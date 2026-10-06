@@ -90,6 +90,7 @@ const ERASURE_DDL = `
   CREATE TABLE er_ratings (note_id TEXT PRIMARY KEY, comment TEXT);
   CREATE TABLE er_loose (id TEXT PRIMARY KEY, memo TEXT);
   CREATE TABLE er_bombs (subject TEXT PRIMARY KEY, kind TEXT NOT NULL);
+  CREATE VIEW er_view AS SELECT id, memo FROM er_loose;
 `;
 
 /**
@@ -127,6 +128,16 @@ const onSubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
       break;
     case 'chained':
       ctx.sql.exec('UPDATE er_loose SET memo = NULL WHERE id = ?; DELETE FROM er_other', [subjectId]);
+      break;
+    case 'view':
+      // A view the module's own migration created is still not one of its tables.
+      ctx.sql.query('SELECT memo FROM er_view');
+      break;
+    case 'cte':
+      ctx.sql.query('WITH er_notes AS (SELECT secret AS body FROM er_other) SELECT body FROM er_notes');
+      break;
+    case 'comma':
+      ctx.sql.query('SELECT * FROM (SELECT 1 AS one) AS a, er_other');
       break;
     case 'async':
       return Promise.resolve() as unknown as void;

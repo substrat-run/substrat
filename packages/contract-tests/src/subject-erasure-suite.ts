@@ -272,6 +272,9 @@ export function subjectErasureContractSuite(
         ['foreign', "a read of another module's table"],
         ['pragma', 'a PRAGMA'],
         ['chained', "a write to another module's table chained after its own"],
+        ['view', "a read of a view, even one the module's migration made"],
+        ['cte', "a CTE that shadows one of its own tables' names"],
+        ['comma', "another module's table joined by a comma after a subquery"],
       ] as const) {
         it(`refuses ${what} from inside the hook, before it runs, and erases nothing`, async () => {
           const { who, sealed } = await armed(kind);

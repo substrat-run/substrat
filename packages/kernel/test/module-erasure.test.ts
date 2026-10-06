@@ -94,35 +94,66 @@ describe('tablesCreatedBy (#2068)', () => {
 });
 
 describe('assertWithinErasureReach (#2068)', () => {
-  const foreign = new Set(['other_secrets', 'ticket0_messages']);
+  const own = new Set(['notes', 'ratings']);
   const refused = (sql: string) => {
     try {
-      assertWithinErasureReach('@test/m', sql, foreign);
+      assertWithinErasureReach('@test/m', sql, own);
     } catch (e) {
       return errorCodeOf(e);
     }
     return undefined;
   };
 
-  it('lets the module read and write its own tables', () => {
+  it('lets the module read and write its own tables, however the statement is shaped', () => {
     expect(refused('UPDATE ratings SET comment = NULL WHERE note_id IN (SELECT id FROM notes WHERE author = ?)')).toBeUndefined();
-    expect(refused('WITH mine AS (SELECT id FROM notes) DELETE FROM ratings WHERE note_id IN mine')).toBeUndefined();
     expect(refused('INSERT INTO ratings (note_id) VALUES (?)')).toBeUndefined();
+    expect(refused('INSERT OR REPLACE INTO ratings (note_id) SELECT id FROM notes')).toBeUndefined();
+    expect(refused('UPDATE OR IGNORE "Notes" SET body = ? WHERE id = ?')).toBeUndefined();
+    expect(refused('SELECT n.id FROM notes AS n JOIN ratings r ON r.note_id = n.id, notes')).toBeUndefined();
+    expect(refused('DELETE FROM ratings WHERE note_id NOT IN (SELECT id FROM notes)')).toBeUndefined();
+    expect(refused('SELECT value FROM notes, json_each(notes.body)')).toBeUndefined();
+    expect(refused('INSERT INTO ratings (note_id) VALUES (?) ON CONFLICT(note_id) DO UPDATE SET comment = NULL')).toBeUndefined();
   });
 
-  it("refuses another module's table anywhere in the statement — quoted, qualified, in a subquery", () => {
+  it('refuses every table that is not its own — an allowlist, so nothing needs listing', () => {
+    // Another module's, a view, a TEMP table: all just names that are not on the list.
     expect(refused('SELECT * FROM other_secrets')).toBe('forbidden');
+    expect(refused('SELECT * FROM some_view')).toBe('forbidden');
+    expect(refused('SELECT * FROM a_temp_table')).toBe('forbidden');
     expect(refused('SELECT * FROM notes WHERE id IN (SELECT id FROM "Other_Secrets")')).toBe('forbidden');
-    expect(refused('SELECT * FROM main.other_secrets')).toBe('forbidden');
     expect(refused('UPDATE notes SET body = (SELECT body_text FROM ticket0_messages LIMIT 1)')).toBe('forbidden');
+    expect(refused('SELECT * FROM notes LEFT JOIN other_secrets ON 1')).toBe('forbidden');
+    expect(refused('INSERT INTO other_secrets (x) VALUES (1)')).toBe('forbidden');
+    expect(refused('DELETE FROM other_secrets')).toBe('forbidden');
   });
 
-  it('refuses the spine and SQLite’s own tables, reads included', () => {
+  it('refuses a comma-joined table after a subquery, at any depth', () => {
+    expect(refused('SELECT * FROM (SELECT 1) AS a, other_secrets')).toBe('forbidden');
+    expect(refused('SELECT * FROM notes, (SELECT * FROM (SELECT 1) b, other_secrets) c')).toBe('forbidden');
+    expect(refused('SELECT * FROM notes, other_secrets')).toBe('forbidden');
+  });
+
+  it('refuses a qualified name, even of its own table — main., temp. or any other schema', () => {
+    expect(refused('SELECT * FROM main.notes')).toBe('forbidden');
+    expect(refused('SELECT * FROM temp.notes')).toBe('forbidden');
+    expect(refused('SELECT * FROM "temp"."notes"')).toBe('forbidden');
+  });
+
+  it('refuses WITH — a CTE could shadow one of its own table names', () => {
+    expect(refused('WITH notes AS (SELECT secret AS body FROM other_secrets) SELECT body FROM notes')).toBe('forbidden');
+    expect(refused('SELECT * FROM notes WHERE id IN (WITH x AS (SELECT 1) SELECT * FROM x)')).toBe('forbidden');
+  });
+
+  it('refuses a table-valued function other than json_each / json_tree', () => {
+    expect(refused("SELECT * FROM pragma_table_info('notes')")).toBe('forbidden');
+  });
+
+  it('refuses the spine and SQLite’s own tables anywhere, reads included', () => {
     expect(refused('SELECT payload FROM _substrat_outbox')).toBe('forbidden');
     expect(refused('SELECT name FROM sqlite_master')).toBe('forbidden');
   });
 
-  it('refuses anything but SELECT, WITH, UPDATE, DELETE, INSERT and REPLACE — in every chained statement', () => {
+  it('refuses anything but SELECT, UPDATE, DELETE, INSERT and REPLACE — in every chained statement', () => {
     expect(refused('PRAGMA table_info(notes)')).toBe('forbidden');
     expect(refused('DROP TABLE notes')).toBe('forbidden');
     expect(refused("ATTACH DATABASE 'x' AS y")).toBe('forbidden');
@@ -132,7 +163,7 @@ describe('assertWithinErasureReach (#2068)', () => {
   });
 });
 
-describe('the hook capability (#2068)', () => {
+describe('the hook capability and the temp schema (#2068)', () => {
   /** A handle over nothing: no rows, and an optional temp schema. */
   const bare = (temp: string[] = []) => {
     const writes: string[] = [];
@@ -168,6 +199,16 @@ describe('the hook capability (#2068)', () => {
     expect(() => kept!.query('SELECT * FROM ratings')).toThrow(/used after the hook returned/);
   });
 
+  it('refuses the erasure when a TEMP object shadows a table it would touch', () => {
+    const plan = moduleErasurePlan(registration(erasure('blank')))!;
+    const { sql, writes } = bare(['NOTES']);
+    expect(() => eraseSubjectFromModules({ sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).toThrow(
+      /TEMP object 'NOTES' shadows/,
+    );
+    expect(writes).toEqual([]);
+    // Its twin: an unrelated temp object is no reason to refuse.
+    expect(() => eraseSubjectFromModules({ sql: bare(['scratch']).sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).not.toThrow();
+  });
 });
 
 describe('the SQLite floor for FTS5 secure-delete (#2068)', () => {
@@ -175,7 +216,8 @@ describe('the SQLite floor for FTS5 secure-delete (#2068)', () => {
   const handle = (secureDelete: boolean) => {
     const writes: string[] = [];
     const sql: ScopedSql = {
-      query: <T>(q: string) => (q.startsWith('SELECT 1') ? [{ one: 1 }] : [{ n: 1 }]) as T[],
+      query: <T>(q: string) =>
+        (q.includes('temp.sqlite_master') ? [] : q.startsWith('SELECT 1') ? [{ one: 1 }] : [{ n: 1 }]) as T[],
       exec: (q: string) => {
         if (!secureDelete && q.includes('secure-delete')) throw new Error('SQL logic error');
         writes.push(q);

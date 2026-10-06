@@ -51,10 +51,11 @@ import { assertSqlIdentifier } from './sql-identifier.js';
 /** What a module's `onSubjectErased` hook is handed — and all it is handed. */
 export interface SubjectErasureContext {
   /**
-   * The module's own tables, and only those: a statement naming any other table in the scope
-   * — another module's, the spine, SQLite's own — is refused before it runs, reads included.
-   * Only `SELECT`, `WITH`, `UPDATE`, `DELETE`, `INSERT` and `REPLACE`; no DDL, no `PRAGMA`.
-   * Revoked when the hook returns: a call after that throws and writes nothing.
+   * The module's own tables, and only those — the ones its migrations create: a statement
+   * naming any other table in the scope (another module's, a view, a TEMP object, the spine)
+   * is refused before it runs, reads included. Only `SELECT`, `UPDATE`, `DELETE`, `INSERT` and
+   * `REPLACE`; no `WITH`, no DDL, no `PRAGMA`. Revoked when the hook returns: a call after that
+   * throws and writes nothing.
    */
   readonly sql: ScopedSql;
   /** The erasure's instant, the same one the spine's tombstones carry. Revoked with `sql`. */
@@ -200,61 +201,128 @@ export function moduleErasurePlan(registration: ModuleRegistration): ModuleErasu
   };
 }
 
-/** The statements a hook may run. Everything else — DDL, PRAGMA, ATTACH, VACUUM — is refused. */
-const HOOK_VERBS = new Set(['select', 'with', 'update', 'delete', 'insert', 'replace']);
+/** The statements a hook may run. Everything else — DDL, PRAGMA, ATTACH, VACUUM, WITH — is refused. */
+const HOOK_VERBS = new Set(['select', 'update', 'delete', 'insert', 'replace']);
+
+/** The only table-valued functions a hook may name in a FROM: they read the row's own JSON. */
+const TABLE_FUNCTIONS = new Set(['json_each', 'json_tree']);
+
+/** Words that end a FROM list (or an UPDATE / INTO target) — what follows them is no table. */
+const ENDS_TABLE_LIST = new Set([
+  'set', 'where', 'on', 'using', 'group', 'order', 'limit', 'values', 'select', 'returning',
+  'union', 'except', 'intersect', 'default', 'having', 'window', 'left', 'right', 'full',
+  'inner', 'cross', 'natural', 'outer',
+]);
+
+/** The conflict clause words between `UPDATE` and its table: `UPDATE OR IGNORE t`. */
+const CONFLICT_WORDS = new Set(['or', 'rollback', 'abort', 'replace', 'fail', 'ignore']);
 
 /**
- * Refuse a hook statement that reaches past the module's own tables.
+ * Refuse a hook statement that reaches past the module's own tables (#2068).
  *
- * Judged by exclusion rather than by parsing where a table sits in the grammar: `foreign` is
- * every table and view the scope holds that the module does not own, and a statement naming
- * any of them ANYWHERE — a FROM, a JOIN, a subquery, a CTE body — is refused, as is any name
- * carrying the spine's or SQLite's prefix. That over-refuses a column or a string literal
- * spelled like another module's table, which fails closed and says why; it cannot
- * under-refuse, because a table the statement does not name is a table it cannot read.
+ * An ALLOWLIST, judged where a table can stand: every name in a table position — after `FROM`,
+ * `JOIN`, `INTO` and `UPDATE`, and each further name in a comma-joined `FROM` list, at any
+ * nesting depth — must be one of `own`, unqualified. Whatever else the scope holds — another
+ * module's table, a view, a TEMP object, the spine — is refused without having to be listed,
+ * so nothing the schema grows later widens the reach. Also refused: a qualified name
+ * (`main.x`, `temp.x`), a table-valued function other than `json_each`/`json_tree`, `WITH`
+ * (a CTE could shadow an own table's name), and any spine- or `sqlite_`-prefixed name
+ * anywhere. Every statement chained after a `;` starts with an allowed verb.
+ *
+ * It errs toward refusing: a name in a table position that is not a table at all
+ * (`a IS DISTINCT FROM b`) is held to the allowlist too, and fails closed with a message.
  */
-export function assertWithinErasureReach(
-  moduleId: string,
-  sql: string,
-  foreign: ReadonlySet<string>,
-): void {
+export function assertWithinErasureReach(moduleId: string, sql: string, own: ReadonlySet<string>): void {
+  const refuse = (what: string): never => {
+    throw substratError(
+      'forbidden',
+      `${moduleId}: onSubjectErased reaches its own module's tables only — refused ${what}`,
+      { reason: 'erasure_reach' },
+    );
+  };
+  interface Frame {
+    expect: boolean;
+    clause: 'from' | 'into' | 'update' | null;
+    inList: boolean;
+  }
   const tokens = tokenizeSql(sql, { punctuation: true });
+  const stack: Frame[] = [];
+  let f: Frame = { expect: false, clause: null, inList: false };
   let start = true;
-  for (const token of tokens) {
+  let prev = '';
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
     if (token.punct) {
-      // A statement after a `;` is judged from its own first word: the DO's `exec` runs every
-      // statement in the string, so a PRAGMA chained after a SELECT must not slip past.
-      if (token.text === ';') start = true;
+      if (token.text === ';') {
+        start = true;
+        stack.length = 0;
+        f = { expect: false, clause: null, inList: false };
+      } else if (token.text === '(') {
+        // A subquery in a FROM position stands where a table would: once it closes, the outer
+        // list continues after it, so a `, other` that follows is still judged.
+        stack.push(f.expect ? { expect: false, clause: f.clause, inList: true } : { ...f, expect: false });
+        f = { expect: false, clause: null, inList: false };
+      } else if (token.text === ')') {
+        f = stack.pop() ?? { expect: false, clause: null, inList: false };
+      } else if (token.text === ',' && f.inList && f.clause === 'from') {
+        f = { ...f, expect: true, inList: false };
+      }
       continue;
+    }
+    const word = token.quoted ? '' : token.text.toLowerCase();
+    for (const part of token.text.split('.')) {
+      const name = part.toLowerCase();
+      if (namesSpineTable(name) || name.startsWith('sqlite_')) refuse(`'${part}'`);
     }
     if (start) {
       start = false;
-      if (token.quoted || !HOOK_VERBS.has(token.text.toLowerCase())) {
-        throw substratError(
-          'forbidden',
-          `${moduleId}: onSubjectErased runs SELECT, UPDATE, DELETE and INSERT on its own tables only, not: ${sql.slice(0, 60)}`,
-          { reason: 'erasure_reach' },
-        );
-      }
+      if (!HOOK_VERBS.has(word)) refuse(`the statement: ${sql.slice(0, 60)}`);
     }
-    for (const part of token.text.split('.')) {
-      const name = part.toLowerCase();
-      if (namesSpineTable(name) || name.startsWith('sqlite_') || foreign.has(name)) {
-        throw substratError(
-          'forbidden',
-          `${moduleId}: onSubjectErased reaches its own module's tables only, and '${part}' is not one of them`,
-          { reason: 'erasure_reach' },
-        );
+    if (word === 'with') refuse('WITH — a common table expression could shadow a table name');
+    if (f.expect) {
+      if (f.clause === 'update' && CONFLICT_WORDS.has(word)) continue;
+      const next = tokens[i + 1];
+      if (f.clause === 'from' && next?.punct && next.text === '(') {
+        if (!TABLE_FUNCTIONS.has(word)) refuse(`the table-valued function '${token.text}'`);
+      } else if (token.text.includes('.')) {
+        refuse(`the qualified name '${token.text}'`);
+      } else if (!own.has(token.text.toLowerCase())) {
+        refuse(`'${token.text}', which is not one of its tables`);
       }
+      f = { ...f, expect: false, inList: true };
+    } else if (word === 'from' || word === 'join') {
+      f = { expect: true, clause: 'from', inList: false };
+    } else if (word === 'into') {
+      f = { expect: true, clause: 'into', inList: false };
+    } else if (word === 'update' && prev !== 'do') {
+      f = { expect: true, clause: 'update', inList: false };
+    } else if (f.inList && ENDS_TABLE_LIST.has(word)) {
+      f = { ...f, inList: false };
     }
+    prev = word;
   }
 }
 
-/** Every table and view in the scope, lowercased — what a hook's reach is judged against. */
-function scopeTables(sql: ScopedSql): string[] {
-  return sql
-    .query<{ name: string }>("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
-    .map((r) => r.name.toLowerCase());
+/**
+ * Refuse the erasure when a TEMP object carries the name of a table it is about to touch: an
+ * unqualified name resolves to the temp schema first, so the declared write or the hook would
+ * land on the shadow. A host whose SQLite will not show its temp schema (a Durable Object) has
+ * none for anything to have made.
+ */
+function assertNoTempShadow(sql: ScopedSql, tables: ReadonlySet<string>): void {
+  let temp: { name: string }[];
+  try {
+    temp = sql.query<{ name: string }>('SELECT name FROM temp.sqlite_master');
+  } catch {
+    return;
+  }
+  const shadow = temp.map((r) => r.name).find((n) => tables.has(n.toLowerCase()));
+  if (shadow) {
+    throw substratError(
+      'precondition_failed',
+      `erasure: a TEMP object '${shadow}' shadows a module table this erasure would touch — nothing was erased`,
+    );
+  }
 }
 
 /**
@@ -323,6 +391,9 @@ export function eraseSubjectFromModules(input: {
 }): ModuleErasureCounts {
   const { sql, plans, subjectId, at } = input;
   const out: ModuleErasureCounts = { verticalRows: [], hookRows: [], unreachedEntities: [] };
+  if (plans.some((p) => p.ownTables.size > 0)) {
+    assertNoTempShadow(sql, new Set(plans.flatMap((p) => [...p.ownTables])));
+  }
 
   // FTS5 keeps a deleted row's terms in the older index segments until they merge, so an
   // erased word stays in the database file after search stops finding it. `secure-delete`
@@ -384,12 +455,9 @@ export function eraseSubjectFromModules(input: {
   }
 
   const guarded = guardSpine(sql, input.statefulTables);
-  let tables: string[] | undefined;
   for (const plan of plans) {
     if (!plan.hook) continue;
-    tables ??= scopeTables(sql);
     const own = plan.ownTables;
-    const foreign = new Set(tables.filter((t) => !own.has(t)));
     let rows = 0;
     // The hook's capability lives exactly as long as its synchronous run. A hook that kept
     // `ctx` — an async continuation, a handle stored on a global — and used it later would
@@ -411,12 +479,12 @@ export function eraseSubjectFromModules(input: {
     const hookSql: ScopedSql = {
       query: <T = Record<string, SqlValue>>(statement: string, params?: readonly SqlValue[]): T[] => {
         alive();
-        assertWithinErasureReach(plan.moduleId, statement, foreign);
+        assertWithinErasureReach(plan.moduleId, statement, own);
         return guarded.query<T>(statement, params);
       },
       exec: (statement: string, params?: readonly SqlValue[]) => {
         alive();
-        assertWithinErasureReach(plan.moduleId, statement, foreign);
+        assertWithinErasureReach(plan.moduleId, statement, own);
         // Any statement the hook runs may change any of its tables; secure their indexes first.
         for (const t of own) secure(t);
         guarded.exec(statement, params);
