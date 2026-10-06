@@ -258,6 +258,7 @@ import type {
 import {
   isUpgradeRequest,
   readSubscription,
+  LIVE_DECIDE_ATTEMPTS,
   LIVE_FANOUT_LIMIT,
   LIVE_MODE_HEADER,
   LIVE_PRINCIPAL_HEADER,
@@ -851,6 +852,17 @@ class WriteRevision {
   private keeping = false;
   /** A statement's text is almost always a constant, so its answer is remembered (bounded). */
   private readonly writes = new Map<string, boolean>();
+  /**
+   * Every write statement run through this handle since the object woke, in memory (#938, Codex
+   * #2077 r4) — counted per STATEMENT, bookkeeping and suspended ones included, where the durable
+   * revision above is bumped once per run. A live fan-out pass decides who may hear a frame across
+   * awaits; it reads this immediately before deciding and again immediately before sending, with
+   * no await between that second read and the send, and decides again when it moved. Per statement
+   * because a decision taken between a transaction's first write (its bump) and a later one (the
+   * revoke itself) must not read as current. Over-counting (a rolled-back write, a write no check
+   * reads) only costs a pass a re-check.
+   */
+  private written = 0;
   readonly sql: SqlStorage;
 
   constructor(
@@ -861,7 +873,9 @@ class WriteRevision {
     private readonly refusal: () => string | null,
   ) {
     const exec = (query: string, ...bindings: unknown[]) => {
-      if (this.keeping && this.isWrite(query)) {
+      const write = this.isWrite(query);
+      if (write) this.written++;
+      if (this.keeping && write) {
         // Bookkeeping takes the copy-marker insert and the lifecycle delivery (#1713) and nothing
         // else: any other write here would be one the revision never saw, which is the hole this
         // class exists to close.
@@ -870,7 +884,7 @@ class WriteRevision {
         }
         return raw.exec(query, ...bindings);
       }
-      if (!this.suspended() && this.isWrite(query)) {
+      if (write && !this.suspended()) {
         const refused = this.refusal();
         if (refused) throw substratError('conflict', refused);
         if (!this.covered) this.bump();
@@ -936,6 +950,11 @@ class WriteRevision {
     queueMicrotask(() => {
       this.covered = false;
     });
+  }
+
+  /** How many write statements this handle has run (see `written`). */
+  get statementsWritten(): number {
+    return this.written;
   }
 
   private isWrite(query: string): boolean {
@@ -3159,6 +3178,9 @@ export function defineScopeDO(
      */
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
       this.webSocketMessagesHandled++;
+      // Ungated, and safe to be: the reply is the constant `'pong'` and carries no event, no
+      // entity and no time, so it tells the socket nothing it did not already know. Every
+      // frame that is about the scope's data goes out through `fanOutLive`'s gates instead.
       if (message === 'ping') ws.send('pong');
     }
 
@@ -3322,6 +3344,21 @@ export function defineScopeDO(
        */
       const rootChecks = new Map<string, Promise<boolean>>();
       const ancestors = new Map<string, Promise<Set<string>>>();
+      /**
+       * The write count every memo above was decided under (#938, Codex #2077 r4). The memos
+       * are decisions about authorization state — a grant, a parent edge — and a later socket
+       * or row awaits after they are taken, so a write that lands in between (a revoke, a
+       * relink) would otherwise be sent past on the old answer. Any write at all forgets them:
+       * coarser than tracking which tables a check reads, and that is the point, because no
+       * write door can be added that forgets to say it touched authorization.
+       */
+      let memosAt = this.revision.statementsWritten;
+      const memosCurrentAt = (at: number) => {
+        if (memosAt === at) return;
+        memosAt = at;
+        rootChecks.clear();
+        ancestors.clear();
+      };
       const reaches = async (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
         let up = ancestors.get(row.id);
         if (!up) {
@@ -3385,76 +3422,95 @@ export function defineScopeDO(
          * so an idle subscription costs no check. A refusal, or a check that throws, closes the socket before anything is
          * sent: the grant is gone, the principal is, or the root moved out of the grant's
          * reach. Closed rather than skipped, so the subscription does not sit there asking
-         * on every pass, and the client's reconnect meets the handshake's 403.
+         * on every pass, and the client's reconnect meets the handshake's 403. Held with the
+         * write count it was decided under, and asked again once that has moved.
          */
-        let rootAllowed: boolean | undefined;
-        for (const row of announceable) {
+        let rootVerdict: { at: number; allowed: boolean } | undefined;
+        /** What this subscriber is owed for one row, decided under write count `at`. */
+        const decide = async (
+          row: (typeof announceable)[number],
+          at: number,
+        ): Promise<LiveChange | LiveNudge | 'skip' | 'revoked'> => {
+          memosCurrentAt(at);
+          if (rootVerdict?.at !== at) rootVerdict = undefined;
           // Narrowing first: it is memoised across sockets, and a row outside the root
           // is out whatever the principal holds.
-          if (within && !(await reaches(row, within))) continue;
+          if (within && !(await reaches(row, within))) return 'skip';
           if (within?.checked !== undefined) {
-            if (rootAllowed === undefined) {
+            if (rootVerdict === undefined) {
               const key = `${subscriber.principal}\n${within.checked}\n${within.entityType}:${within.entityId}`;
               let check = rootChecks.get(key);
               if (!check) rootChecks.set(key, (check = this.mayWatchRoot(context, within)));
-              rootAllowed = await check;
+              rootVerdict = { at, allowed: await check };
             }
-            if (!rootAllowed) {
+            if (!rootVerdict.allowed) return 'revoked';
+          }
+          if (within?.vouched !== undefined || within?.checked !== undefined) {
+            // The root was vouched for or checked, so the walk above was the row filter —
+            // and the subscriber holds no read on this row, so it is told only that
+            // something beneath its root changed. Never which row, never how.
+            return { kind: 'nudge', id: row.id, at: row.occurred_at };
+          }
+          // Non-null: `announceable` is exactly the rows whose type is in the map.
+          const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
+          try {
+            const decision = await context().check(permission, {
+              entityType: row.entity_type,
+              entityId: row.entity_id,
+            });
+            if (!decision.allowed) return 'skip';
+          } catch {
+            // A check that cannot answer is a check that refuses. The alternative —
+            // treating an evaluator failure as an allow — turns an outage in the
+            // permission path into a disclosure, which is the one failure mode this
+            // surface must not have.
+            return 'skip';
+          }
+          return {
+            kind: 'change',
+            id: row.id,
+            type: row.type,
+            entityType: row.entity_type,
+            entityId: row.entity_id,
+            at: row.occurred_at,
+          };
+        };
+
+        rows: for (const row of announceable) {
+          for (let attempt = 0; attempt < LIVE_DECIDE_ATTEMPTS; attempt++) {
+            const at = this.revision.statementsWritten;
+            const verdict = await decide(row, at);
+            // Every gate as close to the send as it can be, with no await between these
+            // reads and the send below — so nothing can land after them and before it.
+            // The store wrote while this was being decided (Codex #2077 r4): a grant may
+            // have been revoked or an edge moved under a memo, so decide again, from
+            // nothing remembered.
+            if (this.revision.statementsWritten !== at) continue;
+            if (verdict === 'skip') continue rows;
+            if (verdict === 'revoked') {
               try {
                 ws.close(LIVE_CLOSE.revoked, 'the subscriber may no longer watch this root');
               } catch {
                 // Already gone.
               }
-              break;
+              break rows;
             }
-          }
-          let frame: LiveChange | LiveNudge;
-          if (within?.vouched !== undefined || within?.checked !== undefined) {
-            // The root was vouched for or checked, so the walk above was the row filter —
-            // and the subscriber holds no read on this row, so it is told only that
-            // something beneath its root changed. Never which row, never how.
-            frame = { kind: 'nudge', id: row.id, at: row.occurred_at };
-          } else {
-            // Non-null: `announceable` is exactly the rows whose type is in the map.
-            const permission = this.liveTargets.get(row.entity_type) as PermissionKey;
-            let allowed = false;
+            // The clock is read again here too, after every await above.
+            if (sessionEnded()) {
+              closeSessionEnded(ws);
+              break rows;
+            }
             try {
-              const decision = await context().check(permission, {
-                entityType: row.entity_type,
-                entityId: row.entity_id,
-              });
-              allowed = decision.allowed;
+              ws.send(JSON.stringify(verdict));
             } catch {
-              // A check that cannot answer is a check that refuses. The alternative —
-              // treating an evaluator failure as an allow — turns an outage in the
-              // permission path into a disclosure, which is the one failure mode this
-              // surface must not have.
-              allowed = false;
+              // The socket went away between `getWebSockets()` and here. Stop writing to
+              // this one and move on; the runtime will deliver `webSocketClose`.
+              break rows;
             }
-            if (!allowed) continue;
-            frame = {
-              kind: 'change',
-              id: row.id,
-              type: row.type,
-              entityType: row.entity_type,
-              entityId: row.entity_id,
-              at: row.occurred_at,
-            };
+            continue rows;
           }
-          // Every gate as close to the send as it can be: the clock is read again here,
-          // after every await above. The checked root's verdict is this pass's, asked just
-          // before its first send; a later pass asks again.
-          if (sessionEnded()) {
-            closeSessionEnded(ws);
-            break;
-          }
-          try {
-            ws.send(JSON.stringify(frame));
-          } catch {
-            // The socket went away between `getWebSockets()` and here. Stop writing to
-            // this one and move on; the runtime will deliver `webSocketClose`.
-            break;
-          }
+          // Still moving after every attempt: this row is not announced, and the client's
+          // poll — the floor under every push — picks it up.
         }
       }
     }

@@ -244,6 +244,14 @@ export function readSubscription(attachment: unknown): LiveSubscription | null {
  */
 export const LIVE_FANOUT_LIMIT = 200;
 
+/**
+ * How many times one row is decided for one subscriber before it is given up on (#938, Codex
+ * #2077 r4). A decision is redone when the store wrote while it was being taken; the pass runs
+ * inside the scope's queue, so a write landing then is rare, and one landing on every attempt
+ * means the store is busy enough that the client's poll is the better answer for this row.
+ */
+export const LIVE_DECIDE_ATTEMPTS = 3;
+
 /** Is this request asking to be upgraded to a WebSocket? Defined in the kernel (#1859). */
 export { isUpgradeRequest } from '@substrat-run/kernel';
 
