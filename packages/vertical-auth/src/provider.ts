@@ -29,6 +29,12 @@ export interface AuthSubject {
    * gates on it decides what `undefined` means.
    */
   emailVerified?: boolean;
+  /**
+   * When the credential that proved this subject stops being valid (ISO 8601): a session's
+   * or a bearer's `exp`. Absent when the provider cannot say. Something held open past the
+   * request on this subject's strength — a live-read socket (#938) — ends at it.
+   */
+  expiresAt?: string;
 }
 
 export interface AuthProvider {

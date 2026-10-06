@@ -63,7 +63,12 @@ export type LiveRefusal =
   /** This host or connection cannot carry a WebSocket; the client should keep polling. */
   | 'poll'
   /** The request was not an upgrade at all — a programming error at the caller. */
-  | 'not-an-upgrade';
+  | 'not-an-upgrade'
+  /**
+   * The subscriber may not watch the root it asked for: a `checkedWithin` root whose key
+   * the principal does not pass (#938). Retrying will not help until a grant changes.
+   */
+  | 'forbidden';
 
 /**
  * The RESPONSE header on `/internal/export` carrying the scope store's load stamp, read in the

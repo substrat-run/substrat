@@ -34,6 +34,8 @@ import {
   readRoutedNode,
   RouterAssertionError,
   invocationLog,
+  externalInput,
+  externalJson,
 } from '@substrat-run/vertical-host';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
@@ -284,6 +286,9 @@ mountPlatformSurface<Env>(app, {
   hostFor,
   roles: ROLES,
   ownerRoleKey: 'hr-admin',
+  // #2071: no shapes here. The platform's reconcile carries EMPLOYEE_SELF from this version's
+  // reviewed registry (`permissions.entityGrants`, declared `bootstrap`) and tops each employee up,
+  // so a key added to it reaches the employees linked before the release that added it.
   onProvision: async (env, b) => {
     await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner);
     // Onto the sweep roster, so the scope's schedules run (#1646). This hook also runs on
@@ -445,6 +450,7 @@ mountOwnerClaim(app, {
  * live in NO role (an hr-admin holds `time:read`, never `time:report`); an employee's
  * authority is a per-record grant, exactly as the demo seed issues one. Without this a linked
  * employee lands on "My work" yet every log-time is denied — the tab is on, the grant is not.
+ * Granted as the declared SHAPE (#2071), so a key EMPLOYEE_SELF gains later reaches them too.
  * Idempotent, and only ever reached by a caller who already passed create-employee's own
  * `employee:manage` check inside the operation, so no fresh authority is minted here.
  */
@@ -455,10 +461,9 @@ async function grantEmployeeSelf(env: Env, node: CompanyNode, result: unknown): 
   // skip rather than throw AFTER the record was already written by the (succeeded) operation.
   const principal = principalId.safeParse(row.principal_ref);
   if (!principal.success) return;
-  const host = hostFor(env);
-  for (const permission of EMPLOYEE_SELF) {
-    await host.grantEntityLocal(node.scopeId, principal.data, permission, { entityType: 'employee', entityId: row.id });
-  }
+  // The declared shape, not its keys one by one (#2071): the marker it leaves is what lets a
+  // key added to EMPLOYEE_SELF later reach this employee at the next reconcile.
+  await hostFor(env).grantEntityShapeLocal(node.scopeId, principal.data, { entityType: 'employee', entityId: row.id }, EMPLOYEE_SELF);
 }
 
 // Generic invoke: the kernel checks the permission inside every operation, so a generic
@@ -466,9 +471,10 @@ async function grantEmployeeSelf(env: Env, node: CompanyNode, result: unknown): 
 // undocumented in the OpenAPI document (one path with a union body reads as nothing).
 app.post('/api/invoke', async (c) => {
   const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
-  const result = (await (await stub(c)).invoke(op, input)) ?? null;
+  // #2073: through the platform's one door, in and out — this route is an external transport too.
+  const result = (await (await stub(c)).invoke(op, externalInput(input))) ?? null;
   if (op === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
-  return c.json(result);
+  return externalJson(c, result);
 });
 
 // The DOCUMENTED invoke surface (design/api-surface.md §2.2): one URL per operation —
@@ -479,9 +485,9 @@ app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
   if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
   const body = await c.req.text();
-  const result = (await (await stub(c)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null;
+  const result = (await (await stub(c)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;
   if (name === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
-  return c.json(result);
+  return externalJson(c, result);
 });
 
 // The OpenAPI 3.1 document, built from the operation catalog — the same schemas the

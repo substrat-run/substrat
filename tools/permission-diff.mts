@@ -74,6 +74,8 @@ interface RoleLike {
 interface EntityGrantLike {
   entityType: string;
   permissions: string[];
+  bootstrap?: true;
+  holder?: 'self' | { table: string; idColumn: string; principalColumn: string };
 }
 /** The normalised surface render()/collectRegistry() consume — unchanged by the discovery move. */
 interface Surface {
@@ -90,6 +92,17 @@ interface PermissionsLike {
 interface VerticalModule {
   permissions?: PermissionsLike;
 }
+
+/**
+ * #2071: whether a shape is topped up, and whose record each entity is — the provenance the
+ * backfill marks holders from, so a reviewer sees who an existing install's top-up reaches.
+ */
+const bootstrapCell = (g: EntityGrantLike): string => {
+  if (!g.bootstrap) return 'no — shared';
+  if (!g.holder) return 'yes — holders given it from now on';
+  const whose = g.holder === 'self' ? 'the entity id is the principal' : `\`${g.holder.table}.${g.holder.principalColumn}\` names the principal`;
+  return `yes — ${whose}`;
+};
 
 const root = new URL('..', import.meta.url).pathname;
 const argv = process.argv.slice(2);
@@ -309,9 +322,22 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       `Reachable WITHOUT a role, narrowed to one entity per principal. A key held by`,
       `no role in §3 but listed here is deliberate, not a gap.`,
       ``,
-      `| Entity type | Permissions granted per entity |`,
-      `| --- | --- |`,
-      ...grants.map((g) => `| ${code(g.entityType)} | ${sorted(g.permissions).map(code).join(', ')} |`),
+      // #2071: a bootstrap shape is topped up for every holder when it grows, so a key added to
+      // one reaches existing people — the column says which rows that is. Only shown when a
+      // vertical declares one, so every other vertical's artifact reads as it did.
+      ...(grants.some((g) => g.bootstrap)
+        ? [
+            `| Entity type | Permissions granted per entity | Given on arrival, topped up when it grows |`,
+            `| --- | --- | --- |`,
+            ...grants.map(
+              (g) => `| ${code(g.entityType)} | ${sorted(g.permissions).map(code).join(', ')} | ${bootstrapCell(g)} |`,
+            ),
+          ]
+        : [
+            `| Entity type | Permissions granted per entity |`,
+            `| --- | --- |`,
+            ...grants.map((g) => `| ${code(g.entityType)} | ${sorted(g.permissions).map(code).join(', ')} |`),
+          ]),
       ``,
     );
     section += 1;

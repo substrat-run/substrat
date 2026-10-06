@@ -154,7 +154,7 @@ import { connectionGrantsForScope, type VerticalClient } from './vertical-client
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
-import { reconcileThenReassert, switchCarryFor } from './reconcile.js';
+import { reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
@@ -3608,6 +3608,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? await c.var.admin.verticalServing(actor, scope.vertical).catch(() => null)
         : null;
     const ranAs = versionReachedAt(reached.via, scope, serving);
+    // #2071: the shapes this reconcile tops holders up to, from the reviewed registry of the
+    // version it reaches — never anything the vertical's own code names.
+    const entityGrants =
+      scope.vertical && ranAs ? await reviewedEntityGrants(c.var.admin, actor, scope.vertical, ranAs) : undefined;
     try {
       // #1674: the recorded OFF positions go back after the reconcile, before the receipt.
       const result = await reconcileThenReassert(c.var.admin, actor, { tenantId, scopeId }, (carry) =>
@@ -3618,6 +3622,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           identityLinks,
           connectionGrants,
           connectionKeys,
+          ...(entityGrants ? { entityGrants } : {}),
           ...carry,
           // Handed over exactly as at provision: a store minted HERE has never been migrated
           // by the vertical, so the reconcile must carry it into the same ready-gate — a bound

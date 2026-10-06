@@ -22,7 +22,7 @@ import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
 import { API_DOCUMENT } from './api.js';
 import { devLogin } from '@substrat-run/dev-issuer';
-import { buildHost, linkDevPersonas, seed, type World } from './seed.js';
+import { buildHost, linkDevPersonas, reconcileOwnerGrants, seed, type World } from './seed.js';
 import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
 
@@ -46,6 +46,8 @@ async function boot() {
   // boundary, so `world.staff` is a plain string until parsed.
   const staff = platformActorId.parse(world.staff);
   await linkDevPersonas(host, { ...world, staff });
+  // #2071: a cast seeded before a key was added to OWNER_GRANTS receives it here.
+  await reconcileOwnerGrants(host, { ...world, staff });
 
   const app = new Hono();
   const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });

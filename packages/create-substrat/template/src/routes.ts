@@ -1,5 +1,5 @@
 import type { Context, Hono } from 'hono';
-import { mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
 import { bikeShopEngineRoutes, bikeShopInvoicingRoutes, bikeShopOperations } from './operations.js';
 
 /**
@@ -76,7 +76,9 @@ export function mountApi(
   // `shop/complete-repair` wraps) is still callable here, on BOTH hosts.
   app.post('/api/invoke', async (c) => {
     const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
-    return c.json((await (await resolveStub(c)).invoke(op, input)) ?? null);
+    // Through the platform's one door (#2073), as the derived routes are: a caller cannot ask
+    // for a page's row cursors, and none ever leave in a response.
+    return externalJson(c, (await (await resolveStub(c)).invoke(op, externalInput(input))) ?? null);
   });
 
   // Returns what it mounted, in registration order — a test pins the complete

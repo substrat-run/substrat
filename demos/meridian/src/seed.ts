@@ -15,6 +15,7 @@ import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors
 import { registerScriveConnector, scriveCallbackPath } from '@substrat-run/connector-scrive';
 import {
   EMPLOYEE_SELF,
+  ENTITY_GRANTS,
   MODULES,
   provisionMeridian,
   VERTICAL,
@@ -333,22 +334,26 @@ export async function seedDemo(
     writeFileSync(castPath, JSON.stringify(world, null, 2));
   }
 
-  // Employee self-service grants (idempotent), entity-narrowed to own record.
+  // Employee self-service grants (idempotent), entity-narrowed to own record — the declared
+  // shape, with its holder marker (#2071).
   for (const [principal, empId, scope] of [
     [world.elin, world.elinEmpId, world.sSe],
     [world.mats, world.matsEmpId, world.sSe],
     [world.pablo, world.pabloEmpId, world.sEs],
   ] as const) {
     if (!empId) continue;
-    for (const permission of EMPLOYEE_SELF) {
-      await host.admin.grant(staff, {
-        principalId: principal,
-        permission,
-        node: { tenantId: world.t1, scopeId: scope },
-        entity: { entityType: 'employee', entityId: empId },
-        grantedBy: world.hedda,
-      });
-    }
+    await host.admin.grantEntityShape(staff, {
+      principalId: principal,
+      node: { tenantId: world.t1, scopeId: scope },
+      entity: { entityType: 'employee', entityId: empId },
+      permissions: EMPLOYEE_SELF,
+      grantedBy: world.hedda,
+    });
+  }
+  // ...and every employee registered through the dev server since, topped up to the shape as
+  // it is now: what a deployed install's reconcile does (#2071).
+  for (const scope of [world.sSe, world.sEs]) {
+    await host.admin.reconcileEntityGrantShapes(staff, { tenantId: world.t1, scopeId: scope }, ENTITY_GRANTS);
   }
 
   // ---------------------------------------------------------------------------

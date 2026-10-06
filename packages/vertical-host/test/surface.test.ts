@@ -2595,3 +2595,56 @@ describe('mountPlatformSurface — the copy verbs carry the tenant (#2016)', () 
     expect(seen).toEqual([TENANT, undefined]);
   });
 });
+
+/**
+ * #2071 (Codex r2): the shapes a reconcile tops holders up to come from ONE source — the
+ * reviewed registry of the version reached, which the platform reads and sends in the body.
+ * The vertical cannot name its own: a shape its code declares `bootstrap` while the reviewed
+ * (digest-covered) registry declares it sharing would top up every sharee unacknowledged.
+ */
+describe('entity-grant shapes on a reconcile come only from the platform body (#2071)', () => {
+  const reviewedSharing = [{ entityType: 'list', permissions: ['list:contribute'] }];
+  const runtimeBootstrap = [{ entityType: 'list', permissions: ['list:contribute', 'list:manage'], bootstrap: true }];
+
+  const reconcileWith = async (body: Record<string, unknown>, deps: Record<string, unknown> = {}) => {
+    let seen: unknown = 'not called';
+    const host = fakeHost({
+      provisionScopeLocal: async (input) => {
+        seen = input.entityGrants;
+        return undefined;
+      },
+    });
+    const res = await appWith(host, { resolveOwner: async () => OWNER as never, ...deps }).request(
+      '/internal/reconcile',
+      { method: 'POST', headers: { ...authed(), 'content-type': 'application/json' }, body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, ...body }) },
+      ENV,
+    );
+    return { status: res.status, seen };
+  };
+
+  it('forwards exactly the reviewed shapes the platform sent', async () => {
+    expect(await reconcileWith({ entityGrants: reviewedSharing })).toEqual({ status: 200, seen: reviewedSharing });
+  });
+
+  it('a divergent bootstrap shape the vertical supplies is never acted on: the reviewed sharing shape is what goes through', async () => {
+    // The mount has no such option, so this is only reachable from untyped code — and ignored.
+    const r = await reconcileWith({ entityGrants: reviewedSharing }, { entityGrants: runtimeBootstrap });
+    expect(r.seen).toEqual(reviewedSharing);
+  });
+
+  it('...and with no shapes in the body, none are reconciled, whatever the vertical holds', async () => {
+    expect((await reconcileWith({}, { entityGrants: runtimeBootstrap })).seen).toBeUndefined();
+  });
+
+  it('refuses a body whose shapes do not parse, before touching the scope', async () => {
+    const r = await reconcileWith({ entityGrants: [{ entityType: 'list', permissions: ['list:contribute'], bootstrap: 'yes' }] });
+    expect(r.status).toBe(400);
+    expect(r.seen).toBe('not called');
+  });
+
+  it('the mount does not accept vertical-supplied shapes at all', () => {
+    // @ts-expect-error — `entityGrants` is not a mount option (#2071): shapes are the platform's to send.
+    const deps: Parameters<typeof mountPlatformSurface<Env>>[1] = { platformSecret: () => SECRET, hostFor: () => fakeHost(), roles: [], ownerRoleKey: 'a', entityGrants: [] };
+    expect(deps).toBeDefined();
+  });
+});

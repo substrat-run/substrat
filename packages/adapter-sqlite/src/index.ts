@@ -203,6 +203,8 @@ import {
   callsOfManifestJson,
   outboundOfManifestJson,
   listLimitOf,
+  pageOf,
+  countedPageOf,
   SCOPE_GATE_REASONS,
   substratError,
   assertReplayableDump,
@@ -494,6 +496,16 @@ import {
   listQuery,
   cursorOf,
   moduleMigrations,
+  MIGRATION_DIGEST_FENCE_DDL,
+  MIGRATION_DIGEST_MARK_LEGACY,
+  assertJournalDumpCoherent,
+  assertMigrationSql,
+  migrationDivergence,
+  migrationFailedError,
+  migrationSteps,
+  planMigrations,
+  type MigrationPlan,
+  type MigrationStep,
   type ListIndexPlan,
   type PageParams,
   isSearchIndexTable,
@@ -618,7 +630,14 @@ import {
   unknownRoleError,
   type ConsumerDelivery,
 } from '@substrat-run/kernel';
-import { attributedView } from '@substrat-run/kernel';
+import {
+  attributedView,
+  delegatedGrantSql,
+  delegatedRevokeSql,
+  grantEntityShapeIn,
+  shapeTopUpBatch,
+  topUpEntityGrantShapes,
+} from '@substrat-run/kernel';
 import {
   ADMIN_LOG_INDEXES_SQL,
   SETTLE_INTENT_SQL,
@@ -630,7 +649,7 @@ import {
   type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
-import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
+import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker, directoryTenantReader } from './checker.js';
 
@@ -727,7 +746,8 @@ interface ScopeRuntime {
    */
   reader: Database.Database | null;
   actor: ScopeActor;
-  appliedMigrations: Set<string>;
+  /** `module@version` → the SQL digest its journal row recorded, null for a row from before #2066. */
+  appliedMigrations: Map<string, string | null>;
   /**
    * The event-id mint for THIS scope (#1335). Per scope, not per host: `ORDER BY id`
    * is an ordering over one scope's outbox, so a busy scope's floor has no business
@@ -765,6 +785,8 @@ interface AttachmentRow {
 interface RegisteredModule {
   id: string;
   migrations: SqlMigration[];
+  /** `migrations` with their digests, and which are held to them (#2066). */
+  steps: Promise<readonly MigrationStep[]>;
   consumers: { eventType: string; handler: ConsumerHandler }[];
   /** The module's declared recurring schedules (#383), empty if it declares none. */
   schedules: ScheduleSpec[];
@@ -1024,8 +1046,13 @@ const KERNEL_DDL = `
     applied_at TEXT NOT NULL,
     duration_ms INTEGER,
     rows_changed INTEGER,
+    -- #2066: SHA-256 of the SQL that ran (kernel migrationDigest). NULL on a row written
+    -- before the column: unrecorded, accepted, never backfilled.
+    sql_digest TEXT,
     PRIMARY KEY (module_id, version)
   );
+  -- #2066: no new journal row without its digest (the kernel's comment says why).
+  ${MIGRATION_DIGEST_FENCE_DDL}
   ${SWITCH_FENCES_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
@@ -2633,6 +2660,7 @@ export class SqliteScopeHost implements ScopeHost {
       // The order the kernel writes once (#1677): authored, then search, then list indexes.
       // The two derived sets are still computed above, for the duplicate-version refusals.
       migrations: moduleMigrations(registration),
+      steps: migrationSteps(registration),
       consumers,
       schedules: manifest.schedules ?? [],
       freshness: manifest.freshness ?? [],
@@ -3555,6 +3583,7 @@ export class SqliteScopeHost implements ScopeHost {
       this.ensureSpineColumns(db);
       const columnsOf = (name: string) => builtColumnsOf(db, name);
       assertSpineTablesBuilt(loadable.map((t) => t.name), columnsOf);
+      assertJournalDumpCoherent(loadable);
       // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
       // untyped column the checker never reads.
       for (const t of loadable) {
@@ -3633,13 +3662,7 @@ export class SqliteScopeHost implements ScopeHost {
       }
       // The frontier came in with the dump — refresh the cached applied-migration set so
       // a later bind/migrate builds on the loaded state, not the previous one.
-      rt.appliedMigrations.clear();
-      for (const r of db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {
-        module_id: string;
-        version: string;
-      }[]) {
-        rt.appliedMigrations.add(`${r.module_id}@${r.version}`);
-      }
+      rt.appliedMigrations = readAppliedMigrations(db);
     });
   }
 
@@ -5765,15 +5788,11 @@ export class SqliteScopeHost implements ScopeHost {
     // Nothing pending FOR THIS HOST → noop, and deliberately no state write: a
     // host that does not run the scope's modules must never clear (or overwrite)
     // a failure recorded by the deployment that does.
-    let pending = false;
-    for (const mod of this.modules.values()) {
-      for (const migration of mod.migrations) {
-        if (!rt.appliedMigrations.has(`${mod.id}@${migration.version}`)) pending = true;
-      }
-    }
-    if (!pending) return { status: 'noop' };
+    // A scope that applied different SQL (#2066) is not a noop: the pass below fails it.
+    const plan = await planMigrations(this.modules.values(), rt.appliedMigrations);
+    if (plan.pending.length === 0 && !plan.diverged) return { status: 'noop' };
     try {
-      await this.applyPendingMigrations(rt);
+      await this.applyPendingMigrations(rt, plan);
       return { status: 'migrated', schemaVersion: String(rt.appliedMigrations.size) };
     } catch {
       // `applyPendingMigrations` already projected the failure (finally-path);
@@ -7167,6 +7186,8 @@ export class SqliteScopeHost implements ScopeHost {
     };
 
     return {
+      // #2069: a view of the view this admin was built over — the person added, its event kept.
+      attributed: (onBehalfOf: OnBehalfOf) => this.attributed(onBehalfOf).admin,
       // #603: fixed at construction — a host built without a box can never store a
       // credential, and saying so is what lets a transport answer 503 instead of 500.
       canStoreSecrets: isSecretBoxConfigured(this.secretBox),
@@ -7300,6 +7321,46 @@ export class SqliteScopeHost implements ScopeHost {
           null,
           grant,
         );
+      },
+      grantEntityShape: async (actor, grant) => {
+        const { tenantId, scopeId } = grant.node;
+        this.assertScope(tenantId, scopeId);
+        const rt = this.runtime(tenantId, scopeId);
+        // One unit on the scope actor (#1678): the marker and its keys land together or not at all.
+        await rt.actor.turn(() =>
+          rt.db.transaction(() => grantEntityShapeIn(switchSqlOf(rt.db), grant.principalId, grant.entity, grant.permissions))(),
+        );
+        this.recordAdmin(actor, 'grantEntityShape', { tenantId, scopeId }, null, grant);
+      },
+      reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
+        const limit = shapeTopUpBatch(opts?.batch);
+        const { tenantId, scopeId } = node;
+        this.assertScope(tenantId, scopeId);
+        const rt = this.runtime(tenantId, scopeId);
+        let toppedUp = 0;
+        // #2071: one bounded transaction per pass, so a large scope never holds one long; a pass
+        // that did not use its whole budget found everything.
+        for (let done = false; !done; ) {
+          const pass = await rt.actor.turn(() =>
+            rt.db.transaction(() =>
+              topUpEntityGrantShapes(switchSqlOf(rt.db), {
+                tenantId,
+                scopeId,
+                shapes,
+                now: new Date().toISOString(),
+                limit,
+                mintEventId: (ms) => rt.mintEventId(ms),
+                version: this.versionId,
+              }),
+            )(),
+          );
+          toppedUp += pass.toppedUp;
+          done = pass.done;
+        }
+        if (toppedUp > 0) {
+          this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, toppedUp });
+        }
+        return { toppedUp };
       },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);
@@ -10956,7 +11017,14 @@ export class SqliteScopeHost implements ScopeHost {
       (c) => c.name.toLowerCase() === column.toLowerCase(),
     );
     if (existing) return false;
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    } catch (err) {
+      // A second opener of the same file can add it between the PRAGMA and here (#2066 review):
+      // the column is there, which is all this wanted. The DO's ALTER pass tolerates it the same way.
+      if (!/duplicate column name/i.test((err as Error).message)) throw err;
+      return false;
+    }
     return true;
   }
 
@@ -11625,18 +11693,16 @@ export class SqliteScopeHost implements ScopeHost {
           string,
           unknown
         >[];
-        // A FULL page may have more; a short one is the end of the walk. Same rule
-        // as `pageOf`, applied here because the cursor is a COLUMN's value (plus
-        // the tie-break) rather than a field the caller could name.
-        const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
-        const nextCursor =
-          last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order, q.view);
-        const page = { entries: rows as T[], nextCursor };
-        if (!params.total) return page;
+        // `pageOf`'s rule — a FULL page may have more, a short one is the end — with the
+        // cursor minted from the row's COLUMN (plus the tie-break), and each row's own
+        // cursor when asked (#2073: `pageVisible` may stop at a visible row mid-page).
+        const mint = (row: T) =>
+          cursorOf(row as Record<string, unknown>, q.sortColumn, plan.idColumn, q.order, q.view);
+        if (!params.total) return pageOf(rows as T[], limit, mint, params.rowCursors);
         const counted = rt.db.prepare(q.countSql).all(...(q.countParams as never[])) as {
           n: number;
         }[];
-        return { ...page, total: counted[0]?.n ?? 0 };
+        return countedPageOf(rows as T[], limit, mint, counted[0]?.n ?? 0, params.rowCursors);
       },
       /**
        * Narrow a permission this caller already holds onto one entity (#K-sharing).
@@ -11667,16 +11733,9 @@ export class SqliteScopeHost implements ScopeHost {
               'the caller does not hold it there (a grant delegates, it never elevates)',
           );
         }
-        rt.db
-          .prepare(
-            `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
-             VALUES (?, ?, ?)`,
-          )
-          .run(
-            `principal:${principal}`,
-            `granted:${permission}`,
-            `${entity.entityType}:${entity.entityId}`,
-          );
+        // #2071: an explicit grant, so it clears a tombstone `revoke` left.
+        const g = delegatedGrantSql(principal, permission, `${entity.entityType}:${entity.entityId}`);
+        rt.db.prepare(g.sql).run(...g.params);
       },
       /**
        * Withdraw a grant this caller could have made. Same guardrails, same reason — but NOT
@@ -11692,15 +11751,10 @@ export class SqliteScopeHost implements ScopeHost {
               'the caller does not hold it there',
           );
         }
-        rt.db
-          .prepare(
-            `DELETE FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?`,
-          )
-          .run(
-            `principal:${principal}`,
-            `granted:${permission}`,
-            `${entity.entityType}:${entity.entityId}`,
-          );
+        // K-21 (#2071): a tombstone, never a delete — a declared shape's top-up must be able
+        // to tell a key taken back from one never held.
+        const r = delegatedRevokeSql(principal, permission, `${entity.entityType}:${entity.entityId}`, at);
+        rt.db.prepare(r.sql).run(...r.params);
       },
       atomic: createAtomic(runSub, { passed, signals }),
       // #1672: mint / revoke / list, written once in the kernel. The raw spine seam (this
@@ -11816,14 +11870,11 @@ export class SqliteScopeHost implements ScopeHost {
     return ctxRef;
   }
 
-  private async applyPendingMigrations(rt: ScopeRuntime): Promise<void> {
-    const pending: { moduleId: string; migration: SqlMigration }[] = [];
-    for (const mod of this.modules.values()) {
-      for (const migration of mod.migrations) {
-        if (!rt.appliedMigrations.has(`${mod.id}@${migration.version}`)) {
-          pending.push({ moduleId: mod.id, migration });
-        }
-      }
+  private async applyPendingMigrations(rt: ScopeRuntime, plan?: MigrationPlan): Promise<void> {
+    const { pending, diverged } = plan ?? (await planMigrations(this.modules.values(), rt.appliedMigrations));
+    if (diverged) {
+      this.recordMigrationState(rt, diverged);
+      throw migrationFailedError(diverged.version, diverged.error);
     }
     // Nothing pending → nothing to record. A scope provisioned before any module
     // registers legitimately sits at schema_version '0'.
@@ -11833,26 +11884,32 @@ export class SqliteScopeHost implements ScopeHost {
     let failure: { version: string; error: string } | undefined;
     try {
       await rt.actor.enqueue(() => {
-        for (const { moduleId, migration } of pending) {
+        for (const { moduleId, migration, digest, authored } of pending) {
           const key = `${moduleId}@${migration.version}`;
           if (rt.appliedMigrations.has(key)) continue;
           rt.db.exec('BEGIN IMMEDIATE');
+          let recorded: string | null = digest;
           try {
             const already = rt.db
-              .prepare('SELECT 1 FROM _substrat_migrations WHERE module_id = ? AND version = ?')
-              .get(moduleId, migration.version);
-            if (!already) {
+              .prepare('SELECT sql_digest FROM _substrat_migrations WHERE module_id = ? AND version = ?')
+              .get(moduleId, migration.version) as { sql_digest: string | null } | undefined;
+            if (already) {
+              // Applied since this pass read the journal: held to the same digest rule.
+              const error = migrationDivergence(already.sql_digest, digest, authored);
+              if (error) throw new Error(error);
+              recorded = already.sql_digest;
+            } else {
               const started = performance.now();
               const before = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
-              // #1898: a migration runs on the scope's own handle, not `ctx.sql`, so the
-              // spine guard's REFERENCES rule is applied here.
-              assertNoSpineReference(migration.sql, `migration ${key}`);
+              // #1898, #2066: a migration runs on the scope's own handle, not `ctx.sql`, so the
+              // spine rules a migration is held to are applied here.
+              assertMigrationSql(migration.sql, { key, digest, authored });
               rt.db.exec(migration.sql);
               assertTablesWithinColumnLimit(rt.db);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
               rt.db
                 .prepare(
-                  'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)',
+                  'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed, sql_digest) VALUES (?, ?, ?, ?, ?, ?)',
                 )
                 .run(
                   moduleId,
@@ -11860,17 +11917,16 @@ export class SqliteScopeHost implements ScopeHost {
                   this.clock(),
                   Math.max(0, Math.round(performance.now() - started)),
                   after - before,
+                  digest,
                 );
             }
             rt.db.exec('COMMIT');
           } catch (err) {
             rt.db.exec('ROLLBACK');
             failure = { version: key, error: (err as Error).message };
-            throw new Error(
-              `migration failed for ${key} — scope fails closed: ${(err as Error).message}`,
-            );
+            throw migrationFailedError(key, (err as Error).message);
           }
-          rt.appliedMigrations.add(key);
+          rt.appliedMigrations.set(key, recorded);
         }
       });
     } finally {
@@ -12057,6 +12113,10 @@ export class SqliteScopeHost implements ScopeHost {
     // #1763: old journal rows keep NULL, meaning their cost was never recorded.
     this.ensureColumn(db, '_substrat_migrations', 'duration_ms', 'duration_ms INTEGER');
     this.ensureColumn(db, '_substrat_migrations', 'rows_changed', 'rows_changed INTEGER');
+    // #2066: the rows already there get the legacy mark, never a digest — what they ran was never
+    // measured. KERNEL_DDL's fence keeps any other NULL out, so the mark finds only those.
+    this.ensureColumn(db, '_substrat_migrations', 'sql_digest', 'sql_digest TEXT');
+    db.exec(MIGRATION_DIGEST_MARK_LEGACY);
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
@@ -12153,14 +12213,7 @@ export class SqliteScopeHost implements ScopeHost {
     db.pragma('journal_mode = WAL');
     db.exec(KERNEL_DDL);
     this.ensureSpineColumns(db);
-    const appliedMigrations = new Set<string>(
-      (
-        db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {
-          module_id: string;
-          version: string;
-        }[]
-      ).map((r) => `${r.module_id}@${r.version}`),
-    );
+    const appliedMigrations = readAppliedMigrations(db);
     // #1335: the floor this scope's ids have to clear is the highest id already in
     // its outbox, not wherever the wall clock happens to be. Read once, here, because
     // this is the one place a scope's runtime is built — a reopened host, a revived
@@ -12186,6 +12239,16 @@ export class SqliteScopeHost implements ScopeHost {
     this.scopesById.set(scopeId, created);
     return created;
   }
+}
+
+/** A scope's migration journal: `module@version` → the SQL digest it recorded (#2066). */
+function readAppliedMigrations(db: Database.Database): Map<string, string | null> {
+  const rows = db.prepare('SELECT module_id, version, sql_digest FROM _substrat_migrations').all() as {
+    module_id: string;
+    version: string;
+    sql_digest: string | null;
+  }[];
+  return new Map(rows.map((r) => [`${r.module_id}@${r.version}`, r.sql_digest]));
 }
 
 /** The platform spine (`_substrat_*`) and SQLite internals — the UI groups these apart. */

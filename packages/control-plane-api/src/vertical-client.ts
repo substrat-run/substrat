@@ -1,4 +1,5 @@
 import type {
+  EntityGrantShape,
   AttachmentRecord,
   ScopeLineage,
   ConnectionId,
@@ -416,6 +417,13 @@ export interface ReconcileInstanceInput {
   tenantHeldPeers?: string[];
   /** #2045: each recorded-off subject's fence, by tuple subject. A vertical that predates it ignores it. */
   switchFences?: Record<string, string>;
+  /**
+   * #2071: the declared entity-grant shapes of the version this reconcile reaches, read from
+   * that version's REVIEWED registry — the object the permission digest covers — so what a
+   * reconcile tops up is exactly what a promote acknowledged. Absent when the platform cannot
+   * name the version, and then nothing is reconciled. A vertical that predates it ignores it.
+   */
+  entityGrants?: EntityGrantShape[];
 }
 
 /**

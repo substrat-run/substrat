@@ -67,8 +67,9 @@ let noteScope: ReturnType<typeof vi.fn>;
 let failNextAdds = 0;
 
 /**
- * The host the executor is mounted on: the SQLite host, except that its attributed view's
- * add (`applyMembership`) can be made to fail. Everything else is the host's own.
+ * The host the executor is mounted on: the SQLite host, except that an add (`applyMembership`)
+ * through the `admin` an executor is handed, or an attributed view of it, can be made to fail.
+ * Everything else is the host's own.
  */
 function flakyHost(real: SqliteScopeHost): ScopeHost {
   const flaky = (admin: HostAdmin): HostAdmin =>
@@ -81,12 +82,16 @@ function flakyHost(real: SqliteScopeHost): ScopeHost {
             throw new Error('directory unavailable');
           };
         }
+        if (key === 'attributed') return (...a: Parameters<NonNullable<HostAdmin['attributed']>>) => flaky(t.attributed!(...a));
         return Reflect.get(t, key) as unknown;
       },
     });
   return new Proxy(real, {
     get(t, key) {
-      if (key === 'attributed') return (...a: Parameters<NonNullable<ScopeHost['attributed']>>) => ({ admin: flaky(t.attributed(...a).admin) });
+      if (key === 'registerExecutor') {
+        return (...[id, type, handler, retry]: Parameters<ScopeHost['registerExecutor']>) =>
+          t.registerExecutor(id, type, (admin, event, scope) => handler(flaky(admin), event, scope), retry);
+      }
       const v = Reflect.get(t, key) as unknown;
       return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
     },

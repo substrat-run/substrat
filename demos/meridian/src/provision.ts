@@ -3,6 +3,7 @@ import {
   definePermissions,
   platformActorId,
   type ConnectionId,
+  type EntityGrantShape,
   type PermissionKey,
   type PrincipalId,
   type RoleDefinition,
@@ -141,9 +142,19 @@ export const EMPLOYEE_SELF: PermissionKey[] = [
   PROTO.read,
 ];
 
-/** Entity-narrowed grant SHAPES — the reviewable half of the permission diff. */
-export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
-  { entityType: 'employee', permissions: EMPLOYEE_SELF },
+/**
+ * Entity-narrowed grant SHAPES — the reviewable half of the permission diff. `employee` is a
+ * bootstrap shape (#2071): given on the employee's own record at link time, and topped up for
+ * every employee when it grows. Whose record it is comes from `hr_employees.principal_ref`, which
+ * is how the employees linked before markers existed are found.
+ */
+export const ENTITY_GRANTS: EntityGrantShape[] = [
+  {
+    entityType: 'employee',
+    permissions: EMPLOYEE_SELF,
+    bootstrap: true,
+    holder: { table: 'hr_employees', idColumn: 'id', principalColumn: 'principal_ref' },
+  },
 ];
 
 /**

@@ -122,7 +122,10 @@ describe('membership executor — the fence and the request share the host clock
   let release: () => void = () => undefined;
   let gate: Promise<void> = Promise.resolve();
 
-  /** The host, except that every membership unit waits for `gate` — the add held in front of it. */
+  /**
+   * The host, except that every membership unit an executor writes — through the `admin` it is
+   * handed or an attributed view of it — waits for `gate`: the add held in front of it.
+   */
   const holding = (real: SqliteScopeHost): ScopeHost => {
     const held = (admin: HostAdmin): HostAdmin =>
       new Proxy(admin, {
@@ -132,11 +135,16 @@ describe('membership executor — the fence and the request share the host clock
                 await gate;
                 return target.applyMembership(...args);
               }
-            : Reflect.get(target, key),
+            : key === 'attributed'
+              ? (...a: Parameters<NonNullable<HostAdmin['attributed']>>) => held(target.attributed!(...a))
+              : Reflect.get(target, key),
       });
     return new Proxy(real, {
       get: (target, key) => {
-        if (key === 'attributed') return (...a: Parameters<NonNullable<ScopeHost['attributed']>>) => ({ admin: held(target.attributed(...a).admin) });
+        if (key === 'registerExecutor') {
+          return (...[id, type, handler, retry]: Parameters<ScopeHost['registerExecutor']>) =>
+            target.registerExecutor(id, type, (admin, event, scope) => handler(held(admin), event, scope), retry);
+        }
         const v = Reflect.get(target, key) as unknown;
         return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
       },

@@ -10,7 +10,7 @@ const D = 'scope-d';
 const app = (scopeId: string, over: Partial<FleetApp> = {}): FleetApp =>
   ({ scopeId, name: `App ${scopeId.slice(-1).toUpperCase()}`, vertical: 'manyfold', ...over });
 const sweep = (scopeId: string, over: Partial<SweepRunEntry> = {}): SweepRunEntry =>
-  ({ scopeId, kind: 'schedule', outcome: 'ok', at: instant.parse('2026-09-10T10:00:00.000Z'), ...over }) as SweepRunEntry;
+  ({ id: '01SWEEP', scopeId, unit: `${scopeId}:tasks/run`, kind: 'schedule', outcome: 'ok', at: instant.parse('2026-09-10T10:00:00.000Z'), ...over }) as SweepRunEntry;
 const failure = (scopeId: string): OpsFailureEntry => ({ scopeId }) as OpsFailureEntry;
 
 describe('deriveFleetHealth (#1238)', () => {
@@ -60,6 +60,68 @@ describe('deriveFleetHealth (#1238)', () => {
     expect(row!.state).toBe('failing');
     expect(row!.sweepFailures).toBe(1);
     expect(row!.reason).toBe('1 failed sweep recorded.');
+  });
+
+  it('a schedule that failed and has since run cleanly has RECOVERED — ok, not failing', () => {
+    // The bug this pins: a failure yesterday kept the app red for the whole 24-hour
+    // window though every run after it succeeded, while the app's own schedules
+    // panel — which reads the newest run — called the same schedule healthy.
+    const [row] = deriveFleetHealth({
+      apps: [app(A)],
+      failures: [],
+      sweeps: [
+        sweep(A, { id: '01B', outcome: 'ok', at: instant.parse('2026-09-10T12:00:00.000Z') }),
+        sweep(A, { id: '01A', outcome: 'failed', at: instant.parse('2026-09-10T08:00:00.000Z') }),
+      ],
+    });
+    expect(row!.state).toBe('ok');
+    expect(row!.sweepFailures).toBe(0);
+    expect(row!.reason).toMatch(/1 sweep that failed earlier in the window has since run cleanly/);
+  });
+
+  it('a schedule whose NEWEST firing failed is still failing, whatever came before', () => {
+    const [row] = deriveFleetHealth({
+      apps: [app(A)],
+      failures: [],
+      sweeps: [
+        sweep(A, { id: '01A', outcome: 'ok', at: instant.parse('2026-09-10T08:00:00.000Z') }),
+        sweep(A, { id: '01B', outcome: 'failed', at: instant.parse('2026-09-10T12:00:00.000Z') }),
+      ],
+    });
+    expect(row!.state).toBe('failing');
+    expect(row!.sweepFailures).toBe(1);
+  });
+
+  it('a skip after a failure is not a recovery — the schedule was not due, nothing ran', () => {
+    const [row] = deriveFleetHealth({
+      apps: [app(A)],
+      failures: [],
+      sweeps: [
+        sweep(A, { id: '01B', outcome: 'skipped', at: instant.parse('2026-09-10T12:00:00.000Z') }),
+        sweep(A, { id: '01A', outcome: 'failed', at: instant.parse('2026-09-10T08:00:00.000Z') }),
+      ],
+    });
+    expect(row!.state).toBe('failing');
+  });
+
+  it('judges each schedule on its own runs — one recovering does not clear another', () => {
+    const [row] = deriveFleetHealth({
+      apps: [app(A)],
+      failures: [],
+      sweeps: [
+        sweep(A, { id: '01C', unit: `${A}:x`, outcome: 'ok', at: instant.parse('2026-09-10T12:00:00.000Z') }),
+        sweep(A, { id: '01A', unit: `${A}:x`, outcome: 'failed', at: instant.parse('2026-09-10T08:00:00.000Z') }),
+        sweep(A, { id: '01B', unit: `${A}:y`, outcome: 'failed', at: instant.parse('2026-09-10T09:00:00.000Z') }),
+      ],
+    });
+    expect(row!.state).toBe('failing');
+    expect(row!.sweepFailures).toBe(1);
+    expect(row!.reason).toBe('1 failed sweep recorded.');
+  });
+
+  it('an ops failure is an incident, not a run — a clean sweep afterwards does not clear it', () => {
+    const [row] = deriveFleetHealth({ apps: [app(A)], failures: [failure(A)], sweeps: [sweep(A)] });
+    expect(row!.state).toBe('failing');
   });
 
   it('counts both sources in one sentence when both are present', () => {
