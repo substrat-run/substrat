@@ -464,6 +464,17 @@ listContractSuite('adapter-sqlite', async () => {
   };
 });
 
+/** A scope's own connection and migration memory, past `ctx.sql` — the harness's way in. */
+const scopeRuntimeOf = (host: SqliteScopeHost | undefined, tenant: unknown, scope: unknown) =>
+  (
+    host as unknown as {
+      runtime(t: unknown, s: unknown): {
+        db: { prepare(q: string): { reader: boolean; all(...a: unknown[]): unknown[]; run(...a: unknown[]): unknown } };
+        appliedMigrations: Set<string>;
+      };
+    }
+  ).runtime(tenant, scope);
+
 // #119: archive and trash. The DEFAULT checker: what is pinned is that the kernel checks the
 // DECLARED key, which an allow-all checker would pass whether it was checked or not.
 let stateHost: SqliteScopeHost | undefined;
@@ -483,24 +494,13 @@ entityStateContractSuite(
   },
   // The scope's own connection, past `ctx.sql`.
   async (tenant, scope, sql, params = []) => {
-    const internals = stateHost as unknown as {
-      runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
-    };
-    internals.runtime(tenant, scope).db.prepare(sql).run(...params);
+    scopeRuntimeOf(stateHost, tenant, scope).db.prepare(sql).run(...params);
   },
 );
 
-// #2090: an authored rebuild of a stateful table, on the pure host's migration pass.
+// #2090: an authored rebuild of a table the kernel derived onto, on the pure host's migration pass.
 let rebuildHost: SqliteScopeHost | undefined;
-const rebuildRuntime = (tenant: unknown, scope: unknown) =>
-  (
-    rebuildHost as unknown as {
-      runtime(t: unknown, s: unknown): {
-        db: { prepare(q: string): { reader: boolean; all(...a: unknown[]): unknown[]; run(...a: unknown[]): unknown } };
-        appliedMigrations: Set<string>;
-      };
-    }
-  ).runtime(tenant, scope);
+const rebuildRuntime = (tenant: unknown, scope: unknown) => scopeRuntimeOf(rebuildHost, tenant, scope);
 entityStateMigrationContractSuite(
   'adapter-sqlite',
   async () => {

@@ -5292,7 +5292,8 @@ entityStateContractSuite(
   },
 );
 
-// #2090: an authored rebuild of a stateful table, on the DO's migration pass — the re-derived
+const scopeStub = (scope: string) => env.SCOPE.get(env.SCOPE.idFromName(scope));
+// #2090: an authored rebuild of a table the kernel derived onto, on the DO's migration pass — the re-derived
 // triggers and partial indexes proven in workerd's SQLite. `rebuildMod` is in
 // `contractTestModules`, so the ScopeDO carries it at code time.
 entityStateMigrationContractSuite(
@@ -5307,12 +5308,12 @@ entityStateMigrationContractSuite(
   },
   {
     sql: (_tenant, scope, sql) =>
-      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) =>
+      runInDurableObject(scopeStub(scope), (_, state) =>
         state.storage.sql.exec(sql).toArray() as Record<string, unknown>[],
       ),
     // The journal row, and the instance's `applied` set that `retryMigrations` reads pending from.
     forget: (_tenant, scope, moduleId, version) =>
-      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (instance, state) => {
+      runInDurableObject(scopeStub(scope), (instance, state) => {
         state.storage.sql.exec('DELETE FROM _substrat_migrations WHERE module_id = ? AND version = ?', moduleId, version);
         (instance as unknown as { applied: Set<string> }).applied.delete(`${moduleId}@${version}`);
       }),

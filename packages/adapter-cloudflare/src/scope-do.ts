@@ -292,7 +292,7 @@ import {
   uncheckedView,
   addStatePlans,
   statefulTablesOf,
-  assertEntityStateColumns,
+  afterMigration,
   assertEntityStateIntact,
   rederiveObjects,
   type DerivedPlans,
@@ -4899,21 +4899,6 @@ export function defineScopeDO(
       for (const stmt of splitSqlStatements(ddl)) this.sql.exec(stmt);
     }
 
-    /**
-     * #2090: a migration runs on this DO's own handle, so neither `ctx.sql`'s after-DDL check
-     * nor the derived migrations (journaled, so never re-run) see what it did to a
-     * table. Inside the migration's own transaction: its state columns must still be there, or
-     * it rolls back — and after the LAST of the pass, the triggers and indexes a create-copy-rename
-     * rebuild dropped are put back (the search index rebuilt), in the same transaction. Only after
-     * the last: a rebuild split over two migrations copies its rows in the second, and a guard
-     * put back in between would refuse the archived ones. The pure host's `afterMigration`.
-     */
-    private afterMigration(key: string, last: boolean): void {
-      const sql = doSpineSql(this.sql);
-      assertEntityStateColumns(sql, this.derivedPlans(), `migration ${key}`);
-      if (last) rederiveObjects(sql, (ddl) => this.runScript(ddl), this.derivedPlans());
-    }
-
     /** Resolves true if this call applied at least one migration. */
     private async applyPendingMigrations(): Promise<boolean> {
       const pending: { moduleId: string; migration: SqlMigration }[] = [];
@@ -4975,10 +4960,11 @@ export function defineScopeDO(
                 // alone. The journal row below is a write, and advances the revision once.
                 this.revisionSuspended = true;
                 try {
-                  for (const stmt of splitSqlStatements(migration.sql)) {
-                    this.sql.exec(stmt);
-                  }
-                  this.afterMigration(key, i === pending.length - 1);
+                  this.runScript(migration.sql);
+                  // #2090: the state columns this migration must have left, and after the last of
+                  // the pass, the triggers and indexes a create-copy-rename rebuild dropped.
+                  const last = i === pending.length - 1;
+                  afterMigration(doSpineSql(this.sql), (ddl) => this.runScript(ddl), this.derivedPlans(), key, last);
                 } finally {
                   this.revisionSuspended = false;
                 }
@@ -6840,7 +6826,7 @@ export function defineScopeDO(
             statefulTablesOf(statePlans),
             // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
             statePlans.size
-              ? () => assertEntityStateIntact(doSpineSql(sql), { state: statePlans, lists: listPlans, search: searchPlans })
+              ? () => assertEntityStateIntact(doSpineSql(sql), this.derivedPlans())
               : undefined,
           ),
           minted,

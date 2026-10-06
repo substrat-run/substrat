@@ -146,8 +146,14 @@ export const stateColumnVersionsOf = (plan: EntityStatePlan): { version: string;
  * The guard triggers' version. By which columns they guard, so declaring a trash on an
  * archivable entity rebuilds them to guard both.
  */
-export const entityStateGuardVersion = (plan: EntityStatePlan): string =>
-  `state/${plan.entityType}:guard:${[...(plan.archivePermission ? ['archive'] : []), ...(plan.trashPermission ? ['trash'] : [])].join('+')}`;
+export const entityStateGuardVersion = (plan: EntityStatePlan): string => {
+  const { archive, trash } = stateColumnsOf(plan);
+  return `state/${plan.entityType}:guard:${[...(archive ? ['archive'] : []), ...(trash ? ['trash'] : [])].join('+')}`;
+};
+
+/** The two guard triggers `entityStateTriggerDdl` creates on the plan's table. */
+export const entityStateTriggerObjects = (plan: EntityStatePlan): { name: string; type: 'trigger' }[] =>
+  ['born', 'moved'].map((s) => ({ name: `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_${s}`, type: 'trigger' }));
 
 /** The prefix of every trigger this module derives — kernel-owned, so the reserved one. */
 export const ENTITY_STATE_TRIGGER_PREFIX = '_substrat_state_';
@@ -193,12 +199,8 @@ const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
  * legitimately born trashed, so the triggers are put back only after them.
  */
 export function entityStateTriggerDdl(plan: EntityStatePlan): string {
-  const born = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_born`;
-  const moved = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_moved`;
-  const columns = [
-    ...(plan.archivePermission ? [ARCHIVED_AT_COLUMN] : []),
-    ...(plan.trashPermission ? [TRASHED_AT_COLUMN] : []),
-  ];
+  const [born, moved] = entityStateTriggerObjects(plan).map((o) => o.name);
+  const columns = stateColumnVersionsOf(plan).map((c) => c.column);
   return [
     `DROP TRIGGER IF EXISTS ${born};`,
     `CREATE TRIGGER ${born} BEFORE INSERT ON ${plan.table} WHEN ${columns.map((c) => `NEW.${c} IS NOT NULL`).join(' OR ')} BEGIN`,

@@ -350,31 +350,36 @@ describe('runtime DDL on a stateful table (#119, Codex r3)', () => {
   });
 });
 
-describe('assertEntityStateIntact', () => {
-  const build = () => {
-    const db = new DatabaseSync(':memory:');
-    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
-    // The journal is what says which derived objects the table is owed (#2090).
-    db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
-    for (const m of moduleMigrations({
-      manifest: { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [both] },
-    })) {
-      db.exec(m.sql);
-      db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
-    }
-    const sql = { query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[], exec: () => ({ changes: 0 }) };
-    const state = new Map();
-    addStatePlans(state, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
-    const lists = new Map(
-      listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]).map((p) => [p.entityType, p]),
+/**
+ * A `docs` table carrying everything its declaration derives, with a journal of the migrations
+ * that derived it — the journal is what says which objects the table is owed (#2090).
+ */
+const derivedFixture = (journaled: (version: string) => boolean = () => true) => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
+  db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
+  const decl = { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [both] };
+  for (const m of moduleMigrations({ manifest: decl })) {
+    db.exec(m.sql);
+    if (journaled(m.version)) db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
+  }
+  const sql = {
+    query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[],
+    exec: () => ({ changes: 0 }),
+  } as never;
+  const state = new Map();
+  addStatePlans(state, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+  const plans = { state, lists: new Map(listIndexPlans('@m', decl.lists, [both]).map((p) => [p.entityType, p])), search: new Map() };
+  /** The kernel-prefixed triggers and indexes, by name. */
+  const derived = () =>
+    (db.prepare(`SELECT name FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\' ORDER BY name`).all() as { name: string }[]).map(
+      (r) => r.name,
     );
-    return {
-      db,
-      sql: sql as never,
-      plans: { state, lists, search: new Map() },
-      check: () => assertEntityStateIntact(sql as never, { state, lists, search: new Map() }),
-    };
-  };
+  return { db, sql, plans, derived, check: () => assertEntityStateIntact(sql, plans) };
+};
+
+describe('assertEntityStateIntact', () => {
+  const build = () => derivedFixture();
   it('passes a table carrying everything the kernel derived', () => expect(() => build().check()).not.toThrow());
   for (const [what, ddl] of [
     ['born trigger', 'DROP TRIGGER _substrat_state_docs_born'],
@@ -383,12 +388,10 @@ describe('assertEntityStateIntact', () => {
     ['column', 'ALTER TABLE docs DROP COLUMN _substrat_trashed_at'],
   ] as const) {
     it(`fails closed without its ${what}`, () => {
-      const { db, check } = build();
+      const { db, check, derived } = build();
       if (what === 'column') {
         // SQLite will not drop a column a trigger or partial index names, so those go first.
-        for (const { name, type } of db.prepare(`SELECT name, type FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\'`).all() as { name: string; type: string }[]) {
-          db.exec(`DROP ${type.toUpperCase()} ${name}`);
-        }
+        for (const name of derived()) db.exec(`DROP ${name.startsWith('_substrat_state_') ? 'TRIGGER' : 'INDEX'} ${name}`);
       }
       db.exec(ddl);
       expect(check).toThrow(/without/);
@@ -397,25 +400,7 @@ describe('assertEntityStateIntact', () => {
 });
 
 describe('rederiveObjects / assertEntityStateColumns (#2090)', () => {
-  const build = (journaled: (version: string) => boolean = () => true) => {
-    const db = new DatabaseSync(':memory:');
-    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
-    db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
-    const decl = { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [both] };
-    for (const m of moduleMigrations({ manifest: decl })) {
-      db.exec(m.sql);
-      if (journaled(m.version)) db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
-    }
-    const sql = { query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[], exec: () => ({ changes: 0 }) };
-    const state = new Map();
-    addStatePlans(state, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
-    const lists = new Map(listIndexPlans('@m', decl.lists, [both]).map((p) => [p.entityType, p]));
-    const derived = () =>
-      (db.prepare(`SELECT name FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\' ORDER BY name`).all() as { name: string }[]).map(
-        (r) => r.name,
-      );
-    return { db, sql: sql as never, plans: { state, lists, search: new Map() }, derived };
-  };
+  const build = derivedFixture;
   const rebuild = 'CREATE TABLE d2 AS SELECT * FROM docs; DROP TABLE docs; ALTER TABLE d2 RENAME TO docs;';
 
   it('puts back what a create-copy-rename rebuild dropped', () => {

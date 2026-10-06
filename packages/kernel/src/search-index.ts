@@ -236,25 +236,26 @@ function tokenizeClause(tokenizer: SearchTokenizer): string {
  */
 export function searchIndexDdl(plan: SearchIndexPlan): string {
   const idx = plan.indexTable;
+  const [, ai, ad, au] = searchIndexObjects(plan).map((o) => o.name);
   const cols = plan.fields.join(', ');
   const newCols = plan.fields.map((f) => `new.${f}`).join(', ');
   const oldCols = plan.fields.map((f) => `old.${f}`).join(', ');
   return [
-    `DROP TRIGGER IF EXISTS ${idx}_ai;`,
-    `DROP TRIGGER IF EXISTS ${idx}_ad;`,
-    `DROP TRIGGER IF EXISTS ${idx}_au;`,
+    `DROP TRIGGER IF EXISTS ${ai};`,
+    `DROP TRIGGER IF EXISTS ${ad};`,
+    `DROP TRIGGER IF EXISTS ${au};`,
     `DROP TABLE IF EXISTS ${idx};`,
     `CREATE VIRTUAL TABLE ${idx} USING fts5(`,
     `  ${cols},`,
     `  content='${plan.table}', content_rowid='rowid', ${tokenizeClause(plan.tokenizer)}`,
     `);`,
-    `CREATE TRIGGER ${idx}_ai AFTER INSERT ON ${plan.table} BEGIN`,
+    `CREATE TRIGGER ${ai} AFTER INSERT ON ${plan.table} BEGIN`,
     `  INSERT INTO ${idx}(rowid, ${cols}) VALUES (new.rowid, ${newCols});`,
     `END;`,
-    `CREATE TRIGGER ${idx}_ad AFTER DELETE ON ${plan.table} BEGIN`,
+    `CREATE TRIGGER ${ad} AFTER DELETE ON ${plan.table} BEGIN`,
     `  INSERT INTO ${idx}(${idx}, rowid, ${cols}) VALUES('delete', old.rowid, ${oldCols});`,
     `END;`,
-    `CREATE TRIGGER ${idx}_au AFTER UPDATE ON ${plan.table} BEGIN`,
+    `CREATE TRIGGER ${au} AFTER UPDATE ON ${plan.table} BEGIN`,
     `  INSERT INTO ${idx}(${idx}, rowid, ${cols}) VALUES('delete', old.rowid, ${oldCols});`,
     `  INSERT INTO ${idx}(rowid, ${cols}) VALUES (new.rowid, ${newCols});`,
     `END;`,
@@ -279,7 +280,10 @@ export function searchIndexMigrations(
   moduleId: string,
   searchables: readonly SearchableDeclaration[] | undefined,
 ): SqlMigration[] {
-  return searchIndexPlans(moduleId, searchables).map((plan) => ({ version: searchIndexVersion(plan), sql: searchIndexDdl(plan) }));
+  return searchIndexPlans(moduleId, searchables).map((plan) => ({
+    version: searchIndexVersion(plan),
+    sql: searchIndexDdl(plan),
+  }));
 }
 
 /** One plan's migration version — the declaration itself, as above. */

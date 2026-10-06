@@ -71,12 +71,15 @@ export function entityStateMigrationContractSuite(
       await fixture.cleanup();
     });
 
-    /** A provisioned scope holding one active and one binned row of `entityType`. */
-    const scopeWith = async (entityType: string) => {
+    const freshScope = async () => {
       const s = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'rebuild-vertical' });
       await host.admin.activateScope(staff, t, s);
-      const stub = await host.getScope(keeper, t, s);
+      return { s, stub: await host.getScope(keeper, t, s) };
+    };
+    /** A provisioned scope holding one active and one binned row of `entityType`. */
+    const scopeWith = async (entityType: string) => {
+      const { s, stub } = await freshScope();
       const kept = ulid();
       const binned = ulid();
       await stub.invoke('rb/add', { entityType, id: kept, title: 'kept' });
@@ -164,16 +167,13 @@ export function entityStateMigrationContractSuite(
     });
 
     it('rebuilds a searchable table’s index and its triggers, so rewritten or deleted text leaves search', async () => {
-      const s = scopeId.parse(ulid());
-      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'rebuild-vertical' });
-      await host.admin.activateScope(staff, t, s);
-      const stub = await host.getScope(keeper, t, s);
+      const { s, stub } = await freshScope();
       const [rewritten, deleted, untouched] = [ulid(), ulid(), ulid()];
       await stub.invoke('rb/add', { entityType: 'rbsearch', id: rewritten, title: 'alpha secret' });
       await stub.invoke('rb/add', { entityType: 'rbsearch', id: deleted, title: 'beta private' });
       await stub.invoke('rb/add', { entityType: 'rbsearch', id: untouched, title: 'delta plain' });
       const before = await objectsOn(s, 'rb_search');
-      expect(before).toEqual(['_substrat_search_test_rebuild_rbsearch_ad', '_substrat_search_test_rebuild_rbsearch_ai', '_substrat_search_test_rebuild_rbsearch_au']);
+      expect(before).toEqual(['ad', 'ai', 'au'].map((s) => `_substrat_search_test_rebuild_rbsearch_${s}`));
 
       // The rebuild copies the rows in reverse, so every rowid the old index points at moves.
       await raw.forget(t, s, MODULE, '0007-rebuild-search');

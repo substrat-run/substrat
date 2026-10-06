@@ -234,7 +234,7 @@ import {
   addStatePlans,
   entityStateMigrations,
   statefulTablesOf,
-  assertEntityStateColumns,
+  afterMigration,
   assertEntityStateIntact,
   rederiveObjects,
   type DerivedPlans,
@@ -11445,7 +11445,7 @@ export class SqliteScopeHost implements ScopeHost {
             statefulTablesOf(statePlans),
             // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
             statePlans.size
-              ? () => assertEntityStateIntact(spineSql(rt.db), { state: statePlans, lists: listPlans, search: searchPlans })
+              ? () => assertEntityStateIntact(spineSql(rt.db), this.derivedPlans())
               : undefined,
           ),
         ),
@@ -11767,21 +11767,6 @@ export class SqliteScopeHost implements ScopeHost {
     return { state: this.statePlans, lists: this.listPlans, search: this.searchPlans };
   }
 
-  /**
-   * #2090: a migration runs on the scope's own handle, so neither `ctx.sql`'s after-DDL check
-   * nor the derived migrations (journaled, so never re-run) see what it did to a table.
-   * Inside the migration's own transaction: its state columns must still be there, or it rolls
-   * back — and after the LAST of the pass, the triggers and indexes a create-copy-rename rebuild
-   * dropped are put back (the search index rebuilt), in the same transaction. Only after the last: a rebuild
-   * split over two migrations copies its rows in the second, and a guard put back in between
-   * would refuse the archived ones.
-   */
-  private afterMigration(db: Database.Database, key: string, last: boolean): void {
-    const sql = spineSql(db);
-    assertEntityStateColumns(sql, this.derivedPlans(), `migration ${key}`);
-    if (last) rederiveObjects(sql, (ddl) => db.exec(ddl), this.derivedPlans());
-  }
-
   private async applyPendingMigrations(rt: ScopeRuntime): Promise<void> {
     const pending: { moduleId: string; migration: SqlMigration }[] = [];
     for (const mod of this.modules.values()) {
@@ -11815,7 +11800,10 @@ export class SqliteScopeHost implements ScopeHost {
               assertNoSpineReference(migration.sql, `migration ${key}`);
               rt.db.exec(migration.sql);
               assertTablesWithinColumnLimit(rt.db);
-              this.afterMigration(rt.db, key, i === pending.length - 1);
+              // #2090: the state columns this migration must have left, and after the last of the
+              // pass, the triggers and indexes a create-copy-rename rebuild dropped.
+              const last = i === pending.length - 1;
+              afterMigration(spineSql(rt.db), (ddl) => rt.db.exec(ddl), this.derivedPlans(), key, last);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
               rt.db
                 .prepare(

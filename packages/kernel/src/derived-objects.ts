@@ -21,7 +21,10 @@
  *   migration that drops one rolls back with nothing applied. The last migration of a pass then
  *   puts the derived objects back, inside that same transaction: SQLite's ordinary
  *   create-copy-rename rebuild of a table drops its triggers and indexes with it, and the
- *   migrations that made them are journaled, so they never run again.
+ *   migrations that made them are journaled, so they never run again. Only after the last,
+ *   because a rebuild split over two migrations copies its rows in the second, and a guard put
+ *   back in between would refuse the archived ones — which also means such a split must ship
+ *   in ONE deploy: split over two, the guard is back before the copy runs.
  * - **a restore** puts them back after the rows, which may legitimately arrive archived or
  *   trashed.
  *
@@ -35,9 +38,9 @@
  */
 import { substratError } from '@substrat-run/contracts';
 import {
-  ENTITY_STATE_TRIGGER_PREFIX,
   entityStateGuardVersion,
   entityStateTriggerDdl,
+  entityStateTriggerObjects,
   stateColumnVersionsOf,
   type EntityStatePlan,
 } from './entity-state.js';
@@ -45,7 +48,7 @@ import { listIndexColumns, listIndexDdl, listIndexVersion, type ListIndexPlan } 
 import type { ScopedSql } from './scope-host.js';
 import { searchIndexDdl, searchIndexObjects, searchIndexVersion, type SearchIndexPlan } from './search-index.js';
 
-/** A scope's derivation inputs: every registered module's plans, entity type → plan, as the adapter keeps them. */
+/** A scope's derivation inputs: every registered module's plans, entity type → plan. */
 export interface DerivedPlans {
   readonly state: ReadonlyMap<string, EntityStatePlan>;
   readonly lists: ReadonlyMap<string, ListIndexPlan>;
@@ -56,7 +59,7 @@ export interface DerivedPlans {
 interface Derived {
   readonly objects: readonly { readonly name: string; readonly type: string }[];
   readonly ddl: string;
-  /** Run whenever the table is owed it, not only when something is missing — cheap, and it replaces an impostor. */
+  /** Run whenever owed, not only when something is missing: cheap, and it replaces an impostor. */
   readonly always?: boolean;
 }
 
@@ -102,16 +105,17 @@ function expectations(sql: ScopedSql, plans: DerivedPlans): TableExpectation[] {
     if (columns.length) e.columns = columns;
     if (applied(plan.moduleId, entityStateGuardVersion(plan))) {
       e.derived.push({
-        objects: ['born', 'moved'].map((s) => ({ name: `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_${s}`, type: 'trigger' })),
+        objects: entityStateTriggerObjects(plan),
         ddl: entityStateTriggerDdl(plan),
         always: true,
       });
     }
   }
   for (const plan of plans.lists.values()) {
-    if (!applied(plan.moduleId, listIndexVersion(plan))) continue;
     const objects = listIndexColumns(plan).map((i) => ({ name: i.name, type: 'index' }));
-    if (objects.length) entry(plan.table).derived.push({ objects, ddl: listIndexDdl(plan) });
+    if (objects.length && applied(plan.moduleId, listIndexVersion(plan))) {
+      entry(plan.table).derived.push({ objects, ddl: listIndexDdl(plan) });
+    }
   }
   // Only when something is missing: the DDL ends in a full `rebuild` from the content table,
   // which is also what repairs an index that went stale while its triggers were gone.
@@ -123,18 +127,19 @@ function expectations(sql: ScopedSql, plans: DerivedPlans): TableExpectation[] {
   return [...byTable.values()];
 }
 
-/** The state half: the table exists and holds every column its journal added. */
-function assertColumns(sql: ScopedSql, catalogue: Map<string, string>, table: TableExpectation, after: string): void {
-  if (!table.columns) return;
-  const fail = (what: string): never => {
-    throw substratError(
-      'internal',
-      `${after} left '${table.table}' without ${what} — its archive/trash guarantees depend on it; nothing was changed`,
-    );
-  };
-  if (catalogue.get(table.table.toLowerCase()) !== 'table') fail('its table');
+const lost = (after: string, table: TableExpectation, what: string): never => {
+  throw substratError(
+    'internal',
+    `${after} left '${table.table}' without ${what} — its archive/trash guarantees depend on it; nothing was changed`,
+  );
+};
+
+/** The state half: the table exists and holds every column its journal added — or what it lacks. */
+function lacks(sql: ScopedSql, catalogue: Map<string, string>, table: TableExpectation): string | undefined {
+  if (!table.columns) return undefined;
+  if (catalogue.get(table.table.toLowerCase()) !== 'table') return 'its table';
   const present = columnsOn(sql, table.table);
-  for (const column of table.columns) if (!present.has(column)) fail(column);
+  return table.columns.find((c) => !present.has(c));
 }
 
 /**
@@ -146,15 +151,11 @@ export function assertEntityStateIntact(sql: ScopedSql, plans: DerivedPlans): vo
   const catalogue = catalogueOf(sql);
   for (const table of expectations(sql, plans)) {
     if (!table.columns) continue;
-    assertColumns(sql, catalogue, table, after);
+    const column = lacks(sql, catalogue, table);
+    if (column) lost(after, table, column);
     for (const d of table.derived) {
       const missing = missingFrom(catalogue, d);
-      if (missing) {
-        throw substratError(
-          'internal',
-          `${after} left '${table.table}' without its ${missing.type} ${missing.name} — its archive/trash guarantees depend on it; nothing was changed`,
-        );
-      }
+      if (missing) lost(after, table, `its ${missing.type} ${missing.name}`);
     }
   }
 }
@@ -165,8 +166,12 @@ export function assertEntityStateIntact(sql: ScopedSql, plans: DerivedPlans): vo
  * the rows keep their state, and the scope fails closed naming the migration.
  */
 export function assertEntityStateColumns(sql: ScopedSql, plans: DerivedPlans, after: string): void {
+  if (plans.state.size === 0) return; // most scopes: nothing holds state, so no read at all
   const catalogue = catalogueOf(sql);
-  for (const table of expectations(sql, plans)) assertColumns(sql, catalogue, table, after);
+  for (const table of expectations(sql, plans)) {
+    const column = lacks(sql, catalogue, table);
+    if (column) lost(after, table, column);
+  }
 }
 
 /**
@@ -181,11 +186,24 @@ export function assertEntityStateColumns(sql: ScopedSql, plans: DerivedPlans, af
 export function rederiveObjects(sql: ScopedSql, run: (ddl: string) => void, plans: DerivedPlans): void {
   const catalogue = catalogueOf(sql);
   for (const table of expectations(sql, plans)) {
-    if (catalogue.get(table.table.toLowerCase()) !== 'table') continue;
-    if (table.columns) {
-      const present = columnsOn(sql, table.table);
-      if (!table.columns.every((c) => present.has(c))) continue;
-    }
+    if (catalogue.get(table.table.toLowerCase()) !== 'table' || lacks(sql, catalogue, table)) continue;
     for (const d of table.derived) if (d.always || missingFrom(catalogue, d)) run(d.ddl);
   }
+}
+
+/**
+ * Both adapters' migration pass, after one migration's SQL and inside its transaction: the
+ * column check, and — after the last migration of the pass — the derived objects put back.
+ * `key` is `<module>@<version>`, which a failure names. A last entry the pass skips (journaled
+ * by a pass that ran first) needs nothing here: that pass put them back after it.
+ */
+export function afterMigration(
+  sql: ScopedSql,
+  run: (ddl: string) => void,
+  plans: DerivedPlans,
+  key: string,
+  last: boolean,
+): void {
+  assertEntityStateColumns(sql, plans, `migration ${key}`);
+  if (last) rederiveObjects(sql, run, plans);
 }
