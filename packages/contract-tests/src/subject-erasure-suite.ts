@@ -76,6 +76,8 @@ export function subjectErasureContractSuite(
       await put('INSERT INTO er_signups (id, kind, email) VALUES (?, ?, ?)', [other, 'news', `${other}@example.test`]);
       await put('INSERT INTO er_ratings (note_id, comment) VALUES (?, ?)', [note, 'great service']);
       await put('INSERT INTO er_ratings (note_id, comment) VALUES (?, ?)', [decoy, 'kept']);
+      // Unreached by any erasure, so a write to it can only be a hook's.
+      await put('INSERT INTO er_loose (id, memo) VALUES (?, ?)', [who, 'untouched']);
       return { other, note, edited, decoy, word };
     };
 
@@ -279,6 +281,28 @@ export function subjectErasureContractSuite(
           await intact(who, sealed);
         });
       }
+
+      it('a refused async hook writes nothing after the await — its ctx is revoked when it returns', async () => {
+        const { who, sealed } = await armed('async-write');
+        const err = await errOf(host.admin.shredSubject(staff, t1, s1, who));
+        expect(errorCodeOf(err)).toBe('precondition_failed');
+        // Give the continuation every chance to have run: another round trip through the scope.
+        await read('SELECT 1');
+        expect(await one('SELECT memo FROM er_loose WHERE id = ?', [who])).toEqual({ memo: 'untouched' });
+        await intact(who, sealed);
+      });
+
+      it('a handle a hook stashed on a global is dead once the hook returns', async () => {
+        const who = subject();
+        await seed(who);
+        await put('INSERT INTO er_bombs (subject, kind) VALUES (?, ?)', [who, 'stash']);
+        // The erasure itself completes — stashing is not an error until the handle is used.
+        await host.admin.shredSubject(staff, t1, s1, who);
+        const err = await errOf(stub.invoke('erasure/use-stash', { subject: who }));
+        expect(errorCodeOf(err)).toBe('forbidden');
+        expect(String((err as Error).message)).toMatch(/used after the hook returned/);
+        expect(await one('SELECT memo FROM er_loose WHERE id = ?', [who])).toEqual({ memo: 'untouched' });
+      });
 
       it('refuses a hook that returns a promise — it must run inside the one transaction', async () => {
         const { who, sealed } = await armed('async');

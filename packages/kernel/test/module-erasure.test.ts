@@ -132,6 +132,44 @@ describe('assertWithinErasureReach (#2068)', () => {
   });
 });
 
+describe('the hook capability (#2068)', () => {
+  /** A handle over nothing: no rows, and an optional temp schema. */
+  const bare = (temp: string[] = []) => {
+    const writes: string[] = [];
+    const sql: ScopedSql = {
+      query: <T>(q: string) =>
+        (q.includes('temp.sqlite_master') ? temp.map((name) => ({ name })) : [{ c: 0, t: writes.length }]) as T[],
+      exec: (q: string) => {
+        writes.push(q);
+        return { changes: 1 };
+      },
+    };
+    return { sql, writes };
+  };
+
+  it('revokes ctx when the hook returns: a call made later throws and writes nothing', () => {
+    let kept: ScopedSql | undefined;
+    const plan = moduleErasurePlan(registration(erasure('custom'), (ctx) => {
+      kept = ctx.sql;
+    }))!;
+    const { sql, writes } = bare();
+    eraseSubjectFromModules({ sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' });
+    expect(() => kept!.exec('UPDATE ratings SET comment = NULL')).toThrow(/used after the hook returned/);
+    expect(writes).toEqual([]);
+  });
+
+  it('revokes it when the hook throws, too', () => {
+    let kept: ScopedSql | undefined;
+    const plan = moduleErasurePlan(registration(erasure('custom'), (ctx) => {
+      kept = ctx.sql;
+      throw new Error('boom');
+    }))!;
+    expect(() => eraseSubjectFromModules({ sql: bare().sql, plans: [plan], searchPlans: [], subjectId: 'S', at: 'now' })).toThrow(/boom/);
+    expect(() => kept!.query('SELECT * FROM ratings')).toThrow(/used after the hook returned/);
+  });
+
+});
+
 describe('the SQLite floor for FTS5 secure-delete (#2068)', () => {
   /** A handle that finds a matching row, records every write, and — on an old SQLite — has no secure-delete. */
   const handle = (secureDelete: boolean) => {

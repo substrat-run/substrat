@@ -130,6 +130,16 @@ const onSubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
       break;
     case 'async':
       return Promise.resolve() as unknown as void;
+    case 'async-write':
+      // Refused for returning a promise; its continuation then tries to write anyway.
+      return (async () => {
+        await Promise.resolve();
+        ctx.sql.exec("UPDATE er_loose SET memo = 'written after the erasure' WHERE id = ?", [subjectId]);
+      })() as unknown as void;
+    case 'stash':
+      // Keeps the handle where a later operation can reach it.
+      (globalThis as { __erasureStash?: unknown }).__erasureStash = ctx.sql;
+      break;
   }
 };
 
@@ -147,6 +157,12 @@ export const erasureMod: ModuleRegistration = {
     'erasure/read': ((ctx, input: { sql: string; params?: (string | null)[] }) =>
       ctx.sql.query(input.sql, input.params ?? [])) as Handler,
     'erasure/search': ((ctx, input: { term: string }) => ctx.search('ernote', input.term)) as Handler,
+    /** Use a hook's `ctx.sql` that a hook stashed on a global, after its erasure finished. */
+    'erasure/use-stash': ((_ctx, input: { subject: string }) => {
+      const stash = (globalThis as { __erasureStash?: { exec(sql: string, params: unknown[]): unknown } }).__erasureStash;
+      if (!stash) throw new Error('nothing stashed');
+      stash.exec("UPDATE er_loose SET memo = 'written through a stashed handle' WHERE id = ?", [input.subject]);
+    }) as Handler,
     /** A classified event about the subject, so the spine half of a rolled-back erasure is visible. */
     'erasure/emit': ((ctx, input: { subject: string; secret: string }) => {
       ctx.emit({

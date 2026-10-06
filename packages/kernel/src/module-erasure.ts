@@ -54,9 +54,10 @@ export interface SubjectErasureContext {
    * The module's own tables, and only those: a statement naming any other table in the scope
    * — another module's, the spine, SQLite's own — is refused before it runs, reads included.
    * Only `SELECT`, `WITH`, `UPDATE`, `DELETE`, `INSERT` and `REPLACE`; no DDL, no `PRAGMA`.
+   * Revoked when the hook returns: a call after that throws and writes nothing.
    */
   readonly sql: ScopedSql;
-  /** The erasure's instant, the same one the spine's tombstones carry. */
+  /** The erasure's instant, the same one the spine's tombstones carry. Revoked with `sql`. */
   now(): string;
 }
 
@@ -390,15 +391,31 @@ export function eraseSubjectFromModules(input: {
     const own = plan.ownTables;
     const foreign = new Set(tables.filter((t) => !own.has(t)));
     let rows = 0;
+    // The hook's capability lives exactly as long as its synchronous run. A hook that kept
+    // `ctx` — an async continuation, a handle stored on a global — and used it later would
+    // write outside the erasure's transaction, after a refusal had rolled it back; revoked,
+    // every later call throws and writes nothing.
+    let live = true;
+    const alive = (): void => {
+      if (!live) {
+        throw substratError(
+          'forbidden',
+          `${plan.moduleId}: onSubjectErased's ctx was used after the hook returned — it is valid only while the hook runs`,
+          { reason: 'erasure_revoked' },
+        );
+      }
+    };
     // `changes()` is the last WRITE's count, so a read run through `exec` would repeat the
     // previous one; `total_changes()` moving at all is what says a statement wrote.
     let total = changeCounts(sql).total;
     const hookSql: ScopedSql = {
       query: <T = Record<string, SqlValue>>(statement: string, params?: readonly SqlValue[]): T[] => {
+        alive();
         assertWithinErasureReach(plan.moduleId, statement, foreign);
         return guarded.query<T>(statement, params);
       },
       exec: (statement: string, params?: readonly SqlValue[]) => {
+        alive();
         assertWithinErasureReach(plan.moduleId, statement, foreign);
         // Any statement the hook runs may change any of its tables; secure their indexes first.
         for (const t of own) secure(t);
@@ -410,10 +427,23 @@ export function eraseSubjectFromModules(input: {
         return { changes };
       },
     };
-    const returned: unknown = plan.hook({ sql: hookSql, now: () => at }, { subjectId });
+    const ctx: SubjectErasureContext = {
+      sql: hookSql,
+      now: () => {
+        alive();
+        return at;
+      },
+    };
+    let returned: unknown;
+    try {
+      returned = plan.hook(ctx, { subjectId });
+    } finally {
+      live = false;
+    }
     if (returned !== undefined && typeof (returned as { then?: unknown }).then === 'function') {
       // Its rejection, if any, is the module's — swallowed so it does not surface unhandled
-      // after the erasure it belonged to has already been refused and rolled back.
+      // after the erasure it belonged to has already been refused and rolled back. Its
+      // continuation can do nothing: `ctx` is revoked above.
       (returned as Promise<unknown>).then(undefined, () => undefined);
       throw substratError(
         'precondition_failed',
