@@ -14,6 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   MEMBERSHIP_EXECUTOR_ID,
+  membershipRemoveExecutorId,
   registerMembershipExecutor,
   ulid,
   type ExecutorOutcome,
@@ -557,16 +558,26 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       }
     });
 
-    it('a host with no attribution at all: the row names the event and no person, and the executor says so', async () => {
+    it('a host with no attribution at all: each row names its event and no person, and each path says so under its own id', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       try {
         const joe = principalId.parse(ulid());
         const added = await asJoiner(oldest, joe, 'invitefix/accept', await send(oldest, oldest.alice, 'member'));
         expect(added.map((o) => o.outcome)).toEqual(['delivered']);
-        const rows = await causedBy(oldest, added[0]!.eventId);
-        expect(rows.map((r) => r.action)).toEqual(['assignRole']);
-        expect(rows[0]!.onBehalfOf ?? null).toBeNull();
-        expect(warn.mock.calls.some(([line]) => String(line).includes(added[0]!.eventId))).toBe(true);
+        const removed = await removeAs(oldest, oldest.alice, joe, 'member');
+        expect(removed.map((o) => o.outcome)).toEqual(['delivered']);
+
+        const addRows = await causedBy(oldest, added[0]!.eventId);
+        const removeRows = await causedBy(oldest, removed[0]!.eventId);
+        expect(addRows.map((r) => r.action)).toEqual(['assignRole']);
+        expect(removeRows.map((r) => r.action)).toEqual(['unassignRole']);
+        for (const row of [...addRows, ...removeRows]) expect(row.onBehalfOf ?? null).toBeNull();
+
+        // The id each warning names is the one its path is registered (and journaled) under.
+        const warnedAs = (eventId: string) =>
+          warn.mock.calls.map(([line]) => String(line)).filter((line) => line.includes(eventId)).map((line) => line.split(': ')[0]);
+        expect(warnedAs(added[0]!.eventId)).toEqual([`executor:${MEMBERSHIP_EXECUTOR_ID}`]);
+        expect(warnedAs(removed[0]!.eventId)).toEqual([`executor:${membershipRemoveExecutorId()}`]);
       } finally {
         warn.mockRestore();
       }

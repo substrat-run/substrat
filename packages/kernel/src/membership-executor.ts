@@ -157,6 +157,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
     );
   }
   const id = options.id ?? MEMBERSHIP_EXECUTOR_ID;
+  const removeId = membershipRemoveExecutorId(id);
   // The org a request names rides along only on a mount that joins orgs (#2047).
   const orgOf = (request: { orgId: OrgId }): { orgId?: OrgId } => (options.orgs === 'join' ? { orgId: request.orgId } : {});
   // Attributed (#977): the person whose authority bounded the write, beside the platform
@@ -165,11 +166,12 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   // at 0.139) hands an admin without it but has the deprecated `host.attributed(…, { causedBy })`,
   // so that form is the fallback, and is why it is kept. A host with neither predates #977 and
   // records no person on any row; that is said aloud rather than lost quietly.
-  const adminFor = (admin: HostAdmin, who: PrincipalId, event: DomainEvent): HostAdmin => {
+  // `executorId` is the id the calling path is registered under, so a warning names that path.
+  const adminFor = (executorId: string, admin: HostAdmin, who: PrincipalId, event: DomainEvent): HostAdmin => {
     const onBehalfOf = { principal: who, tenantId: event.tenantId };
     if (admin.attributed) return admin.attributed(onBehalfOf);
     if (host.attributed) return host.attributed(onBehalfOf, { causedBy: event.id }).admin;
-    console.warn(`executor:${id}: this host cannot attribute an admin to a person; ${event.id}'s rows name no onBehalfOf`);
+    console.warn(`executor:${executorId}: this host cannot attribute an admin to a person; ${event.id}'s rows name no onBehalfOf`);
     return admin;
   };
 
@@ -182,7 +184,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       const { request, inviter } = decided;
       // One directory unit: the fence, the bound asked again, the role and its audit row. A
       // removal or a change of authority lands wholly before it or wholly after it.
-      const applied = await adminFor(admin, inviter, event).applyMembership(options.actor, {
+      const applied = await adminFor(id, admin, inviter, event).applyMembership(options.actor, {
         op: 'add',
         tenantId: event.tenantId,
         principal: request.principal,
@@ -197,7 +199,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   );
 
   host.registerExecutor(
-    membershipRemoveExecutorId(id),
+    removeId,
     MEMBER_REMOVE_REQUESTED,
     async (admin, event, scope) => {
       const decided = await authorizeRemove(event, scope);
@@ -205,7 +207,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       const { request, remover } = decided;
       // One directory unit: the remover's bound asked again, the revoke, its audit row if it
       // took anything, and the fence — raised even with nothing held, so a pending add sees it.
-      const applied = await adminFor(admin, remover, event).applyMembership(options.actor, {
+      const applied = await adminFor(removeId, admin, remover, event).applyMembership(options.actor, {
         op: 'remove',
         tenantId: event.tenantId,
         principal: request.principal,
