@@ -4551,8 +4551,8 @@ export function defineScopeDO(
         if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
         throw toRpcError(err);
       }
-      // #119: the gate the coordinator applies before any schedule fires, applied here from this
-      // scope's own state, so a sweep started from anywhere meets it. A foreign tenant throws.
+      // #119: the gate the coordinator applies before any schedule fires, applied here from what
+      // this scope records of it (`purgeGateFacts`). A foreign tenant throws.
       const held = purgeHeldBy(this.purgeGateFacts(schedule.moduleId, tenantId));
       if (held !== null) return { purged: 0, skipped: 0, errors: [], full: false, held };
       const due = purgeDueOf(

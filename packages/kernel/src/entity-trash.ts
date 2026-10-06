@@ -217,8 +217,8 @@ export interface PurgeGateFacts {
 
 /**
  * THE purge sweep's gate (#119): why this scope may purge nothing now, or null when it may. The
- * same holds the coordinator applies before any schedule fires, applied by the scope itself, so a
- * sweep started from anywhere meets them. A tenant foreign to the scope is a REFUSAL (`not_found`,
+ * same holds the coordinator applies before any schedule fires, applied by the scope itself from
+ * whatever of them it records (below: on a directory-backed host, the kill switch). A tenant foreign to the scope is a REFUSAL (`not_found`,
  * the doors' answer for a pair that does not hold), not a hold: nothing about it is "not yet".
  *
  * On a directory-backed host the scope DO enforces the kill switch; tenant, lifecycle, copy and
