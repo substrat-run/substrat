@@ -197,6 +197,12 @@ describe('pageVisible (#2073)', () => {
       nextCursor: null,
     });
     expect(bare.fetches).toHaveLength(1);
+    // A FULL bare batch, stopped at r0002: its nextCursor is r0063's, a refused row, and is not it.
+    const full = table(200, { bare: true });
+    expect(await pageVisible(full.fetch, { limit: 1 }, (r) => r.id === 'r0002')).toEqual({
+      entries: [{ id: 'r0002', s: '0002' }],
+      nextCursor: null,
+    });
     // The last row of a full batch is still its own: that is the response's `nextCursor`.
     const edge = table(200, { bare: true });
     const last = `r${String(VISIBLE_BATCH - 1).padStart(4, '0')}`;
