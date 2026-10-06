@@ -297,9 +297,12 @@ import {
   entityStateTriggerDdl,
   assertNoCallerPurge,
   isUnreachableParent,
+  PURGE_BATCH,
   purgeDueOf,
   purgeIndexDdl,
   purgeOnlyKeysOf,
+  runPurgePass,
+  type PurgePass,
   refuseTrashedTarget,
   registerTrashTargets,
   withheldKeysFor,
@@ -1155,6 +1158,8 @@ export function defineScopeDO(
     private readonly operationTarget = new Map<string, OperationTarget>();
     /** #119: module id → the keys its system principal holds only for its purge schedules. */
     private readonly purgeOnlyKeys = new Map<string, ReadonlySet<string> | undefined>();
+    /** #119: a purge schedule's operation → the module that declared it and the entity it purges. */
+    private readonly purgeSchedules = new Map<string, { moduleId: string; entityType: string }>();
     /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
     private readonly operationIdempotencyOptOut = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
@@ -1299,6 +1304,9 @@ export function defineScopeDO(
         manifest.schedules,
       );
       this.purgeOnlyKeys.set(manifest.id, purgeOnlyKeysOf(manifest.schedules ?? []));
+      for (const schedule of manifest.schedules ?? []) {
+        if (schedule.purge) this.purgeSchedules.set(schedule.operation, { moduleId: manifest.id, entityType: schedule.purge.entityType });
+      }
       if (manifest.peers?.length) this.peerSources.push({ peers: manifest.peers });
       // #827: the FTS indexes `searchables` declares, appended after the module's
       // own migrations so the content table exists when the trigger references it.
@@ -2439,8 +2447,6 @@ export function defineScopeDO(
        * instance may be rewound storage the gate never saw. The reply carries `systemDoor.honoured`.
        */
       systemDoorInstance?: string,
-      /** #119: the host's own purge sweep — a coordinator-only parameter, never an `InvokeOptions` field. */
-      purge?: boolean,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -2468,7 +2474,7 @@ export function defineScopeDO(
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
         // ZodError, whose `message` is a getter) still arrives with its message.
         try {
-          return await this.invokeOrThrow(
+          return await this.#invokeOrThrow(
             operation,
             input,
             principal,
@@ -2482,7 +2488,6 @@ export function defineScopeDO(
             capabilitySession,
             verticalCaller,
             systemDoorInstance,
-            purge,
           );
         } catch (err) {
           if (err instanceof SystemDoorMovedError) return { result: undefined, platformRequests: 0, ...SYSTEM_DOOR_MOVED };
@@ -2490,7 +2495,7 @@ export function defineScopeDO(
         }
       }
       try {
-        return await this.invokeOrThrow(
+        return await this.#invokeOrThrow(
           operation,
           input,
           principal,
@@ -2504,7 +2509,6 @@ export function defineScopeDO(
           capabilitySession,
           verticalCaller,
           systemDoorInstance,
-          purge,
         );
       } catch (err) {
         // #1834: the pin missed — an answer, never a failure an operation could have produced.
@@ -2516,8 +2520,14 @@ export function defineScopeDO(
       }
     }
 
-    /** The operation path itself. Throws; `invoke` decides how that reaches the caller. */
-    async invokeOrThrow(
+    /**
+     * The operation path itself. Throws; `invoke` decides how that reaches the caller.
+     *
+     * `#`-private, not merely `private`: workerd's RPC exposes every method on the prototype,
+     * and this one takes `purge` (#119), which only `runPurgeSweep` may set. A `#` method is not
+     * on the prototype, so no stub can reach it.
+     */
+    async #invokeOrThrow(
       operation: string,
       input: unknown,
       principal: PrincipalId,
@@ -2535,7 +2545,7 @@ export function defineScopeDO(
       verticalCaller?: VerticalCaller,
       /** #1834: the instance the system door's gate read. See `invoke` above. */
       systemDoorInstance?: string,
-      /** #119: the host's own purge sweep — a coordinator-only parameter, never an `InvokeOptions` field. */
+      /** #119: set only by `runPurgeSweep` on its own invokes — never an RPC argument. */
       purge?: boolean,
     ): Promise<{
       result: unknown;
@@ -2754,7 +2764,7 @@ export function defineScopeDO(
           // #119: a module's purge-only keys are withheld from its system principal on every
           // call but the purge sweep's own invoke of the purge operation.
           const target = this.operationTarget.get(operation);
-          // #119: purge authority is the system door's, through the sweep's own parameter only.
+          // #119: purge authority is the system door's, and only `runPurgeSweep` sets `purge`.
           const purging = purge === true && systemDoor !== undefined;
           const withheld = systemDoor
             ? withheldKeysFor(this.purgeOnlyKeys.get(systemDoor.moduleId), target, purging)
@@ -4502,6 +4512,66 @@ export function defineScopeDO(
     }
 
     /**
+     * One pass of a purge horizon's schedule on this scope (#119): the oldest entities due for
+     * purge, each deleted by the module's own `trashed: 'purges'` operation, one call and one
+     * transaction per entity, as `system:<moduleId>`.
+     *
+     * The caller names only WHICH schedule. Everything that decides what is purged is this
+     * object's: the module and the entity come from the registered schedule, the cutoff from this
+     * object's clock and the entity's declared horizon, the ids from its own bin — and each purge
+     * re-checks the cutoff inside its transaction (`refuseTrashedTarget`). Purge authority lives
+     * here and nowhere else: `invoke` takes no purge argument, so a stub holding this namespace
+     * cannot hand the system principal its purge-only key, and calling this early, often or from
+     * outside the sweep can only purge what is genuinely due.
+     *
+     * Pinned like every system-door call (#1834): a missed pin answers `SystemDoorMoved` before
+     * anything is read, and the coordinator's door gates again.
+     */
+    async runPurgeSweep(
+      operation: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      systemDoorInstance: string,
+    ): Promise<PurgePass | SystemDoorMoved> {
+      await this.ensureMigrations();
+      const schedule = this.purgeSchedules.get(operation);
+      if (!schedule) throw toRpcError(substratError('not_found', `no purge schedule runs ${operation} on this scope`));
+      try {
+        this.assertSystemDoor(schedule.moduleId, systemDoorInstance);
+      } catch (err) {
+        if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
+        throw toRpcError(err);
+      }
+      const due = purgeDueOf(
+        doSpineSql(this.sql),
+        this.statePlans,
+        this.operationTarget,
+        operation,
+        schedule.entityType,
+        new Date().toISOString(),
+        PURGE_BATCH,
+      );
+      return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
+        await this.#invokeOrThrow(
+          operation,
+          { [due.idFrom]: entityId },
+          schedule.moduleId as unknown as PrincipalId,
+          tenantId,
+          scopeId,
+          undefined,
+          undefined,
+          schedule.moduleId,
+          { invocationId: ulid() },
+          undefined,
+          undefined,
+          undefined,
+          systemDoorInstance,
+          true,
+        );
+      });
+    }
+
+    /**
      * The last time a schedule's operation ran on this scope (#383), or null.
      *
      * `kind = 'schedule'` is not decoration (#1288): an operation may legally be
@@ -4509,22 +4579,6 @@ export function defineScopeDO(
      * the EVALUATOR's last recorded time for that event type — a cadence gate
      * driven by a verdict nothing ran.
      */
-    /**
-     * One purge horizon's due work on this scope (#119): the cutoff, the input field carrying
-     * the id, and the oldest due ids — what the coordinator then invokes the purge operation
-     * with, one entity per call, under that cutoff. Registration tied the schedule to a declared
-     * horizon and the entity's purge operation, so a mismatch here is a wiring fault.
-     */
-    async purgeDue(
-      operation: string,
-      entityType: string,
-      now: string,
-      limit: number,
-    ): Promise<{ cutoff: string; idFrom: string; ids: string[] }> {
-      await this.ensureMigrations();
-      return purgeDueOf(doSpineSql(this.sql), this.statePlans, this.operationTarget, operation, entityType, now, limit);
-    }
-
     async scheduleLastRun(operation: string): Promise<string | null> {
       const row = this.sql
         .exec(

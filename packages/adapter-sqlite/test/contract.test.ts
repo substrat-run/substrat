@@ -40,9 +40,11 @@ import {
   inputParseContractSuite,
   entityStateContractSuite,
   entityTrashContractSuite,
+  TRASH_MODULE_ID,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
+import { errorCodeOf, moduleId } from '@substrat-run/contracts';
 import { SqliteScopeHost } from '../src/index.js';
 
 scopeHostContractSuite('adapter-sqlite', async () => {
@@ -512,6 +514,27 @@ entityTrashContractSuite(
       runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
     };
     internals.runtime(tenant, scope).db.prepare(sql).run(...params);
+  },
+  {
+    // This adapter has no RPC: its own door is the system stub and the host's private sweep.
+    direct: {
+      claimPurge: async (tenant, scope, operation, input) => {
+        const system = await trashHost!.getSystemScope(moduleId.parse(TRASH_MODULE_ID), tenant, scope);
+        // Every claim the stub could carry: an option, and an argument past its surface.
+        const invoke = system.invoke as (...a: unknown[]) => Promise<unknown>;
+        return invoke(operation, input, { purge: true }, true).then(
+          () => 'ok',
+          (e: unknown) => errorCodeOf(e) ?? 'unknown',
+        );
+      },
+      runPurgeSweep: async (tenant, scope, operation) => {
+        const internals = trashHost as unknown as {
+          runtime(t: typeof tenant, s: typeof scope): unknown;
+          runPurgeSweep(rt: unknown, m: string, t: typeof tenant, s: typeof scope, op: string): Promise<{ purged: number; skipped: number }>;
+        };
+        return internals.runPurgeSweep(internals.runtime(tenant, scope), TRASH_MODULE_ID, tenant, scope, operation);
+      },
+    },
   },
 );
 

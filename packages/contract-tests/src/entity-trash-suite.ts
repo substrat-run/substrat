@@ -23,6 +23,7 @@ import {
   type HistoryEntry,
   type PrincipalId,
   type ScopeId,
+  type TenantId,
 } from '@substrat-run/contracts';
 import { PURGE_BATCH, runPlatformSweep, ulid, type FetchLike, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
@@ -50,6 +51,16 @@ export function entityTrashContractSuite(
      * included — is the kernel sweep's `isPrimaryScope` filter, the same code on both adapters.
      */
     platformSweep?: boolean;
+    /**
+     * The adapter's own door to a scope, BELOW every host API — what code holding the scope's
+     * storage binding could call (#119, Codex r2). `claimPurge` invokes as the module's system
+     * principal with every purge claim that door can carry attached, and answers the error code
+     * (or `'ok'`); `runPurgeSweep` runs one purge pass directly, outside the coordinator's sweep.
+     */
+    direct?: {
+      claimPurge(tenant: TenantId, scope: ScopeId, operation: string, input: unknown): Promise<string>;
+      runPurgeSweep(tenant: TenantId, scope: ScopeId, operation: string): Promise<{ purged: number; skipped: number }>;
+    };
   } = {},
 ): void {
   describe(`the trash, held by the host (#119 PR 2): ${adapterName}`, () => {
@@ -331,6 +342,27 @@ export function entityTrashContractSuite(
         // Twin: the sweep — the one path that may purge — leaves it too, because it is not due.
         await sweep(s);
         expect(await exists(s, recent)).toBe(true);
+      });
+
+      it('purge authority is no argument of any door: a direct call claiming it is refused, and a direct sweep purges only what is due', async () => {
+        const direct = options.direct;
+        expect(direct, 'every adapter hands the suite its own door').toBeDefined();
+        const s = await freshScope();
+        const due = await dueBox(s);
+        const recent = await binnedBox(s);
+        // The purge-only key stays withheld: the claim is not something a caller can make.
+        expect(await direct!.claimPurge(t, s, 'trash/delete-box', { boxId: due })).toBe('permission_denied');
+        expect(await direct!.claimPurge(t, s, 'trash/delete-box', { boxId: recent })).toBe('permission_denied');
+        expect(await exists(s, due)).toBe(true);
+        // The sweep itself, run from outside the coordinator and ahead of any cadence: it decides
+        // what is due, so it purges the box past the horizon and leaves the one binned just now.
+        expect(await direct!.runPurgeSweep(t, s, 'trash/delete-box')).toMatchObject({ purged: 1, skipped: 0 });
+        expect(await exists(s, due)).toBe(false);
+        expect(await exists(s, recent)).toBe(true);
+        expect(await direct!.runPurgeSweep(t, s, 'trash/delete-box')).toMatchObject({ purged: 0, skipped: 0 });
+        expect(await exists(s, recent)).toBe(true);
+        // Only a purge schedule's operation can be swept.
+        await expect(direct!.runPurgeSweep(t, s, 'trash/other-delete')).rejects.toThrow(/no purge schedule/);
       });
 
       it('the purge grant runs ONLY the purge: the system principal cannot use its key anywhere else', async () => {

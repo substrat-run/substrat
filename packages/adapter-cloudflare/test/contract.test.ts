@@ -6,6 +6,7 @@ import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-
 import {
   connectionId,
   errorCodeOf,
+  fromWireFailure,
   instant,
   SCOPE_GATE_REASONS,
   type SubstratError,
@@ -62,6 +63,7 @@ import {
   listContractSuite,
   entityStateContractSuite,
   entityTrashContractSuite,
+  TRASH_MODULE_ID,
   permMod,
   inputParseContractSuite,
   spineGuardContractSuite,
@@ -5309,10 +5311,38 @@ entityTrashContractSuite(
       state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
     });
   },
-  // Every suite in this file shares one control-plane directory, so a full platform sweep walks
-  // all of their scopes. The preview case runs on the pure adapter, whose fixture owns its
-  // directory; the exclusion it holds is the kernel sweep's, the same code here.
-  { platformSweep: false },
+  {
+    // Every suite in this file shares one control-plane directory, so a full platform sweep walks
+    // all of their scopes. The preview case runs on the pure adapter, whose fixture owns its
+    // directory; the exclusion it holds is the kernel sweep's, the same code here.
+    platformSweep: false,
+    // The Durable Object's own RPC, as any worker holding the SCOPE namespace binding reaches it —
+    // pinned to the live instance, so the system door's own check passes and only purge is tested.
+    direct: (() => {
+      const scopeDo = (scope: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
+        systemDoorState(moduleId: string): Promise<{ instance: string }>;
+        invoke(...args: unknown[]): Promise<{ failure?: Parameters<typeof fromWireFailure>[0] }>;
+        runPurgeSweep(operation: string, tenant: TenantId, scope: ScopeId, instance: string): Promise<{ purged: number; skipped: number }>;
+      };
+      return {
+        claimPurge: async (tenant: TenantId, scope: ScopeId, operation: string, input: unknown) => {
+          const stub = scopeDo(scope);
+          const { instance } = await stub.systemDoorState(TRASH_MODULE_ID);
+          // `invoke`'s whole positional surface, and one argument past it: the old `purge` slot.
+          const reply = await stub.invoke(
+            operation, input, TRASH_MODULE_ID, tenant, scope, undefined, undefined, TRASH_MODULE_ID, true,
+            { invocationId: ulid(), purge: true }, undefined, undefined, undefined, instance, true,
+          );
+          return reply.failure ? (errorCodeOf(fromWireFailure(reply.failure)) ?? 'unknown') : 'ok';
+        },
+        runPurgeSweep: async (tenant: TenantId, scope: ScopeId, operation: string) => {
+          const stub = scopeDo(scope);
+          const { instance } = await stub.systemDoorState(TRASH_MODULE_ID);
+          return stub.runPurgeSweep(operation, tenant, scope, instance);
+        },
+      };
+    })(),
+  },
 );
 
 // #893: the declared `input` parsed at the door, on the adapter that is actually

@@ -1579,12 +1579,6 @@ const admitByDelivery = (
 /** One grant tuple as `connectionGrantsInScope` reads it — either tuple store, same shape. */
 type TupleReadRow = { subject: string; relation: string; expires_at: string | null };
 
-/**
- * #119: the mark this host's own purge sweep puts on its invokes. Module-private and unregistered,
- * so nothing outside this file can construct it: purge authority is never a caller's option.
- */
-const PURGE_SWEEP = Symbol('purge-sweep');
-
 export class SqliteScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
   /**
@@ -3942,6 +3936,20 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<ScopeStub> {
+    return this.openSystemScope(moduleId, tenantId, scopeId, false);
+  }
+
+  /**
+   * The system door's stub. `purge` (#119) is set only by `runPurgeSweep`, which never hands the
+   * stub on: it is the one stub whose invokes may use the module's purge-only keys, and only on
+   * the purge operation. Every stub any caller can get is built with it off.
+   */
+  private async openSystemScope(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    purge: boolean,
+  ): Promise<ScopeStub> {
     // The scheduler's door (#383) — mirror of getConnectorScope. The module must be
     // registered on this host (a schedule can only invoke its own vertical's ops),
     // and the scope must be active. Authority is then an ordinary check against
@@ -3960,7 +3968,7 @@ export class SqliteScopeHost implements ScopeHost {
     }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId });
+    return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId }, undefined, undefined, purge);
   }
 
   /**
@@ -4721,15 +4729,15 @@ export class SqliteScopeHost implements ScopeHost {
       // #119: a purge horizon's batch was full — the schedule stays due, so the next pass continues.
       let stillDue = false;
       try {
-        const stub = await this.getSystemScope(moduleId, tenantId, scopeId);
         if (schedule.purge) {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
-          const pass = await this.purgeDue(rt, stub, schedule.operation, schedule.purge.entityType, nowIso);
+          const pass = await this.runPurgeSweep(rt, moduleId, tenantId, scopeId, schedule.operation);
           stillDue = pass.full;
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
           if (outcome.failure) throw outcome.failure;
         } else {
+          const stub = await this.getSystemScope(moduleId, tenantId, scopeId);
           await stub.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         }
         report.fired += 1;
@@ -4780,23 +4788,25 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
-   * One purge horizon's pass on one scope (#119): the due ids, read in a turn, then the purge
-   * operation invoked once per id through the system door, each in its own transaction and
-   * under the cutoff the host re-checks inside it (`refuseTrashedTarget`). Registration has
-   * already tied the schedule to a declared horizon and the entity's purge operation.
+   * One pass of a purge horizon's schedule on one scope (#119) — the Durable Object's
+   * `runPurgeSweep`, mirrored. The caller names only which schedule: the module and the entity come
+   * from the registered schedule, the cutoff from this host's clock and the declared horizon, the
+   * ids from the scope's own bin, read in a turn. Then the purge operation is invoked once per id
+   * through a purge stub (`openSystemScope`) that never leaves this method, each in its own
+   * transaction and under the cutoff the host re-checks inside it (`refuseTrashedTarget`).
    */
-  private async purgeDue(
-    rt: ScopeRuntime,
-    stub: ScopeStub,
-    operation: string,
-    entityType: string,
-    nowIso: string,
-  ) {
+  private async runPurgeSweep(rt: ScopeRuntime, moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId, operation: string) {
+    const entityType = this.modules
+      .get(moduleId)
+      ?.schedules.find((s) => s.operation === operation && s.purge)?.purge?.entityType;
+    if (entityType === undefined) throw substratError('not_found', `no purge schedule of ${moduleId} runs ${operation}`);
+    const now = this.clock();
     const due = await rt.actor.turn(() =>
-      purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, nowIso),
+      purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, now),
     );
+    const stub = await this.openSystemScope(moduleId, tenantId, scopeId, true);
     return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
-      await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid(), [PURGE_SWEEP]: true } as InvokeOptions);
+      await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid() });
     });
   }
 
@@ -4820,6 +4830,8 @@ export class SqliteScopeHost implements ScopeHost {
      * record additionally keeps, plus the bound a read-only session is held to.
      */
     sessionId?: ImpersonationSessionId,
+    /** #119: a purge stub — `openSystemScope`'s, built only by `runPurgeSweep`, never handed on. */
+    purge = false,
   ): ScopeStub {
     const operations = this.operations;
 
@@ -4840,14 +4852,14 @@ export class SqliteScopeHost implements ScopeHost {
         invokeOptions?: InvokeOptions,
       ): Promise<O> => {
         const handler = operations.get(operation);
-        // #119: purge authority comes only from this host's own sweep (`PURGE_SWEEP`), a key no
-        // caller can construct; an options object naming a cutoff is refused outright.
+        // #119: purge authority is never an invoke option — only a purge stub, which
+        // `runPurgeSweep` builds and keeps, purges — and an options object naming a cutoff is
+        // refused outright.
         try {
           assertNoCallerPurge(invokeOptions);
         } catch (err) {
           return Promise.reject(err);
         }
-        const purge = (invokeOptions as { [PURGE_SWEEP]?: true } | undefined)?.[PURGE_SWEEP] === true;
         // `not_found`, not a bare throw (#113) — the same code `adapter-cloudflare`
         // gives it, so a demo and a hosted vertical answer 404 for the same reason.
         if (!handler)
