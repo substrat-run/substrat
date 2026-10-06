@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/control-plane-client",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "The typed HTTP client for the Substrat control-plane API — one transport (credentials, problem documents, ControlPlaneError) for the CLI, the console and a vertical's connect seam",
   "license": "Apache-2.0",
   "repository": {

@@ -1,5 +1,19 @@
 # @substrat-run/engine-workorder
 
+## 0.12.23
+
+### Patch Changes
+
+- Updated dependencies [d62f6fb]
+- Updated dependencies [98492af]
+- Updated dependencies [2a505df]
+- Updated dependencies [ec25a00]
+- Updated dependencies [4a14c92]
+- Updated dependencies [d55b4cd]
+- Updated dependencies [48bf765]
+  - @substrat-run/kernel@0.139.0
+  - @substrat-run/contracts@0.139.0
+
 ## 0.12.22
 
 ### Patch Changes
@@ -1882,7 +1896,7 @@ active`, `unknown tenant/scope/table`). Those are next, and they are the ones th
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
