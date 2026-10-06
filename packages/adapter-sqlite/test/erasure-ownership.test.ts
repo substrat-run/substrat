@@ -75,8 +75,9 @@ describe('an erasure on a table another module created is refused, IF NOT EXISTS
 });
 
 /**
- * Codex #2084 r3: an authored migration that writes the ledger would forge ownership. It is
- * refused before it runs, the migration rolls back whole — its own table included — and the
+ * Codex #2084 r3: an authored migration may not name the ledger at all — a write would forge
+ * ownership, and #2066's spine rules already refuse that; this one READS it, which only the ledger
+ * guard refuses. It is refused before it runs, the migration rolls back whole — its own table included — and the
  * scope fails closed. On this host only, for the squatter's reason: a forging module in the
  * Durable-Object kit would fail every scope. The guard is the same kernel call on both.
  */
@@ -96,12 +97,14 @@ const forger: ModuleRegistration = {
       version: '0001',
       sql:
         'CREATE TABLE forger_own (id TEXT PRIMARY KEY); ' +
-        "INSERT INTO _substrat_table_owners VALUES ('er_other', '@test/erasure-forger', 'migration', 'now');",
+        // A READ, which the spine rules every migration is held to (#2066) allow — a write to the
+        // ledger is refused by those first. Only the ledger guard refuses this one.
+        'CREATE TABLE forger_copy AS SELECT * FROM _substrat_table_owners;',
     },
   ],
 };
 
-describe('a migration that writes the ownership ledger is refused and rolls back (#2068)', () => {
+describe('a migration that names the ownership ledger is refused and rolls back (#2068)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-forger-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   const t = tenantId.parse(ulid());
@@ -131,7 +134,7 @@ describe('a migration that writes the ownership ledger is refused and rolls back
     expect(db().prepare("SELECT module_id FROM _substrat_table_owners WHERE table_name = 'er_other'").all()).toEqual([
       { module_id: '@test/erasure-other' },
     ]);
-    expect(db().prepare("SELECT name FROM sqlite_master WHERE name = 'forger_own'").all()).toEqual([]);
+    expect(db().prepare("SELECT name FROM sqlite_master WHERE name IN ('forger_own', 'forger_copy')").all()).toEqual([]);
     expect(
       db().prepare("SELECT 1 FROM _substrat_migrations WHERE module_id = '@test/erasure-forger'").all(),
     ).toEqual([]);
