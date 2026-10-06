@@ -295,7 +295,8 @@ import {
   uncheckedView,
   addStatePlans,
   entityStateTriggerDdl,
-  isTrashed,
+  assertNoCallerPurge,
+  isUnreachableParent,
   purgeDueOf,
   purgeIndexDdl,
   purgeOnlyKeysOf,
@@ -7110,7 +7111,7 @@ export function defineScopeDO(
           now: at,
           emit: (event) => writeEvent(event, 'kernel'),
           assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
-          isTrashed: (entity) => isTrashed(doSpineSql(sql), statePlans, entity),
+          isUnreachableParent: (entity) => isUnreachableParent(doSpineSql(sql), statePlans, entity),
         }),
         // #119: archive and trash — the pure adapter's wiring, over the raw spine seam.
         ...createEntityStateVerbs({

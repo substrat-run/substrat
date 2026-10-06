@@ -235,7 +235,8 @@ import {
   addStatePlans,
   entityStateMigrations,
   entityStateTriggerDdl,
-  isTrashed,
+  assertNoCallerPurge,
+  isUnreachableParent,
   PURGE_BATCH,
   purgeDueOf,
   purgeIndexDdl,
@@ -11801,7 +11802,7 @@ export class SqliteScopeHost implements ScopeHost {
         now: at,
         emit: (event) => writeEvent(event, 'kernel'),
         assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
-        isTrashed: (entity) => isTrashed(spineSql(rt.db), statePlans, entity),
+        isUnreachableParent: (entity) => isUnreachableParent(spineSql(rt.db), statePlans, entity),
       }),
       // #119: archive and trash, written once in the kernel. The raw seam, because the guarded
       // `ctx.sql` refuses the very columns these write; the operation's own check, so the

@@ -42,11 +42,10 @@ export interface EntityEdgeDeps {
   /** K-42's read-only refusal, for the effecting verbs. */
   assertWrites: (verb: string) => void;
   /**
-   * Is this entity in the trash (#119)? `false` for an entity whose type declares no trash,
-   * and for one that does not exist. A trashed parent is refused by `link` and as `relink`'s
-   * `to`.
+   * Is this entity out of reach as a parent (#119) — its type declares trash, and it is binned or
+   * missing (`isUnreachableParent`)? Refused by `link` and as `relink`'s `to`, one answer for both.
    */
-  isTrashed: (entity: EntityRef) => boolean;
+  isUnreachableParent: (entity: EntityRef) => boolean;
 }
 
 export type EntityEdgeVerbs = Pick<OperationContext, 'link' | 'relink'>;
@@ -64,12 +63,13 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
 
   /**
    * A binned entity is gone from everyone's view until it is restored (#119), so nothing new
-   * hangs off it — `not_found`, the answer every other operation on it gets. An ARCHIVED parent
-   * passes: archived is filed away and still readable.
+   * hangs off it. The refusal is the one a MISSING parent of the same type gets, word for word:
+   * `link` checks no permission, so a refusal that named the trash would tell a caller who may not
+   * see the parent that it exists. An ARCHIVED parent passes: archived is filed away and readable.
    */
-  const assertParentNotTrashed = (verb: string, parent: EntityRef) => {
-    if (deps.isTrashed(parent)) {
-      throw substratError('not_found', `${verb}: ${parent.entityType}:${parent.entityId} is in the trash`);
+  const assertParentReachable = (verb: string, parent: EntityRef) => {
+    if (deps.isUnreachableParent(parent)) {
+      throw substratError('not_found', `${verb}: ${parent.entityType}:${parent.entityId} not found`);
     }
   };
 
@@ -142,7 +142,7 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       const c = entityObjectRef(child, 'ctx.link'); // #1856: an edge the walk can read back
       const p = entityObjectRef(parent, 'ctx.link');
       assertDeclared('ctx.link', child, parent);
-      assertParentNotTrashed('ctx.link', parent);
+      assertParentReachable('ctx.link', parent);
       // Refuse a parent that is the child itself or already beneath it (#1875) — same question
       // `relink` asks of `to`, same walk.
       assertNoCycle('ctx.link', 'link', c, p);
@@ -169,7 +169,7 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       // whether or not its relation is still declared, so an edge that grants must stay
       // movable. What `from` must be is an edge that exists.
       assertDeclared('ctx.relink', child, to);
-      assertParentNotTrashed('ctx.relink', to);
+      assertParentReachable('ctx.relink', to);
       // The walk's own `live` predicate, so "is a parent" means what a check means by it.
       const live = deps.sql.query(
         `SELECT 1 AS live FROM _substrat_tuples

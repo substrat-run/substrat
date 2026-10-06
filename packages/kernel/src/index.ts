@@ -242,7 +242,8 @@ export {
 } from './entity-state.js';
 export {
   PURGE_BATCH,
-  isTrashed,
+  assertNoCallerPurge,
+  isUnreachableParent,
   purgeCandidates,
   purgeCutoffOf,
   purgeDueOf,

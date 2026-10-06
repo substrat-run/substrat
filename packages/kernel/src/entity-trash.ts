@@ -36,11 +36,17 @@ import type { ScopedSql } from './scope-host.js';
 /** How many entities one purge pass deletes per entity type. A full batch leaves the schedule due. */
 export const PURGE_BATCH = 50;
 
-/** Is `entity` in the trash? `false` for a type that declares no trash, and for a missing row. */
-export function isTrashed(sql: ScopedSql, plans: ReadonlyMap<string, EntityStatePlan>, entity: EntityRef): boolean {
+/**
+ * Is `entity` out of reach as a parent (#119): its type declares trash, and it is in the trash or
+ * does not exist. The two answer as ONE, so `ctx.link` cannot be used to tell a binned entity from
+ * a missing one. `false` for a type that declares no trash — the kernel never read those rows
+ * before, and linking to one is unchanged.
+ */
+export function isUnreachableParent(sql: ScopedSql, plans: ReadonlyMap<string, EntityStatePlan>, entity: EntityRef): boolean {
   const plan = plans.get(entity.entityType);
   if (!plan?.trashPermission) return false;
-  return (readStateRow(sql, plan, entity.entityId)?.trashed_at ?? null) !== null;
+  const row = readStateRow(sql, plan, entity.entityId);
+  return !row || row.trashed_at !== null;
 }
 
 /** What the refusal needs from the adapter, inside the operation's own transaction. */

@@ -516,9 +516,10 @@ export interface OperationContext {
    * Checks no permission: the operation does, in its own vocabulary.
    *
    * A parent in the TRASH (#119) is refused `not_found`: nothing new hangs off a binned
-   * entity, since it is gone from everyone's view until restored. An ARCHIVED parent is
-   * allowed — archived is filed away and still readable, and whether one may still be added
-   * to is the vertical's rule, not the kernel's.
+   * entity, since it is gone from everyone's view until restored. A MISSING parent of a type that
+   * declares trash gets the identical refusal, so the two cannot be told apart. An ARCHIVED parent
+   * is allowed — archived is filed away and still readable, and whether one may still be added to
+   * is the vertical's rule, not the kernel's.
    */
   link(child: EntityRef, parent: EntityRef): void;
   /**
@@ -531,8 +532,9 @@ export interface OperationContext {
    *   move would make the child its own ancestor.
    * - `from` must be a live parent edge of `child`; `conflict` otherwise. Every other
    *   parent a multi-parent entity has is left alone.
-   * - A `to` in the TRASH is refused `not_found`, as `link` refuses one (#119). `from` is
-   *   not: moving a child out from under a binned parent is how it is rescued.
+   * - A `to` in the TRASH is refused `not_found`, as `link` refuses one (#119) — the same refusal a
+   *   missing `to` of that type gets. `from` is not: moving a child out from under a binned
+   *   parent is how it is rescued.
    * - `from` equal to `to` is a no-op: nothing written, nothing emitted.
    * - A `to` that is ALREADY a live parent of `child` is the way to detach one parent of a
    *   multi-parent child (#2044): the `from` edge is tombstoned, the live `to` edge stays

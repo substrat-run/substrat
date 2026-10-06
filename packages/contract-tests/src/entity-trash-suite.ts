@@ -213,6 +213,22 @@ export function entityTrashContractSuite(
         expect(((await as.alice.invoke('trash/box-exists', { boxId })) as { things: number }).things).toBe(0);
       });
 
+      it('a trashed parent and a missing one are refused identically — the trash cannot be probed through link', async () => {
+        const trashed = await binnedBox();
+        const missing = ulid();
+        const refusal = async (who: ScopeStub, boxId: string) => {
+          const e = (await errOf(who.invoke('trash/link-thing', { boxId, thingId: ulid() }))) as Error;
+          // Everything but the id the caller named itself.
+          return { code: errorCodeOf(e), name: e.name, message: e.message.replace(boxId, '<id>') };
+        };
+        // A caller who may write the box learns only "not found", whichever it was.
+        expect(await refusal(as.alice, trashed)).toEqual(await refusal(as.alice, missing));
+        expect((await refusal(as.alice, trashed)).code).toBe('not_found');
+        // A caller without access to the parent is stopped before link, the same way for both.
+        expect(await refusal(as.dave, trashed)).toEqual(await refusal(as.dave, missing));
+        expect((await refusal(as.dave, trashed)).code).toBe('permission_denied');
+      });
+
       it('twin: link accepts an active parent and an ARCHIVED one', async () => {
         const active = await addBox();
         await expect(as.alice.invoke('trash/link-thing', { boxId: active, thingId: ulid() })).resolves.toEqual({ ok: true });
