@@ -17,6 +17,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  instant,
   permissionKey,
   platformActorId,
   principalId,
@@ -971,7 +972,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
       const checks = await instrumentRootChecks({
         throws: false,
         delayMs: 300,
-        ...(revoke ? { whileHeld: (instance: unknown) => setReaderRevoked(instance, new Date().toISOString()) } : {}),
+        ...(revoke ? { whileHeld: (instance: unknown) => void setReaderRevoked(instance, new Date().toISOString()) } : {}),
       });
       try {
         await as('live/touch', { noteId: IN_F1 });
@@ -1013,7 +1014,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
         node: { tenantId: t, scopeId: sc },
         entity: { entityType: 'cabinet', entityId: C1 },
         grantedBy: writer,
-        expiresAt,
+        expiresAt: instant.parse(expiresAt),
       });
       const tabs = [await watchChecked(stranger, F1, later()), await watchChecked(stranger, F1, later())];
       // The one remembered check answers while the grant holds, and is held past its end.
@@ -1026,7 +1027,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
       } finally {
         await checks.restore();
         await runInDurableObject(scopeDo(), (instance) =>
-          (instance as { sql: SqlStorage }).sql.exec(
+          (instance as unknown as { sql: SqlStorage }).sql.exec(
             `UPDATE _substrat_tuples SET revoked_at = ? WHERE subject = ? AND object = ? AND revoked_at IS NULL`,
             new Date().toISOString(),
             `principal:${stranger}`,
@@ -1209,7 +1210,7 @@ describe('live reads: a root checked against the directory (#938, Codex #2077 r5
   });
 
   const pass = async (revoke: boolean) => {
-    await host.admin.assignRole(staff, { principalId: member, roleKey: ROLE, node: { tenantId: t } });
+    await host.admin.assignRole(staff, { principalId: member, roleKey: ROLE, node: { tenantId: t, scopeId: null } });
     const tabs = [await watch(), await watch()];
     const checks = await instrument(
       revoke
