@@ -102,11 +102,15 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   **When an outcome row cannot be written** (on either route), the answer still reflects what
   the vertical did. A refusal or failure keeps the vertical's own status, and the missing row
   is logged as `audit-outcome-unrecorded` with the `operationId`. A change that went through
-  answers `500`, saying it completed and that only its row is missing, with the
-  `operationId` and the result, so it is not retried as a failure. The platform's scheduled
-  pass closes any intent that still has no outcome an hour later with an `unknown` row, which
-  says the log cannot tell whether the change happened, and an ops-failure row that the staff
-  failure digest reports.
+  is answered as the success it is (`200`, or `201` for an invite, with the result: an invite
+  keeps its accept link), carrying `auditWarning` beside the `operationId` every answer
+  carries. A client shows the warning and does not offer the change again. The call to the
+  vertical has a 60 s deadline: past it the route answers `504`, audited `failed`. The
+  platform's scheduled pass closes an intent that still has no outcome an hour later. It
+  writes an `unknown` row, saying the log cannot tell whether the change happened, and an
+  ops-failure row that the staff failure digest reports, both in one transaction, and only if
+  no outcome exists by then. A real outcome that lands later is still recorded, and the
+  latest outcome row of an operation is its result.
   The answer's `fromRevoked` is about the instance's own owner seat only. `false` means `from`
   held none there; if `from` holds the owner role at the tenant level, that grant is untouched
   and still applies, and it is taken back through the tenant's role assignments.
