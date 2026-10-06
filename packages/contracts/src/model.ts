@@ -24,6 +24,8 @@
 import { z } from 'zod';
 import { emitLifecycles, type EmittedLifecycle, type LifecycleDef } from './lifecycle.js';
 import { isKernelNamespace } from './object-ref.js';
+import type { EntityStateDeclaration } from './entity-state.js';
+import { permissionKey } from './ids.js';
 
 /**
  * One entity: the table it lives in, its field schema, and its place in the
@@ -112,6 +114,24 @@ export interface EntityDef<Names extends string = string> {
    * carrying gravestones.
    */
   readonly renamedFrom?: Readonly<Record<string, string>>;
+  /**
+   * The entity can be ARCHIVED — hidden from active views, retained, and readable through
+   * its ordinary read authority (#119). `permission` gates `ctx.archive` and `ctx.unarchive`
+   * on the entity; the kernel re-checks it, so an operation cannot archive under another key.
+   *
+   * Declaring it gives the table a kernel-owned `_substrat_archived_at` column (a derived
+   * migration, like a search index's) and makes `ctx.page`/`ctx.search` leave archived rows
+   * out unless asked for them. Only a single-column-keyed entity can declare it: the verbs
+   * take an `EntityRef`.
+   */
+  readonly archive?: { readonly permission: string };
+  /**
+   * The entity can be TRASHED — a reversible delete (#119). `permission` gates `ctx.trash`,
+   * `ctx.restore` and the trashed readers, and is distinct from `archive`'s on purpose:
+   * putting something in the bin and seeing what is in it are not the same authority as
+   * filing it away. Gives the table `_substrat_trashed_at`.
+   */
+  readonly trash?: { readonly permission: string };
 }
 
 /**
@@ -274,6 +294,10 @@ export interface EmittedEntity {
   readonly key?: readonly string[];
   readonly erasable?: readonly string[];
   readonly outsideText?: readonly string[];
+  /** The permission key that archives it (#119), when it can be archived. */
+  readonly archive?: { readonly permission: string };
+  /** The permission key that trashes it (#119), when it can be trashed. */
+  readonly trash?: { readonly permission: string };
 }
 
 export interface EmittedModel {
@@ -346,6 +370,8 @@ export const emittedEntity = z.object({
   key: z.array(z.string()).optional(),
   erasable: z.array(z.string()).optional(),
   outsideText: z.array(z.string()).optional(),
+  archive: z.object({ permission: z.string().min(1) }).optional(),
+  trash: z.object({ permission: z.string().min(1) }).optional(),
 });
 
 export const emittedExport = z.object({
@@ -409,8 +435,12 @@ export function emitModel<T extends Record<string, EntityDef>>(
       ...(e.key ? { key: [...e.key].sort() } : {}),
       ...(e.erasable ? { erasable: [...e.erasable].sort() } : {}),
       ...(e.outsideText ? { outsideText: [...e.outsideText].sort() } : {}),
+      ...(e.archive ? { archive: { permission: e.archive.permission } } : {}),
+      ...(e.trash ? { trash: { permission: e.trash.permission } } : {}),
     };
   }
+  // Refused at emit too, so `lint:model --check` goes red where `manifestEntities` would.
+  entityStatesOf(entities);
   const lifecycles = options.lifecycles ? emitLifecycles(options.lifecycles) : undefined;
   if (lifecycles) {
     // A machine over an entity the registry does not declare is the same class
@@ -663,6 +693,36 @@ function enrichSearchables(
   });
 }
 
+/**
+ * The `entityStates` manifest entries (#119), derived from each entity's own `archive` /
+ * `trash` — never written a second time, as `entityRelations` is derived from `parents`.
+ *
+ * Refuses a composite-keyed entity for `enrichSearchables`'s reason: the verbs take an
+ * `EntityRef`, which is one id, and a row keyed by three columns has none to give.
+ */
+export function entityStatesOf(entities: Record<string, EntityDef>): EntityStateDeclaration[] {
+  const out: EntityStateDeclaration[] = [];
+  for (const name of Object.keys(entities).sort()) {
+    const entity = entities[name];
+    if (!entity || (!entity.archive && !entity.trash)) continue;
+    const key = primaryKeyOf(name, entity);
+    if (key.length !== 1) {
+      throw new Error(
+        `model: '${name}' is keyed by (${key.join(', ')}) and cannot be archived or trashed — ` +
+          'ctx.archive and ctx.trash take one id, and a composite key has none to give',
+      );
+    }
+    out.push({
+      entityType: name,
+      ...(entity.archive ? { archivePermission: permissionKey.parse(entity.archive.permission) } : {}),
+      ...(entity.trash ? { trashPermission: permissionKey.parse(entity.trash.permission) } : {}),
+      table: entity.table,
+      idColumn: key[0] as string,
+    });
+  }
+  return out;
+}
+
 export function manifestEntities<
   const T extends Record<string, EntityDef>,
   const M extends EntityRefs<T, M>,
@@ -674,8 +734,12 @@ export function manifestEntities<
   liveTargets: NonNullable<M['liveTargets']> | [];
   searchables: EnrichedSearchable[];
   entityRelations: { entityType: string; parentType: string }[];
+  entityStates?: EntityStateDeclaration[];
   ui: { entityViews: M['entityViews'] };
 } {
+  // Absent rather than `[]` when nothing declares one, so a manifest that has no archivable
+  // entity is byte-for-byte what it was before #119.
+  const entityStates = entityStatesOf(entities);
   return {
     attachmentTargets: (refs.attachmentTargets ?? []) as NonNullable<M['attachmentTargets']> | [],
     // `[]` when undeclared, like `attachmentTargets` — and it means the same
@@ -687,6 +751,7 @@ export function manifestEntities<
     // Local edges are derived from the entities' own `parents`; edges involving
     // a composed engine's entity are declared, and both sides are checked.
     entityRelations: [...entityRelationsOf(entities), ...(refs.relations ?? [])],
+    ...(entityStates.length ? { entityStates } : {}),
     ui: { entityViews: refs.entityViews as M['entityViews'] },
   };
 }

@@ -314,6 +314,15 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   so a projection or an offline mirror never hand-rolls the outbox walk either. None of
   them checks a permission; the caller does, first, as always — and in front of a
   scope-wide walk that check must itself be scope-wide.
+- **Archive and trash are declared, never hand-rolled** (#119, K-45). An entity that may be
+  filed away or binned declares `archive: { permission }` / `trash: { permission }` in its
+  model — each its own key — and the kernel adds `_substrat_archived_at` /
+  `_substrat_trashed_at` to its table, leaves archived and binned rows out of `ctx.page` and
+  `ctx.search`, and moves them only through `ctx.archive`/`ctx.trash`/`ctx.restore`, which
+  check the declared key and emit the event. `ctx.sql` refuses a write naming any
+  `_substrat_*` **column**, as it does a `_substrat_*` table. The kernel filters only the
+  reads it composes: a hand-written get-by-id asks `ctx.entityState(ref)`. Not erasure (#37)
+  and not tenant deletion (#36) — nothing is removed. `demos/todo` is the reference.
 - Every operation's first line: `assertAllowed(await ctx.check(PERM))`; per-entity
   checks (`ctx.check(perm, entityRef)`) for portal-style walks.
 - Every mutation emits a **fat** event (consumer must never need a cross-module read);

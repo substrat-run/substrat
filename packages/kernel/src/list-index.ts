@@ -43,7 +43,10 @@
  */
 import { PAGE_CURSOR_RESTART, SubstratError, ULID_PATTERN, z } from '@substrat-run/contracts';
 import { fromBase64url, toBase64url } from './base64url.js';
+import type { EntityStateDeclaration, EntityStateName } from '@substrat-run/contracts';
+import { entityStatePlans, entityStateWhere, stateColumnsOf, viewsOf, type StateColumns } from './entity-state.js';
 import type { SqlMigration } from './scope-host.js';
+import { SQL_IDENTIFIER, assertSqlIdentifier } from './sql-identifier.js';
 
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 declare const TextDecoder: new (label: string, options: { fatal: boolean }) => { decode(input: Uint8Array): string };
@@ -77,6 +80,11 @@ export interface ListIndexPlan {
   readonly filterable: readonly string[];
   /** The index-name stem. Kernel-owned, so it carries the reserved prefix. */
   readonly indexStem: string;
+  /**
+   * The entity's archive/trash columns, when it declares either (#119). Present, every index
+   * is PARTIAL — one per view — and every walk is narrowed to one view.
+   */
+  readonly states?: StateColumns;
 }
 
 /** The prefix every derived list index carries. */
@@ -87,20 +95,8 @@ export function isListIndexName(name: string): boolean {
   return name.startsWith(LIST_INDEX_PREFIX);
 }
 
-/**
- * SQL identifiers reach the DDL by interpolation — there is no parameter form
- * for a table or column name — so every one is checked first. Same reasoning as
- * `search-index.ts`: a declaration is still a string somebody typed, and "it came
- * from the manifest" is exactly the reasoning that makes an injection a surprise.
- */
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-function assertIdentifier(kind: string, value: string, where: string): string {
-  if (!IDENTIFIER.test(value)) {
-    throw new Error(`list: ${where} names ${kind} '${value}', which is not a plain SQL identifier`);
-  }
-  return value;
-}
+const assertIdentifier = (kind: string, value: string, where: string): string =>
+  assertSqlIdentifier('list', kind, value, where);
 
 /** `@acme/vertical` → `acme_vertical`: an id is not an identifier, an index name needs one. */
 function slug(value: string): string {
@@ -163,8 +159,11 @@ export class FilterNotDeclared extends Error {
 export function listIndexPlans(
   moduleId: string,
   lists: readonly ListDeclaration[] | undefined,
+  /** The SAME module's archive/trash declarations (#119) — its table, its columns. */
+  entityStates?: readonly EntityStateDeclaration[],
 ): ListIndexPlan[] {
   if (!lists?.length) return [];
+  const states = new Map(entityStatePlans(moduleId, entityStates).map((p) => [p.entityType, stateColumnsOf(p)]));
   const plans: ListIndexPlan[] = [];
   for (const decl of lists) {
     const where = `${moduleId} lists['${decl.entityType}']`;
@@ -199,6 +198,7 @@ export function listIndexPlans(
       sortable,
       filterable,
       indexStem: `${LIST_INDEX_PREFIX}${slug(moduleId)}_${slug(decl.entityType)}`,
+      ...(states.has(decl.entityType) ? { states: states.get(decl.entityType) } : {}),
     });
   }
   return plans;
@@ -218,8 +218,10 @@ export function listIndexPlans(
  * two-filter combination is hot wants a hand-written index, and knowing that is
  * how somebody adds one.
  */
-export function listIndexColumns(plan: ListIndexPlan): { name: string; columns: string[] }[] {
-  const out: { name: string; columns: string[] }[] = [];
+export function listIndexColumns(
+  plan: ListIndexPlan,
+): { name: string; columns: string[]; where?: string }[] {
+  const out: { name: string; columns: string[]; where?: string }[] = [];
   for (const sort of plan.sortable) {
     // The tie-break collapses when the sort column IS the id — indexing
     // `(id, id)` would be a wider index describing the same order.
@@ -228,7 +230,13 @@ export function listIndexColumns(plan: ListIndexPlan): { name: string; columns: 
     // entity's primary key by construction (`primaryKeyOf` resolved it), and
     // SQLite already indexes that. Emitting one would pay write amplification on
     // every insert for a second copy of an index that exists.
-    if (walk.length > 1) {
+    //
+    // UNLESS the entity is archivable (#119): then every walk is narrowed to a view, and the
+    // primary key would walk past every archived row to find the active ones — the archive is
+    // exactly the part of the table that grows without bound. A partial index per view is
+    // the fix, and it costs no more to write than the one full index it replaces: each row
+    // sits in exactly one view, so it is entered in exactly one of them.
+    if (walk.length > 1 || plan.states) {
       out.push({ name: `${plan.indexStem}_${slug(sort)}`, columns: walk });
     }
     for (const filter of plan.filterable) {
@@ -239,7 +247,17 @@ export function listIndexColumns(plan: ListIndexPlan): { name: string; columns: 
       });
     }
   }
-  return out;
+  if (!plan.states) return out;
+  // One partial index per view. The ACTIVE one keeps the name the full index had, so a scope
+  // that had the full index has it replaced rather than kept beside the partial one.
+  const states = plan.states;
+  return out.flatMap((idx) =>
+    viewsOf(states).map((view) => ({
+      name: view === 'active' ? idx.name : `${idx.name}_${view}`,
+      columns: idx.columns,
+      where: entityStateWhere(plan.entityType, states, view),
+    })),
+  );
 }
 
 /**
@@ -254,7 +272,10 @@ export function listIndexDdl(plan: ListIndexPlan): string {
   const lines: string[] = [];
   for (const idx of listIndexColumns(plan)) {
     lines.push(`DROP INDEX IF EXISTS ${idx.name};`);
-    lines.push(`CREATE INDEX ${idx.name} ON ${plan.table} (${idx.columns.join(', ')});`);
+    lines.push(
+      `CREATE INDEX ${idx.name} ON ${plan.table} (${idx.columns.join(', ')})` +
+        `${idx.where ? ` WHERE ${idx.where}` : ''};`,
+    );
   }
   return lines.join('\n');
 }
@@ -275,9 +296,14 @@ export function listIndexDdl(plan: ListIndexPlan): string {
 export function listIndexMigrations(
   moduleId: string,
   lists: readonly ListDeclaration[] | undefined,
+  entityStates?: readonly EntityStateDeclaration[],
 ): SqlMigration[] {
-  return listIndexPlans(moduleId, lists).map((plan) => ({
-    version: `list/${plan.entityType}:${plan.sortable.join('+')}:${plan.filterable.join('+')}`,
+  return listIndexPlans(moduleId, lists, entityStates).map((plan) => ({
+    // The views are part of the declaration the DDL depends on (#119): declaring a trash
+    // makes every index partial, so the version moves and the indexes are rebuilt.
+    version:
+      `list/${plan.entityType}:${plan.sortable.join('+')}:${plan.filterable.join('+')}` +
+      (plan.states ? `:${viewsOf(plan.states).join('+')}` : ''),
     sql: listIndexDdl(plan),
   }));
 }
@@ -289,11 +315,15 @@ export function listIndexMigrations(
  * that stays true in tests and changes in production.
  */
 export function listPlansByEntityType(
-  modules: readonly { readonly id: string; readonly lists?: readonly ListDeclaration[] }[],
+  modules: readonly {
+    readonly id: string;
+    readonly lists?: readonly ListDeclaration[];
+    readonly entityStates?: readonly EntityStateDeclaration[];
+  }[],
 ): Map<string, ListIndexPlan> {
   const byType = new Map<string, ListIndexPlan>();
   for (const mod of modules) {
-    for (const plan of listIndexPlans(mod.id, mod.lists)) {
+    for (const plan of listIndexPlans(mod.id, mod.lists, mod.entityStates)) {
       const existing = byType.get(plan.entityType);
       if (existing) {
         throw new Error(
@@ -319,6 +349,11 @@ export interface ListQueryParams {
    * the rows with no value there (`IS NULL`).
    */
   readonly filters?: Readonly<Record<string, unknown>>;
+  /**
+   * Which rows (#119). `active` when unset — an archived or trashed row is never in a page
+   * nobody asked to see it in. Refused for an entity that declares no such view.
+   */
+  readonly view?: EntityStateName;
 }
 
 /** A composed read: the page query, and the count over the same `WHERE`. */
@@ -330,6 +365,8 @@ export interface ComposedListQuery {
   /** The column the walk ordered by — what the cursor's first part came from. */
   readonly sortColumn: string;
   readonly order: 'asc' | 'desc';
+  /** The view the walk ran over (#119) — what its cursors are minted for. */
+  readonly view: EntityStateName;
 }
 
 /**
@@ -375,13 +412,19 @@ export class CursorMismatch extends SubstratError {
  * minted exactly that legacy cursor (#2018 review).
  *
  * `id` is present exactly when the walk sorts by something other than the id itself.
+ *
+ * `view` (#119) names an archivable entity's view when it is not `active`. A position in the
+ * active rows means nothing among the archived ones: replayed there, `id > ?` silently skips
+ * every archived row before it. Absent means active, so every cursor minted before it — and
+ * every active one since — reads the same, and a change of view is a `cursor_restart`.
  */
 const cursorEnvelope = z.strictObject({
   v: z.literal(1),
   order: z.enum(['asc', 'desc']),
-  sort: z.string().regex(IDENTIFIER),
+  sort: z.string().regex(SQL_IDENTIFIER),
   value: z.string(),
   id: z.string().optional(),
+  view: z.enum(['archived', 'trashed']).optional(),
 });
 
 /** Build the cursor a row hands to the next page — the walk that minted it, and where. */
@@ -390,6 +433,8 @@ export function cursorOf(
   sortColumn: string,
   idColumn: string,
   order: 'asc' | 'desc',
+  /** The walk's view (#119). `active`, or unset, is left out of the envelope. */
+  view?: EntityStateName,
 ): string {
   const envelope: z.infer<typeof cursorEnvelope> = {
     v: 1,
@@ -397,6 +442,7 @@ export function cursorOf(
     sort: sortColumn,
     value: String(row[sortColumn] ?? ''),
     ...(sortColumn === idColumn ? {} : { id: String(row[idColumn] ?? '') }),
+    ...(view && view !== 'active' ? { view } : {}),
   };
   return toBase64url(new TextEncoder().encode(JSON.stringify(envelope)));
 }
@@ -443,9 +489,17 @@ function positionIn(
   plan: ListIndexPlan,
   sortColumn: string,
   order: 'asc' | 'desc',
+  view: EntityStateName,
 ): { value: string; id: string | undefined } {
   const envelope = envelopeOf(cursor);
   if (envelope) {
+    const minted = envelope.view ?? 'active';
+    if (minted !== view) {
+      throw new CursorMismatch(
+        `list: this cursor continues the ${minted} rows, and this request asks for the ${view} ones — ` +
+          'restart paging from the first page, without a cursor',
+      );
+    }
     if (envelope.order !== order || envelope.sort !== sortColumn) {
       throw new CursorMismatch(
         `list: this cursor continues a walk by '${envelope.sort}' ${envelope.order}, and this request ` +
@@ -459,7 +513,8 @@ function positionIn(
     return { value: envelope.value, id: envelope.id };
   }
   const legacy = legacyPositionOf(cursor, plan, sortColumn);
-  if (legacy && order === 'asc' && sortColumn === plan.sortable[0]) return legacy;
+  // Every legacy cursor predates the views, so it was minted over the active rows (#119).
+  if (legacy && order === 'asc' && sortColumn === plan.sortable[0] && view === 'active') return legacy;
   throw new CursorMismatch(
     legacy
       ? `list: this cursor predates the walk it is replayed in ('${sortColumn}' ${order}) — ` +
@@ -487,6 +542,10 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
   const filters = Object.entries(params.filters ?? {}).filter(([, v]) => v !== undefined);
   const where: string[] = [];
   const args: unknown[] = [];
+  // The view first, in the exact words the partial index was created with — SQLite uses a
+  // partial index only when the query's WHERE carries its terms.
+  const view = entityStateWhere(plan.entityType, plan.states, params.view);
+  if (view) where.push(view);
   for (const [column, value] of filters) {
     if (!plan.filterable.includes(column)) {
       throw new FilterNotDeclared(plan.entityType, column, plan.filterable);
@@ -533,7 +592,7 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
 
   const cmp = order === 'asc' ? '>' : '<';
   if (params.cursor !== undefined && params.cursor !== '') {
-    const { value, id } = positionIn(params.cursor, plan, sortColumn, order);
+    const { value, id } = positionIn(params.cursor, plan, sortColumn, order, params.view ?? 'active');
     if (id === undefined) {
       where.push(`${sortColumn} ${cmp} ?`);
       args.push(value);
@@ -559,5 +618,16 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
     countParams,
     sortColumn,
     order,
+    view: params.view ?? 'active',
   };
+}
+
+/** The derived list indexes on each stateful table (#119), by table — what `assertEntityStateIntact` checks. */
+export function stateListIndexNames(plans: Iterable<ListIndexPlan>): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const plan of plans) {
+    if (!plan.states) continue;
+    out.set(plan.table, [...(out.get(plan.table) ?? []), ...listIndexColumns(plan).map((i) => i.name)]);
+  }
+  return out;
 }

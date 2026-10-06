@@ -34,6 +34,8 @@
  * where a customer lives — the model already said it.
  */
 import type { SqlMigration } from './scope-host.js';
+import { assertSqlIdentifier } from './sql-identifier.js';
+import type { EntityStateName } from '@substrat-run/contracts';
 
 /** How a declared searchable is matched. `prefix` unless it says otherwise. */
 export type SearchTokenizer = 'prefix' | 'substring';
@@ -76,6 +78,12 @@ export interface SearchHit {
 export interface SearchOptions {
   /** Defaults to `DEFAULT_SEARCH_LIMIT`, capped at `MAX_SEARCH_LIMIT`. */
   readonly limit?: number;
+  /**
+   * Which rows (#119): `active` when unset, so an archived or trashed row never surfaces in a
+   * picker nobody asked to show it in. `archived` asks for the archive. The bin is not here —
+   * `ctx.searchTrashed` reads it, checking the declared trash key per hit.
+   */
+  readonly view?: Exclude<EntityStateName, 'trashed'>;
 }
 
 /**
@@ -118,21 +126,8 @@ export class NotSearchable extends Error {
   }
 }
 
-/**
- * SQL identifiers reach the DDL by interpolation — there is no parameter form for
- * a table or column name — so every one of them is checked against this first.
- * The inputs are declarations rather than user input, but a declaration is still
- * a string somebody typed, and "it came from the manifest" is exactly the
- * reasoning that makes an injection a surprise.
- */
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-function assertIdentifier(kind: string, value: string, where: string): string {
-  if (!IDENTIFIER.test(value)) {
-    throw new Error(`search: ${where} names ${kind} '${value}', which is not a plain SQL identifier`);
-  }
-  return value;
-}
+const assertIdentifier = (kind: string, value: string, where: string): string =>
+  assertSqlIdentifier('search', kind, value, where);
 
 /** `@acme/vertical` → `acme_vertical`: an id is not an identifier, and the index table needs one. */
 function slug(value: string): string {
@@ -378,13 +373,18 @@ export function searchQuery(
   plan: SearchIndexPlan,
   match: string,
   limit: number,
+  /**
+   * A further predicate over the source row, aliased `src` — the archive/trash view (#119).
+   * Applied BEFORE the limit, so hiding rows never shortens a ranked top-N.
+   */
+  where?: string,
 ): { sql: string; params: [string, number] } {
   const idx = plan.indexTable;
   return {
     sql:
       `SELECT src.${plan.idColumn} AS id, bm25(${idx}) AS rank ` +
       `FROM ${idx} JOIN ${plan.table} src ON src.rowid = ${idx}.rowid ` +
-      `WHERE ${idx} MATCH ? ORDER BY rank LIMIT ?`,
+      `WHERE ${idx} MATCH ?${where ? ` AND ${where}` : ''} ORDER BY rank LIMIT ?`,
     params: [match, limit],
   };
 }

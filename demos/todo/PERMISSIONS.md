@@ -5,15 +5,17 @@
 
 # Permission snapshot — @substrat-run/demo-todo
 
-3 keys · 1 modules · 1 roles
+5 keys · 1 modules · 1 roles
 
 ## 1. Registry — every key a registered manifest declares
 
 | Key | Description | Declared by |
 | --- | --- | --- |
+| `list:archive` | Archive a list, or bring it back from the archive | `@substrat-run/demo-todo` |
 | `list:contribute` | See a list, add items to it, and tick them off | `@substrat-run/demo-todo` |
 | `list:create` | Create lists of your own | `@substrat-run/demo-todo` |
 | `list:manage` | Rename, delete and share a list, and delete items on it | `@substrat-run/demo-todo` |
+| `list:trash` | Move a list to the trash, see what is in it, and restore it | `@substrat-run/demo-todo` |
 
 ## 2. Roles — as defined by this vertical's provisioning code
 
@@ -27,9 +29,11 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Key | Held by |
 | --- | --- |
+| `list:archive` | — no role — |
 | `list:contribute` | — no role — |
 | `list:create` | `member` |
 | `list:manage` | — no role — |
+| `list:trash` | — no role — |
 
 ## 4. Entity-narrowed grant shapes
 
@@ -39,7 +43,7 @@ no role in §3 but listed here is deliberate, not a gap.
 | Entity type | Permissions granted per entity |
 | --- | --- |
 | `list` | `list:contribute` |
-| `owner` | `list:contribute`, `list:manage` |
+| `owner` | `list:archive`, `list:contribute`, `list:manage`, `list:trash` |
 
 ## 5. Not covered by this artifact
 

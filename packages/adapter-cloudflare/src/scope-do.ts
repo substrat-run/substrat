@@ -143,6 +143,7 @@ import {
   searchIndexDdl,
   searchIndexPlans,
   NotListable,
+  listIndexDdl,
   listIndexPlans,
   moduleMigrations,
   listQuery,
@@ -281,11 +282,22 @@ import {
   assertNoSecret,
   CAPABILITY_DDL,
   COPY_ORIGIN_DDL,
+  ENTITY_STATE_MOVES_DDL,
   SWITCH_FENCES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
   createEntityEdgeVerbs,
+  createEntityStateVerbs,
+  createTrashedReads,
+  searchStateWhere,
+  uncheckedView,
+  addStatePlans,
+  entityStateTriggerDdl,
+  statefulTablesOf,
+  assertEntityStateIntact,
+  stateListIndexNames,
+  type EntityStatePlan,
   exchangeCapability,
   guardSecrets,
   mintBecomeCapability,
@@ -765,6 +777,9 @@ const KERNEL_DDL = `
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
+  -- #119: the kernel's authorization for one archive/trash move, read by the derived update
+  -- trigger. Shared with the other adapter from @substrat-run/kernel; the comments are there.
+  ${ENTITY_STATE_MOVES_DDL}
 `;
 
 /**
@@ -1150,6 +1165,8 @@ export function defineScopeDO(
     private readonly searchPlans = new Map<string, SearchIndexPlan>();
     /** #811: the paged lists modules declare, by entity type. Same one-owner rule. */
     private readonly listPlans = new Map<string, ListIndexPlan>();
+    /** #119: entity type → its archive/trash plan, from every registered module. */
+    private readonly statePlans = new Map<string, EntityStatePlan>();
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     /**
@@ -1275,8 +1292,10 @@ export function defineScopeDO(
         }
         this.searchPlans.set(plan.entityType, plan);
       }
+      // #119: the archive/trash plans, refusing a second owner of one entity type.
+      addStatePlans(this.statePlans, manifest.id, manifest.entityStates, manifest.permissions);
       // #811: the list indexes `lists` declares, same placement and same reason.
-      for (const plan of listIndexPlans(manifest.id, manifest.lists)) {
+      for (const plan of listIndexPlans(manifest.id, manifest.lists, manifest.entityStates)) {
         const existing = this.listPlans.get(plan.entityType);
         if (existing) {
           throw new Error(
@@ -5993,6 +6012,19 @@ export function defineScopeDO(
         if (!present.has(plan.table)) continue;
         for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
       }
+      // #119: the never-born-archived trigger went with the dropped table. Put back AFTER the
+      // rows, which may legitimately arrive archived or trashed.
+      for (const plan of this.statePlans.values()) {
+        if (!present.has(plan.table)) continue;
+        for (const stmt of splitSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
+      }
+      // #811 / #119: the derived list indexes went with the dropped table too, and a load never
+      // put them back — an archivable entity's partial indexes are part of what the kernel
+      // checks after DDL.
+      for (const plan of this.listPlans.values()) {
+        if (!present.has(plan.table)) continue;
+        for (const stmt of splitSqlStatements(listIndexDdl(plan))) this.sql.exec(stmt);
+      }
       // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
       // as on a wake. A copy's own events then sort above every copied one, which is what
       // `emittedHere()` relies on. A dump whose top id is no ULID leaves the floor where it was.
@@ -6643,6 +6675,7 @@ export function defineScopeDO(
       const relations = this.relations;
       const searchPlans = this.searchPlans;
       const listPlans = this.listPlans;
+      const statePlans = this.statePlans;
       const sql = this.sql;
       const mintEventId = this.mintEventId;
       /**
@@ -6799,7 +6832,17 @@ export function defineScopeDO(
         // #1672: a capability's own id stands in so the type holds — it is not a person, and
         // the event actor says what it is instead. Every other door passes its own value.
         principal: capabilityId ? (capabilityId as unknown as PrincipalId) : principal,
-        sql: guardSecrets(doScopedSql(sql), minted),
+        sql: guardSecrets(
+          doScopedSql(
+            sql,
+            statefulTablesOf(statePlans),
+            // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
+            statePlans.size
+              ? () => assertEntityStateIntact(doSpineSql(sql), statePlans, stateListIndexNames(listPlans.values()))
+              : undefined,
+          ),
+          minted,
+        ),
         now: () => at,
         // #1746/#1747: the host stamps who and where; module code supplies only the template
         // and its fields. A consumer runs under the system override, so it logs as `system`.
@@ -6884,6 +6927,8 @@ export function defineScopeDO(
             plan,
             searchMatchExpression(term, plan.tokenizer),
             searchLimit(options?.limit),
+            // #119: active rows unless the archive is asked for.
+            searchStateWhere(statePlans, entityType, options?.view),
           );
           return (sql.exec(q.sql, ...q.params).toArray() as unknown as { id: string; rank: number }[]).map(
             (row) => ({ entityType, id: row.id, rank: row.rank }),
@@ -6905,6 +6950,8 @@ export function defineScopeDO(
             order: params.order,
             cursor: params.cursor,
             filters: params.filters,
+            // #119: the bin is the checked reader's, never this one's.
+            view: uncheckedView('ctx.page', entityType, params.view),
           });
           const rows = sql.exec(q.sql, ...q.params).toArray() as unknown as Record<
             string,
@@ -6912,7 +6959,7 @@ export function defineScopeDO(
           >[];
           const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
           const nextCursor =
-            last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order);
+            last === undefined ? null : cursorOf(last, q.sortColumn, plan.idColumn, q.order, q.view);
           const page = { entries: rows as T[], nextCursor };
           if (!params.total) return page;
           const counted = sql
@@ -6990,6 +7037,23 @@ export function defineScopeDO(
           now: at,
           emit: (event) => writeEvent(event, 'kernel'),
           assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+        }),
+        // #119: archive and trash — the pure adapter's wiring, over the raw spine seam.
+        ...createEntityStateVerbs({
+          sql: doSpineSql(sql),
+          plans: statePlans,
+          now: at,
+          check: runCheck,
+          emit: (event) => writeEvent(event, 'kernel'),
+          assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+        }),
+        ...createTrashedReads({
+          query: (q, params) =>
+            sql.exec(q, ...(params as SqlStorageValue[])).toArray() as unknown as Record<string, unknown>[],
+          listPlans,
+          searchPlans,
+          statePlans,
+          check: runCheck,
         }),
         entitlement: async (key: string): Promise<EntitlementView | null> => {
           const held = await entitlementReader().listEntitlements(tenantId);

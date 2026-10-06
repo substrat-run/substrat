@@ -19,7 +19,13 @@ import { guardSpine, type RedactionSql, type ScopedSql, type SqlValue } from '@s
  * hosted push path. The DO's own spine writes go through `this.sql` directly and
  * never pass through here.
  */
-export function doScopedSql(sql: SqlStorage): ScopedSql {
+export function doScopedSql(
+  sql: SqlStorage,
+  /** #119: the module tables carrying archive/trash columns — `guardSpine` refuses positional writes to them. */
+  statefulTables?: ReadonlySet<string>,
+  /** #119: the kernel's integrity check, run after any runtime DDL — see `guardSpine`. */
+  afterDdl?: () => void,
+): ScopedSql {
   return guardSpine({
     query: <T = Record<string, SqlValue>>(q: string, params: readonly SqlValue[] = []): T[] =>
       sql.exec(q, ...(params as SqlValue[])).toArray() as T[],
@@ -27,7 +33,7 @@ export function doScopedSql(sql: SqlStorage): ScopedSql {
       const cursor = sql.exec(q, ...(params as SqlValue[]));
       return { changes: cursor.rowsWritten };
     },
-  });
+  }, statefulTables, afterDdl);
 }
 
 /**

@@ -3,6 +3,7 @@ import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { eventType } from './events.js';
 import { peerSpec } from './peer.js';
 import { isKernelNamespace } from './object-ref.js';
+import { entityStateDeclaration } from './entity-state.js';
 
 // The manifest is what makes a module self-describing — to agents now, to
 // strangers buying it later (§5.6 of the plan, §7.1 of the design doc).
@@ -470,6 +471,12 @@ export const moduleManifest = z.object({
       }),
     )
     .optional(),
+  // #119: the entities that can be archived and/or trashed, each with its own permission key.
+  // The kernel derives two columns on the entity's table from this, hides archived and trashed
+  // rows from `ctx.page`/`ctx.search` by default, and gates `ctx.archive`/`ctx.trash` on the
+  // declared key. Same authoring rule as `searchables`: `table`/`idColumn` come from the entity
+  // registry via `manifestEntities()`. Optional + additive (D-28).
+  entityStates: z.array(entityStateDeclaration.extend({ entityType: declaredEntityType })).optional(),
   // UI contributions, composed into the vertical's app at BUILD time by the
   // shell (design doc §7.4, K-15). Component values are module-relative import
   // paths. All contributions are permission-keyed; the shell renders them

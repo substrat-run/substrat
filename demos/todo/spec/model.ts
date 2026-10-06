@@ -62,7 +62,14 @@ export const todoEntities = defineEntities({
     erasable: ['email', 'display_name'],
   },
 
-  /** A list. Private to its owner until a share exists for someone else. */
+  /**
+   * A list. Private to its owner until a share exists for someone else.
+   *
+   * Archivable and trashable (#119), each under its own key: filing a finished list away and
+   * putting one in the bin are different acts, and an owner may be given one without the
+   * other. The kernel adds the two columns and leaves archived and binned lists out of
+   * `my-lists` unless they are asked for.
+   */
   list: {
     table: 'todo_lists',
     fields: z.object({
@@ -72,6 +79,8 @@ export const todoEntities = defineEntities({
       created_at: z.string(),
     }),
     parents: ['owner'],
+    archive: { permission: 'list:archive' },
+    trash: { permission: 'list:trash' },
   },
 
   /**
@@ -129,7 +138,16 @@ export const todoEntities = defineEntities({
  * - Sharing narrows `list:contribute` onto ONE list for one person, so what
  *   Björn may do is a fact about *that list* rather than about Björn.
  */
-export const TODO_PERMISSIONS = ['list:create', 'list:manage', 'list:contribute'] as const;
+export const TODO_PERMISSIONS = [
+  'list:create',
+  'list:manage',
+  'list:contribute',
+  'list:archive',
+  'list:trash',
+] as const;
+
+/** Where a list is, as the archive and trash operations report it (#119). */
+const listState = z.object({ id: z.string(), state: z.enum(['active', 'archived', 'trashed']) });
 
 export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   /**
@@ -183,6 +201,9 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
       reason: 'Returns only lists the caller owns or has been shared',
       checks: ['list:contribute'],
     },
+    // #119: the active lists unless the archive is asked for. The bin is its own read,
+    // `trashed-lists`, because who may look in it is a different question.
+    input: z.object({ view: z.enum(['active', 'archived']).optional() }),
     output: todoEntities.list.fields,
     // #811. The underlying walk IS kernel-composed — `created_at` with the id
     // tie-break is exactly the `ORDER BY created_at, id` this shipped with — but
@@ -207,6 +228,64 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
       piiClass: 'none',
       payload: ['id', 'name'],
     },
+  },
+
+  /**
+   * File a list away (#119). It leaves `my-lists` and stays readable — through the archive
+   * view, and by anyone it is shared with. The kernel checks `list:archive` on the list itself,
+   * so this cannot be done under `list:manage`.
+   */
+  'todo/archive-list': {
+    summary: 'Archive a list',
+    permission: { key: 'list:archive', entity: 'list', idFrom: 'listId' },
+    input: z.object({ listId: z.string() }),
+    output: listState,
+    http: { method: 'POST', path: '/lists/{listId}/archive' },
+  },
+
+  'todo/unarchive-list': {
+    summary: 'Bring an archived list back',
+    permission: { key: 'list:archive', entity: 'list', idFrom: 'listId' },
+    input: z.object({ listId: z.string() }),
+    output: listState,
+    http: { method: 'POST', path: '/lists/{listId}/unarchive' },
+  },
+
+  /**
+   * Put a list in the bin (#119) — the delete a person can take back. Its items and shares
+   * are untouched, so a restore brings the whole list back as it was; `delete-list` is still
+   * the delete that cannot be undone.
+   */
+  'todo/trash-list': {
+    summary: 'Move a list to the trash',
+    permission: { key: 'list:trash', entity: 'list', idFrom: 'listId' },
+    input: z.object({ listId: z.string() }),
+    output: listState,
+    http: { method: 'POST', path: '/lists/{listId}/trash' },
+  },
+
+  /** Take a list out of the bin, back to where it was — archived, if it was archived. */
+  'todo/restore-list': {
+    summary: 'Restore a list from the trash',
+    permission: { key: 'list:trash', entity: 'list', idFrom: 'listId' },
+    input: z.object({ listId: z.string() }),
+    output: listState,
+    http: { method: 'POST', path: '/lists/{listId}/restore' },
+  },
+
+  /**
+   * What is in YOUR bin. The kernel checks `list:trash` on every list it reads here, so a
+   * list somebody else binned never shows, however it reached the walk.
+   */
+  'todo/trashed-lists': {
+    summary: 'The lists in your trash',
+    narrows: {
+      reason: 'Returns only binned lists the caller may restore',
+      checks: ['list:trash'],
+    },
+    output: todoEntities.list.fields,
+    paged: { over: { entity: 'list', sortable: ['created_at', 'name'] } },
+    http: { method: 'GET', path: '/lists/trash' },
   },
 
   'todo/delete-list': {

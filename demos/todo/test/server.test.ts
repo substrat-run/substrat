@@ -49,11 +49,12 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('the derived route table, served', () => {
   it('mounts every operation the model declares an http shape for', () => {
-    // Fourteen of fourteen — a derived table that silently mounted nothing would
+    // Nineteen of nineteen — a derived table that silently mounted nothing would
     // otherwise pass every test below that expects a 4xx. The count is pinned on
     // purpose: adding an operation to the model should make somebody look here.
-    // Twelve until #827 added the two search reads.
-    expect(mounted).toHaveLength(14);
+    // Twelve until #827 added the two search reads; fourteen until #119 added the
+    // four archive/trash moves and the bin.
+    expect(mounted).toHaveLength(19);
   });
 
   it('serves a real operation for a seeded persona', async () => {

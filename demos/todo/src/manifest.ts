@@ -24,7 +24,25 @@ export const TODO_PERM = {
   listCreate: permissionKey.parse('list:create'),
   listManage: permissionKey.parse('list:manage'),
   listContribute: permissionKey.parse('list:contribute'),
+  listArchive: permissionKey.parse('list:archive'),
+  listTrash: permissionKey.parse('list:trash'),
 } as const;
+
+/**
+ * What a person holds on their OWN `owner` entity — the bootstrap every list they create
+ * inherits through the declared parent edge, and the only grant a person is given rather than
+ * delegated.
+ *
+ * One list, read by both places that need it: the seed that mints it and the permission
+ * snapshot that shows it to a reviewer (`ENTITY_GRANTS`). They were two literals until #119,
+ * which is how a key added to one would have reached the review and not the people.
+ */
+export const OWNER_GRANTS = [
+  TODO_PERM.listManage,
+  TODO_PERM.listContribute,
+  TODO_PERM.listArchive,
+  TODO_PERM.listTrash,
+] as const;
 
 export const todoManifest = moduleManifest.parse({
   id: '@substrat-run/demo-todo',
@@ -36,6 +54,8 @@ export const todoManifest = moduleManifest.parse({
       'list:create': 'Create lists of your own',
       'list:manage': 'Rename, delete and share a list, and delete items on it',
       'list:contribute': 'See a list, add items to it, and tick them off',
+      'list:archive': 'Archive a list, or bring it back from the archive',
+      'list:trash': 'Move a list to the trash, see what is in it, and restore it',
     },
   }),
   // #827. `item` only, and only `text`. The kernel derives a per-scope FTS5 index

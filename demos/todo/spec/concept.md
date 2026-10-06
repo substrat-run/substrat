@@ -30,11 +30,12 @@ platform's own.
 ## 4. Who can do what
 
 **The owner** does everything to their own list: create it, rename it, delete it,
-add items, complete them, delete them, share it, revoke a share.
+add items, complete them, delete them, share it, revoke a share — and archive it or
+put it in the trash, and take it back out of either.
 
 **Someone the list is shared with** can see it, add items, and tick items off —
-including un-ticking. They cannot delete items, delete the list, or share it
-onward.
+including un-ticking. They cannot delete items, delete the list, archive it,
+bin it, or share it onward.
 
 **Everyone else** sees nothing. A list you have not been shared with is invisible:
 not its contents, not its name, not the fact that it exists. Asking for it
@@ -101,6 +102,21 @@ changes.
 - A control alongside each: Björn *can* add and tick, so the closed doors are not
   passing because every door is shut.
 
+**Putting lists away** (#119). Dana joins after everyone else and makes "Holiday"
+and "Taxes 2025".
+
+- She archives "Taxes 2025". It leaves her lists, appears when she asks for her
+  archive, and is still readable — archiving files a list away, it does not hide
+  what is on it.
+- She puts "Holiday" in the trash. It leaves her lists and shows in her trash;
+  opening it is "not found", like a deleted list. Restoring it brings it back with
+  its items.
+- She bins the archived "Taxes 2025" and restores it: it comes back to the archive,
+  not to her lists.
+- Nobody else's trash shows her lists, and Björn — who can add to a list Ada shared
+  with him — cannot archive or bin it.
+- Emptying the bin is the delete that cannot be undone.
+
 ## 10. Assumptions
 
 Decisions taken on the builder's behalf. Each is cheap to reverse now and
@@ -118,6 +134,9 @@ expensive later.
 - Item text is ordinary personal data — nothing needing erasure beyond deleting
   it.
 - English only.
+- Archive and trash are two different things with two different permissions.
+  An archived list is kept and readable; a binned list is gone until restored.
+  Search finds items only on the lists you see in your lists.
 
 ## 11. Out of scope
 

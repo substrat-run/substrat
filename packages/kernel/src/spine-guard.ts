@@ -96,7 +96,7 @@ function spineTargetFrom(tokens: SqlToken[], from: number, verb: string): SqlTok
  * is a fault in the module, not in the caller's permissions, and the message names
  * the table so the author sees which line to delete.
  */
-export function assertNoSpineWrite(sql: string): void {
+export function assertNoSpineWrite(sql: string, statefulTables?: ReadonlySet<string>): void {
   const tokens = tokenizeSql(sql);
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i]!;
@@ -118,6 +118,313 @@ export function assertNoSpineWrite(sql: string): void {
     );
   }
   refuseSpineReference(referencedTablesIn(tokens), 'ctx.sql');
+  assertNoReservedColumnWrite(sql, statefulTables);
+  if (statefulTables?.size) assertNoStatefulDdl(sql, statefulTables);
+}
+
+/** Statement verbs whose execution changes the schema — what `guardSpine`'s `afterDdl` follows. */
+const DDL_VERBS = new Set(['create', 'alter', 'drop']);
+
+/**
+ * A statement can be DDL only if its text spells one of these words, and almost none does — so the
+ * two scans below are skipped for nearly every statement a module runs. Text, not tokens: a word
+ * inside a string makes the scan run and find nothing, which costs a scan and nothing else.
+ */
+const MAYBE_DDL = /\b(create|alter|drop|attach|detach)\b/i;
+
+/**
+ * Refuse runtime DDL that would take a stateful table's guarantees away (#119, Codex r3).
+ *
+ * #1811 made a module's own DDL through `ctx.sql` a supported path, and it stays one. But a table
+ * that carries archive/trash state is guarded by derived triggers ON THAT TABLE, and DDL can move
+ * the rows out from under them: `ALTER TABLE docs RENAME TO x; CREATE TABLE docs AS SELECT …,
+ * NULL AS _substrat_trashed_at FROM x` un-trashes everything with no move and no event. So, for a
+ * stateful table, in any spelling — quoted, any case, `main.`/`temp.`-qualified:
+ *
+ * - `ALTER TABLE <it>` that renames the table or a column, or drops a column; and `RENAME TO <it>`
+ *   from another table;
+ * - `DROP TABLE <it>`;
+ * - `CREATE [TEMP] TABLE|VIEW <it>` — a temp object of the same name SHADOWS the real table in
+ *   every unqualified reference, the kernel's own included;
+ * - `CREATE [TEMP] TRIGGER … ON <it>`.
+ *
+ * Plus, for any table, a trigger, index or view carrying the reserved prefix (the kernel's derived
+ * objects), and `ATTACH`/`DETACH` outright: nothing in module code needs a second database, and an
+ * attached one is a second place a stateful name can resolve. Ordinary runtime DDL — a module's own
+ * unrelated tables, an index on a stateful table, an added column — is untouched.
+ */
+export function assertNoStatefulDdl(sql: string, statefulTables: ReadonlySet<string>): void {
+  if (!MAYBE_DDL.test(sql)) return;
+  const tokens = tokenizeSql(sql, { punctuation: true });
+  const refuse = (what: string): never => {
+    throw substratError(
+      'forbidden',
+      `ctx.sql cannot ${what}: its archive/trash state is guarded by the kernel's own triggers on it. ` +
+        'Change its schema in a declared migration.',
+      { reason: 'spine_write' },
+    );
+  };
+  const bare = (t: SqlToken | undefined) => (t && !t.punct ? (t.text.split('.').pop() ?? '').toLowerCase() : '');
+  const stateful = (t: SqlToken | undefined) => statefulTables.has(bare(t));
+  const reserved = (t: SqlToken | undefined) => bare(t).startsWith('_substrat');
+  // One statement at a time: a `;` at the top ends it (trigger bodies hold their own `;`s, but
+  // a trigger is judged whole from its CREATE, and its body's statements are DML).
+  let start = 0;
+  while (start < tokens.length) {
+    let end = start;
+    let depth = 0;
+    let inBody = false;
+    // Only a CREATE … TRIGGER has a body. `begin` is a legal identifier elsewhere (`SELECT 1 AS
+    // begin`), and reading it as a body would swallow every statement after it into this one.
+    const head = tokens.slice(start, start + 4).map((t) => (t.quoted || t.punct ? '' : t.text.toLowerCase()));
+    const opensTrigger = head[0] === 'create' && head.slice(1).includes('trigger');
+    for (; end < tokens.length; end += 1) {
+      const t = tokens[end]!;
+      const kw = t.quoted || t.punct ? undefined : t.text.toLowerCase();
+      if (kw === 'begin' && opensTrigger) inBody = true;
+      else if (kw === 'end' && inBody && depth === 0) inBody = false;
+      else if (t.punct && t.text === '(') depth += 1;
+      else if (t.punct && t.text === ')') depth -= 1;
+      else if (t.punct && t.text === ';' && depth === 0 && !inBody) break;
+    }
+    const st = tokens.slice(start, end);
+    start = end + 1;
+    const words = st.map((t) => (t.quoted || t.punct ? '' : t.text.toLowerCase()));
+    const verb = words[0];
+    if (verb === 'attach' || verb === 'detach') refuse(`${verb.toUpperCase()} a database`);
+    if (verb === 'alter' && words[1] === 'table') {
+      const target = st[2];
+      const rest = words.slice(3);
+      if (stateful(target) && (rest.includes('rename') || rest[0] === 'drop')) {
+        refuse(`rename '${target!.text}' or drop or rename its columns`);
+      }
+      const to = rest.indexOf('to');
+      if (rest[0] === 'rename' && to !== -1 && stateful(st[3 + to + 1])) {
+        refuse(`rename a table to '${st[3 + to + 1]!.text}'`);
+      }
+      continue;
+    }
+    if (verb === 'drop') {
+      let k = 1;
+      const kind = words[k];
+      k += 1;
+      if (words[k] === 'if' && words[k + 1] === 'exists') k += 2;
+      if (kind === 'table' && stateful(st[k])) refuse(`drop '${st[k]!.text}'`);
+      if ((kind === 'trigger' || kind === 'index' || kind === 'view') && reserved(st[k])) {
+        refuse(`drop the kernel's ${kind} '${st[k]!.text}'`);
+      }
+      continue;
+    }
+    if (verb === 'create') {
+      let k = 1;
+      while (['temp', 'temporary', 'unique', 'virtual'].includes(words[k] ?? '')) k += 1;
+      const kind = words[k];
+      k += 1;
+      if (words[k] === 'if' && words[k + 1] === 'not' && words[k + 2] === 'exists') k += 3;
+      const name = st[k];
+      if ((kind === 'table' || kind === 'view') && stateful(name)) refuse(`create a ${kind} named '${name!.text}'`);
+      if ((kind === 'trigger' || kind === 'index' || kind === 'view') && reserved(name)) {
+        refuse(`create a ${kind} with the kernel's prefix ('${name!.text}')`);
+      }
+      if (kind === 'trigger') {
+        const on = words.indexOf('on', k + 1);
+        if (on !== -1 && stateful(st[on + 1])) refuse(`create a trigger on '${st[on + 1]!.text}'`);
+      }
+    }
+  }
+}
+
+/** Does this SQL change the schema — any statement in it a CREATE, ALTER or DROP? */
+export function changesSchema(sql: string): boolean {
+  if (!MAYBE_DDL.test(sql)) return false;
+  const tokens = tokenizeSql(sql, { punctuation: true });
+  let first = true;
+  for (const t of tokens) {
+    if (t.punct && t.text === ';') {
+      first = true;
+      continue;
+    }
+    if (first && !t.punct) {
+      if (!t.quoted && DDL_VERBS.has(t.text.toLowerCase())) return true;
+      first = false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Refuse a statement that WRITES a `_substrat_*` column of a module's own table (#119).
+ *
+ * The kernel keeps state on module rows — `_substrat_archived_at`, `_substrat_trashed_at` —
+ * and a row's way into or out of the trash must be `ctx.trash`/`ctx.restore`, which check the
+ * declared key and emit the event. A module that could `UPDATE todo_lists SET
+ * _substrat_trashed_at = NULL` would restore without the key and without a record, which is
+ * the forgery the table rule above exists to stop, one level down.
+ *
+ * Judged by POSITION, so reading the columns stays allowed — in a `SELECT`, and in the `WHERE`
+ * of a write (`UPDATE … SET done = 1 WHERE _substrat_trashed_at IS NULL`). Refused:
+ *
+ * - an assignment target after `SET` — `UPDATE … SET`, an upsert's `DO UPDATE SET`, and a
+ *   trigger body's `UPDATE`, row-value targets `SET (a, b) = …` included;
+ * - a name in an `INSERT`/`REPLACE` column list;
+ * - any reserved name in an `ALTER TABLE` (add, rename or drop the column itself);
+ * - into a table that CARRIES the columns (`statefulTables`, lowercased names): an `INSERT`
+ *   with no column list — `VALUES (…)` and `SELECT …` fill the columns by position, the
+ *   reserved ones included, without ever naming them — and any `REPLACE` / `INSERT OR
+ *   REPLACE`, which deletes the existing row and writes a new one with the columns NULL, so
+ *   it un-archives and un-trashes without the key. An `INSERT … (columns) SELECT` and an
+ *   upsert's `DO UPDATE SET` are judged by the rules above.
+ *
+ * Below this sits a trigger on each such table that refuses a row born archived or trashed
+ * (`entityStateMigrations`), so a form this scan misses still cannot set the state.
+ *
+ * The prefix is reserved whole, not the two names: the next kernel-owned column is covered
+ * without anyone remembering to list it here.
+ */
+export function assertNoReservedColumnWrite(sql: string, statefulTables?: ReadonlySet<string>): void {
+  // Every token is a substring of the text, so a statement that never spells the prefix names
+  // no reserved column — and that is nearly every statement, which then skips the second scan.
+  // A positional write names no column at all, so it is looked for whenever a stateful table
+  // exists and the statement could be one.
+  const positional = statefulTables !== undefined && statefulTables.size > 0 && /\b(insert|replace)\b/i.test(sql);
+  if (!positional && !/_substrat/i.test(sql)) return;
+  const tokens = tokenizeSql(sql, { punctuation: true });
+  const refuse = (column: string, how: string): never => {
+    throw substratError(
+      'forbidden',
+      `ctx.sql cannot write the platform's column '${column}' (${how}). ` +
+        'Reads are fine; archive and trash go through ctx.archive / ctx.trash / ctx.restore.',
+      { reason: 'spine_write' },
+    );
+  };
+  const refuseRow = (table: string, why: string): never => {
+    throw substratError(
+      'forbidden',
+      `ctx.sql cannot write '${table}' this way: ${why}. Name the columns you write; ` +
+        'archive and trash go through ctx.archive / ctx.trash / ctx.restore.',
+      { reason: 'spine_write' },
+    );
+  };
+  const word = (k: number) => {
+    const t = tokens[k];
+    return t && !t.quoted && !t.punct ? t.text.toLowerCase() : undefined;
+  };
+  const isPunct = (k: number, c: string) => tokens[k]?.punct === true && tokens[k]!.text === c;
+  // Names inside one parenthesised group starting at `open`; returns the index after `)`.
+  const namesInParens = (open: number, onName: (text: string) => void): number => {
+    let depth = 0;
+    let k = open;
+    for (; k < tokens.length; k += 1) {
+      const t = tokens[k]!;
+      if (t.punct && t.text === '(') depth += 1;
+      else if (t.punct && t.text === ')') {
+        depth -= 1;
+        if (depth === 0) return k + 1;
+      } else if (!t.punct && depth === 1) onName(t.text);
+    }
+    return k;
+  };
+  /**
+   * Keywords that end an assignment list when they stand at its own depth. All reserved: none can
+   * be an unquoted identifier, so none can be mistaken for one. `END` is deliberately NOT here — it
+   * is a legal identifier (`SET end = 1, …`), and a trigger body's statements end at their own `;`.
+   */
+  const SET_ENDS = new Set(['where', 'from', 'returning', 'order', 'limit']);
+
+  /**
+   * The assignment targets of the `SET` list starting after `start`, judged by STRUCTURE.
+   *
+   * Everything that can hold a comma, a keyword or another `SET` is nested: a parenthesised
+   * expression or subquery, and a `CASE … END`, each pushed on one stack, so an `END` closes a
+   * `CASE` that is open and ends the list only when none is (the trigger body's `END`). Strings,
+   * comments and quoted identifiers never reach here as keywords — `tokenizeSql` keeps a quoted
+   * token apart. A target is the first token of the list and the first after each comma at the
+   * list's own depth; a `(a, b)` there is a row-value target, every name in it a target.
+   */
+  const setTargets = (start: number, onTarget: (name: string) => void): void => {
+    const nesting: ('paren' | 'case')[] = [];
+    let expectTarget = true;
+    for (let k = start; k < tokens.length; k += 1) {
+      const t = tokens[k]!;
+      const kw = t.quoted || t.punct ? undefined : t.text.toLowerCase();
+      if (nesting.length === 0) {
+        if (t.punct && (t.text === ';' || t.text === ')')) return;
+        if (kw !== undefined && SET_ENDS.has(kw)) return;
+        if (t.punct && t.text === ',') {
+          expectTarget = true;
+          continue;
+        }
+        if (expectTarget) {
+          expectTarget = false;
+          if (t.punct && t.text === '(') {
+            k = namesInParens(k, onTarget) - 1;
+            continue;
+          }
+          if (!t.punct) {
+            onTarget(t.text);
+            continue;
+          }
+        }
+      }
+      if (t.punct && t.text === '(') nesting.push('paren');
+      else if (kw === 'case') nesting.push('case');
+      else if (t.punct && t.text === ')') {
+        while (nesting.length && nesting.pop() !== 'paren');
+      } else if (kw === 'end' && nesting[nesting.length - 1] === 'case') nesting.pop();
+    }
+  };
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const verb = word(i);
+    if (verb === 'set') {
+      setTargets(i + 1, (name) => {
+        if (namesSpineTable(name)) refuse(name, 'SET target');
+      });
+      continue;
+    }
+    if (verb === 'insert' || verb === 'replace') {
+      // `replace(` is SQLite's string function, not the statement — which always reads
+      // `REPLACE INTO`. Read as a statement, its argument list became a "column list".
+      if (verb === 'replace' && word(i + 1) !== 'into') continue;
+      // By the grammar, not by a word list: `INSERT [OR <resolution>] INTO <table>` and
+      // `REPLACE INTO <table>`. A table may be NAMED `replace` or `ignore` — both are legal
+      // identifiers — and a loop skipping modifier words would skip it too.
+      let k = i + 1;
+      let replaces = verb === 'replace';
+      if (verb === 'insert' && word(k) === 'or') {
+        if (word(k + 1) === 'replace') replaces = true;
+        k += 2;
+      }
+      if (word(k) !== 'into') continue;
+      k += 1;
+      const target = tokens[k];
+      if (!target || target.punct) continue;
+      k += 1; // past the target table
+      if (word(k) === 'as') k += 2; // an alias
+      const table = target && !target.punct ? (target.text.split('.').pop() ?? '').toLowerCase() : '';
+      if (statefulTables?.has(table)) {
+        if (replaces) refuseRow(target!.text, 'REPLACE deletes the row and writes it back with no archive or trash state');
+        if (!isPunct(k, '(') && word(k) !== 'default') {
+          refuseRow(target!.text, 'an INSERT with no column list fills the archive/trash columns by position');
+        }
+      }
+      if (isPunct(k, '(')) {
+        namesInParens(k, (name) => {
+          if (namesSpineTable(name)) refuse(name, 'INSERT column');
+        });
+      }
+      continue;
+    }
+    if (verb === 'alter') {
+      // ALTER TABLE <t> …: the table is judged above; here, every other name in the statement.
+      let k = i + 1;
+      while (word(k) !== undefined && MODIFIERS.alter!.has(word(k)!)) k += 1;
+      for (k += 1; k < tokens.length && !isPunct(k, ';'); k += 1) {
+        const t = tokens[k]!;
+        if (!t.punct && namesSpineTable(t.text)) refuse(t.text, 'ALTER TABLE');
+      }
+    }
+  }
 }
 
 /**
@@ -152,15 +459,26 @@ function refuseSpineReference(referenced: readonly string[], what: string): void
  * first. `query` is guarded too: SQLite runs `INSERT … RETURNING` perfectly well
  * through a `.all()`, so guarding only `exec` would leave the door open.
  */
-export function guardSpine(inner: ScopedSql): ScopedSql {
+export function guardSpine(
+  inner: ScopedSql,
+  /** The module tables that carry archive/trash columns (#119), lowercased — see `assertNoReservedColumnWrite`. */
+  statefulTables?: ReadonlySet<string>,
+  /**
+   * Run after any statement that changed the schema passed (#119, Codex r3): the kernel's own
+   * check that every stateful table still carries what it derived. It throws to fail closed —
+   * the operation, and the DDL with it, roll back.
+   */
+  afterDdl?: () => void,
+): ScopedSql {
+  const follow = <R>(sql: string, run: () => R): R => {
+    assertNoSpineWrite(sql, statefulTables);
+    const result = run();
+    if (afterDdl && changesSchema(sql)) afterDdl();
+    return result;
+  };
   return {
-    query: <T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[] => {
-      assertNoSpineWrite(sql);
-      return inner.query<T>(sql, params);
-    },
-    exec: (sql: string, params?: readonly SqlValue[]) => {
-      assertNoSpineWrite(sql);
-      return inner.exec(sql, params);
-    },
+    query: <T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[] =>
+      follow(sql, () => inner.query<T>(sql, params)),
+    exec: (sql: string, params?: readonly SqlValue[]) => follow(sql, () => inner.exec(sql, params)),
   };
 }

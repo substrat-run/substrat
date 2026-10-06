@@ -109,6 +109,13 @@ export interface TodoClient {
   addItem(input: { listId: string; text: string }): Promise<Item>;
 
   /**
+   * Archive a list
+   *
+   * `POST /lists/{listId}/archive` — `todo/archive-list`
+   */
+  archiveList(input: { listId: string }): Promise<{ id: string; state: "active" | "archived" | "trashed" }>;
+
+  /**
    * Create a list
    *
    * `POST /lists` — `todo/create-list`
@@ -161,7 +168,7 @@ export interface TodoClient {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  myLists(): Promise<Paged<List>>;
+  myLists(input: { view?: "active" | "archived" }): Promise<Paged<List>>;
 
   /**
    * Rename a list
@@ -169,6 +176,13 @@ export interface TodoClient {
    * `PATCH /lists/{listId}` — `todo/rename-list`
    */
   renameList(input: { listId: string; name: string }): Promise<List>;
+
+  /**
+   * Restore a list from the trash
+   *
+   * `POST /lists/{listId}/restore` — `todo/restore-list`
+   */
+  restoreList(input: { listId: string }): Promise<{ id: string; state: "active" | "archived" | "trashed" }>;
 
   /**
    * Revoke someone’s access to a list
@@ -204,6 +218,29 @@ export interface TodoClient {
    * `POST /lists/{listId}/shares` — `todo/share-list`
    */
   shareList(input: { listId: string; email: string }): Promise<Share>;
+
+  /**
+   * Move a list to the trash
+   *
+   * `POST /lists/{listId}/trash` — `todo/trash-list`
+   */
+  trashList(input: { listId: string }): Promise<{ id: string; state: "active" | "archived" | "trashed" }>;
+
+  /**
+   * The lists in your trash
+   *
+   * `GET /lists/trash` — `todo/trashed-lists`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  trashedLists(): Promise<Paged<List>>;
+
+  /**
+   * Bring an archived list back
+   *
+   * `POST /lists/{listId}/unarchive` — `todo/unarchive-list`
+   */
+  unarchiveList(input: { listId: string }): Promise<{ id: string; state: "active" | "archived" | "trashed" }>;
 
   /**
    * Fetch the next page of any paged read, given a previous page's `next`.
@@ -307,6 +344,8 @@ export function createClient(options: ClientOptions = {}): TodoClient {
   return {
     addItem: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/items`, "POST", omit(input, ["listId"]), undefined),
+    archiveList: (input: Args) =>
+      send(`/lists/${encodeURIComponent(String(input.listId))}/archive`, "POST", omit(input, ["listId"]), undefined),
     createList: (input: Args) =>
       send("/lists", "POST", input, undefined),
     deleteItem: (input: Args) =>
@@ -319,10 +358,12 @@ export function createClient(options: ClientOptions = {}): TodoClient {
       page(`/lists/${encodeURIComponent(String(input.listId))}/items`, "GET", undefined, omit(input, ["listId"])),
     listShares: (input: Args) =>
       page(`/lists/${encodeURIComponent(String(input.listId))}/shares`, "GET", undefined, omit(input, ["listId"])),
-    myLists: () =>
-      page("/lists", "GET", undefined, undefined),
+    myLists: (input: Args) =>
+      page("/lists", "GET", undefined, input),
     renameList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}`, "PATCH", omit(input, ["listId"]), undefined),
+    restoreList: (input: Args) =>
+      send(`/lists/${encodeURIComponent(String(input.listId))}/restore`, "POST", omit(input, ["listId"]), undefined),
     revokeShare: (input: Args) =>
       send(`/shares/${encodeURIComponent(String(input.shareId))}`, "DELETE", undefined, omit(input, ["shareId"])),
     searchItems: (input: Args) =>
@@ -333,6 +374,12 @@ export function createClient(options: ClientOptions = {}): TodoClient {
       send(`/items/${encodeURIComponent(String(input.itemId))}/done`, "POST", omit(input, ["itemId"]), undefined),
     shareList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/shares`, "POST", omit(input, ["listId"]), undefined),
+    trashList: (input: Args) =>
+      send(`/lists/${encodeURIComponent(String(input.listId))}/trash`, "POST", omit(input, ["listId"]), undefined),
+    trashedLists: () =>
+      page("/lists/trash", "GET", undefined, undefined),
+    unarchiveList: (input: Args) =>
+      send(`/lists/${encodeURIComponent(String(input.listId))}/unarchive`, "POST", omit(input, ["listId"]), undefined),
     follow: async (next: string) => {
       // The link names the API's OWN origin, which under a dev proxy is not the origin
       // this page was served from. So the path is kept and the origin is taken from

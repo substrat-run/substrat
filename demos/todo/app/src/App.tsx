@@ -83,7 +83,7 @@ function Lists() {
 
   const load = useCallback(async () => {
     try {
-      setLists((await api.myLists()).entries);
+      setLists((await api.myLists({})).entries);
       setError(null);
     } catch (e) {
       setError(e);

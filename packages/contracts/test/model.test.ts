@@ -442,3 +442,60 @@ manifestEntities(entities, {
   // @ts-expect-error engineEntities is not in `engines`, so 'workorder' is unknown
   relations: [{ entityType: 'workorder', parentType: 'customer' }],
 });
+
+// --- archive and trash (#119) ------------------------------------------------
+
+describe('archive and trash on an entity (#119)', () => {
+  const stateful = defineEntities({
+    doc: {
+      table: 'docs',
+      fields: z.object({ id: z.string(), title: z.string() }),
+      archive: { permission: 'doc:archive' },
+      trash: { permission: 'doc:trash' },
+    },
+    note: {
+      table: 'notes',
+      fields: z.object({ id: z.string() }),
+      archive: { permission: 'note:archive' },
+    },
+    plain: { table: 'plain', fields: z.object({ id: z.string() }) },
+  });
+
+  it('derives the manifest entries from the entities, with table and id from the registry', () => {
+    expect(manifestEntities(stateful, {}).entityStates).toEqual([
+      { entityType: 'doc', archivePermission: 'doc:archive', trashPermission: 'doc:trash', table: 'docs', idColumn: 'id' },
+      { entityType: 'note', archivePermission: 'note:archive', table: 'notes', idColumn: 'id' },
+    ]);
+  });
+
+  it('adds no `entityStates` key to a manifest where nothing declares one', () => {
+    expect('entityStates' in manifestEntities(entities, {})).toBe(false);
+  });
+
+  it('carries the keys into model.json, and the artifact still re-parses', () => {
+    const model = emitModel(stateful);
+    expect(model.entities['doc']).toMatchObject({ archive: { permission: 'doc:archive' }, trash: { permission: 'doc:trash' } });
+    expect(model.entities['plain']).not.toHaveProperty('archive');
+    expect(emittedModel.parse(model)).toEqual(model);
+  });
+
+  it('refuses a composite-keyed entity — the verbs take one id', () => {
+    const composite = defineEntities({
+      budget: {
+        table: 'budgets',
+        fields: z.object({ customer_id: z.string(), year: z.number() }),
+        primaryKey: ['customer_id', 'year'],
+        archive: { permission: 'budget:archive' },
+      },
+    });
+    expect(() => manifestEntities(composite, {})).toThrow(/cannot be archived or trashed/);
+    expect(() => emitModel(composite)).toThrow(/cannot be archived or trashed/);
+  });
+
+  it('refuses a permission that is not a permission key', () => {
+    const bad = defineEntities({
+      doc: { table: 'docs', fields: z.object({ id: z.string() }), trash: { permission: 'not a key' } },
+    });
+    expect(() => manifestEntities(bad, {})).toThrow();
+  });
+});
