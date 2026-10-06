@@ -21,6 +21,7 @@ import {
   VerticalClient,
   settleUnrecordedOutcomes,
   UNRECORDED_OUTCOME_LOG,
+  AUDITED_CALL_DEADLINE_MS,
 } from '../src/index.js';
 
 /**
@@ -326,6 +327,50 @@ describe('the owner hand-over route (#1665)', () => {
       [staff, 'intent'],
       [sweep, 'unknown'],
     ]);
+  });
+
+  it('a vertical that answers in time but STALLS its body — an answer or a refusal — is cut off at the deadline, audited `failed` (#2064)', async () => {
+    for (const status of [200, 409]) {
+      const s = await newScope();
+      let streamAborted = false;
+      // A real client, so the deadline under test is the one the route runs behind. Its fetch
+      // answers headers at once and never finishes the body, and errors the body stream when
+      // its signal aborts, as a real fetch does.
+      const client = new VerticalClient({
+        platformSecret: 'secret',
+        fetch: (async (_url: string, init?: RequestInit) => {
+          const signal = init!.signal!;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              signal.addEventListener('abort', () => {
+                streamAborted = true;
+                controller.error(signal.reason);
+              });
+            },
+          });
+          return new Response(body, { status, headers: { 'content-type': 'application/json' } });
+        }) as unknown as typeof fetch,
+      });
+      answer = () => client.transferOwner({ tenantId: t, scopeId: scopeId.parse(s), from: A, to: B });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const pending = send(route(s), asStaff);
+        await vi.advanceTimersByTimeAsync(AUDITED_CALL_DEADLINE_MS - 1);
+        expect(streamAborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        const res = await pending;
+        expect(res.status).toBe(504);
+        expect(streamAborted).toBe(true);
+        const body = (await res.json()) as { error: string; operationId: string };
+        expect(body.error).toMatch(/did not answer owner-transfer within 60 s/);
+        expect((await rows(s)).map((r) => [r.operationId, r.phase])).toEqual([
+          [body.operationId, 'intent'],
+          [body.operationId, 'failed'],
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it('a scope no vertical serves has no owner seat to hand over — 501, and nothing is recorded', async () => {

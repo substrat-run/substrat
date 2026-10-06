@@ -183,10 +183,14 @@ function denialParams(scopeId: ScopeId, filter?: DenialFilter): URLSearchParams 
 export const AUDITED_CALL_DEADLINE_MS = 60_000;
 
 /**
- * Race `send` against `ms`: on expiry the request is aborted (a fetch that honours its signal
- * stops) and the caller is answered 504 whether or not the fetch ever settles.
+ * Run the WHOLE exchange `run` under one deadline (#2064): the request, its status, and the
+ * body, whether that body is the answer or a refusal. A vertical that answers its headers in
+ * time and then stalls the body is held to the same bound as one that never answers. On expiry,
+ * the signal handed to `run` is aborted. A `fetch` given that signal aborts the request AND its
+ * response body stream, so the call stops rather than idling on. The caller is answered `504`
+ * whether or not `run` ever settles.
  */
-async function withDeadline(verb: string, ms: number, send: (signal: AbortSignal) => Promise<Response>): Promise<Response> {
+async function withDeadline<T>(verb: string, ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -196,7 +200,7 @@ async function withDeadline(verb: string, ms: number, send: (signal: AbortSignal
     }, ms);
   });
   try {
-    return await Promise.race([send(controller.signal), expired]);
+    return await Promise.race([run(controller.signal), expired]);
   } finally {
     clearTimeout(timer);
   }
@@ -1818,8 +1822,9 @@ export class VerticalClient {
   /** `deadlineMs` bounds the call (#2064): past it the request is aborted and answered 504. */
   private async postInternal<T>(path: string, body: unknown, verb: string, deadlineMs?: number): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const send = (signal?: AbortSignal) =>
-      this.reach(verb, () =>
+    // The request and the reading of its answer are ONE exchange, so a deadline bounds both.
+    const exchange = async (signal?: AbortSignal): Promise<T> => {
+      const res = await this.reach(verb, () =>
         this.options.fetch(`${base}${path}`, {
           method: 'POST',
           headers: {
@@ -1830,9 +1835,10 @@ export class VerticalClient {
           ...(signal ? { signal } : {}),
         }),
       );
-    const res = deadlineMs === undefined ? await send() : await withDeadline(verb, deadlineMs, send);
-    if (!res.ok) throw await this.refusal(verb, res);
-    return this.parseInternal<T>(verb, path, res);
+      if (!res.ok) throw await this.refusal(verb, res);
+      return this.parseInternal<T>(verb, path, res);
+    };
+    return deadlineMs === undefined ? exchange() : withDeadline(verb, deadlineMs, exchange);
   }
 
   /** A platform-authenticated GET to the vertical's `/internal/*` surface. */
