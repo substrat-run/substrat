@@ -130,8 +130,34 @@ describe('the journal backfill (#2068)', () => {
     expect(s.owners()).toEqual({ shared: 'a' });
   });
 
+  it("leaves a table UNOWNED when its creator's text is unavailable — never hands it to a later IF NOT EXISTS", () => {
+    const s = scope();
+    s.migrate('gone', '1', 'CREATE TABLE shared (id TEXT)');
+    s.migrate('b', '1', 'CREATE TABLE IF NOT EXISTS shared (id TEXT)');
+    s.forget();
+    // `gone` is no longer registered: its migration text is not available to the replay.
+    const textOf = (m: string, v: string) => (m === 'gone' ? undefined : s.sqlOf(m, v));
+    expect(s.refusedFor('b', ['shared'], textOf)).toBe('precondition_failed');
+    expect(s.owners()).toEqual({});
+  });
 
+  it('treats IF NOT EXISTS as proving nothing, even as the first CREATE in the journal', () => {
+    const s = scope();
+    s.db.exec('CREATE TABLE made_at_runtime (id TEXT)'); // runtime DDL, in no journal
+    s.migrate('b', '1', 'CREATE TABLE IF NOT EXISTS made_at_runtime (id TEXT)');
+    s.forget();
+    expect(s.refusedFor('b', ['made_at_runtime'])).toBe('precondition_failed');
+  });
 
+  it('a plain CREATE after an unavailable entry still proves its own creation', () => {
+    const s = scope();
+    s.migrate('gone', '1', 'CREATE TABLE theirs (id TEXT)');
+    s.migrate('b', '1', 'CREATE TABLE mine (id TEXT)');
+    s.forget();
+    const textOf = (m: string, v: string) => (m === 'gone' ? undefined : s.sqlOf(m, v));
+    expect(s.refusedFor('b', ['mine'], textOf)).toBeUndefined();
+    expect(s.refusedFor('b', ['theirs'], textOf)).toBe('precondition_failed');
+  });
 
   it('replays statements in order within an entry: drop then recreate, rename then reuse', () => {
     const s = scope();

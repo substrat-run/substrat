@@ -18,10 +18,14 @@
  * **Guarded.** The ledger is a spine table, so module code cannot write it through `ctx.sql`, and
  * an authored migration that names it is refused before it runs (`assertMigrationLeavesLedgerAlone`).
  *
- * **Backfilled from the journal.** Scopes migrated before the ledger existed have tables with no
+ * **Backfilled conservatively.** Scopes migrated before the ledger existed have tables with no
  * row. On the first erasure that needs them, the journal is replayed in applied order through the
  * SAME transition function (`applyTableChange`), statement by statement, from each entry's
- * migration text.
+ * migration text. The replay only ever attributes what it can prove: a plain `CREATE TABLE`
+ * (which would have failed had the table existed) proves its creator; `IF NOT EXISTS` proves
+ * nothing, since the table may already have been there; and an entry whose text is unavailable
+ * (its module no longer registered) makes every table it could have touched unowned. Unowned
+ * means the erasure refuses that table — the conservative answer, never a guess.
  */
 import { namesSpineTable, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
 import type { ScopedSql } from './scope-host.js';
@@ -250,8 +254,16 @@ export function recordOwnershipSteps(sql: ScopedSql, moduleId: string, steps: re
 /**
  * Attribute the given tables, where they have no row yet, by replaying the migration journal in
  * applied order, statement by statement, through `applyTableChange` — the one-time backfill for a
- * scope migrated before ownership was recorded. A CREATE of a table the replay already holds
- * (an `IF NOT EXISTS` that created nothing) changes nothing.
+ * scope migrated before ownership was recorded. Only what the replay can prove is attributed:
+ *
+ * - a plain `CREATE TABLE` proves its creator — it would have failed had the table existed;
+ * - `CREATE TABLE IF NOT EXISTS` proves nothing: an earlier migration, or runtime DDL, may already
+ *   have made the table, so it leaves the table's owner unknown;
+ * - an entry whose migration text is not available — its module no longer registered — could have
+ *   created, renamed or dropped anything, so every table that exists at that point becomes
+ *   unknown. A later plain `CREATE` still proves its own creation.
+ *
+ * An unknown owner is no row, and the erasure refuses that table.
  */
 export function backfillOwnershipFromJournal(
   sql: ScopedSql,
@@ -274,11 +286,14 @@ export function backfillOwnershipFromJournal(
   };
   for (const entry of journal) {
     const text = migrationSqlOf(entry.module_id, entry.version);
-    if (text === undefined) continue;
+    if (text === undefined) {
+      for (const t of model.keys()) model.set(t, null);
+      continue;
+    }
     for (const st of tableStatements(text)) {
       if (st.kind === 'create') {
         if (st.ifNotExists && model.has(st.table)) continue;
-        applyTableChange(store, { kind: 'create', table: st.table, owner: entry.module_id });
+        applyTableChange(store, { kind: 'create', table: st.table, owner: st.ifNotExists ? null : entry.module_id });
       } else {
         applyTableChange(store, st);
       }
