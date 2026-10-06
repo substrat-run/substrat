@@ -95,6 +95,8 @@ import {
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   seatScopeTuple,
+  delegatedGrantSql,
+  delegatedRevokeSql,
   applyScopeRoleChange,
   changeScopeRole,
   revokeScopeRoles,
@@ -6985,12 +6987,9 @@ export function defineScopeDO(
                 'the caller does not hold it there (a grant delegates, it never elevates)',
             );
           }
-          sql.exec(
-            `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)`,
-            `principal:${principal}`,
-            `granted:${permission}`,
-            `${entity.entityType}:${entity.entityId}`,
-          );
+          // #2071: an explicit grant, so it clears a tombstone `revoke` left.
+          const g = delegatedGrantSql(principal, permission, `${entity.entityType}:${entity.entityId}`);
+          sql.exec(g.sql, ...g.params);
         },
         /**
          * Deliberately NOT the #1856 grammar check `grant` and `link` make: a revoke writes
@@ -7006,12 +7005,10 @@ export function defineScopeDO(
                 'the caller does not hold it there',
             );
           }
-          sql.exec(
-            `DELETE FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?`,
-            `principal:${principal}`,
-            `granted:${permission}`,
-            `${entity.entityType}:${entity.entityId}`,
-          );
+          // K-21 (#2071): a tombstone, never a delete — a declared shape's top-up must be
+          // able to tell a key taken back from one never held.
+          const r = delegatedRevokeSql(principal, permission, `${entity.entityType}:${entity.entityId}`, at);
+          sql.exec(r.sql, ...r.params);
         },
         atomic: createAtomic(runSub, { passed, signals }),
         // #1672: mint / revoke / list, written once in the kernel — the pure adapter hands

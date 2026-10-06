@@ -197,8 +197,9 @@ the scope's **own** database, inside the same transaction:
 |---|---|---|
 | `ctx.emit` | `INSERT INTO _substrat_outbox` ([sqlite:6345](../../packages/adapter-sqlite/src/index.ts#L6345), [scope-do:1884](../../packages/adapter-cloudflare/src/scope-do.ts#L1884)) | strictly **after** commit ([sqlite:1868](../../packages/adapter-sqlite/src/index.ts#L1868)) |
 | `ctx.requestPlatform` | `INSERT INTO _substrat_platform_requests` ([sqlite:6388](../../packages/adapter-sqlite/src/index.ts#L6388)) | pulled by the sweep, post-commit |
-| `ctx.link` / `ctx.grant` | `INSERT OR IGNORE INTO _substrat_tuples` | n/a |
-| `ctx.revoke` | `DELETE FROM _substrat_tuples` | n/a |
+| `ctx.link` | `INSERT OR IGNORE INTO _substrat_tuples` | n/a |
+| `ctx.grant` | `INSERT … ON CONFLICT DO UPDATE` (clears a tombstone, #2071) | n/a |
+| `ctx.revoke` | `UPDATE _substrat_tuples SET revoked_at` (a K-21 tombstone, #2071) | n/a |
 
 `runSub` discards all of them. Questions 2 and 3 therefore collapse from "design a mechanism"
 to "**assert it in the contract test**". The permission checker holds no cache in either

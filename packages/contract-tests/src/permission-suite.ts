@@ -416,6 +416,66 @@ export function permissionContractSuite(
         });
         expect((await probe(frank, s1, PERM_USE, { entityType: 'item', entityId: 'i1' })).allowed).toBe(false);
       });
+
+      /**
+       * K-21 (#2071): a revoke tombstones rather than deletes, so "taken back" and "never held"
+       * are two facts. A declared entity-grant shape's top-up reads that difference: it must
+       * never hand a person back a key someone revoked from them.
+       */
+      describe('a revoke leaves a tombstone, and a re-grant clears it (K-21, #2071)', () => {
+        const i3 = { entityType: 'item', entityId: 'i3' };
+        const rows = async () =>
+          (await (await host.getScope(alice, t1, s1)).invoke<{ relation: string; object: string; revokedAt: string | null }[]>(
+            'perm/grant-rows',
+            { principal: frank },
+          )).filter((r) => r.object === 'item:i3');
+        const unshare = async () =>
+          (await host.getScope(alice, t1, s1)).invoke('perm/unshare', { principal: frank, permission: PERM_USE, entity: i3 });
+
+        it('the revoked row stays, tombstoned, and grants nothing', async () => {
+          await share(alice, PERM_USE, i3);
+          expect(await rows()).toEqual([{ relation: `granted:${PERM_USE}`, object: 'item:i3', revokedAt: null, expiresAt: null }]);
+          await unshare();
+          const [row] = await rows();
+          expect(row?.revokedAt).toEqual(expect.any(String));
+          expect((await probe(frank, s1, PERM_USE, i3)).allowed).toBe(false);
+        });
+
+        it('a repeat revoke changes nothing: the first tombstone keeps its instant', async () => {
+          const [before] = await rows();
+          await unshare();
+          expect(await rows()).toEqual([before]);
+        });
+
+        it('a re-grant clears the tombstone and grants again', async () => {
+          await share(alice, PERM_USE, i3);
+          expect(await rows()).toEqual([{ relation: `granted:${PERM_USE}`, object: 'item:i3', revokedAt: null, expiresAt: null }]);
+          expect((await probe(frank, s1, PERM_USE, i3)).allowed).toBe(true);
+        });
+
+        it('a grant over a live row leaves it as it was', async () => {
+          const before = await rows();
+          await share(alice, PERM_USE, i3);
+          expect(await rows()).toEqual(before);
+        });
+
+        it('a copy of the scope carries the tombstone, and it still grants nothing there', async () => {
+          await unshare();
+          const s3 = scopeId.parse(ulid());
+          await host.importScope(
+            staff,
+            { tenantId: t1, scopeId: s3, vertical: 'perm-vertical' },
+            await host.admin.exportScope(staff, t1, s1),
+          );
+          expect((await probe(frank, s3, PERM_USE, i3)).allowed).toBe(false);
+          const [carried] = (
+            await (await host.getScope(alice, t1, s3)).invoke<{ object: string; revokedAt: string | null }[]>('perm/grant-rows', {
+              principal: frank,
+            })
+          ).filter((r) => r.object === 'item:i3');
+          expect(carried?.revokedAt).toEqual(expect.any(String));
+        });
+      });
     });
 
     it('denies by default with the checked permission and node', async () => {

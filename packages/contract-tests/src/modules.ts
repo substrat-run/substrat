@@ -1759,6 +1759,19 @@ export const permMod: ModuleRegistration = {
     'perm/can-assign': (async (ctx, input) => {
       return ctx.canAssign((input as { roleKey: string }).roleKey);
     }) as OperationHandler<never, unknown>,
+    // #2071: a principal's `granted:` rows, tombstones included — what a revoke LEAVES, which
+    // the checker's answer alone cannot show (a deleted row and a tombstone both deny).
+    'perm/grant-rows': (async (ctx, input) =>
+      ctx.sql
+        .query<{ relation: string; object: string; revoked_at: string | null; expires_at: string | null }>(
+          `SELECT relation, object, revoked_at, expires_at FROM _substrat_tuples
+            WHERE subject = ? AND substr(relation, 1, 8) = 'granted:' ORDER BY relation, object`,
+          [`principal:${(input as { principal: string }).principal}`],
+        )
+        .map((r) => ({ relation: r.relation, object: r.object, revokedAt: r.revoked_at, expiresAt: r.expires_at }))) as OperationHandler<
+      never,
+      unknown
+    >,
     'perm/unshare': (async (ctx, input) => {
       const i = input as { principal: string; permission: string; entity: EntityRef };
       await ctx.revoke(
