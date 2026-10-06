@@ -107,8 +107,9 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
   };
 
   /**
-   * `host`, except that an add's `applyMembership` fails while `w.failNextAdds` counts down,
-   * and every unit, an add's or a removal's, otherwise waits for `hold` before it runs.
+   * `host`, except that, through the `admin` an executor is handed and every attributed view of
+   * it, an add's `applyMembership` fails while `w.failNextAdds` counts down, and every unit, an
+   * add's or a removal's, otherwise waits for `hold` before it runs.
    */
   const intercepting = (host: ScopeHost, w: { failNextAdds: number }, hold?: () => Promise<void>): ScopeHost => {
     const held = (admin: HostAdmin): HostAdmin =>
@@ -123,11 +124,16 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
                 await hold?.();
                 return t.applyMembership(...args);
               }
-            : Reflect.get(t, key),
+            : key === 'attributed'
+              ? (...a: Parameters<NonNullable<HostAdmin['attributed']>>) => held(t.attributed!(...a))
+              : Reflect.get(t, key),
       });
     return new Proxy(host, {
       get: (t, key) => {
-        if (key === 'attributed') return (...a: Parameters<NonNullable<ScopeHost['attributed']>>) => ({ admin: held(t.attributed!(...a).admin) });
+        if (key === 'registerExecutor') {
+          return (...[id, type, handler, retry]: Parameters<ScopeHost['registerExecutor']>) =>
+            t.registerExecutor(id, type, (admin, event, scope) => handler(held(admin), event, scope), retry);
+        }
         const v = Reflect.get(t, key) as unknown;
         return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
       },

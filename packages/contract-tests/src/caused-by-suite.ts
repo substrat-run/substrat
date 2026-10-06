@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import {
   orgId,
   platformActorId,
@@ -6,6 +6,7 @@ import {
   scopeId,
   tenantId,
   type DomainEvent,
+  type PrincipalId,
   type TenantId,
 } from '@substrat-run/contracts';
 import { ulid, type HostAdmin, type ScopeHost } from '@substrat-run/kernel';
@@ -33,6 +34,7 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
     let host: ScopeHost;
     const staff = platformActorId.parse(ulid());
     const alice = principalId.parse(ulid());
+    const bob = principalId.parse(ulid());
     const t = tenantId.parse(ulid());
     const s = scopeId.parse(ulid());
 
@@ -46,12 +48,18 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
       entered = new Promise((r) => (enter = r));
     };
 
+    /**
+     * What the handlers write through, made from the `admin` they are handed: that admin itself
+     * unless a case sets it to an attributed view of it (#2069). Reset after every case.
+     */
+    let through: (admin: HostAdmin) => HostAdmin = (admin) => admin;
+
     /** The handlers' one write: an org named by the event's tag, so its row is findable. */
     const heldWrite = async (admin: HostAdmin, event: DomainEvent): Promise<void> => {
       enter();
       await gate;
       const tag = (event.payload as { tag: string }).tag;
-      await admin.createOrg(staff, { id: orgId.parse(ulid()), tenantId: event.tenantId as TenantId, slug: tag, name: tag });
+      await through(admin).createOrg(staff, { id: orgId.parse(ulid()), tenantId: event.tenantId as TenantId, slug: tag, name: tag });
     };
 
     const tagOf = (kind: string) => `${kind}-${ulid().slice(-8).toLowerCase()}`;
@@ -61,7 +69,11 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
      * runs for once it is done), make a staff write while it is held, release it, and assert both
      * halves: the staff row carries no cause, the handler's own row carries its event.
      */
-    const expectCausedPerCall = async (start: (tag: string) => Promise<string>, kind: string): Promise<void> => {
+    const expectCausedPerCall = async (
+      start: (tag: string) => Promise<string>,
+      kind: string,
+      onBehalfOf: PrincipalId | null = null,
+    ): Promise<void> => {
       shut();
       const tag = tagOf(kind);
       const done = start(tag);
@@ -71,9 +83,11 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
       release();
       const eventId = await done;
       const created = await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 });
-      const causeOf = (slug: string) => created.find((r) => (r.after as { slug?: string } | null)?.slug === slug)?.causedBy;
-      expect(causeOf(staffSlug)).toBeNull();
-      expect(causeOf(tag)).toBe(eventId);
+      const rowOf = (slug: string) => created.find((r) => (r.after as { slug?: string } | null)?.slug === slug);
+      expect(rowOf(staffSlug)?.causedBy).toBeNull();
+      expect(rowOf(staffSlug)?.onBehalfOf ?? null).toBeNull();
+      expect(rowOf(tag)?.causedBy).toBe(eventId);
+      expect(rowOf(tag)?.onBehalfOf?.principal ?? null).toBe(onBehalfOf);
     };
 
     /** Invoke `operation` for `tag`; answers the event id the one executor delivered. */
@@ -98,6 +112,9 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
     afterAll(async () => {
       await fixture.cleanup();
     });
+    afterEach(() => {
+      through = (admin) => admin;
+    });
 
     it('an executor: a staff write while its handler awaits carries no cause; the handler\'s own row carries its event', async () => {
       await expectCausedPerCall(invoked('connector/request-effect'), 'effect');
@@ -113,6 +130,43 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
         await host.dispatchConnector(t, s, (ctx, e) => heldWrite(ctx.admin, e), event);
         return event.id;
       }, 'routed');
+    });
+
+    // #2069: a handler that writes for a person attributes from the `admin` it is handed, and the
+    // row names both — the person, and the event that admin was bound to. Through every door.
+    const asAlice = (admin: HostAdmin) => admin.attributed!({ principal: alice, tenantId: t });
+
+    it('an executor attributing from its handed admin: its row names the person AND its event', async () => {
+      through = asAlice;
+      await expectCausedPerCall(invoked('connector/request-effect'), 'effect-attr', alice);
+    });
+
+    it('an in-process connector attributing from `ctx.admin`: the same', async () => {
+      through = asAlice;
+      await expectCausedPerCall(invoked('connector/request-outbound'), 'outbound-attr', alice);
+    });
+
+    it('a routed connector delivery attributing from `ctx.admin`: the same', async () => {
+      through = asAlice;
+      await expectCausedPerCall(async (tag) => {
+        const event = { id: ulid(), tenantId: t, type: 'outbound.requested', payload: { tag } } as unknown as DomainEvent;
+        await host.dispatchConnector(t, s, (ctx, e) => heldWrite(ctx.admin, e), event);
+        return event.id;
+      }, 'routed-attr', alice);
+    });
+
+    it('a view of a view keeps the inner cause, and the outer person', async () => {
+      through = (admin) => admin.attributed!({ principal: bob, tenantId: t }).attributed!({ principal: alice, tenantId: t });
+      await expectCausedPerCall(invoked('connector/request-effect'), 'effect-nested', alice);
+    });
+
+    it("the host's own admin, attributed, names the person and invents no cause", async () => {
+      const slug = tagOf('host-attr');
+      await asAlice(host.admin).createOrg(staff, { id: orgId.parse(ulid()), tenantId: t, slug, name: slug });
+      const created = await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 });
+      const row = created.find((r) => (r.after as { slug?: string } | null)?.slug === slug);
+      expect(row?.causedBy).toBeNull();
+      expect(row?.onBehalfOf?.principal).toBe(alice);
     });
 
     it('two views with two causes, their writes interleaved across awaits: each row carries its own', async () => {

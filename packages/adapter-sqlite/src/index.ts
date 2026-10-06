@@ -7079,6 +7079,8 @@ export class SqliteScopeHost implements ScopeHost {
     };
 
     return {
+      // #2069: a view of the view this admin was built over — the person added, its event kept.
+      attributed: (onBehalfOf: OnBehalfOf) => this.attributed(onBehalfOf).admin,
       // #603: fixed at construction — a host built without a box can never store a
       // credential, and saying so is what lets a transport answer 503 instead of 500.
       canStoreSecrets: isSecretBoxConfigured(this.secretBox),

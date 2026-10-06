@@ -156,11 +156,10 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   // The org a request names rides along only on a mount that joins orgs (#2047).
   const orgOf = (request: { orgId: OrgId }): { orgId?: OrgId } => (options.orgs === 'join' ? { orgId: request.orgId } : {});
   // Attributed (#977): the person whose authority bounded the write, beside the platform
-  // actor that executed it. `causedBy` is passed, never stamped by the host (#2055): a view of
-  // the host is not the `admin` the dispatch handed the handler, so the event goes with it.
-  // A host without `attributed` writes through that `admin`, which carries the event already.
+  // actor that executed it — added to the `admin` the dispatch handed the handler, which
+  // already carries the event (#2069). An admin without `attributed` writes as it is.
   const adminFor = (admin: HostAdmin, who: PrincipalId, event: DomainEvent): HostAdmin =>
-    host.attributed?.({ principal: who, tenantId: event.tenantId }, { causedBy: event.id }).admin ?? admin;
+    admin.attributed?.({ principal: who, tenantId: event.tenantId }) ?? admin;
 
   host.registerExecutor(
     id,
