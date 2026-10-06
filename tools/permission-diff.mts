@@ -44,6 +44,8 @@ interface ScheduleLike {
   operation: string;
   cadence?: { everyMinutes: number };
   permissions?: string[];
+  /** #119: a purge horizon's schedule names the entity it purges. */
+  purge?: { entityType: string };
 }
 /** #1705: the two halves of a cross-vertical edge, as a manifest declares them. */
 interface EventsLike {
@@ -60,6 +62,8 @@ interface ModuleLike {
     id: string;
     permissions: PermissionDecl[];
     schedules?: ScheduleLike[];
+    /** #119: where a purge schedule's horizon is declared. */
+    entityStates?: { entityType: string; purgeAfterDays?: number }[];
     peers?: PeerLike[];
     events?: EventsLike;
   };
