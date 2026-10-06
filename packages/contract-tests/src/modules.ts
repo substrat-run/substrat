@@ -29,6 +29,7 @@ import {
 import { membershipFixtureMod } from './membership-module.js';
 import { stateMod } from './entity-state-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
+import { commentedDdlMod } from './migration-comments.js';
 import {
   assertAllowed,
   readAttachmentText,
@@ -2951,6 +2952,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // module half is harmless where it holds nothing.
   erasureMod,
   erasureOtherMod,
+  // #2068 r5: a module whose migrations comment their DDL and then drop the last column. Every
+  // scope in the kit migrates it, so a regression fails loudly everywhere.
+  commentedDdlMod,
   parseMod,
   concurrencyMod,
   idempotencyMod,

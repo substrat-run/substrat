@@ -312,6 +312,7 @@ import {
   recordOwnershipSteps,
   runMigrationStatements,
   splitSqlStatements,
+  executableSqlStatements,
   type TableStep,
   CAPABILITY_EXCHANGE_OPERATION,
   capabilityAttachmentWriteRefused,
@@ -1259,7 +1260,7 @@ export function defineScopeDO(
         () => (this.carriedAwayCopy ? CARRIED_AWAY_WRITE_REFUSAL : null),
       );
       this.sql = this.revision.sql;
-      for (const stmt of splitSqlStatements(KERNEL_DDL)) {
+      for (const stmt of executableSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
       }
       this.applySpineColumnAdditions();
@@ -6096,7 +6097,7 @@ export function defineScopeDO(
       // synchronous, which is the one case the sync API is for (it commits at the
       // first await, and there is none). It also has to be sync because the caller is.
       this.revision.transactionSync(() => {
-        for (const stmt of splitSqlStatements(script)) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(script)) this.sql.exec(stmt);
       });
     }
 
@@ -6242,7 +6243,7 @@ export function defineScopeDO(
           // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
           // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
           // leaves to it.
-          for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+          for (const stmt of executableSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
           this.applySpineColumnAdditions();
           const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
           assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
@@ -6321,20 +6322,20 @@ export function defineScopeDO(
       );
       for (const plan of this.searchPlans.values()) {
         if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
       }
       // #119: the never-born-archived trigger went with the dropped table. Put back AFTER the
       // rows, which may legitimately arrive archived or trashed.
       for (const plan of this.statePlans.values()) {
         if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
       }
       // #811 / #119: the derived list indexes went with the dropped table too, and a load never
       // put them back — an archivable entity's partial indexes are part of what the kernel
       // checks after DDL.
       for (const plan of this.listPlans.values()) {
         if (!present.has(plan.table)) continue;
-        for (const stmt of splitSqlStatements(listIndexDdl(plan))) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(listIndexDdl(plan))) this.sql.exec(stmt);
       }
       // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
       // as on a wake. A copy's own events then sort above every copied one, which is what

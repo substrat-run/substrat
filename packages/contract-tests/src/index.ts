@@ -113,3 +113,5 @@ export {
 } from './connector-fixture.js';
 export { directoryRestoreSuite, type DirectoryRestoreHarness, type RestorableDirectory } from './directory-restore-suite.js';
 export { SPLIT_CASES } from './split-cases.js';
+export { migrationCommentsContractSuite } from './migration-comments-suite.js';
+export { commentedDdlMod } from './migration-comments.js';

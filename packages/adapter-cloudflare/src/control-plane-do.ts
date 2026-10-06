@@ -86,7 +86,8 @@ import {
   type SubjectTextTarget,
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
-import { splitSqlStatements, switchSqlOver } from './scope-do.js';
+import { switchSqlOver } from './scope-do.js';
+import { executableSqlStatements } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -1272,8 +1273,8 @@ const SCOPE_COLUMNS_ADDED = [
  * fragment and the DDL had parted company (its test holds it empty).
  */
 export function planDirectoryDdl(ddl: string): { loop: string[]; afterColumns: string[]; missing: string[] } {
-  const all = splitSqlStatements(ddl);
-  const afterColumns = splitSqlStatements(VERSION_MIGRATIONS_DDL);
+  const all = executableSqlStatements(ddl);
+  const afterColumns = executableSqlStatements(VERSION_MIGRATIONS_DDL);
   const held = new Set(afterColumns);
   return {
     loop: all.filter((stmt) => !held.has(stmt)),
@@ -1433,14 +1434,14 @@ export class ControlPlaneDO extends DurableObject {
     this.buildDirectorySchema({ holdSwitchRecords: newRecords, holdFences: fencesAreNew });
     for (const kind of newRecords) {
       this.ctx.storage.transactionSync(() => {
-        for (const stmt of splitSqlStatements(switchesDdlOf(kind))) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(switchesDdlOf(kind))) this.sql.exec(stmt);
         this.sql.exec(switchesBackfillSqlOf(kind));
       });
     }
     // #1184: the removal fence and its backfill from the admin log, together, the same way.
     if (fencesAreNew) {
       this.ctx.storage.transactionSync(() => {
-        for (const stmt of splitSqlStatements(MEMBERSHIP_FENCES_DDL)) this.sql.exec(stmt);
+        for (const stmt of executableSqlStatements(MEMBERSHIP_FENCES_DDL)) this.sql.exec(stmt);
         // Stamped now, inside this unit (`membershipFencesBackfillSql` says why).
         this.sql.exec(membershipFencesBackfillSql(new Date().toISOString()));
       });

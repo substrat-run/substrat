@@ -41,6 +41,7 @@ import {
   inputParseContractSuite,
   entityStateContractSuite,
   subjectErasureContractSuite,
+  migrationCommentsContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
@@ -534,6 +535,19 @@ subjectErasureContractSuite(
     return internals.runtime(tenant, scope).db.prepare(sql).all(...params);
   },
 );
+
+// #2068 r5: commented migration DDL, then a DROP COLUMN of the last column.
+migrationCommentsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-comments-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
 
 // #893: the declared `input` is parsed by the HOST, before guards and handler.
 // The DEFAULT checker: the fixture's handlers run a real `ctx.check`, and

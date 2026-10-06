@@ -76,21 +76,25 @@ const KEYWORDS: Readonly<Record<string, number>> = {
   explain: TK_EXPLAIN,
 };
 
-/**
- * The statements in `sql`, in order, each its original text without the terminating `;`.
- * Name and signature are stable: every caller that runs SQL statement by statement uses it.
- */
-export function splitSqlStatements(sql: string): string[] {
-  const out: string[] = [];
+/** One statement's place in the source: its span, and the comment spans inside it. */
+interface ScannedStatement {
+  readonly start: number;
+  readonly end: number;
+  readonly comments: readonly (readonly [number, number])[];
+}
+
+/** The scanner both functions below share: complete.c's tokens and transitions, nothing else. */
+function scanSqlStatements(sql: string): ScannedStatement[] {
+  const out: ScannedStatement[] = [];
   const n = sql.length;
   let state = 0;
   let start = 0;
+  let comments: [number, number][] = [];
   /** Whether a token other than whitespace or a comment has been seen since `start`. */
   let substantive = false;
   let i = 0;
   const emit = (end: number): void => {
-    const text = sql.slice(start, end).trim();
-    if (substantive && text) out.push(text);
+    if (substantive && sql.slice(start, end).trim()) out.push({ start, end, comments });
   };
   while (i < n) {
     const c = sql[i]!;
@@ -103,10 +107,12 @@ export function splitSqlStatements(sql: string): string[] {
     } else if (c === '/' && sql[i + 1] === '*') {
       const close = sql.indexOf('*/', i + 2);
       next = close === -1 ? n : close + 2;
+      comments.push([i, next]);
       token = TK_WS;
     } else if (c === '-' && sql[i + 1] === '-') {
       const nl = sql.indexOf('\n', i + 2);
       next = nl === -1 ? n : nl + 1;
+      comments.push([i, next]);
       token = TK_WS;
     } else if (c === '[') {
       const close = sql.indexOf(']', i + 1);
@@ -129,10 +135,45 @@ export function splitSqlStatements(sql: string): string[] {
     if (token === TK_SEMI && state === START) {
       emit(i);
       start = next;
+      comments = [];
       substantive = false;
     }
     i = next;
   }
   emit(n);
   return out;
+}
+
+/**
+ * The statements in `sql`, in order, each its original text without the terminating `;`.
+ * Name and signature are stable: every caller that needs a statement's TEXT — to log it, to show
+ * it, to hash it, to read which tables it names — uses it.
+ */
+export function splitSqlStatements(sql: string): string[] {
+  return scanSqlStatements(sql).map((st) => sql.slice(st.start, st.end).trim());
+}
+
+/**
+ * The same statements, at the same boundaries, as the text to EXECUTE: every comment replaced
+ * by whitespace of the same length (a newline stays a newline), strings and quoted identifiers
+ * untouched. Every caller that runs SQL statement by statement — a module's migrations, the
+ * kernel's own DDL, on both adapters — runs this, never `splitSqlStatements`' text.
+ *
+ * Why: SQLite stores a `CREATE TABLE`'s text as written, and its `ALTER TABLE … DROP COLUMN`
+ * rewrites that stored text. workerd's SQLite fails the rewrite with "incomplete input" when the
+ * dropped column is the last one and line comments come before it — so a module whose migration
+ * created a commented table could never drop that column later, and a failed migration closes the
+ * scope. Blanking the comments before execution keeps the stored DDL free of them on both hosts.
+ * The one scanner decides what a comment is, so there is no second grammar to drift.
+ */
+export function executableSqlStatements(sql: string): string[] {
+  return scanSqlStatements(sql).map((st) => {
+    let text = '';
+    let at = st.start;
+    for (const [from, to] of st.comments) {
+      text += sql.slice(at, from) + sql.slice(from, to).replace(/[^\n]/g, ' ');
+      at = to;
+    }
+    return (text + sql.slice(at, st.end)).trim();
+  });
 }

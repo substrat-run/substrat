@@ -29,7 +29,7 @@
  */
 import { namesSpineTable, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
 import type { ScopedSql } from './scope-host.js';
-import { splitSqlStatements } from './sql-statements.js';
+import { executableSqlStatements, splitSqlStatements } from './sql-statements.js';
 
 /** The ledger's name — also what an authored migration may never name. */
 export const TABLE_OWNERS = '_substrat_table_owners';
@@ -197,7 +197,8 @@ export interface TableStep {
 export function runMigrationStatements(sql: ScopedSql, migrationSql: string, exec: (statement: string) => void): TableStep[] {
   const steps: TableStep[] = [];
   let tables = moduleTableNames(sql);
-  for (const statement of splitSqlStatements(migrationSql)) {
+  // Comment-blanked text, at the same boundaries: what SQLite stores is what a later ALTER rewrites.
+  for (const statement of executableSqlStatements(migrationSql)) {
     exec(statement);
     const after = moduleTableNames(sql);
     if (after.size !== tables.size || [...after].some((t) => !tables.has(t))) steps.push({ before: tables, after });

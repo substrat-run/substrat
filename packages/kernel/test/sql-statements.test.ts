@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitSqlStatements } from '../src/index.js';
+import { executableSqlStatements, splitSqlStatements } from '../src/index.js';
 
 /**
  * #2068, Codex #2084 r4 — the splitter's own contract: original substrings, nothing glued, and an
@@ -17,5 +17,18 @@ describe('splitSqlStatements (#2068)', () => {
 
   it('ends the input as one statement at an unterminated string, for SQLite to refuse', () => {
     expect(splitSqlStatements("SELECT 1; SELECT 'open")).toEqual(['SELECT 1', "SELECT 'open"]);
+  });
+
+  it('executable text blanks every comment to equal-length whitespace, keeps newlines, and leaves strings alone', () => {
+    const sql = "CREATE/*c*/TABLE t(a, -- note\n b DEFAULT '-- kept /* too */'); -- tail;\nINSERT INTO \"x--y\" VALUES(1);";
+    const exec = executableSqlStatements(sql);
+    const text = splitSqlStatements(sql);
+    expect(exec).toEqual([
+      "CREATE     TABLE t(a,        \n b DEFAULT '-- kept /* too */')",
+      'INSERT INTO "x--y" VALUES(1)',
+    ]);
+    // The same boundaries as the original text, statement for statement.
+    expect(exec).toHaveLength(text.length);
+    expect(text[0]).toContain('/*c*/');
   });
 });
