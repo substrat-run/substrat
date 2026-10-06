@@ -516,12 +516,17 @@ the control plane's `openTenantStore` uses the D1 HTTP API (out-of-band migratio
   makes the journal and the schema agree with the deployment again: rebuild the scope (a
   dev database, a preview), or restore it to a dump taken before the other SQL ran.
   Re-numbering is not a recovery — the scope would still hold the other SQL under the old
-  version. Two exceptions, both deliberate: a row from before the column has no digest and
-  is **accepted and left NULL**, never backfilled (a backfill would write a value nobody
-  measured, and bless the one divergent row this exists to catch). That NULL is provably
-  legacy: a spine trigger refuses any new journal row without a digest, so an older writer
-  mid-rollout fails its migration loudly instead of recording one, and only a restore, which
-  loads a legacy dump's rows verbatim, lifts it around its row load. The kernel-derived
+  version. Two exceptions, both deliberate. A row applied before the column has no digest:
+  it carries the explicit mark `'legacy'` (stamped on the rows present when the column
+  arrives, and derived for a dump exported before it) and is accepted, never backfilled — a
+  backfill would write a value nobody measured, and bless the one divergent row this exists to
+  catch. A NULL is never trusted: a spine trigger refuses any journal row written or rewritten
+  without a digest, so an older writer mid-rollout fails its migration loudly instead of
+  recording one, and a restore whose dump carries a NULL is refused. Restore is a privileged,
+  audited staff operation and could forge any digest; the check still matters there because a
+  corrupted or partly edited dump is caught rather than silently unprotecting the scope. And
+  migration SQL may not name the journal at all (`assertNoJournalSql`), so no migration can
+  drop the fence or write its own row. The other exception: the kernel-derived
   DDL (`search/…`, `state/…`, `list/…`) is held to its *declaration*, which is its version,
   not to its digest — the kernel may respell the same declaration between releases, and
   holding those rows to a digest would fail every scope closed on that upgrade. Their
