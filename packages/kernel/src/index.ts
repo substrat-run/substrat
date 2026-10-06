@@ -126,6 +126,11 @@ export {
   isVouchedWithin,
   vouchedWithin,
   type VouchedWithin,
+  checkedWithin,
+  isCheckedWithin,
+  type CheckedWithin,
+  LIVE_CLOSE,
+  LIVE_SOCKETS_PER_PRINCIPAL,
 } from './scope-host.js';
 export {
   /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
@@ -363,6 +368,22 @@ export type {
   ListQueryParams,
 } from './list-index.js';
 export { moduleMigrations } from './module-migrations.js';
+export {
+  MIGRATION_DIGEST_FENCE_DDL,
+  MIGRATION_DIGEST_LEGACY,
+  MIGRATION_DIGEST_MARK_LEGACY,
+  assertJournalDumpCoherent,
+  assertMigrationSql,
+  assertNoJournalSql,
+  migrationDigest,
+  migrationDivergence,
+  migrationFailedError,
+  migrationSteps,
+  planMigrations,
+  type MigrationPlan,
+  type MigrationStep,
+  type PendingMigration,
+} from './migration-digest.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';
@@ -463,6 +484,9 @@ export {
   type FindingObservation,
 } from './findings.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
+export { delegatedGrantSql, delegatedRevokeSql } from './entity-grant.js';
+export { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes } from './entity-grant-shape.js';
+export type { ShapePass } from './entity-grant-shape.js';
 export { applyScopeRoleChange, changeScopeRole, combineCoverage, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, MARK_COPY_ORIGIN_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';

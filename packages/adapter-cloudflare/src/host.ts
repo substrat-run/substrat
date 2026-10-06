@@ -1,3 +1,4 @@
+import type { EntityGrantShape } from '@substrat-run/contracts';
 import type { TenantVerdict } from './scope-do.js';
 import { env as ambientEnv } from 'cloudflare:workers';
 import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
@@ -446,6 +447,7 @@ import {
   type FindingChange,
   type FindingPruneReport,
   memberAddedAudit,
+  shapeTopUpBatch,
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
 import {
@@ -457,6 +459,8 @@ import {
   LIVE_SUBSCRIBE_PATH,
   LIVE_TENANT_HEADER,
   LIVE_WITHIN_HEADER,
+  LIVE_EXPIRES_HEADER,
+  liveInstant,
   encodeLiveWithin,
   liveWithinOf,
   type LiveRefusal,
@@ -1403,6 +1407,15 @@ interface ScopeStubRpc {
   listConnectionGrants(
     now: string,
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
+  /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
+  grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
+  /** One bounded pass of the shape reconcile with its events (#2071). */
+  topUpEntityGrantShapes(
+    tenantId: string,
+    scopeId: string,
+    shapes: readonly EntityGrantShape[],
+    limit: number,
+  ): Promise<{ toppedUp: number; done: boolean }>;
   /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
   writeTuple(
     subject: string,
@@ -6327,6 +6340,17 @@ export class CloudflareScopeHost implements ScopeHost {
         // grants write scope tuples (already local), so they need no fan-out.
         if (!grant.node.scopeId) await this.fanOut(grant.node.tenantId);
       },
+      grantEntityShape: async (actor, grant) => {
+        await this.grantEntityShapeLocal(grant.node.scopeId, grant.principalId, grant.entity, grant.permissions);
+        await this.recordAdmin(actor, 'grantEntityShape', grant.node, null, grant);
+      },
+      reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
+        const toppedUp = await this.topUpEntityGrantShapesLocal(node.tenantId, node.scopeId, shapes, opts?.batch);
+        if (toppedUp > 0) {
+          await this.recordAdmin(actor, 'reconcileEntityGrantShapes', node, null, { shapes, toppedUp });
+        }
+        return { toppedUp };
+      },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);
         const conn = await this.cp.readConnection(grant.connectionId);
@@ -9597,11 +9621,17 @@ export class CloudflareScopeHost implements ScopeHost {
    * arrive as a different class of answer just because the caller asked for a socket.
    */
   readonly liveReads: LiveReadSurface<Request, Response> = {
-    subscribe: async ({ tenantId, scopeId, principal, request, within }) => {
+    subscribe: async ({ tenantId, scopeId, principal, request, within, expiresAt }) => {
       // Decided before anything else, and thrown: a `within` that is neither a plain
       // EntityRef nor a value `vouchedWithin` built is a caller bug, and the two ways of
       // guessing at it both open a feed wider than was asked for (#1853).
       const narrowed = liveWithinOf(within);
+      // The same for an expiry that is not an instant: read as "none", it would keep the
+      // socket open past the session it was meant to end with (#938).
+      const expires = expiresAt === undefined ? undefined : liveInstant(expiresAt);
+      if (expiresAt !== undefined && !expires) {
+        throw substratError('validation_failed', 'live reads: `expiresAt` must be an ISO 8601 instant');
+      }
       if (!isUpgradeRequest(request)) {
         return new Response('live reads are a WebSocket surface', {
           status: 426,
@@ -9664,6 +9694,8 @@ export class CloudflareScopeHost implements ScopeHost {
       headers.set(LIVE_SCOPE_HEADER, scopeId);
       if (narrowed) headers.set(LIVE_WITHIN_HEADER, encodeLiveWithin(narrowed));
       else headers.delete(LIVE_WITHIN_HEADER);
+      if (expires) headers.set(LIVE_EXPIRES_HEADER, expires);
+      else headers.delete(LIVE_EXPIRES_HEADER);
       const forwarded = new Request(
         new URL(LIVE_SUBSCRIBE_PATH, 'https://scope.substrat.internal'),
         // `new Request(url, { …, headers })` rather than `new Request(request, …)`:
@@ -9909,6 +9941,11 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantHeldPeers?: readonly string[];
     /** #2045: each recorded-off subject's fence, by tuple subject. */
     switchFences?: Readonly<Record<string, string>>;
+    /** #2071: the declared entity-grant shapes, as the platform's reconcile sends them from the
+     *  reached version's reviewed registry. Only a shape declared `bootstrap: true` is reconciled;
+     *  a sharing one is skipped. Each holder is topped up to the shape as it is now, after the
+     *  seat, in bounded passes. Never a revoked key, never a removal. Absent ⇒ no reconcile. */
+    entityGrants?: readonly EntityGrantShape[];
   }): Promise<{ switchedOff?: SwitchedOff[] }> {
     const carry = recordedOffFromWire(input);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
@@ -10010,6 +10047,7 @@ export class CloudflareScopeHost implements ScopeHost {
       carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
       services?.map((id) => `principal:${id}`),
     ));
+    if (input.entityGrants) await this.topUpEntityGrantShapesLocal(input.tenantId, input.scopeId, input.entityGrants);
     return carry ? { switchedOff } : {};
   }
 
@@ -10119,6 +10157,47 @@ export class CloudflareScopeHost implements ScopeHost {
       entityObjectRef(entity, 'grantEntityLocal'), // #1856
       null,
     );
+  }
+
+  /**
+   * Give a person a declared entity-grant SHAPE on one entity in a CP-less vertical (#2071) —
+   * `grantEntityLocal` for every key of the shape, plus the marker that makes them a holder of
+   * it, in one unit. What a vertical calls where it used to loop `grantEntityLocal` over its
+   * `ENTITY_GRANTS` keys: a key the shape gains later then reaches this person at the next
+   * provision or reconcile (`provisionScopeLocal`'s `entityGrants`). Idempotent, and explicit
+   * like `grantEntityLocal`: it brings back a key or a marker a revoke tombstoned.
+   */
+  async grantEntityShapeLocal(
+    scopeId: ScopeId,
+    principal: PrincipalId,
+    entity: EntityRef,
+    permissions: readonly PermissionKey[],
+  ): Promise<void> {
+    await this.scopeStub(scopeId).grantEntityShape(principal, entity, permissions);
+  }
+
+  /**
+   * Top every holder of each declared shape up to the shape as it is now (#2071), in bounded
+   * passes — at most `batch` rows of work per scope transaction (default 500, at most 5000;
+   * anything else is `validation_failed`), repeated until a pass finishes. Never re-grants a revoked
+   * key, never removes one. Returns how many (person, entity) it topped up.
+   */
+  async topUpEntityGrantShapesLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    shapes: readonly EntityGrantShape[],
+    batch?: number,
+  ): Promise<number> {
+    const limit = shapeTopUpBatch(batch);
+    if (shapes.length === 0) return 0;
+    const stub = this.scopeStub(scopeId);
+    let toppedUp = 0;
+    for (let done = false; !done; ) {
+      const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, limit);
+      toppedUp += pass.toppedUp;
+      done = pass.done;
+    }
+    return toppedUp;
   }
 
   // -- the connector write-back's far end (#574) -----------------------------

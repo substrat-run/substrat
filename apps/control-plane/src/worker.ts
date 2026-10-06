@@ -1302,6 +1302,8 @@ async function reconcileOneScope(
     host.admin as unknown as Parameters<typeof reconcilePayloadFor>[0],
     SWEEP_ACTOR,
     { tenantId: t, id: s, vertical: rec.vertical },
+    // #2071: the version just asserted reached, so the shapes are that version's reviewed ones.
+    expected,
   );
   return reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, client, payload);
 }
@@ -1327,6 +1329,7 @@ export async function reconcileReachedScope(
         identityLinks: payload.identityLinks as never,
         connectionGrants: payload.connectionGrants as never,
         connectionKeys: payload.connectionKeys as never,
+        ...(payload.entityGrants ? { entityGrants: payload.entityGrants } : {}),
         // #1742: the recorded-off modules, switched off in the deployment's own unit.
         ...carry,
       }),

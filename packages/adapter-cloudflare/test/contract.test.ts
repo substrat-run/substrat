@@ -61,6 +61,7 @@ import {
   asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
+  migrationDigestContractSuite,
   entityStateContractSuite,
   entityTrashContractSuite,
   TRASH_MODULE_ID,
@@ -5263,6 +5264,18 @@ timelineContractSuite('adapter-cloudflare', async () => {
 // #811: `ctx.page` on the DO host — same suite, and the only place the derived
 // index DDL meets workerd's regulator.
 listContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #2066: the journal's SQL digest on the DO host — the column, the ALTER and the refusal in
+// workerd's SQLite. `listMod` is in `contractTestModules`, so the ScopeDO carries it at code time.
+migrationDigestContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

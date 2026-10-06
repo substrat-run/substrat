@@ -168,6 +168,7 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
             : typeof (meta['user_metadata'] as { name?: unknown })?.name === 'string'
               ? ((meta['user_metadata'] as { name: string }).name)
               : null,
+        ...(typeof payload.exp === 'number' ? { expiresAt: new Date(payload.exp * 1000).toISOString() } : {}),
       };
     } catch {
       return null; // bad signature / expired / wrong issuer — resolve to nobody, fail closed

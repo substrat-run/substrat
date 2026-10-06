@@ -18,6 +18,7 @@ import {
   moduleManifest,
   permissionKey,
   purgeSchedulesOf,
+  type EntityGrantShape,
 } from '@substrat-run/contracts';
 import { todoEntities, todoOperations } from '../spec/model.js';
 
@@ -44,6 +45,26 @@ export const OWNER_GRANTS = [
   TODO_PERM.listArchive,
   TODO_PERM.listTrash,
 ] as const;
+
+/**
+ * The keys reachable OUTSIDE the role table — the shapes, not the grants
+ * themselves, which are per-principal ULIDs minted at runtime.
+ *
+ * Both entries are the interesting half of this app. `owner` is the bootstrap: a
+ * person holds these on their own entity, and their lists inherit through the
+ * declared parent edge. Declared `bootstrap`, so a key added to it reaches every
+ * owner at the next reconcile (#2071); `holder: 'self'` because a person's owner entity id
+ * IS their principal id. `list` is sharing: `ctx.grant` narrows
+ * `list:contribute` onto ONE list for ONE person, which is the only way anybody
+ * reaches a list that is not theirs — and is never reconciled.
+ *
+ * Here rather than in `provision.ts`, which re-exports it, so the seed can read it
+ * without importing provisioning (which imports the seed).
+ */
+export const ENTITY_GRANTS: EntityGrantShape[] = [
+  { entityType: 'owner', permissions: [...OWNER_GRANTS], bootstrap: true, holder: 'self' },
+  { entityType: 'list', permissions: [TODO_PERM.listContribute] },
+];
 
 export const todoManifest = moduleManifest.parse({
   id: '@substrat-run/demo-todo',

@@ -296,15 +296,71 @@ that entity and what hangs beneath it through declared parent edges (what `ctx.l
 runs on every frame, so `within` can only take frames away. A screen watching one record
 passes it to stop hearing the rest of the scope.
 
-A subscriber with no principal of its own, such as a visitor holding a session token, can be
-given a feed the **vertical vouches for**: `within: vouchedWithin(entity, { because })`, from
-`@substrat-run/kernel`. The principal's check is then not applied. The walk from each changed
-row to `entity` is the whole filter, and each frame is a bare nudge (`{ kind: 'nudge', id, at }`)
-that names no event type and no entity. Call it only after your own code has proven the
-caller may watch `entity`, and root it at an entity whose subtree holds only what that caller
-may see. A plain object of the same shape is refused: `vouchedWithin` is the only way in.
-ticket0's widget does this (`harness/widget-surface.ts`), rooted at the visitor's session,
-under which the desk links exactly the public messages the visitor can read.
+Two built roots go further. Each replaces the per-frame check with a check on the **root**,
+and each frame is then a bare nudge (`{ kind: 'nudge', id, at }`) that names no event type and
+no entity, because the subscriber may not be able to read each row beneath it. Both come from
+`@substrat-run/kernel`, and a plain object of the same shape is refused: the builder is the
+only way in.
+
+- **`within: checkedWithin(entity, permission)`**: for a signed-in principal whose grant
+  reaches the root but not each row the way a `liveTargets` key would. The principal must
+  pass `permission` on `entity` at the handshake, or the route answers `403` with
+  `x-substrat-live: forbidden`. The check runs again, once per socket, on every pass that has
+  a row beneath the root to announce. If it refuses or throws, the scope closes the socket
+  (`1008`) before sending anything, and the client's reconnect meets the `403`. A withdrawn
+  grant, or a root moved out of the grant's reach, therefore ends the feed. ticket0's portal
+  does this (`harness/portal-live.ts`): rooted at a conversation's public thread, checked on
+  the customer's own `conversation:read-own`.
+- **`within: vouchedWithin(entity, { because })`**: for a subscriber with no principal of its
+  own, such as a visitor holding a session token. Your code proves access once, before
+  subscribing, and nothing re-checks it, so a token revoked while the socket is open keeps
+  receiving nudges until the socket closes. That is accepted for ticket0's widget
+  (`harness/widget-surface.ts`), rooted at the visitor's session, because the nudge names
+  nothing and every re-read it causes is checked again.
+
+Prefer `checkedWithin` whenever there is a grant to check: authority then leaves with the
+grant. For either one, root the feed at an entity whose subtree holds only what the caller may
+see, because the walk is the row filter.
+
+### A socket ends with its session
+
+`subscriber` may return `expiresAt`, the instant the caller's credential stops being valid.
+`AuthSubject.expiresAt` from `@substrat-run/vertical-auth` carries it: a session cookie's or a
+bearer's `exp`. A handshake at or past it is refused, and the scope closes the socket (`1008`)
+on its first pass at or past it, before sending anything, whatever the caller's grants still
+say. A scope nobody writes to has no passes, so the scope also sets an alarm for the earliest
+expiry among its sockets and closes them then. Without `expiresAt`, a socket lives until one
+end closes it.
+
+### How many sockets
+
+One principal may hold `LIVE_SOCKETS_PER_PRINCIPAL` (8) live sockets on a scope. The next is
+accepted and closed at once with `LIVE_CLOSE.tooMany` (`4429`), because a browser never sees a
+failed handshake's status, only a close code. A client should read `4429` as "poll and stop
+asking", not as a reason to reconnect. `checkedWithin` gates are asked once per
+(principal, key, root) per pass, however many of those sockets share a root, when the scope
+reads its permissions from its own storage. A scope that still reads them from the directory
+asks once per socket instead (see below).
+
+### How fresh a live decision is
+
+Each frame is decided just before it is sent. A decision the pass reuses for a later socket or
+row (a `checkedWithin` gate, the walk up from a row) is reused only while all three of these
+still hold, checked against the clock immediately before each send:
+
+- nothing has been written to the scope since the decision was made;
+- no grant, tuple, parent edge or entitlement in the scope has reached its `expires_at` since
+  the decision was made;
+- the scope reads its permissions from its own storage. While it still reads tenant tuples,
+  roles and org membership from the directory, a change there writes nothing in the scope, so
+  the gate is asked again for every socket and row.
+
+What stays open is a change that lands while a check is still being evaluated. It can let that
+one evaluation's frame through: one nudge, after the change. Frames carry no content (a nudge
+names no entity, and a `change` frame only names a row the subscriber could read when it was
+checked). The next frame, the next pass and the client's poll all see the change. This is the
+live-read freshness contract: a push is a hint that can be up to one evaluation stale, and the
+read it prompts is checked as usual.
 
 ## `requestConnectUrl(request)`
 

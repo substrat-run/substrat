@@ -12,12 +12,14 @@
  * genuinely differ — the repair route mints missing stores first, the drain settles an
  * intent, the sweep records a receipt.
  */
-import type {
-  ModuleId,
-  PlatformActorId,
-  ScopeId,
-  SwitchedOffInUnit,
-  TenantId,
+import {
+  storedDeployManifest,
+  type EntityGrantShape,
+  type ModuleId,
+  type PlatformActorId,
+  type ScopeId,
+  type SwitchedOffInUnit,
+  type TenantId,
 } from '@substrat-run/contracts';
 import { switchSubjectOf, type HostAdmin } from '@substrat-run/kernel';
 import { connectionGrantsForScope } from './vertical-client.js';
@@ -31,6 +33,7 @@ export interface ReconcileGatherAdmin {
   ) => Promise<{ tenantId: TenantId }[]>;
   listConnectionGrants: (actor: PlatformActorId, tenantId: TenantId) => Promise<unknown[]>;
   connectionSealingKeys: (tenantId: TenantId, vertical: string) => Promise<unknown[]>;
+  versionManifest: (actor: PlatformActorId, verticalSlug: string, versionId: string) => Promise<string | null>;
 }
 
 export interface ReconcilePayload {
@@ -38,6 +41,28 @@ export interface ReconcilePayload {
   identityLinks: unknown[];
   connectionGrants: unknown[];
   connectionKeys: unknown[];
+  /** #2071: the reached version's reviewed shapes — see {@link reviewedEntityGrants}. */
+  entityGrants?: EntityGrantShape[];
+}
+
+/**
+ * #2071: the entity-grant shapes in the REVIEWED registry of one version — the stored deploy
+ * manifest's `registry.entityGrants`, the very object `digests.permission` covers and a promote
+ * acknowledges. The only source a reconcile tops holders up from: a shape a vertical's runtime
+ * code names instead could declare `bootstrap` where the reviewed registry did not, and top up
+ * every sharee with no digest change. `undefined` when the version holds no registry (pushed before
+ * registries were), which reconciles nothing; a version the platform does not hold is
+ * `not_found`, so the reconcile fails rather than running without it.
+ */
+export async function reviewedEntityGrants(
+  admin: Pick<ReconcileGatherAdmin, 'versionManifest'>,
+  actor: PlatformActorId,
+  vertical: string,
+  versionId: string,
+): Promise<EntityGrantShape[] | undefined> {
+  const json = await admin.versionManifest(actor, vertical, versionId);
+  if (!json) return undefined;
+  return storedDeployManifest.parse(JSON.parse(json)).registry?.entityGrants;
 }
 
 /**
@@ -50,6 +75,8 @@ export async function reconcilePayloadFor(
   admin: ReconcileGatherAdmin,
   actor: PlatformActorId,
   scope: { tenantId: TenantId; id: ScopeId; vertical: string | null },
+  /** #2071: the version this reconcile reaches, whose reviewed shapes it carries. */
+  versionId?: string | null,
 ): Promise<ReconcilePayload> {
   const entitlements = await admin.listEntitlements(actor, scope.tenantId);
   // The tenant leg is dropped: the vertical is being told about links INTO this tenant,
@@ -67,11 +94,14 @@ export async function reconcilePayloadFor(
   const connectionKeys = scope.vertical
     ? await admin.connectionSealingKeys(scope.tenantId, scope.vertical)
     : [];
+  const entityGrants =
+    scope.vertical && versionId ? await reviewedEntityGrants(admin, actor, scope.vertical, versionId) : undefined;
   return {
     entitlements,
     identityLinks,
     connectionGrants: connectionGrants as unknown[],
     connectionKeys,
+    ...(entityGrants ? { entityGrants } : {}),
   };
 }
 

@@ -1,4 +1,5 @@
 import { SPINE_PREFIX, namesSpineTable, substratError } from '@substrat-run/contracts';
+import { MIGRATION_DIGEST_LEGACY } from './migration-digest.js';
 import { SCHEDULE_STATE_KIND_OF_OP } from './platform-sweep.js';
 import { isSearchIndexTable } from './search-index.js';
 import { SWITCH_KINDS, dumpCarriesSwitches, switchesBackfillSqlOf } from './system-switch-record.js';
@@ -104,6 +105,10 @@ const unbuiltSpineTables = (names: readonly string[]) =>
  */
 const DERIVED_COLUMNS: Record<string, Record<string, string>> = {
   _substrat_schedule_state: { kind: SCHEDULE_STATE_KIND_OF_OP },
+  // #2066: a journal dumped before digests were recorded. Its rows are legacy by construction,
+  // since the exporting kernel had no digest to write; a dump that carries the column and a NULL
+  // in it is refused by the journal's fence instead.
+  _substrat_migrations: { sql_digest: `'${MIGRATION_DIGEST_LEGACY}'` },
 };
 
 /**

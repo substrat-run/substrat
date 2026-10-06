@@ -22,7 +22,10 @@ import { Hono } from 'hono';
 import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { LIVE_PATH, mountLiveReads } from '@substrat-run/vertical-host';
+import { LIVE_CLOSE, isCheckedWithin } from '@substrat-run/kernel';
+import { CLOSE_TOO_MANY } from '../app/src/feed.js';
 import { buildHost } from '../src/seed.js';
+import { mountPortalLive, portalThreadWithin } from '../harness/portal-live.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'ticket0-live-'));
 const host = buildHost(dir);
@@ -59,5 +62,54 @@ describe('the live route on the node host', () => {
     expect(res.status).toBe(403);
     expect(res.headers.get('x-substrat-live')).toBeNull();
     expect(subscriber).not.toHaveBeenCalled();
+  });
+});
+
+describe("the portal's live route on the node host (#938)", () => {
+  const caller = vi.fn(async () => ({
+    tenantId: tenantId.parse(ulid()),
+    scopeId: scopeId.parse(ulid()),
+    principal: principalId.parse(ulid()),
+  }));
+  const portal = new Hono();
+  mountPortalLive(portal, { live: () => host.liveReads, caller });
+  const conversation = ulid();
+  const portalHandshake = (headers: Record<string, string>) =>
+    new Request(`${ORIGIN}/api/conversations/${conversation}/live`, {
+      headers: { upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-version': '13', ...headers },
+    });
+
+  beforeEach(() => caller.mockClear());
+
+  it('answers 501 and says to poll, so the portal keeps its poll on the dev server', async () => {
+    const res = await portal.fetch(portalHandshake({ origin: ORIGIN }));
+    expect(res.status).toBe(501);
+    expect(res.headers.get('x-substrat-live')).toBe('poll');
+  });
+
+  it('refuses another origin before it asks who is calling', async () => {
+    const res = await portal.fetch(portalHandshake({ origin: 'http://localhost:9999' }));
+    expect(res.status).toBe(403);
+    expect(caller).not.toHaveBeenCalled();
+  });
+
+  it("subscribes within the conversation's public thread, checked on the customer's own key", async () => {
+    const subscribe = vi.fn(async () => new Response(null, { status: 204 }));
+    const hosted = new Hono();
+    mountPortalLive(hosted, { live: () => ({ subscribe }), caller });
+    await hosted.fetch(portalHandshake({ origin: ORIGIN }));
+    const [{ within }] = subscribe.mock.calls[0] as unknown as [{ within: unknown }];
+    expect(isCheckedWithin(within)).toBe(true);
+    expect(within).toMatchObject({
+      entity: { entityType: 'publicThread', entityId: conversation },
+      permission: 'conversation:read-own',
+    });
+    expect(portalThreadWithin(conversation)).toMatchObject(within as object);
+  });
+});
+
+describe('the close code the app reads as "poll" (#938)', () => {
+  it("is the kernel's, restated because the browser bundle does not depend on the kernel", () => {
+    expect(CLOSE_TOO_MANY).toBe(LIVE_CLOSE.tooMany);
   });
 });

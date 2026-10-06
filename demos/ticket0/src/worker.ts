@@ -108,6 +108,7 @@ import { senderFor, sweepOutbound } from '../harness/relay.js';
 import { inboundConfigFor, receiveInbound } from '../harness/inbound.js';
 import { mountInvites, recordStaffProfile } from '../harness/invites.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
+import { mountPortalLive } from '../harness/portal-live.js';
 import {
   confirmationEmail,
   mountSignupSurface,
@@ -459,11 +460,17 @@ function providerOf(instance: InstanceAuth): AuthProvider {
  * ship an impersonation bypass one environment variable from being live.
  */
 async function principalFor(env: Env, req: Request): Promise<PrincipalId | null> {
+  return (await sessionFor(env, req))?.principal ?? null;
+}
+
+/** `principalFor`, plus when the credential that proved it expires, where the provider says. */
+async function sessionFor(env: Env, req: Request): Promise<{ principal: PrincipalId; expiresAt?: string } | null> {
   const subject = await (await authProviderFor(env, req)).resolve(req.headers);
   if (!subject) return null;
   const node = nodeFor(req, env);
   const principal = await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub);
-  return principal ? principalId.parse(principal) : null;
+  if (!principal) return null;
+  return { principal: principalId.parse(principal), ...(subject.expiresAt ? { expiresAt: subject.expiresAt } : {}) };
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -1119,14 +1126,17 @@ app.post('/api/email/inbound', async (c) => {
 // registered before `mountApi` so the declared table never sees the path. The caller
 // is resolved exactly as `stub` resolves one. What they are then told is the scope's
 // decision, frame by frame, not this route's.
-mountLiveReads(app, {
-  live: (c) => hostFor(c.env).liveReads,
-  subscriber: async (c) => {
-    const node = nodeFor(c.req.raw, c.env);
-    const principal = await principalFor(c.env, c.req.raw);
-    return principal ? { ...node, principal } : null;
-  },
-});
+// The session's expiry rides along, so the scope closes the socket when the session ends
+// rather than when somebody happens to close the tab (#938).
+const liveCaller = async (c: Context<{ Bindings: Env }>) => {
+  const node = nodeFor(c.req.raw, c.env);
+  const session = await sessionFor(c.env, c.req.raw);
+  return session ? { ...node, ...session } : null;
+};
+mountLiveReads(app, { live: (c) => hostFor(c.env).liveReads, subscriber: liveCaller });
+// The portal's one-conversation feed, rooted at the conversation's public thread and
+// gated by the customer's own grant (`harness/portal-live.ts`).
+mountPortalLive(app, { live: (c) => hostFor(c.env).liveReads, caller: liveCaller });
 
 // ── The declared API, the spec, and the platform contract ────────────────────
 

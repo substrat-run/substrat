@@ -40,10 +40,10 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 Reachable WITHOUT a role, narrowed to one entity per principal. A key held by
 no role in §3 but listed here is deliberate, not a gap.
 
-| Entity type | Permissions granted per entity |
-| --- | --- |
-| `list` | `list:contribute` |
-| `owner` | `list:archive`, `list:contribute`, `list:manage`, `list:trash` |
+| Entity type | Permissions granted per entity | Given on arrival, topped up when it grows |
+| --- | --- | --- |
+| `list` | `list:contribute` | no — shared |
+| `owner` | `list:archive`, `list:contribute`, `list:manage`, `list:trash` | yes — the entity id is the principal |
 
 ## 5. Scheduled work — the system principal's grants
 

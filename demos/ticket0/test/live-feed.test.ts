@@ -5,9 +5,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CLOSE_TOO_MANY,
   FEED_TIMING,
   createFeed,
   endingOnUnauthorized,
+  feedSet,
   type Feed,
   type SocketLike,
 } from '../app/src/feed.js';
@@ -15,7 +17,7 @@ import {
 class FakeSocket implements SocketLike {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code?: number }) => void) | null = null;
   closed = false;
   send(): void {}
   close(): void {
@@ -26,18 +28,17 @@ class FakeSocket implements SocketLike {
     this.onopen?.();
   }
   /** The connection ends, from the server's side or the network's. */
-  drop(): void {
-    this.onclose?.();
+  drop(code?: number): void {
+    this.onclose?.(code === undefined ? undefined : { code });
   }
 }
 
 let sockets: FakeSocket[];
 let feed: Feed;
 
-beforeEach(() => {
-  vi.useFakeTimers();
-  sockets = [];
-  feed = createFeed({
+/** A feed on fake sockets, each one pushed to `sockets` as it is opened. */
+const makeFeed = (): Feed =>
+  createFeed({
     connect: () => {
       const s = new FakeSocket();
       sockets.push(s);
@@ -49,6 +50,11 @@ beforeEach(() => {
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (t) => clearInterval(t),
   });
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  sockets = [];
+  feed = makeFeed();
 });
 afterEach(() => vi.useRealTimers());
 
@@ -146,6 +152,28 @@ describe('the live feed ends with the session', () => {
     expect(sockets.length).toBe(after);
   });
 
+  it('ends every feed the page opened — the desk’s and a portal conversation’s — on one 401', async () => {
+    const page = feedSet();
+    const desk = page.track(feed);
+    const portal = page.track(makeFeed());
+    desk.listen(listener());
+    const deskSocket = latest();
+    portal.listen(listener());
+    const portalSocket = latest();
+    deskSocket.accept();
+    portalSocket.accept();
+
+    await endingOnUnauthorized(async () => new Response(null, { status: 401 }), page)();
+    expect(deskSocket.closed).toBe(true);
+    expect(portalSocket.closed).toBe(true);
+    expect(portal.isOpen()).toBe(false);
+    // A conversation opened after the session ended never connects at all.
+    const after = sockets.length;
+    page.track(makeFeed()).listen(listener());
+    vi.advanceTimersByTime(FEED_TIMING.restMs * 2);
+    expect(sockets.length).toBe(after);
+  });
+
   it('leaves the feed alone on any other answer', async () => {
     feed.listen(listener());
     latest().accept();
@@ -154,5 +182,52 @@ describe('the live feed ends with the session', () => {
     }
     expect(latest().closed).toBe(false);
     expect(feed.isOpen()).toBe(true);
+  });
+});
+
+describe('the live feed told it holds too many sockets (#938)', () => {
+  it(`stops asking after a ${CLOSE_TOO_MANY} close, and the screen keeps polling`, () => {
+    const l = listener();
+    feed.listen(l);
+    latest().accept();
+    latest().drop(CLOSE_TOO_MANY);
+    expect(l.state).toHaveBeenLastCalledWith(false);
+    const after = sockets.length;
+    feed.wake();
+    vi.advanceTimersByTime(FEED_TIMING.restMs * 2);
+    expect(sockets.length).toBe(after);
+  });
+
+  it('reconnects after any other close — the twin', () => {
+    feed.listen(listener());
+    latest().accept();
+    latest().drop(1008);
+    const after = sockets.length;
+    vi.advanceTimersByTime(FEED_TIMING.maxBackoffMs);
+    expect(sockets.length).toBe(after + 1);
+  });
+});
+
+describe('the live feed hands on what a scope sends', () => {
+  const deliver = (data: unknown) => latest().onmessage?.({ data });
+
+  it('hands a change to every listener, and a nudge too (the portal’s feed sends only those)', () => {
+    const l = listener();
+    feed.listen(l);
+    latest().accept();
+    deliver(JSON.stringify({ kind: 'change', id: '1', type: 't', entityType: 'message', entityId: 'm', at: 'x' }));
+    deliver(JSON.stringify({ kind: 'nudge', id: '2', at: 'x' }));
+    expect(l.frame.mock.calls.map(([f]) => f.kind)).toEqual(['change', 'nudge']);
+  });
+
+  it('drops a pong, a frame it cannot parse, and a kind it does not know', () => {
+    const l = listener();
+    feed.listen(l);
+    latest().accept();
+    deliver('pong');
+    deliver('{not json');
+    deliver('null');
+    deliver(JSON.stringify({ kind: 'payload', body: 'never' }));
+    expect(l.frame).not.toHaveBeenCalled();
   });
 });

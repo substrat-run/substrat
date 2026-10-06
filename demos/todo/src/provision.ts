@@ -10,25 +10,12 @@
  * adapter, and anything importing provisioning from there would drag both into
  * environments that cannot load them.
  */
-import { definePermissions, type PermissionKey } from '@substrat-run/contracts';
+import { definePermissions } from '@substrat-run/contracts';
 import { TODO_PERMISSIONS } from '../spec/model.js';
-import { OWNER_GRANTS, TODO_PERM } from './manifest.js';
+import { ENTITY_GRANTS } from './manifest.js';
 import { MODULES, ROLES } from './seed.js';
 
-/**
- * The keys reachable OUTSIDE the role table — the shapes, not the grants
- * themselves, which are per-principal ULIDs minted at runtime.
- *
- * Both entries are the interesting half of this app. `owner` is the bootstrap: a
- * person holds these on their own entity, and their lists inherit through the
- * declared parent edge. `list` is sharing: `ctx.grant` narrows `list:contribute`
- * onto ONE list for ONE person, which is the only way anybody reaches a list
- * that is not theirs.
- */
-export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
-  { entityType: 'owner', permissions: [...OWNER_GRANTS] },
-  { entityType: 'list', permissions: [TODO_PERM.listContribute] },
-];
+export { ENTITY_GRANTS };
 
 /**
  * `keys` is the SAME array `spec/model.ts` hands `defineOperations` (#1208).

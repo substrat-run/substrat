@@ -44,7 +44,7 @@ export interface AppHealthRow {
   reason: string;
   /** Failures recorded against this scope inside the window. */
   failures: number;
-  /** Sweep units that reported `failed` inside the window. */
+  /** Sweep units whose newest firing inside the window failed — a later clean run clears it. */
   sweepFailures: number;
   /** Freshness expectations currently reading stale. */
   stale: number;
@@ -118,7 +118,13 @@ export function deriveFleetHealth(input: {
     // sweep reporting an absence, which is the `stale` verdict below. Counting it
     // here too would let "an event is overdue" masquerade as "the machinery broke",
     // and since `failing` outranks `stale` the more specific answer would be lost.
-    const sweepFailures = mine.filter((s) => s.outcome === 'failed' && s.kind !== 'freshness').length;
+    //
+    // A unit is failing only while its NEWEST firing failed. A schedule that failed
+    // yesterday and has run cleanly since has recovered — counting every failure in
+    // the window kept such an app red for a full day after it was fine, while its
+    // own schedules panel (which already reads the newest run) said healthy. A
+    // `skipped` row is not a firing (the schedule was not due) and decides nothing.
+    const { failing: sweepFailures, recovered } = unitStanding(mine);
     // A freshness row that failed IS the staleness verdict — the evaluator already
     // judged it (#1232), so this counts verdicts rather than re-deriving them.
     const stale = mine.filter((s) => s.kind === 'freshness' && s.outcome === 'failed').length;
@@ -160,12 +166,40 @@ export function deriveFleetHealth(input: {
         : 'No sweep has reached this app in the window — nothing is checking it.';
       return { ...id, state: 'silent', reason, ...blank };
     }
-    return { ...id, state: 'ok', reason: 'Swept, with nothing failing or overdue.', failures: 0, sweepFailures: 0, stale: 0, lastSweepAt };
+    const reason = recovered > 0
+      ? `Swept, with nothing failing or overdue — ${recovered} sweep${recovered === 1 ? '' : 's'} that failed earlier in the window ${recovered === 1 ? 'has' : 'have'} since run cleanly.`
+      : 'Swept, with nothing failing or overdue.';
+    return { ...id, state: 'ok', reason, failures: 0, sweepFailures: 0, stale: 0, lastSweepAt };
   });
 
   return rows.sort(
     (a, b) => RANK[a.state] - RANK[b.state] || b.failures - a.failures || a.scopeId.localeCompare(b.scopeId),
   );
+}
+
+/**
+ * Per sweep unit (`<scopeId>:<operation>` for a schedule), whether its newest
+ * firing failed — `failing` — or it failed earlier in the window and its newest
+ * firing is clean — `recovered`. Freshness rows are excluded: theirs is the
+ * `stale` verdict, judged separately. Order-independent; ties on `at` fall back
+ * to the ULID `id`, which is chronological.
+ */
+function unitStanding(rows: SweepRunEntry[]): { failing: number; recovered: number } {
+  const newest = new Map<string, SweepRunEntry>();
+  const everFailed = new Set<string>();
+  for (const r of rows) {
+    if (r.kind === 'freshness' || r.outcome === 'skipped') continue;
+    if (r.outcome === 'failed') everFailed.add(r.unit);
+    const prev = newest.get(r.unit);
+    if (prev === undefined || r.at > prev.at || (r.at === prev.at && r.id > prev.id)) newest.set(r.unit, r);
+  }
+  let failing = 0;
+  let recovered = 0;
+  for (const unit of everFailed) {
+    if (newest.get(unit)!.outcome === 'failed') failing++;
+    else recovered++;
+  }
+  return { failing, recovered };
 }
 
 /**
