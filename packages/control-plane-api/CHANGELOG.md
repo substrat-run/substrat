@@ -1,5 +1,41 @@
 # @substrat-run/control-plane-api
 
+## 0.139.0
+
+### Minor Changes
+
+- ec25a00: Findings with a lifecycle (#1748): a tenant-scoped inbox of anomalies, triaged like email.
+
+  - A finding is one per (tenant, kind, subject), in a new directory table `_substrat_findings` (`FINDINGS_DDL`, kernel-owned, so both adapters run the same statements). Kinds: `recurring` (a tenant's own ops failures on one `_substrat_issues` fingerprint), `invariant` (a failed scheduled run) and `drift` (a freshness expectation judged stale). Each is opened on write by `recordOpsFailure` / `recordSweepRun` themselves: no cron, no scan, one indexed rule lookup and one upsert per occurrence. A replayed drain the sweep record ignores is not counted again.
+  - Statuses `open`, `acked`, `resolved`, `suppressed`, with a `regressed` flag; the issue statuses map 1:1 (new → open, regressed → open + regressed, resolved → resolved, ignored → suppressed). A resolved finding seen again reopens `regressed`, and when it came back under a version other than the one it was resolved under, that version is its `likelyCause`.
+  - A finding carries the tenant's own count, versions and scope, an `evidence` reference to where its rows are read, and the codes seen — never the evidence's free text, and never the fleet count of a fingerprint it shares with other tenants.
+  - `HostAdmin.listFindings`, `setFindingStatus` (acknowledge / resolve / reopen, keyed on the tenant), `createFindingRule` / `revokeFindingRule` / `listFindingRules`. A suppress rule names at least one of kind, operation, code or subject and expires within `FINDING_RULE_MAX_DAYS` (90); covered occurrences are still counted. Every mutation is audited (`setFindingStatus`, `createFindingRule`, `revokeFindingRule`).
+  - `HostAdmin.pruneFindings(actor, limit)`, run by the platform sweep as its own `findings` phase: an open or acked finding quiet for `FINDING_RETENTION_DAYS` is resolved as `stale`, with a `resolveStaleFinding` audit row written in the same unit, rather than deleted; resolved and suppressed findings are deleted once both their last occurrence and their last resolve are past the horizon, and expired rules once their expiry is. `PlatformSweepReport.findings` carries what it did. A tenant reap clears a tenant's findings and rules.
+  - Control plane: `GET /findings` (staff read the fleet; a tenant credential its own tenant), `PUT /tenants/:t/findings/:id/status`, and `GET`/`POST /tenants/:t/finding-rules`, `DELETE /tenants/:t/finding-rules/:id`, path-pinned for the tenant credential and absent for builders.
+  - Dashboard: `GET /api/findings`, `PUT /api/findings/:id/status`, and `GET`/`POST /api/findings/rules`, `DELETE /api/findings/rules/:id`, each asking the person first. Two new permission keys: `dashboard:read-findings` (owner, admin, member, viewer) and `dashboard:manage-findings` (owner, admin, member). Existing teams receive them through the role reconcile.
+  - `findingsContractSuite` holds both adapters to it.
+
+- 48bf765: An installed vertical's members can be managed from the dashboard (#1150): listed, invited, moved between roles and removed. Every change is bounded by what the signed-in person holds in the vertical's own scope (§5.1, K-21), asked in the scope task that writes it.
+
+  - Three scope-host verbs on both adapters, held by the permission contract suite: `listScopeRoleHolders(tenant, scope)` returns the live scope-level role assignments. `changeScopeRoleBounded(tenant, scope, caller, principal, from, to)` checks the caller's bound over both roles, then tombstones `from` and grants `to` in one transaction, or writes nothing. `revokeScopeRolesBounded(tenant, scope, caller, principal)` takes every scope role the principal holds, bounded over each, in one transaction. A role the tenant no longer defines confers nothing and is taken without a bound.
+  - vertical-host's `mountPlatformSurface` takes an optional `members` hook and serves `GET /internal/members`, `POST /internal/members/invite`, `…/role` and `…/remove`. Without the hook all four answer `501`. The owner of record answers `409` (move it with the owner hand-over), and so does a principal holding a role outside the hook's `roles`, and a role move for someone whose invite is still open (withdraw it and invite again at the new role). A removal takes every scope role first, bounded by what the principal holds, then withdraws the open invite, then unbinds every login, so an accept of the old link afterwards finds nothing. The roster's open invites carry the roles their principal holds now beside the role they were minted at.
+  - vertical-auth's `mountInviteRoutes` takes `revokeScopeRolesBounded` in place of `canAssign`: withdrawing an invite is bounded by the roles its principal holds now, asked in the scope task that takes them back, never by the role the invite row recorded at minting, and the grant goes with the row. A vertical passing `canAssign` passes `revokeScopeRolesBounded: (env, node, caller, principal) => host.revokeScopeRolesBounded(node.tenantId, node.scopeId, caller, principal)` instead.
+  - vertical-auth's `membersHook({ roles, directory })` builds that hook. `mintMemberInvite` is now the one copy of what an invite is, run by both `mountInviteRoutes` and the platform route. The invite table's rows are plain functions in `@substrat-run/vertical-auth/member-directory`, which the IdentityDO delegates to, and `IdentityDO.listMemberBindings(scope)` gives the identity half of the roster.
+  - control-plane-api serves `/tenants/:t/scopes/:s/members` (`GET` and `POST`), `…/members/:principal/role` and `…/members/:principal/remove`, pinned to the tenant. A change is made as the person the tenant credential was minted for (`onBehalfOf`). A credential naming nobody is refused `403`. Each change leaves `manageScopeMember` admin rows, the intent and then the outcome (`HostAdmin.recordMemberChange`).
+
+### Patch Changes
+
+- Updated dependencies [d62f6fb]
+- Updated dependencies [98492af]
+- Updated dependencies [2a505df]
+- Updated dependencies [ec25a00]
+- Updated dependencies [4a14c92]
+- Updated dependencies [d55b4cd]
+- Updated dependencies [48bf765]
+  - @substrat-run/kernel@0.139.0
+  - @substrat-run/contracts@0.139.0
+  - @substrat-run/control-plane-client@0.1.4
+
 ## 0.138.0
 
 ### Minor Changes

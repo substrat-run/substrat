@@ -1,5 +1,40 @@
 # @substrat-run/contracts
 
+## 0.139.0
+
+### Minor Changes
+
+- 2a505df: An entity can now be archived and moved to the trash, each under its own permission key (#119). Declare `archive: { permission }` and/or `trash: { permission }` on the entity in your model, and the kernel adds `_substrat_archived_at` / `_substrat_trashed_at` to its table through a derived migration. Existing rows come out active, and nothing needs backfilling.
+
+  - `ctx.archive`, `ctx.unarchive`, `ctx.trash` and `ctx.restore` check the declared key on the entity, refuse a move from the wrong state with `conflict` (`reason: 'invalid_transition'`), and emit `entity.archived` / `entity.unarchived` / `entity.trashed` / `entity.restored`. A restore returns an entity to the state it was trashed from, so an archived entity comes back archived.
+  - `ctx.page` and `ctx.search` leave archived and trashed rows out by default. Pass `view: 'archived'` to read the archive. The trash is read with `ctx.pageTrashed` / `ctx.searchTrashed`, which check the trash key on every row.
+  - `ctx.entityState(ref)` answers `active`, `archived`, `trashed` or `null`, for a handler's own get-by-id.
+  - An archivable entity's list indexes become partial, one per view, so a large archive does not slow the active list.
+  - `ctx.sql` now refuses a write that names a `_substrat_*` column, as it already refused one that targets a `_substrat_*` table. Reads stay allowed.
+
+- ec25a00: Findings with a lifecycle (#1748): a tenant-scoped inbox of anomalies, triaged like email.
+
+  - A finding is one per (tenant, kind, subject), in a new directory table `_substrat_findings` (`FINDINGS_DDL`, kernel-owned, so both adapters run the same statements). Kinds: `recurring` (a tenant's own ops failures on one `_substrat_issues` fingerprint), `invariant` (a failed scheduled run) and `drift` (a freshness expectation judged stale). Each is opened on write by `recordOpsFailure` / `recordSweepRun` themselves: no cron, no scan, one indexed rule lookup and one upsert per occurrence. A replayed drain the sweep record ignores is not counted again.
+  - Statuses `open`, `acked`, `resolved`, `suppressed`, with a `regressed` flag; the issue statuses map 1:1 (new → open, regressed → open + regressed, resolved → resolved, ignored → suppressed). A resolved finding seen again reopens `regressed`, and when it came back under a version other than the one it was resolved under, that version is its `likelyCause`.
+  - A finding carries the tenant's own count, versions and scope, an `evidence` reference to where its rows are read, and the codes seen — never the evidence's free text, and never the fleet count of a fingerprint it shares with other tenants.
+  - `HostAdmin.listFindings`, `setFindingStatus` (acknowledge / resolve / reopen, keyed on the tenant), `createFindingRule` / `revokeFindingRule` / `listFindingRules`. A suppress rule names at least one of kind, operation, code or subject and expires within `FINDING_RULE_MAX_DAYS` (90); covered occurrences are still counted. Every mutation is audited (`setFindingStatus`, `createFindingRule`, `revokeFindingRule`).
+  - `HostAdmin.pruneFindings(actor, limit)`, run by the platform sweep as its own `findings` phase: an open or acked finding quiet for `FINDING_RETENTION_DAYS` is resolved as `stale`, with a `resolveStaleFinding` audit row written in the same unit, rather than deleted; resolved and suppressed findings are deleted once both their last occurrence and their last resolve are past the horizon, and expired rules once their expiry is. `PlatformSweepReport.findings` carries what it did. A tenant reap clears a tenant's findings and rules.
+  - Control plane: `GET /findings` (staff read the fleet; a tenant credential its own tenant), `PUT /tenants/:t/findings/:id/status`, and `GET`/`POST /tenants/:t/finding-rules`, `DELETE /tenants/:t/finding-rules/:id`, path-pinned for the tenant credential and absent for builders.
+  - Dashboard: `GET /api/findings`, `PUT /api/findings/:id/status`, and `GET`/`POST /api/findings/rules`, `DELETE /api/findings/rules/:id`, each asking the person first. Two new permission keys: `dashboard:read-findings` (owner, admin, member, viewer) and `dashboard:manage-findings` (owner, admin, member). Existing teams receive them through the role reconcile.
+  - `findingsContractSuite` holds both adapters to it.
+
+- 4a14c92: The membership executor can join the org an invitation names (#2047). Mount it with `registerMembershipExecutor(host, { actor, orgs: 'join' })`. An add then joins the org and a removal takes the person out of it, in the same directory unit as the role. Both are bounded by the inviter's or remover's own live membership of that org. A member holds everything the org confers, including its grants in each scope's own store, so that is the whole bound. A tenant admin who is not a member of the org cannot invite into it. The joiner's membership expires no later than the inviter's own. The default (`orgs: 'ignore'`) is unchanged: role only.
+
+  `HostAdmin.applyMembership` takes an optional `orgId` and can refuse with `unknownOrg` or `notMember`. `HostAdmin.addMember` takes an optional `{ expiresAt }`, and `listMembers` reports each membership's `expiresAt`. The kernel exports `liveOrgMembership` and `joinedMembershipExpiry`.
+
+- 48bf765: An installed vertical's members can be managed from the dashboard (#1150): listed, invited, moved between roles and removed. Every change is bounded by what the signed-in person holds in the vertical's own scope (§5.1, K-21), asked in the scope task that writes it.
+
+  - Three scope-host verbs on both adapters, held by the permission contract suite: `listScopeRoleHolders(tenant, scope)` returns the live scope-level role assignments. `changeScopeRoleBounded(tenant, scope, caller, principal, from, to)` checks the caller's bound over both roles, then tombstones `from` and grants `to` in one transaction, or writes nothing. `revokeScopeRolesBounded(tenant, scope, caller, principal)` takes every scope role the principal holds, bounded over each, in one transaction. A role the tenant no longer defines confers nothing and is taken without a bound.
+  - vertical-host's `mountPlatformSurface` takes an optional `members` hook and serves `GET /internal/members`, `POST /internal/members/invite`, `…/role` and `…/remove`. Without the hook all four answer `501`. The owner of record answers `409` (move it with the owner hand-over), and so does a principal holding a role outside the hook's `roles`, and a role move for someone whose invite is still open (withdraw it and invite again at the new role). A removal takes every scope role first, bounded by what the principal holds, then withdraws the open invite, then unbinds every login, so an accept of the old link afterwards finds nothing. The roster's open invites carry the roles their principal holds now beside the role they were minted at.
+  - vertical-auth's `mountInviteRoutes` takes `revokeScopeRolesBounded` in place of `canAssign`: withdrawing an invite is bounded by the roles its principal holds now, asked in the scope task that takes them back, never by the role the invite row recorded at minting, and the grant goes with the row. A vertical passing `canAssign` passes `revokeScopeRolesBounded: (env, node, caller, principal) => host.revokeScopeRolesBounded(node.tenantId, node.scopeId, caller, principal)` instead.
+  - vertical-auth's `membersHook({ roles, directory })` builds that hook. `mintMemberInvite` is now the one copy of what an invite is, run by both `mountInviteRoutes` and the platform route. The invite table's rows are plain functions in `@substrat-run/vertical-auth/member-directory`, which the IdentityDO delegates to, and `IdentityDO.listMemberBindings(scope)` gives the identity half of the roster.
+  - control-plane-api serves `/tenants/:t/scopes/:s/members` (`GET` and `POST`), `…/members/:principal/role` and `…/members/:principal/remove`, pinned to the tenant. A change is made as the person the tenant credential was minted for (`onBehalfOf`). A credential naming nobody is refused `403`. Each change leaves `manageScopeMember` admin rows, the intent and then the outcome (`HostAdmin.recordMemberChange`).
+
 ## 0.138.0
 
 ### Minor Changes
@@ -6147,7 +6182,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
