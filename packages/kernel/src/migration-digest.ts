@@ -102,6 +102,33 @@ export function assertNoJournalSql(sql: string, what: string): void {
   }
 }
 
+/**
+ * Refuse a dump whose journal is not consistent with its own shape (#2066 r3): a table whose
+ * recorded DDL declares `sql_digest` while its columns omit it, or the other way round.
+ *
+ * A dump exported before digests were recorded restores as `'legacy'` (`spineRowsInsert`), so
+ * the shape of the journal is what says which kind of dump this is — and a current dump with
+ * the column stripped would otherwise pass as legacy and unprotect every row. The dump's DDL is
+ * `sqlite_master`'s text, which an ALTER rewrites, so a real pre-#2066 journal carries neither.
+ * Nothing else a dump carries changed with #2066 to cross-check against (the fence is a trigger,
+ * and a dump holds tables). A dump is freely editable data: a consistent edit of both is not
+ * detectable, and restore is privileged, audited staff work that could forge any digest anyway.
+ * This catches corruption and partial edits, not an author set on lying.
+ */
+export function assertJournalDumpCoherent(tables: readonly { name: string; ddl: string; columns: readonly string[] }[]): void {
+  for (const t of tables) {
+    if (t.name.toLowerCase() !== '_substrat_migrations') continue;
+    const declared = tokenizeSql(t.ddl).some((tok) => tok.text.toLowerCase() === 'sql_digest');
+    const carried = t.columns.some((c) => c.toLowerCase() === 'sql_digest');
+    if (declared === carried) continue;
+    throw substratError(
+      'validation_failed',
+      `restore refused: the dump's _substrat_migrations ${declared ? 'declares sql_digest in its DDL but carries no such column' : 'carries sql_digest but its DDL does not declare it'} — ` +
+        `it is neither a dump from before digests were recorded nor a whole one from after. Nothing was changed (#2066).`,
+    );
+  }
+}
+
 /** One migration a host applies, with its digest and whether it is held to it. */
 export interface MigrationStep {
   migration: SqlMigration;

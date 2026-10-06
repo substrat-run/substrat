@@ -148,6 +148,7 @@ import {
   moduleMigrations,
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_MARK_LEGACY,
+  assertJournalDumpCoherent,
   assertNoJournalSql,
   migrationDivergence,
   migrationFailedError,
@@ -5967,6 +5968,7 @@ export function defineScopeDO(
           this.applySpineColumnAdditions();
           const columnsOf = (name: string) => doBuiltColumnsOf(this.sql, name);
           assertSpineTablesBuilt(replayable.map((t) => t.name), columnsOf);
+          assertJournalDumpCoherent(replayable);
           // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
           // untyped column the checker never reads.
           for (const t of replayable) {

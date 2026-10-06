@@ -20,6 +20,16 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 import { listMod } from './modules.js';
 
 const MODULE = '@test/list';
+
+/** `_substrat_migrations` as `sqlite_master` held it before #2066 — what a pre-digest dump carries. */
+const PRE_DIGEST_JOURNAL_DDL = `CREATE TABLE _substrat_migrations (
+    module_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    duration_ms INTEGER,
+    rows_changed INTEGER,
+    PRIMARY KEY (module_id, version)
+  )`;
 const AUTHORED = '0001-init';
 
 /** SHA-256 hex, computed here with Web Crypto rather than through the kernel helper under test. */
@@ -141,23 +151,41 @@ export function migrationDigestContractSuite(
       await expect(add()).resolves.toBeDefined();
     });
 
-    it('a dump taken before digests were recorded restores with every journal row marked legacy, and serves', async () => {
-      // The journal as a pre-#2066 kernel exported it: no sql_digest column at all.
-      const tables = clean.tables.map((tbl) => {
+    /** `clean` with the journal reshaped: its `sql_digest` cells dropped, and its DDL set to `ddl`. */
+    const withoutDigestColumn = (ddl?: string): ScopeDump => ({
+      ...clean,
+      tables: clean.tables.map((tbl) => {
         if (tbl.name !== '_substrat_migrations') return tbl;
         const at = tbl.columns.indexOf('sql_digest');
         return {
           ...tbl,
+          ddl: ddl ?? tbl.ddl,
           columns: tbl.columns.filter((_, i) => i !== at),
           rows: tbl.rows.map((r) => r.filter((_, i) => i !== at)),
         };
-      });
-      await host.restoreScope(staff, t, s, { ...clean, tables });
+      }),
+    });
+
+    it('a dump taken before digests were recorded restores with every journal row marked legacy, and serves', async () => {
+      // The journal exactly as a pre-#2066 kernel exported it: the DDL `sqlite_master` held for it
+      // then, and the columns that DDL declares.
+      await host.restoreScope(staff, t, s, withoutDigestColumn(PRE_DIGEST_JOURNAL_DDL));
       const rows = await journal();
       expect([...rows.values()].map((r) => r.digest)).toEqual([...expected.keys()].map(() => 'legacy'));
       await expect(add()).resolves.toBeDefined();
       expect((await host.migrateScope(t, s)).status).not.toBe('failed');
       await restoreWith({});
+    });
+
+    it('a current dump with the digest column stripped is not taken for a legacy one: refused, the scope as it was', async () => {
+      // Its journal DDL still declares sql_digest: neither a dump from before digests nor a whole
+      // one from after. Read as legacy, it would unprotect every row.
+      const before = await journal();
+      await expect(host.restoreScope(staff, t, s, withoutDigestColumn())).rejects.toThrow(
+        "the dump's _substrat_migrations declares sql_digest in its DDL but carries no such column",
+      );
+      expect(await journal()).toEqual(before);
+      await expect(add()).resolves.toBeDefined();
     });
 
     it('derived DDL is held to its declaration, not its digest', async () => {

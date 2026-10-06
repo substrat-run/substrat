@@ -496,6 +496,7 @@ import {
   moduleMigrations,
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_MARK_LEGACY,
+  assertJournalDumpCoherent,
   assertNoJournalSql,
   migrationDivergence,
   migrationFailedError,
@@ -3568,6 +3569,7 @@ export class SqliteScopeHost implements ScopeHost {
       this.ensureSpineColumns(db);
       const columnsOf = (name: string) => builtColumnsOf(db, name);
       assertSpineTablesBuilt(loadable.map((t) => t.name), columnsOf);
+      assertJournalDumpCoherent(loadable);
       // A spine column this kernel does not know (a dump from a newer one) is kept, as a plain
       // untyped column the checker never reads.
       for (const t of loadable) {
