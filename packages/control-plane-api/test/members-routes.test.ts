@@ -13,6 +13,7 @@ import {
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
   settleUnrecordedOutcomes,
+  UNRECORDED_OUTCOME_LOG,
   type VerticalClient,
 } from '../src/index.js';
 
@@ -199,7 +200,7 @@ describe('/tenants/:t/scopes/:s/members — the plane names the scope and the pe
     const body = (await res.json()) as { error: string; operationId: string };
     expect(body.error).toMatch(/do not hold perm:use/);
     expect(logged).toEqual([
-      ['audit-outcome-unrecorded', { flow: 'member-change', operationId: body.operationId, phase: 'refused', auditError: 'admin log unavailable' }],
+      [UNRECORDED_OUTCOME_LOG, { flow: 'member-change', operationId: body.operationId, phase: 'refused', auditError: 'admin log unavailable' }],
     ]);
     expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent']]);
     const sweep = platformActorId.parse(ulid());
@@ -215,7 +216,7 @@ describe('/tenants/:t/scopes/:s/members — the plane names the scope and the pe
     expect(body.error).toMatch(/the removal completed, but its outcome could not be written/);
     expect(body.revoked).toEqual(['agent']);
     expect(logged).toEqual([
-      ['audit-outcome-unrecorded', { flow: 'member-change', operationId: body.operationId, phase: 'applied', auditError: 'admin log unavailable' }],
+      [UNRECORDED_OUTCOME_LOG, { flow: 'member-change', operationId: body.operationId, phase: 'applied', auditError: 'admin log unavailable' }],
     ]);
     expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent']]);
   });

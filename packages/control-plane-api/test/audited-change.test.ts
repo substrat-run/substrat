@@ -1,11 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ControlPlaneError, auditedChange, settleUnrecordedOutcomes, type AuditedRow } from '../src/index.js';
+import { ControlPlaneError, UNRECORDED_OUTCOME_LOG, auditedChange, settleUnrecordedOutcomes, type AuditedRow } from '../src/index.js';
 
 /**
  * The intent → call → outcome audit both cross-store flows share (#2064). The helper is pinned
@@ -16,13 +16,9 @@ describe('auditedChange (#2064)', () => {
   const harness = (fail: Partial<Record<AuditedRow<unknown>['phase'], Error>> = {}) => {
     const rows: AuditedRow<unknown>[] = [];
     const logged: [string, Record<string, unknown>][] = [];
-    let ran = 0;
     return {
       rows,
       logged,
-      get ran() {
-        return ran;
-      },
       spec: <T>(run: () => Promise<T>) => ({
         flow: 'test-flow',
         operationId: 'op-1',
@@ -30,10 +26,7 @@ describe('auditedChange (#2064)', () => {
           if (fail[row.phase]) throw fail[row.phase];
           rows.push(row as AuditedRow<unknown>);
         },
-        run: () => {
-          ran++;
-          return run();
-        },
+        run: vi.fn(run),
         refused: (e: unknown) => e instanceof ControlPlaneError && e.status === 409,
         logError: (message: string, fields: Record<string, unknown>) => logged.push([message, fields]),
       }),
@@ -64,8 +57,9 @@ describe('auditedChange (#2064)', () => {
 
   it('an intent the log cannot take stops the call', async () => {
     const h = harness({ intent: new Error('log down') });
-    await expect(auditedChange(h.spec(async () => 'moved'))).rejects.toThrow('log down');
-    expect(h.ran).toBe(0);
+    const spec = h.spec(async () => 'moved');
+    await expect(auditedChange(spec)).rejects.toThrow('log down');
+    expect(spec.run).not.toHaveBeenCalled();
   });
 
   it("a refused/failed row that cannot be written still hands back the vertical's error — and logs it with the operation id", async () => {
@@ -75,7 +69,7 @@ describe('auditedChange (#2064)', () => {
       expect(await auditedChange(h.spec(() => Promise.reject(thrown)))).toEqual({ operationId: 'op-1', error: thrown });
       expect(h.rows).toEqual([{ phase: 'intent' }]);
       expect(h.logged).toEqual([
-        ['audit-outcome-unrecorded', { flow: 'test-flow', operationId: 'op-1', phase, auditError: 'log down' }],
+        [UNRECORDED_OUTCOME_LOG, { flow: 'test-flow', operationId: 'op-1', phase, auditError: 'log down' }],
       ]);
     }
   });
@@ -84,7 +78,7 @@ describe('auditedChange (#2064)', () => {
     const h = harness({ applied: new Error('log down') });
     expect(await auditedChange(h.spec(async () => 'moved'))).toEqual({ operationId: 'op-1', result: 'moved', unrecorded: 'log down' });
     expect(h.logged).toEqual([
-      ['audit-outcome-unrecorded', { flow: 'test-flow', operationId: 'op-1', phase: 'applied', auditError: 'log down' }],
+      [UNRECORDED_OUTCOME_LOG, { flow: 'test-flow', operationId: 'op-1', phase: 'applied', auditError: 'log down' }],
     ]);
   });
 });
@@ -173,16 +167,8 @@ describe('settleUnrecordedOutcomes (#2064)', () => {
       (await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(9 * 24 * HOUR) })).settled,
     ).toEqual([]);
 
-    const failing = {
-      ...host.admin,
-      auditLog: host.admin.auditLog.bind(host.admin),
-      recordMemberChange: host.admin.recordMemberChange.bind(host.admin),
-      recordOpsFailure: host.admin.recordOpsFailure.bind(host.admin),
-      recordOwnerTransfer: async () => {
-        throw new Error('log down');
-      },
-    };
-    const pass = await settleUnrecordedOutcomes({ admin: failing, actor: sweep, now: later(2 * HOUR) });
+    vi.spyOn(host.admin, 'recordOwnerTransfer').mockRejectedValueOnce(new Error('log down'));
+    const pass = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) });
     expect(pass.settled).toEqual([]);
     expect(pass.errors).toEqual([{ operationId: old, error: 'log down' }]);
     expect((await rowsOf('transferOwner', old)).map((r) => r.phase)).toEqual(['intent']);

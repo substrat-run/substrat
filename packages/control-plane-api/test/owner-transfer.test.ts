@@ -20,6 +20,7 @@ import {
   ControlPlaneError,
   VerticalClient,
   settleUnrecordedOutcomes,
+  UNRECORDED_OUTCOME_LOG,
 } from '../src/index.js';
 
 /**
@@ -298,25 +299,20 @@ describe('the owner hand-over route (#1665)', () => {
     answer = async () => {
       throw new ControlPlaneError(409, 'claim it first');
     };
-    const original = host.admin.recordOwnerTransfer;
-    host.admin.recordOwnerTransfer = async (actor, entry) => {
+    const record = host.admin.recordOwnerTransfer;
+    const unwritable = vi.spyOn(host.admin, 'recordOwnerTransfer').mockImplementation(async (actor, entry) => {
       if (entry.phase === 'refused') throw new Error('admin log unavailable');
-      return original.call(host.admin, actor, entry);
-    };
+      return record.call(host.admin, actor, entry);
+    });
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    let res: Response;
-    let calls: unknown[][];
-    try {
-      res = await send(route(s), asStaff);
-      calls = logged.mock.calls.slice();
-    } finally {
-      host.admin.recordOwnerTransfer = original;
-      logged.mockRestore();
-    }
+    const res = await send(route(s), asStaff);
+    const calls = logged.mock.calls.slice();
+    unwritable.mockRestore();
+    logged.mockRestore();
     expect(res.status).toBe(409);
     const { operationId } = (await res.json()) as { operationId: string };
     expect(calls).toEqual([
-      ['audit-outcome-unrecorded', { flow: 'owner-transfer', operationId, phase: 'refused', auditError: 'admin log unavailable' }],
+      [UNRECORDED_OUTCOME_LOG, { flow: 'owner-transfer', operationId, phase: 'refused', auditError: 'admin log unavailable' }],
     ]);
     expect((await rows(s)).map((r) => r.phase)).toEqual(['intent']);
     // The scheduled pass closes the intent; the refusal itself is not recoverable from the log.

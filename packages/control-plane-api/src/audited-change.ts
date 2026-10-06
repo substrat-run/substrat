@@ -17,10 +17,19 @@
  *
  * Neither failure is silent any more, and neither is left for a reader to explain: an intent
  * with no outcome is closed by `settleUnrecordedOutcomes` below, which the scheduled pass runs.
- * Every flow of this shape goes through `auditedChange`, so the next one cannot leave the
- * outcome write in a bare `.catch(() => undefined)` again.
+ * Every control-plane flow of this shape goes through `auditedChange`, so the next one cannot
+ * leave the outcome write in a bare `.catch(() => undefined)` again. (The schedule and peer kill
+ * switches audit the same way inside the adapters, which cannot import this package; they are
+ * not covered here.)
  */
-import { AUDIT_ERROR_MAX, type AdminAction, type AdminLogEntry, type PlatformActorId } from '@substrat-run/contracts';
+import {
+  AUDIT_ERROR_MAX,
+  type AdminAction,
+  type AdminLogEntry,
+  type MemberChangeAudit,
+  type OwnerTransferAudit,
+  type PlatformActorId,
+} from '@substrat-run/contracts';
 import type { HostAdmin, OpsFailureInput } from '@substrat-run/kernel';
 
 /** One row of an audited change, before the flow adds its own fields. */
@@ -52,6 +61,7 @@ export type AuditedChange<T> =
   | { operationId: string; error: unknown };
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+const consoleError = (message: string, fields: Record<string, unknown>) => console.error(message, fields);
 
 /** The structured line both unwritten outcomes leave, keyed so a log search finds every one. */
 export const UNRECORDED_OUTCOME_LOG = 'audit-outcome-unrecorded';
@@ -62,7 +72,7 @@ export const UNRECORDED_OUTCOME_LOG = 'audit-outcome-unrecorded';
  */
 export async function auditedChange<T>(spec: AuditedChangeSpec<T>): Promise<AuditedChange<T>> {
   const { flow, operationId, record } = spec;
-  const logError = spec.logError ?? ((message, fields) => console.error(message, fields));
+  const logError = spec.logError ?? consoleError;
   await record({ phase: 'intent' });
   let result: T;
   try {
@@ -86,16 +96,9 @@ export async function auditedChange<T>(spec: AuditedChangeSpec<T>): Promise<Audi
   return { operationId, result };
 }
 
-/**
- * The admin actions written through `auditedChange`, and how the sweep writes an `unknown`
- * outcome for each: through the same narrow, parsed recorder the flow itself uses.
- */
-type AuditedAction = Extract<AdminAction, 'transferOwner' | 'manageScopeMember'>;
-const SETTLERS: Record<AuditedAction, (admin: SettleAdmin, actor: PlatformActorId, entry: never) => Promise<void>> = {
-  transferOwner: (admin, actor, entry) => admin.recordOwnerTransfer(actor, entry),
-  manageScopeMember: (admin, actor, entry) => admin.recordMemberChange(actor, entry),
-};
-export const AUDITED_CHANGE_ACTIONS = Object.keys(SETTLERS) as AuditedAction[];
+/** The admin actions written through `auditedChange`. */
+const AUDITED_CHANGE_ACTIONS = ['transferOwner', 'manageScopeMember'] as const satisfies readonly AdminAction[];
+type AuditedAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
 
 export type SettleAdmin = Pick<HostAdmin, 'auditLog' | 'recordOwnerTransfer' | 'recordMemberChange' | 'recordOpsFailure'>;
 
@@ -124,8 +127,8 @@ export interface SettleResult {
   errors: { operationId: string; error: string }[];
 }
 
-export const SETTLE_GRACE_MS = 60 * 60 * 1000;
-export const SETTLE_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+const SETTLE_GRACE_MS = 60 * 60 * 1000;
+const SETTLE_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 const PAGE = 500;
 
 /**
@@ -136,23 +139,24 @@ const PAGE = 500;
  */
 export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<SettleResult> {
   const { admin, actor } = opts;
-  const logError = opts.logError ?? ((message, fields) => console.error(message, fields));
+  const logError = opts.logError ?? consoleError;
   const now = (opts.now ?? new Date()).getTime();
   const graceMs = opts.graceMs ?? SETTLE_GRACE_MS;
   const cutoff = new Date(now - graceMs).toISOString();
   const since = new Date(now - (opts.lookbackMs ?? SETTLE_LOOKBACK_MS)).toISOString();
 
-  const intents = new Map<string, AdminLogEntry>();
+  type IntentPayload = Record<string, unknown> & { phase: 'intent'; operationId: string };
+  const intents = new Map<string, { row: AdminLogEntry; after: IntentPayload }>();
   const closed = new Set<string>();
   for (let cursor: string | undefined; ; ) {
-    const page = await admin.auditLog(actor, { action: AUDITED_CHANGE_ACTIONS, since, limit: PAGE, cursor });
+    const page = await admin.auditLog(actor, { action: [...AUDITED_CHANGE_ACTIONS], since, limit: PAGE, cursor });
     for (const row of page) {
-      const after = row.after as { phase?: unknown; operationId?: unknown } | null;
+      const after = row.after as IntentPayload | null;
       if (typeof after?.operationId !== 'string') continue;
       // Keyed by action too: the two flows mint their operation ids independently.
       const key = `${row.action}:${after.operationId}`;
       if (after.phase === 'intent') {
-        if (row.at < cutoff) intents.set(key, row);
+        if (row.at < cutoff) intents.set(key, { row, after });
       } else {
         closed.add(key);
       }
@@ -163,19 +167,17 @@ export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<Set
 
   const result: SettleResult = { settled: [], errors: [] };
   const minutes = Math.round(graceMs / 60_000);
-  for (const [key, intent] of intents) {
+  for (const [key, { row: intent, after }] of intents) {
     if (closed.has(key)) continue;
     const action = intent.action as AuditedAction;
-    const { phase: _intent, ...fields } = intent.after as Record<string, unknown> & { operationId: string };
+    const { phase: _intent, ...fields } = after;
     const error = `no outcome was recorded within ${minutes} minutes of the intent (${intent.at}); whether the change happened is not known to this log`;
+    // The intent's own fields, re-parsed strictly by the same recorder the flow wrote it with.
+    const entry = { ...fields, tenantId: intent.tenantId, scopeId: intent.scopeId, phase: 'unknown' as const, error };
     try {
-      await SETTLERS[action](admin, actor, {
-        ...fields,
-        tenantId: intent.tenantId,
-        scopeId: intent.scopeId,
-        phase: 'unknown',
-        error,
-      } as never);
+      await (action === 'transferOwner'
+        ? admin.recordOwnerTransfer(actor, entry as OwnerTransferAudit)
+        : admin.recordMemberChange(actor, entry as MemberChangeAudit));
     } catch (e) {
       result.errors.push({ operationId: fields.operationId, error: messageOf(e) });
       continue;
