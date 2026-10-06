@@ -71,28 +71,33 @@ export interface MigrationStep {
   authored: boolean;
 }
 
-type Registration = Parameters<typeof moduleMigrations>[0];
-const stepsOf = new WeakMap<Registration, Promise<readonly MigrationStep[]>>();
+/**
+ * Digests by SQL text. Keyed on the content, not on the registration object: a registration
+ * mutated or rebuilt with other SQL under the same version gets that SQL's digest, never a
+ * stale one. Bounded by the distinct migration texts the isolate has registered.
+ */
+const digestOf = new Map<string, Promise<string>>();
+const cachedDigest = (sql: string): Promise<string> => {
+  let digest = digestOf.get(sql);
+  if (!digest) digestOf.set(sql, (digest = migrationDigest(sql)));
+  return digest;
+};
 
 /**
  * A module's migrations in the order the host applies them (`moduleMigrations`), each with its
- * digest and whether it is authored. Memoised per registration, so a Durable Object that wakes
- * with the same code-time modules hashes nothing again.
+ * digest and whether it is authored — read from the registration as it is now. The digest of a
+ * text is computed once per isolate, so a Durable Object that wakes with the same code hashes
+ * nothing again.
  */
-export function migrationSteps(registration: Registration): Promise<readonly MigrationStep[]> {
-  let steps = stepsOf.get(registration);
-  if (!steps) {
-    const authored = new Set((registration.migrations ?? []).map((m) => m.version));
-    steps = Promise.all(
-      moduleMigrations(registration).map(async (migration) => ({
-        migration,
-        digest: await migrationDigest(migration.sql),
-        authored: authored.has(migration.version),
-      })),
-    );
-    stepsOf.set(registration, steps);
-  }
-  return steps;
+export function migrationSteps(registration: Parameters<typeof moduleMigrations>[0]): Promise<readonly MigrationStep[]> {
+  const authored = new Set((registration.migrations ?? []).map((m) => m.version));
+  return Promise.all(
+    moduleMigrations(registration).map(async (migration) => ({
+      migration,
+      digest: await cachedDigest(migration.sql),
+      authored: authored.has(migration.version),
+    })),
+  );
 }
 
 /** A step a migration pass still has to run, with the module it belongs to. */
