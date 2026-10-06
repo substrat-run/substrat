@@ -5736,6 +5736,14 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
      *   `403` otherwise) and again on every pass that has a row beneath it to announce,
      *   so a grant withdrawn, or a root moved out from under it, closes the socket
      *   instead of nudging it. `LiveNudge` frames only, as for a vouched root.
+     *
+     * **Freshness (Codex #2077 r5).** A decision is reused within a pass only while the
+     * scope has had no write and nothing it holds has reached its `expires_at` since the
+     * decision. It is never reused while the scope reads its permissions from the directory.
+     * Both are checked against the clock immediately before each send. A change that lands
+     * while a check is still being evaluated can let that one frame through. Frames name
+     * nothing the subscriber could not read when checked, and the next frame, pass and poll
+     * see the change: a push is a hint at most one evaluation stale.
      */
     within?: EntityRef | VouchedWithin | CheckedWithin;
     /**

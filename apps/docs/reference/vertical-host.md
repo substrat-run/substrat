@@ -338,7 +338,29 @@ One principal may hold `LIVE_SOCKETS_PER_PRINCIPAL` (8) live sockets on a scope.
 accepted and closed at once with `LIVE_CLOSE.tooMany` (`4429`), because a browser never sees a
 failed handshake's status, only a close code. A client should read `4429` as "poll and stop
 asking", not as a reason to reconnect. `checkedWithin` gates are asked once per
-(principal, key, root) per pass, however many of those sockets share a root.
+(principal, key, root) per pass, however many of those sockets share a root, when the scope
+reads its permissions from its own storage. A scope that still reads them from the directory
+asks once per socket instead (see below).
+
+### How fresh a live decision is
+
+Each frame is decided just before it is sent. A decision the pass reuses for a later socket or
+row (a `checkedWithin` gate, the walk up from a row) is reused only while all three of these
+still hold, checked against the clock immediately before each send:
+
+- nothing has been written to the scope since the decision was made;
+- no grant, tuple, parent edge or entitlement in the scope has reached its `expires_at` since
+  the decision was made;
+- the scope reads its permissions from its own storage. While it still reads tenant tuples,
+  roles and org membership from the directory, a change there writes nothing in the scope, so
+  the gate is asked again for every socket and row.
+
+What stays open is a change that lands while a check is still being evaluated. It can let that
+one evaluation's frame through: one nudge, after the change. Frames carry no content (a nudge
+names no entity, and a `change` frame only names a row the subscriber could read when it was
+checked). The next frame, the next pass and the client's poll all see the change. This is the
+live-read freshness contract: a push is a hint that can be up to one evaluation stale, and the
+read it prompts is checked as usual.
 
 ## `requestConnectUrl(request)`
 
