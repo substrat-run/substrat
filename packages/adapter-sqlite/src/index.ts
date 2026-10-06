@@ -495,7 +495,7 @@ import {
   cursorOf,
   moduleMigrations,
   MIGRATION_DIGEST_FENCE_DDL,
-  MIGRATION_DIGEST_FENCE_LIFT,
+  MIGRATION_DIGEST_MARK_LEGACY,
   migrationDivergence,
   migrationFailedError,
   migrationSteps,
@@ -3572,15 +3572,12 @@ export class SqliteScopeHost implements ScopeHost {
       for (const t of loadable) {
         if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) db.exec(alter);
       }
-      // #2066: a legacy scope's dump carries journal rows with no digest, verbatim.
-      db.exec(MIGRATION_DIGEST_FENCE_LIFT);
       for (const t of loadable) {
         const insert = dumpRowsInsert(t, columnsOf);
         if (t.rows.length === 0) continue;
         const stmt = db.prepare(insert);
         for (const row of t.rows) stmt.run(...(row as unknown[]));
       }
-      db.exec(MIGRATION_DIGEST_FENCE_DDL);
       // Rebuild the derived search indexes over the rows just loaded (#827). The DDL
       // drops and recreates, so this also repairs an index the dump left stale, and
       // the triggers it recreates are what keep the restored scope in step from here.
@@ -12042,8 +12039,10 @@ export class SqliteScopeHost implements ScopeHost {
     // #1763: old journal rows keep NULL, meaning their cost was never recorded.
     this.ensureColumn(db, '_substrat_migrations', 'duration_ms', 'duration_ms INTEGER');
     this.ensureColumn(db, '_substrat_migrations', 'rows_changed', 'rows_changed INTEGER');
-    // #2066: old journal rows keep NULL — what they ran was never measured, so it is not backfilled.
+    // #2066: the rows already there get the legacy mark, never a digest — what they ran was never
+    // measured. KERNEL_DDL's fence keeps any other NULL out, so the mark finds only those.
     this.ensureColumn(db, '_substrat_migrations', 'sql_digest', 'sql_digest TEXT');
+    db.exec(MIGRATION_DIGEST_MARK_LEGACY);
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');

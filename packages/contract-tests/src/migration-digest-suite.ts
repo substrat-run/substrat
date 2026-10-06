@@ -132,13 +132,31 @@ export function migrationDigestContractSuite(
       await expect(add()).resolves.toBeDefined();
     });
 
-    it('a legacy row with no digest is accepted, and left unrecorded rather than backfilled', async () => {
-      await restoreWith({ '0001-init': null, '0002-hold': null });
+    it("a dump whose journal carries a NULL digest is refused, and the scope is left as it was", async () => {
+      // A modern dump with an authored digest cleared — corrupted, or edited to hide a mismatch.
+      // A NULL cannot say where it came from, so the journal's fence refuses it on the way in.
+      const before = await journal();
+      await expect(restoreWith({ [AUTHORED]: null })).rejects.toThrow('a migration journal row must carry its sql_digest (#2066)');
+      expect(await journal()).toEqual(before);
+      await expect(add()).resolves.toBeDefined();
+    });
+
+    it('a dump taken before digests were recorded restores with every journal row marked legacy, and serves', async () => {
+      // The journal as a pre-#2066 kernel exported it: no sql_digest column at all.
+      const tables = clean.tables.map((tbl) => {
+        if (tbl.name !== '_substrat_migrations') return tbl;
+        const at = tbl.columns.indexOf('sql_digest');
+        return {
+          ...tbl,
+          columns: tbl.columns.filter((_, i) => i !== at),
+          rows: tbl.rows.map((r) => r.filter((_, i) => i !== at)),
+        };
+      });
+      await host.restoreScope(staff, t, s, { ...clean, tables });
+      const rows = await journal();
+      expect([...rows.values()].map((r) => r.digest)).toEqual([...expected.keys()].map(() => 'legacy'));
       await expect(add()).resolves.toBeDefined();
       expect((await host.migrateScope(t, s)).status).not.toBe('failed');
-      const rows = await journal();
-      expect(rows.get('0001-init')?.digest).toBeNull();
-      expect(rows.get('0002-hold')?.digest).toBeNull();
       await restoreWith({});
     });
 

@@ -24,31 +24,44 @@ declare const TextEncoder: new () => { encode(input: string): Uint8Array };
  *   how it spells the same declaration between releases. Holding those rows to a digest would
  *   fail every scope with a searchable entity closed on the kernel upgrade that respelled a
  *   trigger. Their digest is still recorded, as the fact of what ran.
- * - **A row with no digest is accepted and left NULL.** It was written before the column,
- *   and nobody measured what it ran. Backfilling the registered digest would write a value
+ * - **A row applied before the column carries `'legacy'`, and is accepted.** Nobody measured
+ *   what it ran, so it gets no digest: backfilling the registered one would write a value
  *   nobody measured, and bless the one row this exists to catch if that scope did run
- *   something else; NULL says "unrecorded", which is true. Such a row is unprotected for
- *   good, which is the price of not lying in the journal.
+ *   something else. The mark is explicit rather than a NULL, because a NULL cannot say where it
+ *   came from: the rows present when the column arrives are marked (`MIGRATION_DIGEST_MARK_LEGACY`),
+ *   a dump taken before the column restores as `'legacy'` (the restore derives it), and from
+ *   then on the fence below refuses a NULL however it is written. So `'legacy'` is provenance,
+ *   and a NULL — say a dump edited to clear a digest — is refused rather than trusted. Such a
+ *   row is unprotected for good, which is the price of not lying in the journal.
  */
 export function migrationDigest(sql: string): Promise<string> {
   return attachmentSha256(new TextEncoder().encode(sql));
 }
 
+/** What a journal row applied before digests were recorded carries in `sql_digest` (#2066). */
+export const MIGRATION_DIGEST_LEGACY = 'legacy';
+
 /**
- * The fence that keeps a NULL digest meaning "written before the column" — in both adapters'
- * KERNEL_DDL, after the journal table, so `lint:spine-ddl` holds it like any spine trigger.
+ * Marks the rows present when the column arrived. Run right after the column's ALTER on every
+ * wake: once the fence is in place it can only ever find those rows, since nothing else can
+ * leave a NULL. Literal text, like the fence, so `lint:spine-ddl` and a reviewer read one spelling.
+ */
+export const MIGRATION_DIGEST_MARK_LEGACY = "UPDATE _substrat_migrations SET sql_digest = 'legacy' WHERE sql_digest IS NULL";
+
+/**
+ * The fence: no journal row is written, or rewritten, without a digest or the legacy mark — in
+ * both adapters' KERNEL_DDL, after the journal table, so `lint:spine-ddl` holds it like any
+ * spine trigger.
  *
  * Without it an older writer (an instance still on the previous release during a rollout or a
- * rollback, or a second process over the same SQLite file) inserts a journal row that omits the
- * column, SQLite records NULL, and the row is unprotected for good. With it that INSERT aborts,
- * so the older writer's migration fails and its scope fails closed until code that records the
- * digest serves it, which then applies the migration properly. KERNEL_DDL runs before the
- * column is ALTERed onto a legacy journal, and on a table without the column the trigger makes
- * any INSERT fail with `no such column`: there is no window in which a NULL can be written. So
- * a NULL row predates the first wake by digest-aware code, which is what makes accepting it
- * sound, with no install marker to keep. A restore is the one writer that may load NULL rows
- * (a dump of a legacy scope carries them verbatim): it lifts the fence around its row load
- * (`MIGRATION_DIGEST_FENCE_LIFT`) and puts it back after.
+ * rollback, or a second process over the same SQLite file) inserts a row that omits the
+ * column, and SQLite records NULL. With it that INSERT aborts, so the older writer's migration
+ * fails and its scope fails closed until code that records the digest serves it, which then
+ * applies the migration properly. KERNEL_DDL runs before the column is ALTERed onto a legacy
+ * journal, and on a table without the column the INSERT trigger makes any INSERT fail with
+ * `no such column`: there is no window in which a NULL can be written. A restore loads its
+ * rows under the fence too, so a dump that carries a NULL is refused (`spineRowsInsert` gives a
+ * dump from before the column the legacy mark instead).
  *
  * Literal text, no interpolation: `lint:spine-ddl` inlines a kernel fragment one level deep.
  */
@@ -58,10 +71,12 @@ export const MIGRATION_DIGEST_FENCE_DDL = `
   BEGIN
     SELECT RAISE(ABORT, 'a migration journal row must carry its sql_digest (#2066)');
   END;
+  CREATE TRIGGER IF NOT EXISTS _substrat_migrations_digest_kept
+  BEFORE UPDATE OF sql_digest ON _substrat_migrations WHEN NEW.sql_digest IS NULL
+  BEGIN
+    SELECT RAISE(ABORT, 'a migration journal row must carry its sql_digest (#2066)');
+  END;
 `;
-
-/** Drops the fence for a restore's row load; `MIGRATION_DIGEST_FENCE_DDL` puts it back. */
-export const MIGRATION_DIGEST_FENCE_LIFT = 'DROP TRIGGER IF EXISTS _substrat_migrations_digest_required';
 
 /** One migration a host applies, with its digest and whether it is held to it. */
 export interface MigrationStep {
@@ -141,7 +156,8 @@ export function migrationFailedError(key: string, cause: string): Error {
 
 /**
  * Why a registered migration the scope has already applied cannot be trusted, or null when it
- * can: a recorded digest that differs from the registered one, on an authored migration.
+ * can: on an authored migration, a recorded digest that differs from the registered one, or
+ * no digest and no legacy mark at all.
  *
  * The caller fails the scope closed with this as the cause, the way a migration that threw
  * does — the same `migration failed for <module>@<version> — scope fails closed:` record, so
@@ -157,7 +173,16 @@ export function migrationDivergence(
   registered: string,
   authored: boolean,
 ): string | null {
-  if (!authored || recorded == null || recorded === registered) return null;
+  if (!authored || recorded === undefined || recorded === registered || recorded === MIGRATION_DIGEST_LEGACY) return null;
+  if (recorded === null) {
+    // The fence makes this unreachable through the kernel; a row that has it anyway was not
+    // written by the kernel, and says nothing about what ran.
+    return (
+      `this scope's journal records neither a digest nor the legacy mark for this version, so ` +
+      `what it ran is unknown (registered sha256 ${registered}). Rebuild the scope, or restore it ` +
+      `to a dump the kernel wrote (#2066)`
+    );
+  }
   return (
     `this scope applied different SQL under this version (applied sha256 ${recorded}, ` +
     `registered sha256 ${registered}). Rebuild the scope, or restore it to a dump taken before ` +

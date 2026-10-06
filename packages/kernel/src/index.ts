@@ -348,7 +348,8 @@ export type {
 export { moduleMigrations } from './module-migrations.js';
 export {
   MIGRATION_DIGEST_FENCE_DDL,
-  MIGRATION_DIGEST_FENCE_LIFT,
+  MIGRATION_DIGEST_LEGACY,
+  MIGRATION_DIGEST_MARK_LEGACY,
   migrationDigest,
   migrationDivergence,
   migrationFailedError,

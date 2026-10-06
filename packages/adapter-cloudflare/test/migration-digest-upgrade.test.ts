@@ -46,6 +46,7 @@ it('adds sql_digest to a legacy journal on wake, leaves its rows NULL, and toler
     await runInDurableObject(fresh(), (_instance, state) => {
       // The journal as every scope had it before #2066: no fence, no column.
       state.storage.sql.exec('DROP TRIGGER _substrat_migrations_digest_required');
+      state.storage.sql.exec('DROP TRIGGER _substrat_migrations_digest_kept');
       state.storage.sql.exec('ALTER TABLE _substrat_migrations DROP COLUMN sql_digest');
     });
     await runInDurableObject(fresh(), (_instance, state) => {
@@ -54,7 +55,8 @@ it('adds sql_digest to a legacy journal on wake, leaves its rows NULL, and toler
     await expect(add()).resolves.toBeDefined();
     const legacy = await digests();
     expect(legacy.length).toBeGreaterThan(0);
-    expect(legacy.every((d) => d === null)).toBe(true);
+    // Marked, not backfilled: the rows present when the column arrived say so.
+    expect(legacy.every((d) => d === 'legacy')).toBe(true);
     await runInDurableObject(fresh(), (_instance, state) => {
       state.abort('evicted to check the repeat sql_digest ALTER');
     }).catch(() => undefined);
@@ -75,6 +77,16 @@ it('adds sql_digest to a legacy journal on wake, leaves its rows NULL, and toler
       }
     });
     expect(oldWrite).toContain('a migration journal row must carry its sql_digest (#2066)');
+    // Nor can a row's digest be cleared afterwards.
+    const cleared = await runInDurableObject(fresh(), (_instance, state) => {
+      try {
+        state.storage.sql.exec("UPDATE _substrat_migrations SET sql_digest = NULL WHERE module_id = '@test/list'");
+        return 'cleared';
+      } catch (err) {
+        return (err as Error).message;
+      }
+    });
+    expect(cleared).toContain('a migration journal row must carry its sql_digest (#2066)');
     // The twin: with its digest, the same row goes in.
     await runInDurableObject(fresh(), (_instance, state) => {
       state.storage.sql.exec(

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { MIGRATION_DIGEST_FENCE_LIFT, migrationDigest, ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler, type SqlMigration } from '@substrat-run/kernel';
+import { migrationDigest, ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler, type SqlMigration } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 const MODULE = '@test/digest';
@@ -118,21 +118,22 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
     }
   });
 
-  it('a scope file from before the column gains it on wake; its rows stay NULL and are accepted', async () => {
+  it('a scope file from before the column gains it on wake; its rows are marked legacy, not backfilled, and accepted', async () => {
     const { dir, t, s, file } = await scopeRanWith([INIT, BRANCH_A]);
     // The journal as every scope had it before #2066: no fence, no column.
     const db = new Database(file);
     db.exec('DROP TRIGGER _substrat_migrations_digest_required');
+    db.exec('DROP TRIGGER _substrat_migrations_digest_kept');
     db.exec('ALTER TABLE _substrat_migrations DROP COLUMN sql_digest');
     db.close();
-    // Even under SQL the legacy row cannot vouch for: a NULL is accepted, never compared.
+    // Even under SQL the legacy row cannot vouch for: the mark is accepted, never compared.
     const third = { version: '0003-more', sql: 'ALTER TABLE digest_notes ADD COLUMN more TEXT;' };
     const next = redeploy(dir, [INIT, BRANCH_B, third]);
     try {
       await (await next.getScope(who, t, s)).invoke('digest/add', {});
       expect(journalOf(file)).toEqual([
-        { version: '0001-init', sql_digest: null },
-        { version: '0002-next', sql_digest: null },
+        { version: '0001-init', sql_digest: 'legacy' },
+        { version: '0002-next', sql_digest: 'legacy' },
         { version: '0003-more', sql_digest: await migrationDigest(third.sql) },
       ]);
     } finally {
@@ -155,6 +156,10 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
         MODULE, '9999-probe', 'x', 0, 0, 'f'.repeat(64),
       );
       db.prepare('DELETE FROM _substrat_migrations WHERE version = ?').run('9999-probe');
+      // Nor can a row's digest be cleared afterwards.
+      expect(() => db.prepare('UPDATE _substrat_migrations SET sql_digest = NULL').run()).toThrow(
+        'a migration journal row must carry its sql_digest (#2066)',
+      );
     } finally {
       db.close();
     }
@@ -174,7 +179,8 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
   it('a second opener that adds a spine column first does not fail the wake (#2066 review)', async () => {
     const { dir, t, s, file } = await scopeRanWith([INIT]);
     const db = new Database(file);
-    db.exec(MIGRATION_DIGEST_FENCE_LIFT);
+    db.exec('DROP TRIGGER _substrat_migrations_digest_required');
+    db.exec('DROP TRIGGER _substrat_migrations_digest_kept');
     db.exec('ALTER TABLE _substrat_migrations DROP COLUMN sql_digest');
     db.close();
     // The race, made deterministic: this opener's PRAGMA saw no column, and another opener's
@@ -205,4 +211,5 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
       await host.close();
     }
   });
+
 });

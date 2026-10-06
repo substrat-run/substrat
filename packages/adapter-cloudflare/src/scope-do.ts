@@ -147,7 +147,7 @@ import {
   listIndexPlans,
   moduleMigrations,
   MIGRATION_DIGEST_FENCE_DDL,
-  MIGRATION_DIGEST_FENCE_LIFT,
+  MIGRATION_DIGEST_MARK_LEGACY,
   migrationDivergence,
   migrationFailedError,
   migrationSteps,
@@ -5692,7 +5692,7 @@ export function defineScopeDO(
         // #1763: rows written before these fields keep NULL, meaning unrecorded.
         'ALTER TABLE _substrat_migrations ADD COLUMN duration_ms INTEGER',
         'ALTER TABLE _substrat_migrations ADD COLUMN rows_changed INTEGER',
-        // #2066: old journal rows keep NULL — what they ran was never measured, so it is not backfilled.
+        // #2066: the rows already there get the legacy mark below, never a digest.
         'ALTER TABLE _substrat_migrations ADD COLUMN sql_digest TEXT',
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
@@ -5773,6 +5773,8 @@ export function defineScopeDO(
       // boot. `lint:spine-ddl` compares KERNEL_DDL's indexes only, so this one is held to
       // both adapters by the query-plan test rather than by that gate.
       this.sql.exec('CREATE INDEX IF NOT EXISTS _substrat_outbox_invocation ON _substrat_outbox (invocation_id, id)');
+      // #2066: what they ran was never measured. KERNEL_DDL's fence keeps any other NULL out.
+      this.sql.exec(MIGRATION_DIGEST_MARK_LEGACY);
       this.ensureScheduleStateKind();
       this.ensureRefusalsAdmitGuards();
     }
@@ -5968,13 +5970,10 @@ export function defineScopeDO(
           for (const t of replayable) {
             if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
           }
-          // #2066: a legacy scope's dump carries journal rows with no digest, verbatim.
-          this.sql.exec(MIGRATION_DIGEST_FENCE_LIFT);
           for (const t of replayable) {
             const insert = dumpRowsInsert(t, columnsOf);
             for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
           }
-          for (const stmt of splitSqlStatements(MIGRATION_DIGEST_FENCE_DDL)) this.sql.exec(stmt);
           // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
           // not this one, so it is never carried over. #2016: what stays is THIS store's own —
           // the platform's word when the load carries it (a copy into a fresh scope records its
