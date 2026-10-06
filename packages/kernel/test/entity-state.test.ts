@@ -18,6 +18,8 @@ import {
   StateColumnLost,
   assertNoStatefulDdl,
   changesSchema,
+  guardSpine,
+  splitStatements,
   cursorOf,
   listQuery,
 } from '../src/index.js';
@@ -528,3 +530,59 @@ describe('repairDerivedObjects / assertEntityStateColumns (#2090)', () => {
     expect(ran[0]).toMatch(/CREATE INDEX _substrat_list_m_doc_title_archived ON docs \(title, id\) WHERE/);
   });
 });
+
+describe('splitStatements / guardSpine one statement at a time (#2090, Codex r3)', () => {
+  it('cuts at a `;` outside strings, quoted names, comments and trigger bodies', () => {
+    expect(splitStatements(`CREATE TABLE a (x); INSERT INTO a VALUES ('x;y'); SELECT "c;d" FROM a`)).toEqual([
+      'CREATE TABLE a (x)',
+      `INSERT INTO a VALUES ('x;y')`,
+      'SELECT "c;d" FROM a',
+    ]);
+    expect(splitStatements('-- a;b\nSELECT 1; /* ; */ SELECT 2;;  ')).toEqual(['-- a;b\nSELECT 1', '/* ; */ SELECT 2']);
+    expect(splitStatements('SELECT 1')).toEqual(['SELECT 1']);
+  });
+
+  it('keeps a trigger body whole, a CASE … END inside it included', () => {
+    const trigger =
+      'CREATE TEMP TRIGGER t AFTER INSERT ON a WHEN CASE WHEN 1 THEN 1 END BEGIN SELECT CASE WHEN 1 THEN 2 END; UPDATE a SET x = 1; END';
+    expect(splitStatements(`${trigger}; SELECT 2`)).toEqual([trigger, 'SELECT 2']);
+    expect(splitStatements('BEGIN; SELECT 1; END')).toEqual(['BEGIN', 'SELECT 1', 'END']);
+  });
+
+  const recording = () => {
+    const calls: string[] = [];
+    const inner = {
+      query: (q: string) => (calls.push(`query ${q}`), [{ q }]) as never[],
+      exec: (q: string) => (calls.push(`exec ${q}`), { changes: 1 }),
+    };
+    return { calls, sql: guardSpine(inner, undefined, () => calls.push('afterDdl')) };
+  };
+
+  it('runs the check right after each schema change, before the next statement', () => {
+    const { calls, sql } = recording();
+    const rows = sql.query('CREATE TABLE n AS SELECT 1 AS x; DROP TABLE o; INSERT INTO n VALUES (2); SELECT x FROM n');
+    expect(calls).toEqual([
+      'exec CREATE TABLE n AS SELECT 1 AS x',
+      'afterDdl',
+      'exec DROP TABLE o',
+      'afterDdl',
+      'exec INSERT INTO n VALUES (2)',
+      'query SELECT x FROM n',
+    ]);
+    expect(rows).toEqual([{ q: 'SELECT x FROM n' }]);
+  });
+
+  it('twin: a call that changes no schema runs whole, and one DDL statement runs as it is', () => {
+    const { calls, sql } = recording();
+    sql.exec('INSERT INTO n VALUES (1); INSERT INTO n VALUES (2)');
+    sql.exec('CREATE TABLE p (x);');
+    expect(calls).toEqual(['exec INSERT INTO n VALUES (1); INSERT INTO n VALUES (2)', 'exec CREATE TABLE p (x);', 'afterDdl']);
+  });
+
+  it('refuses a multi-statement schema change that binds parameters', () => {
+    const { calls, sql } = recording();
+    expect(() => sql.exec('CREATE TABLE q (x); INSERT INTO q VALUES (?)', ['a'])).toThrow(/binds parameters runs one statement/);
+    expect(calls).toEqual([]);
+  });
+});
+

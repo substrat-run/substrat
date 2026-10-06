@@ -271,6 +271,9 @@ export const rebuildMod: ModuleRegistration = {
       for (const statement of (input as { statements: string[] }).statements) ctx.sql.exec(statement);
       return null;
     }) as Handler,
+    // Several statements in ONE `ctx.sql` call — the rows of the last one.
+    'rb/batch': (async (ctx, input) => ctx.sql.query((input as { sql: string }).sql)) as Handler,
+    'rb/ddl-bound': (async (ctx) => ctx.sql.exec('ALTER TABLE rb_plain ADD COLUMN extra TEXT; UPDATE rb_plain SET extra = ?', ['x'])) as Handler,
     'rb/titles': (async (ctx, input) =>
       ctx.sql
         .query<{ title: string }>(`SELECT title FROM ${RB_TABLES[(input as { entityType: keyof typeof RB_TABLES }).entityType]} ORDER BY title`)

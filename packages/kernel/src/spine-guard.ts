@@ -234,6 +234,42 @@ export function assertNoStatefulDdl(sql: string, statefulTables: ReadonlySet<str
   }
 }
 
+/**
+ * The statements in `sql`, each as its own source text (#2090, Codex r3 on #2091). Cut at a `;`
+ * the tokenizer saw — so never inside a string, a quoted identifier or a comment — and never
+ * inside a trigger body: a `CREATE [TEMP] TRIGGER`'s `BEGIN … END` holds statements of its own,
+ * and a `CASE … END` inside it is counted so its `END` does not close the body early. A
+ * fragment holding no token at all (whitespace, a comment) is not a statement.
+ */
+export function splitStatements(sql: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let lead: string[] = [];
+  let depth = 0;
+  const cut = (end: number) => {
+    const text = sql.slice(start, end);
+    if (tokenizeSql(text).length) out.push(text.trim());
+  };
+  for (const t of tokenizeSql(sql, { punctuation: true })) {
+    if (t.punct) {
+      if (t.text === ';' && depth === 0) {
+        cut(t.at!);
+        start = t.at! + 1;
+        lead = [];
+      }
+      continue;
+    }
+    const word = t.quoted ? '' : t.text.toLowerCase();
+    if (lead.length < 3) lead.push(word);
+    const trigger = lead[0] === 'create' && (lead[1] === 'trigger' || ((lead[1] === 'temp' || lead[1] === 'temporary') && lead[2] === 'trigger'));
+    if (!trigger) continue;
+    if (word === 'begin' || (word === 'case' && depth > 0)) depth += 1;
+    else if (word === 'end' && depth > 0) depth -= 1;
+  }
+  cut(sql.length);
+  return out;
+}
+
 /** Does this SQL change the schema — any statement in it a CREATE, ALTER or DROP? */
 export function changesSchema(sql: string): boolean {
   if (!MAYBE_DDL.test(sql)) return false;
@@ -470,15 +506,42 @@ export function guardSpine(
    */
   afterDdl?: () => void,
 ): ScopedSql {
-  const follow = <R>(sql: string, run: () => R): R => {
+  /**
+   * One call, judged whole. When it changes the schema and the scope has a check to run after
+   * DDL, it runs one statement at a time, with the check right after each schema change and
+   * before the next statement (#2090, Codex r3): a Durable Object's `exec` runs a whole batch,
+   * so `rebuild; write; search` in one call would otherwise read the index before its triggers
+   * were back. `last` runs the final statement as the caller asked (a query returns its rows),
+   * the rest through `exec`. Parameters cannot be told apart between statements, so a
+   * multi-statement call that changes the schema binds none.
+   */
+  const follow = <R>(sql: string, params: readonly SqlValue[] | undefined, last: (statement: string) => R): R => {
     assertNoSpineWrite(sql, statefulTables);
-    const result = run();
-    if (afterDdl && changesSchema(sql)) afterDdl();
+    if (!afterDdl || !changesSchema(sql)) return last(sql);
+    const statements = splitStatements(sql);
+    if (statements.length <= 1) {
+      const result = last(sql);
+      afterDdl();
+      return result;
+    }
+    if (params?.length) {
+      throw substratError(
+        'validation_failed',
+        'a ctx.sql call that changes the schema and binds parameters runs one statement — split it into one call per statement',
+        { errors: [{ path: 'sql', message: `${statements.length} statements with bound parameters` }] },
+      );
+    }
+    let result!: R;
+    statements.forEach((statement, i) => {
+      if (i === statements.length - 1) result = last(statement);
+      else inner.exec(statement);
+      if (changesSchema(statement)) afterDdl();
+    });
     return result;
   };
   return {
     query: <T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[] =>
-      follow(sql, () => inner.query<T>(sql, params)),
-    exec: (sql: string, params?: readonly SqlValue[]) => follow(sql, () => inner.exec(sql, params)),
+      follow(sql, params, (statement) => inner.query<T>(statement, params)),
+    exec: (sql: string, params?: readonly SqlValue[]) => follow(sql, params, (statement) => inner.exec(statement, params)),
   };
 }

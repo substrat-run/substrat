@@ -317,6 +317,30 @@ export function entityStateMigrationContractSuite(
       expect(await stub.invoke('rb/search', { term: 'gamma' })).toEqual([]);
     });
 
+    it('repairs between the statements of ONE ctx.sql call — a rebuild, a write and a read of the index see no stale hit (Codex r3)', async () => {
+      const { s, stub } = await freshScope();
+      const said = ulid();
+      await stub.invoke('rb/add', { entityType: 'rbsearch', id: said, title: 'alpha secret' });
+      const idx = '_substrat_search_test_rebuild_rbsearch';
+      const rows = await stub.invoke<{ n: number }[]>('rb/batch', {
+        sql: [
+          ...rebuild('rb_search'),
+          `UPDATE rb_search SET title = 'gamma redacted' WHERE id = '${said}'`,
+          `SELECT COUNT(*) AS n FROM ${idx} WHERE ${idx} MATCH 'secret'`,
+        ].join(';\n'),
+      });
+      expect(rows).toEqual([{ n: 0 }]);
+      expect(await stub.invoke('rb/search', { term: 'gamma' })).toEqual([said]);
+    });
+
+    it('refuses a multi-statement schema change that binds parameters, and runs none of it', async () => {
+      const { s, stub } = await freshScope();
+      const before = await definitions(s);
+      await expect(stub.invoke('rb/ddl-bound', {})).rejects.toThrow(/binds parameters runs one statement/);
+      expect(await columnsOf(s, 'rb_plain')).toEqual(['id', 'title']);
+      expect(await definitions(s)).toEqual(before);
+    });
+
     it('runs no DDL over a scope that already carries everything as the kernel emits it', async () => {
       const { s } = await scopeWith('rbnote');
       await host.migrateScope(t, s);
