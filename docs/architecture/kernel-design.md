@@ -522,11 +522,15 @@ the control plane's `openTenantStore` uses the D1 HTTP API (out-of-band migratio
   backfill would write a value nobody measured, and bless the one divergent row this exists to
   catch. A NULL is never trusted: a spine trigger refuses any journal row written or rewritten
   without a digest, so an older writer mid-rollout fails its migration loudly instead of
-  recording one, and a restore whose dump carries a NULL is refused. Restore is a privileged,
-  audited staff operation and could forge any digest; the check still matters there because a
-  corrupted or partly edited dump is caught rather than silently unprotecting the scope. And
-  migration SQL may not name the journal at all (`assertNoJournalSql`), so no migration can
-  drop the fence or write its own row. The other exception: the kernel-derived
+  recording one, and a restore whose dump carries a NULL is refused. A dump is taken for a
+  pre-digest one only when its journal is shaped like one: DDL and columns that disagree about
+  `sql_digest` are refused. Restore is a privileged, audited staff operation and could forge
+  any digest — a dump is editable data, and a consistent edit cannot be authenticated — so
+  these are checks against corruption and partial edits, not an author set on lying. And a
+  migration may not touch what the check rests on (`assertMigrationSql`): none may name the
+  journal, and an authored one is held to the full spine write guard (no write, DDL or
+  same-named TEMP object on any `_substrat_*` table), except four shipped, reviewed ticket0
+  repairs keyed by their exact digest. The other exception: the kernel-derived
   DDL (`search/…`, `state/…`, `list/…`) is held to its *declaration*, which is its version,
   not to its digest — the kernel may respell the same declaration between releases, and
   holding those rows to a digest would fail every scope closed on that upgrade. Their
