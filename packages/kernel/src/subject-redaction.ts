@@ -38,6 +38,7 @@
  */
 
 import { SWEEP_RUNS_KIND } from '@substrat-run/contracts';
+import type { ModuleErasureCounts } from './module-erasure.js';
 
 /**
  * The one key a redacted intent payload carries, and nothing else in the system does.
@@ -148,6 +149,13 @@ export interface SubjectRedactionCounts {
    * the new ones, so an erasure that crashed between the two halves converges on its re-run.
    */
   intentIds: string[];
+  /**
+   * The module half (#2068): what the declared erasures and the `onSubjectErased` hooks did
+   * to the scope's own tables, in the same transaction as everything above. Its PRESENCE is
+   * what a coordinator reads to tell a host that reached the module tables from one built
+   * before they could be — the absent field is refused before the key, like the others.
+   */
+  vertical: ModuleErasureCounts;
 }
 
 /**
@@ -158,7 +166,7 @@ export interface SubjectRedactionCounts {
  */
 export type LegacySubjectRedactionCounts = Omit<
   SubjectRedactionCounts,
-  'jobRuns' | 'idempotencyResults' | 'intentIds'
+  'jobRuns' | 'idempotencyResults' | 'intentIds' | 'vertical'
 > & { jobRuns?: number };
 
 /**

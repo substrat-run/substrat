@@ -61,6 +61,7 @@ import {
   idempotencyContractSuite,
   listContractSuite,
   entityStateContractSuite,
+  subjectErasureContractSuite,
   permMod,
   inputParseContractSuite,
   spineGuardContractSuite,
@@ -5289,6 +5290,27 @@ entityStateContractSuite(
       state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
     });
   },
+);
+
+// #2068: subject erasure inside a module's own tables, on the DO host — the one transaction,
+// the counts and FTS5 secure-delete proven in workerd's SQLite. `erasureMod` is in
+// `contractTestModules`, so the ScopeDO carries it, and its hook, at code time.
+subjectErasureContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      checker: UNSAFE_allowAllChecker,
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  // The scope DO's own storage, past `ctx.sql`.
+  async (_tenant, scope, sql, params = []) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) =>
+      state.storage.sql.exec(sql, ...(params as SqlStorageValue[])).toArray(),
+    ),
 );
 
 // #893: the declared `input` parsed at the door, on the adapter that is actually

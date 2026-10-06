@@ -356,7 +356,7 @@ compiler checks the joins between them. Full walkthrough in
 
 | export | what it does |
 |---|---|
-| `defineEntities` | declares entities — `table`, `fields`, `parents`, `key`, `erasable`, `outsideText`. `parents` is checked against the map's own keys; `key`, `erasable` and `outsideText` against each entity's own fields, and neither of the last two may ride an event payload |
+| `defineEntities` | declares entities — `table`, `fields`, `parents`, `key`, `erasable`, `outsideText`, `erasure`. `parents` is checked against the map's own keys; `key`, `erasable` and `outsideText` against each entity's own fields, and neither of the last two may ride an event payload |
 | `defineOperations(entities, permissions, engines?)` | declares operations against those entities, a declared permission set, and any composed engine registries |
 | `manifestOperations(ops, { permissions, checksDeclaredElsewhere?, consumes? })` | the operation half of the manifest — descriptions supplied, the permission key set and `events.emits` derived; a key checked but owned by a composed engine is listed under `checksDeclaredElsewhere` with its owner, and both an undescribed key and a stale exemption are load errors |
 | `manifestEntities(entities, refs)` | composes the entity-referencing manifest fragments; derives `entityRelations` from each entity's `parents` |

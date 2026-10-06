@@ -39,6 +39,7 @@ import {
   listContractSuite,
   inputParseContractSuite,
   entityStateContractSuite,
+  subjectErasureContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
@@ -486,6 +487,37 @@ entityStateContractSuite(
       runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
     };
     internals.runtime(tenant, scope).db.prepare(sql).run(...params);
+  },
+);
+
+// #2068: subject erasure inside a module's own tables. Allow-all: the erasure is a staff verb
+// and the fixture's operations check nothing; what is pinned is what the erasure reaches.
+let erasureHost: SqliteScopeHost | undefined;
+subjectErasureContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-erasure-'));
+    const host = new SqliteScopeHost({
+      dir,
+      checker: UNSAFE_allowAllChecker,
+      // The key's survival is part of what a failed erasure must leave, so a sealed copy exists.
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    erasureHost = host;
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  // The scope's own connection, past `ctx.sql` — the FTS shadow tables and the outbox.
+  async (tenant, scope, sql, params = []) => {
+    const internals = erasureHost as unknown as {
+      runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { all(...a: unknown[]): unknown[] } } };
+    };
+    return internals.runtime(tenant, scope).db.prepare(sql).all(...params);
   },
 );
 

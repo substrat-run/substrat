@@ -78,6 +78,9 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
+  eraseSubjectFromModules,
+  moduleErasurePlan,
+  type ModuleErasurePlan,
   redactSubjectScopeText,
   assertRowLimit,
   assertRowOffset,
@@ -1167,6 +1170,8 @@ export function defineScopeDO(
     private readonly listPlans = new Map<string, ListIndexPlan>();
     /** #119: entity type → its archive/trash plan, from every registered module. */
     private readonly statePlans = new Map<string, EntityStatePlan>();
+    /** #2068: each registered module's erasure, in registration order — what `redactSubject` runs. */
+    private readonly erasurePlans: ModuleErasurePlan[] = [];
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     /**
@@ -1277,6 +1282,8 @@ export function defineScopeDO(
 
     private registerModule(registration: ModuleRegistration): void {
       const manifest = registration.manifest;
+      // #2068: refused before anything is recorded, as on the pure host.
+      const erasure = moduleErasurePlan(registration);
       if (manifest.peers?.length) this.peerSources.push({ peers: manifest.peers });
       // #827: the FTS indexes `searchables` declares, appended after the module's
       // own migrations so the content table exists when the trigger references it.
@@ -1316,6 +1323,7 @@ export function defineScopeDO(
           handler,
         })),
       });
+      if (erasure) this.erasurePlans.push(erasure);
       for (const [name, handler] of Object.entries(registration.predicates ?? {})) {
         this.predicates.set(name, { module: manifest.id, handler });
       }
@@ -6333,10 +6341,41 @@ export function defineScopeDO(
      * to yield to — the alternative is telling a data subject that the spine's convenience
      * outranks their Article 17 right.
      */
-    async redactSubject(subjectId: string): Promise<SubjectRedactionCounts> {
+    async redactSubject(subjectId: string): Promise<SubjectRedactionCounts | { failure: WireFailure }> {
+      // #2068: the module half reaches the scope's own tables, so they have to exist.
+      await this.ensureMigrations();
       // One instant for the whole erasure — the intent tombstones must not disagree with
       // each other about when a person was erased.
       const at = new Date().toISOString();
+      // ONE transaction (#2068): a module's `onSubjectErased` hook that throws rolls the
+      // whole redaction back, the spine half with it, and the coordinator — which destroys
+      // the key only after this returns — never reaches the key.
+      //
+      // Its refusal is answered as DATA (`toWireFailure`, #113): workerd delivers a throw across
+      // this boundary as its message alone, and a hook's `forbidden` (it reached past its own
+      // tables) is a different answer from an `internal`. In this method's own reply rather than
+      // a `…Reply` sibling, so every coordinator — old ones too — keeps calling one verb: an old
+      // one reads a failure as a reply missing its counts and refuses before the key, which is
+      // the safe reading.
+      try {
+        return this.revision.transactionSync(() => this.redactSubjectInTransaction(subjectId, at));
+      } catch (err) {
+        return { failure: toWireFailure(err) };
+      }
+    }
+
+    /** The body of `redactSubject`, inside its transaction. */
+    private redactSubjectInTransaction(subjectId: string, at: string): SubjectRedactionCounts {
+      // The module half first (#2068): the declared entities, then each hook, with the search
+      // indexes over them under FTS5 secure-delete. The spine half follows in the same transaction.
+      const vertical = eraseSubjectFromModules({
+        sql: doSpineSql(this.sql),
+        plans: this.erasurePlans,
+        searchPlans: this.searchPlans.values(),
+        statefulTables: statefulTablesOf(this.statePlans),
+        subjectId,
+        at,
+      });
       const doomed = (
         this.sql
           .exec(
@@ -6362,6 +6401,7 @@ export function defineScopeDO(
         // The free-text copies (#1632), and the tombstoned intents the coordinator hands to
         // the directory half. Last, so those ids include every intent tombstoned above.
         ...redactSubjectScopeText(sql, subjectId, at),
+        vertical,
       };
     }
 

@@ -170,20 +170,20 @@ explicitly. That raises a question this document cannot answer from the docs:
 > that D-27's own test says it must sit inside — and every vertical storing a customer
 > address re-implements erasure, which is the exact failure the test exists to prevent.
 
-**Answered, and the answer is "not yet — so don't put the address there" (#37, D-45).** The
+**Answered twice. First "not yet — so don't put the address there" (#37, D-45), then "yes,
+once the table says whose rows they are" (#2068, K-46).** The
 kernel now has an erasure primitive: `shredSubject` redacts every classified event keyed to
 a data subject and destroys the key that seals those payloads inside every backup the
-platform holds. It reaches the **spine**. It does not reach a vertical's own table, because
-nothing classifies a table — which is exactly the gap this question named, now measured
-rather than suspected.
+platform holds. It reaches the **spine**. On its own it did not reach a vertical's own table,
+because nothing classified a table — which is exactly the gap this question named.
 
-So the reshaping argument above still points at vertical code, and the GDPR argument still
-points away from it, and the tie is not broken yet. What breaks it is a declared
-`onSubjectErased` hook the kernel calls inside the erasure, letting a module delete its own
-rows for that subject under the platform's audit — deferred to its own issue because it is
-a new module-facing contract and D-28 governs it from the first line. Until it exists, a
-vertical storing a shipping address is holding personal data no kernel guarantee covers,
-and §4.2's placement should be read as blocked on that hook rather than settled.
+So the reshaping argument above still points at vertical code, and the GDPR argument used to
+point away from it. What broke the tie is the declared erasure #2068 built (K-46): a side table
+whose entity names its subject column (`erasure: { subjects: ['customer_id'] }` beside
+`erasable: ['address']`) is blanked inside the kernel's erasure, in the same transaction as the
+spine redaction, and every erasure receipt names an erasable entity that declares no subject. A
+shipping address in a vertical side table is inside the guarantee once its entity says whose it
+is, so §4.2's placement is settled as vertical code.
 
 Carriers/rates/labels are a connector boundary and not in scope here.
 

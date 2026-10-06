@@ -429,6 +429,20 @@ export type {
   IssueExemplarOwner,
 } from './subject-redaction.js';
 export {
+  assertWithinErasureReach,
+  eraseSubjectFromModules,
+  isModuleErasureCounts,
+  moduleErasurePlan,
+  moduleRowsErased,
+  SECURE_DELETE_MIN_SQLITE,
+} from './module-erasure.js';
+export type {
+  ModuleErasureCounts,
+  ModuleErasurePlan,
+  OnSubjectErased,
+  SubjectErasureContext,
+} from './module-erasure.js';
+export {
   FINDINGS_DDL,
   FINDING_RETENTION_DAYS,
   createFindingRule,

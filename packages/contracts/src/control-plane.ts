@@ -15,6 +15,7 @@ import {
 // none of these modules imports this one, so no cycle.
 import { org, scope, scopeStatus, tenant, tenantStatus } from './tenancy.js';
 import { tenantRole } from './permission.js';
+import { erasedEntityCount, erasureHookCount, unreachedEntity } from './subject-erasure.js';
 import { hostnameBinding } from './routing.js';
 import {
   connection,
@@ -287,6 +288,22 @@ export const subjectShredReceipt = z.object({
    * zero it honestly was.
    */
   jobRunsRedacted: z.number().int().nonnegative().default(0),
+  /**
+   * The module tables a declared erasure reached (#2068), one line per declaring entity — a
+   * zero included, because "this entity was looked at and held nothing of theirs" is the fact
+   * a DSAR answer needs, and an absent line cannot say it. Counts, never ids, for the reason
+   * this receipt carries counts at all. Defaulted: a receipt minted before the hook existed
+   * parses as the nothing it honestly reached.
+   */
+  verticalRows: z.array(erasedEntityCount).default([]),
+  /** Each module `onSubjectErased` hook that ran, with the rows its statements changed. */
+  hookRows: z.array(erasureHookCount).default([]),
+  /**
+   * Entities holding `erasable` fields that no erasure reaches — neither declared subject
+   * columns nor claimed by a hook. Named on every receipt so an incomplete erasure is visible
+   * where the erasure is read, not only in the model. Defaulted, as above.
+   */
+  unreachedEntities: z.array(unreachedEntity).default([]),
   /**
    * Whether a subject key existed to destroy. False means nothing platform-retained was ever
    * sealed for this subject — either it was never exported, or a prior shred already ran.

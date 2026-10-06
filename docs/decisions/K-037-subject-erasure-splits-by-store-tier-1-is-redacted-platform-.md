@@ -10,6 +10,12 @@ tracking: ["#37", "#493", "#542", "#543", "#545"]
 ---
 # K-37 — Subject erasure splits by store: Tier 1 is redacted, platform-retained copies are…
 
+> **The deferred hook is built (#2068, K-46); the decision stands.** "Vertical tables untouched"
+> was limit 2 when this was decided. A module's own tables are now reached by declaration
+> (`erasure: { subjects }` beside `erasable`) or by the module's `onSubjectErased` hook, in the
+> same transaction as the spine redaction and before the key. An entity that declares neither
+> is still unreached, and every receipt names it. kernel-design §13.1 has the current limits.
+
 > **A finding the code has since overtaken (#1527); the decision stands.** "There is no Tier-2 event drain" was
 > true on 2026-08-08 and is not true now. The control plane's sweep ships each scope's outbox
 > to Pipelines → Iceberg in production (#1334, #1413, #1485, #1498, #1517, #1522). The lake did

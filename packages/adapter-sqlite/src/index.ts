@@ -330,6 +330,10 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
+  eraseSubjectFromModules,
+  moduleRowsErased,
+  moduleErasurePlan,
+  type ModuleErasurePlan,
   redactSubjectScopeText,
   redactSubjectDirectoryText,
   ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
@@ -1621,6 +1625,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly listPlans = new Map<string, ListIndexPlan>();
   /** #119: entity type → its archive/trash plan, from every registered module. */
   private readonly statePlans = new Map<string, EntityStatePlan>();
+  /** #2068: each registered module's erasure, in registration order — what `shredSubject` runs. */
+  private readonly erasurePlans: ModuleErasurePlan[] = [];
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
   /** operation name → who binds it: the owning module, its entitlementKey and its declared
@@ -2526,6 +2532,9 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.modules.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    // #2068: refused here, before anything is recorded, when the module claims an erasure it
+    // cannot deliver (a hook with no reach declared, a `custom` entity with no hook).
+    const erasure = moduleErasurePlan(registration);
     const migrations = registration.migrations ?? [];
     const seen = new Set<string>();
     for (const m of migrations) {
@@ -2633,6 +2642,7 @@ export class SqliteScopeHost implements ScopeHost {
       freshness: manifest.freshness ?? [],
       peers: manifest.peers ?? [],
     });
+    if (erasure) this.erasurePlans.push(erasure);
     for (const rel of manifest.entityRelations ?? []) {
       const parents = this.relations.get(rel.entityType) ?? new Set<string>();
       parents.add(rel.parentType);
@@ -9435,6 +9445,10 @@ export class SqliteScopeHost implements ScopeHost {
         // and transaction facts remain". A consumer's timeline still shows that something
         // happened, to what, and when; it no longer shows who or what was said.
         const db = this.scopeDbFor(tenantId, scopeId);
+        // #2068: the module half reaches the scope's own tables, so they have to exist — the
+        // same migrations an invoke would apply first.
+        const rt = this.runtime(tenantId, scopeId);
+        await this.applyPendingMigrations(rt);
         // One instant for the whole erasure, read before the first write: the intent
         // tombstones below and the key's own tombstone should not disagree about when a
         // person was erased.
@@ -9442,8 +9456,23 @@ export class SqliteScopeHost implements ScopeHost {
         // Both scope-side redactions in ONE turn on the scope actor (#1678): issued while an
         // invoke held its transaction open, they joined it, and its rollback put the
         // person's PII back after this verb had destroyed the key and receipted the erasure.
+        //
+        // And in ONE transaction (#2068): a module's `onSubjectErased` hook that throws rolls
+        // the whole scope side back, the spine redaction with it, and the erasure throws
+        // before the key below is touched — nothing receipts an erasure that did not happen.
         const scopeSql = redactionSqlOf(db);
-        const { redacted, intentsRedacted, jobRunsRedacted, text } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
+        const { redacted, intentsRedacted, jobRunsRedacted, text, vertical } = await rt.actor.turn(() => db.transaction(() => ({
+          // The module half first (#2068): the declared entities, then each hook, with the
+          // search indexes over them under FTS5 secure-delete. The spine half follows in the same
+          // transaction, so the order between them decides nothing but the reading order.
+          vertical: eraseSubjectFromModules({
+            sql: spineSql(db),
+            plans: this.erasurePlans,
+            searchPlans: this.searchPlans.values(),
+            statefulTables: statefulTablesOf(this.statePlans),
+            subjectId,
+            at,
+          }),
           redacted: db
             .prepare(
               `UPDATE _substrat_outbox SET payload = NULL
@@ -9468,7 +9497,7 @@ export class SqliteScopeHost implements ScopeHost {
           // The free-text copies (#1632), and the tombstoned intents the directory half
           // follows. Last, so those ids include every intent tombstoned above.
           text: redactSubjectScopeText(scopeSql, subjectId, at),
-        }));
+        }))());
         const { idempotencyResults, intentIds } = text;
         // The directory's failure text (#1632) — a drain failure quoting one of those
         // intents, an issue's exemplar, a sweep record's error. Before the key, for the
@@ -9480,6 +9509,7 @@ export class SqliteScopeHost implements ScopeHost {
           eventsRedacted: redacted.changes,
           intentsRedacted,
           jobRunsRedacted,
+          ...vertical,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -9494,7 +9524,7 @@ export class SqliteScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults,
+          redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults + moduleRowsErased(vertical),
         );
         return receipt;
       },

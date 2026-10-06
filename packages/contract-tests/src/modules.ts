@@ -28,6 +28,7 @@ import {
 } from '@substrat-run/contracts';
 import { membershipFixtureMod } from './membership-module.js';
 import { stateMod } from './entity-state-module.js';
+import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import {
   assertAllowed,
   readAttachmentText,
@@ -2921,6 +2922,13 @@ export const contractTestModules: ModuleRegistration[] = [
   // #119: the archive/trash suite's module. Inert for every other suite — nothing else reads
   // its tables or invokes a `state/*` operation.
   stateMod,
+  // #2068: the subject-erasure suite's modules. Every scope in the kit carries them, so every
+  // `shredSubject` in every suite runs their declared erasure and their hook — which reaches
+  // only `er_*` tables nothing else writes, and misbehaves only for a subject the erasure suite
+  // arms in `er_bombs`. That is deliberate: every other suite's erasure then also proves the
+  // module half is harmless where it holds nothing.
+  erasureMod,
+  erasureOtherMod,
   parseMod,
   concurrencyMod,
   idempotencyMod,

@@ -25,6 +25,11 @@ import { z } from 'zod';
 import { emitLifecycles, type EmittedLifecycle, type LifecycleDef } from './lifecycle.js';
 import { isKernelNamespace } from './object-ref.js';
 import type { EntityStateDeclaration } from './entity-state.js';
+import {
+  subjectErasureDeclaration,
+  type EntityErasure,
+  type SubjectErasureDeclaration,
+} from './subject-erasure.js';
 import { permissionKey } from './ids.js';
 
 /**
@@ -132,7 +137,22 @@ export interface EntityDef<Names extends string = string> {
    * filing it away. Gives the table `_substrat_trashed_at`.
    */
   readonly trash?: { readonly permission: string };
+  /**
+   * How a subject erasure reaches this entity's rows (#2068) — see `subject-erasure.ts`.
+   *
+   * `subjects` names the fields whose value is a data subject id; a row is the subject's when
+   * any of them equals the id erased. `mode: 'blank'` (the default) blanks the `erasable`
+   * fields and keeps the row; `'delete'` removes the row; `{ mode: 'custom' }` says the
+   * module's `onSubjectErased` hook reaches it. Requires `erasable`. An entity with `erasable`
+   * fields and no `erasure` is unreached, and every receipt says so.
+   */
+  readonly erasure?: EntityErasureDef;
 }
+
+/** An entity's `erasure` declaration, as authored. */
+export type EntityErasureDef =
+  | { readonly subjects: readonly string[]; readonly mode?: 'blank' | 'delete' }
+  | { readonly mode: 'custom' };
 
 /**
  * The entities the platform can point AT — those identified by ONE column.
@@ -196,6 +216,9 @@ export function defineEntities<
       key?: readonly EntityFields<T[K]>[];
       erasable?: readonly EntityFields<T[K]>[];
       outsideText?: readonly EntityFields<T[K]>[];
+      erasure?:
+        | { readonly subjects: readonly EntityFields<T[K]>[]; readonly mode?: 'blank' | 'delete' }
+        | { readonly mode: 'custom' };
       // Keys are CURRENT field names — the thing being renamed TO. The values
       // are historical and name nothing that still exists, so they stay strings.
       //
@@ -298,6 +321,8 @@ export interface EmittedEntity {
   readonly archive?: { readonly permission: string };
   /** The permission key that trashes it (#119), when it can be trashed. */
   readonly trash?: { readonly permission: string };
+  /** How a subject erasure reaches it (#2068), when declared. `subjects` sorted. */
+  readonly erasure?: { readonly mode: 'blank' | 'delete' | 'custom'; readonly subjects?: readonly string[] };
 }
 
 export interface EmittedModel {
@@ -372,6 +397,9 @@ export const emittedEntity = z.object({
   outsideText: z.array(z.string()).optional(),
   archive: z.object({ permission: z.string().min(1) }).optional(),
   trash: z.object({ permission: z.string().min(1) }).optional(),
+  erasure: z
+    .object({ mode: z.enum(['blank', 'delete', 'custom']), subjects: z.array(z.string()).optional() })
+    .optional(),
 });
 
 export const emittedExport = z.object({
@@ -437,10 +465,12 @@ export function emitModel<T extends Record<string, EntityDef>>(
       ...(e.outsideText ? { outsideText: [...e.outsideText].sort() } : {}),
       ...(e.archive ? { archive: { permission: e.archive.permission } } : {}),
       ...(e.trash ? { trash: { permission: e.trash.permission } } : {}),
+      ...(e.erasure ? { erasure: emittedErasure(e.erasure) } : {}),
     };
   }
   // Refused at emit too, so `lint:model --check` goes red where `manifestEntities` would.
   entityStatesOf(entities);
+  subjectErasureOf(entities);
   const lifecycles = options.lifecycles ? emitLifecycles(options.lifecycles) : undefined;
   if (lifecycles) {
     // A machine over an entity the registry does not declare is the same class
@@ -723,6 +753,83 @@ export function entityStatesOf(entities: Record<string, EntityDef>): EntityState
   return out;
 }
 
+/** An authored `erasure`, in the artifact's one shape: the mode spelled out, subjects sorted. */
+function emittedErasure(e: EntityErasureDef): NonNullable<EmittedEntity['erasure']> {
+  return 'subjects' in e
+    ? { mode: e.mode ?? 'blank', subjects: [...e.subjects].sort() }
+    : { mode: 'custom' };
+}
+
+/**
+ * What a blank writes into one erasable field (#2068): NULL when the field admits it, else the
+ * empty string when IT admits that, else nothing a blank can write — and the model is refused.
+ * Probed against the field's own schema, so the answer is the one the row's writers live by.
+ */
+function blankFor(entity: string, field: string, schema: z.ZodType): null | '' {
+  if (schema.safeParse(null).success) return null;
+  if (schema.safeParse('').success) return '';
+  throw new Error(
+    `model: ${entity}.${field} is erasable, admits neither NULL nor '', and so cannot be blanked — ` +
+      "make it nullable, or declare `erasure: { subjects, mode: 'delete' }`",
+  );
+}
+
+/**
+ * The `erasure` manifest block (#2068), derived from each entity's `erasable` and `erasure`.
+ * Undefined when no entity declares either, so a model with nothing personal in it emits a
+ * manifest byte-for-byte what it was before.
+ *
+ * Refuses, at emit and at manifest time alike:
+ * - an `erasure` on an entity with no `erasable` fields — it would reach nothing;
+ * - a subject column that is not a field;
+ * - a `blank` that would write into the primary key, or write `''` into a `key` column (a
+ *   second blanked row would collide with the first and fail the erasure mid-way) — such an
+ *   entity is the person's data whole, and declares `mode: 'delete'`;
+ * - a blank of a field that admits neither NULL nor `''`.
+ */
+export function subjectErasureOf(entities: Record<string, EntityDef>): SubjectErasureDeclaration | undefined {
+  const out: EntityErasure[] = [];
+  for (const name of Object.keys(entities).sort()) {
+    const entity = entities[name];
+    if (!entity) continue;
+    const erasable = entity.erasable ?? [];
+    if (entity.erasure && erasable.length === 0) {
+      throw new Error(`model: ${name} declares an \`erasure\` but no \`erasable\` fields — it would reach nothing`);
+    }
+    if (erasable.length === 0) continue;
+    const shape = entity.fields.shape as Record<string, z.ZodType>;
+    const declared = entity.erasure;
+    const mode = !declared ? 'unreached' : 'subjects' in declared ? (declared.mode ?? 'blank') : 'custom';
+    const subjects = declared && 'subjects' in declared ? [...declared.subjects].sort() : undefined;
+    for (const col of subjects ?? []) {
+      if (!(col in shape)) throw new Error(`model: ${name}.erasure.subjects names '${col}', which is not a field`);
+    }
+    if (subjects?.length === 0) throw new Error(`model: ${name}.erasure.subjects is empty — name the subject column`);
+    const fields = [...erasable].sort().map((f) => {
+      const schema = shape[f];
+      if (!schema) throw new Error(`model: ${name}.erasable names '${f}', which is not a field`);
+      // Only a blank writes the value, so only a blank is refused for having none to write.
+      return { name: f, blank: mode === 'blank' ? blankFor(name, f, schema) : schema.safeParse(null).success ? null : ('' as const) };
+    });
+    if (mode === 'blank') {
+      const pk = new Set(primaryKeyOf(name, entity));
+      const key = new Set(entity.key ?? []);
+      for (const f of fields) {
+        if (pk.has(f.name) || (f.blank === '' && key.has(f.name))) {
+          throw new Error(
+            `model: ${name}.${f.name} is erasable and part of the ${pk.has(f.name) ? 'primary key' : '`key`'}, so a ` +
+              "blank would collide with the next one — declare `erasure: { subjects, mode: 'delete' }`",
+          );
+        }
+      }
+    }
+    out.push({ entityType: name, table: entity.table, mode, ...(subjects ? { subjects } : {}), fields });
+  }
+  if (out.length === 0) return undefined;
+  const tables = [...new Set(Object.values(entities).map((e) => e.table))].sort();
+  return subjectErasureDeclaration.parse({ tables, entities: out });
+}
+
 export function manifestEntities<
   const T extends Record<string, EntityDef>,
   const M extends EntityRefs<T, M>,
@@ -735,11 +842,14 @@ export function manifestEntities<
   searchables: EnrichedSearchable[];
   entityRelations: { entityType: string; parentType: string }[];
   entityStates?: EntityStateDeclaration[];
+  erasure?: SubjectErasureDeclaration;
   ui: { entityViews: M['entityViews'] };
 } {
   // Absent rather than `[]` when nothing declares one, so a manifest that has no archivable
   // entity is byte-for-byte what it was before #119.
   const entityStates = entityStatesOf(entities);
+  // #2068: absent when nothing is erasable, for the same reason.
+  const erasure = subjectErasureOf(entities);
   return {
     attachmentTargets: (refs.attachmentTargets ?? []) as NonNullable<M['attachmentTargets']> | [],
     // `[]` when undeclared, like `attachmentTargets` — and it means the same
@@ -752,6 +862,7 @@ export function manifestEntities<
     // a composed engine's entity are declared, and both sides are checked.
     entityRelations: [...entityRelationsOf(entities), ...(refs.relations ?? [])],
     ...(entityStates.length ? { entityStates } : {}),
+    ...(erasure ? { erasure } : {}),
     ui: { entityViews: refs.entityViews as M['entityViews'] },
   };
 }

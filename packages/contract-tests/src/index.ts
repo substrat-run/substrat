@@ -22,6 +22,8 @@ export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { entityStateContractSuite } from './entity-state-suite.js';
 export { stateMod } from './entity-state-module.js';
+export { subjectErasureContractSuite, type RawScopeQuery } from './subject-erasure-suite.js';
+export { erasureMod, erasureOtherMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
 export { inertScopeContractSuite } from './inert-scope-suite.js';
