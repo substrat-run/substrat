@@ -335,6 +335,10 @@ import {
   platformRequestRedactionQuery,
   intentPayloadCarriesSubject,
   redactSubjectJobRuns,
+  eraseSubjectFromModules,
+  moduleRowsErased,
+  moduleErasurePlan,
+  type ModuleErasurePlan,
   redactSubjectScopeText,
   redactSubjectDirectoryText,
   ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
@@ -373,6 +377,12 @@ import {
   PEER_SWITCHES_DDL,
   SWITCH_OWED_DDL,
   SWITCH_FENCES_DDL,
+  TABLE_OWNERS_DDL,
+  assertMigrationLeavesLedgerAlone,
+  recordOwnershipSteps,
+  runMigrationStatements,
+  executableSqlStatements,
+  blankSqlComments,
   recordWriteSuperseded,
   switchFencesOf,
   switchSupersededMessage,
@@ -638,6 +648,16 @@ import {
   grantEntityShapeIn,
   shapeTopUpBatch,
   topUpEntityGrantShapes,
+} from '@substrat-run/kernel';
+import {
+  ADMIN_LOG_INDEXES_SQL,
+  SETTLE_INTENT_SQL,
+  SETTLE_OUTCOME_SQL,
+  settleOutcomeParamsOf,
+  readAuditedOperations,
+  unknownOutcomeOf,
+  type AuditedOperationSqlRow,
+  type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
@@ -1051,6 +1071,7 @@ const KERNEL_DDL = `
   -- #2066: no new journal row without its digest (the kernel's comment says why).
   ${MIGRATION_DIGEST_FENCE_DDL}
   ${SWITCH_FENCES_DDL}
+  ${TABLE_OWNERS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
     relation TEXT NOT NULL,
@@ -1655,6 +1676,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly listPlans = new Map<string, ListIndexPlan>();
   /** #119: entity type → its archive/trash plan, from every registered module. */
   private readonly statePlans = new Map<string, EntityStatePlan>();
+  /** #2068: each registered module's erasure, in registration order — what `shredSubject` runs. */
+  private readonly erasurePlans: ModuleErasurePlan[] = [];
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
   /** operation name → who binds it: the owning module, its entitlementKey and its declared
@@ -1779,7 +1802,7 @@ export class SqliteScopeHost implements ScopeHost {
    * recorded answer to #969; `docs/architecture/kernel-design.md` §8 says why.
    */
   private applyDirectorySchema(): void {
-    this.directory.exec(`
+    execSqlStatements(this.directory, `
       -- The tenant registry (control-plane.md §4.1). Before this a tenant was an
       -- FK string on scope rows; now it is a real record with a lifecycle status.
       CREATE TABLE IF NOT EXISTS tenants (
@@ -2225,14 +2248,9 @@ export class SqliteScopeHost implements ScopeHost {
         on_behalf_of TEXT,
         at TEXT NOT NULL
       );
-      -- Read-path indexes for the console (control-plane.md §4.5). The admin log
-      -- is append-only and only grows, so every filter it offers needs one; the
-      -- trailing id column makes each a covering index for the ORDER BY.
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_tenant ON _substrat_admin_log (tenant_id, id);
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_scope ON _substrat_admin_log (scope_id, id);
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_actor ON _substrat_admin_log (actor, id);
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_action ON _substrat_admin_log (action, id);
-      CREATE INDEX IF NOT EXISTS _substrat_admin_log_at ON _substrat_admin_log (at);
+      -- Every admin-log index, from the kernel's one list (#2064), which the legacy
+      -- rebuild below runs again after its rename.
+      ${ADMIN_LOG_INDEXES_SQL}
       -- Operational failures (#559): what the platform could NOT do. Unlike the
       -- never-swept admin log above, this is retention-bounded telemetry, pruned
       -- on write (OPS_FAILURE_RETENTION_DAYS). reference carries the upstream
@@ -2560,6 +2578,9 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.modules.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    // #2068: refused here, before anything is recorded, when the module claims an erasure it
+    // cannot deliver (a hook with no reach declared, a `custom` entity with no hook).
+    const erasure = moduleErasurePlan(registration);
     const migrations = registration.migrations ?? [];
     const seen = new Set<string>();
     for (const m of migrations) {
@@ -2668,6 +2689,7 @@ export class SqliteScopeHost implements ScopeHost {
       freshness: manifest.freshness ?? [],
       peers: manifest.peers ?? [],
     });
+    if (erasure) this.erasurePlans.push(erasure);
     for (const rel of manifest.entityRelations ?? []) {
       const parents = this.relations.get(rel.entityType) ?? new Set<string>();
       parents.add(rel.parentType);
@@ -3580,8 +3602,10 @@ export class SqliteScopeHost implements ScopeHost {
       // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
       // not keep at all; they are skipped by name, and any other unknown spine table is refused.
       const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));
-      for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(t.ddl).run();
-      db.exec(KERNEL_DDL);
+      // Comment-blanked (#2068), as the Durable Object replays it: the dump's DDL is
+      // `sqlite_master.sql` verbatim, and `prepare` still compiles exactly one statement.
+      for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(blankSqlComments(t.ddl)).run();
+      execSqlStatements(db, KERNEL_DDL);
       this.ensureSpineColumns(db);
       const columnsOf = (name: string) => builtColumnsOf(db, name);
       assertSpineTablesBuilt(loadable.map((t) => t.name), columnsOf);
@@ -3602,7 +3626,7 @@ export class SqliteScopeHost implements ScopeHost {
       // gone. Put back, and the search index rebuilt, AFTER the rows — which may legitimately
       // arrive archived or trashed — as the dump's own journal says they were derived (#2090).
       // A plan whose table this dump did not carry is skipped: a restore must not invent one.
-      repairDerivedObjects(spineSql(db), (ddl) => db.exec(ddl), this.derivedPlans(), {
+      repairDerivedObjects(spineSql(db), (ddl) => execSqlStatements(db, ddl), this.derivedPlans(), {
         after: 'the restored dump',
         absentTable: 'skip',
       });
@@ -6361,6 +6385,89 @@ export class SqliteScopeHost implements ScopeHost {
     return this.directory.transaction(() =>
       run(redactionSqlOf(this.directory), (a) => this.recordAdmin(actor, a.action, a.target, a.before, a.after)),
     )();
+  }
+
+  /**
+   * #559: one ops-failure row with its issue and finding, in one transaction (a savepoint when
+   * the caller holds one: #2064's settle writes it beside the `unknown` row it reports).
+   */
+  private writeOpsFailure(entry: OpsFailureInput): void {
+    const at = new Date().toISOString();
+    const fingerprint = opsFailureFingerprint(entry);
+    // #1748: the evidence, its issue and its finding in ONE transaction — a detector that
+    // throws takes the evidence with it, so the caller's retry observes it rather than finding
+    // the row already there and the observation lost.
+    this.directory.transaction(() => {
+      this.directory
+        .prepare(
+          `INSERT INTO _substrat_ops_failures
+             (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          ulid(),
+          entry.actor,
+          entry.operation,
+          entry.stage ?? null,
+          entry.tenantId ?? null,
+          entry.scopeId ?? null,
+          entry.vertical ?? null,
+          entry.version ?? null,
+          entry.status ?? null,
+          // Bounded here, not trusted from the catch site: one runaway upstream
+          // body must not become a runaway directory row (#559).
+          entry.message.slice(0, 2000),
+          entry.reference ?? null,
+          entry.origin ?? null,
+          entry.code ?? null,
+          fingerprint,
+          at,
+        );
+      // Prune-on-write (#559): retention lives here, not in a cron — every insert
+      // pays for its own housekeeping, so the table stays bounded even where no
+      // scheduled pass runs (this adapter has none).
+      const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
+      this.directory.prepare('DELETE FROM _substrat_ops_failures WHERE at < ?').run(horizon);
+      // The issues materialization (#1233): the group's counters live on their
+      // own row, bumped in the same call, because the evidence self-prunes above
+      // and a count must survive its own exemplars. A fresh arrival regresses a
+      // resolved issue; an ignored one stays ignored — that is what ignoring means.
+      this.directory
+        .prepare(
+          `INSERT INTO _substrat_issues
+             (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
+           VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+           ON CONFLICT (fingerprint) DO UPDATE SET
+             seen_count = seen_count + 1,
+             last_seen = excluded.last_seen,
+             last_message = excluded.last_message,
+             last_tenant_id = excluded.last_tenant_id,
+             last_owner_kind = excluded.last_owner_kind,
+             last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+             last_version = COALESCE(excluded.last_version, last_version),
+             origin = COALESCE(excluded.origin, origin),
+             status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
+        )
+        .run(
+          fingerprint,
+          entry.operation,
+          entry.stage ?? null,
+          entry.origin ?? null,
+          entry.code ?? null,
+          at,
+          at,
+          entry.message.slice(0, 2000),
+          entry.tenantId ?? null,
+          issueExemplarOwner(entry.tenantId ?? null),
+          entry.vertical ?? null,
+          entry.version ?? null,
+        );
+      const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
+      this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
+      // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
+      const finding = findingOfOpsFailure(entry);
+      if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
+    })();
   }
 
   private recordAdmin(
@@ -9491,6 +9598,10 @@ export class SqliteScopeHost implements ScopeHost {
         // and transaction facts remain". A consumer's timeline still shows that something
         // happened, to what, and when; it no longer shows who or what was said.
         const db = this.scopeDbFor(tenantId, scopeId);
+        // #2068: the module half reaches the scope's own tables, so they have to exist — the
+        // same migrations an invoke would apply first.
+        const rt = this.runtime(tenantId, scopeId);
+        await this.applyPendingMigrations(rt);
         // One instant for the whole erasure, read before the first write: the intent
         // tombstones below and the key's own tombstone should not disagree about when a
         // person was erased.
@@ -9498,8 +9609,25 @@ export class SqliteScopeHost implements ScopeHost {
         // Both scope-side redactions in ONE turn on the scope actor (#1678): issued while an
         // invoke held its transaction open, they joined it, and its rollback put the
         // person's PII back after this verb had destroyed the key and receipted the erasure.
+        //
+        // And in ONE transaction (#2068): a module's `onSubjectErased` hook that throws rolls
+        // the whole scope side back, the spine redaction with it, and the erasure throws
+        // before the key below is touched — nothing receipts an erasure that did not happen.
         const scopeSql = redactionSqlOf(db);
-        const { redacted, intentsRedacted, jobRunsRedacted, text } = await this.runtime(tenantId, scopeId).actor.turn(() => ({
+        const { redacted, intentsRedacted, jobRunsRedacted, text, vertical } = await rt.actor.turn(() => db.transaction(() => ({
+          // The module half first (#2068): the declared entities, then each hook, with the
+          // search indexes over them under FTS5 secure-delete. The spine half follows in the same
+          // transaction, so the order between them decides nothing but the reading order.
+          vertical: eraseSubjectFromModules({
+            sql: spineSql(db),
+            plans: this.erasurePlans,
+            searchPlans: this.searchPlans.values(),
+            statefulTables: statefulTablesOf(this.statePlans),
+            subjectId,
+            at,
+            migrationSqlOf: (moduleId, version) =>
+              this.modules.get(moduleId)?.migrations.find((m) => m.version === version)?.sql,
+          }),
           redacted: db
             .prepare(
               `UPDATE _substrat_outbox SET payload = NULL
@@ -9524,7 +9652,7 @@ export class SqliteScopeHost implements ScopeHost {
           // The free-text copies (#1632), and the tombstoned intents the directory half
           // follows. Last, so those ids include every intent tombstoned above.
           text: redactSubjectScopeText(scopeSql, subjectId, at),
-        }));
+        }))());
         const { idempotencyResults, intentIds } = text;
         // The directory's failure text (#1632) — a drain failure quoting one of those
         // intents, an issue's exemplar, a sweep record's error. Before the key, for the
@@ -9536,6 +9664,7 @@ export class SqliteScopeHost implements ScopeHost {
           eventsRedacted: redacted.changes,
           intentsRedacted,
           jobRunsRedacted,
+          ...vertical,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -9550,7 +9679,7 @@ export class SqliteScopeHost implements ScopeHost {
           'shredSubject',
           { tenantId, scopeId },
           { subjectId },
-          redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults,
+          redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults + moduleRowsErased(vertical),
         );
         return receipt;
       },
@@ -10535,83 +10664,27 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
-        const at = new Date().toISOString();
-        const fingerprint = opsFailureFingerprint(entry);
-        // #1748: the evidence, its issue and its finding in ONE transaction — a detector that
-        // throws takes the evidence with it, so the caller's retry observes it rather than finding
-        // the row already there and the observation lost.
-        this.directory.transaction(() => {
-          this.directory
-            .prepare(
-              `INSERT INTO _substrat_ops_failures
-                 (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            )
-            .run(
-              ulid(),
-              entry.actor,
-              entry.operation,
-              entry.stage ?? null,
-              entry.tenantId ?? null,
-              entry.scopeId ?? null,
-              entry.vertical ?? null,
-              entry.version ?? null,
-              entry.status ?? null,
-              // Bounded here, not trusted from the catch site: one runaway upstream
-              // body must not become a runaway directory row (#559).
-              entry.message.slice(0, 2000),
-              entry.reference ?? null,
-              entry.origin ?? null,
-              entry.code ?? null,
-              fingerprint,
-              at,
-            );
-          // Prune-on-write (#559): retention lives here, not in a cron — every insert
-          // pays for its own housekeeping, so the table stays bounded even where no
-          // scheduled pass runs (this adapter has none).
-          const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
-          this.directory.prepare('DELETE FROM _substrat_ops_failures WHERE at < ?').run(horizon);
-          // The issues materialization (#1233): the group's counters live on their
-          // own row, bumped in the same call, because the evidence self-prunes above
-          // and a count must survive its own exemplars. A fresh arrival regresses a
-          // resolved issue; an ignored one stays ignored — that is what ignoring means.
-          this.directory
-            .prepare(
-              `INSERT INTO _substrat_issues
-                 (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
-               VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-               ON CONFLICT (fingerprint) DO UPDATE SET
-                 seen_count = seen_count + 1,
-                 last_seen = excluded.last_seen,
-                 last_message = excluded.last_message,
-                 last_tenant_id = excluded.last_tenant_id,
-                 last_owner_kind = excluded.last_owner_kind,
-                 last_vertical = COALESCE(excluded.last_vertical, last_vertical),
-                 last_version = COALESCE(excluded.last_version, last_version),
-                 origin = COALESCE(excluded.origin, origin),
-                 status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
-            )
-            .run(
-              fingerprint,
-              entry.operation,
-              entry.stage ?? null,
-              entry.origin ?? null,
-              entry.code ?? null,
-              at,
-              at,
-              entry.message.slice(0, 2000),
-              entry.tenantId ?? null,
-              issueExemplarOwner(entry.tenantId ?? null),
-              entry.vertical ?? null,
-              entry.version ?? null,
-            );
-          const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
-          this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
-          // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
-          const finding = findingOfOpsFailure(entry);
-          if (finding) observeFinding(redactionSqlOf(this.directory), finding, at);
-        })();
+        this.writeOpsFailure(entry);
       },
+      /** #2064: an audited operation's rows, by the operation-id index, in bounded batches. */
+      auditedOperations: async (actor, refs) => {
+        const rows = readAuditedOperations(
+          (sql, params) => this.directory.prepare(sql).all(...params) as AuditedOperationSqlRow[],
+          refs,
+        );
+        this.recordAccess(actor, 'auditedOperations', {}, { operations: refs.length }, rows.length);
+        return rows;
+      },
+      /** #2064: settle an intent with no outcome, in one transaction — see `audit-outcome.ts`. */
+      settleUnrecordedOutcome: async (actor, input) =>
+        this.directory.transaction(() => {
+          const row = this.directory.prepare(SETTLE_INTENT_SQL).get(input.intentId) as SettleIntentRow | undefined;
+          const outcome = unknownOutcomeOf(row, input.intentId, input.error);
+          if (this.directory.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(outcome.operation))) return false;
+          this.recordAdmin(actor, outcome.action, outcome.target as never, null, outcome.after);
+          this.writeOpsFailure({ ...outcome.failure, actor });
+          return true;
+        })(),
       listOpsFailures: async (actor, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]> => {
         const where: string[] = [];
         const params: (string | number)[] = [];
@@ -11029,7 +11102,7 @@ export class SqliteScopeHost implements ScopeHost {
     // behind an empty table `CREATE TABLE IF NOT EXISTS` put back. `db.transaction`
     // nests as a SAVEPOINT, which is what makes this safe on the `loadDump` path too,
     // where the whole replay is already inside one.
-    db.transaction(() => db.exec(script))();
+    db.transaction(() => execSqlStatements(db, script))();
   }
 
   /**
@@ -11050,7 +11123,7 @@ export class SqliteScopeHost implements ScopeHost {
    * capture one.
    */
   private rebuildAtomically(script: string): void {
-    this.directory.transaction(() => this.directory.exec(script))();
+    this.directory.transaction(() => execSqlStatements(this.directory, script))();
   }
 
   /**
@@ -11098,7 +11171,8 @@ export class SqliteScopeHost implements ScopeHost {
    * constraint in place, so this is the same create-copy-drop-rename the identity key
    * uses, detected the same way — from `sqlite_master.sql`, which works on DO SQLite
    * too. Rows are copied verbatim: the log stays append-only in content, this only
-   * widens what a future row may say.
+   * widens what a future row may say. The DROP takes every index on the table with it, so
+   * the same transaction rebuilds them from the kernel's list (#2064).
    */
   private ensureAdminLogTenantNullable(): void {
     const row = this.directory
@@ -11124,6 +11198,7 @@ export class SqliteScopeHost implements ScopeHost {
         FROM _substrat_admin_log;
       DROP TABLE _substrat_admin_log;
       ALTER TABLE _substrat_admin_log_new RENAME TO _substrat_admin_log;
+      ${ADMIN_LOG_INDEXES_SQL}
     `);
   }
 
@@ -11529,7 +11604,7 @@ export class SqliteScopeHost implements ScopeHost {
             // #119 / #2090: after runtime DDL, inside this operation's transaction, what the kernel
             // derived onto any table is repaired — and a lost state column fails the operation.
             derivesAnything(this.derivedPlans())
-              ? () => afterRuntimeDdl(spineSql(rt.db), (ddl) => rt.db.exec(ddl), this.derivedPlans())
+              ? () => afterRuntimeDdl(spineSql(rt.db), (ddl) => execSqlStatements(rt.db, ddl), this.derivedPlans())
               : undefined,
           ),
         ),
@@ -11849,7 +11924,7 @@ export class SqliteScopeHost implements ScopeHost {
     await rt.actor.enqueue(() => {
       rt.db.exec('BEGIN IMMEDIATE');
       try {
-        repairDerivedObjects(spineSql(rt.db), (ddl) => rt.db.exec(ddl), this.derivedPlans(), {
+        repairDerivedObjects(spineSql(rt.db), (ddl) => execSqlStatements(rt.db, ddl), this.derivedPlans(), {
           after: 'an applied migration',
         });
         rt.db.exec('COMMIT');
@@ -11903,13 +11978,20 @@ export class SqliteScopeHost implements ScopeHost {
               // #1898, #2066: a migration runs on the scope's own handle, not `ctx.sql`, so the
               // spine rules a migration is held to are applied here.
               assertMigrationSql(migration.sql, { key, digest, authored });
-              rt.db.exec(migration.sql);
+              // #2068: the ownership ledger is the kernel's — no migration may name it, not even to
+              // read it (the spine rules above allow reads).
+              assertMigrationLeavesLedgerAlone(migration.sql, `migration ${key}`);
+              // #2068: one statement at a time, keeping the table set either side of each — the
+              // same splitter the Durable Object runs, so both hosts execute identical statements.
+              const steps = runMigrationStatements(spineSql(rt.db), migration.sql, (stmt) => rt.db.exec(stmt));
               assertTablesWithinColumnLimit(rt.db);
               // #2090: the state columns this migration must have left, and after the last of the
               // pass, the triggers and indexes a create-copy-rename rebuild dropped.
               const last = i === pending.length - 1;
-              afterMigration(spineSql(rt.db), (ddl) => rt.db.exec(ddl), this.derivedPlans(), key, last);
+              afterMigration(spineSql(rt.db), (ddl) => execSqlStatements(rt.db, ddl), this.derivedPlans(), key, last);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+              // After the count: `rows_changed` is the migration's own, never the kernel's bookkeeping.
+              recordOwnershipSteps(spineSql(rt.db), moduleId, steps, this.clock());
               rt.db
                 .prepare(
                   'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed, sql_digest) VALUES (?, ?, ?, ?, ?, ?)',
@@ -12215,7 +12297,7 @@ export class SqliteScopeHost implements ScopeHost {
     // WAL is also what the read connection rests on (#1624): a reader sees the last
     // committed snapshot and never blocks, or is blocked by, the writer.
     db.pragma('journal_mode = WAL');
-    db.exec(KERNEL_DDL);
+    execSqlStatements(db, KERNEL_DDL);
     this.ensureSpineColumns(db);
     const appliedMigrations = readAppliedMigrations(db);
     // #1335: the floor this scope's ids have to clear is the highest id already in
@@ -12284,6 +12366,15 @@ function redactionSqlOf(db: Database.Database): RedactionSql {
  * `_substrat_*`" a mechanism rather than a lint rule (#954) — the kernel's own
  * spine writes use `rt.db` directly and never pass through here.
  */
+/**
+ * Run a multi-statement DDL blob one statement at a time, as its comment-blanked text (#2068) —
+ * the same statements and the same text the Durable Object executes, so both hosts store the
+ * same DDL in `sqlite_master` and a later `ALTER TABLE … DROP COLUMN` rewrites the same thing.
+ */
+function execSqlStatements(db: Database.Database, sql: string): void {
+  for (const statement of executableSqlStatements(sql)) db.exec(statement);
+}
+
 /**
  * The kernel's OWN spine access (#1672) — the same seam as `scopedSql` without `guardSpine`,
  * because these are the kernel's writes to `_substrat_capabilities`, which module code may

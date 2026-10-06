@@ -24,6 +24,8 @@ export { migrationDigestContractSuite } from './migration-digest-suite.js';
 export { entityStateContractSuite } from './entity-state-suite.js';
 export { entityStateMigrationContractSuite, type RawScopeAccess } from './entity-state-migration-suite.js';
 export { stateMod } from './entity-state-module.js';
+export { subjectErasureContractSuite, type RawScopeQuery } from './subject-erasure-suite.js';
+export { erasureOtherMod, erasureSquatterMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
 export { inertScopeContractSuite } from './inert-scope-suite.js';
@@ -111,3 +113,6 @@ export {
   type ConnectorCall,
 } from './connector-fixture.js';
 export { directoryRestoreSuite, type DirectoryRestoreHarness, type RestorableDirectory } from './directory-restore-suite.js';
+export { SPLIT_CASES } from './split-cases.js';
+export { migrationCommentsContractSuite } from './migration-comments-suite.js';
+export { commentedDdlMod } from './migration-comments.js';

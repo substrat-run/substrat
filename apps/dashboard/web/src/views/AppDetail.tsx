@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView } from '../lib/api';
+import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
 import { diffRegistries, hasRegistryChange } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
@@ -3121,12 +3121,14 @@ function Settings({ app, section, onSection, onDeleted, authServers }: { app: Ap
  * refusal is shown as it was given. Removal is destructive and typed to confirm; the owner of
  * record is moved by handing the owner seat over, not here.
  */
-function AppMembers({ app }: { app: AppRow }) {
+export function AppMembers({ app }: { app: AppRow }) {
   const scope = app.app_scope_id;
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
   const [view, setView] = useState<AppMembersView | null | undefined>(undefined);
   const [unsupported, setUnsupported] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // #2064: a change that went through but whose admin-log row could not be written. A success.
+  const [auditWarning, setAuditWarning] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('');
   const [busy, setBusy] = useState(false);
@@ -3159,12 +3161,17 @@ function AppMembers({ app }: { app: AppRow }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope]);
 
-  /** Run one change, show the app's refusal as given, then re-read the roster. */
-  const act = async (run: () => Promise<unknown>) => {
+  /**
+   * Run one change, show the app's refusal as given, then re-read the roster. A change answered
+   * with an `auditWarning` went through: it is shown as a warning, and nothing offers to repeat it.
+   */
+  const act = async (run: () => Promise<AuditedAnswerView | void>) => {
     setBusy(true);
     setErr(null);
+    setAuditWarning(null);
     try {
-      await run();
+      const answer = await run();
+      if (answer?.auditWarning) setAuditWarning(answer.auditWarning);
       await read();
       return true;
     } catch (e) {
@@ -3198,8 +3205,10 @@ function AppMembers({ app }: { app: AppRow }) {
           <Button
             disabled={busy || !role}
             onClick={() => act(async () => {
-              setLink(await api.appInviteMember(scope, { roleKey: role, ...(email.trim() ? { email: email.trim() } : {}) }));
+              const invite = await api.appInviteMember(scope, { roleKey: role, ...(email.trim() ? { email: email.trim() } : {}) });
+              setLink(invite);
               setEmail('');
+              return invite;
             })}
           >
             {busy ? 'Working…' : 'Create invite link'}
@@ -3222,6 +3231,12 @@ function AppMembers({ app }: { app: AppRow }) {
       </div>
 
       {err && <div style={{ ...card, padding: '10px 16px', fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
+      {auditWarning && (
+        <div role="status" style={{ ...card, padding: '10px 16px', fontSize: 12.5, background: 'var(--status-warning-bg)', color: 'var(--status-warning-fg)', lineHeight: 1.6 }}>
+          The change was made, but the platform could not record it in its audit log. Its staff will be told. There is nothing to redo.
+          <div style={{ marginTop: 4, fontSize: 12, opacity: 0.85 }}>{auditWarning}</div>
+        </div>
+      )}
 
       <div style={{ ...card, padding: 0 }}>
         <div style={{ padding: '14px 20px' }}><Eyebrow>Members</Eyebrow></div>

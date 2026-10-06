@@ -169,10 +169,12 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
+import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { SealedSecret } from './secret-box.js';
+import type { OnSubjectErased } from './module-erasure.js';
 import type {
   SystemSwitchReassert,
   SystemSwitchReassertOptions,
@@ -1828,6 +1830,15 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * contribute the same name.
    */
   predicates?: Record<string, GuardPredicate>;
+  /**
+   * This module's own step in a subject erasure (#2068), for the rows its declared
+   * `erasure: { subjects }` cannot reach — a link the row does not hold itself. Run by
+   * `shredSubject` inside the erasure's one transaction, after the declared entities and
+   * before the key is destroyed; a throw refuses the whole erasure and rolls it back.
+   * Synchronous, idempotent, and handed a `sql` that reaches the module's own tables only
+   * (`module-erasure.ts`). Requires `manifest.erasure`, whose `tables` is that reach.
+   */
+  onSubjectErased?: OnSubjectErased;
 }
 
 /**
@@ -4064,6 +4075,24 @@ export interface HostAdmin {
    * cannot be written.
    */
   recordMemberChange(actor: PlatformActorId, entry: MemberChangeAudit): Promise<void>;
+
+  /**
+   * Close one audited change whose intent has no outcome (#2064): in ONE transaction, read the
+   * intent `intentId` names, and if no outcome row exists for its operation, write an `unknown`
+   * outcome carrying `error` and an ops-failure row (`audit.<action>`, stage `outcome-unknown`)
+   * for the staff digest. Answers `true` when it wrote them, `false` when an outcome was already
+   * there, so concurrent callers settle an operation once. Throws `not_found` for an id that is
+   * not an audited-change intent. See `audit-outcome.ts` for why a later real outcome still wins.
+   */
+  settleUnrecordedOutcome(actor: PlatformActorId, input: { intentId: string; error: string }): Promise<boolean>;
+
+  /**
+   * Every admin-log row of the given audited operations (#2064), read through the operation-id
+   * index in bounded batches — one statement per `AUDITED_OPERATIONS_BATCH` ids, never a scan of
+   * the log. Only rows of the exact (action, operation, tenant, scope) asked about are returned.
+   * Reading the audit trail is itself recorded, once per call.
+   */
+  auditedOperations(actor: PlatformActorId, refs: readonly AuditedOperationRef[]): Promise<AuditedOperationRow[]>;
 
   /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including

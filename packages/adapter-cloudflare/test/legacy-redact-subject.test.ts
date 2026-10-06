@@ -40,9 +40,10 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
    * The real host, optionally with `redactSubject` answering the way it used to: `true` is
    * the pre-#1600 bare count, `'pre-1632'` the `{ events, intents }` a DO answered after
    * #1600 and before the job-run tables were reached, `'pre-text'` the `{ events, intents,
-   * jobRuns }` a DO answered before the free-text columns were reached.
+   * jobRuns }` a DO answered before the free-text columns were reached, `'pre-2068'` the full
+   * spine answer a DO gave before a module's own tables were reached.
    */
-  const hostFor = (legacy: boolean | 'pre-1632' | 'pre-text' = false) =>
+  const hostFor = (legacy: boolean | 'pre-1632' | 'pre-text' | 'pre-2068' = false) =>
     new CloudflareScopeHost({
       scope: legacy
         ? ({
@@ -60,7 +61,9 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
                           ? { events: 1, intents: 0 }
                           : legacy === 'pre-text'
                             ? { events: 1, intents: 0, jobRuns: 0 }
-                            : 1
+                            : legacy === 'pre-2068'
+                              ? { events: 1, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [] }
+                              : 1
                     : Reflect.get(target, prop, receiver),
               });
             },
@@ -137,6 +140,26 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
     await legacy.close();
   });
 
+  it("refuses a DO from before the module half the same way (#2068) — a vertical's own tables were never reached", async () => {
+    // Every spine count is present, so only the missing `vertical` shows it never ran a
+    // module's declared erasure or its hook. Read as "no module rows", the key would go and the
+    // receipt would claim an erasure that left the person in the vertical's tables.
+    const subject = dataSubjectId.parse(ulid());
+    const [sealed] = await hostFor().admin.sealSubjectPayloads(staff, t, s, [
+      { subjectId: subject, plaintext: 'in the backup' },
+    ]);
+    const legacy = hostFor('pre-2068');
+    await expect(legacy.admin.shredSubject(staff, t, s, subject)).rejects.toSatisfy(
+      (e: unknown) => errorCodeOf(e) === 'unavailable' && /before #2068/.test((e as Error).message),
+    );
+    const [opened] = await hostFor().admin.openSubjectPayloads(staff, t, s, [
+      { subjectId: subject, sealed: sealed! },
+    ]);
+    expect(opened).toBe('in the backup');
+    await hostFor().close();
+    await legacy.close();
+  });
+
   it('a migrated DO on the same scope erases normally', async () => {
     // The positive twin: the guard must refuse the legacy reply and nothing else.
     const subject = dataSubjectId.parse(ulid());
@@ -145,6 +168,8 @@ describe('a ScopeDO from before the intent redaction (#1600)', () => {
     expect(receipt.tombstoned).toBe(true);
     expect(receipt.intentsRedacted).toBe(0);
     expect(receipt.jobRunsRedacted).toBe(0);
+    // It ran the module half: the kit's erasure fixture is on every scope, and says so.
+    expect(receipt.verticalRows.length).toBeGreaterThan(0);
     await host.close();
   });
 });

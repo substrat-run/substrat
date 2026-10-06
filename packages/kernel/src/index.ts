@@ -457,6 +457,36 @@ export type {
   IssueExemplarOwner,
 } from './subject-redaction.js';
 export {
+  assertWithinErasureReach,
+  eraseSubjectFromModules,
+  isModuleErasureCounts,
+  moduleErasurePlan,
+  moduleRowsErased,
+  SECURE_DELETE_MIN_SQLITE,
+  tablesCreatedBy,
+} from './module-erasure.js';
+export {
+  TABLE_OWNERS,
+  TABLE_OWNERS_DDL,
+  applyTableChange,
+  assertMigrationLeavesLedgerAlone,
+  assertTablesOwned,
+  backfillOwnershipFromJournal,
+  moduleTableNames,
+  recordOwnershipSteps,
+  runMigrationStatements,
+  tableChangesOf,
+  tableStatements,
+} from './table-ownership.js';
+export type { OwnerStore, TableChange, TableStatement, TableStep } from './table-ownership.js';
+export { blankSqlComments, executableSqlStatements, splitSqlStatements } from './sql-statements.js';
+export type {
+  ModuleErasureCounts,
+  ModuleErasurePlan,
+  OnSubjectErased,
+  SubjectErasureContext,
+} from './module-erasure.js';
+export {
   FINDINGS_DDL,
   FINDING_RETENTION_DAYS,
   createFindingRule,
@@ -563,6 +593,31 @@ export type {
   SystemSwitchRecordFilter,
   SystemSwitchRecordRow,
 } from './system-switch-record.js';
+export { ADMIN_LOG_INDEX_DDL, ADMIN_LOG_INDEXES_SQL } from './admin-log-ddl.js';
+export {
+  AUDITED_CHANGE_ACTIONS,
+  AUDITED_OPERATIONS_BATCH,
+  SETTLE_INTENT_SQL,
+  SETTLE_OUTCOME_SQL,
+  settleOutcomeParamsOf,
+  operationKeyOf,
+  auditedOperationsSql,
+  effectiveOutcomes,
+  isSupersededOutcome,
+  readAuditedOperations,
+  unknownOutcomeOf,
+} from './audit-outcome.js';
+export type {
+  AuditedChangeAction,
+  AuditedOperationRef,
+  AuditedOperationRow,
+  AuditedOperationSqlRow,
+  AuditedPhase,
+  EffectiveOutcome,
+  OperationKey,
+  SettleIntentRow,
+  UnknownOutcome,
+} from './audit-outcome.js';
 export {
   VERSION_MIGRATIONS_DDL,
   splitManifestMigrations,

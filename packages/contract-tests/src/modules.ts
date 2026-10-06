@@ -28,6 +28,8 @@ import {
 } from '@substrat-run/contracts';
 import { membershipFixtureMod } from './membership-module.js';
 import { rebuildMod, stateMod } from './entity-state-module.js';
+import { erasureMod, erasureOtherMod } from './erasure-module.js';
+import { commentedDdlMod } from './migration-comments.js';
 import {
   assertAllowed,
   readAttachmentText,
@@ -2943,8 +2945,21 @@ export const contractTestModules: ModuleRegistration[] = [
   // #119: the archive/trash suite's module. Inert for every other suite — nothing else reads
   // its tables or invokes a `state/*` operation.
   stateMod,
+  // #2068: the subject-erasure suite's modules. Every scope in the kit carries them, so every
+  // `shredSubject` in every suite runs their declared erasure and their hook — which reaches
+  // only `er_*` tables nothing else writes, and misbehaves only for a subject the erasure suite
+  // arms in `er_bombs`. That is deliberate: every other suite's erasure then also proves the
+  // module half is harmless where it holds nothing.
+  erasureMod,
+  erasureOtherMod,
+  // #2068 r5: a module whose migrations comment their DDL and then drop the last column. Every
+  // scope in the kit migrates it, so a regression fails loudly everywhere.
+  commentedDdlMod,
   // #2090: the authored-rebuild suite's module. Inert for every other suite — its rebuilds run
-  // before the derived state migrations on a fresh scope, and nothing else reads `rb_*`.
+  // before the derived state migrations on a fresh scope, and nothing else reads `rb_*`. AFTER the
+  // erasure modules: a dump wipe drops tables and not views, so a wiped scope still holds `er_view`
+  // until `erasureMod` re-creates `er_loose`, and SQLite refuses any `ALTER TABLE … RENAME` while
+  // a view names a missing table.
   rebuildMod,
   parseMod,
   concurrencyMod,

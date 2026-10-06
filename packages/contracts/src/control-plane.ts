@@ -15,6 +15,7 @@ import {
 // none of these modules imports this one, so no cycle.
 import { org, scope, scopeStatus, tenant, tenantStatus } from './tenancy.js';
 import { tenantRole } from './permission.js';
+import { erasedEntityCount, erasureHookCount, unreachedEntity } from './subject-erasure.js';
 import { hostnameBinding } from './routing.js';
 import {
   connection,
@@ -290,6 +291,22 @@ export const subjectShredReceipt = z.object({
    */
   jobRunsRedacted: z.number().int().nonnegative().default(0),
   /**
+   * The module tables a declared erasure reached (#2068), one line per declaring entity — a
+   * zero included, because "this entity was looked at and held nothing of theirs" is the fact
+   * a DSAR answer needs, and an absent line cannot say it. Counts, never ids, for the reason
+   * this receipt carries counts at all. Defaulted: a receipt minted before the hook existed
+   * parses as the nothing it honestly reached.
+   */
+  verticalRows: z.array(erasedEntityCount).default([]),
+  /** Each module `onSubjectErased` hook that ran, with the rows its statements changed. */
+  hookRows: z.array(erasureHookCount).default([]),
+  /**
+   * Entities holding `erasable` fields that no erasure reaches — neither declared subject
+   * columns nor claimed by a hook. Named on every receipt so an incomplete erasure is visible
+   * where the erasure is read, not only in the model. Defaulted, as above.
+   */
+  unreachedEntities: z.array(unreachedEntity).default([]),
+  /**
    * Whether a subject key existed to destroy. False means nothing platform-retained was ever
    * sealed for this subject — either it was never exported, or a prior shred already ran.
    */
@@ -486,6 +503,18 @@ export const memberRemoval = z.object({
 export type MemberRemoval = z.infer<typeof memberRemoval>;
 
 /**
+ * What the control plane's answer to an AUDITED change carries beside its result (#2064): the
+ * owner hand-over and the member changes. `operationId` pairs the change's admin-log rows.
+ * `auditWarning` is present only when the change went through but its outcome row could not be
+ * written. The answer is still a success, because the change happened: a client shows the
+ * result and the warning, and must not offer to make the change again.
+ */
+export interface AuditedAnswer {
+  operationId: string;
+  auditWarning?: string;
+}
+
+/**
  * An owner HAND-OVER request (#1665): the current owner of record and the member who takes
  * over. Two principals in the scope's own identity directory. The scope comes from the address.
  * One principal on both sides is refused here, before anything is reached. `abandon: true`
@@ -553,18 +582,54 @@ export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
 /**
  * One row of an owner hand-over's audit (#1665), for `HostAdmin.recordOwnerTransfer`: an
  * `intent`, then `applied`, `refused` (the vertical's 409) or `failed`, paired by `operationId`.
+ * `unknown` is the platform sweep's row for an intent whose outcome was never written (#2064):
+ * the call's result is not known to the log, and `error` says so. A real outcome landing after
+ * it is the later row, and the one to read.
  * No `id`, `at` or actor: the adapter stamps the first two and the request supplies the third.
  */
-/** How much of the vertical's error text a `refused`/`failed` row keeps: the append-only log is
- *  no place for a vertical's whole response, and the caller got that in full already. */
-export const OWNER_TRANSFER_AUDIT_ERROR_MAX = 300;
+/**
+ * Whether `s` is well-formed UTF-16: every high surrogate followed by a low one, and no low one
+ * on its own. A lone surrogate is a string JavaScript holds and nothing else does: SQLite's JSON
+ * functions, a JSON encoder and a UTF-8 store each write it differently, so an id holding one is
+ * not the same id once it has crossed a store.
+ */
+export function isWellFormedText(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      i++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * The id pairing an audited change's admin-log rows (#2064): its intent and its outcome. The
+ * routes mint a ULID. The contract holds any id to being non-empty and well-formed text, because
+ * the id is matched in SQL and in memory, and only well-formed text reads the same in both.
+ */
+export const auditOperationId = z
+  .string()
+  .min(1)
+  .refine(isWellFormedText, { message: 'an audit operation id must be well-formed text (no lone surrogate)' });
+
+/** How much error text a `refused`/`failed`/`unknown` audit row keeps (#2064: one cap for every
+ *  intent-then-outcome audit): the append-only log is no place for a vertical's whole response,
+ *  and the caller got that in full already. */
+export const AUDIT_ERROR_MAX = 300;
+/** @deprecated Since #2064 one cap serves every audited change: use `AUDIT_ERROR_MAX`. */
+export const OWNER_TRANSFER_AUDIT_ERROR_MAX = AUDIT_ERROR_MAX;
 const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
   z
     .object({
       ...phase,
       tenantId,
       scopeId,
-      operationId: z.string().min(1),
+      operationId: auditOperationId,
       from: principalId,
       to: principalId,
       /** Present on every row of an abandon, so the log tells one from a hand-over. */
@@ -574,7 +639,7 @@ const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
 export const ownerTransferAudit = z.discriminatedUnion('phase', [
   ownerTransferAuditRow({ phase: z.literal('intent') }),
   ownerTransferAuditRow({ phase: z.literal('applied'), outcome: ownerTransferOutcome, fromRevoked: z.boolean() }),
-  ownerTransferAuditRow({ phase: z.enum(['refused', 'failed']), error: z.string().max(OWNER_TRANSFER_AUDIT_ERROR_MAX) }),
+  ownerTransferAuditRow({ phase: z.enum(['refused', 'failed', 'unknown']), error: z.string().max(AUDIT_ERROR_MAX) }),
 ]);
 export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
 
@@ -582,14 +647,15 @@ export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
  * One row of a dashboard member change's audit (#1150), for `HostAdmin.recordMemberChange`: an
  * `intent`, then `applied`, `refused` (the vertical's 4xx: nothing written) or `failed`, paired by
  * `operationId`. `principal` is the member changed — on an invite's intent, not yet minted.
+ * `unknown` is the platform sweep's row for an intent with no outcome, as `ownerTransferAudit`'s.
  * No `id`, `at` or actor, for `ownerTransferAudit`'s reason.
  */
 export const memberChangeAudit = z
   .object({
-    phase: z.enum(['intent', 'applied', 'refused', 'failed']),
+    phase: z.enum(['intent', 'applied', 'refused', 'failed', 'unknown']),
     tenantId,
     scopeId,
-    operationId: z.string().min(1),
+    operationId: auditOperationId,
     change: z.enum(['invite', 'role', 'remove']),
     caller: principalId,
     principal: principalId.optional(),
@@ -597,7 +663,7 @@ export const memberChangeAudit = z
     from: z.string().optional(),
     to: z.string().optional(),
     revoked: z.array(z.string()).optional(),
-    error: z.string().max(OWNER_TRANSFER_AUDIT_ERROR_MAX).optional(),
+    error: z.string().max(AUDIT_ERROR_MAX).optional(),
   })
   .strict();
 export type MemberChangeAudit = z.infer<typeof memberChangeAudit>;
@@ -1230,6 +1296,22 @@ export const adminLogEntry = z.object({
    */
   onBehalfOf: onBehalfOf.nullable().optional(),
   at: instant,
+  /**
+   * #2064: on a row of an audited change (`transferOwner`, `manageScopeMember`), the outcome its
+   * operation stands at, resolved by the admin-log read surface and never stored. The raw rows
+   * stay as written. This says how to read them: a real outcome (`applied`, `refused`, `failed`)
+   * beats a settle's `unknown` whichever was written first, and two real outcomes for one
+   * operation read `conflicting`, which the audit must never hold.
+   */
+  audited: z
+    .object({
+      operationId: auditOperationId,
+      /** The operation's effective outcome; `pending` while it has none. */
+      outcome: z.enum(['pending', 'applied', 'refused', 'failed', 'unknown', 'conflicting']),
+      /** True on an `unknown` row that a real outcome of the same operation beat. */
+      superseded: z.boolean(),
+    })
+    .optional(),
 });
 export type AdminLogEntry = z.infer<typeof adminLogEntry>;
 
