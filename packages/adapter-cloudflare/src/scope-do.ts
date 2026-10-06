@@ -146,6 +146,8 @@ import {
   listIndexDdl,
   listIndexPlans,
   moduleMigrations,
+  MIGRATION_DIGEST_FENCE_DDL,
+  MIGRATION_DIGEST_FENCE_LIFT,
   migrationDivergence,
   migrationFailedError,
   migrationSteps,
@@ -629,6 +631,8 @@ const KERNEL_DDL = `
     sql_digest TEXT,
     PRIMARY KEY (module_id, version)
   );
+  -- #2066: no new journal row without its digest (the kernel's comment says why).
+  ${MIGRATION_DIGEST_FENCE_DDL}
   -- #286: the PITR bookmark taken immediately BEFORE a migration pass runs on a
   -- scope that already holds data -- the precise rewind point a backout restores
   -- to. Rows live in the same storage they describe, so a rewind erases the rows
@@ -5964,10 +5968,13 @@ export function defineScopeDO(
           for (const t of replayable) {
             if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) this.sql.exec(alter);
           }
+          // #2066: a legacy scope's dump carries journal rows with no digest, verbatim.
+          this.sql.exec(MIGRATION_DIGEST_FENCE_LIFT);
           for (const t of replayable) {
             const insert = dumpRowsInsert(t, columnsOf);
             for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
           }
+          for (const stmt of splitSqlStatements(MIGRATION_DIGEST_FENCE_DDL)) this.sql.exec(stmt);
           // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
           // not this one, so it is never carried over. #2016: what stays is THIS store's own —
           // the platform's word when the load carries it (a copy into a fresh scope records its

@@ -494,6 +494,8 @@ import {
   listQuery,
   cursorOf,
   moduleMigrations,
+  MIGRATION_DIGEST_FENCE_DDL,
+  MIGRATION_DIGEST_FENCE_LIFT,
   migrationDivergence,
   migrationFailedError,
   migrationSteps,
@@ -1028,6 +1030,8 @@ const KERNEL_DDL = `
     sql_digest TEXT,
     PRIMARY KEY (module_id, version)
   );
+  -- #2066: no new journal row without its digest (the kernel's comment says why).
+  ${MIGRATION_DIGEST_FENCE_DDL}
   ${SWITCH_FENCES_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_tuples (
     subject TEXT NOT NULL,
@@ -3568,12 +3572,15 @@ export class SqliteScopeHost implements ScopeHost {
       for (const t of loadable) {
         if (isSpineTable(t.name)) for (const alter of spineColumnAdditions(t, columnsOf(t.name))) db.exec(alter);
       }
+      // #2066: a legacy scope's dump carries journal rows with no digest, verbatim.
+      db.exec(MIGRATION_DIGEST_FENCE_LIFT);
       for (const t of loadable) {
         const insert = dumpRowsInsert(t, columnsOf);
         if (t.rows.length === 0) continue;
         const stmt = db.prepare(insert);
         for (const row of t.rows) stmt.run(...(row as unknown[]));
       }
+      db.exec(MIGRATION_DIGEST_FENCE_DDL);
       // Rebuild the derived search indexes over the rows just loaded (#827). The DDL
       // drops and recreates, so this also repairs an index the dump left stale, and
       // the triggers it recreates are what keep the restored scope in step from here.

@@ -34,6 +34,35 @@ export function migrationDigest(sql: string): Promise<string> {
   return attachmentSha256(new TextEncoder().encode(sql));
 }
 
+const FENCE = '_substrat_migrations_digest_required';
+
+/**
+ * The fence that keeps a NULL digest meaning "written before the column" — in both adapters'
+ * KERNEL_DDL, after the journal table, so `lint:spine-ddl` holds it like any spine trigger.
+ *
+ * Without it an older writer (an instance still on the previous release during a rollout or a
+ * rollback, or a second process over the same SQLite file) inserts a journal row that omits the
+ * column, SQLite records NULL, and the row is unprotected for good. With it that INSERT aborts,
+ * so the older writer's migration fails and its scope fails closed until code that records the
+ * digest serves it, which then applies the migration properly. KERNEL_DDL runs before the
+ * column is ALTERed onto a legacy journal, and on a table without the column the trigger makes
+ * any INSERT fail with `no such column`: there is no window in which a NULL can be written. So
+ * a NULL row predates the first wake by digest-aware code, which is what makes accepting it
+ * sound, with no install marker to keep. A restore is the one writer that may load NULL rows
+ * (a dump of a legacy scope carries them verbatim): it lifts the fence around its row load
+ * (`MIGRATION_DIGEST_FENCE_LIFT`) and puts it back after.
+ */
+export const MIGRATION_DIGEST_FENCE_DDL = `
+  CREATE TRIGGER IF NOT EXISTS ${FENCE}
+  BEFORE INSERT ON _substrat_migrations WHEN NEW.sql_digest IS NULL
+  BEGIN
+    SELECT RAISE(ABORT, 'a migration journal row must carry its sql_digest (#2066)');
+  END;
+`;
+
+/** Drops the fence for a restore's row load; `MIGRATION_DIGEST_FENCE_DDL` puts it back. */
+export const MIGRATION_DIGEST_FENCE_LIFT = `DROP TRIGGER IF EXISTS ${FENCE}`;
+
 /** One migration a host applies, with its digest and whether it is held to it. */
 export interface MigrationStep {
   migration: SqlMigration;

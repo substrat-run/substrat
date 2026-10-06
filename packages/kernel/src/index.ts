@@ -347,6 +347,8 @@ export type {
 } from './list-index.js';
 export { moduleMigrations } from './module-migrations.js';
 export {
+  MIGRATION_DIGEST_FENCE_DDL,
+  MIGRATION_DIGEST_FENCE_LIFT,
   migrationDigest,
   migrationDivergence,
   migrationFailedError,

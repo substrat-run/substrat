@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { migrationDigest, ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler, type SqlMigration } from '@substrat-run/kernel';
+import { MIGRATION_DIGEST_FENCE_LIFT, migrationDigest, ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler, type SqlMigration } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 const MODULE = '@test/digest';
@@ -120,8 +120,9 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
 
   it('a scope file from before the column gains it on wake; its rows stay NULL and are accepted', async () => {
     const { dir, t, s, file } = await scopeRanWith([INIT, BRANCH_A]);
-    // The journal as every scope had it before #2066.
+    // The journal as every scope had it before #2066: no fence, no column.
     const db = new Database(file);
+    db.exec('DROP TRIGGER _substrat_migrations_digest_required');
     db.exec('ALTER TABLE _substrat_migrations DROP COLUMN sql_digest');
     db.close();
     // Even under SQL the legacy row cannot vouch for: a NULL is accepted, never compared.
@@ -133,6 +134,37 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
         { version: '0001-init', sql_digest: null },
         { version: '0002-next', sql_digest: null },
         { version: '0003-more', sql_digest: await migrationDigest(third.sql) },
+      ]);
+    } finally {
+      await next.close();
+    }
+  });
+
+  it("refuses an older writer's journal row once the column exists, and its scope recovers under the new code", async () => {
+    const { dir, t, s, file } = await scopeRanWith([INIT]);
+    // An instance still on the previous release, over the same file: its INSERT omits the column.
+    const OLD_INSERT =
+      'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)';
+    const db = new Database(file);
+    try {
+      expect(() => db.prepare(OLD_INSERT).run(MODULE, BRANCH_A.version, 'x', 0, 0)).toThrow(
+        'a migration journal row must carry its sql_digest (#2066)',
+      );
+      // The twin: the same row WITH its digest is what the fence lets through.
+      db.prepare(`${OLD_INSERT.replace('rows_changed)', 'rows_changed, sql_digest)').replace('?)', '?, ?)')}`).run(
+        MODULE, '9999-probe', 'x', 0, 0, 'f'.repeat(64),
+      );
+      db.prepare('DELETE FROM _substrat_migrations WHERE version = ?').run('9999-probe');
+    } finally {
+      db.close();
+    }
+    // The old writer's migration rolled back, so the new code applies it — with its digest.
+    const next = redeploy(dir, [INIT, BRANCH_A]);
+    try {
+      await (await next.getScope(who, t, s)).invoke('digest/add', {});
+      expect(journalOf(file)).toEqual([
+        { version: '0001-init', sql_digest: await migrationDigest(INIT.sql) },
+        { version: '0002-next', sql_digest: await migrationDigest(BRANCH_A.sql) },
       ]);
     } finally {
       await next.close();
