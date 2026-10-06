@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,7 @@ import {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
+  settleUnrecordedOutcomes,
   type VerticalClient,
 } from '../src/index.js';
 
@@ -159,5 +160,63 @@ describe('/tenants/:t/scopes/:s/members — the plane names the scope and the pe
       .map((r) => r.after as { phase: string; roleKey?: string; error?: string })
       .filter((a) => a.roleKey === 'lead');
     expect(last.map((a) => a.phase).sort()).toEqual(['intent', 'refused']);
+  });
+  /**
+   * Runs `fn` with `recordMemberChange` throwing on `phase`, and console.error captured. A
+   * person's token writes through an attributed view (#977) with an admin of its own, so the
+   * failure is injected into each view the request makes.
+   */
+  const withUnwritable = async (phase: string, fn: () => Promise<Response>) => {
+    const attributed = host.attributed;
+    host.attributed = (...args: Parameters<SqliteScopeHost['attributed']>) => {
+      const view = attributed.apply(host, args);
+      const record = view.admin.recordMemberChange;
+      view.admin.recordMemberChange = async (actor, entry) => {
+        if (entry.phase === phase) throw new Error('admin log unavailable');
+        return record(actor, entry);
+      };
+      return view;
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const res = await fn();
+      return { res, logged: logged.mock.calls.slice() };
+    } finally {
+      host.attributed = attributed;
+      logged.mockRestore();
+    }
+  };
+  const memberRows = async (operationId: string) =>
+    (await host.admin.auditLog(staff, { tenantId: tA, action: 'manageScopeMember' }))
+      .filter((r) => (r.after as { operationId: string }).operationId === operationId)
+      .map((r) => [r.actor, (r.after as { phase: string }).phase]);
+
+  it("a refusal whose `refused` row cannot be written still answers the vertical's 403 — logged, and closed by the sweep (#2064)", async () => {
+    const asAnn = await mint(tA, ann);
+    refuseNext = new ControlPlaneError(403, 'you do not hold perm:use');
+    const { res, logged } = await withUnwritable('refused', () => post(`/tenants/${tA}/scopes/${sA}/members`, asAnn, { roleKey: 'lead' }));
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; operationId: string };
+    expect(body.error).toMatch(/do not hold perm:use/);
+    expect(logged).toEqual([
+      ['audit-outcome-unrecorded', { flow: 'member-change', operationId: body.operationId, phase: 'refused', auditError: 'admin log unavailable' }],
+    ]);
+    expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent']]);
+    const sweep = platformActorId.parse(ulid());
+    await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: new Date(Date.now() + 2 * 3600_000) });
+    expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent'], [sweep, 'unknown']]);
+  });
+
+  it('a change whose `applied` row cannot be written says it completed, with its operation id and result', async () => {
+    const asAnn = await mint(tA, ann);
+    const { res, logged } = await withUnwritable('applied', () => post(`/tenants/${tA}/scopes/${sA}/members/${member}/remove`, asAnn));
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; operationId: string; revoked: string[] };
+    expect(body.error).toMatch(/the removal completed, but its outcome could not be written/);
+    expect(body.revoked).toEqual(['agent']);
+    expect(logged).toEqual([
+      ['audit-outcome-unrecorded', { flow: 'member-change', operationId: body.operationId, phase: 'applied', auditError: 'admin log unavailable' }],
+    ]);
+    expect(await memberRows(body.operationId)).toEqual([[serviceActor, 'intent']]);
   });
 });

@@ -551,11 +551,17 @@ export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
 /**
  * One row of an owner hand-over's audit (#1665), for `HostAdmin.recordOwnerTransfer`: an
  * `intent`, then `applied`, `refused` (the vertical's 409) or `failed`, paired by `operationId`.
+ * `unknown` is the platform sweep's row for an intent whose outcome was never written (#2064):
+ * the call's result is not known to the log, and `error` says so. A real outcome landing after
+ * it is the later row, and the one to read.
  * No `id`, `at` or actor: the adapter stamps the first two and the request supplies the third.
  */
-/** How much of the vertical's error text a `refused`/`failed` row keeps: the append-only log is
- *  no place for a vertical's whole response, and the caller got that in full already. */
-export const OWNER_TRANSFER_AUDIT_ERROR_MAX = 300;
+/** How much error text a `refused`/`failed`/`unknown` audit row keeps (#2064: one cap for every
+ *  intent-then-outcome audit): the append-only log is no place for a vertical's whole response,
+ *  and the caller got that in full already. */
+export const AUDIT_ERROR_MAX = 300;
+/** @deprecated Since #2064 one cap serves every audited change: use `AUDIT_ERROR_MAX`. */
+export const OWNER_TRANSFER_AUDIT_ERROR_MAX = AUDIT_ERROR_MAX;
 const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
   z
     .object({
@@ -572,7 +578,7 @@ const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
 export const ownerTransferAudit = z.discriminatedUnion('phase', [
   ownerTransferAuditRow({ phase: z.literal('intent') }),
   ownerTransferAuditRow({ phase: z.literal('applied'), outcome: ownerTransferOutcome, fromRevoked: z.boolean() }),
-  ownerTransferAuditRow({ phase: z.enum(['refused', 'failed']), error: z.string().max(OWNER_TRANSFER_AUDIT_ERROR_MAX) }),
+  ownerTransferAuditRow({ phase: z.enum(['refused', 'failed', 'unknown']), error: z.string().max(AUDIT_ERROR_MAX) }),
 ]);
 export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
 
@@ -580,11 +586,12 @@ export type OwnerTransferAudit = z.infer<typeof ownerTransferAudit>;
  * One row of a dashboard member change's audit (#1150), for `HostAdmin.recordMemberChange`: an
  * `intent`, then `applied`, `refused` (the vertical's 4xx: nothing written) or `failed`, paired by
  * `operationId`. `principal` is the member changed — on an invite's intent, not yet minted.
+ * `unknown` is the platform sweep's row for an intent with no outcome, as `ownerTransferAudit`'s.
  * No `id`, `at` or actor, for `ownerTransferAudit`'s reason.
  */
 export const memberChangeAudit = z
   .object({
-    phase: z.enum(['intent', 'applied', 'refused', 'failed']),
+    phase: z.enum(['intent', 'applied', 'refused', 'failed', 'unknown']),
     tenantId,
     scopeId,
     operationId: z.string().min(1),
@@ -595,7 +602,7 @@ export const memberChangeAudit = z
     from: z.string().optional(),
     to: z.string().optional(),
     revoked: z.array(z.string()).optional(),
-    error: z.string().max(OWNER_TRANSFER_AUDIT_ERROR_MAX).optional(),
+    error: z.string().max(AUDIT_ERROR_MAX).optional(),
   })
   .strict();
 export type MemberChangeAudit = z.infer<typeof memberChangeAudit>;

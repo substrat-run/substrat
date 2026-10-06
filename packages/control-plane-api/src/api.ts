@@ -7,7 +7,6 @@ import {
   RESERVED_LABEL_SEPARATOR,
   adminAction,
   ownerTransferInput,
-  OWNER_TRANSFER_AUDIT_ERROR_MAX,
   memberInviteInput,
   memberRoleInput,
   type MemberChangeAudit,
@@ -132,6 +131,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
+import { auditedChange, type AuditedChange } from './audited-change.js';
 import {
   BIND_EXPORT_BREAK_REFUSAL,
   CARRIED_AWAY_KEY,
@@ -4127,32 +4127,59 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return { tenantId, scopeId, actor, vertical, person: memberPerson(principal) } as const;
   };
 
+  /**
+   * Answer for one `auditedChange` (#2064): the vertical's refusal or failure with its own status
+   * (a non-`ControlPlaneError` throw rethrown), a change whose outcome row is missing as a `500`
+   * saying it DID happen, under the operation id its intent row carries, or `ok`.
+   */
+  const auditedAnswer = <T,>(
+    c: Context<{ Variables: Vars }>,
+    done: AuditedChange<T>,
+    what: string,
+    ok: (result: T) => Response,
+  ): Response => {
+    const { operationId } = done;
+    if ('error' in done) {
+      if (done.error instanceof ControlPlaneError) {
+        return c.json({ error: done.error.message, operationId }, done.error.status as ContentfulStatusCode);
+      }
+      throw done.error;
+    }
+    if ('unrecorded' in done) {
+      return c.json(
+        {
+          error: `${what} completed, but its outcome could not be written to the admin log: ${done.unrecorded}`,
+          operationId,
+          ...((done.result ?? {}) as object),
+        },
+        500,
+      );
+    }
+    return ok(done.result);
+  };
+
   /** Run one audited member change: intent, the vertical's call, then the outcome row. */
-  const auditedMemberChange = async <T,>(
+  const auditedMemberChange = <T,>(
     c: Context<{ Variables: Vars }>,
     entry: Omit<MemberChangeAudit, 'phase' | 'operationId' | 'error'>,
     run: () => Promise<T>,
     applied: (result: T) => Partial<MemberChangeAudit>,
-  ): Promise<{ ok: true; result: T } | { ok: false; response: Response }> => {
+  ): Promise<AuditedChange<T>> => {
     const actor = c.get('actor');
-    const base = { ...entry, operationId: ulid() };
-    await c.var.admin.recordMemberChange(actor, { ...base, phase: 'intent' });
-    let result: T;
-    try {
-      result = await run();
-    } catch (e) {
-      const status = e instanceof ControlPlaneError ? e.status : 500;
-      const error = (e instanceof Error ? e.message : String(e)).slice(0, OWNER_TRANSFER_AUDIT_ERROR_MAX);
-      await c.var.admin
-        .recordMemberChange(actor, { ...base, phase: status < 500 ? 'refused' : 'failed', error })
-        .catch(() => undefined);
-      if (e instanceof ControlPlaneError) {
-        return { ok: false, response: c.json({ error: e.message }, e.status as ContentfulStatusCode) };
-      }
-      throw e;
-    }
-    await c.var.admin.recordMemberChange(actor, { ...base, phase: 'applied', ...applied(result) });
-    return { ok: true, result };
+    const operationId = ulid();
+    return auditedChange({
+      flow: 'member-change',
+      operationId,
+      run,
+      // A 4xx is the vertical's refusal: nothing was written there.
+      refused: (e) => e instanceof ControlPlaneError && e.status < 500,
+      record: (row) =>
+        c.var.admin.recordMemberChange(actor, {
+          ...entry,
+          operationId,
+          ...(row.phase === 'applied' ? { phase: 'applied', ...applied(row.result) } : row),
+        }),
+    });
   };
 
   const NO_PERSON = 'a member change needs the signed-in person it is made for — this credential names nobody';
@@ -4184,7 +4211,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       () => target.vertical.inviteMember({ tenantId, scopeId, caller: person, origin, roleKey: body.roleKey, email: body.email ?? null }),
       (link) => ({ principal: link.principal }),
     );
-    return done.ok ? c.json(done.result, 201) : done.response;
+    return auditedAnswer(c, done, 'the invite', (link) => c.json(link, 201));
   });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/members/:principal/role', async (c) => {
@@ -4200,7 +4227,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       () => target.vertical.changeMemberRole({ tenantId, scopeId, caller: person, principal: member, from: body.from, to: body.to }),
       () => ({}),
     );
-    return done.ok ? c.json({ principal: member, from: body.from, to: body.to }) : done.response;
+    return auditedAnswer(c, done, 'the role change', () => c.json({ principal: member, from: body.from, to: body.to }));
   });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/members/:principal/remove', async (c) => {
@@ -4215,7 +4242,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       () => target.vertical.removeMember({ tenantId, scopeId, caller: person, principal: member }),
       (removal) => ({ revoked: removal.revoked }),
     );
-    return done.ok ? c.json(done.result) : done.response;
+    return auditedAnswer(c, done, 'the removal', (removal) => c.json(removal));
   });
 
   // The owner HAND-OVER (#1665). The move runs in the VERTICAL, behind `/internal/owner-transfer`
@@ -4245,42 +4272,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // An abandon (`abandon: true`) is audited the same way, every row marked, so the log tells
     // a hand-over closed without finishing from one that finished.
     const base = { tenantId, scopeId, operationId, from: body.from, to: body.to, ...(body.abandon ? { abandon: true as const } : {}) };
-    await c.var.admin.recordOwnerTransfer(actor, { ...base, phase: 'intent' });
-    let moved;
-    try {
-      moved = await vertical.transferOwner({ tenantId, scopeId, ...body });
-    } catch (e) {
-      const refused = e instanceof ControlPlaneError && e.status === 409;
-      const error = (e instanceof Error ? e.message : String(e)).slice(0, OWNER_TRANSFER_AUDIT_ERROR_MAX);
-      await c.var.admin
-        .recordOwnerTransfer(actor, { ...base, phase: refused ? 'refused' : 'failed', error })
-        .catch(() => undefined);
-      if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message, operationId }, e.status as ContentfulStatusCode);
-      }
-      throw e;
-    }
-    try {
-      await c.var.admin.recordOwnerTransfer(actor, {
-        ...base,
-        phase: 'applied',
-        outcome: moved.outcome,
-        fromRevoked: moved.fromRevoked,
-      });
-    } catch (e) {
-      // The owner HAS moved; only the outcome row is missing. Say exactly that, so nobody retries
-      // a hand-over believing it failed, and name the operation whose intent row stands alone.
-      const why = e instanceof Error ? e.message : String(e);
-      return c.json(
-        {
-          error: `the hand-over completed, but its outcome could not be written to the admin log: ${why}`,
-          operationId,
-          ...moved,
-        },
-        500,
-      );
-    }
-    return c.json({ operationId, ...moved });
+    const done = await auditedChange({
+      flow: 'owner-transfer',
+      operationId,
+      run: () => vertical.transferOwner({ tenantId, scopeId, ...body }),
+      // Only the vertical's 409 is a refusal: anything else may have stopped part-way.
+      refused: (e) => e instanceof ControlPlaneError && e.status === 409,
+      record: (row) =>
+        c.var.admin.recordOwnerTransfer(
+          actor,
+          row.phase === 'applied'
+            ? { ...base, phase: 'applied', outcome: row.result.outcome, fromRevoked: row.result.fromRevoked }
+            : { ...base, ...row },
+        ),
+    });
+    // A missing outcome row is said exactly that way, so nobody retries a hand-over believing it
+    // failed, under the operation whose intent row stands alone.
+    return auditedAnswer(c, done, 'the hand-over', (moved) => c.json({ operationId, ...moved }));
   });
 
   // Deliver per-instance CONFIG to the scope's own storage (vertical-auth-detach.md

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   ControlPlaneError,
   VerticalClient,
+  settleUnrecordedOutcomes,
 } from '../src/index.js';
 
 /**
@@ -290,6 +291,42 @@ describe('the owner hand-over route (#1665)', () => {
     expect(asked).toHaveLength(1);
     // The intent row stands, under the operation id the caller was told.
     expect((await rows(s)).map((r) => [r.operationId, r.phase])).toEqual([[body.operationId, 'intent']]);
+  });
+
+  it("a refusal whose `refused` row cannot be written still answers the vertical's 409 — logged, and closed by the sweep (#2064)", async () => {
+    const s = await newScope();
+    answer = async () => {
+      throw new ControlPlaneError(409, 'claim it first');
+    };
+    const original = host.admin.recordOwnerTransfer;
+    host.admin.recordOwnerTransfer = async (actor, entry) => {
+      if (entry.phase === 'refused') throw new Error('admin log unavailable');
+      return original.call(host.admin, actor, entry);
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let res: Response;
+    let calls: unknown[][];
+    try {
+      res = await send(route(s), asStaff);
+      calls = logged.mock.calls.slice();
+    } finally {
+      host.admin.recordOwnerTransfer = original;
+      logged.mockRestore();
+    }
+    expect(res.status).toBe(409);
+    const { operationId } = (await res.json()) as { operationId: string };
+    expect(calls).toEqual([
+      ['audit-outcome-unrecorded', { flow: 'owner-transfer', operationId, phase: 'refused', auditError: 'admin log unavailable' }],
+    ]);
+    expect((await rows(s)).map((r) => r.phase)).toEqual(['intent']);
+    // The scheduled pass closes the intent; the refusal itself is not recoverable from the log.
+    const sweep = platformActorId.parse(ulid());
+    const settled = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: new Date(Date.now() + 2 * 3600_000) });
+    expect(settled.settled.map((x) => x.operationId)).toContain(operationId);
+    expect((await rows(s)).map((r) => [r.actor, r.phase])).toEqual([
+      [staff, 'intent'],
+      [sweep, 'unknown'],
+    ]);
   });
 
   it('a scope no vertical serves has no owner seat to hand over — 501, and nothing is recorded', async () => {

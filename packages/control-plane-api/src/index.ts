@@ -132,6 +132,15 @@ export {
   tenantStoreBindings,
 } from './tenant-stores.js';
 export {
+  auditedChange,
+  settleUnrecordedOutcomes,
+  AUDITED_CHANGE_ACTIONS,
+  SETTLE_GRACE_MS,
+  SETTLE_LOOKBACK_MS,
+  UNRECORDED_OUTCOME_LOG,
+} from './audited-change.js';
+export type { AuditedChange, AuditedChangeSpec, AuditedRow, SettleAdmin, SettleOptions, SettleResult } from './audited-change.js';
+export {
   createCustomHostnameProvisioner,
   mapCfStatus,
   extractRecords,

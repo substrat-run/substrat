@@ -81,7 +81,7 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   credential naming nobody (a builder, staff, or a tenant token minted without a person) is
   refused `403` on the three writes; the roster still reads. Each write leaves two
   `manageScopeMember` rows on the admin log, the intent and then `applied`, `refused` or
-  `failed`. The vertical's own status (`403` past the person's authority, `409` for the owner
+  `failed`, paired by the `operationId` a refusal also answers with. The vertical's own status (`403` past the person's authority, `409` for the owner
   of record, `501` for an app that declares no member roles) is forwarded unchanged.
   A third, `POST …/owner-transfer` with `{ from, to }`, hands the owner seat to another member
   of the instance. It is **staff-only**: a tenant credential or a builder is refused `403`.
@@ -99,6 +99,14 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   `transferOwner` rows to the admin log, paired by the `operationId` the route answers with:
   an `intent` before the vertical is asked, then `applied`, `refused` or `failed`. A `failed`
   hand-over may have stopped part-way, and sending the same request again completes it.
+  **When an outcome row cannot be written** (on either route), the answer still reflects what
+  the vertical did. A refusal or failure keeps the vertical's own status, and the missing row
+  is logged as `audit-outcome-unrecorded` with the `operationId`. A change that went through
+  answers `500`, saying it completed and that only its row is missing, with the
+  `operationId` and the result, so it is not retried as a failure. The platform's scheduled
+  pass closes any intent that still has no outcome an hour later with an `unknown` row, which
+  says the log cannot tell whether the change happened, and an ops-failure row that the staff
+  failure digest reports.
   The answer's `fromRevoked` is about the instance's own owner seat only. `false` means `from`
   held none there; if `from` holds the owner role at the tenant level, that grant is untouched
   and still applies, and it is taken back through the tenant's role assignments.

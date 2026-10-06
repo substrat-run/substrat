@@ -1827,6 +1827,12 @@ export function permissionContractSuite(
         host.admin.recordOwnerTransfer(operator, { ...base, phase: 'intent', actor: staff } as never),
       ).rejects.toThrow();
       expect((await host.admin.auditLog(staff, { tenantId: t1 })).filter((r) => r.action === 'transferOwner')).toHaveLength(2);
+      // #2064: the platform sweep closes an intent with no outcome as `unknown`, saying why. Its
+      // reason is required, as a refusal's is.
+      await expect(host.admin.recordOwnerTransfer(operator, { ...base, phase: 'unknown' } as never)).rejects.toThrow();
+      await host.admin.recordOwnerTransfer(operator, { ...base, phase: 'unknown', error: 'no outcome was recorded' });
+      const settled = (await host.admin.auditLog(staff, { tenantId: t1, action: 'transferOwner' })).at(-1);
+      expect(settled?.after).toEqual({ phase: 'unknown', error: 'no outcome was recorded', operationId, from, to });
     });
 
     it('audits reading the audit trail, and reading the access log itself', async () => {

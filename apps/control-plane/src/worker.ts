@@ -122,6 +122,7 @@ import {
   VerticalClient,
   hostedCrossVerticalReach,
   retireClientsOfReapedScope,
+  settleUnrecordedOutcomes,
   versionReachedAt,
   type ScopeDeployment,
 } from '@substrat-run/control-plane-api';
@@ -1803,6 +1804,17 @@ export default {
           : {}),
         errors: report.errors,
       });
+    }
+
+    // #2064 — an audited change (owner hand-over, member change) whose intent row has had no
+    // outcome for an hour: its outcome write failed, or the request died between the two. The
+    // pass writes an `unknown` outcome for each and an ops-failure row, BEFORE the digest below,
+    // so the digest this pass sends names it. Contained like the phases below: loud, never sunk.
+    try {
+      const settled = await settleUnrecordedOutcomes({ admin: host.admin, actor: SWEEP_ACTOR });
+      if (settled.settled.length || settled.errors.length) console.error('audit-outcome-settle', settled);
+    } catch (err) {
+      console.error('audit-outcome-settle failed', err instanceof Error ? err.message : String(err));
     }
 
     // #1416 — the one push in the observability stack. Everything above records; this
