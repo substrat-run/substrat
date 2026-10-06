@@ -76,9 +76,9 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 Reachable WITHOUT a role, narrowed to one entity per principal. A key held by
 no role in §3 but listed here is deliberate, not a gap.
 
-| Entity type | Permissions granted per entity |
-| --- | --- |
-| `employee` | `absence:read`, `absence:request`, `expense:read`, `expense:submit`, `protocol:fill`, `protocol:read`, `protocol:sign`, `time:read`, `time:report` |
+| Entity type | Permissions granted per entity | Given on arrival, topped up when it grows |
+| --- | --- | --- |
+| `employee` | `absence:read`, `absence:request`, `expense:read`, `expense:submit`, `protocol:fill`, `protocol:read`, `protocol:sign`, `time:read`, `time:report` | yes — `hr_employees.principal_ref` names the principal |
 
 ## 5. Scheduled work — the system principal's grants
 

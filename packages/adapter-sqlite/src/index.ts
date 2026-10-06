@@ -628,7 +628,14 @@ import {
   unknownRoleError,
   type ConsumerDelivery,
 } from '@substrat-run/kernel';
-import { attributedView } from '@substrat-run/kernel';
+import {
+  attributedView,
+  delegatedGrantSql,
+  delegatedRevokeSql,
+  grantEntityShapeIn,
+  shapeTopUpBatch,
+  topUpEntityGrantShapes,
+} from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -7223,6 +7230,46 @@ export class SqliteScopeHost implements ScopeHost {
           grant,
         );
       },
+      grantEntityShape: async (actor, grant) => {
+        const { tenantId, scopeId } = grant.node;
+        this.assertScope(tenantId, scopeId);
+        const rt = this.runtime(tenantId, scopeId);
+        // One unit on the scope actor (#1678): the marker and its keys land together or not at all.
+        await rt.actor.turn(() =>
+          rt.db.transaction(() => grantEntityShapeIn(switchSqlOf(rt.db), grant.principalId, grant.entity, grant.permissions))(),
+        );
+        this.recordAdmin(actor, 'grantEntityShape', { tenantId, scopeId }, null, grant);
+      },
+      reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
+        const limit = shapeTopUpBatch(opts?.batch);
+        const { tenantId, scopeId } = node;
+        this.assertScope(tenantId, scopeId);
+        const rt = this.runtime(tenantId, scopeId);
+        let toppedUp = 0;
+        // #2071: one bounded transaction per pass, so a large scope never holds one long; a pass
+        // that did not use its whole budget found everything.
+        for (let done = false; !done; ) {
+          const pass = await rt.actor.turn(() =>
+            rt.db.transaction(() =>
+              topUpEntityGrantShapes(switchSqlOf(rt.db), {
+                tenantId,
+                scopeId,
+                shapes,
+                now: new Date().toISOString(),
+                limit,
+                mintEventId: (ms) => rt.mintEventId(ms),
+                version: this.versionId,
+              }),
+            )(),
+          );
+          toppedUp += pass.toppedUp;
+          done = pass.done;
+        }
+        if (toppedUp > 0) {
+          this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, toppedUp });
+        }
+        return { toppedUp };
+      },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);
         const check = () => {
@@ -11650,16 +11697,9 @@ export class SqliteScopeHost implements ScopeHost {
               'the caller does not hold it there (a grant delegates, it never elevates)',
           );
         }
-        rt.db
-          .prepare(
-            `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
-             VALUES (?, ?, ?)`,
-          )
-          .run(
-            `principal:${principal}`,
-            `granted:${permission}`,
-            `${entity.entityType}:${entity.entityId}`,
-          );
+        // #2071: an explicit grant, so it clears a tombstone `revoke` left.
+        const g = delegatedGrantSql(principal, permission, `${entity.entityType}:${entity.entityId}`);
+        rt.db.prepare(g.sql).run(...g.params);
       },
       /**
        * Withdraw a grant this caller could have made. Same guardrails, same reason — but NOT
@@ -11675,15 +11715,10 @@ export class SqliteScopeHost implements ScopeHost {
               'the caller does not hold it there',
           );
         }
-        rt.db
-          .prepare(
-            `DELETE FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?`,
-          )
-          .run(
-            `principal:${principal}`,
-            `granted:${permission}`,
-            `${entity.entityType}:${entity.entityId}`,
-          );
+        // K-21 (#2071): a tombstone, never a delete — a declared shape's top-up must be able
+        // to tell a key taken back from one never held.
+        const r = delegatedRevokeSql(principal, permission, `${entity.entityType}:${entity.entityId}`, at);
+        rt.db.prepare(r.sql).run(...r.params);
       },
       atomic: createAtomic(runSub, { passed, signals }),
       // #1672: mint / revoke / list, written once in the kernel. The raw spine seam (this

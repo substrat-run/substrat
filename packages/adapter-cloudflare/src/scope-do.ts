@@ -1,3 +1,4 @@
+import type { EntityGrantShape } from '@substrat-run/contracts';
 import { REWIND_REFUSED } from './rewind-refusal.js';
 import { SYSTEM_DOOR_MOVED, type SystemDoorMoved } from './system-door.js';
 import { DurableObject } from 'cloudflare:workers';
@@ -97,6 +98,10 @@ import {
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   seatScopeTuple,
+  delegatedGrantSql,
+  delegatedRevokeSql,
+  grantEntityShapeIn,
+  topUpEntityGrantShapes,
   applyScopeRoleChange,
   changeScopeRole,
   revokeScopeRoles,
@@ -2319,6 +2324,38 @@ export function defineScopeDO(
           }
           return switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
         }),
+      );
+    }
+
+    /** A declared entity-grant shape's grant to one person on one entity (#2071), as ONE unit. */
+    async grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void> {
+      await this.queue.enqueue(() =>
+        this.revision.transactionSync(() => grantEntityShapeIn(this.switchSql(), principal, entity, permissions)),
+      );
+    }
+
+    /**
+     * One bounded pass of a declared shape's reconcile (#2071), with its events, in ONE
+     * transaction: how many it topped up, and whether the scope is done.
+     */
+    async topUpEntityGrantShapes(
+      tenantId: string,
+      scopeId: string,
+      shapes: readonly EntityGrantShape[],
+      limit: number,
+    ): Promise<{ toppedUp: number; done: boolean }> {
+      return this.queue.enqueue(() =>
+        this.revision.transactionSync(() =>
+          topUpEntityGrantShapes(this.switchSql(), {
+            tenantId,
+            scopeId,
+            shapes,
+            now: new Date().toISOString(),
+            limit,
+            mintEventId: (ms) => this.mintEventId(ms),
+            version: this.env.SUBSTRAT_VERSION_ID ?? null,
+          }),
+        ),
       );
     }
 
@@ -7289,12 +7326,9 @@ export function defineScopeDO(
                 'the caller does not hold it there (a grant delegates, it never elevates)',
             );
           }
-          sql.exec(
-            `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)`,
-            `principal:${principal}`,
-            `granted:${permission}`,
-            `${entity.entityType}:${entity.entityId}`,
-          );
+          // #2071: an explicit grant, so it clears a tombstone `revoke` left.
+          const g = delegatedGrantSql(principal, permission, `${entity.entityType}:${entity.entityId}`);
+          sql.exec(g.sql, ...g.params);
         },
         /**
          * Deliberately NOT the #1856 grammar check `grant` and `link` make: a revoke writes
@@ -7310,12 +7344,10 @@ export function defineScopeDO(
                 'the caller does not hold it there',
             );
           }
-          sql.exec(
-            `DELETE FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?`,
-            `principal:${principal}`,
-            `granted:${permission}`,
-            `${entity.entityType}:${entity.entityId}`,
-          );
+          // K-21 (#2071): a tombstone, never a delete — a declared shape's top-up must be
+          // able to tell a key taken back from one never held.
+          const r = delegatedRevokeSql(principal, permission, `${entity.entityType}:${entity.entityId}`, at);
+          sql.exec(r.sql, ...r.params);
         },
         atomic: createAtomic(runSub, { passed, signals }),
         // #1672: mint / revoke / list, written once in the kernel — the pure adapter hands

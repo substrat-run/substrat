@@ -15,6 +15,8 @@ import {
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
   deploymentRefFor,
+  reconcilePayloadFor,
+  reviewedEntityGrants,
   stableDeploymentRefFor,
 } from '../src/index.js';
 
@@ -4703,6 +4705,37 @@ describe('control-plane API — deploy', () => {
     // No schedules, nothing owed.
     expect((await push('fsm-sweep', form(manifest({ version: '0.1.3', sweeperClasses: [] })))).status).toBe(201);
     expect('supplySweeper' in deployed.at(-1)!.bundle).toBe(false);
+  });
+
+  /**
+   * #2071 (Codex r2): a reconcile tops holders up to the shapes in the REVIEWED registry of the
+   * version it reaches, the object the permission digest covers, and nothing a vertical names
+   * at run time. A version whose reviewed registry declares a shape SHARING delivers it sharing,
+   * so the kernel reconciles nothing for it.
+   */
+  it('a reconcile carries the reached version’s reviewed entity-grant shapes, and only those (#2071)', async () => {
+    const sharing = { entityType: 'list', permissions: ['list:contribute'] };
+    const bootstrap = { entityType: 'owner', permissions: ['list:manage'], bootstrap: true, holder: 'self' };
+    const res = await push(
+      'fsm-shapes',
+      form(manifest({ registry: { permissions: [], roles: [], entityGrants: [sharing, bootstrap] } })),
+    );
+    expect(res.status).toBe(201);
+    const v = await res.json();
+    expect(await reviewedEntityGrants(host.admin, staff, 'fsm-shapes', v.id)).toEqual([sharing, bootstrap]);
+    const gather = {
+      listEntitlements: async () => [],
+      listIdentityLinks: async () => [],
+      listConnectionGrants: async () => [],
+      connectionSealingKeys: async () => [],
+      versionManifest: (actor: never, slug: string, id: string) => host.admin.versionManifest(actor, slug, id),
+    };
+    const scope = { tenantId: tenantId.parse(ulid()), id: scopeId.parse(ulid()), vertical: 'fsm-shapes' };
+    expect((await reconcilePayloadFor(gather, staff, scope, v.id)).entityGrants).toEqual([sharing, bootstrap]);
+    // No version the platform can name: no shapes at all, so nothing is reconciled.
+    expect(await reconcilePayloadFor(gather, staff, scope)).not.toHaveProperty('entityGrants');
+    // A version the platform does not hold is refused, never read as "no shapes".
+    await expect(reviewedEntityGrants(host.admin, staff, 'fsm-shapes', ulid())).rejects.toThrow(/unknown version/);
   });
 
   it('refuses a contradictory declaration at push, 422, before anything is uploaded (#1902)', async () => {

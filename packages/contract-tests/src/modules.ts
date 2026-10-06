@@ -1759,6 +1759,28 @@ export const permMod: ModuleRegistration = {
     'perm/can-assign': (async (ctx, input) => {
       return ctx.canAssign((input as { roleKey: string }).roleKey);
     }) as OperationHandler<never, unknown>,
+    // #2071: a principal's `granted:` rows, tombstones included — what a revoke LEAVES, which
+    // the checker's answer alone cannot show (a deleted row and a tombstone both deny).
+    'perm/grant-rows': (async (ctx, input) =>
+      ctx.sql
+        .query<{ relation: string; object: string; revoked_at: string | null; expires_at: string | null }>(
+          `SELECT relation, object, revoked_at, expires_at FROM _substrat_tuples
+            WHERE subject = ? AND substr(relation, 1, 8) = 'granted:' ORDER BY relation, object`,
+          [`principal:${(input as { principal: string }).principal}`],
+        )
+        .map((r) => ({ relation: r.relation, object: r.object, revokedAt: r.revoked_at, expiresAt: r.expires_at }))) as OperationHandler<
+      never,
+      unknown
+    >,
+    // #2071: the kernel's `entity.grants-topped-up` events on one entity, oldest first.
+    'perm/topped-up': (async (ctx, input) =>
+      ctx.sql
+        .query<{ payload: string; actor: string; operation: string | null; authorization: string | null }>(
+          `SELECT payload, actor, operation, authorization FROM _substrat_outbox
+            WHERE type = 'entity.grants-topped-up' AND entity_type = ? AND entity_id = ? ORDER BY id`,
+          [(input as EntityRef).entityType, (input as EntityRef).entityId],
+        )
+        .map((r) => ({ ...r, payload: JSON.parse(r.payload), actor: JSON.parse(r.actor) }))) as OperationHandler<never, unknown>,
     'perm/unshare': (async (ctx, input) => {
       const i = input as { principal: string; permission: string; entity: EntityRef };
       await ctx.revoke(

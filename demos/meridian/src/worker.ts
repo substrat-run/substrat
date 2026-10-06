@@ -284,6 +284,9 @@ mountPlatformSurface<Env>(app, {
   hostFor,
   roles: ROLES,
   ownerRoleKey: 'hr-admin',
+  // #2071: no shapes here. The platform's reconcile carries EMPLOYEE_SELF from this version's
+  // reviewed registry (`permissions.entityGrants`, declared `bootstrap`) and tops each employee up,
+  // so a key added to it reaches the employees linked before the release that added it.
   onProvision: async (env, b) => {
     await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner);
     // Onto the sweep roster, so the scope's schedules run (#1646). This hook also runs on
@@ -445,6 +448,7 @@ mountOwnerClaim(app, {
  * live in NO role (an hr-admin holds `time:read`, never `time:report`); an employee's
  * authority is a per-record grant, exactly as the demo seed issues one. Without this a linked
  * employee lands on "My work" yet every log-time is denied — the tab is on, the grant is not.
+ * Granted as the declared SHAPE (#2071), so a key EMPLOYEE_SELF gains later reaches them too.
  * Idempotent, and only ever reached by a caller who already passed create-employee's own
  * `employee:manage` check inside the operation, so no fresh authority is minted here.
  */
@@ -455,10 +459,9 @@ async function grantEmployeeSelf(env: Env, node: CompanyNode, result: unknown): 
   // skip rather than throw AFTER the record was already written by the (succeeded) operation.
   const principal = principalId.safeParse(row.principal_ref);
   if (!principal.success) return;
-  const host = hostFor(env);
-  for (const permission of EMPLOYEE_SELF) {
-    await host.grantEntityLocal(node.scopeId, principal.data, permission, { entityType: 'employee', entityId: row.id });
-  }
+  // The declared shape, not its keys one by one (#2071): the marker it leaves is what lets a
+  // key added to EMPLOYEE_SELF later reach this employee at the next reconcile.
+  await hostFor(env).grantEntityShapeLocal(node.scopeId, principal.data, { entityType: 'employee', entityId: row.id }, EMPLOYEE_SELF);
 }
 
 // Generic invoke: the kernel checks the permission inside every operation, so a generic
