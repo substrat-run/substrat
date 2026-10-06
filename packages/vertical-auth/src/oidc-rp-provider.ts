@@ -2,7 +2,7 @@ import {
   beginLogin,
   completeLogin,
   federatedLogoutUrl,
-  verifySession,
+  verifySessionEnvelope,
   readCookie,
   safePath,
   SESSION_COOKIE,
@@ -249,8 +249,9 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
   }
 
   async function resolve(headers: Headers, url?: string): Promise<AuthSubject | null> {
-    const session = await verifySession(env, readCookie(headers.get('cookie'), SESSION_COOKIE));
-    if (session) {
+    const envelope = await verifySessionEnvelope(env, readCookie(headers.get('cookie'), SESSION_COOKIE));
+    if (envelope) {
+      const session = envelope.user;
       return {
         sub: session.id,
         email: session.email ?? null,
@@ -258,6 +259,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
         // Passed through as-is, `undefined` included: the session says what the issuer
         // said, and an absent claim is a fact about the issuer, not a missing value.
         emailVerified: session.emailVerified,
+        expiresAt: envelope.expiresAt,
       };
     }
     // No cookie session — an API client presenting the issuer's own token directly. On a

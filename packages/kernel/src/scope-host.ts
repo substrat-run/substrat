@@ -165,10 +165,11 @@ import type {
   FindingStatusInput,
   DeclaredMigration,
   CheckSubject,
+  EntityGrantShape,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
-import { substratError, type EntityStateName } from '@substrat-run/contracts';
+import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { SealedSecret } from './secret-box.js';
@@ -218,6 +219,11 @@ export interface PageParams {
    * archive. Refused for an entity that declares no archive. The bin is `ctx.pageTrashed`.
    */
   readonly view?: Exclude<EntityStateName, 'trashed'>;
+  /**
+   * Also return each row's own cursor, as `rowCursors` (#2073) — asked for by `pageVisible`,
+   * which may stop partway through a page. Off by default, so an ordinary page is unchanged.
+   */
+  readonly rowCursors?: boolean;
 }
 
 /**
@@ -445,9 +451,9 @@ export interface OperationContext {
    *
    * **This does not check permission** — nothing on `ctx` does, and a paged read
    * is not an exception. The operation's own `assertAllowed` still comes first.
-   * A read that filters per ROW after the fact (a portal walk) cannot use this at
-   * all: a page of 20 filtered down to 3 is not a page, and the honest shape is an
-   * over-fetch loop the handler owns.
+   * A read that filters per ROW after the fact (a portal walk) cannot hand this
+   * page on as it is: a page of 20 filtered down to 3 is not a page, and its cursor
+   * may be a refused row's. It walks this read with `pageVisible` instead (#2073).
    *
    * Throws `NotListable` for an entity no operation declared `paged.over` on,
    * `SortNotDeclared` for a `?sort=` outside the vocabulary, and
@@ -1059,9 +1065,9 @@ export type MembershipChangeResult =
  * It receives `HostAdmin`, not `ctx`: it acts with platform authority, which is
  * precisely what module code must never hold. Admin writes it makes through the `admin`
  * it is handed are stamped with the causing event's id (`causedBy`), so the split trail
- * joins. That `admin` is bound to this one event, never the host's own: a handler that
- * writes through the host instead — `host.attributed(…)` — passes `{ causedBy: event.id }`
- * itself (#2055).
+ * joins. That `admin` is bound to this one event, never the host's own (#2055). A handler
+ * that writes for a person attributes from it — `admin.attributed(onBehalfOf)` — which keeps
+ * the event (#2069); a view of the HOST knows nothing of the event.
  *
  * A handler that decides an event must never be effected RETURNS `refuseDelivery(reason)`
  * (#1184). The delivery is journaled terminal with the reason, never retried. A return
@@ -1847,6 +1853,16 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
  * stay sync — they are code-time bookkeeping, not control-plane state.)
  */
 export interface HostAdmin {
+  /**
+   * This same admin, with every row written through it also naming `onBehalfOf` (#977, #2069),
+   * and keeping whatever this one already carries — for the `admin` an executor handler is
+   * handed, the event (`causedBy`). A handler that writes for a person attributes from that
+   * `admin`, so the cause comes along by construction and there is no option to forget.
+   *
+   * Optional so an admin that predates it still satisfies the interface; a caller that finds it
+   * absent writes through the admin it holds, unattributed to a person.
+   */
+  attributed?(onBehalfOf: OnBehalfOf): HostAdmin;
   defineRole(actor: PlatformActorId, tenantId: TenantId, role: RoleDefinition): Promise<void>;
   /**
    * Every role the directory holds, ordered by (tenantId, key).
@@ -1879,6 +1895,50 @@ export interface HostAdmin {
    */
   unassignRole(actor: PlatformActorId, assignment: RoleAssignment): Promise<void>;
   grant(actor: PlatformActorId, grant: CapabilityGrant): Promise<void>;
+  /**
+   * Give a person a vertical's declared entity-grant SHAPE on one entity (#2071): every key in
+   * `permissions`, plus the marker that makes them a holder of the shape, so a key the shape
+   * gains later reaches them at the next {@link reconcileEntityGrantShapes}. What a vertical
+   * calls where it used to `grant` its `ENTITY_GRANTS` keys one at a time. It brings back a key
+   * or marker a revoke tombstoned, as `grant` does, and leaves a live row as it is, expiry
+   * included, as `ctx.grant` does. Audited as `grantEntityShape`.
+   */
+  grantEntityShape(
+    actor: PlatformActorId,
+    grant: {
+      principalId: PrincipalId;
+      node: { tenantId: TenantId; scopeId: ScopeId };
+      entity: EntityRef;
+      permissions: readonly PermissionKey[];
+      grantedBy: PrincipalId;
+    },
+  ): Promise<void>;
+  /**
+   * Top every holder of each declared shape up to the shape as it is now (#2071): a key the
+   * shape gained is granted to each person holding the shape's marker on an entity of that
+   * type. Never a key revoked from that person there (its K-21 tombstone stays), and never a
+   * removal: a key dropped from the shape is left in place. Until it is done on a scope, a
+   * shape that declares a `holder` is also backfilled: each person its holder relationship names
+   * as the owner of an entity (`'self'`, or the vertical's own column) is marked if they hold a
+   * key of the shape there. Never inferred from key sets, so a grant delegated on someone else's
+   * record is never marked. Without a `holder`, there is no backfill.
+   *
+   * Only shapes declared `bootstrap: true` are reconciled — those given with
+   * {@link grantEntityShape} on a person's own record. A SHARING shape, reached through
+   * `ctx.grant` (todo's `list`), is skipped whole: reconciling one would mark every person
+   * something was fully shared with as a holder.
+   *
+   * Bounded: `batch` rows of work (default 500, an integer from 1 to 5000, or `validation_failed`)
+   * per scope transaction, backfill included, repeated until a pass finishes — so it is safe
+   * on a large scope, and finishes on a re-run if interrupted. Each (person, entity) topped up is an `entity.grants-topped-up` event on the entity. Audited
+   * as `reconcileEntityGrantShapes` when it changed anything. Returns how many it topped up.
+   */
+  reconcileEntityGrantShapes(
+    actor: PlatformActorId,
+    node: { tenantId: TenantId; scopeId: ScopeId },
+    shapes: readonly EntityGrantShape[],
+    opts?: { batch?: number },
+  ): Promise<{ toppedUp: number }>;
   /** Grant to an organization (portal customers); members reach it via membership tuples. */
   /**
    * Grant a permission to a CONNECTION (#97) — how a connector is allowed to
@@ -4761,10 +4821,19 @@ export interface ScopeHost {
    * Optional so a host that predates it still satisfies the interface; a transport
    * that finds it absent writes unattributed rows, which is what every row was before.
    *
-   * `options.causedBy` (#2055) is the event whose effect the view's writes are (K-22): an
-   * executor handler passes its own event's id, because the host stamps nothing ambiently —
-   * a field set around the handler's `await` would also stamp every other admin call the
-   * host served meanwhile. The `admin` a handler is handed already carries it.
+   * A view of the host knows nothing of any event: an executor handler attributes from the
+   * `admin` it is handed instead (`HostAdmin.attributed`), which keeps its `causedBy`.
+   */
+  attributed?(onBehalfOf: OnBehalfOf): ScopeHost;
+  /**
+   * The same view, its rows also naming `options.causedBy` as the event they are the effect
+   * of (K-22, #2055).
+   *
+   * @deprecated since #2069: an executor handler attributes from the `admin` it is handed —
+   * `admin.attributed(onBehalfOf)` — which carries its event by construction. This form needs
+   * the event passed again, and a handler that forgets writes `causedBy` NULL with nothing
+   * failing. It stays because it shipped, and because it is how the membership executor still
+   * attributes on a host whose handed admin predates `HostAdmin.attributed`.
    */
   attributed?(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): ScopeHost;
   /**
@@ -5673,10 +5742,12 @@ export interface ScopeHost {
  * changed at 14:02 is information about that row, so "the body was empty" is not a
  * defence: the filter runs whether or not there is a payload to withhold.
  *
- * A subscription may be narrowed `within` one entity (#1853), which only removes frames;
- * the one exception to the per-principal check is a `within` the vertical built with
- * `vouchedWithin`, whose subscriber is sent bare `LiveNudge` frames and nothing that
- * names an entity.
+ * A subscription may be narrowed `within` one entity (#1853), which only removes frames.
+ * Two built roots replace the per-row check with one about the ROOT, and their subscribers
+ * are sent bare `LiveNudge` frames that name no entity: `checkedWithin`, whose principal must
+ * pass a stated key on the root at the handshake and again on every pass that has something
+ * to send (#938), and `vouchedWithin`, which the vertical asserts once and nothing re-checks
+ * (#1853). Which to use is on `checkedWithin`.
  *
  * **Generic over the runtime's request and response, because the kernel names
  * neither.** This package has one dependency and no DOM or workers lib
@@ -5729,14 +5800,64 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
      *   the same trust it already extends in naming `principal`, and the scope's walk is
      *   the whole filter. Such a subscriber receives `LiveNudge` frames only, which name
      *   no event type and no entity.
+     * - **A `checkedWithin(…)` value replaces the per-row check with one on the root**
+     *   (#938). The principal must pass the stated key on the root, at the handshake (a
+     *   `403` otherwise) and again on every pass that has a row beneath it to announce,
+     *   so a grant withdrawn, or a root moved out from under it, closes the socket
+     *   instead of nudging it. `LiveNudge` frames only, as for a vouched root.
+     *
+     * **Freshness (Codex #2077 r5).** A decision is reused within a pass only while the
+     * scope has had no write and nothing it holds has reached its `expires_at` since the
+     * decision. It is never reused while the scope reads its permissions from the directory.
+     * Both are checked against the clock immediately before each send. A change that lands
+     * while a check is still being evaluated can let that one frame through. Frames name
+     * nothing the subscriber could not read when checked, and the next frame, pass and poll
+     * see the change: a push is a hint at most one evaluation stale.
      */
-    within?: EntityRef | VouchedWithin;
+    within?: EntityRef | VouchedWithin | CheckedWithin;
+    /**
+     * When the credential that proved `principal` stops being valid (ISO 8601), so the
+     * socket never outlives it (#938). Pass the session's or the bearer's expiry
+     * (`AuthSubject.expiresAt`). A handshake at or past it is refused, and the scope closes
+     * the socket (`1008`) on its first pass at or past it, before sending anything on that
+     * pass. Absent: the socket lives until either end closes it, as before.
+     */
+    expiresAt?: string;
   }): Promise<Res>;
 }
+
+/**
+ * The close codes a live socket ends with, so a client can tell "try again" from "poll".
+ *
+ * - `1008` (policy): the subscriber may no longer watch what it subscribed to — a
+ *   `checkedWithin` gate refused, or the session that opened it ended. A reconnect meets
+ *   the handshake's own refusal.
+ * - `4429`: this principal already holds `LIVE_SOCKETS_PER_PRINCIPAL` sockets on the scope.
+ *   Not a reason to retry: the client should poll, which it does anyway, and stop asking.
+ */
+export const LIVE_CLOSE = { revoked: 1008, tooMany: 4429 } as const;
+
+/**
+ * How many live sockets one principal may hold on one scope (#938). A tab holds one per
+ * feed (the desk's, and one per open conversation in ticket0's portal), and each socket is
+ * work on every post-commit pass, so a principal opening more is a cost on everybody else
+ * writing to the scope. Eight covers several tabs; past it a socket is closed `4429`.
+ */
+export const LIVE_SOCKETS_PER_PRINCIPAL = 8;
 
 /** The brand only `vouchedWithin` can apply — a literal cannot type-check as one. */
 declare const vouchedBrand: unique symbol;
 const VOUCHED = Symbol('substrat.live.vouched-within');
+
+/** A frozen value carrying `mark`, non-enumerable, so a spread copy or a literal never does. */
+function branded<T>(value: object, mark: symbol): T {
+  Object.defineProperty(value, mark, { value: true, enumerable: false });
+  return Object.freeze(value) as unknown as T;
+}
+
+function hasBrand(value: unknown, mark: symbol): boolean {
+  return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[mark] === true;
+}
 
 /**
  * A `within` root the VERTICAL vouches the subscriber may watch, in place of the
@@ -5770,14 +5891,70 @@ export function vouchedWithin(entity: EntityRef, opts: { because: string }): Vou
   if (!opts?.because?.trim()) {
     throw substratError('validation_failed', 'vouchedWithin needs a reason: what the vertical checked');
   }
-  const value = { entity: { entityType: entity.entityType, entityId: entity.entityId }, because: opts.because };
-  Object.defineProperty(value, VOUCHED, { value: true, enumerable: false });
-  return Object.freeze(value) as unknown as VouchedWithin;
+  return branded({ entity: { entityType: entity.entityType, entityId: entity.entityId }, because: opts.because }, VOUCHED);
 }
 
 /** Was this value built by `vouchedWithin`? A host asks before it drops the principal's check. */
 export function isVouchedWithin(value: unknown): value is VouchedWithin {
-  return typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[VOUCHED] === true;
+  return hasBrand(value, VOUCHED);
+}
+
+/** The brand only `checkedWithin` can apply. */
+declare const checkedBrand: unique symbol;
+const CHECKED = Symbol('substrat.live.checked-within');
+
+/**
+ * A `within` root the PRINCIPAL must be allowed `permission` on, re-checked for as long
+ * as the socket is open (#938). Built only by `checkedWithin`.
+ */
+export interface CheckedWithin {
+  readonly [checkedBrand]: true;
+  readonly entity: EntityRef;
+  readonly permission: PermissionKey;
+}
+
+/**
+ * Watch `entity` and everything beneath it, for as long as the subscriber may
+ * `permission` on `entity` itself.
+ *
+ * For a subscriber whose grant reaches the ROOT but not each row under it the way a
+ * `liveTargets` key would: ticket0's portal customer holds `conversation:read-own` on
+ * their contact, which reaches the conversation's public thread, while the per-row key
+ * on a message is the staff read. Rooted at an entity whose subtree is exactly what that
+ * key's read returns, the walk is the row filter and the key is the gate.
+ *
+ * The gate is asked at the handshake (`403` if it refuses) and again, once per socket,
+ * on every post-commit pass that has a row beneath the root to announce. A refusal or a
+ * check that throws closes the socket (`1008`) and sends nothing on that pass, so a
+ * revoked grant, a principal who is gone, or a root relinked out of the grant's reach
+ * ends the subscription instead of nudging it, and the client's reconnect meets the
+ * handshake's `403`. A pass with nothing beneath the root asks nothing, so an idle
+ * subscription costs no checks.
+ *
+ * **`checkedWithin` or `vouchedWithin`?** Use `checkedWithin` whenever the subscriber is
+ * a principal with a grant that reaches the root: authority leaves with the grant. Use
+ * `vouchedWithin` only when there is no such grant to ask, as for ticket0's widget
+ * visitor, who holds a session token rather than a principal of their own. A vouched
+ * socket is asserted once, so a token revoked mid-socket keeps receiving content-free
+ * nudges until the socket closes. That is known and accepted for the widget: the nudge
+ * names nothing, and every re-read it causes is checked again.
+ *
+ * Both send `LiveNudge` frames only: the subscriber may not read each row, so it is
+ * never told which one changed. Only rows of a type some module declared in
+ * `liveTargets` are announced, as for every other subscriber.
+ */
+export function checkedWithin(entity: EntityRef, permission: string): CheckedWithin {
+  if (!entity?.entityType || !entity?.entityId) {
+    throw substratError('validation_failed', 'checkedWithin needs an entity with a type and an id');
+  }
+  const key = permissionKey.safeParse(permission);
+  if (!key.success) throw substratError('validation_failed', 'checkedWithin needs a permission key');
+  return branded({ entity: { entityType: entity.entityType, entityId: entity.entityId }, permission: key.data }, CHECKED);
+}
+
+/** Was this value built by `checkedWithin`? */
+export function isCheckedWithin(value: unknown): value is CheckedWithin {
+  return hasBrand(value, CHECKED);
 }
 
 /**
@@ -5850,12 +6027,13 @@ export interface LiveChange {
 }
 
 /**
- * What a vouched subscriber is told (#1853): something beneath its root changed, and
- * nothing else.
+ * What a vouched or checked subscriber is told (#1853, #938): something beneath its root
+ * changed, and nothing else.
  *
- * No event type and no entity, deliberately. A vouched subscriber holds no read on the
- * entities its frames are about — the vertical vouched for the ROOT, and the scope
- * cannot know which rows under it the vertical's own read would show. Naming the type
+ * No event type and no entity, deliberately. Such a subscriber holds no read on the
+ * entities its frames are about — the vertical vouched for the ROOT, or the principal was
+ * checked on the root alone, and the scope cannot know which rows under it the vertical's
+ * own read would show. Naming the type
  * or the id would tell it what it never asked to read. The client re-reads, as it does
  * on a `LiveChange`.
  */

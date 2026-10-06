@@ -42,7 +42,7 @@ tracking: ["#119"]
 - **No cascade.** Binning a list does not bin its items. They are hidden because every read of them goes through the list. A scope-wide read over children (todo's `search-items`) asks the parent's state itself.
 - **Archived and binned entities keep their natural `key`.** A restore can never collide, and reusing a name means deleting the binned entity first.
 - **No purge horizon yet.** The permanent delete is still the vertical's own delete operation. When a horizon arrives it will run that operation, so cascade rules stay the vertical's. Purging is not erasure: the events stay. Erasure reaches a binned row because the row never moved tables.
-- **Entity-grant shapes are not reconciled.** A person who holds an entity-narrowed bootstrap grant (todo's owner grant, meridian's `EMPLOYEE_SELF`) does not receive a key added to that shape later. Todo's seed now mints from the same list `PERMISSIONS.md` renders, so a reseed picks the key up. A deployed vertical whose shape grows has no such path. That is a platform gap of its own, tracked separately.
+- **Entity-grant shapes were not reconciled.** A person who held an entity-narrowed bootstrap grant (todo's owner grant, meridian's `EMPLOYEE_SELF`) did not receive a key added to that shape later. #2071 closed that gap: a shape is now given with `grantEntityShape`, which leaves a holder marker beside the keys, and every provision and reconcile tops each holder up to the declared shape, never re-granting a key revoked from that person.
 
 ## Why
 

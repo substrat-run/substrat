@@ -118,7 +118,7 @@ describe('oidcRpAuthProvider', () => {
 
     // …and the minted session RESOLVES to the issuer's subject.
     const subject = await provider.resolve(new Headers({ cookie: `${SESSION_COOKIE}=${encodeURIComponent(session!)}` }));
-    expect(subject).toEqual({ sub: 'user-77', email: 'pat@acme.test', name: 'Pat' });
+    expect(subject).toEqual({ sub: 'user-77', email: 'pat@acme.test', name: 'Pat', expiresAt: expect.any(String) });
   });
 
   it('callback with a WRONG state fails opaquely — no session, redirect to the error page', async () => {
@@ -157,6 +157,22 @@ describe('oidcRpAuthProvider', () => {
    * three states rather than flattening them. Nothing here decides anything: `false` and
    * "the issuer said nothing" arrive distinguishable, and stay that way.
    */
+  it('resolve says when the session expires (#938): a live socket opened on it ends then', async () => {
+    const before = Date.now();
+    const session = await mintSession(
+      { OIDC_ISSUER: ISSUER, OIDC_CLIENT_ID: cfg.clientId, OIDC_CLIENT_SECRET: cfg.clientSecret, SESSION_SECRET: cfg.sessionSecret },
+      { id: 'user-77', email: 'pat@acme.test' },
+      600,
+    );
+    const subject = await oidcRpAuthProvider(cfg).resolve(
+      new Headers({ cookie: `${SESSION_COOKIE}=${encodeURIComponent(session)}` }),
+    );
+    const expiresAt = Date.parse(subject!.expiresAt!);
+    // The session's own exp, to the second it was minted with.
+    expect(expiresAt).toBeGreaterThanOrEqual(Math.floor(before / 1000) * 1000 + 600_000);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 600_000);
+  });
+
   for (const [label, emailVerified] of [
     ['asserted true', true],
     ['asserted false', false],

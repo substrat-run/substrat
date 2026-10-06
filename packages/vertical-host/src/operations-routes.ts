@@ -39,6 +39,7 @@ import {
   PAGE_TOTAL_HEADER,
   errorCodeOf,
 } from '@substrat-run/contracts';
+import { externalInput, externalJson } from './wire.js';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError } from './errors.js';
@@ -519,7 +520,7 @@ export function mountOperations(
                 : {}),
             }
           : undefined;
-      const result = await stub.invoke(name, payload, invokeOptions);
+      const result = await stub.invoke(name, externalInput(payload), invokeOptions);
       // #1331: the field walk, on the RESULT rather than the serialised body, and before
       // `respond`, so a vertical that owns its envelope is observed like every other. Only
       // when there is a record to write it to, and only on a request the router armed it for
@@ -564,9 +565,11 @@ export function mountOperations(
         if (link) c.header(PAGE_LINK_HEADER, link);
         const total = (result as { total?: unknown }).total;
         if (typeof total === 'number') c.header(PAGE_TOTAL_HEADER, String(total));
-        return c.json(result.entries);
+        return externalJson(c, result.entries);
       }
-      return c.json(result);
+      // #2073: the egress every transport shares (`wire.ts`). A vertical's own `respond`
+      // (above) is handed the result untouched: that envelope is its statement (#1331).
+      return externalJson(c, result);
     };
 
     const handler = async (c: Context) => {

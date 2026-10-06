@@ -55,6 +55,8 @@ export const adminAction = z.enum([
   'assignRole',
   'unassignRole', // the inverse of assignRole — tombstones the role tuple (K-21)
   'grant',
+  'grantEntityShape', // #2071 — a declared shape's keys plus its holder marker, on one entity
+  'reconcileEntityGrantShapes', // #2071 — holders topped up to the declared shape; logged only when it changed something
   'grantToOrg',
   'addMember',
   'removeMember', // K-21 — tombstones the membership tuple, never deletes it

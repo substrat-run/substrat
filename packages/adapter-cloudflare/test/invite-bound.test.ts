@@ -316,3 +316,64 @@ describe('scope-role writes over a CP-less host — all or nothing (#1150)', () 
     expect(await rolesOf(m)).toEqual([]);
   });
 });
+
+/**
+ * #2071 over the CP-less host a deployed vertical runs: the shape granted with
+ * `grantEntityShapeLocal` at link time, and topped up by `provisionScopeLocal`'s
+ * `entityGrants` — the call every provision, `/internal/reconcile` and listed promote makes.
+ */
+describe('a declared entity-grant shape over a CP-less host (#2071)', () => {
+  let host: CloudflareScopeHost;
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+  const USE = permissionKey.parse('perm:use');
+  const owner = principalId.parse(ulid());
+  const employee = principalId.parse(ulid());
+  const record = { entityType: 'employee', entityId: 'e1' };
+  const provision = (permissions?: (typeof READ)[]) =>
+    host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [READ, USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+      ...(permissions ? { entityGrants: [{ entityType: 'employee', permissions, bootstrap: true as const }] } : {}),
+    });
+  const can = async (perm: typeof READ): Promise<boolean> =>
+    (await (await host.getScope(employee, t, s)).invoke<{ allowed: boolean }>('perm/probe', { permission: perm, entity: record }))
+      .allowed;
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({ scope: env.SCOPE, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    await provision([READ]);
+    await host.grantEntityShapeLocal(s, employee, record, [READ]);
+  });
+
+  afterAll(async () => host.close());
+
+  it('an employee linked under the old shape holds the key the next provision adds', async () => {
+    expect(await can(READ)).toBe(true);
+    expect(await can(USE)).toBe(false);
+    await provision([READ, USE]);
+    expect(await can(USE)).toBe(true);
+  });
+
+  it('...and the top-up is an event on the employee record, stamped with no operation', async () => {
+    const rows = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_i, state) =>
+      state.storage.sql
+        .exec(`SELECT payload, operation FROM _substrat_outbox WHERE type = 'entity.grants-topped-up' AND entity_id = 'e1'`)
+        .toArray(),
+    );
+    expect(rows).toEqual([{ payload: JSON.stringify({ entity: record, principal: employee, added: [USE] }), operation: null }]);
+  });
+
+  it('a provision without `entityGrants` reconciles nothing, and a repeat with them adds no second event', async () => {
+    await provision();
+    await provision([READ, USE]);
+    const count = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_i, state) =>
+      state.storage.sql.exec(`SELECT count(*) AS n FROM _substrat_outbox WHERE type = 'entity.grants-topped-up'`).one(),
+    );
+    expect(count).toEqual({ n: 1 });
+  });
+});

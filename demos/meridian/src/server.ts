@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { globalFetch, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
-import { problemResponse } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, problemResponse } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
@@ -191,7 +191,7 @@ app.get('/api/me', async (c) => {
 /**
  * Mirror of the worker's `grantEmployeeSelf` (see worker.ts) on the SQLite dev host: when an
  * employee is created with a login attached, issue that principal the self-service grants
- * narrowed to their own record via the audited `host.admin.grant`. Keeps `pnpm … dev` behaving
+ * narrowed to their own record via the audited `host.admin.grantEntityShape` (#2071). Keeps `pnpm … dev` behaving
  * like the deployed worker — an employee you register can actually report time.
  */
 async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
@@ -200,16 +200,13 @@ async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
   // Only a real principal is a grantable subject, so skip anything else rather than throw.
   const subject = principalId.safeParse(row.principal_ref);
   if (!subject.success) return;
-  const staff = platformActorId.parse(ulid());
-  for (const permission of EMPLOYEE_SELF) {
-    await host.admin.grant(staff, {
-      principalId: subject.data,
-      permission,
-      node: { tenantId: p.tenantId, scopeId: p.scopeId },
-      entity: { entityType: 'employee', entityId: row.id },
-      grantedBy: p.principal,
-    });
-  }
+  await host.admin.grantEntityShape(platformActorId.parse(ulid()), {
+    principalId: subject.data,
+    node: { tenantId: p.tenantId, scopeId: p.scopeId },
+    entity: { entityType: 'employee', entityId: row.id },
+    permissions: EMPLOYEE_SELF,
+    grantedBy: p.principal,
+  });
 }
 
 /**
@@ -227,10 +224,11 @@ async function grantEmployeeSelf(p: DevCaller, result: unknown): Promise<void> {
  * `pageOf` reaches the client unchanged instead of being emptied.
  */
 function jsonPage(c: Context, result: unknown) {
-  if (!isPage(result)) return c.json(result as never);
+  // #2073: serialised through the platform's one door, as the generated routes are.
+  if (!isPage(result)) return externalJson(c, result);
   const link = nextPageLink(c.req.url, result.nextCursor);
   if (link) c.header(PAGE_LINK_HEADER, link);
-  return c.json(result.entries as never);
+  return externalJson(c, result.entries);
 }
 
 // Generic invoke: the kernel checks permissions inside every operation, so a
@@ -238,7 +236,7 @@ function jsonPage(c: Context, result: unknown) {
 app.post('/api/invoke', async (c) => {
   const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
   const p = await persona(c);
-  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(op, input)) ?? null;
+  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(op, externalInput(input))) ?? null;
   if (op === 'hr/create-employee') await grantEmployeeSelf(p, result);
   return jsonPage(c, result);
 });
@@ -252,7 +250,7 @@ app.post('/api/op/*', async (c) => {
   if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
   const body = await c.req.text();
   const p = await persona(c);
-  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(name, body ? JSON.parse(body) : undefined)) ?? null;
+  const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;
   if (name === 'hr/create-employee') await grantEmployeeSelf(p, result);
   return jsonPage(c, result);
 });

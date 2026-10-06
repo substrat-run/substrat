@@ -434,11 +434,10 @@ const closeRepairOp: OperationHandler<{ orderId: string }, WorkOrder> = async (c
 /**
  * Portal listing: per-entity proof walks (workorder → bike → customer).
  *
- * Paged by OVER-FETCHING (#811), which is what a permission-filtered walk needs.
- * A page of 20 read from the table can leave 3 after the walk, so the page size
- * cannot be the fetch size — and the cursor has to advance by the last row
- * EXAMINED rather than the last row returned, or the rows filtered out are
- * examined again on the next request and the walk never terminates.
+ * Paged with `pageVisible` (#811), which is what a permission-filtered walk needs.
+ * A page of 20 read from the table can leave 3 after the walk, so it reads on past
+ * refused rows until the page is full, and mints the cursor from the last row it
+ * RETURNS — a refused repair's position never reaches the caller (#2073).
  */
 const portalRepairsOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ctx, input) =>
   pageVisible(

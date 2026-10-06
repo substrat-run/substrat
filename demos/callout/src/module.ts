@@ -448,10 +448,10 @@ const instantiateProtocolOp: OperationHandler<
 
 /** Portal listing: per-entity proof walks, no node-level permission required. */
 /**
- * #811. Paged by OVER-FETCHING, which is what a permission-filtered walk needs: a
- * page of 20 read from the table can leave 3 after the proof walk, so the page
- * size cannot be the fetch size. The cursor advances by the last row EXAMINED, or
- * the rows the walk rejected would be examined again forever.
+ * #811. Paged with `pageVisible`, which is what a permission-filtered walk needs: a
+ * page of 20 read from the table can leave 3 after the proof walk, so it reads on
+ * past refused rows until the page is full, and mints the cursor from the last row
+ * it RETURNS — a refused order's position never reaches the caller (#2073).
  */
 const portalOrdersOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ctx, input) =>
   pageVisible(

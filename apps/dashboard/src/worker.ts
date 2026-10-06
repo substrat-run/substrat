@@ -2424,8 +2424,11 @@ app.get('/api/fleet-health', async (c) => {
   ]);
   const fleet = named.map((a) => ({ ...a, sweepable: sweepable.get(a.scopeId) ?? null }));
 
-  // The failed rows come from the narrow read; the broad read contributes only
-  // `lastSweepAt`, so a row appearing in both is not double-counted as a failure.
+  // The failed rows come from the narrow read; the broad read contributes its clean
+  // firings — `lastSweepAt`, and the later `ok` that marks a failed unit recovered —
+  // so a row appearing in both is not double-counted as a failure. Both arrive
+  // newest-first, so a truncated broad read drops the OLDEST clean runs, never the
+  // recovery that follows a failure.
   const merged = [...failedSweeps.entries, ...sweeps.entries.filter((s) => s.outcome !== 'failed')];
 
   // A truncated broad read cannot say whether an app absent from it was ever swept.

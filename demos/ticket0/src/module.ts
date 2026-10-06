@@ -20,11 +20,11 @@ import {
   addDecimal,
   assertTransition,
   LIST_PAGE_DEFAULT,
-  listLimitOf,
   mulDecimal,
   operationConcurrencyOf,
   operationInputsOf,
   pageOf,
+  pageVisible,
   permissionKey,
   permissionsUsedBy,
   principalId,
@@ -7469,23 +7469,22 @@ const operations = {
    * a promise the author remembered to keep; the walk is one the kernel keeps.
    *
    * Two proofs per row since #1086, and either is enough: the walk (the caller's own
-   * conversation, through the parent edge) or a CC's (`readableAsCc`). `pageVisible`'s one
-   * batch and filter, written out so the CC proof is asked once for the rows the walk
-   * refused rather than once per row — a customer whose every conversation is their own
-   * pays nothing more than before.
+   * conversation, through the parent edge) or a CC's (`readableAsCc`). `pageVisible` with a
+   * batch test, so the CC proof is asked once per batch for the rows the walk refused rather
+   * than once per row — a customer whose every conversation is their own pays nothing more —
+   * and the cursor is a visible conversation's, never one the caller cannot see (#2073).
    */
-  'ticket0/my-conversations': async (ctx, input) => {
-    const batch = ctx.page<ConversationRow>('conversation', {
-      limit: listLimitOf(input?.limit),
-      cursor: input?.cursor,
-    });
-    const own = new Set<string>();
-    for (const c of batch.entries) {
-      if ((await ctx.check(T0_PERM.conversationReadOwn, conversationRef(c.id))).allowed) own.add(c.id);
-    }
-    const asCc = await readableAsCc(ctx, batch.entries.filter((c) => !own.has(c.id)).map((c) => c.id));
-    return { entries: batch.entries.filter((c) => own.has(c.id) || asCc.has(c.id)), nextCursor: batch.nextCursor };
-  },
+  'ticket0/my-conversations': async (ctx, input) =>
+    pageVisible((p) => ctx.page<ConversationRow>('conversation', p), input, {
+      batch: async (rows) => {
+        const own = new Set<string>();
+        for (const c of rows) {
+          if ((await ctx.check(T0_PERM.conversationReadOwn, conversationRef(c.id))).allowed) own.add(c.id);
+        }
+        const asCc = await readableAsCc(ctx, rows.filter((c) => !own.has(c.id)).map((c) => c.id));
+        return rows.map((c) => own.has(c.id) || asCc.has(c.id));
+      },
+    }),
 
   'ticket0/my-messages': async (ctx, input) => {
     await assertReadsAsCustomer(ctx, input.conversationId);

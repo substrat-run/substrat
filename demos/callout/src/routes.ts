@@ -6,7 +6,7 @@ import {
   type Page,
   type TimelineEntry,
 } from '@substrat-run/contracts';
-import { mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
+import { externalJson, mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
 import {
   calloutEngineRoutes,
   calloutInvoicingRoutes,
@@ -96,10 +96,11 @@ export function mountApi(
     });
     const link = nextPageLink(c.req.url, page.nextCursor);
     if (link) c.header(PAGE_LINK_HEADER, link);
-    return c.json(page.entries);
+    return externalJson(c, page.entries);
   });
   app.get('/api/workorders/:id/protocols', async (c) =>
-    c.json(
+    externalJson(
+      c,
       await (await S(c)).invoke('protocol/list-for-entity', {
         entityType: 'workorder',
         entityId: c.req.param('id'),

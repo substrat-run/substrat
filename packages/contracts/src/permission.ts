@@ -437,6 +437,36 @@ export const entityLinkedPayload = z.object({
 });
 export type EntityLinkedPayload = z.infer<typeof entityLinkedPayload>;
 
+/**
+ * A declared entity-grant SHAPE (`ENTITY_GRANTS`) grew, and a person who already held it on an
+ * entity was given the keys it gained (#2071). The kernel writes it at reconcile, one per
+ * (person, entity) topped up, so the entity's own history says which keys arrived, for whom,
+ * and when. The deploy whose declared shape did it is the outbox row's `version`. Entity: the
+ * entity the shape is held on.
+ *
+ * A top-up never brings back a key that was revoked from the person on that entity: the
+ * tombstone (K-21) is the record that someone took it back, and it is left as it is.
+ */
+export const ENTITY_GRANTS_TOPPED_UP = 'entity.grants-topped-up';
+
+export const entityGrantsToppedUpPayload = z.object({
+  entity: entityRef,
+  principal: principalId,
+  /** The keys the shape gained that this person now holds on the entity, sorted. */
+  added: z.array(permissionKey).min(1),
+});
+export type EntityGrantsToppedUpPayload = z.infer<typeof entityGrantsToppedUpPayload>;
+
+/**
+ * The marker a declared shape's grant leaves beside its keys (#2071):
+ * `(principal:<id>, bootstrap, <entityType>:<id>)`. It says "this person was given the
+ * declared shape on this entity", which no set of keys can say — someone ctx.granted one of
+ * those keys holds a subset of the shape and is not a holder of it. The checker walks only
+ * `granted:` and `role:` relations, so the marker grants nothing by itself. Tombstoning it
+ * stops the top-ups for that person on that entity.
+ */
+export const ENTITY_SHAPE_MARKER_RELATION = 'bootstrap';
+
 // 'member' | 'parent' | 'role:staff' | 'granted:workorder:read' …
 export const relationName = z.string().regex(/^[a-z0-9_:-]+$/);
 

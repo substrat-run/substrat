@@ -26,6 +26,7 @@ import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf } from './errors.js';
+import { externalInput, externalJson } from './wire.js';
 import {
   type CarriedAway,
   type KeptCopy,
@@ -158,6 +159,8 @@ import {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
+  entityGrantShape,
+  type EntityGrantShape,
 } from '@substrat-run/contracts';
 
 /**
@@ -193,6 +196,9 @@ export interface VerticalScopeHost {
     tenantHeldPeers?: string[];
     /** #2045: each recorded-off subject's fence, by tuple subject. A host built before it ignores it. */
     switchFences?: Record<string, string>;
+    /** #2071: the declared entity-grant shapes, each holder topped up to the shape as it is now.
+     *  A host built before it ignores the field, and the next host that reads it catches up. */
+    entityGrants?: readonly EntityGrantShape[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
@@ -588,6 +594,14 @@ const reconcileBody = z.object({
   tenantHeldPeers: z.array(verticalSlugOf).optional(),
   /** #2045: each recorded-off subject's fence, by tuple subject. */
   switchFences: z.record(z.string().min(1), z.string().min(1)).optional(),
+  /**
+   * #2071: the declared entity-grant shapes of the version this reconcile reaches, as the
+   * platform reads them from that version's REVIEWED registry. The only source the reconcile
+   * tops holders up from — a vertical names no shapes of its own here, so a shape its code
+   * declares `bootstrap` while the reviewed registry does not is never acted on. Absent ⇒ no
+   * reconcile of shapes.
+   */
+  entityGrants: z.array(entityGrantShape).optional(),
 });
 
 /**
@@ -1465,9 +1479,10 @@ export function mountPlatformSurface<Env extends object>(
     const body = connectorInvokeBody.parse(await c.req.json());
     const result = await deps
       .hostFor(c.env)
-      .connectorInvokeLocal(body.connectionId, body.tenantId, body.scopeId, body.operation, body.input);
+      .connectorInvokeLocal(body.connectionId, body.tenantId, body.scopeId, body.operation, externalInput(body.input));
     // Enveloped: an operation may legitimately return undefined, which bare JSON can't say.
-    return c.json({ result: result ?? null });
+    // #2073: through the egress every transport shares (`wire.ts`).
+    return externalJson(c, { result: result ?? null });
   });
 
   // The bytes leg (#574): multipart, because provider artifacts (a sealed signed PDF)
@@ -1627,10 +1642,11 @@ export function mountPlatformSurface<Env extends object>(
       body.tenantId,
       body.scopeId,
       body.operation,
-      body.input,
+      externalInput(body.input),
       body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : undefined,
     );
-    return c.json({ result: result ?? null });
+    // #2073: through the egress every transport shares (`wire.ts`).
+    return externalJson(c, { result: result ?? null });
   });
 
   // The peer kill switch's far end (#1706), for a scope served HERE — the mirror of
@@ -1661,7 +1677,7 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.exportedEventsLocal) {
       return c.json({ error: 'this deployment cannot export events to other verticals (#1705) — redeploy it' }, 501);
     }
-    return c.json(await host.exportedEventsLocal(body.tenantId, body.scopeId, body.input));
+    return externalJson(c, await host.exportedEventsLocal(body.tenantId, body.scopeId, body.input));
   });
   app.get('/internal/import-state', async (c) => {
     const tenantId = tenantIdOf.parse(c.req.query('tenantId'));
@@ -1784,6 +1800,8 @@ export function mountPlatformSurface<Env extends object>(
       switchedOffPeers: body.switchedOffPeers,
       tenantHeldPeers: body.tenantHeldPeers,
       switchFences: body.switchFences,
+      // #2071: from the platform's body — the reviewed registry — never from this vertical's code.
+      entityGrants: body.entityGrants,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this
@@ -2196,6 +2214,7 @@ export * from './operations-routes.js';
 export { requestConnectUrl, ConnectUrlRequestError } from './connect-url.js';
 export type { ConnectUrlRequest } from './connect-url.js';
 export * from './mcp.js';
+export { externalInput, externalJson, externalResult } from './wire.js';
 export * from './public-surface.js';
 // #1672: the link-share exchange — a capability's secret traded for an HttpOnly session.
 export * from './capability-exchange.js';

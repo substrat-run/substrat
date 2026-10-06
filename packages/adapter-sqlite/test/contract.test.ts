@@ -37,6 +37,7 @@ import {
   asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
+  migrationDigestContractSuite,
   inputParseContractSuite,
   entityStateContractSuite,
   entityStateMigrationContractSuite,
@@ -454,6 +455,19 @@ timelineContractSuite('adapter-sqlite', async () => {
 // subject — a page is a read, and the operation's own `assertAllowed` gates it.
 listContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-list-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2066: the SQL digest each applied migration records, and the scope that ran other SQL.
+migrationDigestContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-digest-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,

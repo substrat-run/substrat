@@ -431,11 +431,26 @@ export async function verifySession(
   env: OidcEnv,
   token: string | undefined,
 ): Promise<SessionUser | null> {
+  return (await verifySessionEnvelope(env, token))?.user ?? null;
+}
+
+/**
+ * `verifySession`, plus when the session stops being valid: its `exp`, as ISO 8601.
+ *
+ * For a caller that holds something open on the session's strength, past the request that
+ * proved it: a live-read socket (#938) is told this instant and closes at it, so it never
+ * outlives the session that authenticated it. Every session this package mints has an
+ * `exp`; one without is refused, as an expired one is.
+ */
+export async function verifySessionEnvelope(
+  env: OidcEnv,
+  token: string | undefined,
+): Promise<{ user: SessionUser; expiresAt: string } | null> {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, signingKey(env));
-    if (!payload.sub) return null;
-    return userFromClaims(payload);
+    if (!payload.sub || typeof payload.exp !== 'number') return null;
+    return { user: userFromClaims(payload), expiresAt: new Date(payload.exp * 1000).toISOString() };
   } catch {
     return null;
   }
