@@ -34,8 +34,6 @@ export function migrationDigest(sql: string): Promise<string> {
   return attachmentSha256(new TextEncoder().encode(sql));
 }
 
-const FENCE = '_substrat_migrations_digest_required';
-
 /**
  * The fence that keeps a NULL digest meaning "written before the column" — in both adapters'
  * KERNEL_DDL, after the journal table, so `lint:spine-ddl` holds it like any spine trigger.
@@ -51,9 +49,11 @@ const FENCE = '_substrat_migrations_digest_required';
  * sound, with no install marker to keep. A restore is the one writer that may load NULL rows
  * (a dump of a legacy scope carries them verbatim): it lifts the fence around its row load
  * (`MIGRATION_DIGEST_FENCE_LIFT`) and puts it back after.
+ *
+ * Literal text, no interpolation: `lint:spine-ddl` inlines a kernel fragment one level deep.
  */
 export const MIGRATION_DIGEST_FENCE_DDL = `
-  CREATE TRIGGER IF NOT EXISTS ${FENCE}
+  CREATE TRIGGER IF NOT EXISTS _substrat_migrations_digest_required
   BEFORE INSERT ON _substrat_migrations WHEN NEW.sql_digest IS NULL
   BEGIN
     SELECT RAISE(ABORT, 'a migration journal row must carry its sql_digest (#2066)');
@@ -61,7 +61,7 @@ export const MIGRATION_DIGEST_FENCE_DDL = `
 `;
 
 /** Drops the fence for a restore's row load; `MIGRATION_DIGEST_FENCE_DDL` puts it back. */
-export const MIGRATION_DIGEST_FENCE_LIFT = `DROP TRIGGER IF EXISTS ${FENCE}`;
+export const MIGRATION_DIGEST_FENCE_LIFT = 'DROP TRIGGER IF EXISTS _substrat_migrations_digest_required';
 
 /** One migration a host applies, with its digest and whether it is held to it. */
 export interface MigrationStep {
