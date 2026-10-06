@@ -440,6 +440,7 @@ import {
   asyncLinePass,
   assertNoCallerPurge,
   purgeReportOf,
+  purgeStillDue,
   registerTrashTargets,
   type PurgePass,
   type AsyncLinePass,
@@ -5133,7 +5134,7 @@ export class CloudflareScopeHost implements ScopeHost {
       const startedAt = Date.now();
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
-      // #119: a purge horizon's batch was full — the schedule stays due, so the next pass continues.
+      // #119: a purge horizon's batch was full and moved something — the schedule stays due, so the next pass continues.
       let stillDue = false;
       try {
         // The gate above already answered for this pass; a fire that meets a restarted scope
@@ -5147,7 +5148,7 @@ export class CloudflareScopeHost implements ScopeHost {
           const pass = await door.through((instance) => stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance));
           // The purges' events, delivered the way each invoke's own tail delivers them.
           await this.drainExecutors(tenantId, scopeId, null);
-          stillDue = pass.full;
+          stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
           if (outcome.failure) throw outcome.failure;

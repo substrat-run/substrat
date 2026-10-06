@@ -520,6 +520,23 @@ export function entityTrashContractSuite(
         expect(await exists(s, late)).toBe(true);
       }, 60_000);
 
+      it('a full batch that only fails waits its cadence — it does not spin on the same failures', async () => {
+        const s = await freshScope();
+        const prefix = ulid().slice(0, 20);
+        await (await stub(alice, s)).invoke('trash/bin-many', { prefix, count: PURGE_BATCH });
+        const at = new Date(Date.now() - (TBOX_PURGE_DAYS + 1) * DAY).toISOString();
+        const mine = `id >= '${prefix}' AND id < '${prefix}~'`;
+        await raw(t, s, `INSERT INTO _substrat_state_moves (entity_type, entity_id) SELECT 'tbox', id FROM trash_boxes WHERE ${mine}`);
+        await raw(t, s, `UPDATE trash_boxes SET _substrat_trashed_at = ?, name = ? WHERE ${mine}`, [at, EXPLODING_BOX]);
+        await raw(t, s, `DELETE FROM _substrat_state_moves WHERE entity_type = 'tbox'`);
+        const first = await sweep(s);
+        expect(first.failed).toBe(1);
+        expect(first.errors).toHaveLength(PURGE_BATCH);
+        // The batch was full but moved nothing: the run is recorded, so the next pass is inside
+        // its window rather than re-running the same failing batch.
+        expect(await sweep(s)).toMatchObject({ fired: 0, failed: 0, skipped: 1 });
+      }, 60_000);
+
       it('a scope with the module switched off purges nothing, and purges once it is restored', async () => {
         const s = await freshScope();
         const id = await dueBox(s);

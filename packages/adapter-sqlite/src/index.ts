@@ -248,6 +248,7 @@ import {
   purgeIndexDdl,
   purgeOnlyKeysOf,
   purgeReportOf,
+  purgeStillDue,
   refuseTrashedTarget,
   registerTrashTargets,
   runPurgePass,
@@ -837,14 +838,15 @@ export interface SqliteScopeHostOptions {
   /**
    * Directory holding one SQLite file per scope plus the directory database.
    *
-   * **Owned by one process at a time** (#119). The first host to open it in a process takes an
-   * exclusive lock (`_host.lock`); further hosts in that process share the directory (the
+   * **Owned by one JavaScript thread at a time** (#119). The first host to open it takes an
+   * exclusive lock (`_host.lock`); further hosts on that thread share the directory (the
    * multi-vertical model, #1705), and the lock is released when the last of them closes — or by
-   * the operating system when the process dies, so it never goes stale. A host in ANOTHER process
-   * is refused with `conflict` (reason `host_dir_in_use`) naming the directory. Several guarantees
+   * the operating system when the process dies, so it never goes stale. A host in ANOTHER process,
+   * or on another worker thread (which has its own claim map), is refused with `conflict` (reason
+   * `host_dir_in_use`) naming the directory. Several guarantees
    * read the directory database and a scope's file with no `await` between the read and the commit
-   * (the purge gate's last read, for one): nothing in this process can interleave there, and
-   * the lock is what keeps another process from doing so.
+   * (the purge gate's last read, for one): nothing on this thread can interleave there, and
+   * the lock is what keeps another thread or process from doing so.
    */
   dir: string;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
@@ -1633,12 +1635,14 @@ const admitByDelivery = (
 type TupleReadRow = { subject: string; relation: string; expires_at: string | null };
 
 /**
- * #119: this process's claim on each host directory it has open, by real path — the OS lock and
- * how many live hosts in this process share it. Several hosts in ONE process may share a directory
+ * #119: this thread's claim on each host directory it has open, by real path — the OS lock and
+ * how many live hosts on this thread share it. Several hosts on ONE thread may share a directory
  * (that is how the pure adapter models several verticals on one platform directory, #1705): the
  * guarantees that read the directory and a scope's file together do so with no `await` in between,
- * and one process's JS is single-threaded, so nothing it runs can interleave there. A writer in
- * ANOTHER process could, so the directory belongs to one process at a time.
+ * and one thread's JS runs one task at a time, so nothing it runs can interleave there. A writer on
+ * another thread or in ANOTHER process could. This map is module state, so each worker thread has
+ * its own: a second thread opens its own `_host.lock` connection, and SQLite refuses it exactly as
+ * it refuses another process.
  */
 const PROCESS_HOST_DIRS = new Map<string, { lock: Database.Database; hosts: number }>();
 
@@ -4860,13 +4864,13 @@ export class SqliteScopeHost implements ScopeHost {
       const startedAt = Date.now();
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
-      // #119: a purge horizon's batch was full — the schedule stays due, so the next pass continues.
+      // #119: a purge horizon's batch was full and moved something — the schedule stays due, so the next pass continues.
       let stillDue = false;
       try {
         if (schedule.purge) {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
           const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation);
-          stillDue = pass.full;
+          stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
           if (outcome.failure) throw outcome.failure;

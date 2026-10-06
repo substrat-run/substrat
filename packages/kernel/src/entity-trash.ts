@@ -242,7 +242,7 @@ export interface PurgePass {
   skipped: number;
   /** One entry per entity whose purge threw for any other reason; it stays in the bin and is retried. */
   errors: { entityId: string; error: string }[];
-  /** The batch was full: the schedule stays due, so the next sweep pass continues. */
+  /** The batch was full — with progress, the schedule stays due (`purgeStillDue`). */
   full: boolean;
   /** Why the scope ran no purge at all this pass (`purgeHeldBy`), when its gate held it. */
   held?: string;
@@ -275,6 +275,16 @@ export async function runPurgePass(
     }
   }
   return pass;
+}
+
+/**
+ * Whether a purge pass leaves its schedule due, so the next sweep pass runs it again rather than
+ * waiting the cadence: the batch was full AND it moved something. A full batch in which every
+ * entity failed would otherwise select the same failures on every sweep tick, never record a run,
+ * and spin on them — so a pass with no progress waits its cadence like any other.
+ */
+export function purgeStillDue(pass: PurgePass): boolean {
+  return pass.full && pass.purged + pass.skipped > 0;
 }
 
 /**

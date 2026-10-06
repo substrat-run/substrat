@@ -129,13 +129,14 @@ sqlite3 ./data/_directory.sqlite 'SELECT * FROM scopes;'
 - **Single-node by design.** It preserves the serialization *semantics*, not the scale-out;
   production scale-out is the Cloudflare adapter's job. That is a deliberate split, not a
   gap — the semantics are what the contract tests pin, and they are identical.
-- **One process owns a `dir`.** The first host to open it in a process takes an exclusive lock
-  on `_host.lock`. Further hosts in that process share the directory, as two verticals on one
+- **One JavaScript thread owns a `dir`.** The first host to open it takes an exclusive lock
+  on `_host.lock`. Further hosts on the same thread share the directory, as two verticals on one
   platform directory do, and the lock is released when the last of them closes, or when the
-  process exits however it exits. A host in another process is refused with `conflict`
-  (reason `host_dir_in_use`) naming the directory. The reason: some guarantees read the
-  directory and a scope's file with nothing awaited before the commit, which no code in the same
-  process can interleave but a writer in another process could. Opening the files read-only
+  process exits however it exits. A host in another process, or on another worker thread of
+  the same process, is refused with `conflict` (reason `host_dir_in_use`) naming the directory. The reason: some guarantees read the
+  directory and a scope's file with nothing awaited before the commit, which no code on the
+  same thread can interleave but a writer on another thread or in another process could. Opening
+  the files read-only
   with a SQLite tool, as above, is unaffected.
 - The directory schema is re-applied on every open **and after a restore**, because a dump
   taken before a directory migration carries the old shape and replaying it verbatim would
