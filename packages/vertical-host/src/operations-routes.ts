@@ -35,6 +35,7 @@ import {
   listPageQuery,
   LIST_SORT_PARAM,
   nextPageLink,
+  withoutRowCursors,
   PAGE_LINK_HEADER,
   PAGE_TOTAL_HEADER,
   errorCodeOf,
@@ -519,7 +520,11 @@ export function mountOperations(
                 : {}),
             }
           : undefined;
-      const result = await stub.invoke(name, payload, invokeOptions);
+      const answered = await stub.invoke(name, payload, invokeOptions);
+      // #2073: a page's `rowCursors` are an in-process answer for a walk, and a handler that
+      // filtered `entries` after its read leaves them naming the rows it dropped. Nothing past
+      // this line — the field walk, a vertical's `respond`, the body — ever sees them.
+      const result = withoutRowCursors(answered);
       // #1331: the field walk, on the RESULT rather than the serialised body, and before
       // `respond`, so a vertical that owns its envelope is observed like every other. Only
       // when there is a record to write it to, and only on a request the router armed it for

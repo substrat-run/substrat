@@ -116,7 +116,7 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
         );
       }
       return pageVisible(
-        ({ limit, cursor }) => {
+        ({ limit, cursor, rowCursors }) => {
           const q = listQuery(plan, {
             limit,
             sort: params.sort,
@@ -125,8 +125,11 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
             filters: params.filters,
             view: 'trashed',
           });
-          return pageOf(deps.query(q.sql, q.params), limit, (row) =>
-            cursorOf(row, q.sortColumn, plan.idColumn, q.order, 'trashed'),
+          return pageOf(
+            deps.query(q.sql, q.params),
+            limit,
+            (row) => cursorOf(row, q.sortColumn, plan.idColumn, q.order, 'trashed'),
+            rowCursors,
           );
         },
         params,

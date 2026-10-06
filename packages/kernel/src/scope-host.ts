@@ -218,6 +218,11 @@ export interface PageParams {
    * archive. Refused for an entity that declares no archive. The bin is `ctx.pageTrashed`.
    */
   readonly view?: Exclude<EntityStateName, 'trashed'>;
+  /**
+   * Also return each row's own cursor, as `rowCursors` (#2073) — asked for by `pageVisible`,
+   * which may stop partway through a page. Off by default, so an ordinary page is unchanged.
+   */
+  readonly rowCursors?: boolean;
 }
 
 /**

@@ -11594,15 +11594,15 @@ export class SqliteScopeHost implements ScopeHost {
           unknown
         >[];
         // `pageOf`'s rule — a FULL page may have more, a short one is the end — with the
-        // cursor minted from the row's COLUMN (plus the tie-break), for any row on the
-        // page (#2073: `pageVisible` hands on the position of a visible row mid-page).
+        // cursor minted from the row's COLUMN (plus the tie-break), and each row's own
+        // cursor when asked (#2073: `pageVisible` may stop at a visible row mid-page).
         const mint = (row: T) =>
           cursorOf(row as Record<string, unknown>, q.sortColumn, plan.idColumn, q.order, q.view);
-        if (!params.total) return pageOf(rows as T[], limit, mint);
+        if (!params.total) return pageOf(rows as T[], limit, mint, params.rowCursors);
         const counted = rt.db.prepare(q.countSql).all(...(q.countParams as never[])) as {
           n: number;
         }[];
-        return countedPageOf(rows as T[], limit, mint, counted[0]?.n ?? 0);
+        return countedPageOf(rows as T[], limit, mint, counted[0]?.n ?? 0, params.rowCursors);
       },
       /**
        * Narrow a permission this caller already holds onto one entity (#K-sharing).

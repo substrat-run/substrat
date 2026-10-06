@@ -6959,14 +6959,14 @@ export function defineScopeDO(
             string,
             unknown
           >[];
-          // `pageOf`'s rule, with a cursor for any row on the page (#2073).
+          // `pageOf`'s rule, and each row's own cursor when asked (#2073).
           const mint = (row: T) =>
             cursorOf(row as Record<string, unknown>, q.sortColumn, plan.idColumn, q.order, q.view);
-          if (!params.total) return pageOf(rows as T[], limit, mint);
+          if (!params.total) return pageOf(rows as T[], limit, mint, params.rowCursors);
           const counted = sql
             .exec(q.countSql, ...q.countParams)
             .toArray() as unknown as { n: number }[];
-          return countedPageOf(rows as T[], limit, mint, counted[0]?.n ?? 0);
+          return countedPageOf(rows as T[], limit, mint, counted[0]?.n ?? 0, params.rowCursors);
         },
         /**
          * Delegate a permission this caller holds onto one entity — see the

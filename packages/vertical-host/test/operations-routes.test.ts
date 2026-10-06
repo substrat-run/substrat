@@ -158,6 +158,29 @@ describe('a paged read on the wire (#829)', () => {
     await expect(res.json()).resolves.toEqual(page);
   });
 
+  // #2073: `rowCursors` name rows by position, and a handler that filtered `entries` after its
+  // read leaves them naming the rows it dropped. No projection hands them on.
+  it('never puts rowCursors on the wire — paged, unpaged, or through respond', async () => {
+    const leaky = { entries: [{ id: 'a' }], nextCursor: 'a', rowCursors: ['a', 'hidden'] };
+    const paged = await pagedHarness(leaky).request('/api/lists/L1/items');
+    expect(await paged.text()).not.toContain('hidden');
+    const unpaged = await pagedHarness(leaky, { 'todo/my-lists': { http: { method: 'GET', path: '/lists' } } }).request(
+      '/api/lists',
+    );
+    await expect(unpaged.json()).resolves.toEqual({ entries: [{ id: 'a' }], nextCursor: 'a' });
+    const app = new Hono();
+    let seen: unknown;
+    mountOperations(
+      app,
+      { 'todo/my-lists': { paged: { sortKey: 'id' }, http: { method: 'GET', path: '/lists' } } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async () => ({ invoke: async () => leaky }) as any,
+      { respond: (c, result) => ((seen = result), c.json(result as never)) },
+    );
+    expect(await (await app.request('/api/lists')).text()).not.toContain('hidden');
+    expect(seen).toEqual({ entries: [{ id: 'a' }], nextCursor: 'a' });
+  });
+
   /** Two mounts cannot both decide the body; the vertical's own statement wins. */
   it('yields the whole Page to a vertical that supplies `respond`', async () => {
     const app = new Hono();

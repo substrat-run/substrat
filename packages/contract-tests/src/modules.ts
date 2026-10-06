@@ -13,7 +13,6 @@ import {
   operationInputsOf,
   operationConcurrencyOf,
   operationIdempotencyOptOutsOf,
-  pageCursorOf,
   IDEMPOTENCY_RESULT_LIMIT,
   permissionKey,
   principalId,
@@ -1997,13 +1996,6 @@ export const listMod: ModuleRegistration = {
     'list/page-of': (async (ctx, input) => {
       const i = input as { entityType: string; limit: number };
       return ctx.page<Record<string, unknown>>(i.entityType, { limit: i.limit });
-    }) as OperationHandler<never, unknown>,
-    // The page's own mint (#2073), read INSIDE the operation: it is non-enumerable, so it
-    // never survives the trip back to the suite. Each row's minted cursor, beside the page's.
-    'list/minted': (async (ctx, input) => {
-      const page = ctx.page<Record<string, unknown>>('listorder', input as { limit: number });
-      const mint = pageCursorOf(page);
-      return { nextCursor: page.nextCursor, minted: mint ? page.entries.map((row) => mint(row)) : null };
     }) as OperationHandler<never, unknown>,
     // Write then page back INSIDE one operation — a page is a plain read of the
     // content table, so it must see the row the same transaction just wrote.

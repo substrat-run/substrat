@@ -21,6 +21,7 @@ import {
   errorCodeOf,
   permissionKey,
   PAGE_CURSOR_RESTART,
+  pageVisible,
   platformActorId,
   principalId,
   scopeId,
@@ -109,21 +110,21 @@ export function listContractSuite(
       await fixture.cleanup();
     });
 
-    it("mints a cursor for every row on the page, each resuming right after its row (#2073)", async () => {
+    it("returns each row's own cursor when asked, each resuming right after its row (#2073)", async () => {
       // On the tied `status` walk, and on a counted page: `pageVisible` hands on the cursor of
-      // the row a page stops at, which may be any row, not only the last.
+      // the row a page stops at, which may be any row, not only the last. Plain data, so it is
+      // read here across the same boundary a host-side walk reads it across.
       for (const params of [{ sort: 'status' }, { sort: 'number', total: true }]) {
         const all = (await page({ ...params, limit: 50 })).entries.map((r) => String(r['id']));
-        const got = await stub.invoke<{ nextCursor: string | null; minted: string[] | null }>('list/minted', {
-          ...params,
-          limit: 4,
-        });
-        expect(got.minted, JSON.stringify(params)).toHaveLength(4);
-        expect(got.minted![3]).toBe(got.nextCursor);
-        for (const [i, cursor] of got.minted!.entries()) {
+        const got = await page({ ...params, limit: 4, rowCursors: true });
+        expect(got.rowCursors, JSON.stringify(params)).toHaveLength(4);
+        expect(got.rowCursors![3]).toBe(got.nextCursor);
+        for (const [i, cursor] of got.rowCursors!.entries()) {
           const rest = await page({ ...params, limit: 50, cursor });
           expect(rest.entries.map((r) => String(r['id'])), `${JSON.stringify(params)} after row ${i}`).toEqual(all.slice(i + 1));
         }
+        // Not asked, not there: an ordinary page is unchanged.
+        expect('rowCursors' in (await page({ ...params, limit: 4 }))).toBe(false);
       }
     });
 
@@ -412,6 +413,43 @@ export function listContractSuite(
         expect(await after(`x|y|${ids[4]}`)).toEqual([ids[5]]);
         await expectRestart(page({ limit: 1, filters: hostile, order: 'desc', cursor: `desc.number.b|${ids[3]}` }));
       });
+    });
+
+    it('pageVisible across the RPC: a row written between calls is neither leaked nor skipped (#2073)', async () => {
+      // The walk runs HERE, host-side, and every batch is a separate invoke into the scope —
+      // the boundary across which a cursor read back with a second query could answer for
+      // a row inserted in between. Visible rows are `v…`; everything else is refused.
+      const kind = 'k2073';
+      const add = (id: string, number: string) => stub.invoke('list/add', { id, number, status: 'open', kind });
+      for (let n = 1; n <= 10; n++) await add(n === 3 ? 'v1' : n === 8 ? 'v2' : `h${n}`, String(5000 + n * 10));
+      const idOf = (cursor: string) => {
+        const b64 = cursor.replace(/-/g, '+').replace(/_/g, '/');
+        const json = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))));
+        return String((json as { id?: string; value: string }).id ?? (json as { value: string }).value);
+      };
+      const params = { sort: 'number', filters: { kind } };
+      let writes = 0;
+      const fetch = async (p: { limit: number; cursor?: string; rowCursors: true }) => {
+        const got = await page({ ...params, ...p });
+        // After the first batch: a refused row before v1 and before v2, and a visible one between.
+        if (writes++ === 0) {
+          await add('h-before-v1', '5025');
+          await add('v3', '5050');
+          await add('h-before-v2', '5075');
+        }
+        return got;
+      };
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let guard = 0; guard < 20; guard++) {
+        const got = await pageVisible(fetch, { limit: 1, cursor }, (r: Row) => String(r['id']).startsWith('v'));
+        expect('rowCursors' in got).toBe(false);
+        seen.push(...got.entries.map((r) => String(r['id'])));
+        if (got.nextCursor === null) break;
+        expect(idOf(got.nextCursor)).toBe(seen.at(-1)); // the visible row's own position
+        cursor = got.nextCursor;
+      }
+      expect(seen).toEqual(['v1', 'v3', 'v2']);
     });
   });
 }

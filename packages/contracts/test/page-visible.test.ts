@@ -8,7 +8,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   mapPage,
-  pageCursorOf,
   pageOf,
   pageVisible,
   VISIBLE_BATCH,
@@ -32,7 +31,7 @@ const after = (row: Row, cursor: string) => {
 /**
  * A keyset table of `n` rows, read the way `ctx.page` reads one: `pageOf`, so a full page carries
  * its last row's cursor and the page can mint any of its rows'. `tie` rows share each sort value.
- * `bare` strips the mint, for a fetch whose producer supplies none.
+ * `bare` drops `rowCursors`, for a fetch whose producer does not pass the ask on.
  */
 function table(n: number, opts: { tie?: number; bare?: boolean } = {}) {
   const rows = Array.from({ length: n }, (_, i) => ({
@@ -40,12 +39,13 @@ function table(n: number, opts: { tie?: number; bare?: boolean } = {}) {
     s: String(Math.floor(i / (opts.tie ?? 1))).padStart(4, '0'),
   }));
   const fetches: { limit: number; cursor?: string }[] = [];
-  const fetch = (p: { limit: number; cursor?: string }): Page<Row> => {
-    fetches.push(p);
+  const fetch = (p: { limit: number; cursor?: string; rowCursors?: boolean }): Page<Row> => {
+    fetches.push({ limit: p.limit, cursor: p.cursor });
     const page = pageOf(
       rows.filter((r) => p.cursor === undefined || after(r, p.cursor)).slice(0, p.limit),
       p.limit,
       encode,
+      p.rowCursors,
     );
     return opts.bare ? { entries: page.entries, nextCursor: page.nextCursor } : page;
   };
@@ -54,7 +54,7 @@ function table(n: number, opts: { tie?: number; bare?: boolean } = {}) {
 
 /** Walk to the end, collecting every entry and every cursor handed out. */
 async function walk(
-  fetch: (p: { limit: number; cursor?: string }) => Page<Row>,
+  fetch: (p: { limit: number; cursor?: string; rowCursors?: boolean }) => Page<Row>,
   limit: number,
   visible: ReadonlySet<string> | VisibleTest<Row>,
   scanBudget?: number,
@@ -65,6 +65,7 @@ async function walk(
   let cursor: string | undefined;
   for (let i = 0; i < 1000; i++) {
     const page = await pageVisible(fetch, { limit, cursor }, allow, { scanBudget });
+    expect('rowCursors' in page).toBe(false); // never handed on: only the rows returned are named
     entries.push(...page.entries.map((r) => r.id));
     if (page.nextCursor === null) return { entries, cursors };
     cursors.push(page.nextCursor);
@@ -179,17 +180,28 @@ describe('pageVisible (#2073)', () => {
     }
   });
 
-  it('mints the cursor from the visible row itself, with one more fetch only when the producer cannot', async () => {
+  it("takes the cursor from the visible row's own entry in the same response — one fetch", async () => {
     // Visible r0000 and r0002 at limit 2: the page fills on r0002, mid-batch.
-    const visibleAt = (r: Row) => r.id === 'r0000' || r.id === 'r0002';
-    const minted = table(10);
-    const viaMint = await pageVisible(minted.fetch, { limit: 2 }, visibleAt);
-    expect(decode(viaMint.nextCursor!)).toBe('r0002');
-    expect(minted.fetches).toHaveLength(1);
+    const t = table(10);
+    const page = await pageVisible(t.fetch, { limit: 2 }, (r) => r.id === 'r0000' || r.id === 'r0002');
+    expect(decode(page.nextCursor!)).toBe('r0002');
+    expect(t.fetches).toHaveLength(1);
+  });
 
+  it('fails closed on a fetch that returns no rowCursors: the page ends there, and nothing is read again', async () => {
+    // Mid-batch: no position of r0002 is in the response, so the walk ends, as a short page does.
     const bare = table(10, { bare: true });
-    expect(await pageVisible(bare.fetch, { limit: 2 }, visibleAt)).toEqual(viaMint);
-    expect(bare.fetches.at(-1)).toEqual({ limit: 3, cursor: undefined });
+    const visibleAt = (r: Row) => r.id === 'r0000' || r.id === 'r0002';
+    expect(await pageVisible(bare.fetch, { limit: 2 }, visibleAt)).toEqual({
+      entries: [{ id: 'r0000', s: '0000' }, { id: 'r0002', s: '0002' }],
+      nextCursor: null,
+    });
+    expect(bare.fetches).toHaveLength(1);
+    // The last row of a full batch is still its own: that is the response's `nextCursor`.
+    const edge = table(200, { bare: true });
+    const last = `r${String(VISIBLE_BATCH - 1).padStart(4, '0')}`;
+    const atEdge = await pageVisible(edge.fetch, { limit: 1 }, (r) => r.id === last);
+    expect(decode(atEdge.nextCursor!)).toBe(last);
   });
 
   it('takes a batch test, one verdict per row in order, asked once per batch', async () => {
@@ -207,21 +219,32 @@ describe('pageVisible (#2073)', () => {
   });
 });
 
-describe('a page knows the cursor of each of its own rows (#2073)', () => {
-  const rows: Row[] = [{ id: 'a', s: '1' }, { id: 'b', s: '2' }];
+describe("a page's own row cursors (#2073)", () => {
+  const rows: Row[] = [{ id: 'a', s: '1' }, { id: 'b', s: '2' }, { id: 'c', s: '3' }];
 
-  it('pageOf sets it, and it never shows: not in JSON, a spread or toEqual', () => {
-    const page = pageOf(rows, 2, encode);
-    expect(decode(pageCursorOf(page)!(rows[0]!))).toBe('a');
-    expect(JSON.parse(JSON.stringify(page))).toEqual({ entries: rows, nextCursor: encode(rows[1]!) });
-    expect(page).toEqual({ entries: rows, nextCursor: encode(rows[1]!) });
-    expect(pageCursorOf({ ...page })).toBeUndefined();
-    expect(pageCursorOf(structuredClone(page))).toBeUndefined();
+  it('are there only when asked for, aligned with the entries', () => {
+    expect('rowCursors' in pageOf(rows, 3, encode)).toBe(false);
+    expect(pageOf(rows, 3, encode, true).rowCursors!.map(decode)).toEqual(['a', 'b', 'c']);
   });
 
-  it("mapPage keeps it, answering for a mapped entry with its source row's cursor", () => {
-    const mapped = mapPage(pageOf(rows, 2, encode), (r) => ({ name: r.id.toUpperCase() }));
-    expect(decode(pageCursorOf(mapped)!(mapped.entries[0]!))).toBe('a');
-    expect(() => pageCursorOf(mapped)!({ name: 'A' })).toThrow(/did not return/);
-  });
+  for (const [what, project] of [
+    ['an equal primitive', () => 'same'],
+    ['one reused object', (() => {
+      const shared = { name: 'same' };
+      return () => shared;
+    })()],
+  ] as [string, (r: Row) => unknown][]) {
+    it(`mapPage keeps each row's cursor by position when rows project to ${what}`, async () => {
+      const mapped = mapPage(pageOf(rows, 3, encode, true), project);
+      expect(mapped.rowCursors!.map(decode)).toEqual(['a', 'b', 'c']);
+      // The walk that stops at the second of three equal projections hands on b, not a.
+      const fetch = (p: { limit: number; cursor?: string; rowCursors?: boolean }) =>
+        mapPage(pageOf(rows.filter((r) => !p.cursor || after(r, p.cursor)).slice(0, p.limit), p.limit, encode, p.rowCursors), project);
+      const first = await pageVisible(fetch, { limit: 2 }, () => true);
+      expect(decode(first.nextCursor!)).toBe('b');
+      const second = await pageVisible(fetch, { limit: 2, cursor: first.nextCursor! }, () => true);
+      expect(second.entries).toHaveLength(1);
+      expect(second.nextCursor).toBeNull();
+    });
+  }
 });
