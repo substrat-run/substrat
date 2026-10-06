@@ -33,9 +33,12 @@ import type { ScopedSql } from './scope-host.js';
 /** The ledger's name — also what an authored migration may never name. */
 export const TABLE_OWNERS = '_substrat_table_owners';
 
-/** The spine table the ownership lives in — a scope table, so it travels with the scope's data. */
+/**
+ * The spine table the ownership lives in — a scope table, so it travels with the scope's data.
+ * The name is spelled out rather than interpolated: `lint:spine-ddl` reads this text as written.
+ */
 export const TABLE_OWNERS_DDL = `
-  CREATE TABLE IF NOT EXISTS ${TABLE_OWNERS} (
+  CREATE TABLE IF NOT EXISTS _substrat_table_owners (
     table_name TEXT PRIMARY KEY,
     module_id TEXT NOT NULL,
     source TEXT NOT NULL,
