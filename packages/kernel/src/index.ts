@@ -239,18 +239,19 @@ export {
   entityStateWhere,
   stateColumnsOf,
   purgeIndexDdl,
-  purgeIndexName,
-  PURGE_INDEX_PREFIX,
 } from './entity-state.js';
 export {
   PURGE_BATCH,
   isTrashed,
   purgeCandidates,
   purgeCutoffOf,
+  purgeDueOf,
   purgeOnlyKeysOf,
+  purgeReportOf,
   refuseTrashedTarget,
   registerTrashTargets,
   runPurgePass,
+  withheldKeysFor,
 } from './entity-trash.js';
 export type { PurgePass, TrashRefusalDeps } from './entity-trash.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';

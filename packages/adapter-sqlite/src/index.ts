@@ -237,13 +237,14 @@ import {
   entityStateTriggerDdl,
   isTrashed,
   PURGE_BATCH,
-  purgeCandidates,
-  purgeCutoffOf,
+  purgeDueOf,
   purgeIndexDdl,
   purgeOnlyKeysOf,
+  purgeReportOf,
   refuseTrashedTarget,
   registerTrashTargets,
   runPurgePass,
+  withheldKeysFor,
   statefulTablesOf,
   assertEntityStateIntact,
   stateListIndexNames,
@@ -773,7 +774,7 @@ interface RegisteredModule {
   /** The module's declared peers (#1706), empty if it declares none. */
   peers: PeerSpec[];
   /** Keys its system principal holds only for its purge schedules (#119) — `purgeOnlyKeysOf`. */
-  purgeOnlyKeys: ReadonlySet<string>;
+  purgeOnlyKeys: ReadonlySet<string> | undefined;
 }
 
 /** A manifest guard, bound to the module whose manifest declared it (K-17). */
@@ -4718,12 +4719,9 @@ export class SqliteScopeHost implements ScopeHost {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
           const pass = await this.purgeDue(rt, stub, schedule.operation, schedule.purge.entityType, nowIso);
           stillDue = pass.full;
-          if (pass.errors.length > 0) {
-            for (const e of pass.errors) {
-              report.errors.push({ operation: `${schedule.operation} (${schedule.purge.entityType}:${e.entityId})`, error: e.error });
-            }
-            throw new Error(`${pass.errors.length} purge(s) of ${schedule.purge.entityType} failed; they stay in the bin and are retried`);
-          }
+          const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
+          report.errors.push(...outcome.errors);
+          if (outcome.failure) throw outcome.failure;
         } else {
           await stub.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         }
@@ -4787,15 +4785,11 @@ export class SqliteScopeHost implements ScopeHost {
     entityType: string,
     nowIso: string,
   ) {
-    const plan = this.statePlans.get(entityType);
-    const target = this.operationTarget.get(operation);
-    if (plan?.purgeAfterDays === undefined || !target) {
-      throw new Error(`purge: '${operation}' is not the purge operation of a horizon on '${entityType}'`);
-    }
-    const cutoff = purgeCutoffOf(nowIso, plan.purgeAfterDays);
-    const ids = await rt.actor.turn(() => purgeCandidates(spineSql(rt.db), plan, cutoff));
-    return runPurgePass(ids, PURGE_BATCH, async (entityId) => {
-      await stub.invoke(operation, { [target.idFrom]: entityId }, { invocationId: ulid(), purgeCutoff: cutoff });
+    const due = await rt.actor.turn(() =>
+      purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, nowIso),
+    );
+    return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
+      await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid(), purgeCutoff: due.cutoff });
     });
   }
 
@@ -4967,9 +4961,11 @@ export class SqliteScopeHost implements ScopeHost {
           // which must not leak across operations (invokes are serialized per scope).
           // #119: the keys the module's system principal holds only for its purge schedules are
           // withheld from every call but the purge sweep's own invoke of the purge operation.
-          const purging =
-            invokeOptions?.purgeCutoff !== undefined && this.operationTarget.get(operation)?.trashed === 'purges';
-          const withheld = subject.kind === 'system' && !purging ? this.modules.get(subject.id)?.purgeOnlyKeys : undefined;
+          const target = this.operationTarget.get(operation);
+          const withheld =
+            subject.kind === 'system'
+              ? withheldKeysFor(this.modules.get(subject.id)?.purgeOnlyKeys, target, invokeOptions?.purgeCutoff)
+              : undefined;
           const ctx = this.operationContext(
             rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld,
           );
@@ -5048,7 +5044,7 @@ export class SqliteScopeHost implements ScopeHost {
             await refuseTrashedTarget(
               { sql: spineSql(rt.db), plans: this.statePlans, check: ctx.check },
               operation,
-              this.operationTarget.get(operation),
+              target,
               parsed,
               invokeOptions?.purgeCutoff,
             );

@@ -296,12 +296,12 @@ import {
   addStatePlans,
   entityStateTriggerDdl,
   isTrashed,
-  purgeCandidates,
-  purgeCutoffOf,
+  purgeDueOf,
   purgeIndexDdl,
   purgeOnlyKeysOf,
   refuseTrashedTarget,
   registerTrashTargets,
+  withheldKeysFor,
   statefulTablesOf,
   assertEntityStateIntact,
   stateListIndexNames,
@@ -1153,7 +1153,7 @@ export function defineScopeDO(
     /** #119: name → the entity it addresses by id — the host's trash refusal reads it. */
     private readonly operationTarget = new Map<string, OperationTarget>();
     /** #119: module id → the keys its system principal holds only for its purge schedules. */
-    private readonly purgeOnlyKeys = new Map<string, ReadonlySet<string>>();
+    private readonly purgeOnlyKeys = new Map<string, ReadonlySet<string> | undefined>();
     /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
     private readonly operationIdempotencyOptOut = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
@@ -2744,9 +2744,10 @@ export function defineScopeDO(
         try {
           // #119: a module's purge-only keys are withheld from its system principal on every
           // call but the purge sweep's own invoke of the purge operation.
-          const purging =
-            invokeOptions?.purgeCutoff !== undefined && this.operationTarget.get(operation)?.trashed === 'purges';
-          const withheld = systemDoor && !purging ? this.purgeOnlyKeys.get(systemDoor.moduleId) : undefined;
+          const target = this.operationTarget.get(operation);
+          const withheld = systemDoor
+            ? withheldKeysFor(this.purgeOnlyKeys.get(systemDoor.moduleId), target, invokeOptions?.purgeCutoff)
+            : undefined;
           await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal,
@@ -2798,7 +2799,7 @@ export function defineScopeDO(
             await refuseTrashedTarget(
               { sql: doSpineSql(this.sql), plans: this.statePlans, check: ctx.check },
               operation,
-              this.operationTarget.get(operation),
+              target,
               parsed,
               invokeOptions?.purgeCutoff,
             );
@@ -4510,13 +4511,7 @@ export function defineScopeDO(
       limit: number,
     ): Promise<{ cutoff: string; idFrom: string; ids: string[] }> {
       await this.ensureMigrations();
-      const plan = this.statePlans.get(entityType);
-      const target = this.operationTarget.get(operation);
-      if (plan?.purgeAfterDays === undefined || !target) {
-        throw new Error(`purge: '${operation}' is not the purge operation of a horizon on '${entityType}'`);
-      }
-      const cutoff = purgeCutoffOf(now, plan.purgeAfterDays);
-      return { cutoff, idFrom: target.idFrom, ids: purgeCandidates(doSpineSql(this.sql), plan, cutoff, limit) };
+      return purgeDueOf(doSpineSql(this.sql), this.statePlans, this.operationTarget, operation, entityType, now, limit);
     }
 
     async scheduleLastRun(operation: string): Promise<string | null> {

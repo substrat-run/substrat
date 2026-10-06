@@ -1193,10 +1193,11 @@ function assertTrashedDeclarations(
   entities: Record<string, EntityDef>,
 ): void {
   const purges = new Map<string, string>();
+  const targets = operationTargetsOf(operations as Record<string, object>);
   for (const [name, op] of Object.entries(operations)) {
     const decl = op as { trashed?: unknown; permission?: unknown; input?: z.ZodObject<z.ZodRawShape> };
     if (decl.trashed === undefined) continue;
-    const target = operationTargetsOf({ [name]: op as object })[name];
+    const target = targets[name];
     if ((decl.trashed !== 'admits' && decl.trashed !== 'purges') || !target || !entities[target.entity]?.trash) {
       throw new Error(
         `model: '${name}' declares \`trashed: ${JSON.stringify(decl.trashed)}\` — it is 'admits' or 'purges', ` +

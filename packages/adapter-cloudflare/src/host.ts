@@ -438,6 +438,7 @@ import {
   asyncInvocationId,
   asyncLinePass,
   PURGE_BATCH,
+  purgeReportOf,
   registerTrashTargets,
   runPurgePass,
   type AsyncLinePass,
@@ -5128,12 +5129,9 @@ export class CloudflareScopeHost implements ScopeHost {
             await scope.invoke(schedule.operation, { [due.idFrom]: entityId }, { invocationId: ulid(), purgeCutoff: due.cutoff });
           });
           stillDue = pass.full;
-          if (pass.errors.length > 0) {
-            for (const e of pass.errors) {
-              report.errors.push({ operation: `${schedule.operation} (${schedule.purge.entityType}:${e.entityId})`, error: e.error });
-            }
-            throw new Error(`${pass.errors.length} purge(s) of ${schedule.purge.entityType} failed; they stay in the bin and are retried`);
-          }
+          const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
+          report.errors.push(...outcome.errors);
+          if (outcome.failure) throw outcome.failure;
         } else {
           await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         }

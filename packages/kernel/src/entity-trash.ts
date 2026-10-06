@@ -30,7 +30,7 @@ import {
   type ScheduleSpec,
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
-import type { EntityStatePlan, StateCheck } from './entity-state.js';
+import { readStateRow, type EntityStatePlan, type StateCheck } from './entity-state.js';
 import type { ScopedSql } from './scope-host.js';
 
 /** How many entities one purge pass deletes per entity type. A full batch leaves the schedule due. */
@@ -40,11 +40,7 @@ export const PURGE_BATCH = 50;
 export function isTrashed(sql: ScopedSql, plans: ReadonlyMap<string, EntityStatePlan>, entity: EntityRef): boolean {
   const plan = plans.get(entity.entityType);
   if (!plan?.trashPermission) return false;
-  return (
-    sql.query(`SELECT 1 AS hit FROM ${plan.table} WHERE ${plan.idColumn} = ? AND ${TRASHED_AT_COLUMN} IS NOT NULL`, [
-      entity.entityId,
-    ]).length > 0
-  );
+  return (readStateRow(sql, plan, entity.entityId)?.trashed_at ?? null) !== null;
 }
 
 /** What the refusal needs from the adapter, inside the operation's own transaction. */
@@ -79,20 +75,16 @@ export async function refuseTrashedTarget(
   input: unknown,
   purgeCutoff: string | undefined,
 ): Promise<void> {
-  if (purgeCutoff !== undefined) {
-    if (target?.trashed !== 'purges') {
-      throw substratError('internal', `${operation} is not a purge — only a \`trashed: 'purges'\` operation runs under a purge cutoff`);
-    }
+  if (purgeCutoff !== undefined && !isPurgeInvoke(target, purgeCutoff)) {
+    throw substratError('internal', `${operation} is not a purge — only a \`trashed: 'purges'\` operation runs under a purge cutoff`);
   }
-  if (!target) return;
+  // An operation that opted in reaches the bin as it is; only a purge re-checks its cutoff.
+  if (!target || (target.trashed && purgeCutoff === undefined)) return;
   const plan = deps.plans.get(target.entity);
   if (!plan?.trashPermission) return;
   const id = (input as Record<string, unknown> | undefined)?.[target.idFrom];
   if (typeof id !== 'string') return;
-  const row = deps.sql.query<{ trashed_at: string | null }>(
-    `SELECT ${TRASHED_AT_COLUMN} AS trashed_at FROM ${plan.table} WHERE ${plan.idColumn} = ?`,
-    [id],
-  )[0];
+  const row = readStateRow(deps.sql, plan, id);
   if (purgeCutoff !== undefined) {
     if (!row) throw substratError('not_found', `${target.entity} not found: ${id}`);
     if (row.trashed_at === null || row.trashed_at > purgeCutoff) {
@@ -102,9 +94,26 @@ export async function refuseTrashedTarget(
     }
     return;
   }
-  if (!row || row.trashed_at === null || target.trashed) return;
+  if (!row || row.trashed_at === null) return;
   assertAllowed(await deps.check(target.key as Parameters<StateCheck>[0], { entityType: target.entity, entityId: id }));
   throw substratError('not_found', `${target.entity} not found: ${id}`);
+}
+
+/** Is this call the purge sweep's own invoke of an entity's `trashed: 'purges'` operation? */
+const isPurgeInvoke = (target: OperationTarget | undefined, purgeCutoff: string | undefined): boolean =>
+  purgeCutoff !== undefined && target?.trashed === 'purges';
+
+/**
+ * The keys a system principal's checks refuse on this call (#119): its module's purge-only keys,
+ * unless the call is the purge sweep's own invoke of the purge operation. `undefined` — nothing
+ * withheld — for any other subject, and for a module with no purge-only key.
+ */
+export function withheldKeysFor(
+  purgeOnlyKeys: ReadonlySet<string> | undefined,
+  target: OperationTarget | undefined,
+  purgeCutoff: string | undefined,
+): ReadonlySet<string> | undefined {
+  return purgeOnlyKeys && !isPurgeInvoke(target, purgeCutoff) ? purgeOnlyKeys : undefined;
 }
 
 /** The latest trash instant still due for purge at `now` — `now` minus the horizon. */
@@ -125,6 +134,29 @@ export function purgeCandidates(sql: ScopedSql, plan: EntityStatePlan, cutoff: s
       [cutoff, limit],
     )
     .map((r) => String(r.id));
+}
+
+/**
+ * One purge horizon's due work on a scope: the cutoff, the input field carrying the id, and the
+ * oldest due ids. Registration has tied the schedule to a declared horizon and the entity's
+ * purge operation, so a miss here is a wiring fault.
+ */
+export function purgeDueOf(
+  sql: ScopedSql,
+  plans: ReadonlyMap<string, EntityStatePlan>,
+  targets: ReadonlyMap<string, OperationTarget>,
+  operation: string,
+  entityType: string,
+  now: string,
+  limit = PURGE_BATCH,
+): { cutoff: string; idFrom: string; ids: string[] } {
+  const plan = plans.get(entityType);
+  const target = targets.get(operation);
+  if (plan?.purgeAfterDays === undefined || !target) {
+    throw new Error(`purge: '${operation}' is not the purge operation of a horizon on '${entityType}'`);
+  }
+  const cutoff = purgeCutoffOf(now, plan.purgeAfterDays);
+  return { cutoff, idFrom: target.idFrom, ids: purgeCandidates(sql, plan, cutoff, limit) };
 }
 
 /** What one purge schedule did on one scope in one pass. */
@@ -174,10 +206,25 @@ export async function runPurgePass(
  * sweep's own invoke of the purge operation, so the scope-wide grant seated for a purge cannot
  * run anything else — another operation checking the same key, a job step, a host-level call.
  */
-export function purgeOnlyKeysOf(schedules: readonly ScheduleSpec[]): ReadonlySet<string> {
+export function purgeOnlyKeysOf(schedules: readonly ScheduleSpec[]): ReadonlySet<string> | undefined {
   const purge = new Set(schedules.filter((s) => s.purge).flatMap((s) => s.permissions));
   for (const s of schedules) if (!s.purge) for (const p of s.permissions) purge.delete(p);
-  return purge;
+  return purge.size > 0 ? purge : undefined;
+}
+
+/**
+ * A purge pass, as the schedule run reports it: one error row per entity that failed (labelled
+ * with its id), and the error that marks the schedule's run `failed` when any did.
+ */
+export function purgeReportOf(
+  operation: string,
+  entityType: string,
+  pass: PurgePass,
+): { errors: { operation: string; error: string }[]; failure?: Error } {
+  const errors = pass.errors.map((e) => ({ operation: `${operation} (${entityType}:${e.entityId})`, error: e.error }));
+  return errors.length === 0
+    ? { errors }
+    : { errors, failure: new Error(`${errors.length} purge(s) of ${entityType} failed; they stay in the bin and are retried`) };
 }
 
 /**

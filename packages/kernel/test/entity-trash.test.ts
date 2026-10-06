@@ -67,11 +67,12 @@ describe('a horizon is declared on a trashable entity only', () => {
 describe('purgeOnlyKeysOf', () => {
   it('names the keys only a purge schedule declares', () => {
     const other: ScheduleSpec = { operation: 'b/tick', cadence: { everyMinutes: 5 }, permissions: [permissionKey.parse('box:read')] };
-    expect([...purgeOnlyKeysOf([purgeSchedule, other])]).toEqual(['box:delete']);
+    expect([...purgeOnlyKeysOf([purgeSchedule, other])!]).toEqual(['box:delete']);
     // A key another schedule also declares is already the system principal's for that one.
     const shares: ScheduleSpec = { ...other, permissions: [permissionKey.parse('box:delete')] };
-    expect([...purgeOnlyKeysOf([purgeSchedule, shares])]).toEqual([]);
-    expect([...purgeOnlyKeysOf([])]).toEqual([]);
+    // Nothing withheld is `undefined`, so a system principal's every check skips the lookup.
+    expect(purgeOnlyKeysOf([purgeSchedule, shares])).toBeUndefined();
+    expect(purgeOnlyKeysOf([])).toBeUndefined();
   });
 });
 

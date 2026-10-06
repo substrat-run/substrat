@@ -155,11 +155,8 @@ export function entityStateMigrations(
   return out;
 }
 
-/** The prefix of the purge sweep's index on a table (#119) — kernel-owned, so the reserved one. */
-export const PURGE_INDEX_PREFIX = '_substrat_purge_';
-
-/** The purge index's name on a plan's table. */
-export const purgeIndexName = (plan: EntityStatePlan): string => `${PURGE_INDEX_PREFIX}${plan.table}`;
+/** The purge index's name on a plan's table (#119) — kernel-prefixed, so the reserved namespace. */
+const purgeIndexName = (plan: EntityStatePlan): string => `_substrat_purge_${plan.table}`;
 
 /**
  * The partial index the purge sweep walks: trashed rows only, oldest trash first, so a sweep
@@ -341,7 +338,7 @@ export function entityStateWhere(
 }
 
 /** The two columns as one row holds them. */
-interface StateRow {
+export interface StateRow {
   readonly archived_at: string | null;
   readonly trashed_at: string | null;
 }
@@ -350,7 +347,7 @@ const stateOf = (row: StateRow): EntityStateName =>
   row.trashed_at !== null ? 'trashed' : row.archived_at !== null ? 'archived' : 'active';
 
 /** One row's two columns, or `undefined` when the row does not exist. */
-function readStateRow(sql: ScopedSql, plan: EntityStatePlan, entityId: string): StateRow | undefined {
+export function readStateRow(sql: ScopedSql, plan: EntityStatePlan, entityId: string): StateRow | undefined {
   const columns = stateColumnsOf(plan);
   return sql.query<StateRow>(
     `SELECT ${columns.archive ? ARCHIVED_AT_COLUMN : 'NULL'} AS archived_at, ` +
