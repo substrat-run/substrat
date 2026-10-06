@@ -42,16 +42,26 @@ export const SETTLE_INTENT_SQL =
  * `(action, id)`, which reads the whole history of the action.
  */
 /**
- * Whether the operation already has an outcome. Found by operation id, never by row order: the
- * intent, a real outcome and a settle's `unknown` are stamped by different writers whose ULIDs
- * and clocks need not agree.
+ * Whether the operation already has an outcome. Bound with `settleOutcomeParamsOf`: the
+ * operation id, which reaches the index, and the operation's FULL key, which decides. A row
+ * matches only when its own `json_array(action, operationId, tenant_id, scope_id)` is that key,
+ * in the grammar `operationKeyOf` writes (a compact JSON array, so a null tenant or scope compares
+ * as `null`), so an outcome of the same id in another tenant or scope is not this operation's.
+ * Never by row order: the intent, a real outcome and a settle's `unknown` are stamped by different
+ * writers whose ids and clocks need not agree.
  */
 export const SETTLE_OUTCOME_SQL = `SELECT 1 AS present FROM _substrat_admin_log
   WHERE json_extract(after, '$.operationId') = ?
     AND json_extract(after, '$.operationId') IS NOT NULL
-    AND +action = ?
+    AND json_array(action, json_extract(after, '$.operationId'), tenant_id, scope_id) = ?
     AND json_extract(after, '$.phase') <> 'intent'
   LIMIT 1`;
+
+/** `SETTLE_OUTCOME_SQL`'s parameters for one operation: its id, then its `operationKeyOf` key. */
+export const settleOutcomeParamsOf = (operation: AuditedOperationRef): [string, OperationKey] => [
+  operation.operationId,
+  operationKeyOf(operation),
+];
 
 /** How many operation ids one batched read binds: well under a Durable Object's 100 parameters. */
 export const AUDITED_OPERATIONS_BATCH = 50;
@@ -142,6 +152,8 @@ export interface SettleIntentRow {
 export interface UnknownOutcome {
   action: AuditedChangeAction;
   operationId: string;
+  /** The operation the intent belongs to, the settle check's whole key. */
+  operation: AuditedOperationRef;
   target: { tenantId: string | null; scopeId: string | null; vertical: string | null };
   after: Record<string, unknown>;
   failure: Omit<OpsFailureInput, 'actor'>;
@@ -167,6 +179,7 @@ export function unknownOutcomeOf(row: SettleIntentRow | undefined, intentId: str
   return {
     action: row.action,
     operationId,
+    operation: { action: row.action, operationId, tenantId: row.tenant_id, scopeId: row.scope_id },
     target: { tenantId: row.tenant_id, scopeId: row.scope_id, vertical: row.vertical },
     after: parsed,
     failure: {

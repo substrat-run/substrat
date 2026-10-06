@@ -1882,6 +1882,35 @@ export function permissionContractSuite(
       await expect(host.admin.settleUnrecordedOutcome(staff, { intentId: ulid(), error: 'x' })).rejects.toThrow(/no audited-change intent/);
     });
 
+    it('the settle checks the WHOLE operation: the same id answered in another tenant or scope does not settle it (#2064)', async () => {
+      const from = principalId.parse(ulid());
+      const to = principalId.parse(ulid());
+      const otherTenant = tenantId.parse(ulid());
+      const settleOf = async (operationId: string) => {
+        await host.admin.recordOwnerTransfer(staff, { tenantId: t1, scopeId: s1, operationId, from, to, phase: 'intent' });
+        const [intent] = await host.admin.auditLog(staff, { tenantId: t1, action: 'transferOwner', order: 'desc', limit: 1 });
+        return () => host.admin.settleUnrecordedOutcome(staff, { intentId: intent!.id, error: 'no outcome was recorded' });
+      };
+      const failuresOf = async (operationId: string) =>
+        (await host.admin.listOpsFailures(staff, { tenantId: t1, operation: 'audit.transferOwner' })).filter((f) => f.reference === operationId);
+
+      // The orphan's id, answered in another tenant AND in another scope: neither is its outcome.
+      const collided = ulid();
+      const settle = await settleOf(collided);
+      const answered = { operationId: collided, from, to, phase: 'applied' as const, outcome: 'transferred' as const, fromRevoked: true };
+      await host.admin.recordOwnerTransfer(staff, { ...answered, tenantId: otherTenant, scopeId: s1 });
+      await host.admin.recordOwnerTransfer(staff, { ...answered, tenantId: t1, scopeId: s2 });
+      expect(await settle()).toBe(true);
+      expect((await failuresOf(collided)).map((f) => [f.stage, f.scopeId])).toEqual([['outcome-unknown', s1]]);
+
+      // The twin: answered under its own whole key, the orphan is not one, and nothing is written.
+      const own = ulid();
+      const settleOwn = await settleOf(own);
+      await host.admin.recordOwnerTransfer(staff, { ...answered, operationId: own, tenantId: t1, scopeId: s1 });
+      expect(await settleOwn()).toBe(false);
+      expect(await failuresOf(own)).toEqual([]);
+    });
+
     it('reads exactly the audited operations asked about, in batches a Durable Object can bind (#2064)', async () => {
       const from = principalId.parse(ulid());
       const to = principalId.parse(ulid());

@@ -86,6 +86,7 @@ import {
   type SubjectTextTarget,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
+  settleOutcomeParamsOf,
   unknownOutcomeOf,
   type SettleIntentRow,
   ADMIN_LOG_INDEX_DDL,
@@ -4636,7 +4637,7 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() => {
       const row = this.sql.exec(SETTLE_INTENT_SQL, input.intentId).toArray()[0] as unknown as SettleIntentRow | undefined;
       const outcome = unknownOutcomeOf(row, input.intentId, input.error);
-      if (this.sql.exec(SETTLE_OUTCOME_SQL, outcome.operationId, outcome.action).toArray().length > 0) {
+      if (this.sql.exec(SETTLE_OUTCOME_SQL, ...settleOutcomeParamsOf(outcome.operation)).toArray().length > 0) {
         return false;
       }
       const at = new Date().toISOString();

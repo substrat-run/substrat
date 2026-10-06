@@ -153,15 +153,15 @@ export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<Set
   const cutoff = new Date(now - graceMs).toISOString();
   const since = new Date(now - (opts.lookbackMs ?? SETTLE_LOOKBACK_MS)).toISOString();
 
-  const intents = new Map<string, AdminLogEntry>();
-  const closed = new Set<string>();
+  const intents = new Map<OperationKey, AdminLogEntry>();
+  const closed = new Set<OperationKey>();
   for (let cursor: string | undefined; ; ) {
     const page = await admin.auditLog(actor, { action: [...AUDITED_CHANGE_ACTIONS], since, limit: PAGE, cursor });
     for (const row of page) {
       const after = row.after as { phase?: unknown; operationId?: unknown } | null;
       if (typeof after?.operationId !== 'string') continue;
-      // Keyed by action too: the two flows mint their operation ids independently.
-      const key = `${row.action}:${after.operationId}`;
+      // The operation's whole identity, as every reader keys it.
+      const key = operationKeyOf({ action: row.action, operationId: after.operationId, tenantId: row.tenantId, scopeId: row.scopeId });
       if (after.phase === 'intent') {
         if (row.at < cutoff) intents.set(key, row);
       } else {

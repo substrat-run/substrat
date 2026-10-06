@@ -623,6 +623,7 @@ import {
   ADMIN_LOG_INDEXES_SQL,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
+  settleOutcomeParamsOf,
   readAuditedOperations,
   unknownOutcomeOf,
   type AuditedOperationSqlRow,
@@ -10582,7 +10583,7 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.transaction(() => {
           const row = this.directory.prepare(SETTLE_INTENT_SQL).get(input.intentId) as SettleIntentRow | undefined;
           const outcome = unknownOutcomeOf(row, input.intentId, input.error);
-          if (this.directory.prepare(SETTLE_OUTCOME_SQL).get(outcome.operationId, outcome.action)) return false;
+          if (this.directory.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(outcome.operation))) return false;
           this.recordAdmin(actor, outcome.action, outcome.target as never, null, outcome.after);
           this.writeOpsFailure({ ...outcome.failure, actor });
           return true;

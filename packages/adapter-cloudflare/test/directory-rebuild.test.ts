@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { ADMIN_LOG_INDEX_DDL, SETTLE_OUTCOME_SQL, auditedOperationsSql, ulid } from '@substrat-run/kernel';
+import { ADMIN_LOG_INDEX_DDL, SETTLE_OUTCOME_SQL, auditedOperationsSql, settleOutcomeParamsOf, ulid } from '@substrat-run/kernel';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -267,7 +267,7 @@ describe('#2064: the hosted admin-log rebuild keeps every index the kernel lists
         .map((r) => r.name);
       const plan = (query: string, ...params: unknown[]) =>
         (state.storage.sql.exec(`EXPLAIN QUERY PLAN ${query}`, ...params).toArray() as { detail: string }[]).map((r) => r.detail).join(' | ');
-      return { sql, present, batched: plan(auditedOperationsSql(2), 'a', 'b'), settle: plan(SETTLE_OUTCOME_SQL, 'a', 'transferOwner') };
+      return { sql, present, batched: plan(auditedOperationsSql(2), 'a', 'b'), settle: plan(SETTLE_OUTCOME_SQL, ...settleOutcomeParamsOf({ action: 'transferOwner', operationId: 'a', tenantId: 't', scopeId: 's' })) };
     });
     expect(seen.sql).not.toContain(legacy.legacyMarker);
     expect(seen.present).toEqual(expect.arrayContaining(names));

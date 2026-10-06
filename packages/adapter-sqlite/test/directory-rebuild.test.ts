@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ADMIN_LOG_INDEX_DDL, SETTLE_OUTCOME_SQL, auditedOperationsSql } from '@substrat-run/kernel';
+import { ADMIN_LOG_INDEX_DDL, SETTLE_OUTCOME_SQL, auditedOperationsSql, settleOutcomeParamsOf } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
@@ -280,7 +280,7 @@ describe('#2064: the admin-log rebuild keeps every index the kernel lists', () =
         const plan = (sql: string, params: unknown[]) =>
           (after.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[]).map((r) => r.detail).join(' | ');
         expect(plan(auditedOperationsSql(2), ['a', 'b'])).toMatch(/USING INDEX _substrat_admin_log_operation/);
-        expect(plan(SETTLE_OUTCOME_SQL, ['a', 'transferOwner'])).toMatch(/USING INDEX _substrat_admin_log_operation/);
+        expect(plan(SETTLE_OUTCOME_SQL, settleOutcomeParamsOf({ action: 'transferOwner', operationId: 'a', tenantId: 't', scopeId: 's' }))).toMatch(/USING INDEX _substrat_admin_log_operation/);
       } finally {
         after.close();
       }

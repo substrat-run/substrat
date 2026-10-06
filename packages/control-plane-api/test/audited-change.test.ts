@@ -348,6 +348,23 @@ describe('the readers hold to the priority rule, whatever the ids and clocks say
     expect(logged).toEqual([]);
   });
 
+  it("the sweep's scan keys by the whole operation: an answer in another tenant does not close this scope's intent", async () => {
+    const operationId = ulid();
+    const t2 = tenantId.parse(ulid());
+    raw(ulid(), 'intent', operationId, AT);
+    raw(ulid(), 'applied', operationId, AT, { outcome: 'transferred', fromRevoked: true }, { tenant: t2 });
+    const pass = await settleUnrecordedOutcomes({ admin: host.admin, actor: staff, now: new Date(Date.parse(AT) + 2 * 3600_000) });
+    expect(pass.settled.filter((x) => x.operationId === operationId)).toEqual([
+      { action: 'transferOwner', operationId, tenantId: t, scopeId: s },
+    ]);
+    // The twin: answered in its own scope, it is not nominated.
+    const own = ulid();
+    raw(ulid(), 'intent', own, AT);
+    raw(ulid(), 'applied', own, AT, { outcome: 'transferred', fromRevoked: true });
+    const again = await settleUnrecordedOutcomes({ admin: host.admin, actor: staff, now: new Date(Date.parse(AT) + 2 * 3600_000) });
+    expect(again.settled.filter((x) => x.operationId === own)).toEqual([]);
+  });
+
   it('resolves a page in ONE batched read, however much unrelated history the log holds', async () => {
     for (let i = 0; i < 1500; i++) raw(ulid(), i % 2 ? 'intent' : 'applied', `noise-${i}`, AT, i % 2 ? {} : { outcome: 'transferred', fromRevoked: true });
     const operationId = ulid();

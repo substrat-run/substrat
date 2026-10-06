@@ -538,6 +538,7 @@ export {
   AUDITED_OPERATIONS_BATCH,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
+  settleOutcomeParamsOf,
   operationKeyOf,
   auditedOperationsSql,
   effectiveOutcomes,

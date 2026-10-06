@@ -9,6 +9,7 @@ import {
   isSupersededOutcome,
   readAuditedOperations,
   SETTLE_OUTCOME_SQL,
+  settleOutcomeParamsOf,
   type AuditedOperationSqlRow,
 } from '../src/audit-outcome.js';
 
@@ -80,10 +81,13 @@ describe('the operation-id reads', () => {
     return d;
   };
   let n = 0;
-  const insert = (d: DatabaseSync, action: string, operationId: string, phase: string, scope = 's1') =>
+  const insert = (d: DatabaseSync, action: string, operationId: string, phase: string, scope: string | null = 's1', tenant: string | null = 't1') =>
     d
       .prepare('INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, after, at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(String(++n).padStart(8, '0'), 'a', action, 't1', scope, JSON.stringify({ phase, operationId }), '2026-10-06T12:00:00.000Z');
+      .run(String(++n).padStart(8, '0'), 'a', action, tenant, scope, JSON.stringify({ phase, operationId }), '2026-10-06T12:00:00.000Z');
+  const ref = (operationId: string, where: { tenantId?: string | null; scopeId?: string | null } = {}) => ({
+    action: 'transferOwner', operationId, tenantId: where.tenantId === undefined ? 't1' : where.tenantId, scopeId: where.scopeId === undefined ? 's1' : where.scopeId,
+  });
   const all = (d: DatabaseSync) => (sql: string, params: string[]) => d.prepare(sql).all(...params) as unknown as AuditedOperationSqlRow[];
 
   it('both statements search the operation-id index rather than scan the log', () => {
@@ -91,7 +95,7 @@ describe('the operation-id reads', () => {
     const plan = (sql: string, params: unknown[]) =>
       (d.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as string[])) as unknown as { detail: string }[]).map((r) => r.detail).join(' | ');
     expect(plan(auditedOperationsSql(3), ['a', 'b', 'c'])).toMatch(/USING INDEX _substrat_admin_log_operation/);
-    expect(plan(SETTLE_OUTCOME_SQL, ['a', 'transferOwner'])).toMatch(/USING INDEX _substrat_admin_log_operation/);
+    expect(plan(SETTLE_OUTCOME_SQL, settleOutcomeParamsOf(ref('a')))).toMatch(/USING INDEX _substrat_admin_log_operation/);
   });
 
   it('reads only the operations asked about, in batches, out of a large unrelated history', () => {
@@ -123,8 +127,31 @@ describe('the operation-id reads', () => {
     const d = db();
     insert(d, 'transferOwner', 'late', 'applied'); // a LOWER id than the intent below
     insert(d, 'transferOwner', 'late', 'intent');
-    expect(d.prepare(SETTLE_OUTCOME_SQL).get('late', 'transferOwner')).toBeTruthy();
+    expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('late')))).toBeTruthy();
     insert(d, 'transferOwner', 'open', 'intent');
-    expect(d.prepare(SETTLE_OUTCOME_SQL).get('open', 'transferOwner')).toBeUndefined();
+    expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('open')))).toBeUndefined();
+  });
+
+  it('the settle check is the WHOLE key: the same id in another tenant, scope or action is not this operation', () => {
+    const d = db();
+    insert(d, 'transferOwner', 'shared', 'intent');
+    insert(d, 'transferOwner', 'shared', 'applied', 's2', 't2');
+    insert(d, 'transferOwner', 'shared', 'refused', 's2');
+    insert(d, 'transferOwner', 'shared', 'failed', 's1', 't2');
+    insert(d, 'manageScopeMember', 'shared', 'applied');
+    expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('shared')))).toBeUndefined();
+    // The twin: an outcome under the same whole key is found.
+    insert(d, 'transferOwner', 'shared', 'unknown');
+    expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('shared')))).toBeTruthy();
+  });
+
+  it('a null tenant or scope compares as null in both grammars, never as a wildcard', () => {
+    const d = db();
+    insert(d, 'transferOwner', 'tenantless', 'applied', null, null);
+    expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('tenantless', { tenantId: null, scopeId: null })))).toBeTruthy();
+    expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('tenantless')))).toBeUndefined();
+    // SQLite's `json_array` and `operationKeyOf` write the same text, nulls and quoting included.
+    const sqlKey = (d.prepare("SELECT json_array('transferOwner', 'o\"p', NULL, 's1') AS k").get() as { k: string }).k;
+    expect(sqlKey).toBe(settleOutcomeParamsOf(ref('o"p', { tenantId: null }))[1]);
   });
 });
