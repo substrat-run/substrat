@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { errorCodeOf } from '@substrat-run/contracts';
 import {
   TABLE_OWNERS_DDL,
+  assertMigrationLeavesLedgerAlone,
   assertTablesOwned,
   moduleTableNames,
   recordMigrationOwnership,
@@ -98,5 +99,19 @@ describe('the journal backfill (#2068)', () => {
     s.migrate('a', '1', 'CREATE TABLE t (id TEXT)');
     expect(() => assertTablesOwned(s.sql, 'b', ['t'], s.sqlOf, 'now')).toThrow(/does not record/);
     expect(s.owners()).toEqual({ t: 'a' });
+  });
+});
+
+describe('the ledger guard (#2068)', () => {
+  it('refuses a migration that names the ledger — in any statement, read or write, any spelling', () => {
+    for (const forge of [
+      "INSERT INTO _substrat_table_owners VALUES ('victim', 'b', 'migration', 'now')",
+      "CREATE TABLE b_own (id TEXT); UPDATE \"_Substrat_Table_Owners\" SET module_id = 'b'",
+      'DELETE FROM main._substrat_table_owners',
+      'CREATE TABLE copy AS SELECT * FROM _substrat_table_owners',
+    ]) {
+      expect(() => assertMigrationLeavesLedgerAlone(forge, 'migration b@1')).toThrow(/names _substrat_table_owners/);
+    }
+    expect(() => assertMigrationLeavesLedgerAlone('CREATE TABLE fine (id TEXT)', 'migration b@1')).not.toThrow();
   });
 });

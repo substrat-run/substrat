@@ -19,6 +19,9 @@
 import { namesSpineTable, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
 import type { ScopedSql } from './scope-host.js';
 
+/** The ledger's name — also what an authored migration may never name. */
+export const TABLE_OWNERS = '_substrat_table_owners';
+
 /** The spine table the ownership lives in — a scope table, so it travels with the scope's data. */
 export const TABLE_OWNERS_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_table_owners (
@@ -28,6 +31,24 @@ export const TABLE_OWNERS_DDL = `
     recorded_at TEXT NOT NULL
   );
 `;
+
+/**
+ * Refuse an authored migration that names the ownership ledger — in any statement, read or
+ * write, quoted or qualified. Each adapter runs it beside `assertNoSpineReference`, before the
+ * migration executes, so a refused migration changes nothing and the scope fails closed.
+ */
+export function assertMigrationLeavesLedgerAlone(sql: string, what: string): void {
+  for (const token of tokenizeSql(sql)) {
+    if (token.text.split('.').some((part) => part.toLowerCase() === TABLE_OWNERS)) {
+      throw substratError(
+        'forbidden',
+        `${what} names ${TABLE_OWNERS}, the kernel's record of which module created which table — ` +
+          'a migration may not read or write it',
+        { reason: 'spine_write' },
+      );
+    }
+  }
+}
 
 /** The scope's own tables, lowercased: no spine, no SQLite or workerd internals, no views. */
 export function moduleTableNames(sql: ScopedSql): Set<string> {

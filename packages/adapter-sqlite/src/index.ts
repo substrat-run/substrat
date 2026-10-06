@@ -373,6 +373,7 @@ import {
   SWITCH_OWED_DDL,
   SWITCH_FENCES_DDL,
   TABLE_OWNERS_DDL,
+  assertMigrationLeavesLedgerAlone,
   moduleTableNames,
   recordMigrationOwnership,
   recordWriteSuperseded,
@@ -11849,6 +11850,8 @@ export class SqliteScopeHost implements ScopeHost {
               // #1898: a migration runs on the scope's own handle, not `ctx.sql`, so the
               // spine guard's REFERENCES rule is applied here.
               assertNoSpineReference(migration.sql, `migration ${key}`);
+              // #2068: the ownership ledger is the kernel's — no migration may name it.
+              assertMigrationLeavesLedgerAlone(migration.sql, `migration ${key}`);
               // #2068: which tables this migration actually made, from the schema either side of it.
               const tablesBefore = moduleTableNames(spineSql(rt.db));
               rt.db.exec(migration.sql);

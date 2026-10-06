@@ -438,7 +438,9 @@ export {
   tablesCreatedBy,
 } from './module-erasure.js';
 export {
+  TABLE_OWNERS,
   TABLE_OWNERS_DDL,
+  assertMigrationLeavesLedgerAlone,
   assertTablesOwned,
   backfillOwnershipFromJournal,
   migrationDdl,

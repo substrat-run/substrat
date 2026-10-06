@@ -288,6 +288,7 @@ import {
   ENTITY_STATE_MOVES_DDL,
   SWITCH_FENCES_DDL,
   TABLE_OWNERS_DDL,
+  assertMigrationLeavesLedgerAlone,
   moduleTableNames,
   recordMigrationOwnership,
   CAPABILITY_EXCHANGE_OPERATION,
@@ -4959,6 +4960,8 @@ export function defineScopeDO(
                 // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
                 // spine guard's REFERENCES rule is applied here.
                 assertNoSpineReference(migration.sql, `migration ${key}`);
+                // #2068: the ownership ledger is the kernel's — no migration may name it.
+                assertMigrationLeavesLedgerAlone(migration.sql, `migration ${key}`);
                 // #1722: not counted per statement, so `total_changes()` measures the migration
                 // alone. The journal row below is a write, and advances the revision once.
                 // #2068: which tables this migration actually made, from the schema either side of it.
