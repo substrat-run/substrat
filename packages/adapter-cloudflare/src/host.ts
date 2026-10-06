@@ -453,6 +453,8 @@ import {
   LIVE_SUBSCRIBE_PATH,
   LIVE_TENANT_HEADER,
   LIVE_WITHIN_HEADER,
+  LIVE_EXPIRES_HEADER,
+  liveInstant,
   encodeLiveWithin,
   liveWithinOf,
   type LiveRefusal,
@@ -9553,11 +9555,17 @@ export class CloudflareScopeHost implements ScopeHost {
    * arrive as a different class of answer just because the caller asked for a socket.
    */
   readonly liveReads: LiveReadSurface<Request, Response> = {
-    subscribe: async ({ tenantId, scopeId, principal, request, within }) => {
+    subscribe: async ({ tenantId, scopeId, principal, request, within, expiresAt }) => {
       // Decided before anything else, and thrown: a `within` that is neither a plain
       // EntityRef nor a value `vouchedWithin` built is a caller bug, and the two ways of
       // guessing at it both open a feed wider than was asked for (#1853).
       const narrowed = liveWithinOf(within);
+      // The same for an expiry that is not an instant: read as "none", it would keep the
+      // socket open past the session it was meant to end with (#938).
+      const expires = expiresAt === undefined ? undefined : liveInstant(expiresAt);
+      if (expiresAt !== undefined && !expires) {
+        throw substratError('validation_failed', 'live reads: `expiresAt` must be an ISO 8601 instant');
+      }
       if (!isUpgradeRequest(request)) {
         return new Response('live reads are a WebSocket surface', {
           status: 426,
@@ -9620,6 +9628,8 @@ export class CloudflareScopeHost implements ScopeHost {
       headers.set(LIVE_SCOPE_HEADER, scopeId);
       if (narrowed) headers.set(LIVE_WITHIN_HEADER, encodeLiveWithin(narrowed));
       else headers.delete(LIVE_WITHIN_HEADER);
+      if (expires) headers.set(LIVE_EXPIRES_HEADER, expires);
+      else headers.delete(LIVE_EXPIRES_HEADER);
       const forwarded = new Request(
         new URL(LIVE_SUBSCRIBE_PATH, 'https://scope.substrat.internal'),
         // `new Request(url, { …, headers })` rather than `new Request(request, …)`:

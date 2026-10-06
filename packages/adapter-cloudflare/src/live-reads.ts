@@ -49,6 +49,19 @@ export const LIVE_SCOPE_HEADER = 'x-substrat-live-scope';
  */
 export const LIVE_WITHIN_HEADER = 'x-substrat-live-within';
 
+/**
+ * When the credential that proved the principal stops being valid (#938), as ISO 8601 —
+ * asserted by the coordinator from `subscribe`'s `expiresAt`. Absent: no expiry was given.
+ */
+export const LIVE_EXPIRES_HEADER = 'x-substrat-live-expires';
+
+/** An instant as the scope keeps it (`toISOString`), or `undefined` for one that is not an instant. */
+export function liveInstant(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+}
+
 /** A subscription's narrowing, as it is carried on the header and kept on the socket. */
 export interface LiveWithin {
   readonly entityType: string;
@@ -180,6 +193,8 @@ export interface LiveSubscription {
   readonly since: string;
   /** The root the feed is narrowed to (#1853). Absent on an unnarrowed one, and on every socket opened before it existed. */
   readonly within?: LiveWithin;
+  /** When the session that opened it ends (#938); the scope closes the socket at it. */
+  readonly expiresAt?: string;
 }
 
 /**
@@ -202,12 +217,16 @@ export function readSubscription(attachment: unknown): LiveSubscription | null {
   // asked for, and a vouched one past anything the principal could read.
   const within = a.within === undefined ? undefined : readLiveWithin(a.within);
   if (a.within !== undefined && !within) return null;
+  // The same rule for an expiry: one that cannot be read is not "never expires".
+  const expiresAt = a.expiresAt === undefined ? undefined : liveInstant(a.expiresAt);
+  if (a.expiresAt !== undefined && !expiresAt) return null;
   return {
     principal: a.principal as PrincipalId,
     tenantId: a.tenantId as TenantId,
     scopeId: a.scopeId as ScopeId,
     since: a.since,
     ...(within ? { within } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
   };
 }
 

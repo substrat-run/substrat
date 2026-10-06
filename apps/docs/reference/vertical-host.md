@@ -322,6 +322,14 @@ Prefer `checkedWithin` whenever there is a grant to check: authority then leaves
 grant. For either one, root the feed at an entity whose subtree holds only what the caller may
 see, because the walk is the row filter.
 
+### A socket ends with its session
+
+`subscriber` may return `expiresAt`, the instant the caller's credential stops being valid.
+`AuthSubject.expiresAt` from `@substrat-run/vertical-auth` carries it: a session cookie's or a
+bearer's `exp`. A handshake at or past it is refused, and the scope closes the socket (`1008`)
+on its first pass at or past it, before sending anything, whatever the caller's grants still
+say. Without it, a socket lives until one end closes it.
+
 ## `requestConnectUrl(request)`
 
 How a vertical starts a provider consent round **itself** (#1310), for the case the

@@ -30,13 +30,19 @@
  * while hidden is dropped for the same reason: coming back re-reads anyway.
  */
 import { useEffect, useRef } from 'react';
-import { createFeed, type Feed, type LiveFrame, type SocketLike } from './feed.js';
+import { createFeed, feedSet, type Feed, type LiveFrame, type SocketLike } from './feed.js';
 import { bindLiveReload } from './live-reload.js';
 import type { Pace } from './pace.js';
 
-/** A feed on `path`, bound to the browser's socket and clock. */
+/**
+ * Every feed this page opened. A 401 on any read ends them all (`api.ts`): each socket was
+ * opened for the session that just ended.
+ */
+export const feeds = feedSet();
+
+/** A feed on `path`, bound to the browser's socket and clock, and tracked in `feeds`. */
 export function browserFeed(path: string): Feed {
-  return createFeed({
+  return feeds.track(createFeed({
     connect: () => {
       if (typeof WebSocket === 'undefined') return null;
       const url = new URL(path, location.href);
@@ -51,7 +57,7 @@ export function browserFeed(path: string): Feed {
       };
       ws.onopen = () => socket.onopen?.();
       ws.onmessage = (event) => socket.onmessage?.(event);
-      ws.onclose = () => socket.onclose?.();
+      ws.onclose = (event) => socket.onclose?.({ code: event.code });
       return socket;
     },
     now: () => Date.now(),
@@ -59,7 +65,7 @@ export function browserFeed(path: string): Feed {
     clearTimeout: (t) => clearTimeout(t),
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (t) => clearInterval(t),
-  });
+  }));
 }
 
 /** The tab's one desk feed (`/api/live`), shared by every staff screen. */

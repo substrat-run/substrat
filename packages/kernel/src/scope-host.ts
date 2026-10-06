@@ -5738,8 +5738,23 @@ export interface LiveReadSurface<Req extends LiveUpgradeRequest = LiveUpgradeReq
      *   instead of nudging it. `LiveNudge` frames only, as for a vouched root.
      */
     within?: EntityRef | VouchedWithin | CheckedWithin;
+    /**
+     * When the credential that proved `principal` stops being valid (ISO 8601), so the
+     * socket never outlives it (#938). Pass the session's or the bearer's expiry
+     * (`AuthSubject.expiresAt`). A handshake at or past it is refused, and the scope closes
+     * the socket (`1008`) on its first pass at or past it, before sending anything on that
+     * pass. Absent: the socket lives until either end closes it, as before.
+     */
+    expiresAt?: string;
   }): Promise<Res>;
 }
+
+/**
+ * The close code a live socket ends with when the subscriber may no longer watch what it
+ * subscribed to — a `checkedWithin` gate refused, or the session that opened it ended
+ * (`1008`, policy). A reconnect meets the handshake's own refusal.
+ */
+export const LIVE_CLOSE = { revoked: 1008 } as const;
 
 /** The brand only `vouchedWithin` can apply — a literal cannot type-check as one. */
 declare const vouchedBrand: unique symbol;

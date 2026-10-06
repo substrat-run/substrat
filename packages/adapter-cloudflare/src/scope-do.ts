@@ -59,6 +59,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   ulid,
+  LIVE_CLOSE,
   DO_SQL_LIMITS,
   unknownRoleError,
   createUlid,
@@ -263,7 +264,9 @@ import {
   LIVE_SUBSCRIBE_PATH,
   LIVE_TENANT_HEADER,
   LIVE_WITHIN_HEADER,
+  LIVE_EXPIRES_HEADER,
   decodeLiveWithin,
+  liveInstant,
   type LiveRefusal,
   type LiveSubscription,
   type LiveWithin,
@@ -2969,6 +2972,12 @@ export function defineScopeDO(
       if (withinHeader !== null && !within) {
         return new Response('live reads: unreadable within narrowing', { status: 500 });
       }
+      // The same for an expiry: dropping it would keep the socket open past its session.
+      const expiresHeader = request.headers.get(LIVE_EXPIRES_HEADER);
+      const expiresAt = expiresHeader === null ? undefined : liveInstant(expiresHeader);
+      if (expiresHeader !== null && !expiresAt) {
+        return new Response('live reads: unreadable expiry', { status: 500 });
+      }
       // A subscriber arriving before the scope's migrations have run would be told
       // about events against a schema it cannot read back through. Same gate every
       // other entry point takes, for the same reason.
@@ -2986,8 +2995,13 @@ export function defineScopeDO(
       };
       // A checked root (#938) is gated here as well as on every pass: a subscriber who may
       // not watch it gets no socket at all, so its client meets a refusal rather than a
-      // feed that would close on the first thing it had to say.
-      if (within?.checked !== undefined && !(await this.mayWatchRoot(() => this.liveContext(subscriber), within))) {
+      // feed that would close on the first thing it had to say. A session already over is
+      // refused the same way.
+      const expired = expiresAt !== undefined && expiresAt <= new Date().toISOString();
+      if (
+        expired ||
+        (within?.checked !== undefined && !(await this.mayWatchRoot(() => this.liveContext(subscriber), within)))
+      ) {
         return new Response('live reads: the subscriber may not watch this root', {
           status: 403,
           headers: { [LIVE_MODE_HEADER]: 'forbidden' satisfies LiveRefusal },
@@ -3007,6 +3021,7 @@ export function defineScopeDO(
         ...subscriber,
         since: new Date().toISOString(),
         ...(within ? { within } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
       } satisfies LiveSubscription);
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -3220,6 +3235,7 @@ export function defineScopeDO(
        */
       const parents = scopeTupleReader(this.sql);
       const now = new Date().toISOString();
+
       const ancestors = new Map<string, Promise<Set<string>>>();
       const reaches = async (row: (typeof announceable)[number], root: { entityType: string; entityId: string }) => {
         let up = ancestors.get(row.id);
@@ -3248,6 +3264,17 @@ export function defineScopeDO(
         // the frames are filtered against an explicit precondition rather than an
         // assumption about how the subscription was created.
         if (subscription.tenantId !== tenantId || subscription.scopeId !== scopeId) continue;
+        // The session that opened it has ended (#938): closed before anything is sent,
+        // whatever the subscriber's grants still say. Checked on every pass, so it holds for
+        // every kind of subscription, not only the ones with a gate to ask.
+        if (subscription.expiresAt !== undefined && subscription.expiresAt <= now) {
+          try {
+            ws.close(LIVE_CLOSE.revoked, 'the session that opened this subscription has ended');
+          } catch {
+            // Already gone.
+          }
+          continue;
+        }
         const { within } = subscription;
 
         // One context per subscriber, not per event: `ctx.check` is the expensive part
@@ -3283,7 +3310,7 @@ export function defineScopeDO(
             rootAllowed ??= await this.mayWatchRoot(context, within);
             if (!rootAllowed) {
               try {
-                ws.close(1008, 'the subscriber may no longer watch this root');
+                ws.close(LIVE_CLOSE.revoked, 'the subscriber may no longer watch this root');
               } catch {
                 // Already gone.
               }

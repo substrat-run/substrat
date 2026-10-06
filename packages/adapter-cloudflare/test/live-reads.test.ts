@@ -551,13 +551,19 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     closedWith: number | null;
   }
 
-  async function watchChecked(principal: typeof reader, folderId: string): Promise<CheckedWatcher> {
+  /** `folderId` null: an unnarrowed feed. `expiresAt`: the session's end, as a vertical passes it. */
+  async function watchChecked(
+    principal: typeof reader,
+    folderId: string | null,
+    expiresAt?: string,
+  ): Promise<CheckedWatcher> {
     const response = await host.liveReads.subscribe({
       tenantId: t,
       scopeId: sc,
       principal,
       request: upgrade(),
-      within: checked(folderId),
+      ...(folderId === null ? {} : { within: checked(folderId) }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
     });
     expect(response.status).toBe(101);
     const ws = response.webSocket!;
@@ -787,6 +793,50 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     expect(stays.closedWith).toBeNull();
   });
 
+  // -- the session's end (#938, Codex round 1) ---------------------------------
+
+  it('refuses a handshake whose session has already ended, though the grant still holds', async () => {
+    const response = await host.liveReads.subscribe({
+      tenantId: t,
+      scopeId: sc,
+      principal: reader,
+      request: upgrade(),
+      within: checked(F1),
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get(LIVE_MODE_HEADER)).toBe('forbidden');
+  });
+
+  it('refuses an expiry that is not an instant, rather than reading it as none', async () => {
+    await expect(
+      host.liveReads.subscribe({ tenantId: t, scopeId: sc, principal: reader, request: upgrade(), expiresAt: 'soon' }),
+    ).rejects.toThrow(/expiresAt/);
+  });
+
+  it.each([
+    ['a checked root', F1],
+    ['an unnarrowed feed', null],
+  ])('closes %s, unsent to, once the session that opened it has ended', async (_label, folderId) => {
+    const ends = await watchChecked(reader, folderId, new Date(Date.now() + 400).toISOString());
+    const stays = await watchChecked(reader, folderId, new Date(Date.now() + 60_000).toISOString());
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    // Unnarrowed, `reader` hears a note only if it may read it, and it holds no note: so
+    // that feed's evidence is the close alone, beside the twin that stays open.
+    const heard = ends.frames.length;
+    expect(stays.frames).toHaveLength(heard);
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(ends.frames).toHaveLength(heard);
+    expect(ends.closedWith).toBe(1008);
+    // The twin, from the same write: a session still current stays open, and hears it.
+    expect(stays.closedWith).toBeNull();
+    if (folderId !== null) expect(stays.frames).toHaveLength(heard + 1);
+  });
+
   it.each([
     ['a look-alike object', { entity: { entityType: 'folder', entityId: F1 }, permission: 'live:read' }],
     ['a spread copy of a checked value', { ...checkedWithin({ entityType: 'folder', entityId: F1 }, 'live:read') }],
@@ -839,6 +889,12 @@ describe('live reads: a socket whose narrowing cannot be read fails closed (#185
     ['both a reason and a checked key', { entityType: 'folder', entityId: 'f', vouched: 'why', checked: 'live:read' }],
   ])('drops a socket whose narrowing has %s, rather than widening it', (_label, within) => {
     expect(readSubscription({ ...base, within })).toBeNull();
+  });
+
+  it('keeps a readable expiry, and drops a socket whose expiry cannot be read rather than keeping it open (#938)', () => {
+    expect(readSubscription({ ...base, expiresAt: '2030-01-01T00:00:00.000Z' })?.expiresAt).toBe('2030-01-01T00:00:00.000Z');
+    expect(readSubscription({ ...base, expiresAt: 'never' })).toBeNull();
+    expect(readSubscription({ ...base, expiresAt: 0 })).toBeNull();
   });
 });
 

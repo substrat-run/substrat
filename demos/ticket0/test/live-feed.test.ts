@@ -8,6 +8,7 @@ import {
   FEED_TIMING,
   createFeed,
   endingOnUnauthorized,
+  feedSet,
   type Feed,
   type SocketLike,
 } from '../app/src/feed.js';
@@ -26,18 +27,17 @@ class FakeSocket implements SocketLike {
     this.onopen?.();
   }
   /** The connection ends, from the server's side or the network's. */
-  drop(): void {
-    this.onclose?.();
+  drop(code?: number): void {
+    this.onclose?.(code === undefined ? undefined : { code });
   }
 }
 
 let sockets: FakeSocket[];
 let feed: Feed;
 
-beforeEach(() => {
-  vi.useFakeTimers();
-  sockets = [];
-  feed = createFeed({
+/** A feed on fake sockets, each one pushed to `sockets` as it is opened. */
+const makeFeed = (): Feed =>
+  createFeed({
     connect: () => {
       const s = new FakeSocket();
       sockets.push(s);
@@ -49,6 +49,11 @@ beforeEach(() => {
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (t) => clearInterval(t),
   });
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  sockets = [];
+  feed = makeFeed();
 });
 afterEach(() => vi.useRealTimers());
 
@@ -142,6 +147,28 @@ describe('the live feed ends with the session', () => {
     const after = sockets.length;
     feed.wake();
     feed.listen(listener());
+    vi.advanceTimersByTime(FEED_TIMING.restMs * 2);
+    expect(sockets.length).toBe(after);
+  });
+
+  it('ends every feed the page opened — the desk’s and a portal conversation’s — on one 401', async () => {
+    const page = feedSet();
+    const desk = page.track(feed);
+    const portal = page.track(makeFeed());
+    desk.listen(listener());
+    const deskSocket = latest();
+    portal.listen(listener());
+    const portalSocket = latest();
+    deskSocket.accept();
+    portalSocket.accept();
+
+    await endingOnUnauthorized(async () => new Response(null, { status: 401 }), page)();
+    expect(deskSocket.closed).toBe(true);
+    expect(portalSocket.closed).toBe(true);
+    expect(portal.isOpen()).toBe(false);
+    // A conversation opened after the session ended never connects at all.
+    const after = sockets.length;
+    page.track(makeFeed()).listen(listener());
     vi.advanceTimersByTime(FEED_TIMING.restMs * 2);
     expect(sockets.length).toBe(after);
   });

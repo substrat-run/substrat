@@ -183,3 +183,13 @@ describe('the marker, as a vertical receives it (instanceAuthFor)', () => {
     }
   });
 });
+
+describe('a bearer says when it expires (#938)', () => {
+  it('carries the token’s exp as expiresAt, so a socket opened on it can end with it', async () => {
+    const external: OidcRpConfig = { ...base, clientId: 'crm-web' };
+    const t = await token({});
+    const exp = JSON.parse(atob(t.split('.')[1]!.replaceAll('-', '+').replaceAll('_', '/'))).exp as number;
+    const subject = await oidcRpAuthProvider(external).resolve(bearer(t), `${APP_A}/api/live`);
+    expect(subject?.expiresAt).toBe(new Date(exp * 1000).toISOString());
+  });
+});

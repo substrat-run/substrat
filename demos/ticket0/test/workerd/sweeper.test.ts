@@ -722,14 +722,14 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
       .replace(/=+$/, '');
   const encodeJson = (value: unknown): string => b64url(new TextEncoder().encode(JSON.stringify(value)));
 
-  /** A bearer the issuer signed for `sub`. */
-  async function bearerFor(sub: string): Promise<string> {
+  /** A bearer the issuer signed for `sub`, valid for `ttlSec`. */
+  async function bearerFor(sub: string, ttlSec = 300): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
     const head = `${encodeJson({ alg: 'RS256', kid: 'live-1', typ: 'JWT' })}.${encodeJson({
       iss: ISSUER,
       sub,
       iat: now,
-      exp: now + 300,
+      exp: now + ttlSec,
     })}`;
     const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', signingKey, new TextEncoder().encode(head));
     return `${head}.${b64url(signature)}`;
@@ -1071,9 +1071,9 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
 
   // -- the portal's feed: one conversation, as its customer may see it (#938) --------
 
-  const portalHandshake = async (sub: string, conversationId: string) =>
+  const portalHandshake = async (sub: string, conversationId: string, ttlSec?: number) =>
     handshake(
-      { origin: ORIGIN, authorization: `Bearer ${await bearerFor(sub)}` },
+      { origin: ORIGIN, authorization: `Bearer ${await bearerFor(sub, ttlSec)}` },
       `/api/conversations/${conversationId}/live`,
     );
 
@@ -1081,8 +1081,9 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
   async function subscribePortal(
     sub: string,
     conversationId: string,
+    ttlSec?: number,
   ): Promise<{ frames: LiveFrame[]; closedWith: number | null }> {
-    const response = await portalHandshake(sub, conversationId);
+    const response = await portalHandshake(sub, conversationId, ttlSec);
     expect(response.status).toBe(101);
     const ws = response.webSocket!;
     ws.accept();
@@ -1173,6 +1174,28 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     expect(feed.closedWith).toBe(1008);
     // And the client's reconnect is refused at the handshake.
     expect((await portalHandshake('sub-portal-revoked', theirs.conversation)).status).toBe(403);
+  });
+
+  it('closes a portal socket, unnudged, once the session that opened it has expired, though the grant holds', async () => {
+    const customer = await member('sub-portal-expiring', 'customer');
+    const theirs = await arrival('portal-expiring@live.example');
+    await grant(customer, 'conversation:read-own', 'contact', theirs.contact);
+    // A bearer good for two seconds, and its twin good for five minutes, on one thread.
+    const expiring = await subscribePortal('sub-portal-expiring', theirs.conversation, 2);
+    const current = await subscribePortal('sub-portal-expiring', theirs.conversation);
+    await reply(theirs.conversation, 'Before the session ends.');
+    await settle();
+    const heard = expiring.frames.length;
+    expect(heard).toBeGreaterThan(0);
+
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    await reply(theirs.conversation, 'After it ended.');
+    await settle();
+    expect(expiring.frames).toHaveLength(heard);
+    expect(expiring.closedWith).toBe(1008);
+    // The twin from the same write: the grant still holds, and a current session hears it.
+    expect(current.closedWith).toBeNull();
+    expect(current.frames.length).toBeGreaterThan(heard);
   });
 
   it('does not nudge a socket on the losing thread once a merge has moved its messages (#2044)', async () => {

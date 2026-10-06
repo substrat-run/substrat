@@ -32,7 +32,8 @@ export type LiveFrame = LiveChange | LiveNudge;
 export interface SocketLike {
   onopen: (() => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
-  onclose: (() => void) | null;
+  /** `code` is the close code, when the runtime reports one. */
+  onclose: ((event?: { code?: number }) => void) | null;
   send(data: string): void;
   close(code?: number, reason?: string): void;
 }
@@ -101,8 +102,36 @@ export interface Feed {
 }
 
 /**
+ * Every feed a page made, so a session ending ends all of them at once: the desk's and
+ * each portal conversation's. A feed tracked after `end` is ended at once — signing back
+ * in is a page load, which makes a new set.
+ */
+export interface FeedSet {
+  track(feed: Feed): Feed;
+  end(): void;
+}
+
+export function feedSet(): FeedSet {
+  const feeds = new Set<Feed>();
+  let ended = false;
+  return {
+    track(feed) {
+      if (ended) feed.end();
+      else feeds.add(feed);
+      return feed;
+    },
+    end() {
+      ended = true;
+      for (const feed of feeds) feed.end();
+      feeds.clear();
+    },
+  };
+}
+
+/**
  * The client's fetch, ending `feed` on the first 401 it sees. Any read answering 401
  * means the session this feed was opened for is gone, whichever screen noticed first.
+ * Pass the page's `FeedSet` to end every feed it made.
  */
 export function endingOnUnauthorized<F extends (...args: never[]) => Promise<Response>>(
   fetchImpl: F,
