@@ -16,7 +16,7 @@ The trash is now held by the host, and a trashed entity can be purged after a de
 - **Purge horizon.** Declare `trash: { permission, purgeAfterDays }` and spread `schedules: purgeSchedulesOf(ops, entities)` into your manifest. Every hour, the platform runs your `trashed: 'purges'` operation as the module's system principal on each entity that has been in the trash longer than the horizon, one entity per transaction and up to 50 per pass.
   - Each purge re-checks inside its transaction that the entity is still due, so a restore always wins.
   - A failed purge leaves that entity in the trash for the next pass.
-  - A preview or fork never purges, and the kill switch (`revokeFromSystem`) stops purging on a scope.
+  - A preview or fork never purges, and the kill switch (`revokeFromSystem`) stops purging on a scope. The scope applies these holds itself, along with a lifecycle hold, so a sweep started from anywhere purges nothing while they hold.
   - The system principal's purge key is refused to it on every other call.
   - The events about a purged entity stay. Registration refuses a horizon without its schedule, and a purge schedule that runs any other operation.
   - The kernel derives a partial index on `_substrat_trashed_at` for each entity with a horizon.
