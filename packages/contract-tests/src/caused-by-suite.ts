@@ -64,6 +64,12 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
 
     const tagOf = (kind: string) => `${kind}-${ulid().slice(-8).toLowerCase()}`;
 
+    /** Every `createOrg` row in the tenant, read once, looked up by the org's slug. */
+    const createdRows = async () => {
+      const created = await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 });
+      return (slug: string) => created.find((r) => (r.after as { slug?: string } | null)?.slug === slug);
+    };
+
     /**
      * Start a handler with `start` (handed a fresh tag; answers the id of the event the handler
      * runs for once it is done), make a staff write while it is held, release it, and assert both
@@ -82,8 +88,7 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
       await host.admin.createOrg(staff, { id: orgId.parse(ulid()), tenantId: t, slug: staffSlug, name: staffSlug });
       release();
       const eventId = await done;
-      const created = await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 });
-      const rowOf = (slug: string) => created.find((r) => (r.after as { slug?: string } | null)?.slug === slug);
+      const rowOf = await createdRows();
       expect(rowOf(staffSlug)?.causedBy).toBeNull();
       expect(rowOf(staffSlug)?.onBehalfOf ?? null).toBeNull();
       expect(rowOf(tag)?.causedBy).toBe(eventId);
@@ -163,8 +168,7 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
     it("the host's own admin, attributed, names the person and invents no cause", async () => {
       const slug = tagOf('host-attr');
       await asAlice(host.admin).createOrg(staff, { id: orgId.parse(ulid()), tenantId: t, slug, name: slug });
-      const created = await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 });
-      const row = created.find((r) => (r.after as { slug?: string } | null)?.slug === slug);
+      const row = (await createdRows())(slug);
       expect(row?.causedBy).toBeNull();
       expect(row?.onBehalfOf?.principal).toBe(alice);
     });
@@ -187,9 +191,8 @@ export function causedByContractSuite(adapterName: string, makeFixture: () => Pr
       await write(a, a2); // …A writes again…
       await write(b, b2); // …and B again.
 
-      const created = await host.admin.auditLog(staff, { tenantId: t, action: 'createOrg', limit: 500 });
-      const causeOf = (slug: string) => created.find((r) => (r.after as { slug?: string } | null)?.slug === slug)?.causedBy;
-      expect([a1, a2, b1, b2].map(causeOf)).toEqual([e1, e1, e2, e2]);
+      const rowOf = await createdRows();
+      expect([a1, a2, b1, b2].map((slug) => rowOf(slug)?.causedBy)).toEqual([e1, e1, e2, e2]);
     });
   });
 }

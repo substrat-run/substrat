@@ -9,6 +9,7 @@ import {
   type OrgId,
   type PlatformActorId,
   type PrincipalId,
+  type TenantId,
 } from '@substrat-run/contracts';
 import { isUnknownRoleError } from './permission-checker.js';
 import { refuseDelivery, type DeliveryRefusal } from './delivery-refusal.js';
@@ -158,8 +159,8 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   // Attributed (#977): the person whose authority bounded the write, beside the platform
   // actor that executed it — added to the `admin` the dispatch handed the handler, which
   // already carries the event (#2069). An admin without `attributed` writes as it is.
-  const adminFor = (admin: HostAdmin, who: PrincipalId, event: DomainEvent): HostAdmin =>
-    admin.attributed?.({ principal: who, tenantId: event.tenantId }) ?? admin;
+  const adminFor = (admin: HostAdmin, who: PrincipalId, tenantId: TenantId): HostAdmin =>
+    admin.attributed?.({ principal: who, tenantId }) ?? admin;
 
   host.registerExecutor(
     id,
@@ -170,7 +171,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       const { request, inviter } = decided;
       // One directory unit: the fence, the bound asked again, the role and its audit row. A
       // removal or a change of authority lands wholly before it or wholly after it.
-      const applied = await adminFor(admin, inviter, event).applyMembership(options.actor, {
+      const applied = await adminFor(admin, inviter, event.tenantId).applyMembership(options.actor, {
         op: 'add',
         tenantId: event.tenantId,
         principal: request.principal,
@@ -193,7 +194,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       const { request, remover } = decided;
       // One directory unit: the remover's bound asked again, the revoke, its audit row if it
       // took anything, and the fence — raised even with nothing held, so a pending add sees it.
-      const applied = await adminFor(admin, remover, event).applyMembership(options.actor, {
+      const applied = await adminFor(admin, remover, event.tenantId).applyMembership(options.actor, {
         op: 'remove',
         tenantId: event.tenantId,
         principal: request.principal,
