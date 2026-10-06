@@ -1,0 +1,141 @@
+/**
+ * The journal's SQL digest across a redeploy (#2066) — a new host over the same directory, as
+ * `migration-failure.test.ts` and `entity-state-upgrade.test.ts` use it. The contract suite
+ * holds both adapters to the rule through a restored dump; this is the issue's own story on
+ * the pure host, plus the upgrade of a scope file built before the column existed.
+ */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it } from 'vitest';
+import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { migrationDigest, ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler, type SqlMigration } from '@substrat-run/kernel';
+import { SqliteScopeHost } from '../src/index.js';
+
+const MODULE = '@test/digest';
+
+const modWith = (migrations: SqlMigration[]): ModuleRegistration => ({
+  manifest: moduleManifest.parse({
+    id: MODULE,
+    version: '1.0.0',
+    kernelContract: '^0.0.1',
+    permissions: [{ key: 'digest:use', description: 'use it' }],
+    events: { emits: [], consumes: [] },
+    migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+    attachmentTargets: [],
+    entitlementKey: 'digest',
+  }),
+  migrations,
+  operations: {
+    'digest/add': (async (ctx) => {
+      ctx.sql.exec('INSERT INTO digest_notes (id) VALUES (?)', [ulid()]);
+      return null;
+    }) as OperationHandler<never, unknown>,
+  },
+});
+
+const INIT = { version: '0001-init', sql: 'CREATE TABLE digest_notes (id TEXT PRIMARY KEY);' };
+/** Two branches each appended the next number to the journal — #2065 and #2063's shape. */
+const BRANCH_A = { version: '0002-next', sql: 'ALTER TABLE digest_notes ADD COLUMN folder TEXT;' };
+const BRANCH_B = { version: '0002-next', sql: 'ALTER TABLE digest_notes ADD COLUMN uses INTEGER;' };
+
+describe('the migration journal digest across a redeploy (#2066)', () => {
+  const dirs: string[] = [];
+  const staff = platformActorId.parse(ulid());
+  const who = principalId.parse(ulid());
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A scope provisioned and migrated by a host running `migrations`; the host is closed after. */
+  const scopeRanWith = async (migrations: SqlMigration[]) => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-digest-'));
+    dirs.push(dir);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const v1 = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+    v1.registerModule(modWith(migrations));
+    await v1.admin.createTenant(staff, { id: t, slug: `digest-${ulid().toLowerCase()}`, name: 'Digest' });
+    await v1.admin.grantEntitlement(staff, t, 'digest');
+    await v1.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'digest' });
+    await v1.admin.activateScope(staff, t, s);
+    await (await v1.getScope(who, t, s)).invoke('digest/add', {});
+    await v1.close();
+    return { dir, t, s, file: join(dir, `${t}__${s}.sqlite`) };
+  };
+  const redeploy = (dir: string, migrations: SqlMigration[]) => {
+    const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+    host.registerModule(modWith(migrations));
+    return host;
+  };
+  const journalOf = (file: string) => {
+    const db = new Database(file, { readonly: true });
+    try {
+      return db.prepare('SELECT version, sql_digest FROM _substrat_migrations WHERE module_id = ? ORDER BY version').all(MODULE);
+    } finally {
+      db.close();
+    }
+  };
+
+  it("fails closed when main's 0002 meets a scope that ran a branch's 0002, naming both digests", async () => {
+    const { dir, t, s, file } = await scopeRanWith([INIT, BRANCH_A]);
+    const ran = await migrationDigest(BRANCH_A.sql);
+    const registered = await migrationDigest(BRANCH_B.sql);
+    const main = redeploy(dir, [INIT, BRANCH_B]);
+    try {
+      // The wake refuses, before any operation is reached.
+      await expect(main.getScope(who, t, s)).rejects.toThrow(
+        `migration failed for ${MODULE}@0002-next — scope fails closed: this scope applied different SQL under this version (applied sha256 ${ran}, registered sha256 ${registered})`,
+      );
+      // The directory records it the way it records a migration that threw.
+      const record = await main.admin.getScopeRecord(staff, t, s);
+      expect(record?.migrationFailure?.version).toBe(`${MODULE}@0002-next`);
+      expect(record?.migrationFailure?.error).toContain(ran);
+      // Nothing ran on top: the branch's column is the only one, and main's never arrived.
+      expect(journalOf(file)).toEqual([
+        { version: '0001-init', sql_digest: await migrationDigest(INIT.sql) },
+        { version: '0002-next', sql_digest: ran },
+      ]);
+    } finally {
+      await main.close();
+    }
+  });
+
+  it('the positive twin: the same SQL redeployed serves, and a new version lands beside it', async () => {
+    const { dir, t, s, file } = await scopeRanWith([INIT, BRANCH_A]);
+    const third = { version: '0003-more', sql: 'ALTER TABLE digest_notes ADD COLUMN more TEXT;' };
+    const same = redeploy(dir, [INIT, BRANCH_A, third]);
+    try {
+      await (await same.getScope(who, t, s)).invoke('digest/add', {});
+      expect(journalOf(file)).toEqual([
+        { version: '0001-init', sql_digest: await migrationDigest(INIT.sql) },
+        { version: '0002-next', sql_digest: await migrationDigest(BRANCH_A.sql) },
+        { version: '0003-more', sql_digest: await migrationDigest(third.sql) },
+      ]);
+    } finally {
+      await same.close();
+    }
+  });
+
+  it('a scope file from before the column gains it on wake; its rows stay NULL and are accepted', async () => {
+    const { dir, t, s, file } = await scopeRanWith([INIT, BRANCH_A]);
+    // The journal as every scope had it before #2066.
+    const db = new Database(file);
+    db.exec('ALTER TABLE _substrat_migrations DROP COLUMN sql_digest');
+    db.close();
+    // Even under SQL the legacy row cannot vouch for: a NULL is accepted, never compared.
+    const third = { version: '0003-more', sql: 'ALTER TABLE digest_notes ADD COLUMN more TEXT;' };
+    const next = redeploy(dir, [INIT, BRANCH_B, third]);
+    try {
+      await (await next.getScope(who, t, s)).invoke('digest/add', {});
+      expect(journalOf(file)).toEqual([
+        { version: '0001-init', sql_digest: null },
+        { version: '0002-next', sql_digest: null },
+        { version: '0003-more', sql_digest: await migrationDigest(third.sql) },
+      ]);
+    } finally {
+      await next.close();
+    }
+  });
+});

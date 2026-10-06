@@ -146,6 +146,8 @@ import {
   listIndexDdl,
   listIndexPlans,
   moduleMigrations,
+  migrationDigests,
+  migrationDivergence,
   listQuery,
   cursorOf,
   type ListIndexPlan,
@@ -381,7 +383,29 @@ export interface ScopeDoEnv {
 interface RegisteredModule {
   id: string;
   migrations: SqlMigration[];
+  /** The versions the module authored — the ones held to their digest (#2066). */
+  authored: ReadonlySet<string>;
+  /** Every migration's SQL digest by version, computed once. */
+  digests: Promise<ReadonlyMap<string, string>>;
   consumers: { eventType: string; handler: ConsumerHandler }[];
+}
+
+/** One migration a pass will run, with its digest and whether it is held to it (#2066). */
+interface PendingMigration {
+  moduleId: string;
+  migration: SqlMigration;
+  digest: string;
+  authored: boolean;
+}
+
+/** A scope's migration journal: `module@version` → the SQL digest it recorded (#2066). */
+function readAppliedMigrations(sql: SqlStorage): Map<string, string | null> {
+  const rows = sql.exec('SELECT module_id, version, sql_digest FROM _substrat_migrations').toArray() as unknown as {
+    module_id: string;
+    version: string;
+    sql_digest: string | null;
+  }[];
+  return new Map(rows.map((r) => [`${r.module_id}@${r.version}`, r.sql_digest]));
 }
 
 interface DeclaredGuard {
@@ -607,6 +631,9 @@ const KERNEL_DDL = `
     applied_at TEXT NOT NULL,
     duration_ms INTEGER,
     rows_changed INTEGER,
+    -- #2066: SHA-256 of the SQL that ran (kernel migrationDigest). NULL on a row written
+    -- before the column: unrecorded, accepted, never backfilled.
+    sql_digest TEXT,
     PRIMARY KEY (module_id, version)
   );
   -- #286: the PITR bookmark taken immediately BEFORE a migration pass runs on a
@@ -1190,7 +1217,8 @@ export function defineScopeDO(
      * underneath rows it already stored.
      */
     private readonly mintEventId: UlidMint = createUlid();
-    private readonly applied = new Set<string>();
+    /** `module@version` → the SQL digest its journal row recorded, null for a row from before #2066. */
+    private applied = new Map<string, string | null>();
     private migrationPromise?: Promise<boolean>;
     /** Latch: the applied count is reported to the directory once per DO instance. */
     private schemaVersionReported = false;
@@ -1250,11 +1278,7 @@ export function defineScopeDO(
       for (const [name, handler] of Object.entries(bareOps)) this.defineOperation(name, handler);
 
       // Which migrations have already run (a warm DO wakes with rows here).
-      for (const row of this.sql
-        .exec('SELECT module_id, version FROM _substrat_migrations')
-        .toArray() as unknown as { module_id: string; version: string }[]) {
-        this.applied.add(`${row.module_id}@${row.version}`);
-      }
+      this.applied = readAppliedMigrations(this.sql);
 
       // #1335: and where this DO's event ids have to resume from. A revived DO would
       // otherwise start its floor at the wall clock, and a clock that has stepped back
@@ -1307,10 +1331,13 @@ export function defineScopeDO(
       }
       // #1705: the same registry, the same refusals, as the coordinator and the pure host.
       this.crossVertical.register(manifest, registration.imports);
+      // The order the kernel writes once (#1677): authored, then search, then list indexes.
+      const migrations = moduleMigrations(registration);
       this.modules.set(manifest.id, {
         id: manifest.id,
-        // The order the kernel writes once (#1677): authored, then search, then list indexes.
-        migrations: moduleMigrations(registration),
+        migrations,
+        authored: new Set((registration.migrations ?? []).map((m) => m.version)),
+        digests: migrationDigests(migrations),
         consumers: Object.entries(registration.consumers ?? {}).map(([eventType, handler]) => ({
           eventType,
           handler,
@@ -4890,15 +4917,40 @@ export function defineScopeDO(
       return this.migrationPromise;
     }
 
+    /**
+     * What a migration pass has to do on this scope: the registered migrations it has not
+     * applied, and the first one it applied from different SQL (#2066), which fails it closed
+     * before anything else runs.
+     */
+    private async migrationWork(): Promise<{
+      pending: PendingMigration[];
+      diverged: { version: string; error: string } | undefined;
+    }> {
+      const pending: PendingMigration[] = [];
+      let diverged: { version: string; error: string } | undefined;
+      for (const mod of this.modules.values()) {
+        const digests = await mod.digests;
+        for (const migration of mod.migrations) {
+          const key = `${mod.id}@${migration.version}`;
+          const step = { moduleId: mod.id, migration, digest: digests.get(migration.version)!, authored: mod.authored.has(migration.version) };
+          if (!this.applied.has(key)) {
+            pending.push(step);
+            continue;
+          }
+          const error = migrationDivergence(this.applied.get(key), step.digest, step.authored);
+          if (error && !diverged) diverged = { version: key, error };
+        }
+      }
+      return { pending, diverged };
+    }
+
     /** Resolves true if this call applied at least one migration. */
     private async applyPendingMigrations(): Promise<boolean> {
-      const pending: { moduleId: string; migration: SqlMigration }[] = [];
-      for (const mod of this.modules.values()) {
-        for (const migration of mod.migrations) {
-          if (!this.applied.has(`${mod.id}@${migration.version}`)) {
-            pending.push({ moduleId: mod.id, migration });
-          }
-        }
+      const { pending, diverged } = await this.migrationWork();
+      if (diverged) {
+        // Recorded as a failed migration is, so the coordinator projects it the same way.
+        this.lastFailure = diverged;
+        throw new Error(`migration failed for ${diverged.version} — scope fails closed: ${diverged.error}`);
       }
       if (pending.length === 0) return false;
       this.migrationRuns += 1;
@@ -4929,19 +4981,25 @@ export function defineScopeDO(
             // (#278) remains the fallback rewind point.
           }
         }
-        for (const { moduleId, migration } of pending) {
+        for (const { moduleId, migration, digest, authored } of pending) {
           const key = `${moduleId}@${migration.version}`;
           if (this.applied.has(key)) continue;
+          let recorded: string | null = digest;
           try {
             await this.revision.transaction(async () => {
               const already = this.sql
                 .exec(
-                  'SELECT 1 FROM _substrat_migrations WHERE module_id = ? AND version = ?',
+                  'SELECT sql_digest FROM _substrat_migrations WHERE module_id = ? AND version = ?',
                   moduleId,
                   migration.version,
                 )
-                .toArray()[0];
-              if (!already) {
+                .toArray()[0] as { sql_digest: string | null } | undefined;
+              if (already) {
+                // Applied since this pass read the journal: held to the same digest rule.
+                const error = migrationDivergence(already.sql_digest, digest, authored);
+                if (error) throw new Error(error);
+                recorded = already.sql_digest;
+              } else {
                 const started = performance.now();
                 const before = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
                 // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
@@ -4959,12 +5017,13 @@ export function defineScopeDO(
                 }
                 const after = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
                 this.sql.exec(
-                  'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)',
+                  'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed, sql_digest) VALUES (?, ?, ?, ?, ?, ?)',
                   moduleId,
                   migration.version,
                   new Date().toISOString(),
                   Math.max(0, Math.round(performance.now() - started)),
                   after - before,
+                  digest,
                 );
               }
             });
@@ -4982,7 +5041,7 @@ export function defineScopeDO(
               `migration failed for ${key} — scope fails closed: ${(err as Error).message}`,
             );
           }
-          this.applied.add(key);
+          this.applied.set(key, recorded);
         }
       });
       return true;
@@ -5667,6 +5726,8 @@ export function defineScopeDO(
         // #1763: rows written before these fields keep NULL, meaning unrecorded.
         'ALTER TABLE _substrat_migrations ADD COLUMN duration_ms INTEGER',
         'ALTER TABLE _substrat_migrations ADD COLUMN rows_changed INTEGER',
+        // #2066: old journal rows keep NULL — what they ran was never measured, so it is not backfilled.
+        'ALTER TABLE _substrat_migrations ADD COLUMN sql_digest TEXT',
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
@@ -6038,12 +6099,7 @@ export function defineScopeDO(
       }
       // The frontier arrived with the dump — refresh the in-memory applied set so a
       // later migrate() builds on the imported state, not the provisioning state.
-      this.applied.clear();
-      for (const row of this.sql
-        .exec('SELECT module_id, version FROM _substrat_migrations')
-        .toArray() as unknown as { module_id: string; version: string }[]) {
-        this.applied.add(`${row.module_id}@${row.version}`);
-      }
+      this.applied = readAppliedMigrations(this.sql);
       // …and forget that this INSTANCE ever ran a migration pass (#1589). Refreshing
       // the set above is not enough on its own: `ensureMigrations` memoises its
       // promise, so a warm DO answers "already migrated" from the cache and never

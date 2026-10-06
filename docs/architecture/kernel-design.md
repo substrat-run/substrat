@@ -506,6 +506,23 @@ the control plane's `openTenantStore` uses the D1 HTTP API (out-of-band migratio
   threshold; recovery is per-scope PITR + a patched forward migration. Sweep progress
   ("release 42: 487/500 migrated, 13 pending, 0 failed") is a first-class ops-console
   view.
+- **An applied version is held to the SQL that ran** (#2066). The journal records the
+  SHA-256 of each migration's exact SQL (`_substrat_migrations.sql_digest`, Web Crypto,
+  no normalisation), so a scope that ran one branch's `0025` and is then deployed `main`'s
+  different `0025` — a dev database, a preview — is no longer skipped as "already applied".
+  The wake refuses it the way it refuses a throwing migration: `migration failed for
+  <module>@<version> — scope fails closed: … (applied sha256 <x>, registered sha256 <y>)`,
+  recorded in the directory as `migrationFailure`, and nothing else runs on top. Recovery
+  makes the journal and the schema agree with the deployment again: rebuild the scope (a
+  dev database, a preview), or restore it to a dump taken before the other SQL ran.
+  Re-numbering is not a recovery — the scope would still hold the other SQL under the old
+  version. Two exceptions, both deliberate: a row from before the column has no digest and
+  is **accepted and left NULL**, never backfilled (a backfill would write a value nobody
+  measured, and bless the one divergent row this exists to catch); and the kernel-derived
+  DDL (`search/…`, `state/…`, `list/…`) is held to its *declaration*, which is its version,
+  not to its digest — the kernel may respell the same declaration between releases, and
+  holding those rows to a digest would fail every scope closed on that upgrade. Their
+  digest is still recorded, as the fact of what ran.
 - **Large backfills are jobs, not migrations.** The migration adds the shape; a chunked
   job (alarm-driven) backfills and marks completion in the journal separately. Backfill
   writes are flagged so they don't pollute the event spine as fake user activity.
@@ -804,7 +821,7 @@ Ownership rules:
    break. CI-lintable: parse migration SQL, reject `REFERENCES` across prefix
    boundaries.
 3. **Migrations are module-owned and module-journaled** (`_substrat_migrations` tracks
-   `(module_id, version)`); on wake, each active module's pending migrations apply
+   `(module_id, version)` and the SQL's digest, §5.3); on wake, each active module's pending migrations apply
    independently — kernel, then engines, then vertical. An engine upgrade never touches
    another module's tables.
 4. **Per-tenant flexibility never mutates engine schema.** Tenants get typed custom
