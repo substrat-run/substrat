@@ -170,4 +170,39 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
       await next.close();
     }
   });
+
+  it('a second opener that adds a spine column first does not fail the wake (#2066 review)', async () => {
+    const { dir, t, s, file } = await scopeRanWith([INIT]);
+    const db = new Database(file);
+    db.exec(MIGRATION_DIGEST_FENCE_LIFT);
+    db.exec('ALTER TABLE _substrat_migrations DROP COLUMN sql_digest');
+    db.close();
+    // The race, made deterministic: this opener's PRAGMA saw no column, and another opener's
+    // ALTER landed before its own. The column is there when the ALTER runs.
+    const host = redeploy(dir, [INIT]);
+    try {
+      const raced = new Database(file);
+      raced.exec('ALTER TABLE _substrat_migrations ADD COLUMN sql_digest TEXT');
+      const stale = new Proxy(raced, {
+        get(target, key) {
+          if (key === 'prepare') {
+            return (q: string) => (q.startsWith('PRAGMA table_info') ? { all: () => [] } : target.prepare(q));
+          }
+          const v = Reflect.get(target, key) as unknown;
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        },
+      });
+      const ensureColumn = (host as unknown as {
+        ensureColumn(db: unknown, table: string, column: string, ddl: string): boolean;
+      }).ensureColumn.bind(host);
+      expect(ensureColumn(stale, '_substrat_migrations', 'sql_digest', 'sql_digest TEXT')).toBe(false);
+      // Any other ALTER failure still throws.
+      expect(() => ensureColumn(stale, '_substrat_no_such_table', 'x', 'x TEXT')).toThrow(/no such table/);
+      raced.close();
+      // And the wake over the raced file serves.
+      await (await host.getScope(who, t, s)).invoke('digest/add', {});
+    } finally {
+      await host.close();
+    }
+  });
 });

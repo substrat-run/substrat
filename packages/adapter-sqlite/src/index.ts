@@ -10934,7 +10934,14 @@ export class SqliteScopeHost implements ScopeHost {
       (c) => c.name.toLowerCase() === column.toLowerCase(),
     );
     if (existing) return false;
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    } catch (err) {
+      // A second opener of the same file can add it between the PRAGMA and here (#2066 review):
+      // the column is there, which is all this wanted. The DO's ALTER pass tolerates it the same way.
+      if (!/duplicate column name/i.test((err as Error).message)) throw err;
+      return false;
+    }
     return true;
   }
 
