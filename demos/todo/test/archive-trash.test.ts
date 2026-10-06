@@ -175,7 +175,7 @@ describe('the denials that prove it', () => {
 describe('a list left in the bin for 30 days is deleted for good', () => {
   it('the sweep runs delete-list on it — items and shares with it — and leaves every younger list alone', async () => {
     const DAY = 86_400_000;
-    const clock = manualClock(new Date().toISOString());
+    const clock = manualClock('2026-03-01T09:00:00.000Z');
     const purgeDir = mkdtempSync(join(tmpdir(), 'todo-purge-'));
     const h = new SqliteScopeHost({ dir: purgeDir, clock: clock.read });
     for (const m of MODULES) h.registerModule(m);
