@@ -36,6 +36,12 @@ import type {
   PrincipalId,
   PeerGrantsStatusEntry,
   EdgeHealthReport,
+  FindingEntry,
+  FindingKind,
+  FindingRuleEntry,
+  FindingRuleInput,
+  FindingStatus,
+  FindingStatusInput,
   ImportCursorMove,
   ImportCursorMoved,
   PeerSwitchResult,
@@ -2030,6 +2036,48 @@ export class TenantNarrowedControlPlane {
   crossVerticalEdges(focus?: ScopeId): Promise<EdgeHealthReport> {
     const q = focus ? `?scopeId=${focus}` : '';
     return this.call(`/tenants/${this.tenantId}/cross-vertical/edges${q}`);
+  }
+
+  /**
+   * This tenant's findings (#1748), most recently seen first. `null` on a plane predating the
+   * route (deploy skew), never `[]`: an empty inbox says nothing is wrong, which a plane that
+   * cannot answer has not said.
+   */
+  async listFindings(filter: { status?: FindingStatus; kind?: FindingKind; limit?: number } = {}): Promise<FindingEntry[] | null> {
+    const q = new URLSearchParams({ tenantId: this.tenantId });
+    if (filter.status) q.set('status', filter.status);
+    if (filter.kind) q.set('kind', filter.kind);
+    if (filter.limit !== undefined) q.set('limit', String(filter.limit));
+    try {
+      return (await this.call<{ entries: FindingEntry[] }>(`/findings?${q}`)).entries;
+    } catch (e) {
+      if (e instanceof ControlPlaneError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  /** A verdict on one of this tenant's findings: acknowledge, resolve, or reopen (#1748). */
+  setFindingStatus(id: string, status: FindingStatusInput): Promise<FindingEntry> {
+    return this.call(`/tenants/${this.tenantId}/findings/${encodeURIComponent(id)}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status }),
+    });
+  }
+
+  /** This tenant's suppress rules (#1748), newest first; `active` keeps the unexpired ones. */
+  async listFindingRules(active = false): Promise<FindingRuleEntry[]> {
+    const q = active ? '?active=true' : '';
+    return (await this.call<{ entries: FindingRuleEntry[] }>(`/tenants/${this.tenantId}/finding-rules${q}`)).entries;
+  }
+
+  /** Suppress with a rule: a scope plus an expiry (#1748). */
+  createFindingRule(input: FindingRuleInput): Promise<{ rule: FindingRuleEntry; suppressed: number }> {
+    return this.post(`/tenants/${this.tenantId}/finding-rules`, input);
+  }
+
+  /** End a suppress rule now (#1748). */
+  revokeFindingRule(ruleId: string): Promise<FindingRuleEntry> {
+    return this.call(`/tenants/${this.tenantId}/finding-rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
   }
 
   /**

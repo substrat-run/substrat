@@ -13,6 +13,8 @@ import {
   causedByContractSuite,
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
+  findingsContractSuite,
+  findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -78,6 +80,39 @@ inertScopeContractSuite('adapter-sqlite', async () => {
     },
   };
 });
+
+// #1748: findings — the tenant inbox, its lifecycle, rules and retention, on the directory.
+findingsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-findings-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1748: the evidence, the finding and the audit row commit together. The faults are triggers
+// on the directory database, reached past the seam because nothing on it injects a failure.
+findingsAtomicContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-findings-atomic-'));
+    const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (host, sql) => {
+    (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+  },
+);
 
 // #2055: an executor's event is stamped on its own admin rows only — never on a call the host
 // serves while the handler awaits.

@@ -24,6 +24,7 @@ import type {
   WantedEvent,
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
+import type { FindingPruneReport } from './findings.js';
 import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -663,6 +664,11 @@ export interface PlatformSweepReport {
    * `pruneTelemetry`. Null and zeros are different facts, as everywhere in this report.
    */
   telemetry?: TelemetryPruneReport | null;
+  /**
+   * What the findings retention phase did (#1748), or null when the host predates
+   * `pruneFindings`.
+   */
+  findings?: FindingPruneReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -679,6 +685,8 @@ export interface PlatformSweepReport {
       | 'access-log'
       // #1632: the telemetry-retention prune failed; the rows stay for the next pass.
       | 'telemetry'
+      // #1748: the findings retention pass failed; nothing it would have resolved is lost.
+      | 'findings'
       // #1334: one scope's event drain failed — its events stay undrained.
       | 'event-drain'
       // #1705: one cross-vertical edge failed in transport. Its watermark did not move, so
@@ -963,6 +971,7 @@ export async function runPlatformSweep(
     eventDrain: null,
     crossVertical: null,
     telemetry: null,
+    findings: null,
     errors: [],
   };
 
@@ -1492,6 +1501,17 @@ export async function runPlatformSweep(
       );
     } catch (err) {
       report.errors.push({ kind: 'telemetry', id: 'telemetry', error: message(err) });
+    }
+  }
+
+  // -- findings retention (#1748) --------------------------------------------
+  // Its own phase, not telemetry's: it resolves quiet open findings as stale and audits each,
+  // which is a lifecycle change rather than a prune. Same batch, feature-detected.
+  if (typeof host.admin.pruneFindings === 'function') {
+    try {
+      report.findings = await host.admin.pruneFindings(options.actor, options.telemetryBatch ?? TELEMETRY_PRUNE_BATCH);
+    } catch (err) {
+      report.errors.push({ kind: 'findings', id: 'findings', error: message(err) });
     }
   }
 

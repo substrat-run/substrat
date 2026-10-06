@@ -33,6 +33,13 @@ import {
   opsFailureEntry,
   opsFailureFingerprint,
   issueEntry,
+  findingEntry,
+  findingRuleEntry,
+  type FindingEntry,
+  type FindingFilter,
+  type FindingRuleEntry,
+  type FindingRuleInput,
+  type FindingStatusInput,
   sweepRunEntry,
   FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunsPayload,
@@ -432,6 +439,8 @@ import {
   asyncLinePass,
   type AsyncLinePass,
   type EmittedReport,
+  type FindingChange,
+  type FindingPruneReport,
   memberAddedAudit,
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
@@ -969,6 +978,30 @@ interface ControlPlaneStub {
   listIssues(query: IssueQuery): Promise<unknown[]>;
   /** #1632: the telemetry retentions, run by the scheduled pass — `telemetryRetentionStatements`. */
   pruneTelemetry(limit: number): Promise<TelemetryPruneReport>;
+  pruneFindings(limit: number, audit: AdminEntry): Promise<FindingPruneReport>;
+  // #1748 — findings; audited here, as every directory mutation is.
+  listFindings(filter: FindingFilter): Promise<FindingEntry[]>;
+  setFindingStatus(
+    tenantId: TenantId,
+    id: string,
+    status: FindingStatusInput,
+    at: string,
+    audit: AdminEntry,
+  ): Promise<FindingChange | undefined>;
+  createFindingRule(
+    tenantId: TenantId,
+    input: FindingRuleInput,
+    createdBy: string,
+    at: string,
+    audit: AdminEntry,
+  ): Promise<{ rule: FindingRuleEntry; suppressed: string[] }>;
+  revokeFindingRule(
+    tenantId: TenantId,
+    ruleId: string,
+    at: string,
+    audit: AdminEntry,
+  ): Promise<{ before: FindingRuleEntry; after: FindingRuleEntry } | undefined>;
+  listFindingRules(tenantId: TenantId, activeAt: string | undefined, limit: number | undefined): Promise<FindingRuleEntry[]>;
   setIssueStatus(
     fingerprint: string,
     status: 'new' | 'resolved' | 'ignored',
@@ -8601,6 +8634,12 @@ export class CloudflareScopeHost implements ScopeHost {
       // Checked here as well as in the directory, so the refusal keeps its code across the hop.
       pruneTelemetry: async (_actor, limit: number): Promise<TelemetryPruneReport> =>
         this.cp.pruneTelemetry(assertRowLimit('limit', limit)),
+      // #1748: the DO writes each stale resolution's audit row in the same unit, from this one.
+      pruneFindings: async (actor, limit: number): Promise<FindingPruneReport> =>
+        this.cp.pruneFindings(
+          assertRowLimit('limit', limit),
+          this.adminEntry(actor, 'resolveStaleFinding', { tenantId: null }, null, null),
+        ),
       listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
         const rows = await this.cp.listIssues({
           status: filter?.status,
@@ -8626,6 +8665,37 @@ export class CloudflareScopeHost implements ScopeHost {
           { fingerprint, status: after.status },
         );
         return after;
+      },
+      listFindings: async (actor, filter?: FindingFilter): Promise<FindingEntry[]> => {
+        const rows = await this.cp.listFindings({ ...filter });
+        await this.recordAccess(actor, 'listFindings', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
+        return rows.map((r) => findingEntry.parse(r));
+      },
+      // #1748: each findings mutation writes its audit row in the DO's own unit, from the row
+      // minted here (actor, attribution) — so a failed audit write rolls the mutation back.
+      setFindingStatus: async (actor, tenantId, id, status): Promise<FindingEntry | undefined> => {
+        const audit = this.adminEntry(actor, 'setFindingStatus', { tenantId }, null, null);
+        const change = await this.cp.setFindingStatus(tenantId, id, status, new Date().toISOString(), audit);
+        return change ? findingEntry.parse(change.after) : undefined;
+      },
+      createFindingRule: async (actor, tenantId, input) => {
+        const audit = this.adminEntry(actor, 'createFindingRule', { tenantId }, null, null);
+        const created = await this.directory('createFindingRule', tenantId, input, actor, new Date().toISOString(), audit);
+        return { rule: findingRuleEntry.parse(created.rule), suppressed: created.suppressed.length };
+      },
+      revokeFindingRule: async (actor, tenantId, ruleId): Promise<FindingRuleEntry | undefined> => {
+        const audit = this.adminEntry(actor, 'revokeFindingRule', { tenantId }, null, null);
+        const change = await this.cp.revokeFindingRule(tenantId, ruleId, new Date().toISOString(), audit);
+        return change ? findingRuleEntry.parse(change.after) : undefined;
+      },
+      listFindingRules: async (actor, tenantId, filter): Promise<FindingRuleEntry[]> => {
+        const rows = await this.cp.listFindingRules(
+          tenantId,
+          filter?.active ? new Date().toISOString() : undefined,
+          filter?.limit,
+        );
+        await this.recordAccess(actor, 'listFindingRules', { tenantId }, filter, rows.length);
+        return rows.map((r) => findingRuleEntry.parse(r));
       },
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;

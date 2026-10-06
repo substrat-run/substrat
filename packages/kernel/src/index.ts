@@ -411,6 +411,23 @@ export type {
   SubjectTextTarget,
   IssueExemplarOwner,
 } from './subject-redaction.js';
+export {
+  FINDINGS_DDL,
+  FINDING_RETENTION_DAYS,
+  createFindingRule,
+  findingOfOpsFailure,
+  findingOfSweepRun,
+  pruneFindings,
+  listFindingRules,
+  listFindings,
+  observeFinding,
+  revokeFindingRule,
+  setFindingStatus,
+  type FindingPruneReport,
+  type FindingAudit,
+  type FindingChange,
+  type FindingObservation,
+} from './findings.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { applyScopeRoleChange, changeScopeRole, combineCoverage, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';

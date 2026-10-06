@@ -41,6 +41,10 @@ export const DASHBOARD_PERM = {
    * host effects the sealed write, but the *right* to connect is checked here.
    */
   manageIntegrations: permissionKey.parse('dashboard:manage-integrations'),
+  /** Read the tenant's findings and suppress rules (#1748) — the Findings inbox. */
+  readFindings: permissionKey.parse('dashboard:read-findings'),
+  /** Acknowledge, resolve or reopen a finding, and create or revoke a suppress rule (#1748). */
+  manageFindings: permissionKey.parse('dashboard:manage-findings'),
 };
 
 /**
@@ -56,10 +60,11 @@ export const DASHBOARD_PERM = {
  * but cannot manage the team; `viewer` is read-only.
  */
 export const MEMBER_ROLES: Record<string, PermissionKey[]> = {
-  owner: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
-  admin: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
-  member: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read],
-  viewer: [DASHBOARD_PERM.read],
+  owner: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
+  admin: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
+  // A member runs the apps, so triaging what they do wrong is theirs too; a viewer only reads.
+  member: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings],
+  viewer: [DASHBOARD_PERM.read, DASHBOARD_PERM.readFindings],
 };
 
 export type MemberRole = keyof typeof MEMBER_ROLES;
@@ -82,6 +87,11 @@ export const dashboardManifest = moduleManifest.parse({
     {
       key: 'dashboard:manage-integrations',
       description: 'Connect and disconnect third-party providers (GitHub, Scrive) for this tenant',
+    },
+    { key: 'dashboard:read-findings', description: 'Read the tenant’s findings and suppress rules' },
+    {
+      key: 'dashboard:manage-findings',
+      description: 'Acknowledge, resolve or reopen findings, and create or revoke suppress rules',
     },
   ],
   // #1184: a removal is asked of the kernel's membership executor, as an add is by the invites engine.
@@ -671,10 +681,23 @@ const unbindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { 
  * trail to hang off (a fork, or an install made before this dashboard tracked them), and
  * the plane's own audit log records each rebind and reap.
  */
-const authorizeScopeChangeOp: OperationHandler<Record<string, never>, { ok: true }> = async (ctx) => {
-  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
-  return { ok: true };
-};
+/** A check-only operation: it writes nothing, and answers whether the caller holds `perm`. */
+const checkOnly =
+  (perm: PermissionKey): OperationHandler<Record<string, never>, { ok: true }> =>
+  async (ctx) => {
+    assertAllowed(await ctx.check(perm));
+    return { ok: true };
+  };
+
+const authorizeScopeChangeOp = checkOnly(DASHBOARD_PERM.provisionApp);
+
+/**
+ * The findings gates (#1748): who inside the tenant may read the inbox, and who may act on it.
+ * The control plane confines the tenant credential to the tenant; these say WHICH person.
+ * Check-only, like `authorize-scope-change`: the read or the verdict is the plane's.
+ */
+const authorizeFindingsReadOp = checkOnly(DASHBOARD_PERM.readFindings);
+const authorizeFindingsChangeOp = checkOnly(DASHBOARD_PERM.manageFindings);
 
 const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
 
@@ -1547,6 +1570,8 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/bind-app-hostname': bindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/unbind-app-hostname': unbindAppHostnameOp as OperationHandler<never, unknown>,
     'dashboard/authorize-scope-change': authorizeScopeChangeOp as OperationHandler<never, unknown>,
+    'dashboard/authorize-findings-read': authorizeFindingsReadOp as OperationHandler<never, unknown>,
+    'dashboard/authorize-findings-change': authorizeFindingsChangeOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-failed': markAppFailedOp as OperationHandler<never, unknown>,
     'dashboard/record-install-step': recordInstallStepOp as OperationHandler<never, unknown>,
     'dashboard/install-steps': installStepsOp as OperationHandler<never, unknown>,

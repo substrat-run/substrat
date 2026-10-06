@@ -38,6 +38,8 @@ import {
   causedByContractSuite,
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
+  findingsContractSuite,
+  findingsAtomicContractSuite,
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
@@ -111,6 +113,36 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
   });
   return { host, cleanup: async () => host.close() };
 });
+
+// #1748: findings — the directory half lives in the ControlPlaneDO, so this is the proof that
+// the kernel's statements (json_each, RETURNING, the upsert) run on DO SQLite.
+findingsContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #1748: the evidence, the finding and the audit row commit together — the DO's own unit is
+// what holds it here. The faults are triggers on the directory singleton the host talks to.
+findingsAtomicContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      checker: UNSAFE_allowAllChecker,
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  async (_host, sql) => {
+    await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      state.storage.sql.exec(sql);
+    });
+  },
+);
 
 // #2055: an executor's event is stamped on its own admin rows only — never on a call the
 // coordinator serves while the handler awaits.

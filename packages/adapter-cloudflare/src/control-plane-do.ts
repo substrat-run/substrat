@@ -19,6 +19,20 @@ import {
   impersonationRowValues,
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
+  FINDINGS_DDL,
+  createFindingRule,
+  findingOfOpsFailure,
+  findingOfSweepRun,
+  pruneFindings,
+  listFindingRules,
+  listFindings,
+  observeFinding,
+  revokeFindingRule,
+  setFindingStatus,
+  type FindingChange,
+  type FindingPruneReport,
+  type FindingAudit,
+  type RedactionSql,
   assertRowLimit,
   type TelemetryPruneReport,
   OPS_FAILURE_RETENTION_DAYS,
@@ -93,6 +107,7 @@ import type {
   ErrorCode,
 } from '@substrat-run/contracts';
 import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import type { FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1121,6 +1136,8 @@ const DIRECTORY_DDL = `
     resolved_at TEXT
   );
   CREATE INDEX IF NOT EXISTS _substrat_issues_seen ON _substrat_issues (last_seen);
+  -- #1748: tenant findings and their suppress rules - kernel-owned DDL (findings.ts).
+  ${FINDINGS_DDL}
   -- The durable sweep record (#1232): one row per unit outcome per pass - a
   -- connection swept/skipped/failed, a schedule fired/skipped/failed. What makes
   -- "when was this last swept" answerable after the log line rolls off. Pruned on
@@ -1316,6 +1333,8 @@ export const REPLIED_METHODS = [
   'createOrg',
   'registerIdentityPool',
   'linkIdentity',
+  // #1748: refuses an expiry outside its bounds with validation_failed.
+  'createFindingRule',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -1921,6 +1940,8 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_membership_fences', // #1184: the latest removal, per principal
       '_substrat_peer_switches', // #2029: the peer switch's record, per scope
       '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
+      '_substrat_findings', // #1748: the tenant's findings
+      '_substrat_finding_rules', // #1748: the tenant's suppress rules
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -4593,66 +4614,81 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   recordOpsFailure(row: OpsFailureRow): void {
-    this.sql.exec(
-      `INSERT INTO _substrat_ops_failures
-         (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      row.id,
-      row.actor,
-      row.operation,
-      row.stage,
-      row.tenant_id,
-      row.scope_id,
-      row.vertical,
-      row.version,
-      row.status,
-      row.message,
-      row.reference,
-      row.origin,
-      row.code,
-      row.fingerprint,
-      row.at,
-    );
-    // Prune-on-write (#559): the retention lives HERE, not in a cron — every insert
-    // pays for its own housekeeping, so the table stays bounded even on a deployment
-    // whose scheduled pass is broken (the exact circumstance this table records).
-    const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
-    this.sql.exec('DELETE FROM _substrat_ops_failures WHERE at < ?', horizon);
-    // The issues materialization (#1233): the group's counters live on their own
-    // row, bumped in the same call, because the evidence self-prunes above and a
-    // count must survive its own exemplars. A fresh arrival regresses a resolved
-    // issue; an ignored one stays ignored — that is what ignoring means.
-    if (row.fingerprint !== null) {
+    // #1748: the evidence, its issue and its finding in ONE unit — a detector that throws takes
+    // the evidence with it, so the caller's retry observes it rather than losing the observation.
+    this.ctx.storage.transactionSync(() => {
       this.sql.exec(
-        `INSERT INTO _substrat_issues
-           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
-         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
-         ON CONFLICT (fingerprint) DO UPDATE SET
-           seen_count = seen_count + 1,
-           last_seen = excluded.last_seen,
-           last_message = excluded.last_message,
-           last_tenant_id = excluded.last_tenant_id,
-           last_owner_kind = excluded.last_owner_kind,
-           last_vertical = COALESCE(excluded.last_vertical, last_vertical),
-           last_version = COALESCE(excluded.last_version, last_version),
-           origin = COALESCE(excluded.origin, origin),
-           status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
-        row.fingerprint,
+        `INSERT INTO _substrat_ops_failures
+           (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        row.id,
+        row.actor,
         row.operation,
         row.stage,
-        row.origin,
-        row.code,
-        row.at,
-        row.at,
-        row.message,
         row.tenant_id,
-        issueExemplarOwner(row.tenant_id),
+        row.scope_id,
         row.vertical,
         row.version,
+        row.status,
+        row.message,
+        row.reference,
+        row.origin,
+        row.code,
+        row.fingerprint,
+        row.at,
       );
-      const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
-      this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
-    }
+      // Prune-on-write (#559): the retention lives HERE, not in a cron — every insert
+      // pays for its own housekeeping, so the table stays bounded even on a deployment
+      // whose scheduled pass is broken (the exact circumstance this table records).
+      const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
+      this.sql.exec('DELETE FROM _substrat_ops_failures WHERE at < ?', horizon);
+      // The issues materialization (#1233): the group's counters live on their own
+      // row, bumped in the same call, because the evidence self-prunes above and a
+      // count must survive its own exemplars. A fresh arrival regresses a resolved
+      // issue; an ignored one stays ignored — that is what ignoring means.
+      if (row.fingerprint !== null) {
+        this.sql.exec(
+          `INSERT INTO _substrat_issues
+             (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_tenant_id, last_owner_kind, last_vertical, last_version, resolved_version, resolved_at)
+           VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+           ON CONFLICT (fingerprint) DO UPDATE SET
+             seen_count = seen_count + 1,
+             last_seen = excluded.last_seen,
+             last_message = excluded.last_message,
+             last_tenant_id = excluded.last_tenant_id,
+             last_owner_kind = excluded.last_owner_kind,
+             last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+             last_version = COALESCE(excluded.last_version, last_version),
+             origin = COALESCE(excluded.origin, origin),
+             status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
+          row.fingerprint,
+          row.operation,
+          row.stage,
+          row.origin,
+          row.code,
+          row.at,
+          row.at,
+          row.message,
+          row.tenant_id,
+          issueExemplarOwner(row.tenant_id),
+          row.vertical,
+          row.version,
+        );
+        const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
+        this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
+        // #1748: the tenant's Recurring finding, over the tenant's own occurrences only.
+        const finding = findingOfOpsFailure({
+          tenantId: row.tenant_id,
+          scopeId: row.scope_id,
+          operation: row.operation,
+          stage: row.stage,
+          code: row.code as Parameters<typeof findingOfOpsFailure>[0]['code'],
+          vertical: row.vertical,
+          version: row.version,
+        });
+        if (finding) observeFinding(doRedactionSql(this.sql), finding, row.at);
+      }
+    });
   }
 
   /**
@@ -4742,33 +4778,54 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   recordSweepRun(row: SweepRunRow): void {
-    this.sql.exec(
-      `INSERT OR IGNORE INTO _substrat_sweep_runs
-         (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
-          connection_id, error, elapsed_ms, request_id, event_type, observed_at, platform_requests, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      row.id,
-      row.kind,
-      row.unit,
-      row.outcome,
-      row.tenant_id,
-      row.scope_id,
-      row.vertical,
-      row.version,
-      row.operation,
-      row.connection_id,
-      row.error,
-      row.elapsed_ms,
-      row.request_id,
-      row.event_type,
-      row.observed_at,
-      row.platform_requests,
-      row.at,
-    );
-    // Prune-on-write, like ops failures and for the same reason: bounded even on a
-    // deployment whose scheduled pass is broken.
-    const horizon = new Date(Date.now() - SWEEP_RUN_RETENTION_DAYS * 86_400_000).toISOString();
-    this.sql.exec('DELETE FROM _substrat_sweep_runs WHERE at < ?', horizon);
+    // #1748: the row and its finding in ONE unit, so a replayed drain the unique index ignores
+    // never meets a row whose observation did not commit.
+    this.ctx.storage.transactionSync(() => {
+      const { rowsWritten } = this.sql.exec(
+        `INSERT OR IGNORE INTO _substrat_sweep_runs
+           (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
+            connection_id, error, elapsed_ms, request_id, event_type, observed_at, platform_requests, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        row.id,
+        row.kind,
+        row.unit,
+        row.outcome,
+        row.tenant_id,
+        row.scope_id,
+        row.vertical,
+        row.version,
+        row.operation,
+        row.connection_id,
+        row.error,
+        row.elapsed_ms,
+        row.request_id,
+        row.event_type,
+        row.observed_at,
+        row.platform_requests,
+        row.at,
+      );
+      // Prune-on-write, like ops failures and for the same reason: bounded even on a
+      // deployment whose scheduled pass is broken.
+      const horizon = new Date(Date.now() - SWEEP_RUN_RETENTION_DAYS * 86_400_000).toISOString();
+      this.sql.exec('DELETE FROM _substrat_sweep_runs WHERE at < ?', horizon);
+      // #1748: a failed schedule (Invariant) or a stale freshness verdict (Drift). Only when the
+      // row was written: a replayed drain the unique index ignored is not a second occurrence.
+      const finding =
+        rowsWritten > 0
+          ? findingOfSweepRun({
+              kind: row.kind,
+              unit: row.unit,
+              outcome: row.outcome,
+              tenantId: row.tenant_id,
+              scopeId: row.scope_id,
+              vertical: row.vertical,
+              version: row.version,
+              operation: row.operation,
+              eventType: row.event_type,
+            })
+          : null;
+      if (finding) observeFinding(doRedactionSql(this.sql), finding, row.at);
+    });
   }
 
   listSweepRuns(query: SweepRunQuery): SweepRunEntry[] {
@@ -4840,6 +4897,75 @@ export class ControlPlaneDO extends DurableObject {
       pruned[table] = this.sql.exec(sql, ...params).toArray().length;
     }
     return pruned;
+  }
+
+  /** #1748: the findings retention pass, in one unit with its audit rows. */
+  pruneFindings(limit: number, audit: AdminEntryInput): FindingPruneReport {
+    assertRowLimit('limit', limit);
+    return this.audited(audit, (sql, write) => pruneFindings(sql, Date.now(), limit, write));
+  }
+
+  /**
+   * #1748: a findings mutation and the audit rows it hands back, in ONE unit, so an audit write
+   * that fails rolls the mutation back. `audit` is the row the host minted, with its actor and
+   * attribution; each row the mutation hands back is written as a copy under its own id.
+   */
+  private audited<R>(audit: AdminEntryInput, run: (sql: RedactionSql, write: (row: FindingAudit) => void) => R): R {
+    return this.ctx.storage.transactionSync(() =>
+      run(doRedactionSql(this.sql), (a) =>
+        this.recordAdmin({
+          ...audit,
+          id: ulid(),
+          action: a.action,
+          tenantId: a.target.tenantId,
+          vertical: a.target.vertical,
+          before: a.before,
+          after: a.after,
+        }),
+      ),
+    );
+  }
+
+  /** #1748: findings, most recently seen first — `listFindings`. */
+  listFindings(filter: FindingFilter): FindingEntry[] {
+    return listFindings(doRedactionSql(this.sql), filter);
+  }
+
+  /** #1748: a verdict on one tenant finding, audited in the same unit. Undefined for an unknown one. */
+  setFindingStatus(
+    tenantId: TenantId,
+    id: string,
+    status: FindingStatusInput,
+    at: string,
+    audit: AdminEntryInput,
+  ): FindingChange | undefined {
+    return this.audited(audit, (sql, write) => setFindingStatus(sql, tenantId, id, status, at, write));
+  }
+
+  /** #1748: a suppress rule, applied to the findings it covers now, audited in the same unit. */
+  createFindingRule(
+    tenantId: TenantId,
+    input: FindingRuleInput,
+    createdBy: string,
+    at: string,
+    audit: AdminEntryInput,
+  ): { rule: FindingRuleEntry; suppressed: string[] } {
+    return this.audited(audit, (sql, write) => createFindingRule(sql, tenantId, input, createdBy, at, write));
+  }
+
+  /** #1748: end a rule now, audited in the same unit. */
+  revokeFindingRule(
+    tenantId: TenantId,
+    ruleId: string,
+    at: string,
+    audit: AdminEntryInput,
+  ): { before: FindingRuleEntry; after: FindingRuleEntry } | undefined {
+    return this.audited(audit, (sql, write) => revokeFindingRule(sql, tenantId, ruleId, at, write));
+  }
+
+  /** #1748: a tenant's suppress rules. */
+  listFindingRules(tenantId: TenantId, activeAt: string | undefined, limit: number | undefined): FindingRuleEntry[] {
+    return listFindingRules(doRedactionSql(this.sql), tenantId, activeAt, limit);
   }
 
   listIssues(query: IssueQuery): unknown[] {

@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, memberInviteInput, memberRoleInput, importCursorMove, findingKind, findingRuleInput, findingStatus, findingStatusInput, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -5123,9 +5123,72 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
  * key, so no role changed. Reads stay open — a `viewer` still sees what they may not touch.
  */
 async function assertMayManageApps(host: ScopeHost, node: DashboardNode): Promise<void> {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  await dash.invoke('dashboard/authorize-scope-change', {});
+  await assertMay(host, node, 'dashboard/authorize-scope-change');
 }
+
+/** Invoke one of the dashboard's check-only gates as the caller: the kernel's 403 when they lack it. */
+async function assertMay(
+  host: ScopeHost,
+  node: DashboardNode,
+  gate: 'dashboard/authorize-scope-change' | 'dashboard/authorize-findings-read' | 'dashboard/authorize-findings-change',
+): Promise<void> {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  await dash.invoke(gate, {});
+}
+
+/**
+ * The findings routes' common head (#1748): the caller's session, then the gate — which person
+ * may read the inbox (`dashboard:read-findings`) or act on it (`dashboard:manage-findings`) —
+ * and only then the team's control plane. The plane confines the credential to the team; the
+ * gate is what tells the people in it apart, so a refusal never reaches the plane.
+ */
+async function findingsPlane(c: Context<{ Bindings: Env }>, may: 'read' | 'manage') {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMay(host, node, may === 'read' ? 'dashboard/authorize-findings-read' : 'dashboard/authorize-findings-change');
+  return controlPlaneFor(c.env, node.tenantId, node.principal);
+}
+
+const findingsListQuery = z.object({
+  status: findingStatus.optional(),
+  kind: findingKind.optional(),
+});
+
+/**
+ * The Findings inbox (#1748): this team's findings, most recently seen first. `available:
+ * false` is a plane that predates findings — said as such, never as an empty inbox.
+ */
+app.get('/api/findings', async (c) => {
+  const cp = await findingsPlane(c, 'read');
+  const entries = await cp.listFindings(findingsListQuery.parse({ status: c.req.query('status'), kind: c.req.query('kind') }));
+  return c.json(entries === null ? { available: false, entries: [] } : { available: true, entries });
+});
+
+/** Acknowledge, resolve or reopen one of this team's findings (#1748). */
+app.put('/api/findings/:id/status', async (c) => {
+  const cp = await findingsPlane(c, 'manage');
+  const { status } = z.object({ status: findingStatusInput }).parse(await c.req.json());
+  return c.json(await cp.setFindingStatus(c.req.param('id'), status));
+});
+
+/** This team's suppress rules (#1748); `?active=true` keeps the unexpired ones. */
+app.get('/api/findings/rules', async (c) => {
+  const cp = await findingsPlane(c, 'read');
+  return c.json({ entries: await cp.listFindingRules(c.req.query('active') === 'true') });
+});
+
+/** Suppress with a rule: a scope plus an expiry, audited by the plane (#1748). */
+app.post('/api/findings/rules', async (c) => {
+  const cp = await findingsPlane(c, 'manage');
+  return c.json(await cp.createFindingRule(findingRuleInput.parse(await c.req.json())), 201);
+});
+
+/** End a suppress rule now (#1748). */
+app.delete('/api/findings/rules/:ruleId', async (c) => {
+  const cp = await findingsPlane(c, 'manage');
+  return c.json(await cp.revokeFindingRule(c.req.param('ruleId')));
+});
 
 /**
  * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-
