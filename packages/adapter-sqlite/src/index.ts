@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
@@ -824,7 +824,18 @@ export interface SqliteScopeHostOptions {
    * budget. Each may only lower the kernel's default (`resolveAttachmentTextBounds`).
    */
   attachmentTextBounds?: Partial<AttachmentTextBounds>;
-  /** Directory holding one SQLite file per scope plus the directory database. */
+  /**
+   * Directory holding one SQLite file per scope plus the directory database.
+   *
+   * **Owned by one process at a time** (#119). The first host to open it in a process takes an
+   * exclusive lock (`_host.lock`); further hosts in that process share the directory (the
+   * multi-vertical model, #1705), and the lock is released when the last of them closes — or by
+   * the operating system when the process dies, so it never goes stale. A host in ANOTHER process
+   * is refused with `conflict` (reason `host_dir_in_use`) naming the directory. Several guarantees
+   * read the directory database and a scope's file with no `await` between the read and the commit
+   * (the purge gate's last read, for one): nothing in this process can interleave there, and
+   * the lock is what keeps another process from doing so.
+   */
   dir: string;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
   checker?: PermissionChecker;
@@ -1610,6 +1621,63 @@ const admitByDelivery = (
 /** One grant tuple as `connectionGrantsInScope` reads it — either tuple store, same shape. */
 type TupleReadRow = { subject: string; relation: string; expires_at: string | null };
 
+/**
+ * #119: this process's claim on each host directory it has open, by real path — the OS lock and
+ * how many live hosts in this process share it. Several hosts in ONE process may share a directory
+ * (that is how the pure adapter models several verticals on one platform directory, #1705): the
+ * guarantees that read the directory and a scope's file together do so with no `await` in between,
+ * and one process's JS is single-threaded, so nothing it runs can interleave there. A writer in
+ * ANOTHER process could, so the directory belongs to one process at a time.
+ */
+const PROCESS_HOST_DIRS = new Map<string, { lock: Database.Database; hosts: number }>();
+
+/**
+ * #119: claim a host directory for this process, for one live `SqliteScopeHost`. The first host in
+ * the process takes an exclusive lock on `_host.lock` (a SQLite file: `locking_mode = EXCLUSIVE`
+ * plus a write holds SQLite's file lock until the connection closes); later hosts in the process
+ * share it, and the last `release()` drops it. The operating system drops it when the process
+ * exits, however it exits, so it never goes stale. No busy timeout: another process's claim is
+ * refused at once — `conflict`, reason `host_dir_in_use`, naming the directory — never queued.
+ */
+function claimHostDir(dir: string): { release(): void } {
+  const key = realpathSync(dir);
+  let claim = PROCESS_HOST_DIRS.get(key);
+  if (!claim) {
+    const lock = new Database(join(key, '_host.lock'), { timeout: 0 });
+    try {
+      lock.pragma('locking_mode = EXCLUSIVE');
+      // No journal file beside the directory: the one write only takes the lock.
+      lock.pragma('journal_mode = MEMORY');
+      lock.exec('CREATE TABLE IF NOT EXISTS owner (id INTEGER PRIMARY KEY CHECK (id = 1), pid INTEGER NOT NULL, at TEXT NOT NULL)');
+      lock.prepare('INSERT OR REPLACE INTO owner (id, pid, at) VALUES (1, ?, ?)').run(process.pid, new Date().toISOString());
+    } catch (err) {
+      lock.close();
+      const code = (err as { code?: string }).code;
+      if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') {
+        throw substratError('conflict', `host directory already in use by another process: ${key} — one process owns a host directory`, {
+          reason: 'host_dir_in_use',
+        });
+      }
+      throw err;
+    }
+    claim = { lock, hosts: 0 };
+    PROCESS_HOST_DIRS.set(key, claim);
+  }
+  claim.hosts += 1;
+  const held = claim;
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      held.hosts -= 1;
+      if (held.hosts > 0) return;
+      PROCESS_HOST_DIRS.delete(key);
+      held.lock.close();
+    },
+  };
+}
+
 export class SqliteScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
   /**
@@ -1639,6 +1707,8 @@ export class SqliteScopeHost implements ScopeHost {
    */
   readonly liveReads?: never;
   private readonly dir: string;
+  /** #119: this host's share of its process's claim on `dir` (`claimHostDir`), released by `close()`. */
+  private readonly owner: { release(): void };
   private readonly checker: PermissionChecker;
   private readonly directory: Database.Database;
   private readonly scopes = new Map<string, ScopeRuntime>();
@@ -1751,10 +1821,20 @@ export class SqliteScopeHost implements ScopeHost {
     this.invocationLineSink = options.invocationLineSink ?? consoleInvocationLineSink;
     this.dir = options.dir;
     mkdirSync(this.dir, { recursive: true });
-    this.directory = new Database(join(this.dir, '_directory.sqlite'));
-    this.directory.pragma('journal_mode = WAL');
-    this.ensureDirectorySchema();
-    this.loadRoles();
+    this.owner = claimHostDir(this.dir);
+    let directory: Database.Database | undefined;
+    try {
+      directory = new Database(join(this.dir, '_directory.sqlite'));
+      this.directory = directory;
+      this.directory.pragma('journal_mode = WAL');
+      this.ensureDirectorySchema();
+      this.loadRoles();
+    } catch (err) {
+      // A host that never finished opening owns nothing: the next one may open the directory.
+      directory?.close();
+      this.owner.release();
+      throw err;
+    }
     this.checker =
       options.checker ??
       createTupleChecker({
@@ -5146,8 +5226,10 @@ export class SqliteScopeHost implements ScopeHost {
             // directory, which this transaction does not cover and whose writers (a suspend, a
             // tenant status, a reclassification) do not take the scope's actor — so a hold could
             // commit while the handler above was awaiting. From here to `COMMIT` nothing awaits:
-            // better-sqlite3 is synchronous and this host is one process owning both files, so no
-            // directory write can land between this read and the commit of the delete.
+            // better-sqlite3 is synchronous and this process's JS single-threaded, so nothing in
+            // this process — another host on the same directory included — can write between this
+            // read and the commit of the delete; and this process owns the directory
+            // (`claimHostDir`), so no other process can either.
             if (purging) {
               const held = purgeHeldBy(this.purgeGateFacts(rt, subject.id, tenantId, scopeId));
               if (held !== null) throw substratError('conflict', `${operation}: ${held}`, { reason: 'purge_held' });
@@ -5314,6 +5396,7 @@ export class SqliteScopeHost implements ScopeHost {
   async close(): Promise<void> {
     for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
     this.directory.close();
+    this.owner.release();
   }
 
   // -------------------------------------------------------------------------

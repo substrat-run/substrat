@@ -18,6 +18,7 @@ The trash is now held by the host, and a trashed entity can be purged after a de
   - A failed purge leaves that entity in the trash for the next pass.
   - A preview or fork never purges, a suspended scope or tenant does not purge, and the kill switch (`revokeFromSystem`) stops purging on a scope. The scope re-checks the holds it records before and during each purge. On a directory-backed host that is the kill switch, and the platform's coordinator enforces the lifecycle, copy and tenant holds.
   - The system principal's purge key is refused to it on every other call.
+- **`SqliteScopeHost`: one process owns a `dir`.** Hosts in one process may share a directory; a host in another process is now refused with `conflict` (reason `host_dir_in_use`) while the first process has it open. The lock is released when the process's last host closes, or when the process exits.
   - The events about a purged entity stay. Registration refuses a horizon without its schedule, and a purge schedule that runs any other operation.
   - The kernel derives a partial index on `_substrat_trashed_at` for each entity with a horizon.
 - Purge authority comes only from the platform's own sweep. The cutoff is computed by the host from its clock and the horizon, and an invoke that tries to supply one is refused `validation_failed`.
