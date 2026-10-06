@@ -158,6 +158,7 @@ import {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
+  entityGrantShape,
   type EntityGrantShape,
 } from '@substrat-run/contracts';
 
@@ -592,6 +593,14 @@ const reconcileBody = z.object({
   tenantHeldPeers: z.array(verticalSlugOf).optional(),
   /** #2045: each recorded-off subject's fence, by tuple subject. */
   switchFences: z.record(z.string().min(1), z.string().min(1)).optional(),
+  /**
+   * #2071: the declared entity-grant shapes of the version this reconcile reaches, as the
+   * platform reads them from that version's REVIEWED registry. The only source the reconcile
+   * tops holders up from — a vertical names no shapes of its own here, so a shape its code
+   * declares `bootstrap` while the reviewed registry does not is never acted on. Absent ⇒ no
+   * reconcile of shapes.
+   */
+  entityGrants: z.array(entityGrantShape).optional(),
 });
 
 /**
@@ -866,15 +875,6 @@ export interface PlatformSurfaceDeps<Env> {
   roles: RoleDefinition[];
   /** The role the installing owner is granted, at scope level (`hr-admin`, `admin`, …). */
   ownerRoleKey: string;
-  /**
-   * The vertical's declared entity-grant shapes (`ENTITY_GRANTS`, #2071) — the same list its
-   * `PERMISSIONS.md` renders. Every provision and reconcile tops each holder up to the shape as
-   * it is now, so a key a release adds reaches the people who already held the shape. Holders
-   * are the people given it with `grantEntityShapeLocal`. Pass the whole `ENTITY_GRANTS`: only a
-   * shape declared `bootstrap: true` is reconciled, and a sharing one is skipped. Optional: a
-   * vertical with none omits it.
-   */
-  entityGrants?: readonly EntityGrantShape[];
 
   /**
    * Vertical-specific provision side effect — the pending-owner TOFU claim, and for a
@@ -1746,7 +1746,6 @@ export function mountPlatformSurface<Env extends object>(
       switchedOffPeers: body.switchedOffPeers,
       tenantHeldPeers: body.tenantHeldPeers,
       switchFences: body.switchFences,
-      entityGrants: deps.entityGrants,
     });
     await deps.onProvision?.(c.env, body);
     // #1902: onto the platform-supplied sweeper's roster, so the scope's schedules run. Last, so
@@ -1798,7 +1797,8 @@ export function mountPlatformSurface<Env extends object>(
       switchedOffPeers: body.switchedOffPeers,
       tenantHeldPeers: body.tenantHeldPeers,
       switchFences: body.switchFences,
-      entityGrants: deps.entityGrants,
+      // #2071: from the platform's body — the reviewed registry — never from this vertical's code.
+      entityGrants: body.entityGrants,
     });
     /**
      * The VERTICAL's half of a provision runs here too — and it did not, which made this

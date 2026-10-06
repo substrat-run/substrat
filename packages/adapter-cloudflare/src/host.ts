@@ -9887,10 +9887,10 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantHeldPeers?: readonly string[];
     /** #2045: each recorded-off subject's fence, by tuple subject. */
     switchFences?: Readonly<Record<string, string>>;
-    /** #2071: the vertical's declared entity-grant shapes, its whole `ENTITY_GRANTS`. Only a shape
-     *  declared `bootstrap: true` is reconciled; a sharing one is skipped. Each holder is topped up to the shape as it is now, after the seat, in bounded passes: a
-     *  key the shape gained reaches the people who already held it. Never a revoked key, never a
-     *  removal. Absent ⇒ no reconcile. */
+    /** #2071: the declared entity-grant shapes, as the platform's reconcile sends them from the
+     *  reached version's reviewed registry. Only a shape declared `bootstrap: true` is reconciled;
+     *  a sharing one is skipped. Each holder is topped up to the shape as it is now, after the
+     *  seat, in bounded passes. Never a revoked key, never a removal. Absent ⇒ no reconcile. */
     entityGrants?: readonly EntityGrantShape[];
   }): Promise<{ switchedOff?: SwitchedOff[] }> {
     const carry = recordedOffFromWire(input);

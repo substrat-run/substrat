@@ -51,8 +51,7 @@ import type { SwitchSql } from './system-switch.js';
  *
  * Only a shape declared `bootstrap: true` is reconciled: one a person is GIVEN on their own
  * record. A sharing shape, which people reach through `ctx.grant` (todo's `list`), is skipped
- * whole, backfill included, so a vertical passes its whole `ENTITY_GRANTS` and a sharee is never
- * marked a holder.
+ * whole, backfill included, so a sharee is never marked a holder.
  */
 
 /** Holders topped up per pass — one transaction each, so a large scope never holds one long. */

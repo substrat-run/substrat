@@ -38,7 +38,7 @@ import {
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { declareScriveConnector } from '@substrat-run/connector-scrive';
-import { EMPLOYEE_SELF, ENTITY_GRANTS, MODULES, ROLES } from './provision.js';
+import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';
 import { MERIDIAN_ENV } from './manifest.js';
 import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
@@ -284,10 +284,9 @@ mountPlatformSurface<Env>(app, {
   hostFor,
   roles: ROLES,
   ownerRoleKey: 'hr-admin',
-  // #2071: every provision and reconcile tops each employee up to EMPLOYEE_SELF (declared
-  // `bootstrap`) as it is now,
+  // #2071: no shapes here. The platform's reconcile carries EMPLOYEE_SELF from this version's
+  // reviewed registry (`permissions.entityGrants`, declared `bootstrap`) and tops each employee up,
   // so a key added to it reaches the employees linked before the release that added it.
-  entityGrants: ENTITY_GRANTS,
   onProvision: async (env, b) => {
     await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner);
     // Onto the sweep roster, so the scope's schedules run (#1646). This hook also runs on

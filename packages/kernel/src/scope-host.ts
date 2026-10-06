@@ -1910,8 +1910,8 @@ export interface HostAdmin {
    *
    * Only shapes declared `bootstrap: true` are reconciled — those given with
    * {@link grantEntityShape} on a person's own record. A SHARING shape, reached through
-   * `ctx.grant` (todo's `list`), is skipped whole, so a vertical passes its whole `ENTITY_GRANTS`:
-   * reconciling one would mark every person something was fully shared with as a holder.
+   * `ctx.grant` (todo's `list`), is skipped whole: reconciling one would mark every person
+   * something was fully shared with as a holder.
    *
    * Bounded: `batch` rows of work (default 500, an integer from 1 to 5000, or `validation_failed`)
    * per scope transaction, backfill included, repeated until a pass finishes — so it is safe
