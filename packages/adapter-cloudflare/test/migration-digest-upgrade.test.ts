@@ -1,6 +1,6 @@
 /**
  * #2066's ALTER on a real Durable Object: a scope whose journal predates `sql_digest` gains the
- * column on its next wake, its rows stay NULL — unrecorded, accepted, never backfilled — and a
+ * column on its next wake, its rows get the legacy mark — accepted, never backfilled — and a
  * second wake tolerates the repeat ALTER. The contract suite covers the digest rule itself; only
  * a test holding the raw DO stub can force the eviction a second wake needs.
  */
@@ -14,7 +14,7 @@ import { warmControlPlane } from './do-warmup.js';
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
 
-it('adds sql_digest to a legacy journal on wake, leaves its rows NULL, and tolerates a second wake (#2066)', async () => {
+it('adds sql_digest to a legacy journal on wake, marks its rows legacy, and tolerates a second wake (#2066)', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
