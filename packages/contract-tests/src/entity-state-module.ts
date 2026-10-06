@@ -266,6 +266,11 @@ export const rebuildMod: ModuleRegistration = {
     }) as Handler,
     'rb/search': (async (ctx, input) =>
       (await ctx.search('rbsearch', (input as { term: string }).term)).map((h) => h.id)) as Handler,
+    // A module's own runtime DDL (#1811), statement by statement through `ctx.sql`.
+    'rb/ddl': (async (ctx, input) => {
+      for (const statement of (input as { statements: string[] }).statements) ctx.sql.exec(statement);
+      return null;
+    }) as Handler,
     'rb/titles': (async (ctx, input) =>
       ctx.sql
         .query<{ title: string }>(`SELECT title FROM ${RB_TABLES[(input as { entityType: keyof typeof RB_TABLES }).entityType]} ORDER BY title`)

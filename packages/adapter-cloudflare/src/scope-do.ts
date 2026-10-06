@@ -293,7 +293,8 @@ import {
   addStatePlans,
   statefulTablesOf,
   afterMigration,
-  assertEntityStateIntact,
+  afterRuntimeDdl,
+  derivesAnything,
   repairDerivedObjects,
   StateColumnLost,
   type DerivedPlans,
@@ -6860,9 +6861,10 @@ export function defineScopeDO(
           doScopedSql(
             sql,
             statefulTablesOf(statePlans),
-            // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
-            statePlans.size
-              ? () => assertEntityStateIntact(doSpineSql(sql), this.derivedPlans())
+            // #119 / #2090: after runtime DDL, inside this operation's transaction, what the kernel
+            // derived onto any table is repaired — and a lost state column fails the operation.
+            derivesAnything(this.derivedPlans())
+              ? () => afterRuntimeDdl(doSpineSql(sql), (ddl) => this.runScript(ddl), this.derivedPlans())
               : undefined,
           ),
           minted,

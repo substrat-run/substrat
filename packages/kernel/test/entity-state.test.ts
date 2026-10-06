@@ -12,7 +12,7 @@ import {
   addStatePlans,
   createTrashedReads,
   assertEntityStateColumns,
-  assertEntityStateIntact,
+  afterRuntimeDdl,
   repairDerivedObjects,
   StateColumnLost,
   assertNoStatefulDdl,
@@ -376,28 +376,45 @@ const derivedFixture = (journaled: (version: string) => boolean = () => true) =>
     (db.prepare(`SELECT name FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\' ORDER BY name`).all() as { name: string }[]).map(
       (r) => r.name,
     );
-  return { db, sql, plans, derived, check: () => assertEntityStateIntact(sql, plans) };
+  /** Every kernel-prefixed trigger and index, name → its stored CREATE statement. */
+  const definitions = () =>
+    Object.fromEntries(
+      (db.prepare(`SELECT name, sql FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\'`).all() as {
+        name: string;
+        sql: string;
+      }[]).map((r) => [r.name, r.sql]),
+    );
+  return { db, sql, plans, derived, definitions, check: () => afterRuntimeDdl(sql, (ddl) => db.exec(ddl), plans) };
 };
 
-describe('assertEntityStateIntact', () => {
+describe('afterRuntimeDdl', () => {
   const build = () => derivedFixture();
-  it('passes a table carrying everything the kernel derived', () => expect(() => build().check()).not.toThrow());
+  it('changes nothing on a table carrying everything the kernel derived', () => {
+    const { definitions, check } = build();
+    const before = definitions();
+    check();
+    expect(definitions()).toEqual(before);
+  });
   for (const [what, ddl] of [
     ['born trigger', 'DROP TRIGGER _substrat_state_docs_born'],
     ['moved trigger', 'DROP TRIGGER _substrat_state_docs_moved'],
     ['list index', 'DROP INDEX _substrat_list_m_doc_title_archived'],
-    ['column', 'ALTER TABLE docs DROP COLUMN _substrat_trashed_at'],
   ] as const) {
-    it(`fails closed without its ${what}`, () => {
-      const { db, check, derived } = build();
-      if (what === 'column') {
-        // SQLite will not drop a column a trigger or partial index names, so those go first.
-        for (const name of derived()) db.exec(`DROP ${name.startsWith('_substrat_state_') ? 'TRIGGER' : 'INDEX'} ${name}`);
-      }
+    it(`puts back its ${what}`, () => {
+      const { db, definitions, check } = build();
+      const before = definitions();
       db.exec(ddl);
-      expect(check).toThrow(/without/);
+      check();
+      expect(definitions()).toEqual(before);
     });
   }
+  it('fails closed without a state column — it cannot be derived again', () => {
+    const { db, check, derived } = build();
+    // SQLite will not drop a column a trigger or partial index names, so those go first.
+    for (const name of derived()) db.exec(`DROP ${name.startsWith('_substrat_state_') ? 'TRIGGER' : 'INDEX'} ${name}`);
+    db.exec('ALTER TABLE docs DROP COLUMN _substrat_trashed_at');
+    expect(check).toThrow(/runtime DDL left 'docs' without _substrat_trashed_at/);
+  });
 });
 
 describe('repairDerivedObjects / assertEntityStateColumns (#2090)', () => {
@@ -412,7 +429,6 @@ describe('repairDerivedObjects / assertEntityStateColumns (#2090)', () => {
     expect(derived()).toEqual([]);
     repairDerivedObjects(sql, (ddl) => db.exec(ddl), plans, { after: 'migration x' });
     expect(derived()).toEqual(before);
-    expect(() => assertEntityStateIntact(sql, plans)).not.toThrow();
   });
 
   it('owes a table only what its journal says was derived', () => {
@@ -461,6 +477,36 @@ describe('repairDerivedObjects / assertEntityStateColumns (#2090)', () => {
     expect(() => repairDerivedObjects(sql, () => undefined, plans, { after: 'the dump', absentTable: 'skip' })).toThrow(
       /the dump left 'docs' without _substrat_trashed_at/,
     );
+  });
+
+  it('compares the text exactly: a guard keyed on another spelling of the entity type is re-created (Codex r2 on #2091)', () => {
+    // Two spaces in the entity type: a whitespace-folding comparison would take the one-space
+    // spelling for the same guard, which checks another authorization row.
+    const spaced = { ...both, entityType: 'doc  x' };
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
+    db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
+    for (const m of moduleMigrations({ manifest: { id: '@m', entityStates: [spaced] } })) {
+      db.exec(m.sql);
+      db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
+    }
+    const sql = {
+      query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[],
+      exec: () => ({ changes: 0 }),
+    } as never;
+    const state = new Map();
+    addStatePlans(state, '@m', [spaced], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+    const plans = { state, lists: new Map(), search: new Map() };
+    const stored = () =>
+      (db.prepare(`SELECT sql FROM sqlite_master WHERE name = '_substrat_state_docs_moved'`).get() as { sql: string }).sql;
+    const emitted = stored();
+    expect(emitted).toContain("entity_type = 'doc  x'");
+    db.exec(`DROP TRIGGER _substrat_state_docs_moved; ${emitted.replace("'doc  x'", "'doc x'")}`);
+    expect(stored()).toContain("entity_type = 'doc x'");
+    const ran: string[] = [];
+    repairDerivedObjects(sql, (ddl) => (ran.push(ddl), db.exec(ddl)), plans, { after: 'x' });
+    expect(ran).toHaveLength(1);
+    expect(stored()).toBe(emitted);
   });
 
   it('judges a derived object by its definition: a same-named index on other columns is re-created, a matching one is not', () => {

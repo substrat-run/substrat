@@ -241,8 +241,9 @@ export {
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
 export {
   afterMigration,
+  afterRuntimeDdl,
   assertEntityStateColumns,
-  assertEntityStateIntact,
+  derivesAnything,
   repairDerivedObjects,
   StateColumnLost,
 } from './derived-objects.js';

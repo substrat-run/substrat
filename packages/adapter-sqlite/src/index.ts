@@ -235,7 +235,8 @@ import {
   entityStateMigrations,
   statefulTablesOf,
   afterMigration,
-  assertEntityStateIntact,
+  afterRuntimeDdl,
+  derivesAnything,
   repairDerivedObjects,
   StateColumnLost,
   type DerivedPlans,
@@ -11456,9 +11457,10 @@ export class SqliteScopeHost implements ScopeHost {
             rt.db,
             true,
             statefulTablesOf(statePlans),
-            // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
-            statePlans.size
-              ? () => assertEntityStateIntact(spineSql(rt.db), this.derivedPlans())
+            // #119 / #2090: after runtime DDL, inside this operation's transaction, what the kernel
+            // derived onto any table is repaired — and a lost state column fails the operation.
+            derivesAnything(this.derivedPlans())
+              ? () => afterRuntimeDdl(spineSql(rt.db), (ddl) => rt.db.exec(ddl), this.derivedPlans())
               : undefined,
           ),
         ),

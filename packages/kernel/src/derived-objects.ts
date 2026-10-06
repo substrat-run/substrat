@@ -13,16 +13,21 @@
  * Without them, erased text stays searchable.
  *
  * **An object is judged by its definition, not its name.** `sqlite_master` holds each one's
- * CREATE statement, and the kernel knows the statement it emits (`DerivedObject`), so a
- * same-named trigger that does nothing, an index on the wrong columns or with the wrong partial
- * predicate, and an object filed under another table are all "not there". Whitespace is the one
- * difference forgiven.
+ * CREATE statement as it was run, and the kernel knows the statement it emits
+ * (`DerivedObject`), so a same-named trigger that does nothing, an index on the wrong columns or
+ * with the wrong partial predicate, and an object filed under another table are all "not
+ * there". The text is compared exactly: nothing but the kernel writes these objects, and a
+ * normalisation that forgave whitespace would forgive it inside a string literal too — a guard
+ * keyed on a different entity type. An object an older kernel worded differently is re-created
+ * once.
  *
  * Four places ask, and all four come here, so "what a table is owed" is written once:
  *
- * - **runtime DDL** (`ctx.sql`'s after-DDL hook) checks every stateful table, and the operation
- *   rolls back. A module's runtime DDL is not reviewed, so a schema the kernel did not expect is
- *   refused, not repaired.
+ * - **runtime DDL** (`ctx.sql`'s after-DDL hook, #1811) repairs inside the operation's
+ *   transaction, whenever the scope has any derived plan. The text guard already refuses the DDL
+ *   known to move a stateful table's rows; a search-only or list-only table has no such guard,
+ *   and a module may rebuild it — this puts its triggers and indexes back before the operation
+ *   commits. A lost state column fails the operation, and the DDL with it.
  * - **a migration** checks the state columns after its own SQL, inside its own transaction, so a
  *   migration that drops one rolls back with nothing applied. The last migration of a pass then
  *   repairs the derived objects, inside that same transaction: SQLite's ordinary
@@ -110,9 +115,6 @@ function catalogueOf(sql: ScopedSql): Map<string, CatalogueEntry> {
   );
 }
 
-/** One statement, as two spellings of it compare: whitespace runs as one space, no trailing `;`. */
-const normalized = (statement: string): string => statement.replace(/\s+/g, ' ').replace(/\s*;\s*$/, '').trim();
-
 /** The first object of `d` the catalogue does not hold exactly as the kernel emits it. */
 const wrongIn = (catalogue: Map<string, CatalogueEntry>, d: Derived): DerivedObject | undefined =>
   d.objects.find((o) => {
@@ -120,8 +122,7 @@ const wrongIn = (catalogue: Map<string, CatalogueEntry>, d: Derived): DerivedObj
     return (
       found?.type !== o.type ||
       found.table.toLowerCase() !== o.table.toLowerCase() ||
-      found.sql === null ||
-      normalized(found.sql) !== normalized(o.sql)
+      found.sql !== o.sql
     );
   });
 
@@ -196,22 +197,16 @@ function assertColumns(
 }
 
 /**
- * After runtime DDL: every stateful table still carries its columns and everything derived onto
- * it, as the kernel emits it. Throws `internal` naming the table and what it lost; the operation
- * and its DDL roll back.
+ * After runtime DDL, inside the operation's transaction: the same repair a migration pass makes.
+ * A lost state column throws `internal`, and the operation and its DDL roll back.
  */
-export function assertEntityStateIntact(sql: ScopedSql, plans: DerivedPlans): void {
-  const after = 'runtime DDL';
-  const catalogue = catalogueOf(sql);
-  for (const table of expectations(sql, plans)) {
-    if (!table.columns) continue;
-    assertColumns(sql, catalogue, table, after);
-    for (const d of table.derived) {
-      const wrong = wrongIn(catalogue, d);
-      if (wrong) lost(after, table, `its ${wrong.type} ${wrong.name} as the kernel derives it`, table.columns[0]!.migration);
-    }
-  }
+export function afterRuntimeDdl(sql: ScopedSql, run: (ddl: string) => void, plans: DerivedPlans): void {
+  repairDerivedObjects(sql, run, plans, { after: 'runtime DDL' });
 }
+
+/** Whether a scope has anything derived for `afterRuntimeDdl` to keep — the hook is installed only then. */
+export const derivesAnything = (plans: DerivedPlans): boolean =>
+  plans.state.size > 0 || plans.lists.size > 0 || plans.search.size > 0;
 
 /**
  * A migration's half, after its own SQL and inside its own transaction: the state columns are

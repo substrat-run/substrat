@@ -610,20 +610,15 @@ export function entityStateContractSuite(
       expect(await as.alice.invoke('state/restore', { id })).toBe('active');
     });
 
-    it('fails closed: runtime DDL that leaves a stateful table without its triggers is rolled back', async () => {
+    it('repairs, in the same operation, a guard trigger missing when runtime DDL runs (#2090)', async () => {
       // Past the guard, take one derived trigger away — what a form nobody foresaw would do.
       await raw(t1, scope, 'DROP TRIGGER _substrat_state_state_docs_born');
       const t = `rt_${ulid().toLowerCase()}`;
-      const err = await errOf(as.alice.invoke('state/sql', { sql: `CREATE TABLE ${t} (id TEXT)` }));
-      expect(String((err as Error).message)).toMatch(/runtime DDL left 'state_docs' without its trigger _substrat_state_state_docs_born/);
-      expect(await as.alice.invoke<Row[]>('state/sql', { sql: `SELECT name FROM sqlite_master WHERE name = '${t}'` })).toEqual([]);
-      // Put it back exactly as the kernel derives it, and the same DDL runs.
-      await raw(
-        t1,
-        scope,
-        `CREATE TRIGGER _substrat_state_state_docs_born BEFORE INSERT ON state_docs WHEN NEW._substrat_archived_at IS NOT NULL OR NEW._substrat_trashed_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'a row is never inserted archived or trashed - ctx.archive and ctx.trash move it (#119)'); END`,
-      );
       await as.alice.invoke('state/sql', { sql: `CREATE TABLE ${t} (id TEXT)` });
+      // The trigger is back as the kernel derives it: a row is never born binned again.
+      await expect(
+        raw(t1, scope, `INSERT INTO state_docs (id, title, owner, _substrat_trashed_at) VALUES ('${ulid()}', 't', 'o', '2026')`),
+      ).rejects.toThrow(/never inserted archived or trashed/);
       await as.alice.invoke('state/sql', { sql: `DROP TABLE ${t}` });
     });
 

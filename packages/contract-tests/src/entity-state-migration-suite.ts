@@ -302,6 +302,32 @@ export function entityStateMigrationContractSuite(
       expect(await stub.invoke('rb/state', { entityType: 'rbcut', id: binned })).toBe('trashed');
     });
 
+    it('repairs a search-only table a module rebuilt through ctx.sql, before its operation commits (Codex r2 on #2091)', async () => {
+      const { s, stub } = await freshScope();
+      const said = ulid();
+      await stub.invoke('rb/add', { entityType: 'rbsearch', id: said, title: 'alpha secret' });
+      const before = await definitions(s);
+      // Supported runtime DDL: `rb_search` declares no state, so no text guard stands in the way.
+      await stub.invoke('rb/ddl', { statements: rebuild('rb_search') });
+      expect(await definitions(s)).toEqual(before);
+      await stub.invoke('rb/retitle', { id: said, title: 'gamma redacted' });
+      expect(await stub.invoke('rb/search', { term: 'secret' })).toEqual([]);
+      expect(await stub.invoke('rb/search', { term: 'gamma' })).toEqual([said]);
+      await stub.invoke('rb/remove', { id: said });
+      expect(await stub.invoke('rb/search', { term: 'gamma' })).toEqual([]);
+    });
+
+    it('runs no DDL over a scope that already carries everything as the kernel emits it', async () => {
+      const { s } = await scopeWith('rbnote');
+      await host.migrateScope(t, s);
+      // A re-created object is a new `sqlite_master` row: the rowids are what a DROP-and-CREATE
+      // moves. (A Durable Object refuses `pragma_schema_version`.)
+      const catalogue = async () => raw.sql(t, s, 'SELECT rowid, name FROM sqlite_master ORDER BY rowid');
+      const before = await catalogue();
+      expect(await host.migrateScope(t, s)).toMatchObject({ status: 'noop' });
+      expect(await catalogue()).toEqual(before);
+    });
+
     it('twin: a rebuild of a table that declares no state runs as before, and its list index comes back too', async () => {
       const { s, stub } = await scopeWith('rbplain');
       const before = await objectsOn(s, 'rb_plain');
