@@ -254,13 +254,13 @@ const closeRepairOp: Op<'shop/close-repair'> = async (ctx, input) => {
  * on their own customer record, so the walk workorder → bike → customer lets
  * them through for their own repairs and no one else's.
  *
- * Paged by OVER-FETCHING, which is what a permission-filtered walk needs: a page
+ * Paged with `pageVisible`, which is what a permission-filtered walk needs: a page
  * of 20 rows read from the table can leave 3 standing after the proof walk, so the
- * fetch size and the page size are not the same number and cannot be made the same
- * number. `pageVisible` does the over-fetch and advances the cursor by the last row
- * EXAMINED — advancing by the last row RETURNED would re-examine every rejected row
- * on the next request, and a page the walk rejects entirely would never advance at
- * all. So a SHORT page does not end this walk; only a null `nextCursor` does.
+ * fetch size and the page size are not the same number. `pageVisible` reads on past
+ * refused rows until the page is full and mints the cursor from the last row it
+ * RETURNS: a cursor carries its row's id and sort value, so one taken from a refused
+ * row would hand the caller exactly what the proof walk withholds (#2073). A short
+ * page is the end of the walk.
  */
 const portalRepairsOp: Op<'shop/portal-repairs'> = async (ctx, input) =>
   pageVisible(

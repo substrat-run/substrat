@@ -445,9 +445,9 @@ export interface OperationContext {
    *
    * **This does not check permission** — nothing on `ctx` does, and a paged read
    * is not an exception. The operation's own `assertAllowed` still comes first.
-   * A read that filters per ROW after the fact (a portal walk) cannot use this at
-   * all: a page of 20 filtered down to 3 is not a page, and the honest shape is an
-   * over-fetch loop the handler owns.
+   * A read that filters per ROW after the fact (a portal walk) cannot hand this
+   * page on as it is: a page of 20 filtered down to 3 is not a page, and its cursor
+   * may be a refused row's. It walks this read with `pageVisible` instead (#2073).
    *
    * Throws `NotListable` for an entity no operation declared `paged.over` on,
    * `SortNotDeclared` for a `?sort=` outside the vocabulary, and

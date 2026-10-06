@@ -133,7 +133,8 @@ unset limit meaning *unbounded* for an internal caller), `listPageQuery` /
 (`LIST_PAGE_DEFAULT` 20, `LIST_PAGE_MAX` 200 — one resolution for the HTTP layer,
 `ctx.page` and handler-composed reads), the `Link` and `X-Total-Count` headers
 (`PAGE_LINK_HEADER`, `PAGE_TOTAL_HEADER`, `PAGE_EXPOSED_HEADERS`, `nextPageLink`),
-`LIST_SORT_PARAM`, `pageVisible` — the over-fetch loop a per-row-filtered read owns — and
+`LIST_SORT_PARAM`, `pageVisible` — the walk a per-row-filtered read owns, whose cursor is
+only ever a visible row's, bounded by `VISIBLE_SCAN_BUDGET` — and
 `pageOverFold`, which cuts a page off a list the handler **already folded in memory** (the
 `paged: { sortKey }` half of #811, as a function).
 
