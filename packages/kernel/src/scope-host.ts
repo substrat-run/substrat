@@ -4782,7 +4782,8 @@ export interface ScopeHost {
    * @deprecated since #2069: an executor handler attributes from the `admin` it is handed —
    * `admin.attributed(onBehalfOf)` — which carries its event by construction. This form needs
    * the event passed again, and a handler that forgets writes `causedBy` NULL with nothing
-   * failing. It stays only because it shipped; only the contract suite holding it working calls it.
+   * failing. It stays because it shipped, and because it is how the membership executor still
+   * attributes on a host whose handed admin predates `HostAdmin.attributed`.
    */
   attributed?(onBehalfOf: OnBehalfOf, options?: { causedBy?: string }): ScopeHost;
   /**

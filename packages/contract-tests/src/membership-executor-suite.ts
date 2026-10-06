@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import {
   instant,
   orgId,
@@ -49,7 +49,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
    * change of authority would race into. `failNextAdds` fails that many adds' units outright:
    * the transient failure the retry backstop absorbs.
    */
-  const world = (opts: { hold?: () => Promise<void>; orgs?: 'join' } = {}) => {
+  const world = (opts: { hold?: () => Promise<void>; orgs?: 'join'; legacy?: Legacy } = {}) => {
     const w = {
       failNextAdds: 0,
       fixture: undefined as unknown as ScopeHostFixture,
@@ -66,7 +66,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       w.host = w.fixture.host;
       w.host.registerModule(membershipFixtureMod);
       // `baseDelayMs: 0` so the backstop case can retry inside a test.
-      registerMembershipExecutor(intercepting(w.host, w, opts.hold), { actor: staff, retry: { baseDelayMs: 0 }, orgs: opts.orgs });
+      registerMembershipExecutor(intercepting(w.host, w, opts.hold, opts.legacy), { actor: staff, retry: { baseDelayMs: 0 }, orgs: opts.orgs });
       const { host, t } = w;
       await host.admin.createTenant(staff, { id: t, slug: `invitefix-${t.slice(-10).toLowerCase()}`, name: 'Invitefix' });
       await host.admin.grantEntitlement(staff, t, 'invitefix');
@@ -107,11 +107,24 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
   };
 
   /**
+   * A host shaped like one built before #2069 (an adapter at 0.139): `'admin'` hands executors
+   * an admin with no `attributed`; `'host'` takes `host.attributed` away too — a host from
+   * before #977, which records no person at all.
+   */
+  type Legacy = 'admin' | 'host';
+
+  /**
    * `host`, except that, through the `admin` an executor is handed and every attributed view of
    * it, an add's `applyMembership` fails while `w.failNextAdds` counts down, and every unit, an
-   * add's or a removal's, otherwise waits for `hold` before it runs.
+   * add's or a removal's, otherwise waits for `hold` before it runs. `legacy` shapes it as an
+   * older host.
    */
-  const intercepting = (host: ScopeHost, w: { failNextAdds: number }, hold?: () => Promise<void>): ScopeHost => {
+  const intercepting = (
+    host: ScopeHost,
+    w: { failNextAdds: number },
+    hold?: () => Promise<void>,
+    legacy?: Legacy,
+  ): ScopeHost => {
     const held = (admin: HostAdmin): HostAdmin =>
       new Proxy(admin, {
         get: (t, key) =>
@@ -125,7 +138,9 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
                 return t.applyMembership(...args);
               }
             : key === 'attributed'
-              ? (...a: Parameters<NonNullable<HostAdmin['attributed']>>) => held(t.attributed!(...a))
+              ? legacy
+                ? undefined
+                : (...a: Parameters<NonNullable<HostAdmin['attributed']>>) => held(t.attributed!(...a))
               : Reflect.get(t, key),
       });
     return new Proxy(host, {
@@ -134,6 +149,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
           return (...[id, type, handler, retry]: Parameters<ScopeHost['registerExecutor']>) =>
             t.registerExecutor(id, type, (admin, event, scope) => handler(held(admin), event, scope), retry);
         }
+        if (key === 'attributed' && legacy === 'host') return undefined;
         const v = Reflect.get(t, key) as unknown;
         return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
       },
@@ -517,6 +533,43 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       expect(await memberOf(w, joe)).toBe(0);
       expect(await holds(w, joe, INVITEFIX_A)).toBe(true);
       expect(await holds(w, joe, INVITEFIX_B)).toBe(false);
+    });
+  });
+
+  describe(`membership executor on a host older than HostAdmin.attributed (#2069): ${adapterName}`, () => {
+    const older = world({ legacy: 'admin' });
+    const oldest = world({ legacy: 'host' });
+
+    it('a handed admin with no `attributed`: the add and the removal still name the person AND the event', async () => {
+      const joe = principalId.parse(ulid());
+      const added = await asJoiner(older, joe, 'invitefix/accept', await send(older, older.alice, 'member'));
+      expect(added.map((o) => o.outcome)).toEqual(['delivered']);
+      const removed = await removeAs(older, older.alice, joe, 'member');
+      expect(removed.map((o) => o.outcome)).toEqual(['delivered']);
+
+      // Through the deprecated `host.attributed(…, { causedBy })`: neither half is lost.
+      const addRows = await causedBy(older, added[0]!.eventId);
+      const removeRows = await causedBy(older, removed[0]!.eventId);
+      expect(addRows.map((r) => r.action)).toEqual(['assignRole']);
+      expect(removeRows.map((r) => r.action)).toEqual(['unassignRole']);
+      for (const row of [...addRows, ...removeRows]) {
+        expect(row.onBehalfOf).toMatchObject({ principal: older.alice, tenantId: older.t });
+      }
+    });
+
+    it('a host with no attribution at all: the row names the event and no person, and the executor says so', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const joe = principalId.parse(ulid());
+        const added = await asJoiner(oldest, joe, 'invitefix/accept', await send(oldest, oldest.alice, 'member'));
+        expect(added.map((o) => o.outcome)).toEqual(['delivered']);
+        const rows = await causedBy(oldest, added[0]!.eventId);
+        expect(rows.map((r) => r.action)).toEqual(['assignRole']);
+        expect(rows[0]!.onBehalfOf ?? null).toBeNull();
+        expect(warn.mock.calls.some(([line]) => String(line).includes(added[0]!.eventId))).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 

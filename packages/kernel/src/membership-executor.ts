@@ -9,7 +9,6 @@ import {
   type OrgId,
   type PlatformActorId,
   type PrincipalId,
-  type TenantId,
 } from '@substrat-run/contracts';
 import { isUnknownRoleError } from './permission-checker.js';
 import { refuseDelivery, type DeliveryRefusal } from './delivery-refusal.js';
@@ -73,6 +72,10 @@ import {
  * **Idempotent.** A delivered event never reaches its handler again. A crash between the
  * effect and its journal row re-runs the handler, and every write it makes is idempotent.
  */
+
+// Runtime global, declared rather than imported, as in `module-log.ts`: this package compiles
+// against `lib: ["ES2023"]` with no DOM and no workers types.
+declare const console: { warn(message: string): void };
 
 /** What the add path consumes, and the version it reads. */
 export const MEMBER_ADD_REQUESTED = 'member.add-requested';
@@ -158,9 +161,17 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
   const orgOf = (request: { orgId: OrgId }): { orgId?: OrgId } => (options.orgs === 'join' ? { orgId: request.orgId } : {});
   // Attributed (#977): the person whose authority bounded the write, beside the platform
   // actor that executed it — added to the `admin` the dispatch handed the handler, which
-  // already carries the event (#2069). An admin without `attributed` writes as it is.
-  const adminFor = (admin: HostAdmin, who: PrincipalId, tenantId: TenantId): HostAdmin =>
-    admin.attributed?.({ principal: who, tenantId }) ?? admin;
+  // already carries the event (#2069). A host built before `HostAdmin.attributed` (an adapter
+  // at 0.139) hands an admin without it but has the deprecated `host.attributed(…, { causedBy })`,
+  // so that form is the fallback, and is why it is kept. A host with neither predates #977 and
+  // records no person on any row; that is said aloud rather than lost quietly.
+  const adminFor = (admin: HostAdmin, who: PrincipalId, event: DomainEvent): HostAdmin => {
+    const onBehalfOf = { principal: who, tenantId: event.tenantId };
+    if (admin.attributed) return admin.attributed(onBehalfOf);
+    if (host.attributed) return host.attributed(onBehalfOf, { causedBy: event.id }).admin;
+    console.warn(`executor:${id}: this host cannot attribute an admin to a person; ${event.id}'s rows name no onBehalfOf`);
+    return admin;
+  };
 
   host.registerExecutor(
     id,
@@ -171,7 +182,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       const { request, inviter } = decided;
       // One directory unit: the fence, the bound asked again, the role and its audit row. A
       // removal or a change of authority lands wholly before it or wholly after it.
-      const applied = await adminFor(admin, inviter, event.tenantId).applyMembership(options.actor, {
+      const applied = await adminFor(admin, inviter, event).applyMembership(options.actor, {
         op: 'add',
         tenantId: event.tenantId,
         principal: request.principal,
@@ -194,7 +205,7 @@ export function registerMembershipExecutor(host: ScopeHost, options: MembershipE
       const { request, remover } = decided;
       // One directory unit: the remover's bound asked again, the revoke, its audit row if it
       // took anything, and the fence — raised even with nothing held, so a pending add sees it.
-      const applied = await adminFor(admin, remover, event.tenantId).applyMembership(options.actor, {
+      const applied = await adminFor(admin, remover, event).applyMembership(options.actor, {
         op: 'remove',
         tenantId: event.tenantId,
         principal: request.principal,
