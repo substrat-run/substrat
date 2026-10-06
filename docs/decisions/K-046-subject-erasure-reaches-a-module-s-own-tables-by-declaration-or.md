@@ -28,6 +28,7 @@ tracking: ["#2068", "#37"]
 - **A module whose manifest is hand-written declares no `erasure` block**, and so its erasable fields are not even named unreached on a receipt. Today that is the engines (`engine-invites`'s invitation); `lint:model` still warns on them from their emitted model.
 - **SQLite's free pages are not overwritten.** A blanked value's old bytes can stay in a page SQLite has freed and not reused, and in the WAL, until those pages are reused or the file is vacuumed. A Durable Object does not let module or kernel code set `secure_delete` or run `VACUUM`. This is the same residue the spine's own redaction has always had; it is now written down.
 - **Attachment text is not reached.** An attachment carries no subject, so neither its bytes nor its extracted text index (#1575) is in an erasure.
+- **An erased search index needs SQLite 3.42+ to read.** Every serving runtime is past that, and a dump never carries the index; a self-host operator inspecting a scope file with an older `sqlite3` (Debian 12 ships 3.40.1) cannot query that index. A documented limit rather than a blocker: purging the erased bytes outweighs ad-hoc inspection with an old CLI (kernel-design §13.1, limit 12; `guide/running-locally`).
 - **One id space, one subject per call.** A customer and a staff member are both erased by their id (contact or principal, both ULIDs). Erasing a person known by two ids is two calls.
 
 ## Why
