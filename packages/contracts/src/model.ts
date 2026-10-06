@@ -26,7 +26,6 @@ import { emitLifecycles, type EmittedLifecycle, type LifecycleDef } from './life
 import { isKernelNamespace } from './object-ref.js';
 import type { EntityStateDeclaration } from './entity-state.js';
 import { permissionKey } from './ids.js';
-import { ROW_CURSORS_KEY } from './pagination.js';
 
 /**
  * One entity: the table it lives in, its field schema, and its place in the
@@ -211,25 +210,7 @@ export function defineEntities<
   },
 >(entities: T): T {
   assertEntityNames(Object.keys(entities));
-  for (const [name, entity] of Object.entries(entities as Record<string, EntityDef>)) {
-    assertNoReservedField(`${name}.fields`, entity.fields);
-  }
   return entities;
-}
-
-/**
- * Refuse a field named `rowCursors` (#2073). The egress drops a property of that name at any
- * depth of every response (`ROW_CURSORS_KEY`), so a declared field of it would vanish from the
- * wire with nothing saying so. Said here, where the model is declared, instead.
- */
-export function assertNoReservedField(where: string, schema: unknown): void {
-  if (!(schema instanceof z.ZodObject)) return;
-  if (ROW_CURSORS_KEY in (schema.shape as Record<string, unknown>)) {
-    throw new Error(
-      `model: ${where} declares '${ROW_CURSORS_KEY}', a name the platform reserves for a page's ` +
-        'own row cursors — every response drops it. Rename the field',
-    );
-  }
 }
 
 /**

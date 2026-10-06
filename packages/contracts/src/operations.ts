@@ -26,7 +26,7 @@
  */
 import { LIST_PAGE_MAX, type CountedPage, type Page } from './pagination.js';
 import { z } from 'zod';
-import { assertNoReservedField, primaryKeyOf, type EmittedExport, type EntityDef, type EntityFields } from './model.js';
+import { primaryKeyOf, type EmittedExport, type EntityDef, type EntityFields } from './model.js';
 
 // ---------------------------------------------------------------------------
 // Reading an operation's own declarations back off itself.
@@ -788,11 +788,6 @@ export function defineOperations<
     operations: Ops,
   ): Ops => {
     assertListsArePaged(operations);
-    // #2073: `rowCursors` is reserved — every response drops it (`ROW_CURSORS_KEY`).
-    for (const [name, op] of Object.entries(operations as Record<string, { input?: unknown; output?: unknown }>)) {
-      assertNoReservedField(`'${name}' input`, op.input);
-      assertNoReservedField(`'${name}' output`, op.output);
-    }
     assertConcurrencyMovesVersion(operations);
     assertFieldBagsDeclareConcurrency(operations, entities, engines ?? []);
     return operations;

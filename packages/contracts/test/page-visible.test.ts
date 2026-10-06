@@ -6,9 +6,6 @@
  * the check refused. That is the oracle: not the page shape, but whose position the cursor is.
  */
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
-import { defineEntities } from '../src/model.js';
-import { defineOperations } from '../src/operations.js';
 import {
   mapPage,
   pageOf,
@@ -283,28 +280,24 @@ describe('rowCursors never leave the process (#2073)', () => {
     });
   }
 
+  it("leaves a rowCursors that is not a page's untouched — a domain field, opaque data", () => {
+    const value = {
+      entry: { id: 'a', rowCursors: ['kept'] },
+      opaque: { rowCursors: { any: 'thing' } },
+      // Has entries but no nextCursor: not a page, so not scrubbed.
+      almost: { entries: [], rowCursors: ['kept'] },
+      page: { entries: [{ id: 'a', rowCursors: 'kept-in-entry' }], nextCursor: null, rowCursors: ['HIDDEN'] },
+    };
+    const back = JSON.parse(serializeWithoutRowCursors(value)!);
+    expect(back.entry.rowCursors).toEqual(['kept']);
+    expect(back.opaque.rowCursors).toEqual({ any: 'thing' });
+    expect(back.almost.rowCursors).toEqual(['kept']);
+    expect(back.page.entries[0].rowCursors).toBe('kept-in-entry');
+    expect(back.page).not.toHaveProperty('rowCursors');
+  });
+
   it('leaves undefined as JSON leaves it', () => {
     expect(serializeWithoutRowCursors(undefined)).toBeUndefined();
     expect(withoutRowCursors(undefined)).toBeUndefined();
-  });
-});
-
-describe('rowCursors is a reserved name in a model (#2073)', () => {
-  it('defineEntities refuses an entity field of that name, and takes any other', () => {
-    expect(() =>
-      defineEntities({ note: { table: 'notes', fields: z.object({ id: z.string(), rowCursors: z.string() }) } }),
-    ).toThrow(/reserves/);
-    expect(() =>
-      defineEntities({ note: { table: 'notes', fields: z.object({ id: z.string(), cursors: z.string() }) } }),
-    ).not.toThrow();
-  });
-
-  it('defineOperations refuses it in a declared input or output, and takes any other', () => {
-    const define = defineOperations({}, ['x:read'] as const);
-    expect(() => define({ 'x/read': { input: z.object({ rowCursors: z.boolean() }) } } as never)).toThrow(/reserves/);
-    expect(() => define({ 'x/read': { output: z.object({ rowCursors: z.array(z.string()) }) } } as never)).toThrow(
-      /reserves/,
-    );
-    expect(() => define({ 'x/read': { output: z.object({ cursors: z.array(z.string()) }) } } as never)).not.toThrow();
   });
 });

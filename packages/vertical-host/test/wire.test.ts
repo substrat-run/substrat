@@ -185,6 +185,12 @@ describe('every external transport goes through the one door (#2073)', () => {
       });
     }
 
+    it(`${transport.name}: a rowCursors that is not a page's arrives untouched`, async () => {
+      const { text } = await transport.call({ q: 'x' }, { id: 'a', rowCursors: ['kept'], data: { rowCursors: { any: 'thing' } } });
+      expect(text).toContain('"rowCursors":["kept"]');
+      expect(text).toContain('"rowCursors":{"any":"thing"}');
+    });
+
     it(`${transport.name}: a caller cannot ask for rowCursors — the operation never sees the flag`, async () => {
       const { received } = await transport.call({ q: 'x', rowCursors: 'true' }, leaky());
       expect(received).toMatchObject({ q: 'x' });
