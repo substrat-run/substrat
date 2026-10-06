@@ -33,6 +33,7 @@ import { DELIVERY_DISCARDED } from '../src/module.js';
 import { buildHost, seed, signIdentity } from '../src/seed.js';
 import { DISCARD_BATCH_MAX, SPAM_MAX_LINKS_MAX, SPAM_REPEAT_MAX, ticket0Entities, ticket0Operations } from '../spec/model.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from './before-0021.js';
+import { listsBefore0027 } from './before-0027.js';
 import { createKit, ORIGIN, type ConversationRead, type Desk } from './desk-kit.js';
 
 const kit = createKit('ticket0-suspended-');
@@ -353,7 +354,8 @@ describe('a held conversation is out of the inbox, and the desk cannot work it',
       'set-agent-offboarded', 'add-kb-source', 'list-kb-sources', 'ingest-kb-source', 'record-kb-articles',
       'record-kb-ingest-failure', 'mint-kb-refresh-token', 'revoke-kb-refresh-token', 'redeem-kb-refresh-token',
       'search-kb', 'search-contacts', 'list-contacts', 'get-contact', 'list-tags', 'list-saved-replies', 'create-saved-reply',
-      'get-saved-reply', 'update-saved-reply', 'delete-saved-reply', 'set-usage-rate', 'close-usage-period',
+      'get-saved-reply', 'update-saved-reply', 'delete-saved-reply', 'share-saved-reply', 'list-saved-reply-folders',
+      'create-saved-reply-folder', 'rename-saved-reply-folder', 'delete-saved-reply-folder', 'set-usage-rate', 'close-usage-period',
       'widget-origins', 'assistant-mode', 'widget-start', 'signup-origins', 'submit-signup', 'confirm-signup',
       'unsubscribe-signup', 'list-signups', 'signup-counts'];
     const d = await filtered({ agents: 1 });
@@ -1049,7 +1051,7 @@ describe('migration 0021 on an existing desk', () => {
         m.manifest.id === ticket0Manifest.id
           ? {
               ...m,
-              manifest: { ...m.manifest, lists: listsBefore0021(m.manifest.lists ?? []) },
+              manifest: { ...m.manifest, lists: listsBefore0021(listsBefore0027(m.manifest.lists ?? [])) },
               migrations: (m.migrations ?? []).filter((x) => x.version <= '0020'),
             }
           : m,
@@ -1272,6 +1274,12 @@ describe('events carry no outside text', () => {
       await (await as(desk.customer)).invoke('ticket0/submit-csat', {
         conversationId: rated.conversation_id, score: 5, comment: plant('csat.comment'),
       });
+      // A canned answer (#1087), written personal and then given to the desk, so the
+      // created, shared and (below) deleted events all pass by the scan.
+      const canned = (await admin.invoke('ticket0/create-saved-reply', {
+        title: plant('savedReply.title'), body: plant('savedReply.body'), personal: true,
+      })) as { id: string };
+      await admin.invoke('ticket0/share-saved-reply', { savedReplyId: canned.id });
 
       const file = join(dir, `${desk.tenant}__${desk.scope}.sqlite`);
       const read = <T,>(fn: (db: Database.Database) => T): T => {
@@ -1297,6 +1305,7 @@ describe('events carry no outside text', () => {
       await admin.invoke('ticket0/discard', { conversationId: junk.conversation_id });
       await admin.invoke('ticket0/suspend', { conversationId: posted.conversation_id });
       await admin.invoke('ticket0/discard', { conversationId: posted.conversation_id });
+      await admin.invoke('ticket0/delete-saved-reply', { savedReplyId: canned.id });
 
       const sentinels = [...planted.values()];
       const leaks = (events: { type: string; payload: string | null }[]) =>

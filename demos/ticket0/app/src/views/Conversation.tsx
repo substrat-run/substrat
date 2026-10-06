@@ -24,11 +24,12 @@ import {
   type Ticket0Client,
 } from '../api.js';
 import { agentName, agents, assignableStaff } from '../agents.js';
+import { everyPage } from '../staff.js';
 import { contactsWith, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
 import { PACE } from '../pace.js';
 import { latestOnly } from '../sequence.js';
-import { Avatar, EventDivider, OwnerPicker, StateBadge, Unassigned, clock } from '../ui.js';
+import { Avatar, EventDivider, OwnerPicker, StateBadge, Unassigned, ago, clock } from '../ui.js';
 
 interface Turn {
   id: string;
@@ -856,6 +857,16 @@ function Composer({
    * pressing it should know what it will do.
    */
   const [macro, setMacro] = useState<{ id: string; title: string; actions: MacroAction[] } | null>(null);
+  /**
+   * Every saved reply inserted since the last send, in the order they went in (#1087).
+   *
+   * Sending text that came from the library goes through `apply-saved-reply`, macro or
+   * not, because that is where a reply's use is counted: on the send, with the message,
+   * never on the insert. The macro (if any) is the reply whose actions run; the rest ride
+   * along as `alsoUsed` and are counted without acting. Emptying the composer forgets
+   * them, since none of their text is left to send.
+   */
+  const [used, setUsed] = useState<string[]>([]);
   /** What the last insert could not fill in. Lives HERE rather than in the picker,
    *  which unmounts the moment the text lands. */
   const [insertNote, setInsertNote] = useState<string | null>(null);
@@ -870,12 +881,15 @@ function Composer({
         // A forward runs no macro: a macro's reply is the customer's or a note, and its
         // actions are work on the customer's thread, not a question to somebody else.
         await api.forwardMessage({ conversationId: conv.id, to: to.trim(), body });
-      } else if (macro) {
+      } else if (used.length > 0) {
+        // Every pick is in `used`, the macro's too; the macro is the one whose actions run.
+        const savedReplyId = macro?.id ?? used[0]!;
         await api.applySavedReply({
           conversationId: conv.id,
-          savedReplyId: macro.id,
+          savedReplyId,
           body,
           visibility: internal ? 'internal' : 'public',
+          alsoUsed: used.filter((id) => id !== savedReplyId),
         });
       } else {
         await (internal
@@ -885,6 +899,7 @@ function Composer({
       setText('');
       setInsertNote(null);
       setMacro(null);
+      setUsed([]);
     });
   };
 
@@ -920,6 +935,7 @@ function Composer({
             // after one leaves the earlier macro's actions in place: the person
             // chose them and has not taken them back.
             if (reply.actions.length > 0) setMacro({ id: reply.id, title: reply.title, actions: reply.actions });
+            setUsed((u) => (u.includes(reply.id) ? u : [...u, reply.id]));
             setPicker(false);
             ta.current?.focus();
           }}
@@ -974,7 +990,10 @@ function Composer({
           <textarea
             ref={ta}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              if (e.target.value.trim() === '') setUsed([]);
+            }}
             onKeyDown={onKeyDown}
             rows={3}
             placeholder={look.placeholder}
@@ -1153,6 +1172,33 @@ function ActionsEditor({
   );
 }
 
+type Folder = Awaited<ReturnType<Ticket0Client['listSavedReplyFolders']>>['entries'][number];
+
+/** The editor's draft: an existing reply (`id`) or a new one (`id: null`). */
+interface ReplyDraft {
+  id: string | null;
+  title: string;
+  body: string;
+  actions: MacroAction[];
+  folderId: string | null;
+  /** Only a NEW reply chooses; an existing one is shared with Share, never back. */
+  personal: boolean;
+}
+
+/** "5m ago" inside a week, "on Oct 3" after it: `ago` answers either a span or a date. */
+const lastSent = (iso: string): string => {
+  const when = ago(iso);
+  return /^\d+[smhd]$/.test(when) ? `${when} ago` : `on ${when}`;
+};
+
+/** Most of what a failure can say, said once for every call in the picker. */
+const failure = (e: unknown, fallback: string): string =>
+  e instanceof ApiError && e.status === 412
+    ? 'Somebody else changed this while you had it open. Close and reopen it to see theirs.'
+    : e instanceof ApiError
+      ? e.message
+      : fallback;
+
 function SavedReplies({
   conversationId,
   staff,
@@ -1165,12 +1211,15 @@ function SavedReplies({
   onClose: () => void;
 }) {
   const [items, setItems] = useState<SavedReplyOut[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  /** Which folder the list shows: every reply, the unfiled ones, or one folder's. */
+  const [inFolder, setInFolder] = useState<'all' | 'none' | string>('all');
   const [q, setQ] = useState('');
   const [i, setI] = useState(0);
-  /** The reply being edited, as a draft — `null` means the list is just a list. */
-  const [draft, setDraft] = useState<{ id: string; title: string; body: string; actions: MacroAction[] } | null>(
-    null,
-  );
+  /** The reply being edited or written, as a draft — `null` means the list is just a list. */
+  const [draft, setDraft] = useState<ReplyDraft | null>(null);
+  /** The folder manager in place of the preview. */
+  const [managing, setManaging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** Which reply's Delete button is asking a second time. A deletion is not undoable
@@ -1185,21 +1234,36 @@ function SavedReplies({
    * delete, where it would read as the write having destroyed everything.
    */
   const reload = () =>
-    api
-      .listSavedReplies()
-      .then((p) => {
-        setItems(p.entries);
+    // The WHOLE library, every page: the search below filters what was loaded, and a
+    // reply missing from the first page would look like a reply that does not exist.
+    Promise.all([
+      everyPage(
+        () => api.listSavedReplies({}),
+        (next) => api.follow<SavedReplyOut>(next),
+      ),
+      everyPage(
+        () => api.listSavedReplyFolders(),
+        (next) => api.follow<Folder>(next),
+      ),
+    ])
+      .then(([replies, f]) => {
+        setItems(replies);
+        setFolders(f);
         setError(null);
       })
-      .catch((e: unknown) =>
-        setError(e instanceof ApiError ? e.message : 'Could not load the saved replies.'),
-      );
+      .catch((e: unknown) => setError(failure(e, 'Could not load the saved replies.')));
 
   useEffect(() => {
     void reload();
   }, []);
 
-  const shown = items.filter((r) => (r.title + r.body).toLowerCase().includes(q.toLowerCase()));
+  const folderName = new Map(folders.map((f) => [f.id, f.name]));
+  // By title, as the library always listed: the server pages in id order now that the
+  // list is "shared or mine" and composed by its handler.
+  const shown = items
+    .filter((r) => inFolder === 'all' || r.folder_id === (inFolder === 'none' ? null : inFolder))
+    .filter((r) => (r.title + r.body).toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => a.title.localeCompare(b.title));
   const active = shown[Math.min(i, shown.length - 1)];
 
   // Moving off a row disarms its Delete. An armed confirmation that survives a walk
@@ -1209,13 +1273,27 @@ function SavedReplies({
     if (confirming !== null && confirming !== active?.id) setConfirming(null);
   }, [active?.id, confirming]);
 
+  /** Run one write, say what went wrong, and reload the library when it went right. */
+  const write = (call: () => Promise<unknown>, fallback: string, after?: () => void) => {
+    setBusy(true);
+    void call()
+      .then(async () => {
+        after?.();
+        setError(null);
+        await reload();
+      })
+      .catch((e: unknown) => setError(failure(e, fallback)))
+      .finally(() => setBusy(false));
+  };
+
   /**
    * Insert the SERVER's rendering, never the raw body.
    *
    * If the render fails the raw text still goes in: a desk that cannot paste a
    * canned answer because a placeholder could not be filled is worse than one that
    * pastes `{{contact.name}}` for a person to fix. The failure is said out loud
-   * rather than swallowed.
+   * rather than swallowed. Inserting counts nothing: a use is counted when the
+   * message is sent.
    */
   const pick = (reply: SavedReplyOut) => {
     setBusy(true);
@@ -1251,39 +1329,49 @@ function SavedReplies({
     // An armed Delete must not survive the trip through the editor: click Delete,
     // click Edit, cancel, and the next single click would delete without asking.
     setConfirming(null);
+    setManaging(false);
     setBusy(true);
     void api
       .getSavedReply({ savedReplyId: reply.id })
-      .then((r) => setDraft({ id: r.id, title: r.title, body: r.body, actions: r.actions }))
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : 'Could not open that reply.'))
+      .then((r) =>
+        setDraft({
+          id: r.id,
+          title: r.title,
+          body: r.body,
+          actions: r.actions,
+          folderId: r.folder_id,
+          personal: r.owner !== null,
+        }),
+      )
+      .catch((e: unknown) => setError(failure(e, 'Could not open that reply.')))
       .finally(() => setBusy(false));
+  };
+
+  /** A blank draft, filed where the list is looking and the desk's unless switched. */
+  const compose = () => {
+    setConfirming(null);
+    setManaging(false);
+    setDraft({
+      id: null,
+      title: '',
+      body: '',
+      actions: [],
+      folderId: inFolder === 'all' || inFolder === 'none' ? null : inFolder,
+      personal: false,
+    });
   };
 
   const save = () => {
     if (!draft) return;
-    setBusy(true);
-    void api
-      .updateSavedReply({
-        savedReplyId: draft.id,
-        title: draft.title,
-        body: draft.body,
-        actions: draft.actions,
-      })
-      .then(async () => {
-        setDraft(null);
-        setError(null);
-        await reload();
-      })
-      .catch((e: unknown) =>
-        setError(
-          e instanceof ApiError && e.status === 412
-            ? 'Somebody else changed this reply while you had it open. Close and reopen it to see theirs.'
-            : e instanceof ApiError
-              ? e.message
-              : 'Could not save that reply.',
-        ),
-      )
-      .finally(() => setBusy(false));
+    const { id, title, body, actions, folderId, personal } = draft;
+    write(
+      () =>
+        id === null
+          ? api.createSavedReply({ title, body, actions, personal, ...(folderId ? { folderId } : {}) })
+          : api.updateSavedReply({ savedReplyId: id, title, body, actions, folderId }),
+      'Could not save that reply.',
+      () => setDraft(null),
+    );
   };
 
   const remove = (reply: SavedReplyOut) => {
@@ -1291,18 +1379,15 @@ function SavedReplies({
       setConfirming(reply.id);
       return;
     }
-    setBusy(true);
-    void api
-      .deleteSavedReply({ savedReplyId: reply.id })
-      .then(async () => {
-        setDraft(null);
-        setConfirming(null);
-        setError(null);
-        await reload();
-      })
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : 'Could not delete that reply.'))
-      .finally(() => setBusy(false));
+    write(() => api.deleteSavedReply({ savedReplyId: reply.id }), 'Could not delete that reply.', () => {
+      setDraft(null);
+      setConfirming(null);
+    });
   };
+
+  /** One way: a shared reply is the desk's from then on. */
+  const share = (reply: SavedReplyOut) =>
+    write(() => api.shareSavedReply({ savedReplyId: reply.id }), 'Could not share that reply.');
 
   return (
     <div
@@ -1322,17 +1407,18 @@ function SavedReplies({
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           if (draft) setDraft(null);
+          else if (managing) setManaging(false);
           else onClose();
           return;
         }
         // While the editor is open the arrows belong to the textarea, not the list.
-        if (draft) return;
+        if (draft || managing) return;
         if (e.key === 'ArrowDown') setI((n) => Math.min(shown.length - 1, n + 1));
         if (e.key === 'ArrowUp') setI((n) => Math.max(0, n - 1));
         if (e.key === 'Enter' && active) pick(active);
       }}
     >
-      <div style={{ padding: 10, borderBottom: '1px solid var(--hairline)' }}>
+      <div style={{ padding: 10, borderBottom: '1px solid var(--hairline)', display: 'flex', gap: 8 }}>
         <input
           autoFocus
           className="input"
@@ -1340,6 +1426,21 @@ function SavedReplies({
           value={q}
           onChange={(e) => setQ(e.target.value)}
           disabled={draft !== null}
+          style={{ flex: 1 }}
+        />
+        <FolderSelect
+          folders={folders}
+          value={inFolder}
+          onChange={(v) => {
+            setInFolder(v);
+            setI(0);
+          }}
+          disabled={draft !== null}
+          style={{ width: 150 }}
+          none={[
+            ['all', 'All folders'],
+            ['none', 'Unfiled'],
+          ]}
         />
       </div>
       {error ? (
@@ -1354,7 +1455,7 @@ function SavedReplies({
         <div style={{ borderRight: '1px solid var(--hairline)', overflowY: 'auto', maxHeight: 260 }}>
           {shown.length === 0 ? (
             <div className="t-small" style={{ padding: 14 }}>
-              Nothing saved yet.
+              {items.length === 0 ? 'Nothing saved yet.' : 'Nothing here.'}
             </div>
           ) : (
             shown.map((r, n) => (
@@ -1371,7 +1472,11 @@ function SavedReplies({
                 }}
               >
                 <div style={{ font: "500 12px 'Geist', sans-serif" }}>{r.title}</div>
-                <div className="t-small mono">;{r.title.toLowerCase().replace(/\s+/g, '-')}</div>
+                <div className="t-small mono">
+                  {r.owner !== null ? 'yours · ' : ''}
+                  {r.use_count === 0 ? 'never sent' : `sent ${r.use_count}×`}
+                  {inFolder === 'all' && r.folder_id ? ` · ${folderName.get(r.folder_id) ?? ''}` : ''}
+                </div>
               </div>
             ))
           )}
@@ -1402,6 +1507,27 @@ function SavedReplies({
               staff={staff}
               onChange={(actions) => setDraft({ ...draft, actions })}
             />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <FolderSelect
+                folders={folders}
+                value={draft.folderId ?? ''}
+                onChange={(v) => setDraft({ ...draft, folderId: v === '' ? null : v })}
+                style={{ flex: 1 }}
+                none={[['', 'Unfiled']]}
+              />
+              {draft.id === null ? (
+                <label className="t-small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={draft.personal}
+                    onChange={(e) => setDraft({ ...draft, personal: e.target.checked })}
+                  />
+                  Only for me
+                </label>
+              ) : (
+                <span className="t-small">{draft.personal ? 'Only you see this one' : 'The whole desk sees this one'}</span>
+              )}
+            </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button
                 className="btn btn-primary"
@@ -1415,6 +1541,8 @@ function SavedReplies({
               </button>
             </div>
           </div>
+        ) : managing ? (
+          <FolderManager folders={folders} busy={busy} write={write} onDone={() => setManaging(false)} />
         ) : (
           <div style={{ padding: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ font: "400 12px/1.65 'Geist', sans-serif", color: 'var(--secondary)', flex: 1 }}>
@@ -1429,10 +1557,26 @@ function SavedReplies({
               </div>
             ) : null}
             {active ? (
+              <div className="t-small">
+                {active.owner !== null ? 'Only you see this one. ' : ''}
+                {active.last_used_at ? `Last sent ${lastSent(active.last_used_at)}.` : 'Not sent since usage was counted.'}
+              </div>
+            ) : null}
+            {active ? (
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn" disabled={busy} onClick={() => edit(active)}>
                   Edit
                 </button>
+                {active.owner !== null ? (
+                  <button
+                    className="btn btn-ghost"
+                    disabled={busy}
+                    title="Give it to the whole desk. This cannot be undone: a shared reply stays shared."
+                    onClick={() => share(active)}
+                  >
+                    Share with the desk
+                  </button>
+                ) : null}
                 <button className="btn btn-ghost" disabled={busy} onClick={() => remove(active)}>
                   {confirming === active.id ? 'Delete — click again' : 'Delete'}
                 </button>
@@ -1445,15 +1589,155 @@ function SavedReplies({
         style={{
           display: 'flex',
           justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 8,
           padding: '8px 12px',
           borderTop: '1px solid var(--hairline)',
           background: 'var(--app-bg)',
         }}
       >
         <span className="t-small mono">
-          {draft ? 'esc cancels the edit' : '↑↓ browse · ↵ insert · esc'}
+          {draft ? 'esc cancels the edit' : '↑↓ browse · ↵ insert, nothing sends · esc'}
         </span>
-        <span className="t-small">Inserted as editable text — nothing sends on insert.</span>
+        {draft ? null : (
+          <span style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => setManaging((m) => !m)}>
+              {managing ? 'Close folders' : 'Folders…'}
+            </button>
+            <button className="btn" disabled={busy} onClick={compose}>
+              New reply
+            </button>
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** A choice of folder, after the `none` choices that are not a folder (every one, unfiled). */
+function FolderSelect({
+  folders,
+  value,
+  onChange,
+  none,
+  disabled,
+  style,
+}: {
+  folders: Folder[];
+  value: string;
+  onChange: (value: string) => void;
+  none: [value: string, label: string][];
+  disabled?: boolean;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <select
+      className="input"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      style={style}
+      aria-label="Folder"
+    >
+      {[...none, ...folders.map((f): [string, string] => [f.id, f.name])].map(([v, label]) => (
+        <option key={v} value={v}>
+          {label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
+ * The desk's folders: add, rename, remove. Removing one unfiles its replies and deletes
+ * none of them, which is what the confirmation says before the second click.
+ */
+function FolderManager({
+  folders,
+  busy,
+  write,
+  onDone,
+}: {
+  folders: Folder[];
+  busy: boolean;
+  write: (call: () => Promise<unknown>, fallback: string, after?: () => void) => void;
+  onDone: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  return (
+    <div style={{ padding: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {folders.length === 0 ? <div className="t-small">No folders yet.</div> : null}
+      {folders.map((f) =>
+        renaming?.id === f.id ? (
+          <div key={f.id} style={{ display: 'flex', gap: 6 }}>
+            <input
+              autoFocus
+              className="input"
+              value={renaming.name}
+              onChange={(e) => setRenaming({ id: f.id, name: e.target.value })}
+              style={{ flex: 1 }}
+            />
+            <button
+              className="btn"
+              disabled={busy || renaming.name.trim() === ''}
+              onClick={() =>
+                write(
+                  () => api.renameSavedReplyFolder({ folderId: f.id, name: renaming.name }),
+                  'Could not rename that folder.',
+                  () => setRenaming(null),
+                )
+              }
+            >
+              Save
+            </button>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => setRenaming(null)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <div key={f.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ flex: 1, font: "500 12px 'Geist', sans-serif" }}>{f.name}</span>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => setRenaming({ id: f.id, name: f.name })}>
+              Rename
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() =>
+                confirming === f.id
+                  ? write(() => api.deleteSavedReplyFolder({ folderId: f.id }), 'Could not remove that folder.', () =>
+                      setConfirming(null),
+                    )
+                  : setConfirming(f.id)
+              }
+            >
+              {confirming === f.id ? 'Remove — its replies become unfiled' : 'Remove'}
+            </button>
+          </div>
+        ),
+      )}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          className="input"
+          placeholder="New folder"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        <button
+          className="btn"
+          disabled={busy || name.trim() === ''}
+          onClick={() => write(() => api.createSavedReplyFolder({ name }), 'Could not add that folder.', () => setName(''))}
+        >
+          Add
+        </button>
+      </div>
+      <div>
+        <button className="btn btn-ghost" disabled={busy} onClick={onDone}>
+          Done
+        </button>
       </div>
     </div>
   );

@@ -102,9 +102,11 @@ async function openSession(desk: Desk, identify = true) {
  * events an operation makes, it has to read the spine. The audit-spine block below reads
  * the newest one instead, which is a different question.
  */
-function outboxCount(desk: Desk, type: string): number {
+function outboxCount(desk: Desk, type: string, entityId?: string): number {
   const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`), { readonly: true });
-  const row = db.prepare('SELECT COUNT(*) AS n FROM _substrat_outbox WHERE type = ?').get(type) as {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM _substrat_outbox WHERE type = ?${entityId ? ' AND entity_id = ?' : ''}`)
+    .get(...(entityId ? [type, entityId] : [type])) as {
     n: number;
   };
   db.close();
@@ -2210,7 +2212,7 @@ describe('the audit spine', () => {
     const row = db
       .prepare('SELECT * FROM _substrat_outbox WHERE type = ? ORDER BY id DESC LIMIT 1')
       .get(type) as
-      | { entity_type: string; entity_id: string; pii_class: string; payload: string | null }
+      | { entity_type: string; entity_id: string; pii_class: string; schema_version: number; payload: string | null }
       | undefined;
     db.close();
     return row;
@@ -2283,15 +2285,15 @@ describe('the audit spine', () => {
     const evt = outbox(world.substrat, 'ticket0.saved-reply-created')!;
     expect(evt).toBeDefined();
     expect(evt.entity_id).toBe(reply.id);
-    // The whole row: a consumer must never need to come back and read it.
+    // Which reply, whose and where (v2, #1087), never what it says: the title and body
+    // are free text, `erasable`, and off every event.
+    expect(evt.schema_version).toBe(2);
     expect(JSON.parse(evt.payload!)).toEqual({
       id: reply.id,
-      title: 'Refund policy',
-      body: 'We refund within 30 days.',
+      owner: null,
+      folder_id: null,
       created_by: reply.created_by,
       created_at: reply.created_at,
-      // The action bag joined the payload in #1087; a reply with none says so.
-      actions: [],
     });
   });
 
@@ -2387,14 +2389,13 @@ describe('the audit spine', () => {
     const evt = outbox(world.substrat, 'ticket0.saved-reply-updated')!;
     expect(evt).toBeDefined();
     expect(evt.entity_id).toBe(reply.id);
+    // Identifiers only (v2, #1087), as on creation.
     expect(JSON.parse(evt.payload!)).toEqual({
       id: reply.id,
-      title: 'Shipping times',
-      body: 'Three to five days.',
+      owner: null,
+      folder_id: null,
       created_by: reply.created_by,
       created_at: reply.created_at,
-      // The action bag joined the payload in #1087; a reply with none says so.
-      actions: [],
     });
 
     // Saving the same values again is not an edit, so the outbox still shows the
@@ -2456,8 +2457,9 @@ describe('the audit spine', () => {
       savedReplyId: reply.id,
     })) as { body: string };
     expect(row.body).toBe('Anna’s version.');
-    const evt = outbox(world.substrat, 'ticket0.saved-reply-updated')!;
-    expect(JSON.parse(evt.payload!).body).toBe('Anna’s version.');
+    // Exactly one edit was announced about this reply: Anna's.
+    const updates = outboxCount(world.substrat, 'ticket0.saved-reply-updated', reply.id);
+    expect(updates).toBe(1);
   });
 
   it('a rename onto a title somebody else holds is refused', async () => {
@@ -2488,8 +2490,9 @@ describe('the audit spine', () => {
     const evt = outbox(world.substrat, 'ticket0.saved-reply-deleted')!;
     expect(evt).toBeDefined();
     expect(evt.entity_id).toBe(reply.id);
-    // The title rides, because after this there is nowhere left to read it from.
-    expect(JSON.parse(evt.payload!)).toEqual({ id: reply.id, title: 'Out of date' });
+    // The answer carries the title, since nothing else is left to read it from; the event
+    // keeps the id only (v2, #1087), because the title is free text and `erasable`.
+    expect(JSON.parse(evt.payload!)).toEqual({ id: reply.id });
 
     const page = (await anna.invoke('ticket0/list-saved-replies', {})) as Page<{ id: string }>;
     expect(page.entries.map((r) => r.id)).not.toContain(reply.id);

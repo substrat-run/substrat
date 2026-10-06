@@ -1082,6 +1082,26 @@ export const ticket0Entities = defineEntities({
     outsideText: ['email_message_id'],
   },
 
+  /**
+   * A folder the desk files its canned answers in (#1087). Flat: a desk's library is
+   * tens of replies, and a tree would be navigation where a word is enough.
+   *
+   * One set per desk, shared by everyone, and a personal reply may be filed in a shared
+   * folder: the folder is a label on the library, not a second library. Deleting one
+   * unfiles its replies rather than deleting them, which is safe because a folder is not
+   * part of a reply's identity (`savedReply.key`).
+   */
+  savedReplyFolder: {
+    table: 'ticket0_saved_reply_folders',
+    fields: z.object({
+      id: z.string(),
+      name: z.string(),
+      created_by: z.string(),
+      created_at: z.string(),
+    }),
+    key: ['name'],
+  },
+
   /** A canned answer. Every desk grows these; better to ship the table than to watch
    *  them accumulate as browser bookmarks. */
   savedReply: {
@@ -1093,6 +1113,30 @@ export const ticket0Entities = defineEntities({
       created_by: z.string(),
       created_at: z.string(),
       /**
+       * Whose reply it is (#1087). `''` is the desk's, shared with every colleague; a
+       * principal id is that person's alone, and to anybody else it does not exist.
+       *
+       * The empty string rather than NULL because of the key: SQLite treats every NULL
+       * as distinct, so `UNIQUE (owner, title)` would hold for personal replies and let
+       * two shared replies take one title. No principal id is empty, so `''` names
+       * nobody. Never handed out as stored: `savedReplyPublic` says `null` for shared.
+       */
+      owner: z.string(),
+      /** The folder it is filed in, or null for unfiled. A `savedReplyFolder` id. */
+      folder_id: z.string().nullable(),
+      /**
+       * How many sent messages an agent ATTESTED used it (#1087). Moved by
+       * `apply-saved-reply` alone, in the transaction that writes the message, so a
+       * preview, an insert into the composer or an abandoned draft counts nothing. It is
+       * attested rather than proven: the server checks that the sender may use the reply
+       * and counts it at most once per message, but it does not try to find the reply's
+       * text in what was sent, which placeholders and edits would make an undercount
+       * nobody sees. Zero for every reply older than the column.
+       */
+      use_count: z.number(),
+      /** When a sent message last used it. Null is never, since the counter existed. */
+      last_used_at: z.string().nullable(),
+      /**
        * The action bag (#1087), as JSON: a `macroActions` array. It is never read as
        * a string anywhere outside `src/module.ts`. Every operation hands it out parsed
        * (`savedReplyPublic`).
@@ -1102,7 +1146,23 @@ export const ticket0Entities = defineEntities({
        */
       actions: z.string().nullable(),
     }),
-    key: ['title'],
+    // Unique per owner: the desk has one "Refund", and so may each agent. Not per
+    // folder, so filing, moving and unfiling can never collide; only sharing can.
+    key: ['owner', 'title'],
+    /**
+     * Free text a person typed (#1087), and so `erasable` like a message's body, a CSAT
+     * comment or an agent's signature: it may name a customer, and it never rides an
+     * event, which the compiler now refuses. That is also what keeps a PERSONAL reply
+     * personal on the desk's trail: its events say which reply, never what it says.
+     *
+     * What it does NOT do yet: reach the stored row. `shredSubject` redacts the spine and
+     * never a vertical's own table, so erasing a subject, a customer or the agent who owns
+     * a personal reply, leaves this row as it is, exactly as it leaves a message body or a
+     * signature. The `onSubjectErased` hook that would bring it in is unbuilt (#2068).
+     * Until then a shared reply is desk content tied to no customer: write placeholders
+     * (`SAVED_REPLY_VARIABLES`), never a customer's details, into a canned answer.
+     */
+    erasable: ['title', 'body'],
   },
 
   /** One satisfaction score per conversation, once. Keyed by the conversation for
@@ -1690,6 +1750,17 @@ export const TICKET0_PERMISSIONS = [
    * desk.
    */
   'conversation:escalate',
+  /**
+   * Curate the desk's SHARED saved replies (#1087): add, change and remove the replies
+   * every colleague sees, manage the folders they are filed in, and share a personal
+   * reply with the desk.
+   *
+   * Its own key, because `conversation:draft` is held by the assistant roles too, and
+   * under that key alone the assistant could rewrite the canned answers every agent
+   * pastes. A personal reply needs only `conversation:draft`: it reaches nobody but the
+   * person who wrote it. Held by the two human staff roles and no service.
+   */
+  'saved-reply:manage',
   'contact:read',
   'kb:read',
   'kb:manage',
@@ -1741,11 +1812,19 @@ const deskPublic = ticket0Entities.deskSettings.fields.omit({
 
 /**
  * A saved reply as every operation hands it out: the action bag parsed, never the JSON
- * text it is stored as. Declared once for `kbSourcePublic`'s reason.
+ * text it is stored as, and `owner` null for a shared reply rather than the `''` the key
+ * needs. Declared once for `kbSourcePublic`'s reason.
  */
 const savedReplyPublic = ticket0Entities.savedReply.fields
-  .omit({ actions: true })
-  .extend({ actions: macroActions });
+  .omit({ actions: true, owner: true })
+  .extend({
+    actions: macroActions,
+    /** The person whose reply it is, or null when it is the desk's, shared. */
+    owner: z.string().nullable(),
+  });
+
+/** How many other saved replies one sent message may say it also used. */
+export const SAVED_REPLY_ALSO_USED_MAX = 10;
 
 /**
  * A message as a CUSTOMER reads it — the widget's thread and the portal's — declared once
@@ -3608,14 +3687,37 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
 
   // ─── Saved replies ───────────────────────────────────────────────────────────
 
+  /**
+   * The canned answers the caller may use: the desk's shared ones and their own.
+   *
+   * Never a colleague's personal reply, desk-admin included. The page is composed by
+   * the handler (`sortKey`), because "shared or mine" is a rule about the caller and no
+   * declared filter can say it: a filter a client may set is a filter a client may
+   * set to somebody else. Oldest first by id; the picker orders what it shows itself.
+   */
   'ticket0/list-saved-replies': {
-    summary: 'The desk’s canned answers',
+    summary: 'The canned answers you may use: the desk’s shared ones and your own',
     permission: 'conversation:draft',
+    input: z.object({
+      /** Only the replies filed in this folder. Absent is every folder and none. */
+      folderId: z.string().optional(),
+    }),
     output: savedReplyPublic,
-    paged: { over: { entity: 'savedReply', sortable: ['title', 'created_at'] } },
+    paged: { sortKey: 'id' },
     http: { method: 'GET', path: '/saved-replies' },
   },
 
+  /**
+   * Save a canned answer, for the desk or for yourself.
+   *
+   * Shared is the default, as it was before personal replies existed, and it needs
+   * `saved-reply:manage` as well: a shared reply is pasted by every colleague. A
+   * personal one needs only the draft key, because nobody else will ever see it.
+   *
+   * The same title from the same owner returns the reply that already holds it, as it
+   * always has. The title is unique per owner (`savedReply.key`), so an agent's
+   * personal "Refund" and the desk's are two replies.
+   */
   'ticket0/create-saved-reply': {
     summary: 'Save a canned answer',
     permission: 'conversation:draft',
@@ -3624,6 +3726,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       body: z.string().min(1),
       /** What the reply also does when it is applied (#1087). Absent is none. */
       actions: macroActions.optional(),
+      /** Yours alone rather than the desk's. Absent is shared. */
+      personal: z.boolean().optional(),
+      /** The folder to file it in. Absent is unfiled. */
+      folderId: z.string().optional(),
     }),
     output: savedReplyPublic,
     http: { method: 'POST', path: '/saved-replies' },
@@ -3631,11 +3737,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'savedReply',
       entityIdFrom: 'id',
       type: 'ticket0.saved-reply-created',
-      schemaVersion: 1,
       piiClass: 'none',
-      // `actions` joined in #1087, additively. What a macro DOES is the part of it a
-      // reviewer of the trail cares about, so it rides on the event.
-      payload: ['id', 'title', 'body', 'created_by', 'created_at', 'actions'],
+      // v2 (#1087): identifiers only. `title` and `body` are free text and `erasable`, so no
+      // event carries them; and a PERSONAL reply's event must not say what it does either,
+      // so `actions` left with them. One declared shape per type, so the shared reply's
+      // event is the same shape. What a macro does still reaches the trail when it runs:
+      // each action emits its own event about the conversation.
+      schemaVersion: 2,
+      payload: ['id', 'owner', 'folder_id', 'created_by', 'created_at'],
     },
   },
 
@@ -3678,9 +3787,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * because its row is keyed by the caller and so has no id for `concurrency` to
    * name. This one does have an id, so it takes the better answer.
    *
-   * The title stays unique — `savedReply.key` says so — and a rename onto another
-   * reply's title is a `conflict` rather than a silent no-op, since the caller
+   * The title stays unique per owner — `savedReply.key` says so — and a rename onto
+   * another reply's title is a `conflict` rather than a silent no-op, since the caller
    * plainly meant to end up with the name they typed.
+   *
+   * Whose reply decides who may change it (#1087). A personal reply is its owner's
+   * alone, and to anybody else it is `not_found`, the same answer an id that names
+   * nothing gets, so a refusal does not confirm the reply exists. A shared one also
+   * needs `saved-reply:manage`, the key that curates what every colleague pastes.
    */
   'ticket0/update-saved-reply': {
     summary: 'Change a canned answer',
@@ -3691,6 +3805,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       body: z.string().min(1).optional(),
       /** The whole bag, replaced. `[]` empties it; absent leaves it. */
       actions: macroActions.optional(),
+      /** The folder to file it in; `null` unfiles it; absent leaves it. */
+      folderId: z.string().nullable().optional(),
     }),
     output: savedReplyPublic,
     http: { method: 'PATCH', path: '/saved-replies/{savedReplyId}' },
@@ -3699,9 +3815,41 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'savedReply',
       entityIdFrom: 'id',
       type: 'ticket0.saved-reply-updated',
+      // v2 (#1087): identifiers only, for `saved-reply-created`'s reasons.
+      schemaVersion: 2,
+      piiClass: 'none',
+      payload: ['id', 'owner', 'folder_id', 'created_by', 'created_at'],
+    },
+  },
+
+  /**
+   * Give a personal reply to the desk (#1087): it becomes shared, and every colleague
+   * sees it from then on.
+   *
+   * One way. A shared reply is never taken back into one person's keeping: colleagues
+   * may already rely on it, and "unshare" would be a delete that leaves the row in one
+   * person's hands. Deleting it (with the same key) is the honest way to retire it.
+   *
+   * Only the owner may share it, since to anybody else it does not exist, and only
+   * with `saved-reply:manage`, since what it creates is a shared reply. A shared reply
+   * already holding the title is a `conflict`: the caller renames one of the two
+   * first. Sharing a reply that is already shared changes nothing and announces
+   * nothing.
+   */
+  'ticket0/share-saved-reply': {
+    summary: 'Share a personal canned answer with the desk',
+    permission: 'saved-reply:manage',
+    input: z.object({ savedReplyId: z.string() }),
+    output: savedReplyPublic,
+    http: { method: 'POST', path: '/saved-replies/{savedReplyId}/share' },
+    concurrency: { over: 'savedReply', idFrom: 'savedReplyId' },
+    emits: {
+      entity: 'savedReply',
+      entityIdFrom: 'id',
+      type: 'ticket0.saved-reply-shared',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'title', 'body', 'created_by', 'created_at', 'actions'],
+      payload: ['id', 'created_by'],
     },
   },
 
@@ -3719,8 +3867,11 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * A delete over a version the caller has not seen destroys someone else's edit
    * just as completely as an overwrite does, and more permanently.
    *
-   * The title rides on the way out, and on the event, because after this there is
-   * nowhere left to read it from.
+   * The title rides on the way out, because after this there is nowhere left to read it
+   * from. Not on the event: it is free text, `erasable`, and the trail keeps the id.
+   *
+   * Who may delete it is who may change it: the owner of a personal reply, and for a
+   * shared one the holder of `saved-reply:manage` (see `update-saved-reply`).
    */
   'ticket0/delete-saved-reply': {
     summary: 'Delete a canned answer',
@@ -3733,9 +3884,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entity: 'savedReply',
       entityIdFrom: 'id',
       type: 'ticket0.saved-reply-deleted',
-      schemaVersion: 1,
+      // v2 (#1087): the id only. The title is free text, `erasable`, and off every event.
+      schemaVersion: 2,
       piiClass: 'none',
-      payload: ['id', 'title'],
+      payload: ['id'],
     },
   },
 
@@ -3809,6 +3961,24 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * whatever edits they made in the composer. Absent, the saved reply is rendered here
    * exactly as `render-saved-reply` renders it. No key is needed to choose your own
    * words, because the reply operation's key is already in the union.
+   *
+   * **This is where a saved reply's use is counted** (#1087), and nowhere else: the
+   * message and the count are one transaction, so a reply that was previewed, inserted
+   * and then abandoned counts nothing, and a sent one counts exactly once. A reply with
+   * no actions is applied too, so the composer sends any text that came from the
+   * library through here. `alsoUsed` names the other replies the agent inserted into the
+   * same message. Each one is counted but runs no actions: the macro whose bag runs is
+   * `savedReplyId`, as before. Every id is resolved by the server and must be a reply the
+   * caller may use, in this desk, or the whole send is refused. Skipping it quietly would
+   * let a client count replies it cannot see.
+   *
+   * **The count is ATTESTED, not proven.** It means "an agent said this reply went into a
+   * message they sent". The server bounds the claim: only ids the sender may use, each
+   * counted at most once per message (`savedReplyId` and `alsoUsed` deduplicated together),
+   * and the event names who attested it, as every event's actor does. It does not look for
+   * the reply's text in `body`. Placeholders and the agent's own edits change that text,
+   * so a containment check would quietly undercount the replies that were used most
+   * carefully, and an undercount nobody sees is worse than a claim with a name on it.
    */
   'ticket0/apply-saved-reply': {
     summary: 'Send a canned answer and run its actions, all or nothing',
@@ -3819,6 +3989,11 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       body: z.string().min(1).optional(),
       /** Public by default: that is what a canned answer is for. `internal` posts it as a note. */
       visibility: z.enum(['public', 'internal']).optional(),
+      /**
+       * Other saved replies the sender attests went into `body`. Each is counted once as used
+       * (an attestation, not a check of the text); their actions do not run.
+       */
+      alsoUsed: z.array(z.string()).max(SAVED_REPLY_ALSO_USED_MAX).optional(),
     }),
     output: z.object({
       saved_reply_id: z.string(),
@@ -3826,6 +4001,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       message_id: z.string(),
       /** The action types, in the order they ran. */
       actions: z.array(z.string()),
+      /** The other replies this message counted as used, deduplicated, `saved_reply_id` excluded. */
+      also_used: z.array(z.string()),
       /** The conversation as the last action left it. */
       conversation: ticket0Entities.conversation.fields,
     }),
@@ -3835,14 +4012,90 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     },
     emits: {
       // About the MACRO: the reply and each action already publish their own event
-      // about the conversation. This one says which canned answer did it, which is the
-      // fact a usage count will be read from.
+      // about the conversation. This one says which canned answers the sender attests went
+      // into the message; the count itself is `use_count`, moved in the same transaction.
       entity: 'savedReply',
       entityIdFrom: 'saved_reply_id',
       type: 'ticket0.saved-reply-applied',
+      // v2 (#1087): `actions` left, for `saved-reply-created`'s reason: a PERSONAL macro's
+      // event reaches the whole desk and must not say what the macro does. Nothing is lost
+      // from the trail: each action that ran emitted its own event about the conversation.
+      schemaVersion: 2,
+      piiClass: 'none',
+      payload: ['saved_reply_id', 'conversation_id', 'message_id', 'also_used'],
+    },
+  },
+
+  // ─── Saved-reply folders ──────────────────────────────────────────────────────
+
+  /** The desk's folders. Everyone who may use a saved reply may see where they are filed. */
+  'ticket0/list-saved-reply-folders': {
+    summary: 'The folders the desk files its canned answers in',
+    permission: 'conversation:draft',
+    output: ticket0Entities.savedReplyFolder.fields,
+    paged: { over: { entity: 'savedReplyFolder', sortable: ['name'] } },
+    http: { method: 'GET', path: '/saved-reply-folders' },
+  },
+
+  /** A new folder. The same name returns the folder that already holds it, as a reply's title does. */
+  'ticket0/create-saved-reply-folder': {
+    summary: 'Add a folder for canned answers',
+    permission: 'saved-reply:manage',
+    input: z.object({ name: z.string().trim().min(1) }),
+    output: ticket0Entities.savedReplyFolder.fields,
+    http: { method: 'POST', path: '/saved-reply-folders' },
+    emits: {
+      entity: 'savedReplyFolder',
+      entityIdFrom: 'id',
+      type: 'ticket0.saved-reply-folder-created',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['saved_reply_id', 'conversation_id', 'message_id', 'actions'],
+      payload: ['id', 'name', 'created_by', 'created_at'],
+    },
+  },
+
+  /** Rename a folder. A name another folder holds is a `conflict`, as a reply's rename is. */
+  'ticket0/rename-saved-reply-folder': {
+    summary: 'Rename a folder of canned answers',
+    permission: 'saved-reply:manage',
+    input: z.object({ folderId: z.string(), name: z.string().trim().min(1) }),
+    output: ticket0Entities.savedReplyFolder.fields,
+    http: { method: 'PATCH', path: '/saved-reply-folders/{folderId}' },
+    concurrency: { over: 'savedReplyFolder', idFrom: 'folderId' },
+    emits: {
+      entity: 'savedReplyFolder',
+      entityIdFrom: 'id',
+      type: 'ticket0.saved-reply-folder-renamed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'name'],
+    },
+  },
+
+  /**
+   * Remove a folder. Its replies are UNFILED, never deleted: a folder is a label, and
+   * removing a label must not take a colleague's canned answers with it. Nothing can
+   * collide on the way out, because a reply's title is unique per owner, not per
+   * folder.
+   *
+   * `unfiled` names the replies it moved, personal ones included, and ids only. The
+   * event is on the desk's trail, and a title would tell the desk what is in a
+   * colleague's personal library.
+   */
+  'ticket0/delete-saved-reply-folder': {
+    summary: 'Remove a folder; its canned answers become unfiled',
+    permission: 'saved-reply:manage',
+    input: z.object({ folderId: z.string() }),
+    output: z.object({ id: z.string(), name: z.string(), unfiled: z.array(z.string()) }),
+    http: { method: 'DELETE', path: '/saved-reply-folders/{folderId}' },
+    concurrency: { over: 'savedReplyFolder', idFrom: 'folderId' },
+    emits: {
+      entity: 'savedReplyFolder',
+      entityIdFrom: 'id',
+      type: 'ticket0.saved-reply-folder-deleted',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'name', 'unfiled'],
     },
   },
 

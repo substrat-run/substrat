@@ -35,6 +35,17 @@ begins with a stranger in a chat bubble on somebody else's page. It proves:
   a resolve on the way to closed would strand it in the inbox for good. Only resolving stamps
   `resolved_at`, and the reports count that stamp, so an emptied inbox moves no number. The
   customer-facing read is written once and strips author ids.
+- **Saved replies are a library, not a clipboard.** A canned answer is the desk's, shared, or
+  one agent's alone, and a colleague's personal reply does not exist to anybody else. Replies
+  file into flat folders. Each one counts how many sent messages used it. The count is
+  **attested**: the agent's composer says which replies went into a message, and the server
+  accepts only replies that agent may use, each at most once per message. It does not check
+  the text, because placeholders and edits would make that check undercount without telling
+  anyone. Curating the shared library takes `saved-reply:manage`, which the assistant roles
+  do not hold. A reply's title and body never ride an event. Like every vertical-owned table,
+  though, the stored reply is outside subject erasure until the module hook that would reach
+  it exists ([#2068](https://github.com/substrat-run/substrat/issues/2068)). So a canned
+  answer uses placeholders, not a customer's details.
 - **Failure is never silent.** A turn that could not answer carries its reason, the
   conversation draws it as a card, and *Settings → Assistant* says which model this install
   answers with and lists the newest failures.
@@ -45,7 +56,7 @@ begins with a stranger in a chat bubble on somebody else's page. It proves:
 |---|---|
 | **Package** | `@substrat-run/demo-ticket0` |
 | **Engines composed** | [`metering`](/engines/metering/) — the concept also names `invites`, but staff join through the platform's own identity invites, so no invites engine is composed |
-| **Own tables** | `ticket0_conversations` · `ticket0_messages` · `ticket0_contacts` · `ticket0_conversation_tags` · `ticket0_csat` · `ticket0_ai_turns` · `ticket0_usage_rates` · `ticket0_kb_sources` · `ticket0_kb_articles` · `ticket0_saved_replies` · `ticket0_agent_profiles` · `ticket0_notifications` · `ticket0_desk_settings` · `ticket0_widget_sessions` · `ticket0_widget_openings` · `ticket0_signups` |
+| **Own tables** | `ticket0_conversations` · `ticket0_messages` · `ticket0_contacts` · `ticket0_conversation_tags` · `ticket0_csat` · `ticket0_ai_turns` · `ticket0_usage_rates` · `ticket0_kb_sources` · `ticket0_kb_articles` · `ticket0_saved_replies` · `ticket0_saved_reply_folders` · `ticket0_agent_profiles` · `ticket0_notifications` · `ticket0_desk_settings` · `ticket0_widget_sessions` · `ticket0_widget_openings` · `ticket0_signups` |
 | **Roles** | `desk-admin` · `agent` · `customer` — plus six service roles: `assistant`, `assistant-autonomous`, `relay` (email in and out), `widget`, `signup` (holds `signup:submit` alone — the public signup form and its confirm/unsubscribe tokens) and `ingest` (holds `kb:refresh` alone — the principal a docs refresh hook runs as); a customer reaches their own conversation through an entity-narrowed `conversation:read-own` |
 | **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/ticket0/PERMISSIONS.md) — 22 keys · 2 modules · 9 roles |
 | **Auth** | [OIDC only](/concepts/identity) — no credential store; the dev issuer lists names instead of asking for a password |

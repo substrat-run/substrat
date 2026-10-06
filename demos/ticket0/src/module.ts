@@ -111,6 +111,7 @@ type ConversationRow = EntityRow<typeof ticket0Entities, 'conversation'>;
 type MessageRow = EntityRow<typeof ticket0Entities, 'message'>;
 type TagRow = EntityRow<typeof ticket0Entities, 'conversationTag'>;
 type SavedReplyRow = EntityRow<typeof ticket0Entities, 'savedReply'>;
+type SavedReplyFolderRow = EntityRow<typeof ticket0Entities, 'savedReplyFolder'>;
 type CsatRow = EntityRow<typeof ticket0Entities, 'csat'>;
 type SessionRow = EntityRow<typeof ticket0Entities, 'widgetSession'>;
 type OpeningRow = EntityRow<typeof ticket0Entities, 'widgetOpening'>;
@@ -385,11 +386,64 @@ function renderSavedReplyBody(
   };
 }
 
+/** The `owner` of the desk's own, shared saved replies (see `savedReply.owner`). */
+const SHARED_OWNER = '';
+
+/**
+ * A saved reply the CALLER may use: the desk's, or their own.
+ *
+ * A colleague's personal reply is `not_found` here, exactly as an id that names nothing
+ * is, so no answer from any operation tells the caller it exists. Every saved-reply
+ * operation reads through this one function, which is what keeps the rule from depending
+ * on each handler remembering it.
+ */
 function savedReplyOrThrow(ctx: OperationContext, id: string): SavedReplyRow {
-  const row = ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
+  const row = ctx.sql.query<SavedReplyRow>(
+    'SELECT * FROM ticket0_saved_replies WHERE id = ? AND owner IN (?, ?)',
+    [id, SHARED_OWNER, String(ctx.principal)],
+  )[0];
+  if (!row) throw substratError('not_found', `saved reply not found: ${id}`);
+  return row;
+}
+
+/**
+ * May the caller change or delete this reply? A row `savedReplyOrThrow` handed back is
+ * shared or the caller's own. Their own is theirs to change; a shared one is what every
+ * colleague pastes, and changing it is curation (`saved-reply:manage`).
+ */
+async function assertMayCurate(ctx: OperationContext, row: SavedReplyRow): Promise<void> {
+  if (row.owner === SHARED_OWNER) assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+}
+
+/** The reply of this owner already holding this title, other than `exceptId`. The key's rule, asked. */
+function titleTaken(ctx: OperationContext, owner: string, title: string, exceptId = ''): SavedReplyRow | undefined {
+  return ctx.sql.query<SavedReplyRow>(
+    'SELECT * FROM ticket0_saved_replies WHERE owner = ? AND title = ? AND id <> ?',
+    [owner, title, exceptId],
+  )[0];
+}
+
+/** A `folderId` input resolved: absent keeps `current`, null unfiles, an id must name a folder. */
+function folderFrom(ctx: OperationContext, input: string | null | undefined, current: string | null): string | null {
+  if (input === undefined) return current;
+  return input === null ? null : savedReplyFolderOrThrow(ctx, input).id;
+}
+
+/**
+ * What `saved-reply-created` and `-updated` announce: which reply, whose, and where it is
+ * filed, never what it says or does. The title and body are `erasable`, and a personal
+ * reply's events reach the whole desk's trail.
+ */
+function savedReplyPayload(row: ReturnType<typeof savedReplyPublic>): Record<string, unknown> {
+  const { id, owner, folder_id, created_by, created_at } = row;
+  return { id, owner, folder_id, created_by, created_at };
+}
+
+function savedReplyFolderOrThrow(ctx: OperationContext, id: string): SavedReplyFolderRow {
+  const row = ctx.sql.query<SavedReplyFolderRow>('SELECT * FROM ticket0_saved_reply_folders WHERE id = ?', [
     id,
   ])[0];
-  if (!row) throw substratError('not_found', `saved reply not found: ${id}`);
+  if (!row) throw substratError('not_found', `saved reply folder not found: ${id}`);
   return row;
 }
 
@@ -416,9 +470,12 @@ function savedReplyActions(row: Pick<SavedReplyRow, 'id' | 'actions'>): MacroAct
   return parsed.data;
 }
 
-/** A saved reply as every operation hands it out: `actions` parsed, never the JSON. */
-function savedReplyPublic(row: SavedReplyRow): Omit<SavedReplyRow, 'actions'> & { actions: MacroAction[] } {
-  return { ...row, actions: savedReplyActions(row) };
+/** A saved reply as every operation hands it out: `actions` parsed, never the JSON, and
+ *  `owner` null for a shared reply, never the `''` the key stores. */
+function savedReplyPublic(
+  row: SavedReplyRow,
+): Omit<SavedReplyRow, 'actions' | 'owner'> & { actions: MacroAction[]; owner: string | null } {
+  return { ...row, owner: row.owner === SHARED_OWNER ? null : row.owner, actions: savedReplyActions(row) };
 }
 
 /**
@@ -5954,38 +6011,53 @@ const operations = {
 
   // --- Saved replies -------------------------------------------------------
 
+  /**
+   * The desk's shared replies and the caller's own, oldest first. Composed here rather
+   * than by `ctx.page`, because "shared or mine" depends on who is asking and a declared
+   * filter is one the client sets.
+   */
   'ticket0/list-saved-replies': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft));
-    const page = ctx.page<SavedReplyRow>('savedReply', input);
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    const params: SqlValue[] = [SHARED_OWNER, String(ctx.principal)];
+    let sql = 'SELECT * FROM ticket0_saved_replies WHERE owner IN (?, ?)';
+    if (input.folderId !== undefined) {
+      sql += ' AND folder_id = ?';
+      params.push(input.folderId);
+    }
+    const desc = input.order === 'desc';
+    if (input.cursor) {
+      sql += desc ? ' AND id < ?' : ' AND id > ?';
+      params.push(input.cursor);
+    }
+    sql += ` ORDER BY id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
+    params.push(limit);
+    const page = pageOf(ctx.sql.query<SavedReplyRow>(sql, params), limit, (row) => row.id);
     return { ...page, entries: page.entries.map(savedReplyPublic) };
   },
 
   'ticket0/create-saved-reply': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft));
-    const existing = ctx.sql.query<SavedReplyRow>(
-      'SELECT * FROM ticket0_saved_replies WHERE title = ?',
-      [input.title],
-    )[0];
+    const owner = input.personal ? String(ctx.principal) : SHARED_OWNER;
+    // A shared reply is pasted by every colleague, so adding one is curation.
+    if (owner === SHARED_OWNER) assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+    const existing = titleTaken(ctx, owner, input.title);
     if (existing) return savedReplyPublic(existing);
+    const folderId = folderFrom(ctx, input.folderId, null);
     const id = ulid();
     ctx.sql.exec(
-      'INSERT INTO ticket0_saved_replies (id, title, body, created_by, created_at, actions) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, input.title, input.body, String(ctx.principal), ctx.now(), storedActions(input.actions ?? [])],
+      `INSERT INTO ticket0_saved_replies
+         (id, title, body, created_by, created_at, owner, folder_id, use_count, last_used_at, actions)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)`,
+      [id, input.title, input.body, String(ctx.principal), ctx.now(), owner, folderId, storedActions(input.actions ?? [])],
     );
     const row = savedReplyPublic(savedReplyOrThrow(ctx, id));
     ctx.emit({
       type: 'ticket0.saved-reply-created',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: { entityType: 'savedReply', entityId: row.id },
       piiClass: 'none',
-      payload: {
-        id: row.id,
-        title: row.title,
-        body: row.body,
-        created_by: row.created_by,
-        created_at: row.created_at,
-        actions: row.actions,
-      },
+      payload: savedReplyPayload(row),
     });
     return row;
   },
@@ -6000,55 +6072,49 @@ const operations = {
   },
 
   /**
-   * Change the title, the text, or both.
+   * Change the title, the text, the actions or the folder.
    *
    * Absent means "leave it", which is why this is a PATCH and why the model makes it
    * declare `concurrency`: the caller read the row, changed one field and sent the
    * bag back, so an unguarded save would destroy a colleague's edit to the other
    * field without either of them seeing anything.
    *
-   * A rename onto a title another reply already holds is a `conflict` rather than a
-   * silent no-op - `savedReply.key` is `title`, and the caller plainly meant to end
-   * up with the name they typed. Changing nothing announces nothing, so a consumer
-   * counting this event counts real edits.
+   * A rename onto a title another reply of the same owner already holds is a
+   * `conflict` rather than a silent no-op - `savedReply.key` is `(owner, title)`, and
+   * the caller plainly meant to end up with the name they typed. Changing nothing
+   * announces nothing, so a consumer counting this event counts real edits.
    */
   'ticket0/update-saved-reply': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft));
     const existing = savedReplyOrThrow(ctx, input.savedReplyId);
+    await assertMayCurate(ctx, existing);
     const title = input.title ?? existing.title;
     const body = input.body ?? existing.body;
-    const clash = ctx.sql.query<SavedReplyRow>(
-      'SELECT * FROM ticket0_saved_replies WHERE title = ? AND id <> ?',
-      [title, existing.id],
-    )[0];
-    if (clash) {
+    if (titleTaken(ctx, existing.owner, title, existing.id)) {
       throw substratError('conflict', `another saved reply is already called "${title}"`);
     }
     const actions =
       input.actions !== undefined ? storedActions(input.actions) : existing.actions;
-    if (title === existing.title && body === existing.body && actions === existing.actions) {
+    const folderId = folderFrom(ctx, input.folderId, existing.folder_id);
+    if (
+      title === existing.title &&
+      body === existing.body &&
+      actions === existing.actions &&
+      folderId === existing.folder_id
+    ) {
       return savedReplyPublic(existing);
     }
-    ctx.sql.exec('UPDATE ticket0_saved_replies SET title = ?, body = ?, actions = ? WHERE id = ?', [
-      title,
-      body,
-      actions,
-      existing.id,
-    ]);
+    ctx.sql.exec(
+      'UPDATE ticket0_saved_replies SET title = ?, body = ?, actions = ?, folder_id = ? WHERE id = ?',
+      [title, body, actions, folderId, existing.id],
+    );
     const row = savedReplyPublic(savedReplyOrThrow(ctx, existing.id));
     ctx.emit({
       type: 'ticket0.saved-reply-updated',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: { entityType: 'savedReply', entityId: row.id },
       piiClass: 'none',
-      payload: {
-        id: row.id,
-        title: row.title,
-        body: row.body,
-        created_by: row.created_by,
-        created_at: row.created_at,
-        actions: row.actions,
-      },
+      payload: savedReplyPayload(row),
     });
     return row;
   },
@@ -6059,20 +6125,44 @@ const operations = {
    * A ULID that names nothing is a stale client rather than a second deletion, so
    * this refuses instead of answering emptily - the reverse of `untag-conversation`,
    * whose identifier is a string a person typed. The title goes out with the answer
-   * and on the event because afterwards there is nowhere left to read it from.
+   * because afterwards there is nowhere left to read it from; the event keeps the id.
    */
   'ticket0/delete-saved-reply': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft));
     const existing = savedReplyOrThrow(ctx, input.savedReplyId);
+    await assertMayCurate(ctx, existing);
     ctx.sql.exec('DELETE FROM ticket0_saved_replies WHERE id = ?', [existing.id]);
     ctx.emit({
       type: 'ticket0.saved-reply-deleted',
+      schemaVersion: 2,
+      entity: { entityType: 'savedReply', entityId: existing.id },
+      piiClass: 'none',
+      payload: { id: existing.id },
+    });
+    return { id: existing.id, title: existing.title };
+  },
+
+  /**
+   * A personal reply, given to the desk. Only its owner reaches it at all
+   * (`savedReplyOrThrow`), and the key is the curator's. One way: nothing takes a
+   * shared reply back.
+   */
+  'ticket0/share-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+    const existing = savedReplyOrThrow(ctx, input.savedReplyId);
+    if (existing.owner === SHARED_OWNER) return savedReplyPublic(existing);
+    if (titleTaken(ctx, SHARED_OWNER, existing.title)) {
+      throw substratError('conflict', `the desk already has a saved reply called "${existing.title}"`);
+    }
+    ctx.sql.exec('UPDATE ticket0_saved_replies SET owner = ? WHERE id = ?', [SHARED_OWNER, existing.id]);
+    ctx.emit({
+      type: 'ticket0.saved-reply-shared',
       schemaVersion: 1,
       entity: { entityType: 'savedReply', entityId: existing.id },
       piiClass: 'none',
-      payload: { id: existing.id, title: existing.title },
+      payload: { id: existing.id, created_by: existing.created_by },
     });
-    return { id: existing.id, title: existing.title };
+    return savedReplyPublic(savedReplyOrThrow(ctx, existing.id));
   },
 
   /**
@@ -6114,6 +6204,12 @@ const operations = {
     for (const key of macroPermissions(visibility, actions)) {
       assertAllowed(await ctx.check(key, conversationRef(conversation.id)));
     }
+    // The other replies the agent ATTESTS went into this message, each resolved here exactly
+    // as the macro is: one the caller may not use, or that is not in this desk, refuses the
+    // whole send rather than being skipped, so a client cannot count what it cannot see.
+    // Deduplicated with the macro's own id, so one message counts a reply at most once.
+    const used = [...new Set([reply.id, ...(input.alsoUsed ?? [])])];
+    const alsoUsed = used.slice(1).map((id) => savedReplyOrThrow(ctx, id).id);
 
     const body = input.body ?? renderFor(ctx, conversation, reply).body;
     if (body.trim() === '') {
@@ -6133,20 +6229,107 @@ const operations = {
       });
     }
 
-    const out = {
+    // The count, in the transaction that wrote the message: a send that fails anywhere
+    // above counts nothing, and a preview or an insert never reaches this line.
+    ctx.sql.exec(
+      `UPDATE ticket0_saved_replies SET use_count = use_count + 1, last_used_at = ?
+        WHERE id IN (${used.map(() => '?').join(', ')})`,
+      [ctx.now(), ...used],
+    );
+
+    const announced = {
       saved_reply_id: reply.id,
       conversation_id: conversation.id,
       message_id: message.id,
-      actions: actions.map((a) => a.type),
+      also_used: alsoUsed,
     };
     ctx.emit({
       type: 'ticket0.saved-reply-applied',
-      schemaVersion: 1,
+      schemaVersion: 2,
       entity: { entityType: 'savedReply', entityId: reply.id },
+      piiClass: 'none',
+      // Not the action types: the caller is told what ran, the desk's trail is not, since
+      // the macro may be personal. Each action's own event already says what it did.
+      payload: announced,
+    });
+    return {
+      ...announced,
+      actions: actions.map((a) => a.type),
+      conversation: conversationOrThrow(ctx, conversation.id),
+    };
+  },
+
+  // --- Saved-reply folders -------------------------------------------------
+
+  'ticket0/list-saved-reply-folders': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    return ctx.page<SavedReplyFolderRow>('savedReplyFolder', input);
+  },
+
+  'ticket0/create-saved-reply-folder': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+    const existing = ctx.sql.query<SavedReplyFolderRow>(
+      'SELECT * FROM ticket0_saved_reply_folders WHERE name = ?',
+      [input.name],
+    )[0];
+    if (existing) return existing;
+    const id = ulid();
+    ctx.sql.exec(
+      'INSERT INTO ticket0_saved_reply_folders (id, name, created_by, created_at) VALUES (?, ?, ?, ?)',
+      [id, input.name, String(ctx.principal), ctx.now()],
+    );
+    const row = savedReplyFolderOrThrow(ctx, id);
+    ctx.emit({
+      type: 'ticket0.saved-reply-folder-created',
+      schemaVersion: 1,
+      entity: { entityType: 'savedReplyFolder', entityId: row.id },
+      piiClass: 'none',
+      payload: { id: row.id, name: row.name, created_by: row.created_by, created_at: row.created_at },
+    });
+    return row;
+  },
+
+  'ticket0/rename-saved-reply-folder': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+    const existing = savedReplyFolderOrThrow(ctx, input.folderId);
+    if (input.name === existing.name) return existing;
+    const clash = ctx.sql.query<SavedReplyFolderRow>(
+      'SELECT * FROM ticket0_saved_reply_folders WHERE name = ? AND id <> ?',
+      [input.name, existing.id],
+    )[0];
+    if (clash) throw substratError('conflict', `another folder is already called "${input.name}"`);
+    ctx.sql.exec('UPDATE ticket0_saved_reply_folders SET name = ? WHERE id = ?', [input.name, existing.id]);
+    ctx.emit({
+      type: 'ticket0.saved-reply-folder-renamed',
+      schemaVersion: 1,
+      entity: { entityType: 'savedReplyFolder', entityId: existing.id },
+      piiClass: 'none',
+      payload: { id: existing.id, name: input.name },
+    });
+    return savedReplyFolderOrThrow(ctx, existing.id);
+  },
+
+  /**
+   * The folder goes; its replies stay, unfiled. Every reply in it is unfiled, a
+   * colleague's personal ones included: they were filed under a label the desk owns.
+   */
+  'ticket0/delete-saved-reply-folder': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+    const existing = savedReplyFolderOrThrow(ctx, input.folderId);
+    const unfiled = ctx.sql
+      .query<{ id: string }>('SELECT id FROM ticket0_saved_replies WHERE folder_id = ? ORDER BY id', [existing.id])
+      .map((r) => r.id);
+    ctx.sql.exec('UPDATE ticket0_saved_replies SET folder_id = NULL WHERE folder_id = ?', [existing.id]);
+    ctx.sql.exec('DELETE FROM ticket0_saved_reply_folders WHERE id = ?', [existing.id]);
+    const out = { id: existing.id, name: existing.name, unfiled };
+    ctx.emit({
+      type: 'ticket0.saved-reply-folder-deleted',
+      schemaVersion: 1,
+      entity: { entityType: 'savedReplyFolder', entityId: existing.id },
       piiClass: 'none',
       payload: out,
     });
-    return { ...out, conversation: conversationOrThrow(ctx, conversation.id) };
+    return out;
   },
 
   // --- The assistant -------------------------------------------------------

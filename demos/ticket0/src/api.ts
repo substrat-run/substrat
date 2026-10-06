@@ -71,8 +71,14 @@ export const API = apiCatalogFrom(SERVED, {
   },
   'ticket0/tag-conversation': { tag: 'Inbox' },
 
-  'ticket0/list-saved-replies': { tag: 'Saved replies' },
-  'ticket0/create-saved-reply': { tag: 'Saved replies' },
+  'ticket0/list-saved-replies': {
+    tag: 'Saved replies',
+    description: 'The desk’s shared replies and the caller’s own personal ones, oldest first. A colleague’s personal reply is never listed.',
+  },
+  'ticket0/create-saved-reply': {
+    tag: 'Saved replies',
+    description: 'Shared by default, which needs `saved-reply:manage`; `personal: true` needs only `conversation:draft`.',
+  },
   'ticket0/get-saved-reply': {
     tag: 'Saved replies',
     description: 'Answers with the `ETag` an edit of this reply is checked against.',
@@ -83,6 +89,22 @@ export const API = apiCatalogFrom(SERVED, {
       'Send `If-Match` with the tag the last read handed back; without one, a colleague’s edit is overwritten silently.',
   },
   'ticket0/delete-saved-reply': { tag: 'Saved replies' },
+  'ticket0/share-saved-reply': {
+    tag: 'Saved replies',
+    description: 'One way: the reply is the desk’s from then on. Refused with `conflict` if the desk already has the title.',
+  },
+  'ticket0/apply-saved-reply': {
+    tag: 'Saved replies',
+    description:
+      'Counts each reply used, `savedReplyId` and `alsoUsed` together, once per message. The count is attested by the sender, not proven: every id must be a reply the sender may use, but the server does not check the reply’s text is in `body`.',
+  },
+  'ticket0/list-saved-reply-folders': { tag: 'Saved replies' },
+  'ticket0/create-saved-reply-folder': { tag: 'Saved replies' },
+  'ticket0/rename-saved-reply-folder': { tag: 'Saved replies' },
+  'ticket0/delete-saved-reply-folder': {
+    tag: 'Saved replies',
+    description: 'Its replies are unfiled, never deleted.',
+  },
   'ticket0/render-saved-reply': {
     tag: 'Saved replies',
     description:

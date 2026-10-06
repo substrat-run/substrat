@@ -16,6 +16,7 @@ import {
 } from '../src/health-queries.js';
 import { NO_REPLY_WAITING } from '../src/module.js';
 import { listsBefore0021 } from './before-0021.js';
+import { listsBefore0027 } from './before-0027.js';
 
 type Query = { sql: string; args: (string | number)[] };
 const queries = {
@@ -101,7 +102,7 @@ beforeAll(async () => {
   for (const module of MODULES) previous.registerModule(module.manifest.id === ticket0Manifest.id
     ? {
         ...module,
-        manifest: { ...module.manifest, lists: listsBefore0021(module.manifest.lists ?? []) },
+        manifest: { ...module.manifest, lists: listsBefore0021(listsBefore0027(module.manifest.lists ?? [])) },
         migrations: (module.migrations ?? []).filter(m => m.version <= '0014'),
       }
     : module);
