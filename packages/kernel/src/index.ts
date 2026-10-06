@@ -440,13 +440,18 @@ export {
 export {
   TABLE_OWNERS,
   TABLE_OWNERS_DDL,
+  applyTableChange,
   assertMigrationLeavesLedgerAlone,
   assertTablesOwned,
   backfillOwnershipFromJournal,
-  migrationDdl,
   moduleTableNames,
-  recordMigrationOwnership,
+  recordOwnershipSteps,
+  runMigrationStatements,
+  splitSqlStatements,
+  tableChangesOf,
+  tableStatements,
 } from './table-ownership.js';
+export type { OwnerStore, TableChange, TableStatement, TableStep } from './table-ownership.js';
 export type {
   ModuleErasureCounts,
   ModuleErasurePlan,

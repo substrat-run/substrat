@@ -4,17 +4,24 @@
  * A subject erasure writes to a module's own tables with the kernel's handle, so "own" has to
  * be a fact the kernel recorded, not a claim a manifest makes or a parse of migration text can
  * infer: `CREATE TABLE IF NOT EXISTS other_modules_table` reads as creating a table and creates
- * nothing when it already exists. So when the kernel applies a module's migration, it diffs the
- * scope's tables before and after, inside the same transaction, and records every table that
- * newly APPEARED as that module's (`recordMigrationOwnership`). A table that existed before the
- * migration is never attributed to it. A rename keeps its original owner; a dropped table loses
- * its row.
+ * nothing when it already exists.
  *
- * Scopes migrated before this existed have tables with no row. Those are backfilled once, on the
- * first erasure that needs them, from the migration JOURNAL in applied order
- * (`backfillOwnershipFromJournal`): the first module whose migration creates a table owns it, so
- * a later module's `IF NOT EXISTS` on the same name still cannot take it over. A table no
- * migration created (runtime DDL) stays unowned, and an erasure that would touch it is refused.
+ * **Recorded statement by statement.** Both adapters run an authored migration one statement at
+ * a time (`splitSqlStatements`) and diff the scope's tables around each one
+ * (`runMigrationStatements`, then `recordOwnershipSteps`). One statement changes at most one table
+ * (with its shadow tables, for a virtual one), so the diff names
+ * it exactly: a table that appeared was created by the migrating module; one table gone and one
+ * appeared is a rename, and the row moves with it; a table gone was dropped, and its row goes.
+ * A table that existed before the statement is never attributed to it. Diffing a whole migration
+ * instead could not tell `RENAME a TO b; CREATE TABLE a` from nothing having happened to `a`.
+ *
+ * **Guarded.** The ledger is a spine table, so module code cannot write it through `ctx.sql`, and
+ * an authored migration that names it is refused before it runs (`assertMigrationLeavesLedgerAlone`).
+ *
+ * **Backfilled from the journal.** Scopes migrated before the ledger existed have tables with no
+ * row. On the first erasure that needs them, the journal is replayed in applied order through the
+ * SAME transition function (`applyTableChange`), statement by statement, from each entry's
+ * migration text.
  */
 import { namesSpineTable, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
 import type { ScopedSql } from './scope-host.js';
@@ -24,7 +31,7 @@ export const TABLE_OWNERS = '_substrat_table_owners';
 
 /** The spine table the ownership lives in — a scope table, so it travels with the scope's data. */
 export const TABLE_OWNERS_DDL = `
-  CREATE TABLE IF NOT EXISTS _substrat_table_owners (
+  CREATE TABLE IF NOT EXISTS ${TABLE_OWNERS} (
     table_name TEXT PRIMARY KEY,
     module_id TEXT NOT NULL,
     source TEXT NOT NULL,
@@ -68,20 +75,15 @@ function nameOf(token: SqlToken | undefined): string | undefined {
   return parts.length === 2 && parts[0] === 'main' ? parts[1] : undefined;
 }
 
-/** One migration's DDL, read statement by statement: what it creates, renames and drops. */
-export interface MigrationDdl {
-  readonly creates: string[];
-  readonly renames: { from: string; to: string }[];
-  readonly drops: string[];
-}
+/** One statement's effect on the table set, as its text states it. */
+export type TableStatement =
+  | { readonly kind: 'create'; readonly table: string; readonly ifNotExists: boolean }
+  | { readonly kind: 'rename'; readonly from: string; readonly to: string }
+  | { readonly kind: 'drop'; readonly table: string };
 
-/**
- * The table DDL in one migration's text, in order. Used for two things only: following a
- * rename the schema diff cannot see as one, and the journal backfill. Never as proof that a
- * table was created — that is the diff's job.
- */
-export function migrationDdl(sqlText: string): MigrationDdl {
-  const out: MigrationDdl = { creates: [], renames: [], drops: [] };
+/** The table DDL in one migration's text, in statement order. TEMP tables are nobody's and are left out. */
+export function tableStatements(sqlText: string): TableStatement[] {
+  const out: TableStatement[] = [];
   const statements: SqlToken[][] = [[]];
   for (const token of tokenizeSql(sqlText, { punctuation: true })) {
     if (token.punct && token.text === ';') statements.push([]);
@@ -96,71 +98,160 @@ export function migrationDdl(sqlText: string): MigrationDdl {
       if (w(k) === 'virtual') k += 1;
       if (w(k) !== 'table') continue;
       k += 1;
-      if (w(k) === 'if' && w(k + 1) === 'not' && w(k + 2) === 'exists') k += 3;
-      const name = nameOf(st[k]);
-      if (name && !temp) out.creates.push(name);
+      const ifNotExists = w(k) === 'if' && w(k + 1) === 'not' && w(k + 2) === 'exists';
+      if (ifNotExists) k += 3;
+      const table = nameOf(st[k]);
+      if (table && !temp) out.push({ kind: 'create', table, ifNotExists });
     } else if (w(0) === 'alter' && w(1) === 'table') {
       const from = nameOf(st[2]);
       const at = st.findIndex((t, i) => i > 2 && !t.quoted && t.text.toLowerCase() === 'rename');
       const to = at > 0 && w(at + 1) === 'to' ? nameOf(st[at + 2]) : undefined;
-      if (from && to) out.renames.push({ from, to });
+      if (from && to) out.push({ kind: 'rename', from, to });
     } else if (w(0) === 'drop' && w(1) === 'table') {
-      const name = nameOf(st[w(2) === 'if' && w(3) === 'exists' ? 4 : 2]);
-      if (name) out.drops.push(name);
+      const table = nameOf(st[w(2) === 'if' && w(3) === 'exists' ? 4 : 2]);
+      if (table) out.push({ kind: 'drop', table });
     }
   }
   return out;
 }
 
 /**
- * Record what one migration did to table ownership, from the schema before and after it ran —
- * called by both adapters inside the migration's own transaction, so a migration that fails
- * records nothing.
- *
- * A table that appeared is the migrating module's, unless the migration renamed a table that
- * disappeared into it: then it keeps the owner the old name had. A table that disappeared loses
- * its row. A table present on both sides is left exactly as recorded.
+ * Where ownership is kept while a transition is applied: the scope's ledger, or the replay's
+ * in-memory model. `null` is a table that exists and whose owner is not known; `undefined`, one
+ * that does not exist as far as the store knows.
  */
-export function recordMigrationOwnership(
-  sql: ScopedSql,
-  moduleId: string,
-  migrationSql: string,
-  before: ReadonlySet<string>,
-  at: string,
-): void {
-  const after = moduleTableNames(sql);
-  const gone = [...before].filter((t) => !after.has(t));
-  const appeared = [...after].filter((t) => !before.has(t));
-  const renamedFrom = new Map<string, string>();
-  for (const r of migrationDdl(migrationSql).renames) {
-    if (gone.includes(r.from) && appeared.includes(r.to)) renamedFrom.set(r.to, r.from);
+export interface OwnerStore {
+  get(table: string): string | null | undefined;
+  set(table: string, owner: string | null): void;
+  delete(table: string): void;
+}
+
+/** One table change, in the terms both the live diff and the journal replay produce. */
+export type TableChange =
+  | { readonly kind: 'create'; readonly table: string; readonly owner: string | null }
+  | { readonly kind: 'rename'; readonly from: string; readonly to: string }
+  | { readonly kind: 'drop'; readonly table: string };
+
+/**
+ * THE transition, shared by the live record and the journal replay: a create sets its owner (or
+ * an unknown one), a rename moves the row to the new name, a drop removes it.
+ */
+export function applyTableChange(store: OwnerStore, change: TableChange): void {
+  switch (change.kind) {
+    case 'create':
+      store.set(change.table, change.owner);
+      return;
+    case 'rename': {
+      const owner = store.get(change.from);
+      store.delete(change.from);
+      store.set(change.to, owner ?? null);
+      return;
+    }
+    case 'drop':
+      store.delete(change.table);
   }
-  const ownerOf = (t: string): string | undefined =>
-    sql.query<{ module_id: string }>('SELECT module_id FROM _substrat_table_owners WHERE table_name = ?', [t])[0]
-      ?.module_id;
-  for (const table of appeared) {
-    const from = renamedFrom.get(table);
-    const owner = (from && ownerOf(from)) || moduleId;
-    sql.exec(
-      `INSERT INTO _substrat_table_owners (table_name, module_id, source, recorded_at) VALUES (?, ?, 'migration', ?)
-         ON CONFLICT(table_name) DO UPDATE SET module_id = excluded.module_id, source = excluded.source,
-           recorded_at = excluded.recorded_at`,
-      [table, owner, at],
-    );
-  }
-  for (const table of gone) sql.exec('DELETE FROM _substrat_table_owners WHERE table_name = ?', [table]);
+}
+
+/** The ledger as an `OwnerStore`: an unknown owner is no row, so an erasure refuses that table. */
+function ledgerStore(sql: ScopedSql, source: 'migration' | 'journal', at: string): OwnerStore {
+  return {
+    get: (table) =>
+      sql.query<{ module_id: string }>(`SELECT module_id FROM ${TABLE_OWNERS} WHERE table_name = ?`, [table])[0]
+        ?.module_id ?? null,
+    set: (table, owner) => {
+      if (owner === null) {
+        sql.exec(`DELETE FROM ${TABLE_OWNERS} WHERE table_name = ?`, [table]);
+        return;
+      }
+      sql.exec(
+        `INSERT INTO ${TABLE_OWNERS} (table_name, module_id, source, recorded_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(table_name) DO UPDATE SET module_id = excluded.module_id, source = excluded.source,
+             recorded_at = excluded.recorded_at`,
+        [table, owner, source, at],
+      );
+    },
+    delete: (table) => {
+      sql.exec(`DELETE FROM ${TABLE_OWNERS} WHERE table_name = ?`, [table]);
+    },
+  };
+}
+
+/** The table set either side of one statement that changed it. */
+export interface TableStep {
+  readonly before: ReadonlySet<string>;
+  readonly after: ReadonlySet<string>;
 }
 
 /**
- * Attribute the given tables, where they have no row yet, from the migration journal in the
- * order it was applied — the one-time backfill for a scope migrated before ownership was
- * recorded. The first module whose migration creates a name owns it (a later `IF NOT EXISTS` on
- * the same name created nothing, so it gains nothing); a rename carries the owner; a drop ends
- * it. A table no journalled migration created is left without a row.
- *
- * `migrationSqlOf` is the registered module's migration text; a journal entry whose module is no
- * longer registered contributes nothing, which can only leave a table unowned — never misowned
- * by a module that is registered.
+ * Run an authored migration ONE statement at a time, through the adapter's `exec`, and return
+ * the table set either side of every statement that changed it. Both adapters run their
+ * authored migrations through this, inside the migration's transaction; recording happens
+ * afterwards (`recordOwnershipSteps`), so the journal's `rows_changed` counts the migration's
+ * own writes and none of the kernel's bookkeeping.
+ */
+export function runMigrationStatements(sql: ScopedSql, migrationSql: string, exec: (statement: string) => void): TableStep[] {
+  const steps: TableStep[] = [];
+  let tables = moduleTableNames(sql);
+  for (const statement of splitSqlStatements(migrationSql)) {
+    exec(statement);
+    const after = moduleTableNames(sql);
+    if (after.size !== tables.size || [...after].some((t) => !tables.has(t))) steps.push({ before: tables, after });
+    tables = after;
+  }
+  return steps;
+}
+
+/**
+ * The table a group of names belongs to, when there is one: the shortest name, with every other
+ * name its shadow (`root_…`) — what one `CREATE VIRTUAL TABLE … USING fts5` makes (`x`, `x_data`,
+ * `x_idx`, …), drops or renames together. Undefined when the names are not one such group.
+ */
+function rootOf(names: readonly string[]): string | undefined {
+  if (names.length === 0) return undefined;
+  const root = [...names].sort((a, b) => a.length - b.length)[0]!;
+  return names.every((n) => n === root || n.startsWith(`${root}_`)) ? root : undefined;
+}
+
+/**
+ * The changes one statement made, from the table set either side of it. A single SQLite
+ * statement changes ONE table — with its shadow tables, for a virtual table — so: tables only
+ * appearing are a create by `moduleId`; only disappearing, a drop; one group gone and one
+ * appeared, a rename, each shadow moving with its root. Anything else is not a shape a single
+ * statement produces, and is refused rather than guessed at.
+ */
+export function tableChangesOf(moduleId: string, step: TableStep): TableChange[] {
+  const gone = [...step.before].filter((t) => !step.after.has(t));
+  const appeared = [...step.after].filter((t) => !step.before.has(t));
+  const from = rootOf(gone);
+  const to = rootOf(appeared);
+  if (gone.length === 0 && to !== undefined) {
+    return appeared.map((table) => ({ kind: 'create', table, owner: moduleId }));
+  }
+  if (appeared.length === 0 && from !== undefined) return gone.map((table) => ({ kind: 'drop', table }));
+  if (from !== undefined && to !== undefined && gone.length === appeared.length) {
+    const renamed = gone.map((g) => ({ from: g, to: `${to}${g.slice(from.length)}` }));
+    if (renamed.every((r) => appeared.includes(r.to))) {
+      return renamed.map((r) => ({ kind: 'rename', from: r.from, to: r.to }));
+    }
+  }
+  throw substratError(
+    'internal',
+    `migration of ${moduleId}: one statement changed unrelated tables (gone: ${gone.join(', ') || '-'}; ` +
+      `appeared: ${appeared.join(', ') || '-'}), which the ownership record cannot attribute`,
+  );
+}
+
+/** Apply each recorded step to the ledger, in statement order, through `applyTableChange`. */
+export function recordOwnershipSteps(sql: ScopedSql, moduleId: string, steps: readonly TableStep[], at: string): void {
+  const store = ledgerStore(sql, 'migration', at);
+  for (const step of steps) for (const change of tableChangesOf(moduleId, step)) applyTableChange(store, change);
+}
+
+/**
+ * Attribute the given tables, where they have no row yet, by replaying the migration journal in
+ * applied order, statement by statement, through `applyTableChange` — the one-time backfill for a
+ * scope migrated before ownership was recorded. A CREATE of a table the replay already holds
+ * (an `IF NOT EXISTS` that created nothing) changes nothing.
  */
 export function backfillOwnershipFromJournal(
   sql: ScopedSql,
@@ -168,35 +259,36 @@ export function backfillOwnershipFromJournal(
   migrationSqlOf: (moduleId: string, version: string) => string | undefined,
   at: string,
 ): void {
-  const wanted = [...tables].map((t) => t.toLowerCase());
-  const missing = wanted.filter(
-    (t) => sql.query('SELECT 1 FROM _substrat_table_owners WHERE table_name = ?', [t]).length === 0,
-  );
+  const missing = [...tables]
+    .map((t) => t.toLowerCase())
+    .filter((t) => sql.query(`SELECT 1 FROM ${TABLE_OWNERS} WHERE table_name = ?`, [t]).length === 0);
   if (missing.length === 0) return;
   const journal = sql.query<{ module_id: string; version: string }>(
     'SELECT module_id, version FROM _substrat_migrations ORDER BY applied_at, rowid',
   );
-  const owner = new Map<string, string>();
+  const model = new Map<string, string | null>();
+  const store: OwnerStore = {
+    get: (t) => model.get(t),
+    set: (t, o) => void model.set(t, o),
+    delete: (t) => void model.delete(t),
+  };
   for (const entry of journal) {
     const text = migrationSqlOf(entry.module_id, entry.version);
     if (text === undefined) continue;
-    const ddl = migrationDdl(text);
-    for (const t of ddl.creates) if (!owner.has(t)) owner.set(t, entry.module_id);
-    for (const r of ddl.renames) {
-      const o = owner.get(r.from);
-      owner.delete(r.from);
-      if (o !== undefined) owner.set(r.to, o);
+    for (const st of tableStatements(text)) {
+      if (st.kind === 'create') {
+        if (st.ifNotExists && model.has(st.table)) continue;
+        applyTableChange(store, { kind: 'create', table: st.table, owner: entry.module_id });
+      } else {
+        applyTableChange(store, st);
+      }
     }
-    for (const t of ddl.drops) owner.delete(t);
   }
   const live = moduleTableNames(sql);
+  const ledger = ledgerStore(sql, 'journal', at);
   for (const t of missing) {
-    const o = owner.get(t);
-    if (o === undefined || !live.has(t)) continue;
-    sql.exec(
-      "INSERT INTO _substrat_table_owners (table_name, module_id, source, recorded_at) VALUES (?, ?, 'journal', ?)",
-      [t, o, at],
-    );
+    const owner = model.get(t);
+    if (owner && live.has(t)) ledger.set(t, owner);
   }
 }
 
@@ -216,7 +308,7 @@ export function assertTablesOwned(
   backfillOwnershipFromJournal(sql, list, migrationSqlOf, at);
   const refused = list.filter(
     (t) =>
-      sql.query<{ module_id: string }>('SELECT module_id FROM _substrat_table_owners WHERE table_name = ?', [t])[0]
+      sql.query<{ module_id: string }>(`SELECT module_id FROM ${TABLE_OWNERS} WHERE table_name = ?`, [t])[0]
         ?.module_id !== moduleId,
   );
   if (refused.length > 0) {
@@ -226,4 +318,67 @@ export function assertTablesOwned(
         'created by its migrations — an erasure touches only the tables a module owns. Nothing was erased.',
     );
   }
+}
+
+/**
+ * Split SQL into top-level statements on `;`, keeping a `CREATE TRIGGER … END;` body whole and
+ * skipping comments and string literals. Both adapters run an authored migration through this
+ * one statement at a time — the Durable Object because its `exec` takes one statement, and both
+ * because the ownership record diffs the schema around each statement.
+ */
+const IS_CREATE_TRIGGER = /^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
+const ENDS_WITH_END = /\bEND\s*$/i;
+
+export function splitSqlStatements(sql: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  const n = sql.length;
+  let i = 0;
+  while (i < n) {
+    const c = sql[i];
+    const c2 = sql[i + 1];
+    if (c === '-' && c2 === '-') {
+      while (i < n && sql[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < n && !(sql[i] === '*' && sql[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === "'") {
+      cur += c;
+      i += 1;
+      while (i < n) {
+        cur += sql[i];
+        if (sql[i] === "'") {
+          if (sql[i + 1] === "'") {
+            cur += sql[i + 1];
+            i += 2;
+            continue;
+          }
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    if (c === ';') {
+      if (IS_CREATE_TRIGGER.test(cur) && !ENDS_WITH_END.test(cur)) {
+        cur += c;
+        i += 1;
+        continue;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      cur = '';
+      i += 1;
+      continue;
+    }
+    cur += c;
+    i += 1;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
 }

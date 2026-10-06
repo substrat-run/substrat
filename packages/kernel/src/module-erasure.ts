@@ -46,7 +46,7 @@ import type { ModuleRegistration, ScopedSql, SqlValue } from './scope-host.js';
 import type { SearchIndexPlan } from './search-index.js';
 import { guardSpine } from './spine-guard.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
-import { assertTablesOwned, migrationDdl } from './table-ownership.js';
+import { assertTablesOwned, tableStatements } from './table-ownership.js';
 
 /** What a module's `onSubjectErased` hook is handed — and all it is handed. */
 export interface SubjectErasureContext {
@@ -100,10 +100,12 @@ export interface ModuleErasureCounts {
 export function tablesCreatedBy(migrations: readonly { readonly sql: string }[]): Set<string> {
   const owned = new Set<string>();
   for (const migration of migrations) {
-    const ddl = migrationDdl(migration.sql);
-    for (const t of ddl.creates) owned.add(t);
-    for (const r of ddl.renames) if (owned.delete(r.from)) owned.add(r.to);
-    for (const t of ddl.drops) owned.delete(t);
+    for (const st of tableStatements(migration.sql)) {
+      if (st.kind === 'create') owned.add(st.table);
+      else if (st.kind === 'rename') {
+        if (owned.delete(st.from)) owned.add(st.to);
+      } else owned.delete(st.table);
+    }
   }
   return owned;
 }

@@ -374,8 +374,8 @@ import {
   SWITCH_FENCES_DDL,
   TABLE_OWNERS_DDL,
   assertMigrationLeavesLedgerAlone,
-  moduleTableNames,
-  recordMigrationOwnership,
+  recordOwnershipSteps,
+  runMigrationStatements,
   recordWriteSuperseded,
   switchFencesOf,
   switchSupersededMessage,
@@ -11852,13 +11852,13 @@ export class SqliteScopeHost implements ScopeHost {
               assertNoSpineReference(migration.sql, `migration ${key}`);
               // #2068: the ownership ledger is the kernel's — no migration may name it.
               assertMigrationLeavesLedgerAlone(migration.sql, `migration ${key}`);
-              // #2068: which tables this migration actually made, from the schema either side of it.
-              const tablesBefore = moduleTableNames(spineSql(rt.db));
-              rt.db.exec(migration.sql);
+              // #2068: one statement at a time, keeping the table set either side of each — the
+              // same splitter the Durable Object runs, so both hosts execute identical statements.
+              const steps = runMigrationStatements(spineSql(rt.db), migration.sql, (stmt) => rt.db.exec(stmt));
               assertTablesWithinColumnLimit(rt.db);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
               // After the count: `rows_changed` is the migration's own, never the kernel's bookkeeping.
-              recordMigrationOwnership(spineSql(rt.db), moduleId, migration.sql, tablesBefore, this.clock());
+              recordOwnershipSteps(spineSql(rt.db), moduleId, steps, this.clock());
               rt.db
                 .prepare(
                   'INSERT INTO _substrat_migrations (module_id, version, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?)',
