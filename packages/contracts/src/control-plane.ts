@@ -484,6 +484,18 @@ export const memberRemoval = z.object({
 export type MemberRemoval = z.infer<typeof memberRemoval>;
 
 /**
+ * What the control plane's answer to an AUDITED change carries beside its result (#2064): the
+ * owner hand-over and the member changes. `operationId` pairs the change's admin-log rows.
+ * `auditWarning` is present only when the change went through but its outcome row could not be
+ * written. The answer is still a success, because the change happened: a client shows the
+ * result and the warning, and must not offer to make the change again.
+ */
+export interface AuditedAnswer {
+  operationId: string;
+  auditWarning?: string;
+}
+
+/**
  * An owner HAND-OVER request (#1665): the current owner of record and the member who takes
  * over. Two principals in the scope's own identity directory. The scope comes from the address.
  * One principal on both sides is refused here, before anything is reached. `abandon: true`
