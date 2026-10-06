@@ -112,7 +112,8 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   no outcome exists by then. A real outcome that lands later is still recorded. Every reader
   resolves an operation by priority, never by row order or timestamp: a real outcome
   (`applied`, `refused`, `failed`) beats `unknown`, and two real outcomes for one operation
-  read `conflicting` and are logged, never guessed past.
+  read `conflicting` and are logged, never guessed past. An operation is its action, its
+  `operationId`, its tenant and its scope.
   `GET /admin-log` returns the rows as written, and gives each row of these two actions an
   `audited` field: its `operationId`, the `outcome` the operation stands at (`pending` until
   it has one), and `superseded` on an `unknown` a real outcome beat. Each page is resolved
