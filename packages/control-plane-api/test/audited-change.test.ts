@@ -4,15 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { platformActorId, principalId, scopeId, tenantId, type OpsFailureEntry } from '@substrat-run/contracts';
 import {
   AUDITED_CALL_DEADLINE_MS,
   ControlPlaneError,
   SETTLE_GRACE_MS,
   UNRECORDED_OUTCOME_LOG,
   VerticalClient,
+  OUTCOME_CONFLICT_LOG,
   auditedChange,
   settleUnrecordedOutcomes,
+  supersededUnknowns,
+  withAuditedOutcomes,
   type AuditedRow,
 } from '../src/index.js';
 
@@ -230,6 +233,101 @@ describe('settleUnrecordedOutcomes (#2064)', () => {
   it('refuses a grace window that does not exceed the audited call deadline', async () => {
     await expect(settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, graceMs: AUDITED_CALL_DEADLINE_MS })).rejects.toThrow(/does not exceed/);
     expect(SETTLE_GRACE_MS).toBeGreaterThan(AUDITED_CALL_DEADLINE_MS);
+  });
+});
+
+/**
+ * The readers resolve an operation by PRIORITY, not by order (#2064 r3): the intent and a real
+ * outcome are stamped by the request's writer, a settle's `unknown` by the directory's, and their
+ * ids and clocks need not agree. Rows are written straight into the directory here, so each test
+ * picks the ids and timestamps that a skewed clock or a same-millisecond write would produce.
+ */
+describe('the readers hold to the priority rule, whatever the ids and clocks say (#2064)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const A = principalId.parse(ulid());
+  const B = principalId.parse(ulid());
+  let dir: string;
+  let host: SqliteScopeHost;
+  const raw = (id: string, phase: string, operationId: string, at: string, extra: object = {}) =>
+    (host as unknown as { directory: { prepare(sql: string): { run(...a: unknown[]): void } } }).directory
+      .prepare('INSERT INTO _substrat_admin_log (id, actor, action, tenant_id, scope_id, vertical, before, after, at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)')
+      .run(id, staff, 'transferOwner', t, s, JSON.stringify({ phase, operationId, from: A, to: B, ...extra }), at);
+  const entriesOf = async (operationId: string) =>
+    (await host.admin.auditLog(staff, { tenantId: t, action: 'transferOwner' })).filter(
+      (r) => (r.after as { operationId: string }).operationId === operationId,
+    );
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-audited-priority-'));
+    host = new SqliteScopeHost({ dir });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const AT = '2026-10-06T12:00:00.000Z';
+  const EARLIER = '2026-10-06T11:00:00.000Z';
+  // [case, rows as (id, phase, at)]: the real outcome before, beside or "behind" the unknown.
+  const orders: [string, [string, string, string][]][] = [
+    ['the real outcome with a lower id than the unknown', [['01J0000000000000000000000A', 'intent', AT], ['01J0000000000000000000000B', 'applied', AT], ['01J0000000000000000000000C', 'unknown', AT]]],
+    ['the same timestamp on every row', [['01J0000000000000000000000A', 'intent', AT], ['01J0000000000000000000000C', 'unknown', AT], ['01J0000000000000000000000B', 'applied', AT]]],
+    ['a skewed clock: the real outcome stamped before the intent', [['01J0000000000000000000000B', 'applied', EARLIER], ['01J0000000000000000000000C', 'intent', AT], ['01J0000000000000000000000D', 'unknown', AT]]],
+  ];
+
+  for (const [name, rows] of orders) {
+    it(`the admin-log API and the digest both read applied: ${name}`, async () => {
+      const operationId = ulid();
+      for (const [id, phase, at] of rows) {
+        // Unique per operation, ordered within it by the last letter the case chose.
+        raw(`01J${operationId.slice(10, 22)}${id.slice(15)}`, phase, operationId, at, phase === 'unknown' ? { error: 'no outcome' } : phase === 'applied' ? { outcome: 'transferred', fromRevoked: true } : {});
+      }
+      const annotated = await withAuditedOutcomes(host.admin, staff, await entriesOf(operationId));
+      for (const row of annotated) {
+        const phase = (row.after as { phase: string }).phase;
+        expect(row.audited).toEqual({ operationId, outcome: 'applied', superseded: phase === 'unknown' });
+      }
+      // The digest: the settle's ops-failure row, stamped later than the skewed real outcome.
+      const failure = {
+        id: ulid(), actor: staff, operation: 'audit.transferOwner', stage: 'outcome-unknown', tenantId: t, scopeId: s,
+        vertical: null, version: null, status: null, origin: null, code: null, message: `operation ${operationId}`,
+        reference: operationId, fingerprint: null, at: AT,
+      } as OpsFailureEntry;
+      expect(await supersededUnknowns(host.admin, staff, [failure])).toEqual(new Set([failure.id]));
+    });
+  }
+
+  it('two real outcomes are conflicting: logged, kept in the digest, and not guessed past', async () => {
+    const operationId = ulid();
+    raw(ulid(), 'intent', operationId, AT);
+    raw(ulid(), 'applied', operationId, AT, { outcome: 'transferred', fromRevoked: true });
+    raw(ulid(), 'refused', operationId, AT, { error: 'no' });
+    raw(ulid(), 'unknown', operationId, AT, { error: 'no outcome' });
+    const logged: unknown[][] = [];
+    const logError = (m: string, f: Record<string, unknown>) => logged.push([m, f]);
+    const annotated = await withAuditedOutcomes(host.admin, staff, await entriesOf(operationId), logError);
+    expect(annotated.map((r) => r.audited?.outcome)).toEqual(['conflicting', 'conflicting', 'conflicting', 'conflicting']);
+    expect(logged).toEqual([[OUTCOME_CONFLICT_LOG, { operation: `transferOwner:${operationId}`, outcomes: ['applied', 'refused'] }]]);
+    const failure = { id: ulid(), operation: 'audit.transferOwner', stage: 'outcome-unknown', tenantId: t, scopeId: s, reference: operationId, at: AT } as OpsFailureEntry;
+    expect(await supersededUnknowns(host.admin, staff, [failure], logError)).toEqual(new Set());
+  });
+
+  it('resolves a page in ONE batched read, however much unrelated history the log holds', async () => {
+    for (let i = 0; i < 1500; i++) raw(ulid(), i % 2 ? 'intent' : 'applied', `noise-${i}`, AT, i % 2 ? {} : { outcome: 'transferred', fromRevoked: true });
+    const operationId = ulid();
+    raw(ulid(), 'intent', operationId, AT);
+    raw(ulid(), 'applied', operationId, AT, { outcome: 'transferred', fromRevoked: true });
+    const page = await entriesOf(operationId);
+    const batched = vi.spyOn(host.admin, 'auditedOperations');
+    const scans = vi.spyOn(host.admin, 'auditLog');
+    const annotated = await withAuditedOutcomes(host.admin, staff, page);
+    expect(batched).toHaveBeenCalledTimes(1);
+    expect(scans).not.toHaveBeenCalled();
+    expect(await batched.mock.results[0]!.value).toHaveLength(2);
+    expect(annotated.map((r) => r.audited?.outcome)).toEqual(['applied', 'applied']);
+    vi.restoreAllMocks();
   });
 });
 

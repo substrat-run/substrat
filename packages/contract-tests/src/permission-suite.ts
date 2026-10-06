@@ -1882,6 +1882,24 @@ export function permissionContractSuite(
       await expect(host.admin.settleUnrecordedOutcome(staff, { intentId: ulid(), error: 'x' })).rejects.toThrow(/no audited-change intent/);
     });
 
+    it('reads exactly the audited operations asked about, in batches a Durable Object can bind (#2064)', async () => {
+      const from = principalId.parse(ulid());
+      const to = principalId.parse(ulid());
+      // More operations than one batch binds, so a hosted read must split them.
+      const ops = Array.from({ length: 120 }, () => ulid());
+      for (const operationId of ops) {
+        await host.admin.recordOwnerTransfer(staff, { tenantId: t1, scopeId: s1, operationId, from, to, phase: 'intent' });
+      }
+      await host.admin.recordOwnerTransfer(staff, { tenantId: t1, scopeId: s1, operationId: ops[0]!, from, to, phase: 'refused', error: 'no' });
+      const refs = ops.map((operationId) => ({ action: 'transferOwner', operationId, tenantId: t1, scopeId: s1 }));
+      const rows = await host.admin.auditedOperations(staff, refs);
+      expect(rows).toHaveLength(121);
+      expect(rows.filter((r) => r.operationId === ops[0]).map((r) => r.phase).sort()).toEqual(['intent', 'refused']);
+      // An operation is its action and scope too: the same id asked under another is not it.
+      expect(await host.admin.auditedOperations(staff, [{ ...refs[0]!, action: 'manageScopeMember' }])).toEqual([]);
+      expect(await host.admin.auditedOperations(staff, [{ ...refs[0]!, scopeId: scopeId.parse(ulid()) }])).toEqual([]);
+    });
+
     it('audits reading the audit trail, and reading the access log itself', async () => {
       const nosy = platformActorId.parse(ulid());
       await host.admin.auditLog(nosy, { tenantId: t1 });

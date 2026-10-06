@@ -1250,15 +1250,16 @@ export const adminLogEntry = z.object({
   /**
    * #2064: on a row of an audited change (`transferOwner`, `manageScopeMember`), the outcome its
    * operation stands at, resolved by the admin-log read surface and never stored. The raw rows
-   * stay as written. This says how to read them: the LATEST outcome row of an operation is its
-   * result, so a real outcome recorded after a settle's `unknown` supersedes it.
+   * stay as written. This says how to read them: a real outcome (`applied`, `refused`, `failed`)
+   * beats a settle's `unknown` whichever was written first, and two real outcomes for one
+   * operation read `conflicting`, which the audit must never hold.
    */
   audited: z
     .object({
       operationId: z.string(),
       /** The operation's effective outcome; `pending` while it has none. */
-      outcome: z.enum(['pending', 'applied', 'refused', 'failed', 'unknown']),
-      /** True on an outcome row that a later outcome row of the same operation replaced. */
+      outcome: z.enum(['pending', 'applied', 'refused', 'failed', 'unknown', 'conflicting']),
+      /** True on an `unknown` row that a real outcome of the same operation beat. */
       superseded: z.boolean(),
     })
     .optional(),

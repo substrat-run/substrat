@@ -59,7 +59,7 @@ const DIGEST_ROW_CAP = 50;
 const WATERMARK_ROWS = 25;
 
 /** The ledger a digest reads, and the one it writes its own failures to. */
-export type FailureDigestAdmin = Pick<HostAdmin, 'listOpsFailures' | 'listSweepRuns' | 'recordOpsFailure' | 'auditLog'>;
+export type FailureDigestAdmin = Pick<HostAdmin, 'listOpsFailures' | 'listSweepRuns' | 'recordOpsFailure' | 'auditedOperations'>;
 
 export interface FailureDigestOptions {
   admin: FailureDigestAdmin;

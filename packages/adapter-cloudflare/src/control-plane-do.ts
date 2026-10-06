@@ -88,6 +88,11 @@ import {
   SETTLE_OUTCOME_SQL,
   unknownOutcomeOf,
   type SettleIntentRow,
+  AUDITED_OPERATION_INDEX_DDL,
+  readAuditedOperations,
+  type AuditedOperationRef,
+  type AuditedOperationRow,
+  type AuditedOperationSqlRow,
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
 import { splitSqlStatements, switchSqlOver } from './scope-do.js';
@@ -1087,6 +1092,8 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS _substrat_admin_log_actor ON _substrat_admin_log (actor, id);
   CREATE INDEX IF NOT EXISTS _substrat_admin_log_action ON _substrat_admin_log (action, id);
   CREATE INDEX IF NOT EXISTS _substrat_admin_log_at ON _substrat_admin_log (at);
+  -- #2064 - an audited change's rows, found by operation id rather than by scanning the log.
+  ${AUDITED_OPERATION_INDEX_DDL};
   -- Operational failures (#559) - what the platform could NOT do, and why. NOT the
   -- admin log (that is the never-swept compliance witness of successful mutations)
   -- but retention-bounded telemetry, pruned on write after OPS_FAILURE_RETENTION_DAYS.
@@ -4632,7 +4639,7 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() => {
       const row = this.sql.exec(SETTLE_INTENT_SQL, input.intentId).toArray()[0] as unknown as SettleIntentRow | undefined;
       const outcome = unknownOutcomeOf(row, input.intentId, input.error);
-      if (this.sql.exec(SETTLE_OUTCOME_SQL, outcome.action, input.intentId, outcome.operationId).toArray().length > 0) {
+      if (this.sql.exec(SETTLE_OUTCOME_SQL, outcome.operationId, outcome.action).toArray().length > 0) {
         return false;
       }
       const at = new Date().toISOString();
@@ -4665,6 +4672,14 @@ export class ControlPlaneDO extends DurableObject {
       });
       return true;
     });
+  }
+
+  /** #2064: an audited operation's rows, by the operation-id index, in bounded batches. */
+  auditedOperations(refs: AuditedOperationRef[]): AuditedOperationRow[] {
+    return readAuditedOperations(
+      (sql, params) => this.sql.exec(sql, ...params).toArray() as unknown as AuditedOperationSqlRow[],
+      refs,
+    );
   }
 
   /** The body of `recordOpsFailure`, for a caller already inside a transaction. */

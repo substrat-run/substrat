@@ -534,13 +534,27 @@ export type {
 } from './system-switch-record.js';
 export {
   AUDITED_CHANGE_ACTIONS,
+  AUDITED_OPERATION_INDEX_DDL,
+  AUDITED_OPERATIONS_BATCH,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
   auditedKeyOf,
+  auditedOperationsSql,
   effectiveOutcomes,
+  isSupersededOutcome,
+  readAuditedOperations,
   unknownOutcomeOf,
 } from './audit-outcome.js';
-export type { AuditedChangeAction, AuditedPhase, EffectiveOutcome, SettleIntentRow, UnknownOutcome } from './audit-outcome.js';
+export type {
+  AuditedChangeAction,
+  AuditedOperationRef,
+  AuditedOperationRow,
+  AuditedOperationSqlRow,
+  AuditedPhase,
+  EffectiveOutcome,
+  SettleIntentRow,
+  UnknownOutcome,
+} from './audit-outcome.js';
 export {
   VERSION_MIGRATIONS_DDL,
   splitManifestMigrations,

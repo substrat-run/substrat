@@ -619,7 +619,15 @@ import {
   type ConsumerDelivery,
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
-import { SETTLE_INTENT_SQL, SETTLE_OUTCOME_SQL, unknownOutcomeOf, type SettleIntentRow } from '@substrat-run/kernel';
+import {
+  AUDITED_OPERATION_INDEX_DDL,
+  SETTLE_INTENT_SQL,
+  SETTLE_OUTCOME_SQL,
+  readAuditedOperations,
+  unknownOutcomeOf,
+  type AuditedOperationSqlRow,
+  type SettleIntentRow,
+} from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -2200,6 +2208,8 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS _substrat_admin_log_actor ON _substrat_admin_log (actor, id);
       CREATE INDEX IF NOT EXISTS _substrat_admin_log_action ON _substrat_admin_log (action, id);
       CREATE INDEX IF NOT EXISTS _substrat_admin_log_at ON _substrat_admin_log (at);
+      -- #2064: an audited change's rows, found by operation id rather than by scanning the log.
+      ${AUDITED_OPERATION_INDEX_DDL};
       -- Operational failures (#559): what the platform could NOT do. Unlike the
       -- never-swept admin log above, this is retention-bounded telemetry, pruned
       -- on write (OPS_FAILURE_RETENTION_DAYS). reference carries the upstream
@@ -10565,12 +10575,21 @@ export class SqliteScopeHost implements ScopeHost {
       recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
         this.writeOpsFailure(entry);
       },
+      /** #2064: an audited operation's rows, by the operation-id index, in bounded batches. */
+      auditedOperations: async (actor, refs) => {
+        const rows = readAuditedOperations(
+          (sql, params) => this.directory.prepare(sql).all(...params) as AuditedOperationSqlRow[],
+          refs,
+        );
+        this.recordAccess(actor, 'auditedOperations', {}, { operations: refs.length }, rows.length);
+        return rows;
+      },
       /** #2064: settle an intent with no outcome, in one transaction — see `audit-outcome.ts`. */
       settleUnrecordedOutcome: async (actor, input) =>
         this.directory.transaction(() => {
           const row = this.directory.prepare(SETTLE_INTENT_SQL).get(input.intentId) as SettleIntentRow | undefined;
           const outcome = unknownOutcomeOf(row, input.intentId, input.error);
-          if (this.directory.prepare(SETTLE_OUTCOME_SQL).get(outcome.action, input.intentId, outcome.operationId)) return false;
+          if (this.directory.prepare(SETTLE_OUTCOME_SQL).get(outcome.operationId, outcome.action)) return false;
           this.recordAdmin(actor, outcome.action, outcome.target as never, null, outcome.after);
           this.writeOpsFailure({ ...outcome.failure, actor });
           return true;

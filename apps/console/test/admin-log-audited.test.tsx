@@ -31,7 +31,10 @@ describe('the admin log reads an audited change by its latest outcome', () => {
 
   const render = async (rows: AdminLogEntry[]) => {
     const scoped = rows.map((r) => ({ ...r, tenantId: rows[0]!.tenantId, scopeId: rows[0]!.scopeId }));
-    const resolved = await withAuditedOutcomes({ auditLog: async () => scoped }, actor, scoped);
+    // The batched read answers this operation's rows, as `HostAdmin.auditedOperations` does.
+    const auditedOperations = async () =>
+      scoped.map((r) => ({ id: r.id, action: r.action, tenantId: r.tenantId, scopeId: r.scopeId, operationId, phase: (r.after as { phase: string }).phase }));
+    const resolved = await withAuditedOutcomes({ auditedOperations }, actor, scoped);
     const wire = JSON.parse(JSON.stringify(resolved)) as AdminLogEntry[];
     return wire.map((e) => renderToString(createElement(AuditedOutcome, { entry: e })).replace(/<!-- -->/g, ''));
   };

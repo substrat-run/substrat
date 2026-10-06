@@ -136,6 +136,7 @@ export {
   settleUnrecordedOutcomes,
   supersededUnknowns,
   withAuditedOutcomes,
+  OUTCOME_CONFLICT_LOG,
   SETTLE_GRACE_MS,
   UNRECORDED_OUTCOME_LOG,
 } from './audited-change.js';

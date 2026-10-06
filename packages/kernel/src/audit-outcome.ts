@@ -15,9 +15,12 @@
  * Because the ops-failure row is written in the same unit, an `unknown` row cannot exist without
  * the digest hearing of it.
  *
- * **A real outcome supersedes `unknown`.** The log is append-only, so a real outcome that lands
- * after the settle is still recorded, as the later row. Readers take the latest outcome row of
- * an operation as its result. The control plane bounds the vertical call well inside the
+ * **A real outcome supersedes `unknown`, by priority, not by order.** The log is append-only, so
+ * a real outcome that lands after the settle is still recorded. Every reader resolves an
+ * operation by `effectiveOutcomes`: a real outcome (`applied`, `refused`, `failed`) beats
+ * `unknown` whichever row was written first, since the two writers' ids and clocks need not
+ * agree. Two real outcomes for one operation break the audit's invariant, so they resolve to
+ * `conflicting`, which is reported and never guessed past. The control plane bounds the vertical call well inside the
  * settle's grace window, so a live request cannot normally be overtaken this way. The rule is
  * stated for the case where one is.
  */
@@ -33,14 +36,93 @@ export const SETTLE_INTENT_SQL =
   'SELECT id, action, tenant_id, scope_id, vertical, after FROM _substrat_admin_log WHERE id = ?';
 
 /**
- * Whether the operation already has an outcome. An outcome is written after its intent, so its
- * ULID id is greater, which keeps the scan on the `(action, id)` range of the log.
+ * The admin log indexed by operation id (#2064): the one lookup the settle and every reader of
+ * an audited change make. Partial, so rows that pair nothing cost nothing. Both adapters build
+ * it from this string, and `lint:spine-ddl` holds them to it.
+ */
+export const AUDITED_OPERATION_INDEX_DDL = `CREATE INDEX IF NOT EXISTS _substrat_admin_log_operation
+    ON _substrat_admin_log (json_extract(after, '$.operationId'))
+    WHERE json_extract(after, '$.operationId') IS NOT NULL`;
+
+/**
+ * Whether the operation already has an outcome. Found by operation id, never by row order: the
+ * intent, a real outcome and a settle's `unknown` are stamped by different writers whose ULIDs
+ * and clocks need not agree.
  */
 export const SETTLE_OUTCOME_SQL = `SELECT 1 AS present FROM _substrat_admin_log
-  WHERE action = ? AND id > ?
-    AND json_extract(after, '$.operationId') = ?
+  WHERE json_extract(after, '$.operationId') = ?
+    AND json_extract(after, '$.operationId') IS NOT NULL
+    AND action = ?
     AND json_extract(after, '$.phase') <> 'intent'
   LIMIT 1`;
+
+/** How many operation ids one batched read binds: well under a Durable Object's 100 parameters. */
+export const AUDITED_OPERATIONS_BATCH = 50;
+
+/**
+ * Every row of the given operations, by the operation-id index. One statement per batch of
+ * `AUDITED_OPERATIONS_BATCH` ids. The caller narrows the rows to the action, tenant and scope it
+ * asked about.
+ */
+export function auditedOperationsSql(count: number): string {
+  return `SELECT id, action, tenant_id, scope_id,
+      json_extract(after, '$.operationId') AS operation_id, json_extract(after, '$.phase') AS phase
+    FROM _substrat_admin_log
+    WHERE json_extract(after, '$.operationId') IN (${Array.from({ length: count }, () => '?').join(', ')})
+      AND json_extract(after, '$.operationId') IS NOT NULL
+      AND action IN (${AUDITED_CHANGE_ACTIONS.map((a) => `'${a}'`).join(', ')})`;
+}
+
+/** One row as `auditedOperationsSql` reads it. */
+export interface AuditedOperationSqlRow {
+  id: string;
+  action: string;
+  tenant_id: string | null;
+  scope_id: string | null;
+  operation_id: string;
+  phase: string | null;
+}
+
+/** One row of an audited operation, as `HostAdmin.auditedOperations` answers it. */
+export interface AuditedOperationRow {
+  id: string;
+  action: string;
+  tenantId: string | null;
+  scopeId: string | null;
+  operationId: string;
+  phase: string | null;
+}
+
+/** The operations a reader asks about: an operation is its action, its id and its scope. */
+export interface AuditedOperationRef {
+  action: string;
+  operationId: string;
+  tenantId: string | null;
+  scopeId: string | null;
+}
+
+/**
+ * Run `auditedOperationsSql` over `refs` in batches through `all`, and keep only the rows of
+ * the exact operations asked about. An operation id from another action or scope is not one.
+ */
+export function readAuditedOperations(
+  all: (sql: string, params: string[]) => AuditedOperationSqlRow[],
+  refs: readonly AuditedOperationRef[],
+): AuditedOperationRow[] {
+  const wanted = new Set(refs.map((r) => operationRefKey(r)));
+  const ids = [...new Set(refs.map((r) => r.operationId))];
+  const rows: AuditedOperationRow[] = [];
+  for (let i = 0; i < ids.length; i += AUDITED_OPERATIONS_BATCH) {
+    const batch = ids.slice(i, i + AUDITED_OPERATIONS_BATCH);
+    for (const r of all(auditedOperationsSql(batch.length), batch)) {
+      const row = { id: r.id, action: r.action, tenantId: r.tenant_id, scopeId: r.scope_id, operationId: r.operation_id, phase: r.phase };
+      if (wanted.has(operationRefKey(row))) rows.push(row);
+    }
+  }
+  return rows;
+}
+
+const operationRefKey = (r: AuditedOperationRef): string => `${r.action}:${r.operationId}:${r.tenantId}:${r.scopeId}`;
 
 /** One row as `SETTLE_INTENT_SQL` reads it. */
 export interface SettleIntentRow {
@@ -97,36 +179,50 @@ export function unknownOutcomeOf(row: SettleIntentRow | undefined, intentId: str
   };
 }
 
-/** The phases an audited change's rows carry. `pending` is an operation with no outcome yet. */
+/** The phases an audited change's rows carry. */
 export type AuditedPhase = 'intent' | 'applied' | 'refused' | 'failed' | 'unknown';
 
 /** One operation's key: the two flows mint their operation ids independently. */
 export const auditedKeyOf = (action: string, operationId: string): string => `${action}:${operationId}`;
 
-/** The outcome an operation stands at: its LATEST outcome row, by id. */
+const REAL_OUTCOMES: ReadonlySet<string> = new Set(['applied', 'refused', 'failed']);
+
+/** Where an operation stands, by priority over its rows (see the module header). */
 export interface EffectiveOutcome {
-  phase: Exclude<AuditedPhase, 'intent'>;
-  /** The id of the outcome row that decides it. */
-  id: string;
-  at: string;
+  /** `conflicting`: more than one real outcome row, which the audit must never hold. */
+  outcome: 'applied' | 'refused' | 'failed' | 'unknown' | 'conflicting';
+  /** The real outcome phases found, in no particular order: one, or several when conflicting. */
+  real: string[];
 }
 
 /**
- * Each audited operation's effective outcome among `rows`, keyed by `auditedKeyOf`: the latest
- * outcome row wins (#2064), so a real outcome recorded after a settle's `unknown` is the result.
- * Rows of other actions, and intents, decide nothing.
+ * Each audited operation's effective outcome among `rows`, keyed by `auditedKeyOf`. A real
+ * outcome beats `unknown` regardless of which was written first. Two or more real outcome rows
+ * are `conflicting`. An operation with only an intent has no entry, so it is pending. Row ids
+ * and timestamps decide nothing.
  */
 export function effectiveOutcomes(
-  rows: readonly { id: string; action: string; at: string; after: unknown }[],
+  rows: readonly { action: string; operationId: string; phase: string | null }[],
 ): Map<string, EffectiveOutcome> {
-  const out = new Map<string, EffectiveOutcome>();
+  const seen = new Map<string, { real: string[]; unknown: boolean }>();
   for (const row of rows) {
-    if (!isAudited(row.action)) continue;
-    const after = row.after as { phase?: unknown; operationId?: unknown } | null;
-    if (typeof after?.operationId !== 'string' || after.phase === 'intent' || typeof after.phase !== 'string') continue;
-    const key = auditedKeyOf(row.action, after.operationId);
-    const seen = out.get(key);
-    if (!seen || row.id > seen.id) out.set(key, { phase: after.phase as EffectiveOutcome['phase'], id: row.id, at: row.at });
+    if (!isAudited(row.action) || row.phase === null || row.phase === 'intent') continue;
+    const key = auditedKeyOf(row.action, row.operationId);
+    const entry = seen.get(key) ?? { real: [], unknown: false };
+    if (REAL_OUTCOMES.has(row.phase)) entry.real.push(row.phase);
+    else if (row.phase === 'unknown') entry.unknown = true;
+    seen.set(key, entry);
+  }
+  const out = new Map<string, EffectiveOutcome>();
+  for (const [key, { real, unknown }] of seen) {
+    if (real.length > 1) out.set(key, { outcome: 'conflicting', real });
+    else if (real.length === 1) out.set(key, { outcome: real[0] as EffectiveOutcome['outcome'], real });
+    else if (unknown) out.set(key, { outcome: 'unknown', real });
   }
   return out;
+}
+
+/** Whether a row is an outcome its operation's effective outcome replaced: an `unknown` beaten by a real one. */
+export function isSupersededOutcome(phase: string | null, effective: EffectiveOutcome | undefined): boolean {
+  return phase === 'unknown' && effective !== undefined && effective.real.length > 0;
 }

@@ -23,7 +23,15 @@
  * not covered here.)
  */
 import { AUDIT_ERROR_MAX, type AdminLogEntry, type OpsFailureEntry, type PlatformActorId } from '@substrat-run/contracts';
-import { AUDITED_CHANGE_ACTIONS, auditedKeyOf, effectiveOutcomes, type HostAdmin } from '@substrat-run/kernel';
+import {
+  AUDITED_CHANGE_ACTIONS,
+  auditedKeyOf,
+  effectiveOutcomes,
+  isSupersededOutcome,
+  type AuditedOperationRef,
+  type EffectiveOutcome,
+  type HostAdmin,
+} from '@substrat-run/kernel';
 import { AUDITED_CALL_DEADLINE_MS } from './vertical-client.js';
 
 /** One row of an audited change, before the flow adds its own fields. */
@@ -180,99 +188,90 @@ export async function settleUnrecordedOutcomes(opts: SettleOptions): Promise<Set
   return result;
 }
 
-/**
- * Read every row of the audited actions in one tenant scope since `since`, paged. The rows a
- * caller needs to tell an operation's effective outcome (#2064): its outcome rows can sit
- * outside the page or filter that showed one of its rows.
- */
-async function auditedRowsSince(
-  admin: Pick<HostAdmin, 'auditLog'>,
-  actor: PlatformActorId,
-  where: { tenantId: AdminLogEntry['tenantId']; scopeId: AdminLogEntry['scopeId']; since: string; action?: AdminLogEntry['action'] },
-): Promise<AdminLogEntry[]> {
-  const rows: AdminLogEntry[] = [];
-  for (let cursor: string | undefined; ; ) {
-    const page = await admin.auditLog(actor, {
-      action: where.action ? [where.action] : [...AUDITED_CHANGE_ACTIONS],
-      ...(where.tenantId ? { tenantId: where.tenantId } : {}),
-      ...(where.scopeId ? { scopeId: where.scopeId } : {}),
-      since: where.since,
-      limit: PAGE,
-      cursor,
-    });
-    rows.push(...page);
-    if (page.length < PAGE) return rows;
-    cursor = page[page.length - 1]!.id;
-  }
-}
-
 const operationIdOf = (row: AdminLogEntry): string | null => {
   const id = (row.after as { operationId?: unknown } | null)?.operationId;
   return (AUDITED_CHANGE_ACTIONS as readonly string[]).includes(row.action) && typeof id === 'string' ? id : null;
 };
 
+/** The structured line an operation with two real outcomes leaves: the audit's invariant broke. */
+export const OUTCOME_CONFLICT_LOG = 'audit-outcome-conflict';
+
 /**
- * The admin-log read surface's half of "the latest outcome wins" (#2064). Each row of an audited
- * change is annotated with its operation's effective outcome, and an outcome row a later one
- * replaced is marked `superseded`. The rows themselves are returned as written, so the raw
- * history stays readable.
+ * Resolve `refs` to their effective outcomes (#2064): ONE batched read of exactly these
+ * operations' rows through the operation-id index, then the kernel's priority rule. An operation
+ * found `conflicting` is logged here, once per read, so a reader never hides it.
+ */
+async function resolveOperations(
+  admin: Pick<HostAdmin, 'auditedOperations'>,
+  actor: PlatformActorId,
+  refs: AuditedOperationRef[],
+  logError: NonNullable<AuditedChangeSpec<unknown>['logError']> = consoleError,
+): Promise<Map<string, EffectiveOutcome>> {
+  if (refs.length === 0) return new Map();
+  const effective = effectiveOutcomes(await admin.auditedOperations(actor, refs));
+  for (const [key, outcome] of effective) {
+    if (outcome.outcome === 'conflicting') logError(OUTCOME_CONFLICT_LOG, { operation: key, outcomes: outcome.real });
+  }
+  return effective;
+}
+
+/**
+ * The admin-log read surface's half of the priority rule (#2064). Each row of an audited change
+ * is annotated with the outcome its operation stands at: a real outcome beats `unknown` whatever
+ * the row order, and two real outcomes read `conflicting`. An `unknown` a real outcome beat is
+ * marked `superseded`. The rows are returned as written, so the raw history stays readable.
  */
 export async function withAuditedOutcomes(
-  admin: Pick<HostAdmin, 'auditLog'>,
+  admin: Pick<HostAdmin, 'auditedOperations'>,
   actor: PlatformActorId,
   entries: AdminLogEntry[],
+  logError?: AuditedChangeSpec<unknown>['logError'],
 ): Promise<AdminLogEntry[]> {
-  // One read per scope the page's audited rows touch, from the earliest of them: an operation's
-  // outcome rows all follow its intent, in its own scope.
-  const scopes = new Map<string, { tenantId: AdminLogEntry['tenantId']; scopeId: AdminLogEntry['scopeId']; since: string }>();
+  const refs: AuditedOperationRef[] = [];
   for (const row of entries) {
-    if (operationIdOf(row) === null) continue;
-    const key = `${row.tenantId}/${row.scopeId}`;
-    const seen = scopes.get(key);
-    if (!seen || row.at < seen.since) scopes.set(key, { tenantId: row.tenantId, scopeId: row.scopeId, since: row.at });
+    const operationId = operationIdOf(row);
+    if (operationId !== null) refs.push({ action: row.action, operationId, tenantId: row.tenantId, scopeId: row.scopeId });
   }
-  if (scopes.size === 0) return entries;
-  const related = (await Promise.all([...scopes.values()].map((where) => auditedRowsSince(admin, actor, where)))).flat();
-  const effective = effectiveOutcomes([...related, ...entries]);
+  if (refs.length === 0) return entries;
+  const effective = await resolveOperations(admin, actor, refs, logError);
   return entries.map((row) => {
     const operationId = operationIdOf(row);
     if (operationId === null) return row;
     const outcome = effective.get(auditedKeyOf(row.action, operationId));
-    const phase = (row.after as { phase?: unknown }).phase;
+    const phase = (row.after as { phase?: string }).phase ?? null;
     return {
       ...row,
-      audited: {
-        operationId,
-        outcome: outcome?.phase ?? 'pending',
-        superseded: phase !== 'intent' && outcome !== undefined && outcome.id !== row.id,
-      },
+      audited: { operationId, outcome: outcome?.outcome ?? 'pending', superseded: isSupersededOutcome(phase, outcome) },
     };
   });
 }
 
 /**
  * The digest's half (#2064): of the ops-failure rows the settle wrote for an `unknown` outcome,
- * the ones whose operation has since recorded a real outcome. The settle's row names the
- * operation in `reference`. The digest drops these, because there is nothing left to look into.
+ * the ones whose operation has since recorded ONE real outcome, whatever the order the two rows
+ * landed in. The settle's row names the operation in `reference`. The digest drops these. A
+ * `conflicting` operation is kept and logged: it is the one a person must look at.
  */
 export async function supersededUnknowns(
-  admin: Pick<HostAdmin, 'auditLog'>,
+  admin: Pick<HostAdmin, 'auditedOperations'>,
   actor: PlatformActorId,
   failures: readonly OpsFailureEntry[],
+  logError?: AuditedChangeSpec<unknown>['logError'],
 ): Promise<Set<string>> {
-  const superseded = new Set<string>();
+  const unknowns = new Map<string, OpsFailureEntry>();
+  const refs: AuditedOperationRef[] = [];
   for (const f of failures) {
     const action = f.operation.startsWith('audit.') ? f.operation.slice('audit.'.length) : null;
     if (f.stage !== 'outcome-unknown' || !action || !f.reference) continue;
     if (!(AUDITED_CHANGE_ACTIONS as readonly string[]).includes(action)) continue;
-    const rows = await auditedRowsSince(admin, actor, {
-      tenantId: f.tenantId,
-      scopeId: f.scopeId,
-      since: f.at,
-      action: action as AdminLogEntry['action'],
-    });
-    const outcome = effectiveOutcomes(rows).get(auditedKeyOf(action, f.reference));
-    if (outcome && outcome.phase !== 'unknown') superseded.add(f.id);
+    unknowns.set(f.id, f);
+    refs.push({ action, operationId: f.reference, tenantId: f.tenantId, scopeId: f.scopeId });
+  }
+  const effective = await resolveOperations(admin, actor, refs, logError);
+  const superseded = new Set<string>();
+  for (const [id, f] of unknowns) {
+    const outcome = effective.get(auditedKeyOf(f.operation.slice('audit.'.length), f.reference!));
+    if (outcome && outcome.real.length === 1) superseded.add(id);
   }
   return superseded;
 }

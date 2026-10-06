@@ -168,6 +168,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
+import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import { substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
@@ -4014,6 +4015,14 @@ export interface HostAdmin {
    * not an audited-change intent. See `audit-outcome.ts` for why a later real outcome still wins.
    */
   settleUnrecordedOutcome(actor: PlatformActorId, input: { intentId: string; error: string }): Promise<boolean>;
+
+  /**
+   * Every admin-log row of the given audited operations (#2064), read through the operation-id
+   * index in bounded batches — one statement per `AUDITED_OPERATIONS_BATCH` ids, never a scan of
+   * the log. Only rows of the exact (action, operation, tenant, scope) asked about are returned.
+   * Reading the audit trail is itself recorded, once per call.
+   */
+  auditedOperations(actor: PlatformActorId, refs: readonly AuditedOperationRef[]): Promise<AuditedOperationRow[]>;
 
   /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including

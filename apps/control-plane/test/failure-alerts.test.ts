@@ -86,7 +86,7 @@ function stubAdmin(seed: { failures?: OpsFailureEntry[]; sweepRuns?: SweepRunEnt
     recordOpsFailure: async (entry) => {
       calls.recorded.push(entry);
     },
-    auditLog: async () => [],
+    auditedOperations: async () => [],
   };
   return { admin, calls };
 }
