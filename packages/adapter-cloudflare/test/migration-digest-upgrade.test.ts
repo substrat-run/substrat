@@ -102,7 +102,7 @@ it('adds sql_digest to a legacy journal on wake, marks its rows legacy, and tole
   }
 });
 
-describe('a migration that reaches for the journal is refused before any of it runs, on DO SQLite (#2066)', () => {
+describe('a migration that reaches for the journal or the spine is refused before any of it runs, on DO SQLite (#2066)', () => {
   const staff = platformActorId.parse(ulid());
   const hosts: CloudflareScopeHost[] = [];
   afterAll(async () => {
@@ -112,6 +112,8 @@ describe('a migration that reaches for the journal is refused before any of it r
   for (const [what, ns, version] of [
     ['drops the digest fence', () => env.JOURNAL_FENCE_DROP_SCOPE, '@test/journal-fence-drop@0001-init'],
     ['writes the journal', () => env.JOURNAL_WRITE_SCOPE, '@test/journal-write@0001-init'],
+    ['shadows a spine table with a TEMP one', () => env.SPINE_SHADOW_SCOPE, '@test/spine-shadow@0001-init'],
+    ['drops a spine table', () => env.SPINE_DROP_SCOPE, '@test/spine-drop@0001-init'],
   ] as const) {
     it(`one that ${what}`, async () => {
       const host = new CloudflareScopeHost({ scope: ns(), controlPlane: env.CONTROL_PLANE, checker: UNSAFE_allowAllChecker });
@@ -121,13 +123,15 @@ describe('a migration that reaches for the journal is refused before any of it r
       await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
       await host.admin.grantEntitlement(staff, t, 'notes');
       await expect(host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu' })).rejects.toThrow(
-        `migration failed for ${version} — scope fails closed: migration ${version} cannot name the migration journal`,
+        new RegExp(`migration failed for ${version} — scope fails closed: migration ${version} cannot (name the migration journal|write the platform spine)`),
       );
       const objects = await runInDurableObject(ns().get(ns().idFromName(s)), async (_i, state) =>
         state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')`).toArray().map((r) => r.name as string),
       );
-      // None of it ran: not the harmless first statement, and the fence is where it was.
+      // None of it ran: not the harmless first statement, the spine is all there, and the fence is
+      // where it was.
       expect(objects).not.toContain('jt');
+      expect(objects).toEqual(expect.arrayContaining(['_substrat_outbox', '_substrat_tuples']));
       expect(objects).toEqual(expect.arrayContaining(['_substrat_migrations_digest_required', '_substrat_migrations_digest_kept']));
     });
   }

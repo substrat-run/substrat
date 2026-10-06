@@ -98,6 +98,8 @@ export {
   spineParentMod,
   journalFenceDropMod,
   journalWriteMod,
+  spineDropMod,
+  spineShadowMod,
   ownParentMod,
   PRE_GUARD_REFUSALS_DDL,
 } from './modules.js';

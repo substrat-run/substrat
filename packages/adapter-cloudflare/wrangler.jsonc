@@ -71,6 +71,8 @@
       // #2066: migrations that reach for the migration journal — see test/worker.ts.
       { "name": "JOURNAL_FENCE_DROP_SCOPE", "class_name": "JournalFenceDropScopeDO" },
       { "name": "JOURNAL_WRITE_SCOPE", "class_name": "JournalWriteScopeDO" },
+      { "name": "SPINE_SHADOW_SCOPE", "class_name": "SpineShadowScopeDO" },
+      { "name": "SPINE_DROP_SCOPE", "class_name": "SpineDropScopeDO" },
       // #1686: vertical-auth's real identity directory, for the owner claim link suite — the
       // claim link is a capability in a ScopeDO and a record in this, and both are held here.
       { "name": "AUTH", "class_name": "IdentityDO" }
@@ -131,6 +133,10 @@
     {
       "tag": "v13",
       "new_sqlite_classes": ["JournalFenceDropScopeDO", "JournalWriteScopeDO"]
+    },
+    {
+      "tag": "v14",
+      "new_sqlite_classes": ["SpineShadowScopeDO", "SpineDropScopeDO"]
     }
   ]
 }

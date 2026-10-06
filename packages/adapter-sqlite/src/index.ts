@@ -497,7 +497,7 @@ import {
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_MARK_LEGACY,
   assertJournalDumpCoherent,
-  assertNoJournalSql,
+  assertMigrationSql,
   migrationDivergence,
   migrationFailedError,
   migrationSteps,
@@ -630,7 +630,7 @@ import {
 } from '@substrat-run/kernel';
 import { attributedView } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
-import { LEGACY_SCOPE_ROWS_BACKFILL, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
+import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker, directoryTenantReader } from './checker.js';
 
@@ -11830,10 +11830,9 @@ export class SqliteScopeHost implements ScopeHost {
             } else {
               const started = performance.now();
               const before = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
-              // #1898: a migration runs on the scope's own handle, not `ctx.sql`, so the
-              // spine guard's REFERENCES rule is applied here.
-              assertNoSpineReference(migration.sql, `migration ${key}`);
-              assertNoJournalSql(migration.sql, `migration ${key}`);
+              // #1898, #2066: a migration runs on the scope's own handle, not `ctx.sql`, so the
+              // spine rules a migration is held to are applied here.
+              assertMigrationSql(migration.sql, { key, digest, authored });
               rt.db.exec(migration.sql);
               assertTablesWithinColumnLimit(rt.db);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;

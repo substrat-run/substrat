@@ -1,5 +1,6 @@
 import { substratError, tokenizeSql } from '@substrat-run/contracts';
 import { moduleMigrations } from './module-migrations.js';
+import { assertNoSpineReference, assertNoSpineWrite } from './spine-guard.js';
 import { attachmentSha256, type SqlMigration } from './scope-host.js';
 
 // Declared locally so the kernel needs no platform type packages (§5.8), as `capability.ts` does.
@@ -99,6 +100,45 @@ export function assertNoJournalSql(sql: string, what: string): void {
       `${what} cannot name the migration journal ('${token.text}'): the journal and its digest fence are the kernel's (#2066)`,
       { reason: 'spine_write' },
     );
+  }
+}
+
+/**
+ * The authored migrations allowed to write the spine: four shipped ticket0 repairs of its own
+ * `_substrat_tuples` edges and its hand-recreated derived list indexes, each reviewed under
+ * `boundary-lint-allow R4 migration`. Keyed by module, version AND the digest of the exact text,
+ * so only those texts pass: a new migration, or any edit to one of these, gets the full guard.
+ * Shipped migrations are append-only, so this list only ever shrinks — a new spine repair goes
+ * through the platform, not a migration.
+ */
+const REVIEWED_SPINE_MIGRATIONS: ReadonlySet<string> = new Set([
+  '@substrat-run/demo-ticket0@0020#d29122b68f3cc5d07a70fb87874085e0e6805e2e19612984160488c59789d75c',
+  '@substrat-run/demo-ticket0@0022#9de9088207fa914e9eb8c8344924708655cbecb11e5b64f76e1d2ec7d0bd0ea2',
+  '@substrat-run/demo-ticket0@0024#ba60103ae91108bfce21fd5b24818cec18aefe4ee3b03b49ca8013fd2634aae3',
+  '@substrat-run/demo-ticket0@0026#da0bb4e3c8b13f5febd8b2202e7267c30e9ee91a19d202181b99ccdeb71ec3a4',
+]);
+
+/**
+ * Refuse a migration's SQL before any of it runs, if it reaches where a migration must not.
+ *
+ * A migration runs on the kernel's own handle, not `ctx.sql`, so `ctx.sql`'s guard never sees it.
+ * Every migration is held to: no foreign key to the spine (#1898), and nothing that names the
+ * journal (`assertNoJournalSql`). An AUTHORED one is also held to the full spine write guard —
+ * no write, DDL or same-named TEMP object on any `_substrat_*` table — unless it is one of the
+ * exact reviewed texts above. Kernel-derived DDL is exempt from that last rule: creating
+ * `_substrat_*` indexes and triggers is what it is for.
+ */
+export function assertMigrationSql(sql: string, step: { key: string; digest: string; authored: boolean }): void {
+  const what = `migration ${step.key}`;
+  assertNoSpineReference(sql, what);
+  assertNoJournalSql(sql, what);
+  if (!step.authored || REVIEWED_SPINE_MIGRATIONS.has(`${step.key}#${step.digest}`)) return;
+  try {
+    assertNoSpineWrite(sql);
+  } catch (err) {
+    throw substratError('forbidden', `${what} cannot write the platform spine: ${(err as Error).message.replace(/^ctx\.sql cannot write the platform spine: /, '')}`, {
+      reason: 'spine_write',
+    });
   }
 }
 

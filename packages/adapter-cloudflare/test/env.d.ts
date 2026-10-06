@@ -51,5 +51,7 @@ declare module 'cloudflare:test' {
     /** #2066: migrations that reach for the journal — migration-digest-upgrade.test.ts. */
     JOURNAL_FENCE_DROP_SCOPE: DurableObjectNamespace;
     JOURNAL_WRITE_SCOPE: DurableObjectNamespace;
+    SPINE_SHADOW_SCOPE: DurableObjectNamespace;
+    SPINE_DROP_SCOPE: DurableObjectNamespace;
   }
 }

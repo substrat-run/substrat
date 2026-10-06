@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { journalFenceDropMod, journalWriteMod } from '@substrat-run/contract-tests';
+import { journalFenceDropMod, journalWriteMod, spineDropMod, spineShadowMod } from '@substrat-run/contract-tests';
 import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { migrationDigest, ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler, type SqlMigration } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
@@ -216,6 +216,8 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
   for (const [what, mod, version] of [
     ['drops the digest fence', journalFenceDropMod, '@test/journal-fence-drop@0001-init'],
     ['writes the journal', journalWriteMod, '@test/journal-write@0001-init'],
+    ['shadows a spine table with a TEMP one', spineShadowMod, '@test/spine-shadow@0001-init'],
+    ['drops a spine table', spineDropMod, '@test/spine-drop@0001-init'],
   ] as const) {
     it(`refuses a migration that ${what}, before any of it runs`, async () => {
       const dir = mkdtempSync(join(tmpdir(), 'substrat-digest-'));
@@ -228,7 +230,7 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
         await host.admin.createTenant(staff, { id: t, slug: `j-${ulid().toLowerCase()}`, name: 'J' });
         await host.admin.grantEntitlement(staff, t, 'notes');
         await expect(host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu' })).rejects.toThrow(
-          `migration failed for ${version} — scope fails closed: migration ${version} cannot name the migration journal`,
+          new RegExp(`migration failed for ${version} — scope fails closed: migration ${version} cannot (name the migration journal|write the platform spine)`),
         );
       } finally {
         await host.close();
@@ -239,6 +241,7 @@ describe('the migration journal digest across a redeploy (#2066)', () => {
           (r) => r.name,
         );
         expect(objects).not.toContain('jt');
+        expect(objects).toEqual(expect.arrayContaining(['_substrat_outbox', '_substrat_tuples']));
         expect(objects).toEqual(expect.arrayContaining(['_substrat_migrations_digest_required', '_substrat_migrations_digest_kept']));
       } finally {
         db.close();

@@ -21,6 +21,8 @@ import {
   spineParentMod,
   journalFenceDropMod,
   journalWriteMod,
+  spineDropMod,
+  spineShadowMod,
 } from '@substrat-run/contract-tests';
 import { defineScopeDO, type ScopeDoEnv } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -251,6 +253,8 @@ export const OwnParentScopeDO = defineScopeDO([ownParentMod], {});
 /** #2066: migrations that reach for the journal and its digest fence — migration-digest-upgrade.test.ts. */
 export const JournalFenceDropScopeDO = defineScopeDO([journalFenceDropMod], {});
 export const JournalWriteScopeDO = defineScopeDO([journalWriteMod], {});
+export const SpineShadowScopeDO = defineScopeDO([spineShadowMod], {});
+export const SpineDropScopeDO = defineScopeDO([spineDropMod], {});
 
 export { ControlPlaneDO };
 

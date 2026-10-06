@@ -149,7 +149,7 @@ import {
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_MARK_LEGACY,
   assertJournalDumpCoherent,
-  assertNoJournalSql,
+  assertMigrationSql,
   migrationDivergence,
   migrationFailedError,
   migrationSteps,
@@ -352,7 +352,7 @@ import type {
   StoredScopeLifecycle,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
-import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertNoSpineReference, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -4972,10 +4972,9 @@ export function defineScopeDO(
               } else {
                 const started = performance.now();
                 const before = (this.sql.exec('SELECT total_changes() AS n').toArray()[0] as { n: number }).n;
-                // #1898: a migration runs on this DO's own handle, not `ctx.sql`, so the
-                // spine guard's REFERENCES rule is applied here.
-                assertNoSpineReference(migration.sql, `migration ${key}`);
-                assertNoJournalSql(migration.sql, `migration ${key}`);
+                // #1898, #2066: a migration runs on this DO's own handle, not `ctx.sql`, so the
+                // spine rules a migration is held to are applied here.
+                assertMigrationSql(migration.sql, { key, digest, authored });
                 // #1722: not counted per statement, so `total_changes()` measures the migration
                 // alone. The journal row below is a write, and advances the revision once.
                 this.revisionSuspended = true;

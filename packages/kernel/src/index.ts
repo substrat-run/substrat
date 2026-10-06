@@ -351,6 +351,7 @@ export {
   MIGRATION_DIGEST_LEGACY,
   MIGRATION_DIGEST_MARK_LEGACY,
   assertJournalDumpCoherent,
+  assertMigrationSql,
   assertNoJournalSql,
   migrationDigest,
   migrationDivergence,
