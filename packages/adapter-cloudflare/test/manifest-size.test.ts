@@ -17,6 +17,7 @@ import {
   sqlBytes,
 } from '@substrat-run/contracts';
 import {
+  executableSqlStatements,
   splitVersionMigrationsBatch,
   ulid,
   UNSAFE_allowAllChecker,
@@ -33,7 +34,7 @@ import {
   backfillBackoffMs,
   planDirectoryDdl,
 } from '../src/control-plane-do.js';
-import { splitSqlStatements, switchSqlOver } from '../src/scope-do.js';
+import { switchSqlOver } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -523,7 +524,8 @@ describe('the #1764 backfill survives a failing batch', () => {
  */
 describe('the directory DDL plan holds back exactly #1764\'s statements', () => {
   it('the real DDL: the fragment\'s statements run after the columns, every other statement in the loop', () => {
-    const fragment = splitSqlStatements(VERSION_MIGRATIONS_DDL);
+    // The plan holds the statements as they EXECUTE: comment-blanked (#2068).
+    const fragment = executableSqlStatements(VERSION_MIGRATIONS_DDL);
     expect(DIRECTORY_DDL_PLAN.afterColumns).toEqual(fragment);
     expect(DIRECTORY_DDL_PLAN.missing).toEqual([]);
     for (const stmt of fragment) expect(DIRECTORY_DDL_PLAN.loop).not.toContain(stmt);
@@ -542,7 +544,7 @@ describe('the directory DDL plan holds back exactly #1764\'s statements', () => 
     // A DDL that no longer carries the fragment says so, rather than quietly running it twice,
     // and the module-load check refuses it outright.
     const drifted = planDirectoryDdl(extra.join(';\n'));
-    expect(drifted.missing).toEqual(splitSqlStatements(VERSION_MIGRATIONS_DDL));
+    expect(drifted.missing).toEqual(executableSqlStatements(VERSION_MIGRATIONS_DDL));
     expect(() => assertDirectoryDdlPlan(drifted)).toThrow(/does not carry 2 statement/);
     expect(assertDirectoryDdlPlan(plan)).toBe(plan);
   });
