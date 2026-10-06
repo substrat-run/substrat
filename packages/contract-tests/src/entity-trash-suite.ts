@@ -62,7 +62,37 @@ export function entityTrashContractSuite(
      */
     direct?: {
       claimPurge(tenant: TenantId, scope: ScopeId, operation: string, input: unknown): Promise<string>;
-      runPurgeSweep(tenant: TenantId, scope: ScopeId, operation: string): Promise<{ purged: number; skipped: number }>;
+      runPurgeSweep(tenant: TenantId, scope: ScopeId, operation: string): Promise<{ purged: number; skipped: number; held?: string }>;
+      /**
+       * Hold (or release) the scope's lifecycle where THIS adapter's scope-side gate reads it: the
+       * directory on the pure adapter, the delivered lifecycle (#1713) in a Durable Object.
+       */
+      holdLifecycle(tenant: TenantId, scope: ScopeId, held: boolean): Promise<void>;
+      /**
+       * Record the scope's tenant where this adapter's scope-side gate reads it: the directory on the
+       * pure adapter (already there), the `provisioned_for` receipt in a Durable Object — which only a
+       * projection or a lifecycle delivery writes, so a directory-backed host's scope has none.
+       */
+      recordTenant(tenant: TenantId, scope: ScopeId): Promise<void>;
+      /**
+       * What a direct sweep naming a foreign tenant meets on a scope that has NOT recorded its tenant:
+       * `refused` where the directory is the record (the pure adapter); `admitted` in a Durable Object
+       * with no receipt — the doors' rule for an `unknown` pair, and why a directory-backed host leaves
+       * the tenant to the coordinator. Pinned, so a change to either is seen.
+       */
+      unrecordedTenant: 'refused' | 'admitted';
+      /** Classify the scope a copy where this adapter's scope-side gate reads it. */
+      markCopy(tenant: TenantId, scope: ScopeId): Promise<void>;
+      /**
+       * Where the sweep's scope id is attribution only (the Durable Object, which records no scope id
+       * of its own): run the sweep on `scope`'s object while NAMING `named`.
+       */
+      runPurgeSweepNaming?(
+        tenant: TenantId,
+        scope: ScopeId,
+        named: ScopeId,
+        operation: string,
+      ): Promise<{ purged: number; errors: { entityId: string; error: string }[] }>;
     };
   } = {},
 ): void {
@@ -366,6 +396,89 @@ export function entityTrashContractSuite(
         expect(await exists(s, recent)).toBe(true);
         // Only a purge schedule's operation can be swept.
         await expect(direct!.runPurgeSweep(t, s, 'trash/other-delete')).rejects.toThrow(/no purge schedule/);
+      });
+
+      describe("a direct sweep meets every gate the schedule run applies, from the scope's own state", () => {
+        const sweepNow = (s: ScopeId) => options.direct!.runPurgeSweep(t, s, 'trash/delete-box');
+
+        it('under the kill switch it purges nothing; restored, it purges', async () => {
+          const s = await freshScope();
+          const id = await dueBox(s);
+          await host.admin.revokeFromSystem(staff, { moduleId: MODULE, node: { tenantId: t, scopeId: s }, reason: 'legal hold' });
+          expect(await sweepNow(s)).toMatchObject({ purged: 0, held: expect.stringMatching(/switched off/) });
+          await host.admin.restoreToSystem(staff, { moduleId: MODULE, node: { tenantId: t, scopeId: s }, reason: 'released' });
+          expect(await exists(s, id)).toBe(true);
+          expect(await sweepNow(s)).toMatchObject({ purged: 1 });
+          expect(await exists(s, id)).toBe(false);
+        });
+
+        it('under a lifecycle hold it purges nothing; released, it purges', async () => {
+          const s = await freshScope();
+          const id = await dueBox(s);
+          await options.direct!.holdLifecycle(t, s, true);
+          expect(await sweepNow(s)).toMatchObject({ purged: 0, held: expect.stringMatching(/not active/) });
+          await options.direct!.holdLifecycle(t, s, false);
+          expect(await exists(s, id)).toBe(true);
+          expect(await sweepNow(s)).toMatchObject({ purged: 1 });
+          expect(await exists(s, id)).toBe(false);
+        });
+
+        it('on a copy it purges nothing; the primary beside it, as due, purges', async () => {
+          const copy = await freshScope();
+          const primary = await freshScope();
+          const onCopy = await dueBox(copy);
+          const onPrimary = await dueBox(primary);
+          await options.direct!.markCopy(t, copy);
+          expect(await sweepNow(copy)).toMatchObject({ purged: 0, held: expect.stringMatching(/copy/) });
+          expect(await exists(copy, onCopy)).toBe(true);
+          expect(await sweepNow(primary)).toMatchObject({ purged: 1 });
+          expect(await exists(primary, onPrimary)).toBe(false);
+        });
+
+        it('naming another tenant it is refused, and purges nothing; naming its own, it purges', async () => {
+          const s = await freshScope();
+          const id = await dueBox(s);
+          const other = tenantId.parse(ulid());
+          await options.direct!.recordTenant(t, s);
+          await expect(options.direct!.runPurgeSweep(other, s, 'trash/delete-box')).rejects.toThrow();
+          expect(await exists(s, id)).toBe(true);
+          expect(await sweepNow(s)).toMatchObject({ purged: 1 });
+          expect(await exists(s, id)).toBe(false);
+        });
+
+        it('on a scope that has not recorded its tenant, a foreign one meets the doors\' rule for an unknown pair', async () => {
+          const s = await freshScope();
+          const id = await dueBox(s);
+          const foreign = options.direct!.runPurgeSweep(tenantId.parse(ulid()), s, 'trash/delete-box');
+          if (options.direct!.unrecordedTenant === 'refused') {
+            await expect(foreign).rejects.toThrow();
+            expect(await exists(s, id)).toBe(true);
+          } else {
+            expect(await foreign).toMatchObject({ purged: 1 });
+            expect(await exists(s, id)).toBe(false);
+          }
+        });
+
+        it.runIf(options.direct?.runPurgeSweepNaming !== undefined)(
+          'the scope id it is handed routes nothing, and a wrong one fails closed',
+          async () => {
+            const s = await freshScope();
+            const elsewhere = await freshScope();
+            const here = await dueBox(s);
+            const there = await dueBox(elsewhere);
+            // Run on `s` while naming `elsewhere`: `s`'s due box goes, and nothing of `elsewhere`'s.
+            // Run on `s` while naming `elsewhere`. Nothing of `elsewhere`'s is reached, and `s`'s own
+            // purge fails closed: its check asks for the grant on the node it was named, which this
+            // scope does not hold.
+            const pass = await options.direct!.runPurgeSweepNaming!(t, s, elsewhere, 'trash/delete-box');
+            expect(pass).toMatchObject({ purged: 0, errors: [expect.objectContaining({ entityId: here, error: expect.stringMatching(/permission denied/) })] });
+            expect(await exists(s, here)).toBe(true);
+            expect(await exists(elsewhere, there)).toBe(true);
+            // Twin: named rightly, it purges.
+            expect(await options.direct!.runPurgeSweepNaming!(t, s, s, 'trash/delete-box')).toMatchObject({ purged: 1 });
+            expect(await exists(s, here)).toBe(false);
+          },
+        );
       });
 
       it('the purge grant runs ONLY the purge: the system principal cannot use its key anywhere else', async () => {

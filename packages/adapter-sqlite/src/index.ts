@@ -239,6 +239,10 @@ import {
   isUnreachableParent,
   PURGE_BATCH,
   purgeDueOf,
+  purgeHeldBy,
+  lifecycleRefusal,
+  type PurgeGateFacts,
+  type PurgePass,
   purgeIndexDdl,
   purgeOnlyKeysOf,
   purgeReportOf,
@@ -4731,7 +4735,7 @@ export class SqliteScopeHost implements ScopeHost {
       try {
         if (schedule.purge) {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
-          const pass = await this.runPurgeSweep(rt, moduleId, tenantId, scopeId, schedule.operation);
+          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation);
           stillDue = pass.full;
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
@@ -4795,19 +4799,52 @@ export class SqliteScopeHost implements ScopeHost {
    * through a purge stub (`openSystemScope`) that never leaves this method, each in its own
    * transaction and under the cutoff the host re-checks inside it (`refuseTrashedTarget`).
    */
-  private async runPurgeSweep(rt: ScopeRuntime, moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId, operation: string) {
+  private async runPurgeSweep(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId, operation: string): Promise<PurgePass> {
     const entityType = this.modules
       .get(moduleId)
       ?.schedules.find((s) => s.operation === operation && s.purge)?.purge?.entityType;
     if (entityType === undefined) throw substratError('not_found', `no purge schedule of ${moduleId} runs ${operation}`);
+    // The pair first, from the directory, before the scope's storage is opened for it.
+    const owner = this.directory.prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { tenant_id: string }
+      | undefined;
+    if (!owner || owner.tenant_id !== tenantId) throw substratError('not_found', `unknown scope: ${scopeId}`);
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
     const now = this.clock();
-    const due = await rt.actor.turn(() =>
-      purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, now),
-    );
+    // #119: the gate the schedule run applies, applied by the sweep itself (`purgeHeldBy`), and
+    // again inside each purge's transaction. A held scope selects nothing.
+    const due = await rt.actor.turn(() => {
+      const held = purgeHeldBy(this.purgeGateFacts(rt, moduleId, tenantId, scopeId));
+      return held !== null
+        ? { held }
+        : purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, now);
+    });
+    if ('held' in due) return { purged: 0, skipped: 0, errors: [], full: false, held: due.held };
     const stub = await this.openSystemScope(moduleId, tenantId, scopeId, true);
     return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
       await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid() });
     });
+  }
+
+  /**
+   * #119: the purge gate's facts (`PurgeGateFacts`) — the module's switch from the scope's own
+   * storage, and the lifecycle, the primacy and the tenant from this host's directory, which is
+   * their authority here.
+   */
+  private purgeGateFacts(rt: ScopeRuntime, moduleId: string, tenantId: TenantId, scopeId: ScopeId): PurgeGateFacts {
+    const row = this.directory
+      .prepare(
+        `SELECT s.tenant_id AS tenant_id, s.status AS scope, t.status AS tenant
+           FROM scopes s LEFT JOIN tenants t ON t.tenant_id = s.tenant_id WHERE s.scope_id = ?`,
+      )
+      .get(scopeId) as { tenant_id: string; scope: string; tenant: string | null } | undefined;
+    return {
+      switched: systemScheduleState(switchSqlOf(rt.db), moduleId, this.clock()),
+      lifecycle: row ? lifecycleRefusal({ scope: row.scope, tenant: row.tenant ?? 'active' } as Parameters<typeof lifecycleRefusal>[0]) : null,
+      copy: !this.isPrimaryInDirectory(scopeId),
+      foreignTenant: row?.tenant_id !== tenantId,
+    };
   }
 
   /** The stub body, shared by the principal, connection, system, impersonation and capability doors. */
@@ -5075,7 +5112,7 @@ export class SqliteScopeHost implements ScopeHost {
               operation,
               target,
               parsed,
-              purging ? { now: this.clock() } : undefined,
+              purging ? { now: this.clock(), gate: this.purgeGateFacts(rt, subject.id, tenantId, scopeId) } : undefined,
             );
             // Manifest guards (K-17): pre-conditions, inside the operation's own
             // transaction, before the handler. A throw here blocks the operation

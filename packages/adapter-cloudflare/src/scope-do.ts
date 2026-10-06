@@ -298,6 +298,9 @@ import {
   assertNoCallerPurge,
   isUnreachableParent,
   PURGE_BATCH,
+  lifecycleRefusal,
+  purgeHeldBy,
+  type PurgeGateFacts,
   purgeDueOf,
   purgeIndexDdl,
   purgeOnlyKeysOf,
@@ -2822,7 +2825,7 @@ export function defineScopeDO(
               operation,
               target,
               parsed,
-              purging ? { now: new Date().toISOString() } : undefined,
+              purging ? { now: new Date().toISOString(), gate: this.purgeGateFacts(systemDoor!.moduleId, tenantId) } : undefined,
             );
             await this.runGuards(operation, ctx, parsed);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
@@ -4530,6 +4533,12 @@ export function defineScopeDO(
     async runPurgeSweep(
       operation: string,
       tenantId: TenantId,
+      /**
+       * The node the purges' checks and events are stamped with. This object records no scope id of
+       * its own, so it cannot hold this one to anything — and it routes nothing: the sweep runs on
+       * the scope that received the call, whatever this says. A wrong one fails closed, since the
+       * module's grant is seated on this scope's node and not on the one named.
+       */
       scopeId: ScopeId,
       systemDoorInstance: string,
     ): Promise<PurgePass | SystemDoorMoved> {
@@ -4542,6 +4551,10 @@ export function defineScopeDO(
         if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
         throw toRpcError(err);
       }
+      // #119: the gate the coordinator applies before any schedule fires, applied here from this
+      // scope's own state, so a sweep started from anywhere meets it. A foreign tenant throws.
+      const held = purgeHeldBy(this.purgeGateFacts(schedule.moduleId, tenantId));
+      if (held !== null) return { purged: 0, skipped: 0, errors: [], full: false, held };
       const due = purgeDueOf(
         doSpineSql(this.sql),
         this.statePlans,
@@ -4569,6 +4582,24 @@ export function defineScopeDO(
           true,
         );
       });
+    }
+
+    /**
+     * #119: the purge gate's facts (`PurgeGateFacts`), from this scope's own storage: the module's
+     * switch, the lifecycle the platform delivered (#1713), the copy classification (#2009) and the
+     * tenant receipt (`tenantVerdict` — `unknown` passes, as at every door). A directory-backed
+     * deployment records no receipt and delivers neither a lifecycle nor a copy classification here,
+     * so on one those read clear: this object enforces the kill switch, and the coordinator's gate
+     * is the authority for tenant, lifecycle, copy and the rewind hold.
+     */
+    private purgeGateFacts(moduleId: string, tenantId: TenantId): PurgeGateFacts {
+      const now = new Date().toISOString();
+      return {
+        switched: systemScheduleState(this.switchSql(), moduleId, now),
+        lifecycle: lifecycleRefusal(readLifecycle(this.switchSql())),
+        copy: this.isCopy(),
+        foreignTenant: this.tenantVerdict(tenantId).verdict === 'foreign',
+      };
     }
 
     /**

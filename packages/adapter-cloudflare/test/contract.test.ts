@@ -5322,8 +5322,11 @@ entityTrashContractSuite(
       const scopeDo = (scope: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
         systemDoorState(moduleId: string): Promise<{ instance: string }>;
         invoke(...args: unknown[]): Promise<{ failure?: Parameters<typeof fromWireFailure>[0] }>;
-        runPurgeSweep(operation: string, tenant: TenantId, scope: ScopeId, instance: string): Promise<{ purged: number; skipped: number }>;
+        runPurgeSweep(operation: string, tenant: TenantId, scope: ScopeId, instance: string): Promise<{ purged: number; skipped: number; held?: string; errors: { entityId: string; error: string }[] }>;
+        setLifecycle(next: unknown, tenant?: TenantId): Promise<unknown>;
+        markCopy(): Promise<boolean>;
       };
+      let revision = 0;
       return {
         claimPurge: async (tenant: TenantId, scope: ScopeId, operation: string, input: unknown) => {
           const stub = scopeDo(scope);
@@ -5339,6 +5342,35 @@ entityTrashContractSuite(
           const stub = scopeDo(scope);
           const { instance } = await stub.systemDoorState(TRASH_MODULE_ID);
           return stub.runPurgeSweep(operation, tenant, scope, instance);
+        },
+        // What a CP-less deployment's platform delivers into the scope (#1713, #2009): the inputs
+        // the object's own gate reads. A directory-backed host's suspend never reaches the object.
+        holdLifecycle: async (tenant: TenantId, scope: ScopeId, held: boolean) => {
+          revision += 1;
+          await scopeDo(scope).setLifecycle(
+            { scope: held ? 'suspended' : 'active', tenant: 'active', at: new Date().toISOString(), revision: { epoch: 1, scope: revision, tenant: 0 } },
+            tenant,
+          );
+        },
+        // A delivered lifecycle back-fills the `provisioned_for` receipt of a scope holding data — the
+        // CP-less path. This directory-backed fixture never writes one otherwise.
+        recordTenant: async (tenant: TenantId, scope: ScopeId) => {
+          revision += 1;
+          await scopeDo(scope).setLifecycle(
+            { scope: 'active', tenant: 'active', at: new Date().toISOString(), revision: { epoch: 1, scope: revision, tenant: 0 } },
+            tenant,
+          );
+        },
+        // No receipt on a directory-backed scope, so the object reads any tenant as `unknown` and lets it
+        // through, as every door does. There the coordinator, holding the directory, is the authority.
+        unrecordedTenant: 'admitted' as const,
+        markCopy: async (_tenant: TenantId, scope: ScopeId) => {
+          await scopeDo(scope).markCopy();
+        },
+        runPurgeSweepNaming: async (tenant: TenantId, scope: ScopeId, named: ScopeId, operation: string) => {
+          const stub = scopeDo(scope);
+          const { instance } = await stub.systemDoorState(TRASH_MODULE_ID);
+          return stub.runPurgeSweep(operation, tenant, named, instance);
         },
       };
     })(),

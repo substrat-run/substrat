@@ -247,6 +247,7 @@ export {
   purgeCandidates,
   purgeCutoffOf,
   purgeDueOf,
+  purgeHeldBy,
   purgeOnlyKeysOf,
   purgeReportOf,
   refuseTrashedTarget,
@@ -254,7 +255,7 @@ export {
   runPurgePass,
   withheldKeysFor,
 } from './entity-trash.js';
-export type { PurgePass, TrashRefusalDeps } from './entity-trash.js';
+export type { PurgeGateFacts, PurgePass, TrashRefusalDeps } from './entity-trash.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
 export { TRASH_SCAN_BUDGET, createTrashedReads, searchStateWhere, uncheckedView } from './entity-state-reads.js';
 export type { TrashedReadDeps, TrashedReads } from './entity-state-reads.js';

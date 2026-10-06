@@ -34,6 +34,7 @@ import {
 import { assertAllowed } from './permission-checker.js';
 import { readStateRow, type EntityStatePlan, type StateCheck } from './entity-state.js';
 import type { ScopedSql } from './scope-host.js';
+import type { SystemScheduleState } from './system-switch.js';
 
 /** How many entities one purge pass deletes per entity type. A full batch leaves the schedule due. */
 export const PURGE_BATCH = 50;
@@ -83,7 +84,7 @@ export async function refuseTrashedTarget(
   operation: string,
   target: OperationTarget | undefined,
   input: unknown,
-  purge?: { readonly now: string },
+  purge?: { readonly now: string; readonly gate: PurgeGateFacts },
 ): Promise<void> {
   if (purge && target?.trashed !== 'purges') {
     throw substratError('internal', `${operation} is not a purge — only a \`trashed: 'purges'\` operation is run by the purge sweep`);
@@ -99,6 +100,10 @@ export async function refuseTrashedTarget(
   if (typeof id !== 'string') return;
   const row = readStateRow(deps.sql, plan, id);
   if (purge) {
+    // The sweep's gate again, inside this purge's own transaction: a switch pulled, a lifecycle
+    // hold or a copy classification that landed after the sweep began stops this purge here.
+    const held = purgeHeldBy(purge.gate);
+    if (held !== null) throw substratError('conflict', `${operation}: ${held}`, { reason: 'purge_held' });
     if (plan.purgeAfterDays === undefined) {
       throw substratError('internal', `${operation}: '${target.entity}' declares no purge horizon`);
     }
@@ -194,6 +199,41 @@ export function purgeDueOf(
   return { cutoff, idFrom: target.idFrom, ids: purgeCandidates(sql, plan, cutoff, limit) };
 }
 
+/**
+ * What the purge sweep's gate reads (#119), each fact from the scope's OWN state as the adapter
+ * holds it — never from the caller. The adapter reads them before the sweep selects anything and
+ * again inside each purge's transaction, and both go through `purgeHeldBy`.
+ */
+export interface PurgeGateFacts {
+  /** The module's kill switch on this scope (`systemScheduleState`). */
+  readonly switched: SystemScheduleState;
+  /** The scope's lifecycle refusal (`lifecycleRefusal`), or null when it may run or none is held. */
+  readonly lifecycle: string | null;
+  /** Whether the scope is a copy — a fork, a snapshot or a preview — rather than the primary install. */
+  readonly copy: boolean;
+  /** Whether the tenant the sweep names is foreign to the scope's own record (`tenantVerdict`). */
+  readonly foreignTenant: boolean;
+}
+
+/**
+ * THE purge sweep's gate (#119): why this scope may purge nothing now, or null when it may. The
+ * same holds the coordinator applies before any schedule fires, applied by the scope itself, so a
+ * sweep started from anywhere meets them. A tenant foreign to the scope is a REFUSAL (`not_found`,
+ * the doors' answer for a pair that does not hold), not a hold: nothing about it is "not yet".
+ *
+ * On a directory-backed host the scope DO enforces the kill switch; tenant, lifecycle, copy and
+ * rewind holds are enforced by the coordinator. The scope holds no tenant receipt, lifecycle or copy
+ * classification of its own there (the directory is their authority), so those facts read clear —
+ * an unrecorded tenant is `unknown`, which passes as at every door.
+ */
+export function purgeHeldBy(facts: PurgeGateFacts): string | null {
+  if (facts.foreignTenant) throw substratError('not_found', 'purge refused: the tenant named is not this scope\'s');
+  if (facts.switched !== 'on') return `the module's schedules are ${facts.switched === 'off' ? 'switched off' : 'not granted'} on this scope`;
+  if (facts.lifecycle !== null) return facts.lifecycle;
+  if (facts.copy) return 'this scope is a copy, and a copy never purges';
+  return null;
+}
+
 /** What one purge schedule did on one scope in one pass. */
 export interface PurgePass {
   /** Entities the operation deleted. */
@@ -204,6 +244,8 @@ export interface PurgePass {
   errors: { entityId: string; error: string }[];
   /** The batch was full: the schedule stays due, so the next sweep pass continues. */
   full: boolean;
+  /** Why the scope ran no purge at all this pass (`purgeHeldBy`), when its gate held it. */
+  held?: string;
 }
 
 /**
@@ -225,7 +267,7 @@ export async function runPurgePass(
     } catch (err) {
       const code = errorCodeOf(err);
       const reason = (err as { extensions?: { reason?: unknown } }).extensions?.reason;
-      if (code === 'not_found' || (code === 'conflict' && reason === 'purge_not_due')) {
+      if (code === 'not_found' || (code === 'conflict' && (reason === 'purge_not_due' || reason === 'purge_held'))) {
         pass.skipped += 1;
         continue;
       }

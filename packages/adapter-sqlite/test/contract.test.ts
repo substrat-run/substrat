@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
+import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, ulid, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   atomicContractSuite,
@@ -44,7 +44,7 @@ import {
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
-import { errorCodeOf, moduleId } from '@substrat-run/contracts';
+import { errorCodeOf, moduleId, platformActorId } from '@substrat-run/contracts';
 import { SqliteScopeHost } from '../src/index.js';
 
 scopeHostContractSuite('adapter-sqlite', async () => {
@@ -529,10 +529,21 @@ entityTrashContractSuite(
       },
       runPurgeSweep: async (tenant, scope, operation) => {
         const internals = trashHost as unknown as {
-          runtime(t: typeof tenant, s: typeof scope): unknown;
-          runPurgeSweep(rt: unknown, m: string, t: typeof tenant, s: typeof scope, op: string): Promise<{ purged: number; skipped: number }>;
+          runPurgeSweep(m: string, t: typeof tenant, s: typeof scope, op: string): Promise<{ purged: number; skipped: number; held?: string }>;
         };
-        return internals.runPurgeSweep(internals.runtime(tenant, scope), TRASH_MODULE_ID, tenant, scope, operation);
+        return internals.runPurgeSweep(TRASH_MODULE_ID, tenant, scope, operation);
+      },
+      // The directory is this adapter's authority for both.
+      holdLifecycle: async (tenant, scope, held) => {
+        const staff = platformActorId.parse(ulid());
+        await (held ? trashHost!.admin.suspendScope(staff, tenant, scope) : trashHost!.admin.unsuspendScope(staff, tenant, scope));
+      },
+      // Already the directory's: every scope row names its tenant.
+      recordTenant: async () => undefined,
+      unrecordedTenant: 'refused',
+      markCopy: async (_tenant, scope) => {
+        const internals = trashHost as unknown as { directory: { prepare(q: string): { run(...a: unknown[]): unknown } } };
+        internals.directory.prepare(`UPDATE scopes SET kind = 'preview' WHERE scope_id = ?`).run(scope);
       },
     },
   },

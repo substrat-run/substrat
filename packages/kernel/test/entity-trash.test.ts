@@ -16,9 +16,11 @@ import {
   entityStatePlans,
   purgeCandidates,
   purgeCutoffOf,
+  purgeHeldBy,
   purgeOnlyKeysOf,
   registerTrashTargets,
   runPurgePass,
+  type PurgeGateFacts,
 } from '../src/index.js';
 
 /**
@@ -159,9 +161,16 @@ describe('refuseTrashedTarget under the purge sweep', () => {
   };
   const plans = new Map(entityStatePlans('m', [horizon]).map((p) => [p.entityType, p]));
   const deps = { sql, plans, check: async () => ({ allowed: true as const, proof: [] }) } as never;
-  const now = { now: '2026-01-12T00:00:00.000Z' };
+  const clearGate: PurgeGateFacts = { switched: 'on', lifecycle: null, copy: false, foreignTenant: false };
+  const now = { now: '2026-01-12T00:00:00.000Z', gate: clearGate };
   const refusal = (id: string, target: OperationTarget = purgeTarget) =>
     refuseTrashedTarget(deps, 'b/delete', target, { boxId: id }, now).then(
+      () => 'admitted',
+      (e: unknown) => [errorCodeOf(e), (e as { extensions?: { reason?: string } }).extensions?.reason ?? null],
+    );
+
+  const refusalUnder = (id: string, gate: PurgeGateFacts) =>
+    refuseTrashedTarget(deps, 'b/delete', purgeTarget, { boxId: id }, { now: now.now, gate }).then(
       () => 'admitted',
       (e: unknown) => [errorCodeOf(e), (e as { extensions?: { reason?: string } }).extensions?.reason ?? null],
     );
@@ -171,6 +180,14 @@ describe('refuseTrashedTarget under the purge sweep', () => {
     expect(await refusal('young')).toEqual(['conflict', 'purge_not_due']);
     expect(await refusal('active')).toEqual(['conflict', 'purge_not_due']);
     expect(await refusal('gone')).toEqual(['not_found', null]);
+  });
+  it('re-applies the sweep gate inside the purge: a held scope is purge_held, a foreign tenant not_found', async () => {
+    expect(await refusalUnder('due', { ...clearGate, switched: 'off' })).toEqual(['conflict', 'purge_held']);
+    expect(await refusalUnder('due', { ...clearGate, copy: true })).toEqual(['conflict', 'purge_held']);
+    expect(await refusalUnder('due', { ...clearGate, lifecycle: 'scope not active (status: suspended)' })).toEqual(['conflict', 'purge_held']);
+    expect(await refusalUnder('due', { ...clearGate, foreignTenant: true })).toEqual(['not_found', null]);
+    // Twin: clear, the due entity is admitted.
+    expect(await refusalUnder('due', clearGate)).toBe('admitted');
   });
   it('refuses the sweep on an operation that is not the purge', async () => {
     expect(await refusal('due', { ...purgeTarget, trashed: 'admits' })).toEqual(['internal', null]);
@@ -185,6 +202,21 @@ describe('refuseTrashedTarget under the purge sweep', () => {
       // Twin: exactly the id.
       expect(await run({ boxId: 'due' }, sweep)).toBe('admitted');
     }
+  });
+});
+
+describe('purgeHeldBy — the purge sweep gate', () => {
+  const clear: PurgeGateFacts = { switched: 'on', lifecycle: null, copy: false, foreignTenant: false };
+  it('holds a scope whose switch is off or never granted, whose lifecycle refuses, or that is a copy', () => {
+    expect(purgeHeldBy(clear)).toBeNull();
+    expect(purgeHeldBy({ ...clear, switched: 'off' })).toMatch(/switched off/);
+    expect(purgeHeldBy({ ...clear, switched: 'ungranted' })).toMatch(/not granted/);
+    expect(purgeHeldBy({ ...clear, lifecycle: 'scope not active (status: suspended)' })).toMatch(/not active/);
+    expect(purgeHeldBy({ ...clear, copy: true })).toMatch(/copy/);
+  });
+  it('refuses a foreign tenant outright, whatever else holds', () => {
+    expect(() => purgeHeldBy({ ...clear, foreignTenant: true })).toThrow(/not this scope/);
+    expect(() => purgeHeldBy({ ...clear, foreignTenant: true, switched: 'off' })).toThrow(/not this scope/);
   });
 });
 
@@ -218,6 +250,10 @@ describe('runPurgePass', () => {
       restored: () => {
         throw substratError('conflict', 'restored', { reason: 'purge_not_due' });
       },
+      // The gate held the scope between the sweep's selection and this purge's transaction.
+      held: () => {
+        throw substratError('conflict', 'held', { reason: 'purge_held' });
+      },
       // A conflict for any other reason is the operation's own refusal — a failure.
       refused: () => {
         throw substratError('conflict', 'nope', { reason: 'invalid_transition' });
@@ -230,7 +266,7 @@ describe('runPurgePass', () => {
     const pass = await runPurgePass(ids, ids.length, async (id) => outcomes[id]!());
     expect(pass).toEqual({
       purged: 1,
-      skipped: 2,
+      skipped: 3,
       errors: [
         { entityId: 'refused', error: 'nope' },
         { entityId: 'boom', error: 'crashed' },
