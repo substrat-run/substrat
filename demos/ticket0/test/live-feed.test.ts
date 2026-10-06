@@ -17,7 +17,7 @@ import {
 class FakeSocket implements SocketLike {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code?: number }) => void) | null = null;
   closed = false;
   send(): void {}
   close(): void {
