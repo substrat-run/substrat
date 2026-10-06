@@ -378,7 +378,7 @@ export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
-export { assertNoReservedColumnWrite, assertNoSpineReference, assertNoSpineWrite, assertNoStatefulDdl, changesSchema, guardSpine, splitStatements } from './spine-guard.js';
+export { assertNoReservedColumnWrite, assertNoSpineReference, assertNoSpineWrite, assertNoStatefulDdl, changesSchema, guardSpine } from './spine-guard.js';
 export {
   DO_SQL_LIMITS,
   tooManyResultColumns,

@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { piecesReproduce } from '../src/spine-guard.js';
 import { describe, expect, it } from 'vitest';
 import { errorCodeOf, permissionKey } from '@substrat-run/contracts';
 import {
@@ -19,7 +20,6 @@ import {
   assertNoStatefulDdl,
   changesSchema,
   guardSpine,
-  splitStatements,
   cursorOf,
   listQuery,
 } from '../src/index.js';
@@ -531,24 +531,7 @@ describe('repairDerivedObjects / assertEntityStateColumns (#2090)', () => {
   });
 });
 
-describe('splitStatements / guardSpine one statement at a time (#2090, Codex r3)', () => {
-  it('cuts at a `;` outside strings, quoted names, comments and trigger bodies', () => {
-    expect(splitStatements(`CREATE TABLE a (x); INSERT INTO a VALUES ('x;y'); SELECT "c;d" FROM a`)).toEqual([
-      'CREATE TABLE a (x)',
-      `INSERT INTO a VALUES ('x;y')`,
-      'SELECT "c;d" FROM a',
-    ]);
-    expect(splitStatements('-- a;b\nSELECT 1; /* ; */ SELECT 2;;  ')).toEqual(['-- a;b\nSELECT 1', '/* ; */ SELECT 2']);
-    expect(splitStatements('SELECT 1')).toEqual(['SELECT 1']);
-  });
-
-  it('keeps a trigger body whole, a CASE … END inside it included', () => {
-    const trigger =
-      'CREATE TEMP TRIGGER t AFTER INSERT ON a WHEN CASE WHEN 1 THEN 1 END BEGIN SELECT CASE WHEN 1 THEN 2 END; UPDATE a SET x = 1; END';
-    expect(splitStatements(`${trigger}; SELECT 2`)).toEqual([trigger, 'SELECT 2']);
-    expect(splitStatements('BEGIN; SELECT 1; END')).toEqual(['BEGIN', 'SELECT 1', 'END']);
-  });
-
+describe('guardSpine: a schema change runs one executable statement at a time (#2090, Codex r3)', () => {
   const recording = () => {
     const calls: string[] = [];
     const inner = {
@@ -572,11 +555,34 @@ describe('splitStatements / guardSpine one statement at a time (#2090, Codex r3)
     expect(rows).toEqual([{ q: 'SELECT x FROM n' }]);
   });
 
-  it('twin: a call that changes no schema runs whole, and one DDL statement runs as it is', () => {
+  it('twin: a call that changes no schema runs whole and as written, comments included', () => {
     const { calls, sql } = recording();
-    sql.exec('INSERT INTO n VALUES (1); INSERT INTO n VALUES (2)');
-    sql.exec('CREATE TABLE p (x);');
-    expect(calls).toEqual(['exec INSERT INTO n VALUES (1); INSERT INTO n VALUES (2)', 'exec CREATE TABLE p (x);', 'afterDdl']);
+    sql.exec('INSERT INTO n VALUES (1); -- one\nINSERT INTO n VALUES (2)');
+    expect(calls).toEqual(['exec INSERT INTO n VALUES (1); -- one\nINSERT INTO n VALUES (2)']);
+  });
+
+  it('runs a schema change with its comments blanked, so the DDL SQLite stores carries none (#2084)', () => {
+    const { calls, sql } = recording();
+    sql.exec("CREATE TABLE p (\n  x TEXT, -- the x\n  y TEXT /* last */\n);");
+    expect(calls).toEqual(['exec CREATE TABLE p (\n  x TEXT,         \n  y TEXT           \n)', 'afterDdl']);
+    // A string that merely looks like a comment is the statement's own text, and stays.
+    sql.exec("CREATE TABLE q (x TEXT DEFAULT '-- not a comment')");
+    expect(calls.at(-2)).toBe("exec CREATE TABLE q (x TEXT DEFAULT '-- not a comment')");
+  });
+
+  it('blanks comments with no after-DDL check installed too — every runtime schema change', () => {
+    const calls: string[] = [];
+    const sql = guardSpine({ query: () => [] as never[], exec: (q: string) => (calls.push(q), { changes: 0 }) });
+    sql.exec('CREATE TABLE r (x TEXT -- c\n)');
+    expect(calls).toEqual(['CREATE TABLE r (x TEXT     \n)']);
+  });
+
+  it('accepts pieces only when they are the whole input — in order, unaltered, nothing between but `;`, space and comments', () => {
+    const sql = 'CREATE TABLE a (x); /* note */ ; SELECT 1;';
+    expect(piecesReproduce(sql, ['CREATE TABLE a (x)', 'SELECT 1'])).toBe(true);
+    expect(piecesReproduce(sql, ['CREATE TABLE a (x)'])).toBe(false); // a statement left over
+    expect(piecesReproduce(sql, ['SELECT 1', 'CREATE TABLE a (x)'])).toBe(false); // out of order
+    expect(piecesReproduce(sql, ['CREATE TABLE a (y)', 'SELECT 1'])).toBe(false); // altered
   });
 
   it('refuses a multi-statement schema change that binds parameters', () => {

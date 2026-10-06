@@ -30,8 +30,6 @@ export interface SqlToken {
    * these; one that only looks for table names does not, and gets the same tokens it always did.
    */
   readonly punct?: true;
-  /** Where a punctuation token sits in the source — what a statement splitter cuts at (#2090). */
-  readonly at?: number;
 }
 
 const PUNCTUATION = new Set(['(', ')', ',', '=', ';']);
@@ -135,7 +133,7 @@ export function tokenizeSql(sql: string, options?: { readonly punctuation?: bool
     }
     // Whitespace does not break a dotted name (`main . tbl` is one); anything else does.
     if (!/\s/.test(c)) continues = false;
-    if (options?.punctuation && PUNCTUATION.has(c)) tokens.push({ text: c, quoted: false, punct: true, at: i });
+    if (options?.punctuation && PUNCTUATION.has(c)) tokens.push({ text: c, quoted: false, punct: true });
     i += 1;
   }
   return tokens;

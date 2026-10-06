@@ -341,6 +341,19 @@ export function entityStateMigrationContractSuite(
       expect(await definitions(s)).toEqual(before);
     });
 
+    it('runs runtime DDL comment-blanked: a table created with comments can later drop its last column (#2084 × #2090)', async () => {
+      const { s, stub } = await freshScope();
+      const t2 = `rt_${ulid().toLowerCase()}`;
+      await stub.invoke('rb/ddl', {
+        statements: [`CREATE TABLE ${t2} (\n  id TEXT PRIMARY KEY, -- the id\n  note TEXT -- dropped later\n)`],
+      });
+      const stored = await raw.sql(t, s, `SELECT sql FROM sqlite_master WHERE name = '${t2}'`);
+      expect(String(stored[0]!['sql'])).not.toMatch(/--/);
+      // workerd's SQLite refuses this rewrite of stored DDL with line comments before the last column.
+      await stub.invoke('rb/ddl', { statements: [`ALTER TABLE ${t2} DROP COLUMN note`] });
+      expect(await columnsOf(s, t2)).toEqual(['id']);
+    });
+
     it('runs no DDL over a scope that already carries everything as the kernel emits it', async () => {
       const { s } = await scopeWith('rbnote');
       await host.migrateScope(t, s);
