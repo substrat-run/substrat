@@ -109,6 +109,24 @@ export function listContractSuite(
       await fixture.cleanup();
     });
 
+    it("mints a cursor for every row on the page, each resuming right after its row (#2073)", async () => {
+      // On the tied `status` walk, and on a counted page: `pageVisible` hands on the cursor of
+      // the row a page stops at, which may be any row, not only the last.
+      for (const params of [{ sort: 'status' }, { sort: 'number', total: true }]) {
+        const all = (await page({ ...params, limit: 50 })).entries.map((r) => String(r['id']));
+        const got = await stub.invoke<{ nextCursor: string | null; minted: string[] | null }>('list/minted', {
+          ...params,
+          limit: 4,
+        });
+        expect(got.minted, JSON.stringify(params)).toHaveLength(4);
+        expect(got.minted![3]).toBe(got.nextCursor);
+        for (const [i, cursor] of got.minted!.entries()) {
+          const rest = await page({ ...params, limit: 50, cursor });
+          expect(rest.entries.map((r) => String(r['id'])), `${JSON.stringify(params)} after row ${i}`).toEqual(all.slice(i + 1));
+        }
+      }
+    });
+
     it('defaults to the first declared sort, ascending', async () => {
       const got = await page({ limit: 50 });
       expect(got.entries.map((r) => r['number'])).toEqual([
