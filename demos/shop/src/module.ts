@@ -1020,11 +1020,9 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
 /**
  * Portal listing: per-entity proof walks (order → customer), no node-level grant.
  *
- * The kernel's walk over the order table, newest first, with the check per row on top
- * (#2080). `pageVisible` reads on past orders the caller cannot see until the page is full,
- * mints the cursor from the last order it RETURNS, and reads at most `VISIBLE_SCAN_BUDGET`
- * orders per call — so a customer's page costs a bounded number of checks, however many
- * orders the shop holds (#2073).
+ * A complete grant read narrows the order table by id, including direct order grants
+ * outside the caller's customer. `pageVisible` remains the authority for each order
+ * and handles the fallback walk when grants cannot be enumerated (#2073, #2080).
  */
 const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) => {
   // A complete order-id set includes grants directly on orders as well as grants
