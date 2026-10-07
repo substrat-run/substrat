@@ -325,7 +325,13 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
   `{tenantId, scopeId, provider, label?, externalAccountRef?, scopes?, expiresAt?, secret,
   grants?, createdBy}` with the injected `PLATFORM_SECRET`. That shared secret only proves "a
   platform script is calling" — the relay re-derives WHICH vertical from its own scope record
-  for `(tenantId, scopeId)`, so a caller can never plant a credential on a foreign vertical.
+  for `(tenantId, scopeId)`. The `(tenantId, scopeId)` itself is the caller's claim unless the
+  call arrives through the control plane's `RelayGateway` entrypoint, which the egress worker
+  forwards relay calls into with the caller the router dispatched: a proven caller naming any
+  scope but its own is refused, on this relay, the connect-url and connect-link relays and the
+  email relay alike. A call that cannot carry a caller (one made from inside a Durable Object,
+  or while serving a dispatch the router did not make) is unproven, and passes until
+  `RELAY_REQUIRE_CALLER` is turned on.
 - **Upsert keyed (tenant, vertical, provider, externalAccountRef).** No live connection →
   `createConnection` under a fresh id; one live → `updateConnectionSecret` in place —
   rotation preserves the connection id, and with it every `grantToConnection` tuple. The

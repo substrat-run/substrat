@@ -18,6 +18,7 @@
  */
 import { Hono, type Context } from 'hono';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
+import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv } from './relay-caller.js';
 import {
   parsePlatformBaseDomains,
   platformActorId,
@@ -215,8 +216,9 @@ export async function kickCrossVertical(
 }
 export { ControlPlaneDO };
 export { ObservabilityCacheDO };
+export { RelayGateway } from './relay-gateway.js';
 
-interface Env extends StaffAuthEnv, ConnectorEnv {
+interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
   /** The staff roster's D1 store (#42). Absent in the workerd test (dev-actor path only). */
@@ -2111,7 +2113,9 @@ export default {
     // platform script is calling" — WHICH vertical is re-derived from THIS directory's record for
     // the named scope, and the `emailSender` grant is checked against that vertical. So a script
     // that holds the secret but lacks the grant is still refused, and the FROM address is always
-    // the platform's onboarded sender, never the caller's choice.
+    // the platform's onboarded sender, never the caller's choice. When the call came through the
+    // egress worker's `RelayGateway`, the caller is PROVEN as well, and a body naming any scope
+    // but the caller's own is refused (`checkRelayCaller`) — the same check every relay below runs.
     app.post('/internal/email/send', async (c) => {
       try {
         assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
@@ -2119,7 +2123,10 @@ export default {
         if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
         throw e;
       }
-      const parsed = emailRelayRequest.safeParse(await c.req.json().catch(() => ({})));
+      const body: unknown = await c.req.json().catch(() => ({}));
+      const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+      if (!caller.ok) return c.json({ error: caller.error }, 403);
+      const parsed = emailRelayRequest.safeParse(body);
       if (!parsed.success) {
         return c.json({ error: 'tenantId, scopeId (ULIDs) and {to, subject, html, text} are required' }, 400);
       }
@@ -2167,11 +2174,14 @@ export default {
         if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
         throw e;
       }
+      const body: unknown = await c.req.json().catch(() => ({}));
+      const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+      if (!caller.ok) return c.json({ error: caller.error }, 403);
       try {
         const result = await relayConnectionUpsert(
           hostFor(c.env),
           CONNECTION_RELAY_ACTOR,
-          await c.req.json().catch(() => ({})),
+          body,
           // #605: a vertical's own admin screen gets the same connect-time gate the
           // dashboard does — a credential Scrive refuses never reaches the store.
           {
@@ -2212,11 +2222,14 @@ export default {
         if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
         throw e;
       }
+      const body: unknown = await c.req.json().catch(() => ({}));
+      const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+      if (!caller.ok) return c.json({ error: caller.error }, 403);
       try {
         const result = await relayConnectUrl(
           hostFor(c.env),
           CONNECTION_RELAY_ACTOR,
-          await c.req.json().catch(() => ({})),
+          body,
           {
             ...(c.env.PLATFORM_CONNECT_URL ? { connectOrigin: c.env.PLATFORM_CONNECT_URL } : {}),
             ...(c.env.PLATFORM_SECRET ? { platformSecret: c.env.PLATFORM_SECRET } : {}),
@@ -2245,8 +2258,11 @@ export default {
           if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
           throw e;
         }
+        const body: unknown = await c.req.json().catch(() => ({}));
+        const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+        if (!caller.ok) return c.json({ error: caller.error }, 403);
         try {
-          return c.json(await run(hostFor(c.env), await c.req.json().catch(() => ({})), c.env));
+          return c.json(await run(hostFor(c.env), body, c.env));
         } catch (e) {
           if (e instanceof ConnectUrlRelayError) return c.json({ error: e.message }, e.status);
           throw e;

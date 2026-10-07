@@ -14,7 +14,12 @@
 	// is what keeps a dispatched vertical from addressing it directly.
 	"services": [
 		{ "binding": "ROUTER", "service": "substrat-router" },
-		{ "binding": "PEER_CALLS", "service": "substrat-router", "entrypoint": "PeerCalls" }
+		{ "binding": "PEER_CALLS", "service": "substrat-router", "entrypoint": "PeerCalls" },
+		// RELAY: the control plane's `RelayGateway` entrypoint. A vertical's call to the relay
+		// (`PLATFORM_CP_URL`) goes here with the caller the router dispatched, because the
+		// relay's own authentication says a platform script is calling, not which vertical.
+		// Deploy the control plane first: the entrypoint must exist before this binds to it.
+		{ "binding": "RELAY", "service": "substrat-control-plane", "entrypoint": "RelayGateway" }
 	],
 
 	// What counts as "our own zone" — same var + meaning as the control plane. Any host that
@@ -47,7 +52,8 @@
 			// The router's test deployment is `substrat-router-test` (wrangler suffixes the env).
 			"services": [
 				{ "binding": "ROUTER", "service": "substrat-router-test" },
-				{ "binding": "PEER_CALLS", "service": "substrat-router-test", "entrypoint": "PeerCalls" }
+				{ "binding": "PEER_CALLS", "service": "substrat-router-test", "entrypoint": "PeerCalls" },
+				{ "binding": "RELAY", "service": "substrat-control-plane-test", "entrypoint": "RelayGateway" }
 			], // differs
 			// Test hosts (`*.global.test.substrat.run`) still end in `substrat.run`, so the same
 			// base-domain match routes them; the differing ROUTER binding keeps test loops off prod.

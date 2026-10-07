@@ -241,6 +241,71 @@ describe('outbound policy (#303)', () => {
     expect(r.calls).toHaveLength(0);
   });
 
+  describe('the relay carries the dispatched caller', () => {
+    const CALLER = 'x-substrat-relay-caller';
+    const withScope = (over: Partial<OutboundPolicy> = {}): OutboundPolicy => ({
+      ...policy([]),
+      scope: '01SCOPE',
+      ...over,
+    });
+    const gateway = () => {
+      const calls: Request[] = [];
+      const fetcher = {
+        fetch: async (request: Request) => {
+          calls.push(request);
+          return new Response('gateway', { status: 200 });
+        },
+      } as unknown as Fetcher;
+      return { fetcher, calls };
+    };
+    // What a hostile script would try: claim somebody else's scope on its own request.
+    const forged = () =>
+      new Request('https://console.substrat.net/internal/email/send', {
+        method: 'POST',
+        headers: { [CALLER]: JSON.stringify({ vertical: 'victim', tenantId: '01VICTIM', scopeId: '01VSCOPE' }) },
+        body: '{}',
+      });
+
+    it('hands it to the gateway as the router dispatched it, replacing any copy the script set', async () => {
+      const g = gateway();
+      const internet = vi.fn();
+      vi.stubGlobal('fetch', internet);
+
+      const res = await worker.fetch(forged(), envWith({ RELAY: g.fetcher, OUTBOUND_POLICY: withScope() }));
+
+      expect(await res.text()).toBe('gateway');
+      expect(internet).not.toHaveBeenCalled();
+      expect(g.calls).toHaveLength(1);
+      expect(JSON.parse(g.calls[0]!.headers.get(CALLER)!)).toEqual({
+        vertical: 'acme-crm',
+        tenantId: '01TENANT',
+        scopeId: '01SCOPE',
+      });
+      expect(new URL(g.calls[0]!.url).pathname).toBe('/internal/email/send');
+    });
+
+    it('without the binding it goes out over the public origin, and the forged caller is dropped', async () => {
+      const internet = vi.fn(async (_r: Request) => new Response('relayed', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+
+      await worker.fetch(forged(), envWith({ OUTBOUND_POLICY: withScope() }));
+
+      expect(internet).toHaveBeenCalledTimes(1);
+      expect(internet.mock.calls[0]![0].headers.get(CALLER)).toBeNull();
+    });
+
+    it('with no scope in the policy (an older router) there is no caller to give, so none is given', async () => {
+      const g = gateway();
+      const internet = vi.fn(async (_r: Request) => new Response('relayed', { status: 200 }));
+      vi.stubGlobal('fetch', internet);
+
+      await worker.fetch(forged(), envWith({ RELAY: g.fetcher, OUTBOUND_POLICY: policy([]) }));
+
+      expect(g.calls).toHaveLength(0);
+      expect(internet.mock.calls[0]![0].headers.get(CALLER)).toBeNull();
+    });
+  });
+
   it('exempts the relay HOST only — a third party is still refused, and a lookalike is not the relay', async () => {
     const internet = vi.fn();
     vi.stubGlobal('fetch', internet);
