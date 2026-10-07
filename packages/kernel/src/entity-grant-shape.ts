@@ -86,24 +86,13 @@ const BACKFILLED_RELATION = 'shape-backfilled';
 /** A retirement's run-once record, per key: `(shape:<type>, shape-retired:<key>, scope:<id>)`. */
 const RETIRED_RELATION = 'shape-retired:';
 
+/** The subject and object of a shape's run-once records on one scope. */
+const recordRefs = (entityType: string, scopeId: string) => [`shape:${entityType}`, `scope:${scopeId}`] as const;
+
 /** The writer of the top-up events: the kernel, as no module or person acted. */
 const KERNEL_ACTOR = { system: moduleId.parse('@substrat-run/kernel') };
 
 const PRINCIPAL = 'principal:';
-
-/** One (person, entity) a pass topped up, and the keys it added. */
-interface ShapeTopUp {
-  principal: PrincipalId;
-  entity: EntityRef;
-  added: string[];
-}
-
-/** One (person, entity) a pass took retired keys back from. */
-interface ShapeRetirement {
-  principal: PrincipalId;
-  entity: EntityRef;
-  removed: string[];
-}
 
 const keysOf = (permissions: readonly string[]): string[] => [...new Set(permissions)].sort();
 
@@ -213,7 +202,7 @@ export function topUpEntityGrantShapes(
         );
       }
       const st = outboxInsertSql(
-        shapeTopUpEvent(pass, {
+        shapeEvent(pass, ENTITY_GRANTS_TOPPED_UP, entityGrantsToppedUpPayload, {
           principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
           entity: { entityType: shape.entityType, entityId: h.object.slice(prefix.length) },
           added,
@@ -236,17 +225,21 @@ export function topUpEntityGrantShapes(
  * records the rest finished. Returns how many pairs it took keys from.
  */
 function retire(db: SwitchSql, pass: ShapePass, entityType: string, prefix: string, gone: readonly string[], budget: number): number {
-  const shapeRef = `shape:${entityType}`;
-  const scopeRef = `scope:${pass.scopeId}`;
-  const open = gone.filter(
-    (k) =>
+  if (gone.length === 0) return 0;
+  const [shapeRef, scopeRef] = recordRefs(entityType, pass.scopeId);
+  const finished = new Set(
+    (
       db.all(
-        `SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+        `SELECT substr(relation, ${RETIRED_RELATION.length + 1}) AS key FROM _substrat_tuples
+          WHERE subject = ? AND object = ? AND revoked_at IS NULL
+            AND relation IN (SELECT '${RETIRED_RELATION}' || value FROM json_each(?))`,
         shapeRef,
-        `${RETIRED_RELATION}${k}`,
         scopeRef,
-      ).length === 0,
+        JSON.stringify(gone),
+      ) as { key: string }[]
+    ).map((r) => r.key),
   );
+  const open = gone.filter((k) => !finished.has(k));
   if (open.length === 0) return 0;
   const json = JSON.stringify(open);
   const holders = db.all(
@@ -267,28 +260,23 @@ function retire(db: SwitchSql, pass: ShapePass, entityType: string, prefix: stri
     budget,
   ) as { subject: string; object: string }[];
   for (const h of holders) {
-    const removed = (
-      db.all(
-        `SELECT substr(relation, 9) AS key FROM _substrat_tuples
-          WHERE subject = ? AND object = ? AND revoked_at IS NULL
-            AND relation IN (SELECT 'granted:' || value FROM json_each(?))
-          ORDER BY relation`,
-        h.subject,
-        h.object,
-        json,
-      ) as { key: string }[]
-    ).map((r) => r.key);
-    db.run(
-      `UPDATE _substrat_tuples SET revoked_at = ?
-        WHERE subject = ? AND object = ? AND revoked_at IS NULL
-          AND relation IN (SELECT 'granted:' || value FROM json_each(?))`,
-      pass.now,
-      h.subject,
-      h.object,
-      json,
+    // Tombstoned and read back in one statement: the keys this holder lost are what it touched.
+    const removed = keysOf(
+      (
+        db.all(
+          `UPDATE _substrat_tuples SET revoked_at = ?
+            WHERE subject = ? AND object = ? AND revoked_at IS NULL
+              AND relation IN (SELECT 'granted:' || value FROM json_each(?))
+            RETURNING substr(relation, 9) AS key`,
+          pass.now,
+          h.subject,
+          h.object,
+          json,
+        ) as { key: string }[]
+      ).map((r) => r.key),
     );
     const st = outboxInsertSql(
-      shapeRetiredEvent(pass, {
+      shapeEvent(pass, ENTITY_GRANTS_RETIRED, entityGrantsRetiredPayload, {
         principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
         entity: { entityType, entityId: h.object.slice(prefix.length) },
         removed,
@@ -321,8 +309,7 @@ function reopenRetirements(db: SwitchSql, pass: ShapePass, entityType: string, k
       WHERE subject = ? AND object = ? AND revoked_at IS NULL
         AND relation IN (SELECT '${RETIRED_RELATION}' || value FROM json_each(?))`,
     pass.now,
-    `shape:${entityType}`,
-    `scope:${pass.scopeId}`,
+    ...recordRefs(entityType, pass.scopeId),
     JSON.stringify(keys),
   );
 }
@@ -334,7 +321,8 @@ function reopenRetirements(db: SwitchSql, pass: ShapePass, entityType: string, k
  */
 function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefix: string, json: string, budget: number): number {
   if (!shape.holder || budget === 0) return 0;
-  const record = [`shape:${shape.entityType}`, BACKFILLED_RELATION, `scope:${scopeId}`] as const;
+  const [shapeRef, scopeRef] = recordRefs(shape.entityType, scopeId);
+  const record = [shapeRef, BACKFILLED_RELATION, scopeRef] as const;
   if (db.all('SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?', ...record).length > 0) {
     return 0;
   }
@@ -395,35 +383,27 @@ function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefi
   return candidates.length;
 }
 
-/** The kernel's event for one retirement — the audit record, on the entity's own history. */
-function shapeRetiredEvent(pass: ShapePass, retirement: ShapeRetirement): DomainEvent {
+/**
+ * The kernel's event for one (person, entity) a pass changed — a top-up or a retirement — the
+ * audit record, on the entity's own history.
+ */
+function shapeEvent<P extends { entity: EntityRef }>(
+  pass: ShapePass,
+  type: typeof ENTITY_GRANTS_TOPPED_UP | typeof ENTITY_GRANTS_RETIRED,
+  schema: { parse: (v: unknown) => P },
+  payload: P,
+): DomainEvent {
   return domainEvent.parse({
     id: eventId.parse(pass.mintEventId(Date.parse(pass.now))),
-    type: ENTITY_GRANTS_RETIRED,
+    type,
     schemaVersion: 1,
     occurredAt: pass.now,
     tenantId: pass.tenantId,
     scopeId: pass.scopeId,
     actor: KERNEL_ACTOR,
-    entity: retirement.entity,
+    entity: payload.entity,
     piiClass: 'none',
-    payload: entityGrantsRetiredPayload.parse(retirement),
-  });
-}
-
-/** The kernel's event for one top-up — the audit record, on the entity's own history. */
-function shapeTopUpEvent(pass: ShapePass, topUp: ShapeTopUp): DomainEvent {
-  return domainEvent.parse({
-    id: eventId.parse(pass.mintEventId(Date.parse(pass.now))),
-    type: ENTITY_GRANTS_TOPPED_UP,
-    schemaVersion: 1,
-    occurredAt: pass.now,
-    tenantId: pass.tenantId,
-    scopeId: pass.scopeId,
-    actor: KERNEL_ACTOR,
-    entity: topUp.entity,
-    piiClass: 'none',
-    payload: entityGrantsToppedUpPayload.parse(topUp),
+    payload: schema.parse(payload),
   });
 }
 
