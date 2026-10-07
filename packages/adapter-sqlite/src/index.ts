@@ -7637,6 +7637,7 @@ export class SqliteScopeHost implements ScopeHost {
         this.assertScope(tenantId, scopeId);
         const rt = this.runtime(tenantId, scopeId);
         let toppedUp = 0;
+        let retired = 0;
         // #2071: one bounded transaction per pass, so a large scope never holds one long; a pass
         // that did not use its whole budget found everything.
         for (let done = false; !done; ) {
@@ -7654,12 +7655,13 @@ export class SqliteScopeHost implements ScopeHost {
             )(),
           );
           toppedUp += pass.toppedUp;
+          retired += pass.retired;
           done = pass.done;
         }
-        if (toppedUp > 0) {
-          this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, toppedUp });
+        if (toppedUp > 0 || retired > 0) {
+          this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, toppedUp, retired });
         }
-        return { toppedUp };
+        return { toppedUp, retired };
       },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);

@@ -163,6 +163,15 @@ describe('the diff formatters', () => {
     expect(formatRegistryDiff(null, reg(), true)[0]).toMatch(/serving version carries no permission registry/);
   });
 
+  it('formatRegistryDiff: a retired shape key says who loses it, a direct grant on the entity included (#2082)', () => {
+    const shaped = (permissions: string[], retired?: string[]) =>
+      ({ ...reg(), entityGrants: [{ entityType: 'ticket', permissions, bootstrap: true, ...(retired ? { retired } : {}) }] }) as unknown as PermissionRegistry;
+    expect(formatRegistryDiff(shaped(['desk:read', 'desk:write']), shaped(['desk:read'], ['desk:write']), true)).toEqual([
+      'grant shape ticket: -desk:write',
+      '  existing holders lose desk:write, including any direct grant of desk:write on the same entity',
+    ]);
+  });
+
   // Copilot on #1766: the digest hashes the whole registry, the diff itemises keys, roles and
   // grant shapes. A change in anything else must never print as "none".
   const withExports = (type: string) =>

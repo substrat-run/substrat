@@ -9,7 +9,7 @@
 export interface RegistryLike {
   permissions: ReadonlyArray<{ key: string; description: string }>;
   roles: ReadonlyArray<{ key: string; permissions: readonly string[] }>;
-  entityGrants: ReadonlyArray<{ entityType: string; permissions: readonly string[] }>;
+  entityGrants: ReadonlyArray<{ entityType: string; permissions: readonly string[]; bootstrap?: true; retired?: readonly string[] }>;
 }
 
 export interface RegistryDiff {
@@ -18,8 +18,21 @@ export interface RegistryDiff {
   changedKeys: string[];
   /** Only roles that actually changed: gained/lost permissions, or appeared/vanished. */
   roleChanges: Array<{ key: string; added: string[]; removed: string[]; isNew: boolean; isGone: boolean }>;
-  /** Entity-narrowed grant SHAPES that changed — which keys a per-entity grant may carry. */
-  grantChanges: Array<{ entityType: string; added: string[]; removed: string[]; isNew: boolean; isGone: boolean }>;
+  /**
+   * Entity-narrowed grant SHAPES that changed — which keys a per-entity grant may carry. #2082:
+   * `retired` is the keys this version newly declares taken back from existing holders, and
+   * `kept` the keys it drops from a bootstrap shape WITHOUT retiring them, which existing holders
+   * keep. A sharing shape has no holders to keep or lose anything, so its `kept` is empty.
+   */
+  grantChanges: Array<{
+    entityType: string;
+    added: string[];
+    removed: string[];
+    retired: string[];
+    kept: string[];
+    isNew: boolean;
+    isGone: boolean;
+  }>;
 }
 
 /** The keys in `after` that `before` lacks — a list compared as a set, so order is no change. */
@@ -49,17 +62,22 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
     const isGone = !!before && !after;
     if (added.length || removed.length || isNew || isGone) roleChanges.push({ key, added, removed, isNew, isGone });
   }
-  const fromGrants = new Map(from.entityGrants.map((g) => [g.entityType, g.permissions]));
-  const toGrants = new Map(to.entityGrants.map((g) => [g.entityType, g.permissions]));
+  const fromGrants = new Map(from.entityGrants.map((g) => [g.entityType, g]));
+  const toGrants = new Map(to.entityGrants.map((g) => [g.entityType, g]));
   const grantChanges: RegistryDiff['grantChanges'] = [];
   for (const entityType of new Set([...fromGrants.keys(), ...toGrants.keys()])) {
     const before = fromGrants.get(entityType);
     const after = toGrants.get(entityType);
-    const added = gained(before, after);
-    const removed = gained(after, before);
+    const added = gained(before?.permissions, after?.permissions);
+    const removed = gained(after?.permissions, before?.permissions);
+    const retired = gained(before?.retired, after?.retired);
+    const bootstrap = !!(before?.bootstrap || after?.bootstrap);
+    const kept = bootstrap ? removed.filter((k) => !(after?.retired ?? []).includes(k)) : [];
     const isNew = !before && !!after;
     const isGone = !!before && !after;
-    if (added.length || removed.length || isNew || isGone) grantChanges.push({ entityType, added, removed, isNew, isGone });
+    if (added.length || removed.length || retired.length || isNew || isGone) {
+      grantChanges.push({ entityType, added, removed, retired, kept, isNew, isGone });
+    }
   }
   return {
     addedKeys: [...toKeys.keys()].filter((k) => !fromKeys.has(k)),
@@ -68,6 +86,20 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
     roleChanges,
     grantChanges,
   };
+}
+
+/**
+ * #2082: what a grant-shape change does to the people who ALREADY hold the shape, one sentence
+ * per key, for every reader of the diff to show as written. A key retired is taken from every
+ * holder — and one tuple is one authority, so a direct grant of it on the same entity goes too.
+ * A key dropped without being retired stays with them: the reconcile takes back only what a
+ * version declares retired.
+ */
+export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][number], 'retired' | 'kept'>): string[] {
+  return [
+    ...g.retired.map((k) => `existing holders lose ${k}, including any direct grant of ${k} on the same entity`),
+    ...g.kept.map((k) => `existing holders keep ${k}: dropped from the shape but not retired`),
+  ];
 }
 
 /** Whether the diff holds anything at all — a key, a role or a grant shape moved. */
@@ -96,7 +128,7 @@ export function registryDirection(d: RegistryDiff): RegistryDirection {
   const removes =
     d.removedKeys.length > 0 ||
     d.roleChanges.some((r) => r.isGone || r.removed.length > 0) ||
-    d.grantChanges.some((g) => g.isGone || g.removed.length > 0);
+    d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0);
   // A description re-worded is a change that is neither: it keeps a diff from being "only".
   const other = d.changedKeys.length > 0;
   if (!hasRegistryChange(d)) return 'none';

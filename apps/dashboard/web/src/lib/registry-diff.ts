@@ -4,6 +4,7 @@
  */
 export {
   diffRegistries,
+  grantShapeHolderNotes,
   hasRegistryChange,
   registryDirection,
   type RegistryDiff,

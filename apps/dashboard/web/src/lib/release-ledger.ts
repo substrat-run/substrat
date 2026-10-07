@@ -1,6 +1,6 @@
 import type { EmittedModel, MigrationDiff } from '@substrat-run/contracts';
 import type { ChannelHistoryEntry, DeploymentVersion, ReleaseRow } from './api';
-import type { RegistryDiff, RegistryLike } from './registry-diff';
+import { grantShapeHolderNotes, type RegistryDiff, type RegistryLike } from './registry-diff';
 
 /**
  * The Deployments tab's derivations (#1767): the running → available comparison as
@@ -40,7 +40,10 @@ export function permissionDiffItems(diff: RegistryDiff, from: RegistryLike, to: 
   for (const g of diff.grantChanges) {
     if (g.isNew) items.push({ kind: 'added', name: `grant on ${g.entityType}`, note: g.added.join(', ') || 'new grant shape' });
     else if (g.isGone) items.push({ kind: 'removed', name: `grant on ${g.entityType}`, note: 'no longer declared' });
-    else items.push({ kind: 'changed', name: `grant on ${g.entityType}`, note: signed(g.added, g.removed) });
+    else {
+      const note = [signed(g.added, g.removed), ...grantShapeHolderNotes(g)].filter(Boolean).join('; ');
+      items.push({ kind: 'changed', name: `grant on ${g.entityType}`, note });
+    }
   }
   return items;
 }

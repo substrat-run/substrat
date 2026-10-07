@@ -50,11 +50,12 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       db
         .prepare('INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, revoked_at) VALUES (?, ?, ?, ?)')
         .run(`principal:${who}`, relation, `employee:${id}`, revokedAt);
-    // A pass, answered by the events it wrote: each top-up is one, so they are what it did.
+    // A pass, answered by the events it wrote: each top-up and each retirement is one, so they
+    // are what it did.
     const events = () => (db.prepare('SELECT count(*) AS n FROM _substrat_outbox').get() as { n: number }).n;
-    const pass = (shapes: unknown[], limit = 500) => {
+    const run = (shapes: unknown[], limit = 500) => {
       const before = events();
-      const { toppedUp: n } = topUpEntityGrantShapes(sql, {
+      const result = topUpEntityGrantShapes(sql, {
         tenantId: T,
         scopeId: S,
         shapes: shapes as never,
@@ -63,12 +64,20 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
         mintEventId: () => ulid(),
         version: 'v-test',
       });
-      const rows = db.prepare('SELECT payload FROM _substrat_outbox ORDER BY rowid LIMIT -1 OFFSET ?').all(before) as { payload: string }[];
-      expect(rows).toHaveLength(n);
-      return rows.map((r) => JSON.parse(r.payload) as { principal: string; entity: unknown; added: string[] });
+      const rows = db.prepare('SELECT type, payload FROM _substrat_outbox ORDER BY rowid LIMIT -1 OFFSET ?').all(before) as {
+        type: string;
+        payload: string;
+      }[];
+      const of = (type: string) => rows.filter((r) => r.type === type).map((r) => JSON.parse(r.payload));
+      const toppedUp = of('entity.grants-topped-up') as { principal: string; entity: unknown; added: string[] }[];
+      const retired = of('entity.grants-retired') as { principal: string; entity: unknown; removed: string[] }[];
+      expect(rows).toHaveLength(toppedUp.length + retired.length);
+      expect(result).toMatchObject({ toppedUp: toppedUp.length, retired: retired.length });
+      return { toppedUp, retired, done: result.done };
     };
+    const pass = (shapes: unknown[], limit = 500) => run(shapes, limit).toppedUp;
     const topUp = (permissions = GROWN, limit?: number) => pass([{ entityType: 'employee', permissions, bootstrap: true }], limit);
-    return { db, keysOf, shape, tuple, topUp, pass };
+    return { db, sql, keysOf, shape, tuple, topUp, pass, run };
   };
   const who = () => principalId.parse(ulid());
 
@@ -321,12 +330,174 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
     for (const [i, p] of people.entries()) expect(t.keysOf(p, `e${i}`)).toEqual(['emp:cancel', 'emp:read', 'emp:report']);
   });
 
-  it('a key dropped from the shape is left where it is: top-up only', () => {
+  it('a key dropped from the shape and NOT declared retired is left where it is', () => {
     const t = fresh();
     const anna = who();
     t.shape(anna, 'e1');
     expect(t.topUp(['emp:read'])).toEqual([]);
     expect(t.keysOf(anna, 'e1')).toEqual(OLD);
+  });
+
+  /**
+   * #2082: a key the shape declares `retired` is taken back from every holder — tombstoned, once
+   * per scope, one event per (person, entity). Only a holder's own row of that key on the
+   * entity the marker is on; one tuple is one authority, so a direct grant of the same key there
+   * goes with it.
+   */
+  describe('a key the shape retires is taken back from its holders (#2082)', () => {
+    const CANCEL = 'emp:cancel';
+    const retiring = (permissions = OLD, retired = [CANCEL]) => [{ entityType: 'employee', permissions, bootstrap: true, retired }];
+    const retire = (t: ReturnType<typeof fresh>, limit?: number, permissions?: string[]) => t.run(retiring(permissions), limit);
+    const row = (t: ReturnType<typeof fresh>, who: PrincipalId, relation: string, object: string) =>
+      t.db.prepare('SELECT revoked_at FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?').get(`principal:${who}`, relation, object) as
+        | { revoked_at: string | null }
+        | undefined;
+
+    it('a holder loses the retired key there — tombstoned, not deleted — and keeps the rest of the shape', () => {
+      const t = fresh();
+      const anna = who();
+      t.shape(anna, 'e1', GROWN);
+      expect(retire(t)).toEqual({
+        toppedUp: [],
+        retired: [{ principal: anna, entity: { entityType: 'employee', entityId: 'e1' }, removed: [CANCEL] }],
+        done: true,
+      });
+      expect(t.keysOf(anna, 'e1')).toEqual(OLD);
+      expect(row(t, anna, `granted:${CANCEL}`, 'employee:e1')).toEqual({ revoked_at: NOW });
+    });
+
+    it('each retirement is one kernel event on the entity, stamped with the deploy and no operation', () => {
+      const t = fresh();
+      t.shape(who(), 'e1', [...GROWN, 'emp:sign']);
+      retire(t, undefined, OLD);
+      t.run(retiring(OLD, [CANCEL, 'emp:sign']));
+      expect(t.db.prepare('SELECT type, entity_type, entity_id, actor, operation, authorization, version, payload FROM _substrat_outbox').all()).toEqual([
+        expect.objectContaining({
+          type: 'entity.grants-retired',
+          entity_type: 'employee',
+          entity_id: 'e1',
+          actor: JSON.stringify({ system: '@substrat-run/kernel' }),
+          operation: null,
+          authorization: null,
+          version: 'v-test',
+        }),
+        expect.objectContaining({ type: 'entity.grants-retired' }),
+      ]);
+    });
+
+    it('several retired keys of one holder are one event naming them all', () => {
+      const t = fresh();
+      const anna = who();
+      t.shape(anna, 'e1', [...GROWN, 'emp:sign']);
+      expect(t.run(retiring(OLD, ['emp:sign', CANCEL])).retired.map((r) => r.removed)).toEqual([[CANCEL, 'emp:sign']]);
+      expect(t.keysOf(anna, 'e1')).toEqual(OLD);
+    });
+
+    it('the key held any other way stays: a non-holder on the same entity, the holder on another entity or a parent', () => {
+      const t = fresh();
+      const [anna, manager, bo] = [who(), who(), who()];
+      t.shape(anna, 'e1', GROWN);
+      t.tuple(manager, `granted:${CANCEL}`, 'e1'); // ctx.granted on anna's record: not a holder
+      t.tuple(bo, `granted:${CANCEL}`, 'e2'); // ctx.granted, no shape at all
+      t.tuple(anna, `granted:${CANCEL}`, 'e9'); // anna, on an entity she does not hold the shape on
+      t.db.prepare('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)').run(`principal:${anna}`, `granted:${CANCEL}`, 'dept:d1');
+      expect(retire(t).retired.map((r) => r.principal)).toEqual([anna]);
+      expect(t.keysOf(manager, 'e1')).toEqual([CANCEL]);
+      expect(t.keysOf(bo, 'e2')).toEqual([CANCEL]);
+      expect(t.keysOf(anna, 'e9')).toEqual([CANCEL]);
+      expect(row(t, anna, `granted:${CANCEL}`, 'dept:d1')).toEqual({ revoked_at: null });
+    });
+
+    it('one tuple is one authority: a direct grant of the key to the holder on the same entity goes too', () => {
+      const t = fresh();
+      const anna = who();
+      t.shape(anna, 'e1', OLD); // given the shape without the key...
+      t.tuple(anna, `granted:${CANCEL}`, 'e1'); // ...and ctx.granted it there separately: the same row
+      expect(retire(t).retired.map((r) => r.removed)).toEqual([[CANCEL]]);
+      expect(t.keysOf(anna, 'e1')).toEqual(OLD);
+    });
+
+    it('a holder whose marker is tombstoned is not a holder, and keeps the key', () => {
+      const t = fresh();
+      const [anna, bo] = [who(), who()];
+      t.shape(anna, 'e1', GROWN);
+      t.shape(bo, 'e2', GROWN);
+      t.tuple(anna, 'bootstrap', 'e1', NOW);
+      expect(retire(t).retired.map((r) => r.principal)).toEqual([bo]);
+      expect(t.keysOf(anna, 'e1')).toEqual(GROWN.slice().sort());
+    });
+
+    it('runs once per scope: the key granted to a holder again after it finished is left alone', () => {
+      const t = fresh();
+      const anna = who();
+      t.shape(anna, 'e1', GROWN);
+      expect(retire(t).retired).toHaveLength(1);
+      t.tuple(anna, `granted:${CANCEL}`, 'e1'); // granted back, explicitly
+      expect(retire(t)).toEqual({ toppedUp: [], retired: [], done: true });
+      expect(t.keysOf(anna, 'e1')).toContain(CANCEL);
+    });
+
+    it('a pass retires at most `limit` holders; repeated passes reach each exactly once', () => {
+      const t = fresh();
+      const people = [0, 1, 2, 3, 4].map((i) => {
+        const p = who();
+        t.shape(p, `e${i}`, GROWN);
+        return p;
+      });
+      const passes = [0, 1, 2, 3].map(() => retire(t, 2)).map((r) => [r.retired.length, r.done]);
+      expect(passes).toEqual([[2, false], [2, false], [1, true], [0, true]]);
+      for (const [i, p] of people.entries()) expect(t.keysOf(p, `e${i}`)).toEqual(OLD);
+    });
+
+    it('a retirement and a top-up in one pass share its budget', () => {
+      const t = fresh();
+      for (const i of [0, 1, 2]) t.shape(who(), `e${i}`, GROWN);
+      const grown = [...OLD, 'emp:sign'];
+      const first = retire(t, 4, grown);
+      expect([first.retired.length, first.toppedUp.length, first.done]).toEqual([3, 1, false]);
+      const second = retire(t, 4, grown);
+      expect([second.retired.length, second.toppedUp.length, second.done]).toEqual([0, 2, true]);
+    });
+
+    it('putting the key back reaches only new shape grants; retiring it again runs again', () => {
+      const t = fresh();
+      const anna = who();
+      t.shape(anna, 'e1', GROWN);
+      retire(t);
+      // Back in the shape: anna's tombstone is a revoke the top-up never undoes.
+      expect(t.topUp(GROWN)).toEqual([]);
+      expect(t.keysOf(anna, 'e1')).toEqual(OLD);
+      const bo = who();
+      t.shape(bo, 'e2', GROWN);
+      expect(t.keysOf(bo, 'e2')).toContain(CANCEL);
+      // Retired again in a later release: the first record ended, so this one runs.
+      expect(retire(t).retired.map((r) => r.principal)).toEqual([bo]);
+      expect(t.keysOf(bo, 'e2')).toEqual(OLD);
+    });
+
+    it('a key the shape still grants is never taken back, whatever `retired` says', () => {
+      const t = fresh();
+      const anna = who();
+      t.shape(anna, 'e1', GROWN);
+      expect(t.run(retiring(GROWN, [CANCEL])).retired).toEqual([]);
+      expect(t.keysOf(anna, 'e1')).toContain(CANCEL);
+    });
+
+    it('a sharing shape retires nothing, even for a marked holder', () => {
+      const t = fresh();
+      const anna = who();
+      t.shape(anna, 'e1', GROWN);
+      expect(t.run([{ entityType: 'employee', permissions: OLD, retired: [CANCEL] }]).retired).toEqual([]);
+      expect(t.keysOf(anna, 'e1')).toContain(CANCEL);
+    });
+
+    it('the backfill counts a retired key as evidence: an old owner is marked, retired and topped up in one pass', () => {
+      const t = fresh();
+      const anna = who();
+      t.db.prepare('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)').run(`principal:${anna}`, 'granted:list:old', `owner:${anna}`);
+      const r = t.run([{ entityType: 'owner', permissions: ['list:manage'], bootstrap: true, holder: 'self', retired: ['list:old'] }]);
+      expect([r.retired.map((x) => x.removed), r.toppedUp.map((x) => x.added)]).toEqual([[['list:old']], [['list:manage']]]);
+    });
   });
 
   /** A pass with no budget never reports done: a loop waiting for it would never end. */
