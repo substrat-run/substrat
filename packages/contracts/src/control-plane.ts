@@ -231,6 +231,8 @@ export const adminAction = z.enum([
   // named in `caller` (who is also the row's `onBehalfOf`), so the control plane writes it
   // intent-first then outcome, like `transferOwner`.
   'manageScopeMember',
+  // #1720 — a tenant admin chooses or clears the instance one calling app reaches.
+  'setPeerBinding',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 
@@ -676,6 +678,20 @@ export const memberChangeAudit = z
   })
   .strict();
 export type MemberChangeAudit = z.infer<typeof memberChangeAudit>;
+
+/** Intent and outcome of one tenant's explicit peer-instance choice (#1720). */
+export const peerBindingAudit = z.object({
+  phase: z.enum(['intent', 'applied', 'refused', 'failed', 'unknown']),
+  tenantId,
+  scopeId,
+  operationId: auditOperationId,
+  vertical: z.string().min(1),
+  targetScopeId: scopeId.nullable(),
+  previousScopeId: scopeId.nullable().optional(),
+  changed: z.boolean().optional(),
+  error: z.string().max(AUDIT_ERROR_MAX).optional(),
+}).strict();
+export type PeerBindingAudit = z.infer<typeof peerBindingAudit>;
 
 /**
  * How an identity pool relates to tenants (K-23) — the fact that decides whether the

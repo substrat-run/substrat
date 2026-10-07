@@ -24,11 +24,11 @@
  * settle's grace window, so a live request cannot normally be overtaken this way. The rule is
  * stated for the case where one is.
  */
-import { memberChangeAudit, ownerTransferAudit, substratError, type AdminAction } from '@substrat-run/contracts';
+import { memberChangeAudit, ownerTransferAudit, peerBindingAudit, substratError, type AdminAction } from '@substrat-run/contracts';
 import type { OpsFailureInput } from './scope-host.js';
 
 /** The admin actions written intent-then-outcome around a vertical call, which a settle closes. */
-export const AUDITED_CHANGE_ACTIONS = ['transferOwner', 'manageScopeMember'] as const satisfies readonly AdminAction[];
+export const AUDITED_CHANGE_ACTIONS = ['transferOwner', 'manageScopeMember', 'setPeerBinding'] as const satisfies readonly AdminAction[];
 export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
 
 /** The intent a settle reads by id, inside its transaction. */
@@ -180,7 +180,9 @@ export function unknownOutcomeOf(row: SettleIntentRow | undefined, intentId: str
   }
   const entry = { ...after, tenantId: row.tenant_id, scopeId: row.scope_id, phase: 'unknown', error };
   const { tenantId: _t, scopeId: _s, ...parsed } =
-    row.action === 'transferOwner' ? ownerTransferAudit.parse(entry) : memberChangeAudit.parse(entry);
+    row.action === 'transferOwner' ? ownerTransferAudit.parse(entry)
+      : row.action === 'manageScopeMember' ? memberChangeAudit.parse(entry)
+        : peerBindingAudit.parse(entry);
   const operationId = after.operationId;
   return {
     action: row.action,

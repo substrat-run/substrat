@@ -39,6 +39,7 @@ import type {
   DelegatedReadRecord,
   OwnerTransferAudit,
   MemberChangeAudit,
+  PeerBindingAudit,
   CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
@@ -4151,6 +4152,9 @@ export interface HostAdmin {
    * cannot be written.
    */
   recordMemberChange(actor: PlatformActorId, entry: MemberChangeAudit): Promise<void>;
+
+  /** One intent or outcome of a tenant's peer-instance binding change (#1720). */
+  recordPeerBindingChange(actor: PlatformActorId, entry: PeerBindingAudit): Promise<void>;
 
   /**
    * Close one audited change whose intent has no outcome (#2064): in ONE transaction, read the

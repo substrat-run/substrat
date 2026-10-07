@@ -136,6 +136,7 @@ import {
   delegatedReadRecord,
   ownerTransferAudit,
   memberChangeAudit,
+  peerBindingAudit,
   copyMarkAudit,
   type EventEffectsInput,
   type EffectsTree,
@@ -8665,6 +8666,10 @@ export class CloudflareScopeHost implements ScopeHost {
       recordMemberChange: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
         await this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
+      },
+      recordPeerBindingChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = peerBindingAudit.parse(entry);
+        await this.recordAdmin(actor, 'setPeerBinding', { tenantId, scopeId }, null, after);
       },
       /** #2064: an audited operation's rows, by the operation-id index, in bounded batches. */
       auditedOperations: async (actor, refs) => {
