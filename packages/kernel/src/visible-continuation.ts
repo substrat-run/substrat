@@ -71,6 +71,21 @@ function canonical(value: unknown): string {
     .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
 }
 
+/** SQL IN filters are sets; request order and duplicates must not change a walk's identity. */
+function normalizeFilter(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const members = new Map(value.map((item) => {
+      const normalized = normalizeFilter(item);
+      return [canonical(normalized), normalized] as const;
+    }));
+    return [...members.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, item]) => item);
+  }
+  if (value && typeof value === 'object' && !(value instanceof Set) && !(value instanceof Map)) {
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, normalizeFilter(item)]));
+  }
+  return value;
+}
+
 async function bindingHash(binding: ContinuationBinding): Promise<string> {
   const bytes = new TextEncoder().encode(canonical(binding));
   return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
@@ -88,6 +103,7 @@ export function visibleContinuation(
   binding: ContinuationBinding,
   now: () => number = Date.now,
   legacyUsed?: () => void,
+  writable = true,
 ) {
   // Pagination mechanics do not change the rows in the walk. Every other input,
   // including a grant constraint, does; bind it without retaining its raw value.
@@ -95,20 +111,28 @@ export function visibleContinuation(
     ? Object.fromEntries(Object.entries(binding.query).filter(([name]) =>
         !['cursor', 'limit', 'rowCursors', 'total'].includes(name)))
     : binding.query ?? {};
+  if (query && typeof query === 'object' && !Array.isArray(query) && 'filters' in query) {
+    query.filters = normalizeFilter(query.filters);
+  }
   let fingerprint: Promise<string> | undefined;
   const hash = () => (fingerprint ??= bindingHash({ ...binding, query }));
   const readKeys = async (): Promise<ContinuationKeys | null> => {
     try { return await store.keys(); } catch { throw restart(); }
   };
   return {
-    async seal(position: string, hidden = true): Promise<string> {
+    async seal(position: string, hidden = true): Promise<string | null> {
+      // A read-only invocation (including a copy) cannot persist a hidden
+      // position. It keeps the former bounded-walk result at this budget stop.
+      if (hidden && !writable) return null;
       try {
         const at = now();
         let keys = await readKeys();
-        if (!keys || at - keys.active.createdAt >= ROTATION_MS) {
+        if (!writable && !keys) return null;
+        if (writable && (!keys || at - keys.active.createdAt >= ROTATION_MS)) {
           keys = { active: key(at), ...(keys ? { previous: keys.active } : {}) };
           await store.setKeys(keys);
         }
+        if (!keys) return null;
         const expiresAt = at + LIFETIME_MS;
         let payload: string;
         if (hidden) {
@@ -124,6 +148,7 @@ export function visibleContinuation(
         const token = await box(keys.active).seal(payload);
         return `${TOKEN_PREFIX}.${keys.active.id}.${base64url(fromBase64(token.ciphertext))}`;
       } catch {
+        if (!writable) return null;
         throw restart();
       }
     },

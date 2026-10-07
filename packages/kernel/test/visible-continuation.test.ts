@@ -38,7 +38,7 @@ describe('sealed visible continuations (#2074)', () => {
     const token = await codec.seal(position);
     expect(token).not.toContain(position);
     expect(JSON.stringify(store.stored())).not.toContain(position);
-    expect(await codec.open(token)).toBe(position);
+    expect(await codec.open(token!)).toBe(position);
   });
 
   it('keeps token length fixed across positions of very different lengths', async () => {
@@ -46,7 +46,7 @@ describe('sealed visible continuations (#2074)', () => {
     const short = await codec.seal('a');
     const long = await codec.seal('secret-sort-value'.repeat(2_000));
     expect(long.length).toBe(short.length);
-    expect(await codec.open(long)).toBe('secret-sort-value'.repeat(2_000));
+    expect(await codec.open(long!)).toBe('secret-sort-value'.repeat(2_000));
   });
 
   it('keeps full-page positions stateless and seals them under the same wire grammar', async () => {
@@ -57,10 +57,10 @@ describe('sealed visible continuations (#2074)', () => {
     expect(short).toMatch(/^sc1\./);
     expect(store.stored()).toEqual([]);
     expect(long.length).toBeGreaterThan(short.length);
-    expect(await codec.open(long)).toBe('long-visible-sort'.repeat(1_000));
-    await expect(visibleContinuation(store, { ...binding, principal: 'principal:bob' }, () => 1_000).open(long))
+    expect(await codec.open(long!)).toBe('long-visible-sort'.repeat(1_000));
+    await expect(visibleContinuation(store, { ...binding, principal: 'principal:bob' }, () => 1_000).open(long!))
       .rejects.toThrow(/restart paging/);
-    await expect(visibleContinuation(store, binding, () => 1_000 + 15 * 60_000).open(short))
+    await expect(visibleContinuation(store, binding, () => 1_000 + 15 * 60_000).open(short!))
       .rejects.toThrow(/restart paging/);
   });
 
@@ -69,7 +69,7 @@ describe('sealed visible continuations (#2074)', () => {
     const codec = visibleContinuation(store, binding, () => 1_000);
     const first = await codec.seal('first hidden');
     for (let i = 0; i < CONTINUATION_POSITION_CAP; i++) await codec.seal(`hidden ${i}`);
-    await expect(codec.open(first)).rejects.toThrow(/restart paging/);
+    await expect(codec.open(first!)).rejects.toThrow(/restart paging/);
     expect(store.stored()).toHaveLength(CONTINUATION_POSITION_CAP);
   });
 
@@ -107,13 +107,34 @@ describe('sealed visible continuations (#2074)', () => {
       { query: { ...binding.query, grantConstraint: new Set(['grant-b']) } },
     ];
     for (const change of changes) {
-      await expect(visibleContinuation(store, { ...binding, ...change }, () => 1_000).open(token))
+      await expect(visibleContinuation(store, { ...binding, ...change }, () => 1_000).open(token!))
         .rejects.toThrow(/restart paging/);
     }
-    const payloadAt = token.lastIndexOf('.') + 1;
-    const changed = token[payloadAt] === 'A' ? 'B' : 'A';
-    await expect(codec.open(token.slice(0, payloadAt) + changed + token.slice(payloadAt + 1)))
+    const payloadAt = token!.lastIndexOf('.') + 1;
+    const changed = token![payloadAt] === 'A' ? 'B' : 'A';
+    await expect(codec.open(token!.slice(0, payloadAt) + changed + token!.slice(payloadAt + 1)))
       .rejects.toThrow(/restart paging/);
+  });
+
+  it('treats reordered and repeated IN filter values as the same walk', async () => {
+    const store = memoryStore();
+    const codec = visibleContinuation(store, binding, () => 1_000);
+    const token = await codec.seal('position', false);
+    const reordered = { ...binding, query: { ...binding.query, filters: { status: ['held', 'open', 'open'] } } };
+    expect(await visibleContinuation(store, reordered, () => 1_000).open(token!)).toBe('position');
+  });
+
+  it('does not write or fail a read-only sparse page at its budget stop', async () => {
+    const store = memoryStore();
+    const readonly = visibleContinuation(store, binding, () => 1_000, undefined, false);
+    const page = await pageVisible(
+      () => ({ entries: [{ id: 'hidden' }], rowCursors: ['hidden'], nextCursor: 'hidden' }),
+      { limit: 1 }, () => false,
+      { scanBudget: 1, continuation: readonly },
+    );
+    expect(page).toEqual({ entries: [], nextCursor: null });
+    expect(store.stored()).toEqual([]);
+    expect(await store.keys()).toBeNull();
   });
 
   it('expires, rotates while the prior key has live tokens, and invalidates on restore', async () => {
@@ -125,10 +146,10 @@ describe('sealed visible continuations (#2074)', () => {
     const prior = await codec.seal('prior');
     at = 24 * 60 * 60_000 + 60_000;
     const current = await codec.seal('current');
-    expect(await codec.open(prior)).toBe('prior');
-    expect(await codec.open(current)).toBe('current');
-    await expect(codec.open(expired)).rejects.toThrow(/restart paging/);
+    expect(await codec.open(prior!)).toBe('prior');
+    expect(await codec.open(current!)).toBe('current');
+    await expect(codec.open(expired!)).rejects.toThrow(/restart paging/);
     store.clearKeys();
-    await expect(codec.open(current)).rejects.toThrow(/restart paging/);
+    await expect(codec.open(current!)).rejects.toThrow(/restart paging/);
   });
 });

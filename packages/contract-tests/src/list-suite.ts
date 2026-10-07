@@ -458,6 +458,13 @@ export function listContractSuite(
       }
       await stub.invoke('list/add', { id: 'v2074', number: '002005', status: 'open', kind: 'k2074' });
       const query = { limit: 1, sort: 'number', filters: { kind: 'k2074' } };
+      const session = await host.admin.beginImpersonation(staff, {
+        tenantId: t1, scopeId: stub.scopeId, principal: alice,
+        reason: 'verify sparse read-only paging', mode: 'read-only',
+      });
+      const readOnly = await host.getImpersonatedScope(session.id, t1, stub.scopeId);
+      expect(await readOnly.invoke<Page<Row>>('list/page-visible', query))
+        .toEqual({ entries: [], nextCursor: null });
       const first = await stub.invoke<Page<Row>>('list/page-visible', query);
       expect(first.entries).toEqual([]);
       expect(first.nextCursor).toMatch(/^sc1\./);

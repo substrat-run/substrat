@@ -12033,6 +12033,7 @@ export class SqliteScopeHost implements ScopeHost {
         { scopeId: rt.scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },
         () => Date.parse(this.clock()),
         () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),
+        impersonation?.mode !== 'read-only' && this.isPrimaryInDirectory(rt.scopeId),
       ),
       sql: guardSecrets(
         guardSqlLimits(

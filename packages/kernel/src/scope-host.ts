@@ -287,7 +287,7 @@ export interface OperationContext {
   /** Seal positions for one filtered list under this scope, caller and operation. */
   pageContinuation(list: string, query: unknown): {
     open(cursor: string): Promise<string>;
-    seal(position: string, hidden: boolean): Promise<string>;
+    seal(position: string, hidden: boolean): Promise<string | null>;
   };
   readonly sql: ScopedSql;
   /**

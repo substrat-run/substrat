@@ -7409,6 +7409,7 @@ export function defineScopeDO(
           { scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },
           Date.now,
           () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),
+          impersonation?.mode !== 'read-only' && !this.isCopy(),
         ),
         sql: guardSecrets(
           doScopedSql(
