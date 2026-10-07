@@ -15,6 +15,7 @@
  */
 import {
   diffRegistries,
+  grantShapeHolderNotes,
   unitemisedRegistryChanges,
   type ExportBreak,
   type MigrationDiff,
@@ -161,7 +162,10 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
     ...diff.changedKeys.map((k) => `~ ${k}  “${describe(from, k)}” → “${describe(to, k)}”`),
     ...diff.removedKeys.map((k) => `- ${k}  ${describe(from, k)}`),
     ...diff.roleChanges.map((r) => shape('role', r, r.key)),
-    ...diff.grantChanges.map((g) => shape('grant shape', g, g.entityType)),
+    ...diff.grantChanges.flatMap((g) => [
+      shape('grant shape', g, g.entityType),
+      ...grantShapeHolderNotes(g).map((n) => `  ${n}`),
+    ]),
   ];
   const unitemised = unitemisedRegistryChanges(from, to, diff);
   if (unitemised.length > 0) {
