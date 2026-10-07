@@ -8,12 +8,13 @@ import {
   type ContinuationStore,
 } from '../src/visible-continuation.js';
 
-function memoryStore(): ContinuationStore & { clearKeys(): void; stored(): ContinuationPosition[]; clearPositions(): void } {
+function memoryStore(): ContinuationStore & { clearKeys(): void; stored(): ContinuationPosition[]; clearPositions(): void; keyWrites(): number } {
   let keys: ContinuationKeys | null = null;
+  let writes = 0;
   const positions = new Map<string, ContinuationPosition>();
   return {
     keys: async () => keys,
-    setKeys: async (next) => { keys = next; },
+    setKeys: async (next) => { keys = next; writes += 1; },
     position: async (id, expiry) => positions.get(`${expiry}:${id}`) ?? null,
     setPosition: async (id, position) => {
       positions.set(`${position.expiresAt}:${id}`, position);
@@ -22,6 +23,7 @@ function memoryStore(): ContinuationStore & { clearKeys(): void; stored(): Conti
     clearKeys: () => { keys = null; },
     clearPositions: () => { positions.clear(); },
     stored: () => [...positions.values()],
+    keyWrites: () => writes,
   };
 }
 
@@ -137,6 +139,22 @@ describe('sealed visible continuations (#2074)', () => {
     expect(await store.keys()).toBeNull();
   });
 
+  it('uses a visible plain cursor on a read-only full page without a key, then seals with a key', async () => {
+    const store = memoryStore();
+    const readonly = visibleContinuation(store, binding, () => 1_000, undefined, false);
+    const fetch = () => ({ entries: [{ id: 'visible' }], rowCursors: ['visible'], nextCursor: 'visible' });
+    const plain = await pageVisible(fetch, { limit: 1 }, () => true, { continuation: readonly });
+    expect(plain.nextCursor).toBe('visible');
+    expect(store.keyWrites()).toBe(0);
+    const writable = visibleContinuation(store, binding, () => 1_000);
+    expect((await pageVisible(fetch, { limit: 1 }, () => true, { continuation: writable })).nextCursor)
+      .toMatch(/^sc1\./);
+    expect(store.keyWrites()).toBe(1);
+    expect((await pageVisible(fetch, { limit: 1 }, () => true, { continuation: readonly })).nextCursor)
+      .toMatch(/^sc1\./);
+    expect(store.keyWrites()).toBe(1);
+  });
+
   it('expires, rotates while the prior key has live tokens, and invalidates on restore', async () => {
     const store = memoryStore();
     let at = 0;
@@ -146,6 +164,7 @@ describe('sealed visible continuations (#2074)', () => {
     const prior = await codec.seal('prior');
     at = 24 * 60 * 60_000 + 60_000;
     const current = await codec.seal('current');
+    expect(store.keyWrites()).toBe(2);
     expect(await codec.open(prior!)).toBe('prior');
     expect(await codec.open(current!)).toBe('current');
     await expect(codec.open(expired!)).rejects.toThrow(/restart paging/);
