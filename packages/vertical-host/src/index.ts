@@ -196,8 +196,9 @@ export interface VerticalScopeHost {
     tenantHeldPeers?: string[];
     /** #2045: each recorded-off subject's fence, by tuple subject. A host built before it ignores it. */
     switchFences?: Record<string, string>;
-    /** #2071: the declared entity-grant shapes, each holder topped up to the shape as it is now.
-     *  A host built before it ignores the field, and the next host that reads it catches up. */
+    /** #2071: the declared entity-grant shapes, each holder topped up to the shape as it is now,
+     *  and (#2082) a key a shape declares `retired` taken back from each holder. A host built
+     *  before it ignores the field, and the next host that reads it catches up. */
     entityGrants?: readonly EntityGrantShape[];
   }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.

@@ -10080,7 +10080,8 @@ export class CloudflareScopeHost implements ScopeHost {
     /** #2071: the declared entity-grant shapes, as the platform's reconcile sends them from the
      *  reached version's reviewed registry. Only a shape declared `bootstrap: true` is reconciled;
      *  a sharing one is skipped. Each holder is topped up to the shape as it is now, after the
-     *  seat, in bounded passes. Never a revoked key, never a removal. Absent ⇒ no reconcile. */
+     *  seat, in bounded passes. Never a revoked key; a key is taken back only when the shape
+     *  declares it `retired` (#2082). Absent ⇒ no reconcile. */
     entityGrants?: readonly EntityGrantShape[];
   }): Promise<{ switchedOff?: SwitchedOff[] }> {
     const carry = recordedOffFromWire(input);
