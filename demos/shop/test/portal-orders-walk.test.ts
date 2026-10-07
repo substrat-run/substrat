@@ -36,6 +36,8 @@ const his: string[] = [];
 let orphans = 0;
 /** `order:read` checks on an order, since the last reset. */
 let orderChecks = 0;
+let customerChecks = 0;
+let forceIncomplete = false;
 
 /** The row id inside a `ctx.page` cursor (K-44) — on this `number` walk, its tie-break. */
 function idIn(cursor: string): string {
@@ -105,8 +107,12 @@ beforeAll(async () => {
   const inner = wrapped.checker;
   wrapped.checker = {
     covers: (...args) => inner.covers(...args),
+    grantedEntities: (...args) => forceIncomplete
+      ? Promise.resolve({ kind: 'incomplete' as const, reason: 'checker' as const })
+      : inner.grantedEntities!(...args),
     check: (subject, permission, node, entity) => {
       if (permission === 'order:read' && entity?.entityType === 'order') orderChecks += 1;
+      if (permission === 'order:read' && entity?.entityType === 'customer') customerChecks += 1;
       return inner.check(subject, permission, node, entity);
     },
   };
@@ -114,6 +120,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   orderChecks = 0;
+  customerChecks = 0;
+  forceIncomplete = false;
 });
 
 afterAll(async () => {
@@ -160,6 +168,25 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
       expect(second.entries.map((o) => o.id)).toEqual(hers.slice(2, 4));
       expect(orderChecks).toBeLessThan(20);
     });
+
+    it('falls back to the complete checked walk when grants cannot be enumerated', async () => {
+      forceIncomplete = true;
+      const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 2 });
+      expect(page.entries.map((o) => o.id)).toEqual(hers.slice(0, 2));
+      expect(orderChecks).toBeGreaterThan(300);
+    });
+  });
+
+  it('my-customer reads its checked grant and falls back when enumeration is incomplete', async () => {
+    const fast = await elin.invoke<{ id: string } | null>('shop/my-customer');
+    expect(fast?.id).toBe(w.elinCustomerId);
+    expect(customerChecks).toBeLessThan(10);
+
+    customerChecks = 0;
+    forceIncomplete = true;
+    const fallback = await elin.invoke<{ id: string } | null>('shop/my-customer');
+    expect(fallback?.id).toBe(w.elinCustomerId);
+    expect(customerChecks).toBeGreaterThan(0);
   });
 
   describe(`more than the old ${VISIBLE_SCAN_BUDGET}-row foreign scan budget`, () => {

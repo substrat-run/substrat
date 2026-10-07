@@ -1068,23 +1068,38 @@ async function completeGrantIds(ctx: OperationContext, entityType: string): Prom
 const myCustomerOp: OperationHandler<undefined, { id: string; number: string; name: string } | null> = async (
   ctx,
 ) => {
-  const grants = await completeGrantIds(ctx, 'customer');
-  if (grants === 'all') {
-    const first = ctx.sql.query<{ id: string; number: string; name: string }>(
-      'SELECT id, number, name FROM shop_customers ORDER BY number LIMIT 1',
-    )[0];
-    if (!first) return null;
-    if ((await ctx.check(SHOP_PERM.orderRead, customerRef(first.id))).allowed) return first;
-  } else if (grants !== 'incomplete') {
-    if (grants.length === 0) return null;
-    const first = ctx.sql.query<{ id: string; number: string; name: string }>(
-      'SELECT id, number, name FROM shop_customers WHERE id IN (SELECT value FROM json_each(?)) ORDER BY number LIMIT 1',
-      [JSON.stringify(grants)],
-    )[0];
-    if (!first) return null;
-    if ((await ctx.check(SHOP_PERM.orderRead, customerRef(first.id))).allowed) return first;
+  let cursor: string | undefined;
+  let fallbackReason = 'grant-read-budget';
+  for (let page = 0; page < 10; page++) {
+    const grants = await ctx.grantedEntities(SHOP_PERM.orderRead, 'customer', { limit: 100, cursor });
+    if (grants.kind === 'all') {
+      const first = ctx.sql.query<{ id: string; number: string; name: string }>(
+        'SELECT id, number, name FROM shop_customers ORDER BY number LIMIT 1',
+      )[0];
+      if (!first) return null;
+      if ((await ctx.check(SHOP_PERM.orderRead, customerRef(first.id))).allowed) return first;
+      fallbackReason = 'node-grant-changed';
+      break;
+    }
+    if (grants.kind === 'incomplete') {
+      fallbackReason = grants.reason;
+      break;
+    }
+    if (grants.ids.length > 0) {
+      const candidates = ctx.sql.query<{ id: string; number: string; name: string }>(
+        'SELECT id, number, name FROM shop_customers WHERE id IN (SELECT value FROM json_each(?)) ORDER BY number',
+        [JSON.stringify(grants.ids)],
+      );
+      for (const customer of candidates) {
+        if ((await ctx.check(SHOP_PERM.orderRead, customerRef(customer.id))).allowed) return customer;
+      }
+    }
+    if (grants.nextCursor === null) return null;
+    cursor = grants.nextCursor;
   }
-  // A capability or a very large grant graph cannot be narrowed by this read.
+  ctx.log.warn('grant read fallback for {operation} in {scope}: {reason}', {
+    operation: 'shop/my-customer', scope: ctx.scopeId, reason: fallbackReason,
+  });
   const all = ctx.sql.query<{ id: string; number: string; name: string }>(
     'SELECT id, number, name FROM shop_customers ORDER BY number',
   );
