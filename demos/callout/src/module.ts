@@ -459,6 +459,7 @@ const portalOrdersOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ctx
     input,
     async (order) =>
       (await ctx.check(WO.read, { entityType: 'workorder', entityId: order.id })).allowed,
+    { continuation: ctx.pageContinuation('workorder:portal-orders', input) },
   );
 
 /**

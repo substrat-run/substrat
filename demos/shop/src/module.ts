@@ -1031,6 +1031,7 @@ const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> =
     (p) => ctx.page<OrderRow>('order', { ...input, ...p }),
     input,
     async (order) => (await ctx.check(SHOP_PERM.orderRead, orderRef(order.id))).allowed,
+    { continuation: ctx.pageContinuation('order:portal-orders', input) },
   );
 
 /** "My account": the customer the caller is authorized to read — their portal identity. */

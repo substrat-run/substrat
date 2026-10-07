@@ -33,7 +33,7 @@ export interface ContinuationPosition {
 export interface ContinuationStore {
   keys(): Promise<ContinuationKeys | null>;
   setKeys(keys: ContinuationKeys): Promise<void>;
-  position(id: string): Promise<ContinuationPosition | null>;
+  position(id: string, expiresAt: number): Promise<ContinuationPosition | null>;
   setPosition(id: string, position: ContinuationPosition): Promise<void>;
 }
 
@@ -83,7 +83,13 @@ export function visibleContinuation(
   legacy?: (cursor: string) => Promise<boolean>,
   legacyUsed?: () => void,
 ) {
-  const fingerprint = bindingHash(binding);
+  // Pagination mechanics do not change the rows in the walk. Every other input,
+  // including a grant constraint, does; bind it without retaining its raw value.
+  const query = binding.query && typeof binding.query === 'object' && !Array.isArray(binding.query)
+    ? Object.fromEntries(Object.entries(binding.query).filter(([name]) =>
+        !['cursor', 'limit', 'rowCursors', 'total'].includes(name)))
+    : binding.query;
+  const fingerprint = bindingHash({ ...binding, query });
   const readKeys = async (): Promise<ContinuationKeys | null> => {
     try { return await store.keys(); } catch { throw restart(); }
   };
@@ -128,7 +134,7 @@ export function visibleContinuation(
         const payload = JSON.parse(decoded.trimEnd()) as { i?: unknown; e?: unknown; b?: unknown };
         if (typeof payload.i !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(payload.i) ||
             typeof payload.e !== 'number' || payload.e <= now() || payload.b !== await fingerprint) throw restart();
-        const record = await store.position(payload.i);
+        const record = await store.position(payload.i, payload.e);
         if (!record || record.expiresAt !== payload.e || record.expiresAt <= now()) throw restart();
         const opened = JSON.parse(await box(selected).open(record.sealed)) as { id?: unknown; position?: unknown };
         if (opened.id !== payload.i || typeof opened.position !== 'string') throw restart();

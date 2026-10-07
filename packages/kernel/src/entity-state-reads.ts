@@ -17,7 +17,7 @@ import {
 } from '@substrat-run/contracts';
 import { entityStateWhere, stateColumnsOf, stateKeyOf, type EntityStatePlan, type StateCheck } from './entity-state.js';
 import { cursorOf, listQuery, NotListable, type ListIndexPlan } from './list-index.js';
-import type { OperationContext } from './scope-host.js';
+import type { OperationContext, PageParams } from './scope-host.js';
 import {
   NotSearchable,
   searchLimit,
@@ -65,6 +65,7 @@ export interface TrashedReadDeps {
   check: StateCheck;
   /** Rows one trashed page may read looking for visible ones — `TRASH_SCAN_BUDGET` unless a test narrows it. */
   scanBudget?: number;
+  continuation?: (entityType: string, params: PageParams) => ReturnType<OperationContext['pageContinuation']>;
 }
 
 /** How many binned rows one `ctx.pageTrashed` call reads, at most — `VISIBLE_SCAN_BUDGET`. */
@@ -134,7 +135,10 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
         },
         params,
         async (row) => (await deps.check(key, { entityType, entityId: String(row[plan.idColumn]) })).allowed,
-        { scanBudget: deps.scanBudget ?? TRASH_SCAN_BUDGET },
+        {
+          scanBudget: deps.scanBudget ?? TRASH_SCAN_BUDGET,
+          continuation: deps.continuation?.(entityType, params),
+        },
       ) as Promise<Page<never>>;
     },
 

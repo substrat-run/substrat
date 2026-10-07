@@ -284,6 +284,11 @@ export interface OperationContext {
   readonly tenantId: TenantId;
   readonly scopeId: ScopeId;
   readonly principal: PrincipalId;
+  /** Seal positions for one filtered list under this scope, caller and operation. */
+  pageContinuation(list: string, query: unknown, legacyVisible?: (cursor: string) => Promise<boolean>): {
+    open(cursor: string): Promise<string>;
+    seal(position: string): Promise<string>;
+  };
   readonly sql: ScopedSql;
   /**
    * The operation's instant (#812) — the ONLY clock module code may read.

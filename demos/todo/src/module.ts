@@ -168,6 +168,7 @@ const operations = {
       (p) => ctx.page<ListRow>('list', { ...p, view: input?.view }),
       input,
       async (list) => (await ctx.check(TODO_PERM.listContribute, listRef(list.id))).allowed,
+      { continuation: ctx.pageContinuation('list:my-lists', input) },
     ),
 
   /**

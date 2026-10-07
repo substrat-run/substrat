@@ -322,6 +322,10 @@ import {
   createEntityEdgeVerbs,
   createEntityStateVerbs,
   createTrashedReads,
+  visibleContinuation,
+  type ContinuationStore,
+  type ContinuationKeys,
+  type ContinuationPosition,
   searchStateWhere,
   uncheckedView,
   addStatePlans,
@@ -1169,6 +1173,29 @@ export function defineScopeDO(
 ): new (ctx: DurableObjectState, env: ScopeDoEnv) => DurableObject {
   return class ScopeDO extends DurableObject<ScopeDoEnv> {
     private readonly sql: SqlStorage;
+    /** DO storage KV is private to the adapter; neither module SQL nor dumps can read it. */
+    private continuationStore(): ContinuationStore {
+      const positionKey = (id: string, expiresAt: number) =>
+        `continuation:position:${String(expiresAt).padStart(13, '0')}:${id}`;
+      return {
+        keys: async () => (await this.ctx.storage.get<ContinuationKeys>('continuation:keys')) ?? null,
+        setKeys: async (keys) => { await this.ctx.storage.put('continuation:keys', keys); },
+        position: async (id, expiresAt) =>
+          (await this.ctx.storage.get<ContinuationPosition>(positionKey(id, expiresAt))) ?? null,
+        setPosition: async (id, position) => {
+          await this.ctx.storage.put(positionKey(id, position.expiresAt), position);
+          // Expiry is the leading part of the key, so this bounded pass always
+          // removes the oldest records first. A busy scope pays at most 100 deletes.
+          const old = await this.ctx.storage.list<ContinuationPosition>({
+            prefix: 'continuation:position:', limit: 100,
+          });
+          for (const [name, record] of old) {
+            if (record.expiresAt > Date.now()) break;
+            await this.ctx.storage.delete(name);
+          }
+        },
+      };
+    }
     private readonly queue = new OperationQueue();
     private readonly operations = new Map<string, OperationHandler<never, unknown>>();
     /**
@@ -6563,6 +6590,9 @@ export function defineScopeDO(
       // is complete applies nothing, so there is nothing to report either way.
       this.migrationPromise = undefined;
       this.lastFailure = null;
+      // The KV key never travels in a SQL dump. A load into this same DO would
+      // otherwise retain its old epoch, so explicitly invalidate all old tokens.
+      await this.ctx.storage.delete('continuation:keys');
       return switched;
     }
 
@@ -7367,6 +7397,13 @@ export function defineScopeDO(
         // #1672: a capability's own id stands in so the type holds — it is not a person, and
         // the event actor says what it is instead. Every other door passes its own value.
         principal: capabilityId ? (capabilityId as unknown as PrincipalId) : principal,
+        pageContinuation: (list, query, legacyVisible) => visibleContinuation(
+          this.continuationStore(),
+          { scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },
+          Date.now,
+          legacyVisible,
+          () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),
+        ),
         sql: guardSecrets(
           doScopedSql(
             sql,
@@ -7585,6 +7622,9 @@ export function defineScopeDO(
           searchPlans,
           statePlans,
           check: runCheck,
+          continuation: (entityType, params) => ctxRef.pageContinuation(
+            `trash:${entityType}`, { ...params, view: 'trashed' },
+          ),
         }),
         entitlement: async (key: string): Promise<EntitlementView | null> => {
           const held = await entitlementReader().listEntitlements(tenantId);

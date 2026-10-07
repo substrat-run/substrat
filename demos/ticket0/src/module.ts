@@ -7484,7 +7484,7 @@ const operations = {
         const asCc = await readableAsCc(ctx, rows.filter((c) => !own.has(c.id)).map((c) => c.id));
         return rows.map((c) => own.has(c.id) || asCc.has(c.id));
       },
-    }),
+    }, { continuation: ctx.pageContinuation('conversation:my-conversations', input) }),
 
   'ticket0/my-messages': async (ctx, input) => {
     await assertReadsAsCustomer(ctx, input.conversationId);
