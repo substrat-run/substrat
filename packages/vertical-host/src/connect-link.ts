@@ -6,8 +6,8 @@ import type {
 } from '@substrat-run/contracts';
 
 /**
- * Mint a SHAREABLE provider connect link from a VERTICAL (connections.md §3.5.4) — and list
- * and revoke the ones this scope minted.
+ * Mint a SHAREABLE provider connect link from a VERTICAL (connections.md §3.5.4) — and read
+ * and revoke the ones this scope minted, by the ids the mints returned.
  *
  * `requestConnectUrl` serves the person sitting in front of the vertical: they click the URL
  * within minutes, so it lives fifteen and has no row. It does not serve the other half of a
@@ -44,10 +44,14 @@ import type {
  *   subjectRef: request.subjectRef,             // shown on the list, echoed on the return
  * });
  * await mail(client.fortnoxAdminEmail, url);    // send it; keep `link.id`, not the URL
+ * await scope.invoke('crm/record-books-link', { clientId, linkId: link.id });
  * ```
  *
- * Listing and revoking are permission-checked acts too — an operation that checks and
- * returns `{ linkId }` for a revoke, then the harness calls `revokeConnectLink`.
+ * Keep the link id: store it on your own row beside the `subjectRef` it was minted for (the
+ * client row, above). Listing and revoking both name links by that id — there is no "every
+ * link this scope minted" read — and both are permission-checked acts too: an operation
+ * that checks and returns the ids (`{ linkIds }` for a list, `{ linkId }` for a revoke),
+ * then the harness calls `listConnectLinks` or `revokeConnectLink`.
  *
  * ## What the platform decides, not you
  *
@@ -58,7 +62,8 @@ import type {
  * copy sends the reader back to whoever sent the link. With it, success and every refusal
  * (`?error=link_used`, `link_revoked`, `link_expired`, `link_unknown`, or the round's own)
  * return there, carrying `link=<id>` and your `subjectRef`. List and revoke reach only this
- * scope's links: another scope's id is a `404`, exactly as an unknown one.
+ * scope's links: a list omits another scope's id exactly as an unknown one, and a revoke
+ * answers both with a `404`.
  */
 export interface ConnectLinkRelayAccess {
   /** The control plane's origin, injected into the vertical as `CONTROL_PLANE_URL`. */
@@ -87,8 +92,10 @@ export interface ConnectLinkRequest extends ConnectLinkRelayAccess {
 }
 
 export interface ConnectLinkListRequest extends ConnectLinkRelayAccess {
+  /** The links to read — ids your mints returned, 1 to 100. One not in this scope is omitted. */
+  linkIds: readonly string[];
   provider?: string;
-  /** Only the links that can still be opened. Omitted: every link this scope minted, newest first. */
+  /** Only the links that can still be opened. Omitted: every named link, newest first. */
   outstanding?: boolean;
 }
 
@@ -155,6 +162,7 @@ export function listConnectLinks(request: ConnectLinkListRequest): Promise<Conne
     request,
     '/internal/connections/connect-links/list',
     {
+      linkIds: request.linkIds,
       ...(request.provider ? { provider: request.provider } : {}),
       ...(request.outstanding ? { outstanding: true } : {}),
     },

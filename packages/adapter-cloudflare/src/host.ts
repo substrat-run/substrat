@@ -880,18 +880,19 @@ interface ControlPlaneStub {
     returnUrl: string | null;
     createdAt: string;
     expiresAt: string;
-  }): Promise<ConnectLink>;
+  }, audit: AdminEntry): Promise<ConnectLink>;
   readConnectLink(key: ConnectLinkKeyRow): Promise<ConnectLink | undefined>;
   listConnectLinks(
-    filter: { tenantId: string; scopeId?: string; provider?: string; outstandingOnly?: boolean },
+    filter: { tenantId: string; scopeId?: string; ids?: readonly string[]; provider?: string; outstandingOnly?: boolean },
     now: string,
   ): Promise<ConnectLink[]>;
-  revokeConnectLink(key: ConnectLinkKeyRow): Promise<{ link: ConnectLink; changed: boolean } | undefined>;
+  revokeConnectLink(key: ConnectLinkKeyRow, audit: AdminEntry): Promise<{ link: ConnectLink; changed: boolean } | undefined>;
   consumeConnectLink(
     input: ConnectLinkKeyRow & { provider: string; accountRef?: string; accountLabel?: string },
     now: string,
+    audit: AdminEntry,
   ): Promise<ConnectLinkConsume>;
-  restoreConnectLink(key: ConnectLinkKeyRow, now: string): Promise<ConnectLink | undefined>;
+  restoreConnectLink(key: ConnectLinkKeyRow, now: string, audit: AdminEntry): Promise<ConnectLink | undefined>;
   recordConnectionGrant(row: {
     connectionId: string;
     tenantId: string;
@@ -8400,31 +8401,28 @@ export class CloudflareScopeHost implements ScopeHost {
 
       // -- a vertical's mailed connect links (connections.md §3.5.4) --------------
       // Parsed here, run in the ControlPlaneDO as the kernel's statements (shared with
-      // the pure adapter), audited here. The DO has no clock of its own on this path —
-      // `now` is the coordinator's, the same wall clock every other directory write uses.
+      // the pure adapter). Each move writes its audit row in the DO's own unit, from the
+      // row minted here (actor, attribution) — so a failed audit write rolls the move back.
+      // The DO has no clock of its own on this path — `now` is the coordinator's, the same
+      // wall clock every other directory write uses.
 
       mintConnectLink: async (actor, raw: MintConnectLinkInput) => {
         const input = mintConnectLinkInput.parse(raw);
-        const link = await this.cp.insertConnectLink({
-          id: ulid(),
-          tenantId: input.tenantId,
-          scopeId: input.scopeId,
-          vertical: input.vertical,
-          provider: input.provider,
-          createdBy: input.createdBy,
-          subjectRef: input.subjectRef ?? null,
-          returnUrl: input.returnUrl ?? null,
-          createdAt: new Date().toISOString(),
-          expiresAt: input.expiresAt,
-        });
-        await this.recordAdmin(
-          actor,
-          'mintConnectLink',
-          { tenantId: input.tenantId, scopeId: input.scopeId, vertical: input.vertical },
-          null,
-          { id: link.id, provider: link.provider, createdBy: link.createdBy, expiresAt: link.expiresAt },
+        return this.cp.insertConnectLink(
+          {
+            id: ulid(),
+            tenantId: input.tenantId,
+            scopeId: input.scopeId,
+            vertical: input.vertical,
+            provider: input.provider,
+            createdBy: input.createdBy,
+            subjectRef: input.subjectRef ?? null,
+            returnUrl: input.returnUrl ?? null,
+            createdAt: new Date().toISOString(),
+            expiresAt: input.expiresAt,
+          },
+          this.adminEntry(actor, 'mintConnectLink', { tenantId: input.tenantId }, null, null),
         );
-        return link;
       },
 
       getConnectLink: async (actor, raw: ConnectLinkKey) => {
@@ -8443,48 +8441,21 @@ export class CloudflareScopeHost implements ScopeHost {
 
       revokeConnectLink: async (actor, raw: ConnectLinkKey) => {
         const key = connectLinkKey.parse(raw);
-        const result = await this.cp.revokeConnectLink(key);
-        if (!result) return undefined;
-        // Idempotent, and a no-op is not audited.
-        if (result.changed) {
-          await this.recordAdmin(
-            actor,
-            'revokeConnectLink',
-            { tenantId: key.tenantId, scopeId: key.scopeId, vertical: result.link.vertical },
-            { status: 'outstanding' },
-            { id: key.id, provider: result.link.provider, status: 'revoked' },
-          );
-        }
-        return result.link;
+        // Idempotent, and a no-op is not audited (the statement hands back no row for one).
+        const audit = this.adminEntry(actor, 'revokeConnectLink', { tenantId: key.tenantId }, null, null);
+        return (await this.cp.revokeConnectLink(key, audit))?.link;
       },
 
       consumeConnectLink: async (actor, raw: ConsumeConnectLinkInput) => {
         const input = consumeConnectLinkInput.parse(raw);
-        const result = await this.cp.consumeConnectLink(input, new Date().toISOString());
-        if (result.ok) {
-          await this.recordAdmin(
-            actor,
-            'consumeConnectLink',
-            { tenantId: input.tenantId, scopeId: input.scopeId, vertical: result.link.vertical },
-            { status: 'outstanding' },
-            { id: input.id, provider: input.provider, status: 'used', accountRef: result.link.accountRef },
-          );
-        }
-        return result;
+        const audit = this.adminEntry(actor, 'consumeConnectLink', { tenantId: input.tenantId }, null, null);
+        return this.cp.consumeConnectLink(input, new Date().toISOString(), audit);
       },
 
       restoreConnectLink: async (actor, raw: ConnectLinkKey) => {
         const key = connectLinkKey.parse(raw);
-        const link = await this.cp.restoreConnectLink(key, new Date().toISOString());
-        if (!link) return false;
-        await this.recordAdmin(
-          actor,
-          'restoreConnectLink',
-          { tenantId: key.tenantId, scopeId: key.scopeId, vertical: link.vertical },
-          { status: 'used' },
-          { id: key.id, provider: link.provider, status: 'outstanding' },
-        );
-        return true;
+        const audit = this.adminEntry(actor, 'restoreConnectLink', { tenantId: key.tenantId }, null, null);
+        return (await this.cp.restoreConnectLink(key, new Date().toISOString(), audit)) !== undefined;
       },
 
       openConnection: async (

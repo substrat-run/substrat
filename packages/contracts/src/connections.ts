@@ -202,6 +202,8 @@ export type ConnectLinkKey = z.input<typeof connectLinkKey>;
 export const connectLinkFilter = z.object({
   tenantId,
   scopeId: scopeId.optional(),
+  /** Only these links. An empty list matches nothing; ids outside the tenant/scope are omitted. */
+  ids: z.array(connectLinkId).optional(),
   provider: connectionProvider.optional(),
   /** Outstanding AND unexpired only — the links that can still be opened. */
   outstandingOnly: z.boolean().optional(),

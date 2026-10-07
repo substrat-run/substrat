@@ -33,7 +33,8 @@ import { assertReturnUrlBelongsToScope, ConnectUrlRelayError, type ConnectUrlRel
  * script is calling, the VERTICAL is re-derived from this directory's record, previews and
  * forks are refused (#2005), and the return URL must be a hostname bound to the scope. The
  * list and the revoke are confined to the named scope by the store's own key — a link of
- * another scope reads as absent — so a vertical can see and withdraw only what it minted.
+ * another scope reads as absent — and both take the link ids the caller names, never a
+ * browse of the scope: reading or withdrawing a link takes the id its mint answered.
  * Errors are `ConnectUrlRelayError`: the same statuses, the same worker mapping.
  */
 
@@ -156,9 +157,16 @@ export async function relayConnectLinkList(
 ): Promise<ConnectLinkListRelayResult> {
   const input = parseOr400(connectLinkListRelayRequest, body, 'connect-link list');
   await verticalOfPrimaryScope(host, actor, input.tenantId, input.scopeId);
+  // A capability read: only the links the caller names, by the ids its own mints answered.
+  // Every pushed vertical holds the same shared platform-call credential, so nothing binds
+  // the caller to the (tenant, scope) it names — a platform-wide gap, not this relay's to
+  // close. A browse would hand any vertical that learned another tenant's two ids that
+  // tenant's whole list (company names, subject refs, principals); a link id is a ULID only
+  // the mint's answer carries, so reading a link takes holding its id.
   const links = await host.admin.listConnectLinks(actor, {
     tenantId: input.tenantId,
     scopeId: input.scopeId,
+    ids: input.linkIds,
     ...(input.provider ? { provider: input.provider } : {}),
     ...(input.outstanding ? { outstandingOnly: true } : {}),
   });

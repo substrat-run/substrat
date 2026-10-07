@@ -27,6 +27,7 @@ import {
   readConnectLink as readConnectLinkRow,
   restoreConnectLinkRow,
   revokeConnectLinkRow,
+  type ConnectLinkAudit,
   type ConnectLinkKeyRow,
   createFindingRule,
   findingOfOpsFailure,
@@ -3911,10 +3912,12 @@ export class ControlPlaneDO extends DurableObject {
   // The kernel's statements (`connect-links.ts`), shared with the pure adapter. Each
   // runs inside this single-threaded object with no await between its read and its
   // write, which is what makes consume's single-use hold across racing callbacks here;
-  // the UPDATE's own WHERE holds it again regardless. `now` is the coordinator's.
+  // the UPDATE's own WHERE holds it again regardless. `now` is the coordinator's. A move
+  // and the audit row it hands back commit in one unit: `audit` is the row the host
+  // minted (actor, attribution), completed here from what the move changed.
 
-  insertConnectLink(row: Parameters<typeof insertConnectLinkRow>[1]): ConnectLink {
-    return insertConnectLinkRow(doRedactionSql(this.sql), row);
+  insertConnectLink(row: Parameters<typeof insertConnectLinkRow>[1], audit: AdminEntryInput): ConnectLink {
+    return this.auditedConnectLink(audit, (sql, write) => insertConnectLinkRow(sql, row, write));
   }
 
   readConnectLink(key: ConnectLinkKeyRow): ConnectLink | undefined {
@@ -3925,16 +3928,36 @@ export class ControlPlaneDO extends DurableObject {
     return listConnectLinkRows(doRedactionSql(this.sql), filter, now);
   }
 
-  revokeConnectLink(key: ConnectLinkKeyRow): { link: ConnectLink; changed: boolean } | undefined {
-    return revokeConnectLinkRow(doRedactionSql(this.sql), key);
+  revokeConnectLink(key: ConnectLinkKeyRow, audit: AdminEntryInput): { link: ConnectLink; changed: boolean } | undefined {
+    return this.auditedConnectLink(audit, (sql, write) => revokeConnectLinkRow(sql, key, write));
   }
 
-  consumeConnectLink(input: Parameters<typeof consumeConnectLinkRow>[1], now: string): ConnectLinkConsume {
-    return consumeConnectLinkRow(doRedactionSql(this.sql), input, now);
+  consumeConnectLink(
+    input: Parameters<typeof consumeConnectLinkRow>[1],
+    now: string,
+    audit: AdminEntryInput,
+  ): ConnectLinkConsume {
+    return this.auditedConnectLink(audit, (sql, write) => consumeConnectLinkRow(sql, input, now, write));
   }
 
-  restoreConnectLink(key: ConnectLinkKeyRow, now: string): ConnectLink | undefined {
-    return restoreConnectLinkRow(doRedactionSql(this.sql), key, now);
+  restoreConnectLink(key: ConnectLinkKeyRow, now: string, audit: AdminEntryInput): ConnectLink | undefined {
+    return this.auditedConnectLink(audit, (sql, write) => restoreConnectLinkRow(sql, key, now, write));
+  }
+
+  private auditedConnectLink<R>(audit: AdminEntryInput, run: (sql: RedactionSql, write: (row: ConnectLinkAudit) => void) => R): R {
+    return this.ctx.storage.transactionSync(() =>
+      run(doRedactionSql(this.sql), (a) =>
+        this.recordAdmin({
+          ...audit,
+          action: a.action,
+          tenantId: a.target.tenantId,
+          scopeId: a.target.scopeId,
+          vertical: a.target.vertical,
+          before: a.before,
+          after: a.after,
+        }),
+      ),
+    );
   }
 
   /**

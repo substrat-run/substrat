@@ -68,11 +68,13 @@ describe('connect-link helpers — the harness effects, the operation decides', 
     expect(s.sent()).not.toHaveProperty('ttlSeconds');
   });
 
-  it('lists and revokes this scope\'s links through their own routes', async () => {
+  it('lists the links it names and revokes one, through their own routes', async () => {
     const list = seam(200, { links: [view] });
-    expect((await listConnectLinks({ ...access, outstanding: true, fetchImpl: list.fetchImpl })).links).toHaveLength(1);
+    expect(
+      (await listConnectLinks({ ...access, linkIds: [view.id], outstanding: true, fetchImpl: list.fetchImpl })).links,
+    ).toHaveLength(1);
     expect(list.calls[0]!.url).toBe('https://cp.example/internal/connections/connect-links/list');
-    expect(list.sent()).toEqual({ tenantId: access.tenantId, scopeId: access.scopeId, outstanding: true });
+    expect(list.sent()).toEqual({ tenantId: access.tenantId, scopeId: access.scopeId, linkIds: [view.id], outstanding: true });
 
     const revoke = seam(200, { link: { ...view, status: 'revoked' } });
     expect((await revokeConnectLink({ ...access, linkId: view.id, fetchImpl: revoke.fetchImpl })).link.status).toBe('revoked');
@@ -83,7 +85,7 @@ describe('connect-link helpers — the harness effects, the operation decides', 
   it('throws the relay\'s status and words on a refusal, for each verb', async () => {
     const cases: [() => Promise<unknown>, number][] = [
       [() => mintConnectLink({ ...access, provider: 'fortnox', createdBy: 'x', fetchImpl: seam(403, { error: 'preview' }).fetchImpl }), 403],
-      [() => listConnectLinks({ ...access, fetchImpl: seam(503, { error: 'down' }).fetchImpl }), 503],
+      [() => listConnectLinks({ ...access, linkIds: [view.id], fetchImpl: seam(503, { error: 'down' }).fetchImpl }), 503],
       [() => revokeConnectLink({ ...access, linkId: view.id, fetchImpl: seam(404, { error: 'unknown connect link' }).fetchImpl }), 404],
     ];
     for (const [run, status] of cases) {

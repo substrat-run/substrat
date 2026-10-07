@@ -1531,12 +1531,25 @@ export const connectLinkRelayResult = z.object({
 });
 export type ConnectLinkRelayResult = z.infer<typeof connectLinkRelayResult>;
 
-/** `/internal/connections/connect-links/list` — this scope's links, and no other scope's. */
+/** How many links one `…/connect-links/list` call may name. */
+export const CONNECT_LINK_LIST_MAX_IDS = 100;
+
+/**
+ * `/internal/connections/connect-links/list` — the named links, if they are this scope's.
+ *
+ * A capability read, not a browse: the caller names the ids its own mints answered, and gets
+ * back those that exist in this tenant and scope (an unknown or foreign id is omitted, not
+ * refused). Every pushed vertical holds the same shared platform-call credential, so nothing
+ * here proves the caller IS the scope it names; a browse would hand any vertical another
+ * tenant's client list for the price of two ids.
+ */
 export const connectLinkListRelayRequest = z.object({
   tenantId,
   scopeId,
+  /** The links to read — the ids your mints returned. Required, 1 to 100. */
+  linkIds: z.array(connectLinkId).min(1).max(CONNECT_LINK_LIST_MAX_IDS),
   provider: connectionProvider.optional(),
-  /** Outstanding and unexpired only. Omitted: every link the scope minted, newest first. */
+  /** Outstanding and unexpired only. Omitted: every named link, newest first. */
   outstanding: z.boolean().optional(),
 });
 export type ConnectLinkListRelayRequest = z.infer<typeof connectLinkListRelayRequest>;

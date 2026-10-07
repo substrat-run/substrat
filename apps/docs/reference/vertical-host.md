@@ -442,16 +442,22 @@ const { url, link } = await mintConnectLink({
   ttlSeconds: 14 * 24 * 60 * 60,              // optional: default 7 days, at most 30
 });
 await sendMail(client.fortnoxAdmin, url);     // mail the URL; keep link.id, not the URL
+await scope.invoke('crm/record-books-link', { clientId, linkId: link.id }); // on your client row
 ```
 
-`listConnectLinks({ …, provider?, outstanding? })` answers this scope's links, newest first —
-each with its `status` (`outstanding`, `used`, `revoked`), `expiresAt`, and once spent,
-`usedAt`, `accountRef` and `accountLabel` (for Fortnox: the database number and the company
-name that consented). `revokeConnectLink({ …, linkId })` withdraws one; it is idempotent, and
-a link that was already used answers `used` — disconnect the connection instead. Both are
-permission-checked acts like the mint: the operation checks and returns what to do, the
-harness calls the helper. Only this scope's links are reachable; another scope's id is a
-`404`, the same as an unknown one.
+**Keep the link id.** Store it on your own row beside the `subjectRef` it was minted for —
+the client row, here. Reading and revoking a link both name it by that id; there is no
+"every link this scope minted" read.
+
+`listConnectLinks({ …, linkIds, provider?, outstanding? })` answers the named links (1 to
+100 ids), newest first — each with its `status` (`outstanding`, `used`, `revoked`),
+`expiresAt`, and once spent, `usedAt`, `accountRef` and `accountLabel` (for Fortnox: the
+database number and the company name that consented). An id that is not one of this scope's
+links is left out of the answer rather than refused. `revokeConnectLink({ …, linkId })`
+withdraws one; it is idempotent, and a link that was already used answers `used` —
+disconnect the connection instead. Both are permission-checked acts like the mint: the
+operation checks and returns the ids, the harness calls the helper. Only this scope's links
+are reachable; for a revoke, another scope's id is a `404`, the same as an unknown one.
 
 Where the round ends is yours to choose. **Leave `returnUrl` out for a link mailed to someone
 with no account on your surface** — the round then ends on the platform's own page, whose copy

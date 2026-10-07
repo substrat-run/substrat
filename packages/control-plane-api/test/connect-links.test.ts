@@ -19,7 +19,8 @@ import {
  * written with the vertical the directory has (never the caller's word), the signed state
  * names the row and dies with it, the link is a week by default and a month at most — a
  * different authority from the 15-minute connect URL, not a wider one — and list and revoke
- * see only the named scope's links. The row's own lifecycle is the contract suite's.
+ * reach only links the caller names by id, and only the named scope's. The row's own
+ * lifecycle is the contract suite's.
  */
 describe('connect-link relays — /internal/connections/connect-links{,/list,/revoke}', () => {
   let dir: string;
@@ -161,17 +162,45 @@ describe('connect-link relays — /internal/connections/connect-links{,/list,/re
     });
   });
 
-  it('lists only the named scope\'s links, newest first, and narrows to the ones that still open', async () => {
+  it('lists only the links it is named, newest first, and narrows to the ones that still open', async () => {
     const a = await relayConnectLinkMint(host, relayActor, request({ scopeId: s1b }), options);
     const b = await relayConnectLinkMint(host, relayActor, request({ scopeId: s1b }), options);
+    const unnamed = await relayConnectLinkMint(host, relayActor, request({ scopeId: s1b }), options);
     await relayConnectLinkRevoke(host, relayActor, { tenantId: t1, scopeId: s1b, linkId: a.link.id });
-    const all = await relayConnectLinkList(host, relayActor, { tenantId: t1, scopeId: s1b });
+    const linkIds = [a.link.id, b.link.id];
+    const all = await relayConnectLinkList(host, relayActor, { tenantId: t1, scopeId: s1b, linkIds });
     expect(all.links.map((l) => l.id)).toEqual([b.link.id, a.link.id]);
-    const open = await relayConnectLinkList(host, relayActor, { tenantId: t1, scopeId: s1b, outstanding: true });
+    expect(all.links.map((l) => l.id)).not.toContain(unnamed.link.id);
+    const open = await relayConnectLinkList(host, relayActor, { tenantId: t1, scopeId: s1b, linkIds, outstanding: true });
     expect(open.links.map((l) => l.id)).toEqual([b.link.id]);
-    // s1's links are not s1b's, though the tenant and vertical are the same.
-    const s1Links = await relayConnectLinkList(host, relayActor, { tenantId: t1, scopeId: s1 });
-    expect(s1Links.links.map((l) => l.id)).not.toContain(a.link.id);
+  });
+
+  it('omits a named id that is not the named scope\'s — another install, another tenant, or none', async () => {
+    const mine = await relayConnectLinkMint(host, relayActor, request(), options);
+    const sibling = await relayConnectLinkMint(host, relayActor, request({ scopeId: s1b }), options);
+    const foreign = await relayConnectLinkMint(host, relayActor, request({ tenantId: t2, scopeId: s2 }), options);
+    const listed = await relayConnectLinkList(host, relayActor, {
+      tenantId: t1,
+      scopeId: s1,
+      linkIds: [mine.link.id, sibling.link.id, foreign.link.id, ulid()],
+    });
+    expect(listed.links.map((l) => l.id)).toEqual([mine.link.id]);
+    // The foreign tenant's own scope, named with the bureau's id, finds nothing either.
+    const reversed = await relayConnectLinkList(host, relayActor, { tenantId: t2, scopeId: s2, linkIds: [mine.link.id] });
+    expect(reversed.links).toEqual([]);
+  });
+
+  it('refuses a list that names no link: there is no browse of a scope', async () => {
+    for (const body of [
+      { tenantId: t1, scopeId: s1 },
+      { tenantId: t1, scopeId: s1, linkIds: [] },
+      { tenantId: t1, scopeId: s1, linkIds: Array.from({ length: 101 }, () => ulid()) },
+      { tenantId: t1, scopeId: s1, linkIds: ['not-a-ulid'] },
+    ]) {
+      await expect(relayConnectLinkList(host, relayActor, body)).rejects.toMatchObject({ status: 400 });
+    }
+    const hundred = Array.from({ length: 100 }, () => ulid());
+    expect((await relayConnectLinkList(host, relayActor, { tenantId: t1, scopeId: s1, linkIds: hundred })).links).toEqual([]);
   });
 
   it('revokes idempotently, and another scope naming the id gets a 404', async () => {
@@ -191,9 +220,9 @@ describe('connect-link relays — /internal/connections/connect-links{,/list,/re
   });
 
   it('refuses list and revoke from a preview, as it refuses the mint', async () => {
-    await expect(relayConnectLinkList(host, relayActor, { tenantId: t1, scopeId: preview })).rejects.toMatchObject({
-      status: 403,
-    });
+    await expect(
+      relayConnectLinkList(host, relayActor, { tenantId: t1, scopeId: preview, linkIds: [ulid()] }),
+    ).rejects.toMatchObject({ status: 403 });
     await expect(
       relayConnectLinkRevoke(host, relayActor, { tenantId: t1, scopeId: preview, linkId: ulid() }),
     ).rejects.toMatchObject({ status: 403 });

@@ -3,6 +3,8 @@ import {
   type ConnectLink,
   type ConnectLinkConsume,
   type ConnectLinkRefusal,
+  type ScopeId,
+  type TenantId,
 } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
 
@@ -91,6 +93,21 @@ export interface ConnectLinkKeyRow {
   id: string;
 }
 
+/**
+ * The admin-log row a link move hands back, for the caller to write in the SAME unit as the
+ * move: a consume whose audit row failed would otherwise leave the link spent with no
+ * connection and no record, and the retry refused as `used`. Shaped here, once, so both
+ * adapters write the same row. A move that changed nothing hands back nothing.
+ */
+export interface ConnectLinkAudit {
+  action: 'mintConnectLink' | 'revokeConnectLink' | 'consumeConnectLink' | 'restoreConnectLink';
+  target: { tenantId: TenantId; scopeId: ScopeId; vertical: string };
+  before: unknown;
+  after: unknown;
+}
+
+const targetOf = (link: ConnectLink) => ({ tenantId: link.tenantId, scopeId: link.scopeId, vertical: link.vertical });
+
 const readRow = (sql: RedactionSql, key: ConnectLinkKeyRow): ConnectLinkRow | undefined =>
   sql(`SELECT ${COLUMNS} FROM _substrat_connect_links WHERE id = ? AND tenant_id = ? AND scope_id = ?`, [
     key.id,
@@ -112,6 +129,7 @@ export function insertConnectLink(
     createdAt: string;
     expiresAt: string;
   },
+  audit: (row: ConnectLinkAudit) => void,
 ): ConnectLink {
   const inserted = sql(
     `INSERT INTO _substrat_connect_links
@@ -132,7 +150,14 @@ export function insertConnectLink(
       row.expiresAt,
     ],
   )[0] as ConnectLinkRow;
-  return toConnectLink(inserted);
+  const link = toConnectLink(inserted);
+  audit({
+    action: 'mintConnectLink',
+    target: targetOf(link),
+    before: null,
+    after: { id: link.id, provider: link.provider, createdBy: link.createdBy, expiresAt: link.expiresAt },
+  });
+  return link;
 }
 
 export function readConnectLink(sql: RedactionSql, key: ConnectLinkKeyRow): ConnectLink | undefined {
@@ -142,12 +167,15 @@ export function readConnectLink(sql: RedactionSql, key: ConnectLinkKeyRow): Conn
 
 export function listConnectLinks(
   sql: RedactionSql,
-  filter: { tenantId: string; scopeId?: string; provider?: string; outstandingOnly?: boolean },
+  filter: { tenantId: string; scopeId?: string; ids?: readonly string[]; provider?: string; outstandingOnly?: boolean },
   now: string,
 ): ConnectLink[] {
+  if (filter.ids?.length === 0) return []; // no id named — match nothing, never everything
   const where = ['tenant_id = ?'];
   const params: string[] = [filter.tenantId];
   if (filter.scopeId) (where.push('scope_id = ?'), params.push(filter.scopeId));
+  // ONE bound JSON array, not a `?` per id: a DO binds at most 100 parameters (#1776).
+  if (filter.ids) (where.push('id IN (SELECT value FROM json_each(?))'), params.push(JSON.stringify(filter.ids)));
   if (filter.provider) (where.push('provider = ?'), params.push(filter.provider));
   if (filter.outstandingOnly) (where.push(`status = 'outstanding' AND expires_at > ?`), params.push(now));
   return (
@@ -168,6 +196,7 @@ export function listConnectLinks(
 export function revokeConnectLinkRow(
   sql: RedactionSql,
   key: ConnectLinkKeyRow,
+  audit: (row: ConnectLinkAudit) => void,
 ): { link: ConnectLink; changed: boolean } | undefined {
   const moved = sql(
     `UPDATE _substrat_connect_links SET status = 'revoked'
@@ -175,7 +204,16 @@ export function revokeConnectLinkRow(
      RETURNING ${COLUMNS}`,
     [key.id, key.tenantId, key.scopeId],
   )[0] as ConnectLinkRow | undefined;
-  if (moved) return { link: toConnectLink(moved), changed: true };
+  if (moved) {
+    const link = toConnectLink(moved);
+    audit({
+      action: 'revokeConnectLink',
+      target: targetOf(link),
+      before: { status: 'outstanding' },
+      after: { id: link.id, provider: link.provider, status: 'revoked' },
+    });
+    return { link, changed: true };
+  }
   const row = readRow(sql, key);
   return row ? { link: toConnectLink(row), changed: false } : undefined;
 }
@@ -189,6 +227,7 @@ export function consumeConnectLinkRow(
   sql: RedactionSql,
   input: ConnectLinkKeyRow & { provider: string; accountRef?: string; accountLabel?: string },
   now: string,
+  audit: (row: ConnectLinkAudit) => void,
 ): ConnectLinkConsume {
   const row = readRow(sql, input);
   const refuse = (reason: ConnectLinkRefusal): ConnectLinkConsume => ({ ok: false, reason });
@@ -203,7 +242,15 @@ export function consumeConnectLinkRow(
      RETURNING ${COLUMNS}`,
     [now, input.accountRef ?? null, input.accountLabel ?? null, input.id, input.tenantId, input.scopeId, now],
   )[0] as ConnectLinkRow | undefined;
-  return spent ? { ok: true, link: toConnectLink(spent) } : refuse('used');
+  if (!spent) return refuse('used');
+  const link = toConnectLink(spent);
+  audit({
+    action: 'consumeConnectLink',
+    target: targetOf(link),
+    before: { status: 'outstanding' },
+    after: { id: link.id, provider: link.provider, status: 'used', accountRef: link.accountRef },
+  });
+  return { ok: true, link };
 }
 
 /**
@@ -217,6 +264,7 @@ export function restoreConnectLinkRow(
   sql: RedactionSql,
   key: ConnectLinkKeyRow,
   now: string,
+  audit: (row: ConnectLinkAudit) => void,
 ): ConnectLink | undefined {
   const restored = sql(
     `UPDATE _substrat_connect_links
@@ -225,5 +273,13 @@ export function restoreConnectLinkRow(
      RETURNING ${COLUMNS}`,
     [key.id, key.tenantId, key.scopeId, now],
   )[0] as ConnectLinkRow | undefined;
-  return restored ? toConnectLink(restored) : undefined;
+  if (!restored) return undefined;
+  const link = toConnectLink(restored);
+  audit({
+    action: 'restoreConnectLink',
+    target: targetOf(link),
+    before: { status: 'used' },
+    after: { id: link.id, provider: link.provider, status: 'outstanding' },
+  });
+  return link;
 }

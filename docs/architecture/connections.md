@@ -516,6 +516,17 @@ That is a separate request shape, **not** a wider `ttlSeconds` on `connect-url`:
 are different authorities, and widening the URL's 15-minute clamp would have handed out
 week-long rounds with neither single-use nor revocation.
 
+`…/list` and `…/revoke` name links by id; neither browses a scope. The list requires
+`linkIds` (1 to 100, the ids the vertical's own mints answered) and returns those that are
+this tenant's and this scope's, omitting any other rather than refusing it; the vertical keeps
+each id on its own row beside the `subjectRef` it minted for. The reason is the gate, not the
+key: every pushed vertical holds the same shared platform-call credential, so the relay
+authenticates *a platform script*, not the vertical whose `(tenantId, scopeId)` it names. A
+browse would let any vertical that learned another tenant's two ids read that tenant's links —
+client company names, subject refs, the principals who minted them. Binding the caller to its
+scope is a platform-wide gap shared with mint, `connect-url` and `upsert`, and is tracked as
+such; until it closes, a read here takes holding the link's id.
+
 The signed state is the same `signConnectState` claim with one more field, `linkId`, and
 an `exp` equal to the row's expiry. The dashboard treats it as a platform round that has a
 row: the **landing** asks whether the row is outstanding and unexpired and spends nothing
@@ -536,7 +547,9 @@ outstanding links on the dashboard's integrations card beside its own (marked
 
 Every move of the row is in the admin log — mint, revoke, consume and restore — because
 restore clears `used_at`, and without those rows the directory would forget a link was ever
-spent. Nothing on the row is a secret: the credential exists only after a consume, and it
+spent. Each move commits in one directory transaction with its audit row: a consume whose
+audit write failed would otherwise leave the link spent, with no connection and no record,
+and its retry refused as `used`. Nothing on the row is a secret: the credential exists only after a consume, and it
 lands in the connection store, never here.
 
 ### 3.6 Token refresh

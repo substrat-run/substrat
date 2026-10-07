@@ -11,6 +11,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
+import type { DirectoryExec } from './findings-atomic-suite.js';
 
 /**
  * A vertical's mailed connect link (connections.md §3.5.4), held by the directory.
@@ -23,8 +24,15 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
  *
  * Expiry is asserted with links minted already lapsed rather than by sleeping: the store takes
  * the expiry it is given, and the hosted adapter has no clock a suite could move.
+ *
+ * Every move commits with its audit row or not at all. The audit failure is injected as a
+ * trigger on the directory's admin log (`exec`), the one fault both stores raise the same way.
  */
-export function connectLinkContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
+export function connectLinkContractSuite(
+  adapterName: string,
+  makeFixture: () => Promise<ScopeHostFixture>,
+  exec: DirectoryExec,
+): void {
   describe(`connect links (connections.md §3.5.4): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
     let host: ScopeHost;
@@ -180,6 +188,61 @@ export function connectLinkContractSuite(adapterName: string, makeFixture: () =>
       await host.admin.revokeConnectLink(staff, keyOf(outstanding));
       expect(await host.admin.restoreConnectLink(staff, keyOf(outstanding))).toBe(false);
       expect((await host.admin.getConnectLink(staff, keyOf(outstanding)))?.status).toBe('revoked');
+    });
+
+    it('lists only the ids it is given, and only those in the named tenant and scope', async () => {
+      const a = await mint();
+      const b = await mint();
+      const elsewhere = await mint({ scopeId: s2 });
+      const other = await mint({ tenantId: t2, scopeId: s3 });
+      const ids = [a.id, b.id, elsewhere.id, other.id, connectLinkId.parse(ulid())];
+      const named = await host.admin.listConnectLinks(staff, { tenantId: t1, scopeId: s1, ids });
+      expect(named.map((l) => l.id).sort()).toEqual([a.id, b.id].sort());
+      expect(await host.admin.listConnectLinks(staff, { tenantId: t1, scopeId: s1, ids: [] })).toEqual([]);
+    });
+
+    describe('a move commits with its audit row, or not at all', () => {
+      /** Fail the admin-log insert for `action` in this suite's tenant until `heal`. */
+      const failAudit = async (action: string) => {
+        await exec(
+          host,
+          `CREATE TRIGGER fault_connect_link_audit BEFORE INSERT ON _substrat_admin_log
+           WHEN NEW.action = '${action}' AND NEW.tenant_id = '${t1}'
+           BEGIN SELECT RAISE(ABORT, 'injected fault'); END`,
+        );
+        return () => exec(host, 'DROP TRIGGER fault_connect_link_audit');
+      };
+      const statusOf = async (l: ConnectLink) => (await host.admin.getConnectLink(staff, keyOf(l)))?.status;
+
+      it('a consume whose audit row fails leaves the link outstanding, and the retry spends it', async () => {
+        const link = await mint();
+        const heal = await failAudit('consumeConnectLink');
+        await expect(consume(link)).rejects.toThrow(/injected fault/);
+        expect(await statusOf(link)).toBe('outstanding');
+        await heal();
+        expect((await consume(link)).ok).toBe(true);
+      });
+
+      it('a mint, revoke or restore whose audit row fails changes nothing', async () => {
+        const before = (await host.admin.listConnectLinks(staff, { tenantId: t1, scopeId: s1 })).length;
+        let heal = await failAudit('mintConnectLink');
+        await expect(mint()).rejects.toThrow(/injected fault/);
+        await heal();
+        expect(await host.admin.listConnectLinks(staff, { tenantId: t1, scopeId: s1 })).toHaveLength(before);
+
+        const open = await mint();
+        heal = await failAudit('revokeConnectLink');
+        await expect(host.admin.revokeConnectLink(staff, keyOf(open))).rejects.toThrow(/injected fault/);
+        await heal();
+        expect(await statusOf(open)).toBe('outstanding');
+
+        const spent = await mint();
+        expect((await consume(spent)).ok).toBe(true);
+        heal = await failAudit('restoreConnectLink');
+        await expect(host.admin.restoreConnectLink(staff, keyOf(spent))).rejects.toThrow(/injected fault/);
+        await heal();
+        expect(await statusOf(spent)).toBe('used');
+      });
     });
 
     it('audits mint, revoke, consume and restore — and not a revoke that changed nothing', async () => {

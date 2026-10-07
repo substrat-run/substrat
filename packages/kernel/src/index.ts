@@ -418,6 +418,7 @@ export {
   readConnectLink,
   restoreConnectLinkRow,
   revokeConnectLinkRow,
+  type ConnectLinkAudit,
   type ConnectLinkKeyRow,
 } from './connect-links.js';
 export {
