@@ -1447,6 +1447,16 @@ describe('live reads: the ping keep-alive (#1860)', () => {
 });
 
 describe("live reads: the reaper's alarm and a scope's dump (#938)", () => {
+  it('workerd raw SQL can read KV backing rows, so module and console guards are required (#2074)', async () => {
+    const id = scopeIdOf.parse(ulid());
+    const stub = env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(id));
+    const rows = await runInDurableObject(stub, async (_i, state) => {
+      await state.storage.put('continuation:probe', 'private');
+      return state.storage.sql.exec('SELECT * FROM _cf_KV').toArray();
+    });
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
   it('leaves workerd’s own _cf_* tables out of an export, and a wipe-and-load past them', async () => {
     const host = new CloudflareScopeHost({
       scope: env.LIVE_SCOPE,
