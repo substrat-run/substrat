@@ -185,6 +185,14 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   builder or a tenant credential is refused 403 even for its own tenant, because a row names the
   vertical's end users — and ladder-delegated like the denial log. Records only: no secret is
   stored and no hash is ever selected or returned.
+- **Peer bindings** — `GET` and `PUT /tenants/:t/scopes/:s/peer-bindings` (#1720): the
+  tenant's explicit target for a call made by scope `s`. `GET ?vertical=acme/crm` returns
+  one binding or `null`; without that query it lists all bindings for the caller. `PUT`
+  accepts `{ "vertical": "acme/crm", "targetScopeId": "…" }`, or `null` to clear. The
+  caller and target must be live primary scopes of the addressed tenant. The write records
+  an intent and outcome in the admin log, and responds with its operation id. A target
+  archived after binding remains invalidated even if later unarchived; an admin must bind it
+  again. Queued peer calls read the binding when they execute.
 - **Denials** — `/tenants/:t/scopes/:s/denials` and `…/denials/summary`: the refusals a
   scope recorded (K-35). The third log beside the two above — the admin log holds staff
   *mutations*, the K-24 access log staff *reads*, and this one the operations that were
