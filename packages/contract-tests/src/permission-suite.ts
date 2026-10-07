@@ -521,7 +521,7 @@ export function permissionContractSuite(
       });
 
       it('a principal granted before a key was added holds it after the reconcile', async () => {
-        expect(await reconcile()).toEqual({ toppedUp: 1 });
+        expect(await reconcile()).toEqual({ toppedUp: 1, retired: 0 });
         expect(await can(hana, PERM_USE, 'd1')).toBe(true);
         // ...on that entity only: the shape is entity-narrowed, and so is the top-up.
         expect(await can(hana, PERM_USE, 'd2')).toBe(false);
@@ -542,7 +542,7 @@ export function permissionContractSuite(
       });
 
       it('a re-run is a no-op: nobody topped up, no event, no audit row', async () => {
-        expect(await reconcile()).toEqual({ toppedUp: 0 });
+        expect(await reconcile()).toEqual({ toppedUp: 0, retired: 0 });
         expect(await toppedUp('d1')).toHaveLength(1);
         const log = await host.admin.auditLog(staff, { tenantId: t1 });
         expect(log.filter((e) => e.action === 'reconcileEntityGrantShapes')).toHaveLength(1);
@@ -569,7 +569,7 @@ export function permissionContractSuite(
       it('passes are bounded: a small batch still reaches every holder, each exactly once', async () => {
         const people = [0, 1, 2, 3, 4].map(() => principalId.parse(ulid()));
         for (const [i, p] of people.entries()) await shapeTo(p, `b${i}`, OLD);
-        expect(await reconcile([...GROWN, PERM_ADMIN], 2)).toEqual({ toppedUp: 5 });
+        expect(await reconcile([...GROWN, PERM_ADMIN], 2)).toEqual({ toppedUp: 5, retired: 0 });
         for (const [i, p] of people.entries()) {
           expect(await can(p, PERM_ADMIN, `b${i}`)).toBe(true);
           expect(await toppedUp(`b${i}`)).toHaveLength(1);
@@ -641,8 +641,89 @@ export function permissionContractSuite(
         await shapeTo(kim, 's1', OLD);
         expect(await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'desk', permissions: GROWN }])).toEqual({
           toppedUp: 0,
+          retired: 0,
         });
         expect(await can(kim, PERM_USE, 's1')).toBe(false);
+      });
+    });
+
+    /**
+     * #2082: a key the declared shape RETIRES is taken back from every holder, end to end on each
+     * adapter. The kernel's own edges are in `kernel/test/entity-grant-shape.test.ts`.
+     */
+    describe('a key a declared shape retires is taken back from its holders (#2082)', () => {
+      const s5 = scopeId.parse(ulid());
+      const node = { tenantId: t1, scopeId: s5 };
+      const desk = (id: string): EntityRef => ({ entityType: 'desk', entityId: id });
+      const SHAPE = [PERM_READ, PERM_USE];
+      const hana = principalId.parse(ulid());
+      const jon = principalId.parse(ulid());
+      const shapeTo = (who: PrincipalId, id: string) =>
+        host.admin.grantEntityShape(staff, { principalId: who, node, entity: desk(id), permissions: SHAPE, grantedBy: alice });
+      const retire = (batch?: number) =>
+        host.admin.reconcileEntityGrantShapes(
+          staff,
+          node,
+          [{ entityType: 'desk', permissions: [PERM_READ], bootstrap: true, retired: [PERM_USE] }],
+          batch === undefined ? undefined : { batch },
+        );
+      const can = async (who: PrincipalId, permission: PermissionKey, id: string) => (await probe(who, s5, permission, desk(id))).allowed;
+      const scope = () => host.getScope(alice, t1, s5);
+      const retiredOn = async (id: string) =>
+        (await scope()).invoke<{ payload: unknown; actor: unknown; operation: string | null }[]>('perm/topped-up', {
+          ...desk(id),
+          type: 'entity.grants-retired',
+        });
+
+      beforeAll(async () => {
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s5, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, s5);
+        await shapeTo(hana, 'd1');
+        // alice holds the shape too, and perm:use through her tenant role as well.
+        await shapeTo(alice, 'd2');
+        // jon is not a holder: ctx.granted the key on hana's desk.
+        await (await scope()).invoke('perm/share', { principal: jon, permission: PERM_USE, entity: desk('d1') });
+      });
+
+      it('the holder loses the key after the reconcile, and keeps the rest of the shape', async () => {
+        expect(await can(hana, PERM_USE, 'd1')).toBe(true);
+        expect(await retire()).toEqual({ toppedUp: 0, retired: 2 });
+        expect(await can(hana, PERM_USE, 'd1')).toBe(false);
+        expect(await can(hana, PERM_READ, 'd1')).toBe(true);
+      });
+
+      it('...while the key held another way stays: a non-holder’s direct grant, and a role', async () => {
+        expect(await can(jon, PERM_USE, 'd1')).toBe(true);
+        expect(await can(alice, PERM_USE, 'd2')).toBe(true);
+      });
+
+      it('the row is tombstoned, not deleted, and the retirement is a kernel event and an audit row', async () => {
+        const [row] = (
+          await (await scope()).invoke<{ relation: string; object: string; revokedAt: string | null }[]>('perm/grant-rows', { principal: hana })
+        ).filter((r) => r.relation === `granted:${PERM_USE}`);
+        expect(row?.revokedAt).toEqual(expect.any(String));
+        expect(await retiredOn('d1')).toEqual([
+          { payload: { entity: desk('d1'), principal: hana, removed: [PERM_USE] }, actor: { system: '@substrat-run/kernel' }, operation: null, authorization: null },
+        ]);
+        const log = await host.admin.auditLog(staff, { tenantId: t1 });
+        expect(log.filter((e) => e.action === 'reconcileEntityGrantShapes' && e.scopeId === s5).map((e) => (e.after as { retired: number }).retired)).toEqual([2]);
+      });
+
+      it('runs once: a re-run retires nobody, and the key granted back afterwards stays', async () => {
+        await (await scope()).invoke('perm/share', { principal: hana, permission: PERM_USE, entity: desk('d1') });
+        expect(await retire()).toEqual({ toppedUp: 0, retired: 0 });
+        expect(await can(hana, PERM_USE, 'd1')).toBe(true);
+        expect(await retiredOn('d1')).toHaveLength(1);
+      });
+
+      it('the shape shrunk WITHOUT `retired` changes nothing for a holder', async () => {
+        const kim = principalId.parse(ulid());
+        await shapeTo(kim, 'd7');
+        expect(await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'desk', permissions: [PERM_READ], bootstrap: true }])).toEqual({
+          toppedUp: 0,
+          retired: 0,
+        });
+        expect(await can(kim, PERM_USE, 'd7')).toBe(true);
       });
     });
 

@@ -377,3 +377,66 @@ describe('a declared entity-grant shape over a CP-less host (#2071)', () => {
     expect(count).toEqual({ n: 1 });
   });
 });
+
+/**
+ * #2082 over the same CP-less host: a key the reviewed shape declares `retired` is taken back
+ * at the next provision, and one DO pass, retirement and top-up together, does no more rows of
+ * work than its `limit` — the bound that keeps each scope transaction short.
+ */
+describe('a key a declared shape retires, over a CP-less host (#2082)', () => {
+  let host: CloudflareScopeHost;
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+  const USE = permissionKey.parse('perm:use');
+  const ADMIN = permissionKey.parse('perm:admin');
+  const owner = principalId.parse(ulid());
+  const people = [0, 1, 2].map(() => principalId.parse(ulid()));
+  const record = (i: number) => ({ entityType: 'employee', entityId: `e${i}` });
+  const stub = () => env.SCOPE.get(env.SCOPE.idFromName(s));
+  const provision = (entityGrants?: { entityType: string; permissions: (typeof READ)[]; bootstrap: true; retired?: (typeof READ)[] }[]) =>
+    host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [READ, USE, ADMIN], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+      ...(entityGrants ? { entityGrants } : {}),
+    });
+  const can = async (who: PrincipalId, perm: typeof READ, i: number): Promise<boolean> =>
+    (await (await host.getScope(who, t, s)).invoke<{ allowed: boolean }>('perm/probe', { permission: perm, entity: record(i) })).allowed;
+  const events = (type: string) =>
+    runInDurableObject(stub(), (_i, state) =>
+      state.storage.sql.exec(`SELECT count(*) AS n FROM _substrat_outbox WHERE type = ?`, type).one(),
+    );
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({ scope: env.SCOPE, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    await provision();
+    for (const [i, p] of people.entries()) await host.grantEntityShapeLocal(s, p, record(i), [READ, USE]);
+  });
+
+  afterAll(async () => host.close());
+
+  it('one pass retires and tops up together, and does no more than its limit', async () => {
+    const shapes = [{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true as const, retired: [USE] }];
+    // Through an arrow on the real stub, never a `.bind`: the RPC proxy is not a plain function.
+    const pass = (tn: string, sc: string, sh: unknown, limit: number) =>
+      (
+        stub() as unknown as {
+          topUpEntityGrantShapes: (t: string, s: string, shapes: unknown, limit: number) => Promise<{ toppedUp: number; retired: number; done: boolean }>;
+        }
+      ).topUpEntityGrantShapes(tn, sc, sh, limit);
+    expect(await pass(t, s, shapes, 4)).toEqual({ retired: 3, toppedUp: 1, done: false });
+    expect([await events('entity.grants-retired'), await events('entity.grants-topped-up')]).toEqual([{ n: 3 }, { n: 1 }]);
+    expect(await pass(t, s, shapes, 4)).toEqual({ retired: 0, toppedUp: 2, done: true });
+    for (const [i, p] of people.entries()) {
+      expect([await can(p, READ, i), await can(p, USE, i), await can(p, ADMIN, i)]).toEqual([true, false, true]);
+    }
+  });
+
+  it('a provision carrying the shape again retires nobody a second time', async () => {
+    await provision([{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true, retired: [USE] }]);
+    expect(await events('entity.grants-retired')).toEqual({ n: 3 });
+  });
+});

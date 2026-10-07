@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Checkbox, Dialog } from '@substrat-run/ui';
-import { registryDirection, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
+import { grantShapeHolderNotes, registryDirection, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
 import { outstanding, readyToPromote, type Acks, type Checkpoint, type PermissionSection, type Unverifiable } from '../lib/promote-review';
 import { ExportBreakAck } from './ExportBreakAck';
 import { PromoteMigrations } from './PromoteMigrations';
@@ -199,6 +199,7 @@ function PermissionBody({ section, servingLabel, incomingLabel }: { section: Per
               name={g.entityType}
               added={g.added}
               removed={g.removed}
+              notes={grantShapeHolderNotes(g)}
               status={g.isNew ? 'new shape' : g.isGone ? 'shape removed' : g.added.length > 0 ? 'shape widened' : 'shape narrowed'}
               kind={g.isGone ? 'neutral' : g.added.length > 0 || g.isNew ? 'warning' : 'neutral'}
             />
@@ -229,7 +230,22 @@ function KeyLine({ k, note }: { k: string; note?: string | undefined }) {
   );
 }
 
-function ShapeLine({ name, added, removed, status, kind }: { name: string; added: string[]; removed: string[]; status: string; kind: 'warning' | 'neutral' }) {
+function ShapeLine({
+  name,
+  added,
+  removed,
+  notes = [],
+  status,
+  kind,
+}: {
+  name: string;
+  added: string[];
+  removed: string[];
+  /** #2082: what the change does to people who already hold the shape. */
+  notes?: string[];
+  status: string;
+  kind: 'warning' | 'neutral';
+}) {
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
       <Pill kind={kind}>{status}</Pill>
@@ -242,6 +258,11 @@ function ShapeLine({ name, added, removed, status, kind }: { name: string; added
       {removed.map((p) => (
         <span key={`-${p}`} style={{ ...mono, color: 'var(--status-danger-fg)' }}>
           −{p}
+        </span>
+      ))}
+      {notes.map((n) => (
+        <span key={n} style={{ flexBasis: '100%', color: 'var(--text-secondary)' }}>
+          {n}
         </span>
       ))}
     </div>

@@ -18,6 +18,8 @@ import {
   connectionActivity,
   connectionActivitySource,
   connectionCredential,
+  connectionCertificate,
+  type ConnectionCertificate,
   connectionFilter,
   connectionHealthState,
   connectionProvider,
@@ -156,7 +158,7 @@ import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type Prev
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
-import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
+import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -258,6 +260,18 @@ export interface ConnectionInspector {
    * provider is checked before it writes, and a REFUSED credential never lands.
    */
   probeCandidate?: (secret: Record<string, string>) => Promise<ConnectionProbe>;
+  /**
+   * Finish a candidate credential before it is probed and stored (#2100) — for a provider
+   * where part of the credential is the platform's to make (a generated keypair). Gets the
+   * live connection's secret when the upsert rotates one, so what must survive an edit can.
+   * An `expiresAt` of `null` clears the connection's expiry (`ConnectionCandidatePrepare`).
+   */
+  prepareCandidate?: ConnectionCandidatePrepare;
+  /**
+   * The PUBLIC certificate the connection authenticates with, for the tenant to register on
+   * the provider's side (#2100). `null` when this connection uses none (a client secret).
+   */
+  certificate?: (host: ScopeHost, connection: Connection) => Promise<ConnectionCertificate | null>;
 }
 
 export interface ControlPlaneApiOptions {
@@ -1184,6 +1198,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'DELETE', re: /\/tenants\/[^/]+\/connections\/[^/]+$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/activity$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/credential$/, pin: 'path' },
+  // #2100: the PUBLIC certificate a connection signs in with — same pin as the credential view.
+  { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/certificate$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/verify$/, pin: 'path' },
   // A vertical's mailed connect links (connections.md §3.5.4): the consent landing's liveness
   // read, the callback's spend and its undo, and the integrations card's list and revoke.
@@ -2220,7 +2236,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     try {
       return c.json(
-        await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId }, { probeCandidate }),
+        await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId }, { probeCandidate, prepareCandidate }),
       );
     } catch (err) {
       if (err instanceof ConnectionRelayError && err.status < 500) {
@@ -2347,6 +2363,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const probeCandidate = async (provider: string, secret: Record<string, string>) =>
     options.connectionInspectors?.[provider]?.probeCandidate?.(secret);
+  /** #2100: the provider's own half of a credential, made before the probe sees it. */
+  const prepareCandidate = (provider: string) => options.connectionInspectors?.[provider]?.prepareCandidate;
 
   const inspectableConnection = async (c: Context<{ Variables: Vars }>) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
@@ -2420,6 +2438,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `no credential view registered for provider '${row.provider}'` }, 501);
     }
     return c.json(connectionCredential.parse(await credential(c.var.host, row)));
+  });
+
+  /**
+   * The public certificate a connection signs in with (#2100) — what the tenant downloads and
+   * uploads to the provider. Public by construction: the private key never leaves the sealed
+   * credential, and only a provider whose keypair the platform generates has one at all.
+   */
+  app.get('/tenants/:tenantId/connections/:id/certificate', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    const certificate = await options.connectionInspectors?.[row.provider]?.certificate?.(c.var.host, row);
+    if (!certificate) return c.json({ error: 'this connection signs in with no certificate' }, 404);
+    return c.json(connectionCertificate.parse(certificate));
   });
 
   // -- the scope directory (§3.2/§4.2) ---------------------------------------

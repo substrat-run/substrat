@@ -18,6 +18,7 @@ export {
   confinedTenant,
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
+export type { ConnectionCandidatePrepare, ConnectionCandidatePreparer } from './connection-relay.js';
 export { relayConnectUrl, ConnectUrlRelayError } from './connect-url.js';
 export type { ConnectFlowSpec, ConnectUrlRelayOptions } from './connect-url.js';
 export { relayConnectLinkMint, relayConnectLinkList, relayConnectLinkRevoke, connectLinkViewOf } from './connect-links.js';

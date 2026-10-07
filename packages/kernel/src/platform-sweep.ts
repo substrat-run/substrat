@@ -382,6 +382,11 @@ export const SCHEDULE_STATE_DDL = `
     -- mints one and writes it here, in the same call that stamps it onto whatever
     -- the operation emits — see runDueSchedules in each adapter.
     invocation_id TEXT,
+    -- #2096: a purge horizon's lap in progress (entity-trash.ts, PurgeLap) -- where its
+    -- next pass resumes in the bin, and how many purges failed earlier in the lap. Only a
+    -- 'schedule' row of a purge schedule holds one, and only mid-lap: NULL is the start
+    -- of a lap, which is also the honest reading of every row written before the column.
+    purge_cursor TEXT,
     -- The key LEADS with kind, and that is the point of #1288 rather than a tidy-up.
     -- Until it did, the two families were told apart by the spelling of one column:
     -- a freshness key could never LOOK like an operation (an event type has passed

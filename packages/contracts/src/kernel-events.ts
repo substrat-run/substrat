@@ -2,7 +2,7 @@ import { ATTACHMENT_ADDED, ATTACHMENT_REMOVED } from './attachments.js';
 import { CAPABILITY_EXERCISED, CAPABILITY_MINTED, CAPABILITY_REVOKED } from './capability.js';
 import { ENTITY_ARCHIVED, ENTITY_RESTORED, ENTITY_TRASHED, ENTITY_UNARCHIVED } from './entity-state.js';
 import { substratError } from './errors.js';
-import { ENTITY_GRANTS_TOPPED_UP, ENTITY_LINKED, ENTITY_RELINKED } from './permission.js';
+import { ENTITY_GRANTS_RETIRED, ENTITY_GRANTS_TOPPED_UP, ENTITY_LINKED, ENTITY_RELINKED } from './permission.js';
 
 /**
  * The spine event types only the kernel writes (#1864). Each one is a fact about the
@@ -26,6 +26,7 @@ const KERNEL_AUTHORED: ReadonlySet<string> = new Set([
   CAPABILITY_MINTED,
   CAPABILITY_REVOKED,
   ENTITY_ARCHIVED,
+  ENTITY_GRANTS_RETIRED,
   ENTITY_GRANTS_TOPPED_UP,
   ENTITY_LINKED,
   ENTITY_RELINKED,

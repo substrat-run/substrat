@@ -80,6 +80,7 @@ interface EntityGrantLike {
   permissions: string[];
   bootstrap?: true;
   holder?: 'self' | 'grantee' | { table: string; idColumn: string; principalColumn: string };
+  retired?: string[];
 }
 /** The normalised surface render()/collectRegistry() consume — unchanged by the discovery move. */
 interface Surface {
@@ -170,6 +171,35 @@ const rerun =
 const byKey = <T extends { key: string }>(a: T, b: T) => a.key.localeCompare(b.key);
 const sorted = (keys: string[]) => [...keys].sort((a, b) => a.localeCompare(b));
 const code = (s: string) => `\`${s}\``;
+
+/**
+ * §4's table. Each extra column appears only when some shape needs it, so every other
+ * vertical's artifact reads as it did.
+ *
+ * - #2071: a bootstrap shape is topped up for every holder when it grows, so a key added to one
+ *   reaches existing people — the column says which rows that is.
+ * - #2082: a key a shape RETIRES is taken from every existing holder at the next reconcile —
+ *   including a direct grant of it to that holder on the same entity, the same row — and a key
+ *   put back later reaches only people given the shape from then on.
+ */
+const grantShapeTable = (grants: EntityGrantLike[]): string[] => {
+  const columns: [string, (g: EntityGrantLike) => string][] = [
+    ['Entity type', (g) => code(g.entityType)],
+    ['Permissions granted per entity', (g) => sorted(g.permissions).map(code).join(', ')],
+  ];
+  if (grants.some((g) => g.bootstrap)) columns.push(['Given on arrival, topped up when it grows', bootstrapCell]);
+  if (grants.some((g) => g.retired?.length)) {
+    columns.push([
+      'Taken back from existing holders (a direct grant on the same entity included)',
+      (g) => (g.retired?.length ? sorted(g.retired).map(code).join(', ') : '—'),
+    ]);
+  }
+  return [
+    `| ${columns.map(([h]) => h).join(' | ')} |`,
+    `| ${columns.map(() => '---').join(' | ')} |`,
+    ...grants.map((g) => `| ${columns.map(([, cell]) => cell(g)).join(' | ')} |`),
+  ];
+};
 
 /**
  * `rel` is how this vertical is NAMED in a diagnostic — `demos/callout`, or the
@@ -332,22 +362,7 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       `Reachable WITHOUT a role, narrowed to one entity per principal. A key held by`,
       `no role in §3 but listed here is deliberate, not a gap.`,
       ``,
-      // #2071: a bootstrap shape is topped up for every holder when it grows, so a key added to
-      // one reaches existing people — the column says which rows that is. Only shown when a
-      // vertical declares one, so every other vertical's artifact reads as it did.
-      ...(grants.some((g) => g.bootstrap)
-        ? [
-            `| Entity type | Permissions granted per entity | Given on arrival, topped up when it grows |`,
-            `| --- | --- | --- |`,
-            ...grants.map(
-              (g) => `| ${code(g.entityType)} | ${sorted(g.permissions).map(code).join(', ')} | ${bootstrapCell(g)} |`,
-            ),
-          ]
-        : [
-            `| Entity type | Permissions granted per entity |`,
-            `| --- | --- |`,
-            ...grants.map((g) => `| ${code(g.entityType)} | ${sorted(g.permissions).map(code).join(', ')} |`),
-          ]),
+      ...grantShapeTable(grants),
       ``,
     );
     section += 1;

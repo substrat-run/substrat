@@ -173,7 +173,11 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
   id is the principal), `{ table, idColumn, principalColumn }` (your row names the principal),
   or `'grantee'` for a portal record that names nobody and may have several people (a customer,
   a contact). With `'grantee'`, `ctx.grant` can no longer give the shape's keys on that type
-  (#2083). A sharing shape, reached through `ctx.grant`, carries no flag and is never reconciled. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
+  (#2083). A key merely dropped from a bootstrap shape stays with everyone who held it; to take it
+  back, list it in the shape's `retired` (#2082), which tombstones it for every holder once per
+  scope, a direct `ctx.grant` of it on the same entity included, and which the promote diff shows
+  as "existing holders lose …". A key put back after that reaches only people given the shape
+  from then on. A sharing shape, reached through `ctx.grant`, carries no flag and is never reconciled. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
   `--check`ed in CI.
 - `src/personas.ts`: the dev cast, one per role the scenario needs, including one who
   lives in the *other* tenant.

@@ -68,7 +68,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/builder-generator` · `packages/builder-workspace` | The builder studio's agent loop and its workspace/snapshot half | AGPL, private |
 | `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
 | `engines/*` | The seven domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence` | AGPL + commercial |
-| `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. All three (`scrive`, `fortnox`, `planima`) are published | AGPL + commercial |
+| `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. `scrive`, `fortnox` and `planima` are published; `microsoft365` is private until its first release is set up | AGPL + commercial |
 | `demos/*` | Nine directories: the eight demo verticals — `callout`, `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
 | `apps/control-plane` | The control plane, and the worker that serves the console | private |
