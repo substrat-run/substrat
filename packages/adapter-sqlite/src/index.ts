@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
@@ -214,6 +214,7 @@ import {
   copyMarkAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
+  type OperationTarget,
 } from '@substrat-run/contracts';
 import {
   actorOf,
@@ -236,6 +237,22 @@ import {
   addStatePlans,
   entityStateMigrations,
   entityStateTriggerDdl,
+  assertNoCallerPurge,
+  isUnreachableParent,
+  PURGE_BATCH,
+  purgeDueOf,
+  purgeHeldBy,
+  lifecycleRefusal,
+  type PurgeGateFacts,
+  type PurgePass,
+  purgeIndexDdl,
+  purgeOnlyKeysOf,
+  purgeReportOf,
+  purgeStillDue,
+  refuseTrashedTarget,
+  registerTrashTargets,
+  runPurgePass,
+  withheldKeysFor,
   statefulTablesOf,
   assertEntityStateIntact,
   stateListIndexNames,
@@ -804,6 +821,8 @@ interface RegisteredModule {
   freshness: FreshnessSpec[];
   /** The module's declared peers (#1706), empty if it declares none. */
   peers: PeerSpec[];
+  /** Keys its system principal holds only for its purge schedules (#119) — `purgeOnlyKeysOf`. */
+  purgeOnlyKeys: ReadonlySet<string> | undefined;
 }
 
 /** A manifest guard, bound to the module whose manifest declared it (K-17). */
@@ -826,7 +845,19 @@ export interface SqliteScopeHostOptions {
    * budget. Each may only lower the kernel's default (`resolveAttachmentTextBounds`).
    */
   attachmentTextBounds?: Partial<AttachmentTextBounds>;
-  /** Directory holding one SQLite file per scope plus the directory database. */
+  /**
+   * Directory holding one SQLite file per scope plus the directory database.
+   *
+   * **Owned by one JavaScript thread at a time** (#119). The first host to open it takes an
+   * exclusive lock (`_host.lock`); further hosts on that thread share the directory (the
+   * multi-vertical model, #1705), and the lock is released when the last of them closes — or by
+   * the operating system when the process dies, so it never goes stale. A host in ANOTHER process,
+   * or on another worker thread (which has its own claim map), is refused with `conflict` (reason
+   * `host_dir_in_use`) naming the directory. Several guarantees
+   * read the directory database and a scope's file with no `await` between the read and the commit
+   * (the purge gate's last read, for one): nothing on this thread can interleave there, and
+   * the lock is what keeps another thread or process from doing so.
+   */
   dir: string;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
   checker?: PermissionChecker;
@@ -1613,6 +1644,65 @@ const admitByDelivery = (
 /** One grant tuple as `connectionGrantsInScope` reads it — either tuple store, same shape. */
 type TupleReadRow = { subject: string; relation: string; expires_at: string | null };
 
+/**
+ * #119: this thread's claim on each host directory it has open, by real path — the OS lock and
+ * how many live hosts on this thread share it. Several hosts on ONE thread may share a directory
+ * (that is how the pure adapter models several verticals on one platform directory, #1705): the
+ * guarantees that read the directory and a scope's file together do so with no `await` in between,
+ * and one thread's JS runs one task at a time, so nothing it runs can interleave there. A writer on
+ * another thread or in ANOTHER process could. This map is module state, so each worker thread has
+ * its own: a second thread opens its own `_host.lock` connection, and SQLite refuses it exactly as
+ * it refuses another process.
+ */
+const PROCESS_HOST_DIRS = new Map<string, { lock: Database.Database; hosts: number }>();
+
+/**
+ * #119: claim a host directory for this process, for one live `SqliteScopeHost`. The first host in
+ * the process takes an exclusive lock on `_host.lock` (a SQLite file: `locking_mode = EXCLUSIVE`
+ * plus a write holds SQLite's file lock until the connection closes); later hosts in the process
+ * share it, and the last `release()` drops it. The operating system drops it when the process
+ * exits, however it exits, so it never goes stale. No busy timeout: another process's claim is
+ * refused at once — `conflict`, reason `host_dir_in_use`, naming the directory — never queued.
+ */
+function claimHostDir(dir: string): { release(): void } {
+  const key = realpathSync(dir);
+  let claim = PROCESS_HOST_DIRS.get(key);
+  if (!claim) {
+    const lock = new Database(join(key, '_host.lock'), { timeout: 0 });
+    try {
+      lock.pragma('locking_mode = EXCLUSIVE');
+      // No journal file beside the directory: the one write only takes the lock.
+      lock.pragma('journal_mode = MEMORY');
+      lock.exec('CREATE TABLE IF NOT EXISTS owner (id INTEGER PRIMARY KEY CHECK (id = 1), pid INTEGER NOT NULL, at TEXT NOT NULL)');
+      lock.prepare('INSERT OR REPLACE INTO owner (id, pid, at) VALUES (1, ?, ?)').run(process.pid, new Date().toISOString());
+    } catch (err) {
+      lock.close();
+      const code = (err as { code?: string }).code;
+      if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') {
+        throw substratError('conflict', `host directory already in use by another process: ${key} — one process owns a host directory`, {
+          reason: 'host_dir_in_use',
+        });
+      }
+      throw err;
+    }
+    claim = { lock, hosts: 0 };
+    PROCESS_HOST_DIRS.set(key, claim);
+  }
+  claim.hosts += 1;
+  const held = claim;
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      held.hosts -= 1;
+      if (held.hosts > 0) return;
+      PROCESS_HOST_DIRS.delete(key);
+      held.lock.close();
+    },
+  };
+}
+
 export class SqliteScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
   /**
@@ -1642,6 +1732,8 @@ export class SqliteScopeHost implements ScopeHost {
    */
   readonly liveReads?: never;
   private readonly dir: string;
+  /** #119: this host's share of its process's claim on `dir` (`claimHostDir`), released by `close()`. */
+  private readonly owner: { release(): void };
   private readonly checker: PermissionChecker;
   private readonly directory: Database.Database;
   private readonly scopes = new Map<string, ScopeRuntime>();
@@ -1689,6 +1781,11 @@ export class SqliteScopeHost implements ScopeHost {
    * a bare `defineOperation` carries no declaration to read one off.
    */
   private readonly operationConcurrency = new Map<string, { entity: string; idFrom: string }>();
+  /**
+   * #119: name → the entity the operation addresses by id, its declared key and whether it
+   * reaches a trashed one — what the host's trash refusal reads. Populated by `registerModule`.
+   */
+  private readonly operationTarget = new Map<string, OperationTarget>();
   /**
    * #116: the operations that declared `idempotency: false` — a set of refusals,
    * because that is what the declaration is. Every name NOT in here honours an
@@ -1749,24 +1846,42 @@ export class SqliteScopeHost implements ScopeHost {
     this.versionId = options.versionId ?? null;
     this.logSink = options.logSink ?? consoleLogSink;
     this.invocationLineSink = options.invocationLineSink ?? consoleInvocationLineSink;
+    // Every option is read above and here, BEFORE the directory is claimed: an option that throws
+    // (a getter, a bad value) then fails the constructor with nothing yet held.
+    const customChecker = options.checker;
     this.dir = options.dir;
     mkdirSync(this.dir, { recursive: true });
-    this.directory = new Database(join(this.dir, '_directory.sqlite'));
-    this.directory.pragma('journal_mode = WAL');
-    this.ensureDirectorySchema();
-    this.loadRoles();
-    this.checker =
-      options.checker ??
-      createTupleChecker({
-        directory: this.directory,
-        scopeDb: (scopeId) => this.scopesById.get(scopeId)?.db,
-        getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
-        // #956: the evaluator judges `expires_at` against the host's clock, so a
-        // scripted one can actually expire a grant. A caller-supplied `checker`
-        // keeps its own time source — this only binds the built-in one.
-        clock: () => this.clock(),
-      });
-    this.admin = this.buildAdmin();
+    // #119: from the claim to the end of the constructor is ONE guard. A constructor that throws
+    // leaves no host for anyone to close, so whatever it opened must be released here, and the
+    // only way to keep that true as lines are added is that every line after the claim is inside
+    // this `try`. Do not add work after it; add it inside, before `this.owner`.
+    const owner = claimHostDir(this.dir);
+    let directory: Database.Database | undefined;
+    try {
+      directory = new Database(join(this.dir, '_directory.sqlite'));
+      this.directory = directory;
+      this.directory.pragma('journal_mode = WAL');
+      this.ensureDirectorySchema();
+      this.loadRoles();
+      this.checker =
+        customChecker ??
+        createTupleChecker({
+          directory: this.directory,
+          scopeDb: (scopeId) => this.scopesById.get(scopeId)?.db,
+          getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
+          // #956: the evaluator judges `expires_at` against the host's clock, so a
+          // scripted one can actually expire a grant. A caller-supplied `checker`
+          // keeps its own time source — this only binds the built-in one.
+          clock: () => this.clock(),
+        });
+      this.admin = this.buildAdmin();
+      this.owner = owner;
+    } catch (err) {
+      // A host that never finished opening owns nothing: the next one may open the directory.
+      directory?.close();
+      owner.release();
+      throw err;
+    }
   }
 
   /**
@@ -2571,6 +2686,14 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.modules.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    // #119: refused before anything is recorded, so a module the trash rules refuse leaves nothing.
+    const trashTargets = registerTrashTargets(
+      manifest.id,
+      new Set(Object.keys(registration.operations ?? {})),
+      registration.operationInputs,
+      manifest.entityStates,
+      manifest.schedules,
+    );
     // #2068: refused here, before anything is recorded, when the module claims an erasure it
     // cannot deliver (a hook with no reach declared, a `custom` entity with no hook).
     const erasure = moduleErasurePlan(registration);
@@ -2681,6 +2804,7 @@ export class SqliteScopeHost implements ScopeHost {
       schedules: manifest.schedules ?? [],
       freshness: manifest.freshness ?? [],
       peers: manifest.peers ?? [],
+      purgeOnlyKeys: purgeOnlyKeysOf(manifest.schedules ?? []),
     });
     if (erasure) this.erasurePlans.push(erasure);
     for (const rel of manifest.entityRelations ?? []) {
@@ -2777,6 +2901,8 @@ export class SqliteScopeHost implements ScopeHost {
       if (declaredOptOuts.includes(name) && this.operations.has(name)) {
         this.operationIdempotencyOptOut.add(name);
       }
+      const target = trashTargets.get(name);
+      if (target && this.operations.has(name)) this.operationTarget.set(name, target);
     }
   }
 
@@ -3632,7 +3758,10 @@ export class SqliteScopeHost implements ScopeHost {
       // #119: the guard triggers went with the dropped table. Put back AFTER the rows, which
       // may legitimately arrive archived or trashed.
       for (const plan of this.statePlans.values()) {
-        if (present.has(plan.table)) execSqlStatements(db, entityStateTriggerDdl(plan));
+        if (!present.has(plan.table)) continue;
+        execSqlStatements(db, entityStateTriggerDdl(plan));
+        // And the purge sweep's index, which went with it (#119 PR 2).
+        if (plan.purgeAfterDays !== undefined) db.exec(purgeIndexDdl(plan));
       }
       // #811 / #119: the derived list indexes went with it too, and a load never put them back —
       // an archivable entity's partial indexes are part of what the kernel checks after DDL.
@@ -3950,6 +4079,20 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<ScopeStub> {
+    return this.openSystemScope(moduleId, tenantId, scopeId, false);
+  }
+
+  /**
+   * The system door's stub. `purge` (#119) is set only by `runPurgeSweep`, which never hands the
+   * stub on: it is the one stub whose invokes may use the module's purge-only keys, and only on
+   * the purge operation. Every stub any caller can get is built with it off.
+   */
+  private async openSystemScope(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    purge: boolean,
+  ): Promise<ScopeStub> {
     // The scheduler's door (#383) — mirror of getConnectorScope. The module must be
     // registered on this host (a schedule can only invoke its own vertical's ops),
     // and the scope must be active. Authority is then an ordinary check against
@@ -3968,7 +4111,7 @@ export class SqliteScopeHost implements ScopeHost {
     }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId });
+    return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId }, undefined, undefined, purge);
   }
 
   /**
@@ -4726,18 +4869,31 @@ export class SqliteScopeHost implements ScopeHost {
       const startedAt = Date.now();
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
+      // #119: a purge horizon's batch was full and moved something — the schedule stays due, so the next pass continues.
+      let stillDue = false;
       try {
-        const stub = await this.getSystemScope(moduleId, tenantId, scopeId);
-        await stub.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
+        if (schedule.purge) {
+          // #119: a purge horizon's schedule runs its operation once per due entity, never once.
+          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation);
+          stillDue = purgeStillDue(pass);
+          const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
+          report.errors.push(...outcome.errors);
+          if (outcome.failure) throw outcome.failure;
+        } else {
+          const stub = await this.getSystemScope(moduleId, tenantId, scopeId);
+          await stub.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
+        }
         report.fired += 1;
       } catch (err) {
         status = 'failed';
         failure = { error: err };
         report.failed += 1;
-        report.errors.push({
-          operation: schedule.operation,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        if (!schedule.purge) {
+          report.errors.push({
+            operation: schedule.operation,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       lines.write({
         kind: 'schedule',
@@ -4754,6 +4910,8 @@ export class SqliteScopeHost implements ScopeHost {
         ...(emitted ? { emitted } : {}),
         versionId: this.versionId,
       });
+      report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
+      if (stillDue) continue;
       // On the scope actor (#1678): the cadence row joined whatever transaction an invoke
       // held open, so its rollback forgot the run and the next pass fired it AGAIN.
       await rt.actor.turn(() =>
@@ -4767,10 +4925,65 @@ export class SqliteScopeHost implements ScopeHost {
           )
           .run(schedule.operation, new Date(now).toISOString(), status, invocationId),
       );
-      report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
     lines.end();
     return report;
+  }
+
+  /**
+   * One pass of a purge horizon's schedule on one scope (#119) — the Durable Object's
+   * `runPurgeSweep`, mirrored. The caller names only which schedule: the module and the entity come
+   * from the registered schedule, the cutoff from this host's clock and the declared horizon, the
+   * ids from the scope's own bin, read in a turn. Then the purge operation is invoked once per id
+   * through a purge stub (`openSystemScope`) that never leaves this method, each in its own
+   * transaction and under the cutoff the host re-checks inside it (`refuseTrashedTarget`).
+   */
+  private async runPurgeSweep(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId, operation: string): Promise<PurgePass> {
+    const entityType = this.modules
+      .get(moduleId)
+      ?.schedules.find((s) => s.operation === operation && s.purge)?.purge?.entityType;
+    if (entityType === undefined) throw substratError('not_found', `no purge schedule of ${moduleId} runs ${operation}`);
+    // The pair first, from the directory, before the scope's storage is opened for it.
+    const owner = this.directory.prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { tenant_id: string }
+      | undefined;
+    if (!owner || owner.tenant_id !== tenantId) throw substratError('not_found', `unknown scope: ${scopeId}`);
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    const now = this.clock();
+    // #119: the gate the schedule run applies, applied by the sweep itself (`purgeHeldBy`), and
+    // again inside each purge's transaction. A held scope selects nothing.
+    const due = await rt.actor.turn(() => {
+      const held = purgeHeldBy(this.purgeGateFacts(rt, moduleId, tenantId, scopeId));
+      return held !== null
+        ? { held }
+        : purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, now);
+    });
+    if ('held' in due) return { purged: 0, skipped: 0, errors: [], full: false, held: due.held };
+    const stub = await this.openSystemScope(moduleId, tenantId, scopeId, true);
+    return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
+      await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid() });
+    });
+  }
+
+  /**
+   * #119: the purge gate's facts (`PurgeGateFacts`) — the module's switch from the scope's own
+   * storage, and the lifecycle, the primacy and the tenant from this host's directory, which is
+   * their authority here.
+   */
+  private purgeGateFacts(rt: ScopeRuntime, moduleId: string, tenantId: TenantId, scopeId: ScopeId): PurgeGateFacts {
+    const row = this.directory
+      .prepare(
+        `SELECT s.tenant_id AS tenant_id, s.status AS scope, t.status AS tenant
+           FROM scopes s LEFT JOIN tenants t ON t.tenant_id = s.tenant_id WHERE s.scope_id = ?`,
+      )
+      .get(scopeId) as { tenant_id: string; scope: string; tenant: string | null } | undefined;
+    return {
+      switched: systemScheduleState(switchSqlOf(rt.db), moduleId, this.clock()),
+      lifecycle: row ? lifecycleRefusal({ scope: row.scope, tenant: row.tenant ?? 'active' } as Parameters<typeof lifecycleRefusal>[0]) : null,
+      copy: !this.isPrimaryInDirectory(scopeId),
+      foreignTenant: row?.tenant_id !== tenantId,
+    };
   }
 
   /** The stub body, shared by the principal, connection, system, impersonation and capability doors. */
@@ -4793,6 +5006,8 @@ export class SqliteScopeHost implements ScopeHost {
      * record additionally keeps, plus the bound a read-only session is held to.
      */
     sessionId?: ImpersonationSessionId,
+    /** #119: a purge stub — `openSystemScope`'s, built only by `runPurgeSweep`, never handed on. */
+    purge = false,
   ): ScopeStub {
     const operations = this.operations;
 
@@ -4813,6 +5028,14 @@ export class SqliteScopeHost implements ScopeHost {
         invokeOptions?: InvokeOptions,
       ): Promise<O> => {
         const handler = operations.get(operation);
+        // #119: purge authority is never an invoke option — only a purge stub, which
+        // `runPurgeSweep` builds and keeps, purges — and an options object naming a cutoff is
+        // refused outright.
+        try {
+          assertNoCallerPurge(invokeOptions);
+        } catch (err) {
+          return Promise.reject(err);
+        }
         // `not_found`, not a bare throw (#113) — the same code `adapter-cloudflare`
         // gives it, so a demo and a hosted vertical answer 404 for the same reason.
         if (!handler)
@@ -4939,7 +5162,18 @@ export class SqliteScopeHost implements ScopeHost {
           const minted: string[] = [];
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
-          const ctx = this.operationContext(rt, subject, undefined, signals, session, operation, minted);
+          // #119: the keys the module's system principal holds only for its purge schedules are
+          // withheld from every call but the purge sweep's own invoke of the purge operation.
+          const target = this.operationTarget.get(operation);
+          // Through the system door only: the sweep's mark on any other subject's call means nothing.
+          const purging = purge && subject.kind === 'system';
+          const withheld =
+            subject.kind === 'system'
+              ? withheldKeysFor(this.modules.get(subject.id)?.purgeOnlyKeys, target, purging)
+              : undefined;
+          const ctx = this.operationContext(
+            rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld,
+          );
           const clonedInput = structuredClone(input);
           // #893: parse, don't trust — at the scope door, from the operation's own
           // declaration. BEFORE `BEGIN`, so a malformed call never opens a
@@ -5009,11 +5243,33 @@ export class SqliteScopeHost implements ScopeHost {
             const ref = guarded ? this.concurrencyRef(operation, guarded, parsed) : undefined;
             const seen =
               ref && invokeOptions?.ifMatch !== undefined ? this.versionAt(rt, ref) : undefined;
+            // #119: an operation on a TRASHED entity it did not declare it reaches is refused
+            // here, before the guards and the handler — the declared key first, so a caller
+            // without it meets the same `forbidden` an active entity gives (`entity-trash.ts`).
+            await refuseTrashedTarget(
+              { sql: spineSql(rt.db), plans: this.statePlans, check: ctx.check },
+              operation,
+              target,
+              parsed,
+              purging ? { now: this.clock(), gate: this.purgeGateFacts(rt, subject.id, tenantId, scopeId) } : undefined,
+            );
             // Manifest guards (K-17): pre-conditions, inside the operation's own
             // transaction, before the handler. A throw here blocks the operation
             // and rolls back exactly like a handler throw — fail closed.
             await this.runGuards(operation, ctx, parsed as I | undefined);
             result = await (handler as OperationHandler<I | undefined, O>)(ctx, parsed as I | undefined);
+            // #119: the purge gate's AUTHORITATIVE read. Lifecycle, primacy and tenant live in the
+            // directory, which this transaction does not cover and whose writers (a suspend, a
+            // tenant status, a reclassification) do not take the scope's actor — so a hold could
+            // commit while the handler above was awaiting. From here to `COMMIT` nothing awaits:
+            // better-sqlite3 is synchronous and this process's JS single-threaded, so nothing in
+            // this process — another host on the same directory included — can write between this
+            // read and the commit of the delete; and this process owns the directory
+            // (`claimHostDir`), so no other process can either.
+            if (purging) {
+              const held = purgeHeldBy(this.purgeGateFacts(rt, subject.id, tenantId, scopeId));
+              if (held !== null) throw substratError('conflict', `${operation}: ${held}`, { reason: 'purge_held' });
+            }
             if (ref && invokeOptions?.ifMatch !== undefined) {
               assertIfMatch(ref, invokeOptions.ifMatch, seen ?? null);
             }
@@ -5176,6 +5432,7 @@ export class SqliteScopeHost implements ScopeHost {
   async close(): Promise<void> {
     for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
     this.directory.close();
+    this.owner.release();
   }
 
   // -------------------------------------------------------------------------
@@ -11431,6 +11688,11 @@ export class SqliteScopeHost implements ScopeHost {
     at: Instant = this.clock(),
     /** #2055: the delivery a consumer's or an import's context runs for; absent otherwise. */
     delivery?: ConsumerDelivery,
+    /**
+     * #119: keys this context's checks refuse whatever the subject holds — a module's
+     * purge-only keys, outside the purge sweep's own invoke (`purgeOnlyKeysOf`).
+     */
+    withheld?: ReadonlySet<string>,
   ): OperationContext {
     // For a connection, system, capability or peer-vertical subject this carries THAT id so
     // the type holds — it is not a person, and the event actor below says what it is instead.
@@ -11499,6 +11761,9 @@ export class SqliteScopeHost implements ScopeHost {
       // #1642: parsed before the override actor's early return, which never reaches
       // the checker — a cast key would otherwise become that path's proof relation.
       const permission = assertPermissionKey(unparsed);
+      if (withheld?.has(permission)) {
+        return { allowed: false as const, checked: permission, node: { tenantId: rt.tenantId, scopeId: rt.scopeId } };
+      }
       if (overrideActor) {
         return {
           allowed: true as const,
@@ -11820,6 +12085,7 @@ export class SqliteScopeHost implements ScopeHost {
         now: at,
         emit: (event) => writeEvent(event, 'kernel'),
         assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+        isUnreachableParent: (entity) => isUnreachableParent(spineSql(rt.db), statePlans, entity),
       }),
       // #119: archive and trash, written once in the kernel. The raw seam, because the guarded
       // `ctx.sql` refuses the very columns these write; the operation's own check, so the

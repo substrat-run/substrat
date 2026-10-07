@@ -41,6 +41,9 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+// The PURE trash-gap rule, imported by path like conformance-emit's coverage plan: it reads the
+// operations structurally, so this tool still imports none of the packages it inspects.
+import { trashRefusalGapsOf } from '../packages/contracts/src/operations.js';
 
 const DEMOS = 'demos';
 
@@ -175,6 +178,7 @@ async function emitArtifact(
     );
   }
   const model = models[0]!;
+  warnTrashGaps(src, mod, model);
   warnUnreached(src, model);
   const lifecycles = Object.keys(model.lifecycles ?? {}).length;
   const rendered = `${JSON.stringify(model, null, 2)}\n`;
@@ -192,6 +196,33 @@ async function emitArtifact(
     console.log(`model-diff: wrote ${target}`);
   }
   return { drifted: false, lifecycles };
+}
+
+/**
+ * A WARNING, never a failure (#119 PR 2): each operation on a trashable entity that the host
+ * cannot refuse on a trashed one, because it cannot see which entity the operation reaches — a
+ * check `resolved` in the handler, say. Its handler must ask `ctx.entityState` itself, and this
+ * is where the author of a new vertical finds that out rather than in review.
+ *
+ * The operations are found structurally — any export whose values are all shaped like a
+ * declared operation (`summary` and `output`) — beside the emitted model's own entities.
+ */
+function warnTrashGaps(src: string, mod: Record<string, unknown>, model: EmittedModel): void {
+  const entities = model.entities as Parameters<typeof trashRefusalGapsOf>[1];
+  if (!Object.values(entities).some((e) => e.trash)) return;
+  for (const value of Object.values(mod)) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
+    const ops = Object.values(value);
+    if (ops.length === 0 || !ops.every((op) => typeof op === 'object' && op !== null && 'summary' in op && 'output' in op)) {
+      continue;
+    }
+    for (const gap of trashRefusalGapsOf(value as Record<string, object>, entities)) {
+      console.warn(
+        `model-diff: warning — ${src}: '${gap.operation}' checks trashable '${gap.entity}' resolved in the handler, ` +
+          'so the host cannot refuse it on a trashed one — its handler must check `ctx.entityState` itself',
+      );
+    }
+  }
 }
 
 /** The two spellings CLAUDE.md gives, and the only two an engine may state. */

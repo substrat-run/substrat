@@ -56,6 +56,12 @@ export const entityStateDeclaration = z.object({
   entityType: z.string().min(1),
   archivePermission: permissionKey.optional(),
   trashPermission: permissionKey.optional(),
+  /**
+   * The purge horizon (#119): an entity trashed longer than this many days is permanently
+   * deleted by the platform's sweep, through the module's own `trashed: 'purges'` operation
+   * (run as a derived schedule — `purgeSchedulesOf`). Requires `trashPermission`.
+   */
+  purgeAfterDays: z.number().int().positive().optional(),
   table: z.string().min(1).optional(),
   idColumn: z.string().min(1).optional(),
 });

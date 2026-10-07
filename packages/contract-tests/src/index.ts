@@ -23,6 +23,8 @@ export { listContractSuite } from './list-suite.js';
 export { migrationDigestContractSuite } from './migration-digest-suite.js';
 export { entityStateContractSuite } from './entity-state-suite.js';
 export { stateMod } from './entity-state-module.js';
+export { trashMod, TRASH_MODULE_ID, TBOX_PURGE_DAYS } from './entity-trash-module.js';
+export { entityTrashContractSuite } from './entity-trash-suite.js';
 export { subjectErasureContractSuite, type RawScopeQuery } from './subject-erasure-suite.js';
 export { erasureOtherMod, erasureSquatterMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';

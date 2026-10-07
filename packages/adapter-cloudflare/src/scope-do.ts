@@ -272,6 +272,7 @@ import type {
   Instant,
   MintedCapability,
   ModuleId,
+  OperationTarget,
   PlatformActorId,
 } from '@substrat-run/contracts';
 import {
@@ -327,6 +328,20 @@ import {
   uncheckedView,
   addStatePlans,
   entityStateTriggerDdl,
+  assertNoCallerPurge,
+  isUnreachableParent,
+  PURGE_BATCH,
+  lifecycleRefusal,
+  purgeHeldBy,
+  type PurgeGateFacts,
+  purgeDueOf,
+  purgeIndexDdl,
+  purgeOnlyKeysOf,
+  runPurgePass,
+  type PurgePass,
+  refuseTrashedTarget,
+  registerTrashTargets,
+  withheldKeysFor,
   statefulTablesOf,
   assertEntityStateIntact,
   stateListIndexNames,
@@ -1163,6 +1178,12 @@ export function defineScopeDO(
     private readonly operationInput = new Map<string, { parse(value: unknown): unknown }>();
     /** #129: name → the entity whose version an `If-Match` is compared against. */
     private readonly operationConcurrency = new Map<string, { entity: string; idFrom: string }>();
+    /** #119: name → the entity it addresses by id — the host's trash refusal reads it. */
+    private readonly operationTarget = new Map<string, OperationTarget>();
+    /** #119: module id → the keys its system principal holds only for its purge schedules. */
+    private readonly purgeOnlyKeys = new Map<string, ReadonlySet<string> | undefined>();
+    /** #119: a purge schedule's operation → the module that declared it and the entity it purges. */
+    private readonly purgeSchedules = new Map<string, { moduleId: string; entityType: string }>();
     /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
     private readonly operationIdempotencyOptOut = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
@@ -1297,6 +1318,18 @@ export function defineScopeDO(
 
     private registerModule(registration: ModuleRegistration): void {
       const manifest = registration.manifest;
+      // #119: refused before anything is recorded, as in the pure adapter.
+      const trashTargets = registerTrashTargets(
+        manifest.id,
+        new Set(Object.keys(registration.operations ?? {})),
+        registration.operationInputs,
+        manifest.entityStates,
+        manifest.schedules,
+      );
+      this.purgeOnlyKeys.set(manifest.id, purgeOnlyKeysOf(manifest.schedules ?? []));
+      for (const schedule of manifest.schedules ?? []) {
+        if (schedule.purge) this.purgeSchedules.set(schedule.operation, { moduleId: manifest.id, entityType: schedule.purge.entityType });
+      }
       // #2068: refused before anything is recorded, as on the pure host.
       const erasure = moduleErasurePlan(registration);
       if (manifest.peers?.length) this.peerSources.push({ peers: manifest.peers });
@@ -1434,6 +1467,8 @@ export function defineScopeDO(
         if (declaredOptOuts.includes(name) && this.operations.has(name)) {
           this.operationIdempotencyOptOut.add(name);
         }
+        const target = trashTargets.get(name);
+        if (target && this.operations.has(name)) this.operationTarget.set(name, target);
       }
     }
 
@@ -2498,7 +2533,7 @@ export function defineScopeDO(
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
         // ZodError, whose `message` is a getter) still arrives with its message.
         try {
-          return await this.invokeOrThrow(
+          return await this.#invokeOrThrow(
             operation,
             input,
             principal,
@@ -2519,7 +2554,7 @@ export function defineScopeDO(
         }
       }
       try {
-        return await this.invokeOrThrow(
+        return await this.#invokeOrThrow(
           operation,
           input,
           principal,
@@ -2544,8 +2579,14 @@ export function defineScopeDO(
       }
     }
 
-    /** The operation path itself. Throws; `invoke` decides how that reaches the caller. */
-    async invokeOrThrow(
+    /**
+     * The operation path itself. Throws; `invoke` decides how that reaches the caller.
+     *
+     * `#`-private, not merely `private`: workerd's RPC exposes every method on the prototype,
+     * and this one takes `purge` (#119), which only `runPurgeSweep` may set. A `#` method is not
+     * on the prototype, so no stub can reach it.
+     */
+    async #invokeOrThrow(
       operation: string,
       input: unknown,
       principal: PrincipalId,
@@ -2563,6 +2604,8 @@ export function defineScopeDO(
       verticalCaller?: VerticalCaller,
       /** #1834: the instance the system door's gate read. See `invoke` above. */
       systemDoorInstance?: string,
+      /** #119: set only by `runPurgeSweep` on its own invokes — never an RPC argument. */
+      purge?: boolean,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -2640,6 +2683,8 @@ export function defineScopeDO(
       // declaration. Outside the queue and outside the transaction: a malformed
       // call takes no turn and opens nothing. Guards read the parsed input too,
       // so a K-17 pre-condition sees what the handler will.
+      // #119: purge authority is never an option a caller supplies.
+      assertNoCallerPurge(invokeOptions);
       const declaredInput = this.operationInput.get(operation);
       const parsed = declaredInput ? declaredInput.parse(input) : input;
       // #129. Refused rather than ignored, for the reason the coordinator refuses an
@@ -2775,6 +2820,14 @@ export function defineScopeDO(
         // commit together, or a throw (from either) rolls domain writes AND
         // emitted events back as one — verified across `await` in workerd.
         try {
+          // #119: a module's purge-only keys are withheld from its system principal on every
+          // call but the purge sweep's own invoke of the purge operation.
+          const target = this.operationTarget.get(operation);
+          // #119: purge authority is the system door's, and only `runPurgeSweep` sets `purge`.
+          const purging = purge === true && systemDoor !== undefined;
+          const withheld = systemDoor
+            ? withheldKeysFor(this.purgeOnlyKeys.get(systemDoor.moduleId), target, purging)
+            : undefined;
           await this.revision.transaction(async () => {
             const ctx = this.operationContext(
               principal,
@@ -2790,6 +2843,8 @@ export function defineScopeDO(
               minted,
               undefined,
               peerSubject,
+              undefined,
+              withheld,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -2819,6 +2874,15 @@ export function defineScopeDO(
               guardedRef && invokeOptions?.ifMatch !== undefined
                 ? this.versionAt(guardedRef)
                 : undefined;
+            // #119: the host's trash refusal, before the guards and the handler — the pure
+            // adapter's, through the same kernel function.
+            await refuseTrashedTarget(
+              { sql: doSpineSql(this.sql), plans: this.statePlans, check: ctx.check },
+              operation,
+              target,
+              parsed,
+              purging ? { now: new Date().toISOString(), gate: this.purgeGateFacts(systemDoor!.moduleId, tenantId) } : undefined,
+            );
             await this.runGuards(operation, ctx, parsed);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
             if (guardedRef && invokeOptions?.ifMatch !== undefined) {
@@ -4749,6 +4813,94 @@ export function defineScopeDO(
     }
 
     /**
+     * One pass of a purge horizon's schedule on this scope (#119): the oldest entities due for
+     * purge, each deleted by the module's own `trashed: 'purges'` operation, one call and one
+     * transaction per entity, as `system:<moduleId>`.
+     *
+     * The caller names only WHICH schedule. Everything that decides what is purged is this
+     * object's: the module and the entity come from the registered schedule, the cutoff from this
+     * object's clock and the entity's declared horizon, the ids from its own bin — and each purge
+     * re-checks the cutoff inside its transaction (`refuseTrashedTarget`). Purge authority lives
+     * here and nowhere else: `invoke` takes no purge argument, so a stub holding this namespace
+     * cannot hand the system principal its purge-only key, and calling this early, often or from
+     * outside the sweep can only purge what is genuinely due.
+     *
+     * Pinned like every system-door call (#1834): a missed pin answers `SystemDoorMoved` before
+     * anything is read, and the coordinator's door gates again.
+     */
+    async runPurgeSweep(
+      operation: string,
+      tenantId: TenantId,
+      /**
+       * The node the purges' checks and events are stamped with. This object records no scope id of
+       * its own, so it cannot hold this one to anything — and it routes nothing: the sweep runs on
+       * the scope that received the call, whatever this says. A wrong one fails closed, since the
+       * module's grant is seated on this scope's node and not on the one named.
+       */
+      scopeId: ScopeId,
+      systemDoorInstance: string,
+    ): Promise<PurgePass | SystemDoorMoved> {
+      await this.ensureMigrations();
+      const schedule = this.purgeSchedules.get(operation);
+      if (!schedule) throw toRpcError(substratError('not_found', `no purge schedule runs ${operation} on this scope`));
+      try {
+        this.assertSystemDoor(schedule.moduleId, systemDoorInstance);
+      } catch (err) {
+        if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
+        throw toRpcError(err);
+      }
+      // #119: the gate the coordinator applies before any schedule fires, applied here from what
+      // this scope records of it (`purgeGateFacts`). A foreign tenant throws.
+      const held = purgeHeldBy(this.purgeGateFacts(schedule.moduleId, tenantId));
+      if (held !== null) return { purged: 0, skipped: 0, errors: [], full: false, held };
+      const due = purgeDueOf(
+        doSpineSql(this.sql),
+        this.statePlans,
+        this.operationTarget,
+        operation,
+        schedule.entityType,
+        new Date().toISOString(),
+        PURGE_BATCH,
+      );
+      return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
+        await this.#invokeOrThrow(
+          operation,
+          { [due.idFrom]: entityId },
+          schedule.moduleId as unknown as PrincipalId,
+          tenantId,
+          scopeId,
+          undefined,
+          undefined,
+          schedule.moduleId,
+          { invocationId: ulid() },
+          undefined,
+          undefined,
+          undefined,
+          systemDoorInstance,
+          true,
+        );
+      });
+    }
+
+    /**
+     * #119: the purge gate's facts (`PurgeGateFacts`), from this scope's own storage: the module's
+     * switch, the lifecycle the platform delivered (#1713), the copy classification (#2009) and the
+     * tenant receipt (`tenantVerdict` — `unknown` passes, as at every door). A directory-backed
+     * deployment records no receipt and delivers neither a lifecycle nor a copy classification here,
+     * so on one those read clear: this object enforces the kill switch, and the coordinator's gate
+     * is the authority for tenant, lifecycle, copy and the rewind hold.
+     */
+    private purgeGateFacts(moduleId: string, tenantId: TenantId): PurgeGateFacts {
+      const now = new Date().toISOString();
+      return {
+        switched: systemScheduleState(this.switchSql(), moduleId, now),
+        lifecycle: lifecycleRefusal(readLifecycle(this.switchSql())),
+        copy: this.isCopy(),
+        foreignTenant: this.tenantVerdict(tenantId).verdict === 'foreign',
+      };
+    }
+
+    /**
      * The last time a schedule's operation ran on this scope (#383), or null.
      *
      * `kind = 'schedule'` is not decoration (#1288): an operation may legally be
@@ -6335,6 +6487,8 @@ export function defineScopeDO(
       for (const plan of this.statePlans.values()) {
         if (!present.has(plan.table)) continue;
         for (const stmt of executableSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
+        // And the purge sweep's index, which went with it (#119 PR 2).
+        if (plan.purgeAfterDays !== undefined) this.sql.exec(purgeIndexDdl(plan));
       }
       // #811 / #119: the derived list indexes went with the dropped table too, and a load never
       // put them back — an archivable entity's partial indexes are part of what the kernel
@@ -7017,6 +7171,8 @@ export function defineScopeDO(
       peerSubject?: CheckSubject,
       /** #2055: the delivery a consumer's or an import's context runs for; absent otherwise. */
       delivery?: ConsumerDelivery,
+      /** #119: keys this context's checks refuse whatever the subject holds (`purgeOnlyKeysOf`). */
+      withheld?: ReadonlySet<string>,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -7080,6 +7236,9 @@ export function defineScopeDO(
         // #1642: parsed before the system actor's early return, which never reaches
         // the checker — a cast key would otherwise become that path's proof relation.
         const permission = assertPermissionKey(unparsed);
+        if (withheld?.has(permission)) {
+          return { allowed: false as const, checked: permission, node: { tenantId, scopeId } };
+        }
         if (systemActor) {
           return {
             allowed: true as const,
@@ -7378,6 +7537,7 @@ export function defineScopeDO(
           now: at,
           emit: (event) => writeEvent(event, 'kernel'),
           assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+          isUnreachableParent: (entity) => isUnreachableParent(doSpineSql(sql), statePlans, entity),
         }),
         // #119: archive and trash — the pure adapter's wiring, over the raw spine seam.
         ...createEntityStateVerbs({

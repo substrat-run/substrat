@@ -6,6 +6,7 @@ import { armRewind, holdsStub as holdsOf, landRewind, restartNow } from './pitr-
 import {
   connectionId,
   errorCodeOf,
+  fromWireFailure,
   instant,
   SCOPE_GATE_REASONS,
   type SubstratError,
@@ -62,6 +63,8 @@ import {
   listContractSuite,
   migrationDigestContractSuite,
   entityStateContractSuite,
+  entityTrashContractSuite,
+  TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
   permMod,
@@ -5303,6 +5306,89 @@ entityStateContractSuite(
     await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
       state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
     });
+  },
+);
+
+// #119 PR 2: the host's trash refusal, the link refusal and the purge horizon, in workerd. The
+// DEFAULT tuple checker, for the pure suite's reason. `trashMod` is in `contractTestModules`.
+entityTrashContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  async (_tenant, scope, sql, params = []) => {
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
+      state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
+    });
+  },
+  {
+    // Every suite in this file shares one control-plane directory, so a full platform sweep walks
+    // all of their scopes. The preview case runs on the pure adapter, whose fixture owns its
+    // directory; the exclusion it holds is the kernel sweep's, the same code here.
+    platformSweep: false,
+    // The Durable Object's own RPC, as any worker holding the SCOPE namespace binding reaches it —
+    // pinned to the live instance, so the system door's own check passes and only purge is tested.
+    direct: (() => {
+      const scopeDo = (scope: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
+        systemDoorState(moduleId: string): Promise<{ instance: string }>;
+        invoke(...args: unknown[]): Promise<{ failure?: Parameters<typeof fromWireFailure>[0] }>;
+        runPurgeSweep(operation: string, tenant: TenantId, scope: ScopeId, instance: string): Promise<{ purged: number; skipped: number; held?: string; errors: { entityId: string; error: string }[] }>;
+        setLifecycle(next: unknown, tenant?: TenantId): Promise<unknown>;
+        markCopy(): Promise<boolean>;
+      };
+      let revision = 0;
+      return {
+        claimPurge: async (tenant: TenantId, scope: ScopeId, operation: string, input: unknown) => {
+          const stub = scopeDo(scope);
+          const { instance } = await stub.systemDoorState(TRASH_MODULE_ID);
+          // `invoke`'s whole positional surface, and one argument past it: the old `purge` slot.
+          const reply = await stub.invoke(
+            operation, input, TRASH_MODULE_ID, tenant, scope, undefined, undefined, TRASH_MODULE_ID, true,
+            { invocationId: ulid(), purge: true }, undefined, undefined, undefined, instance, true,
+          );
+          return reply.failure ? (errorCodeOf(fromWireFailure(reply.failure)) ?? 'unknown') : 'ok';
+        },
+        runPurgeSweep: async (tenant: TenantId, scope: ScopeId, operation: string) => {
+          const stub = scopeDo(scope);
+          const { instance } = await stub.systemDoorState(TRASH_MODULE_ID);
+          return stub.runPurgeSweep(operation, tenant, scope, instance);
+        },
+        // What a CP-less deployment's platform delivers into the scope (#1713, #2009): the inputs
+        // the object's own gate reads. A directory-backed host's suspend never reaches the object.
+        holdLifecycle: async (tenant: TenantId, scope: ScopeId, held: boolean) => {
+          revision += 1;
+          await scopeDo(scope).setLifecycle(
+            { scope: held ? 'suspended' : 'active', tenant: 'active', at: new Date().toISOString(), revision: { epoch: 1, scope: revision, tenant: 0 } },
+            tenant,
+          );
+        },
+        // A delivered lifecycle back-fills the `provisioned_for` receipt of a scope holding data — the
+        // CP-less path. This directory-backed fixture never writes one otherwise.
+        recordTenant: async (tenant: TenantId, scope: ScopeId) => {
+          revision += 1;
+          await scopeDo(scope).setLifecycle(
+            { scope: 'active', tenant: 'active', at: new Date().toISOString(), revision: { epoch: 1, scope: revision, tenant: 0 } },
+            tenant,
+          );
+        },
+        // No receipt on a directory-backed scope, so the object reads any tenant as `unknown` and lets it
+        // through, as every door does. There the coordinator, holding the directory, is the authority.
+        unrecordedTenant: 'admitted' as const,
+        markCopy: async (_tenant: TenantId, scope: ScopeId) => {
+          await scopeDo(scope).markCopy();
+        },
+        runPurgeSweepNaming: async (tenant: TenantId, scope: ScopeId, named: ScopeId, operation: string) => {
+          const stub = scopeDo(scope);
+          const { instance } = await stub.systemDoorState(TRASH_MODULE_ID);
+          return stub.runPurgeSweep(operation, tenant, named, instance);
+        },
+      };
+    })(),
   },
 );
 

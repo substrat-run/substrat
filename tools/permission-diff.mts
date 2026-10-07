@@ -44,6 +44,8 @@ interface ScheduleLike {
   operation: string;
   cadence?: { everyMinutes: number };
   permissions?: string[];
+  /** #119: a purge horizon's schedule names the entity it purges. */
+  purge?: { entityType: string };
 }
 /** #1705: the two halves of a cross-vertical edge, as a manifest declares them. */
 interface EventsLike {
@@ -60,6 +62,8 @@ interface ModuleLike {
     id: string;
     permissions: PermissionDecl[];
     schedules?: ScheduleLike[];
+    /** #119: where a purge schedule's horizon is declared. */
+    entityStates?: { entityType: string; purgeAfterDays?: number }[];
     peers?: PeerLike[];
     events?: EventsLike;
   };
@@ -347,8 +351,19 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
   // module's SYSTEM principal holds to run it. Widening a schedule's authority
   // lands here, in the reviewed diff.
   const schedules = modules
-    .flatMap((m) => (m.manifest.schedules ?? []).map((s) => ({ module: m.manifest.id, ...s })))
+    .flatMap((m) =>
+      (m.manifest.schedules ?? []).map((s) => ({
+        module: m.manifest.id,
+        ...s,
+        // #119: a purge horizon's schedule names the entity and its horizon, so a reviewer reads
+        // what the grant deletes and when, not only that it exists.
+        horizon: s.purge
+          ? m.manifest.entityStates?.find((e) => e.entityType === s.purge!.entityType)?.purgeAfterDays
+          : undefined,
+      })),
+    )
     .sort((a, b) => a.operation.localeCompare(b.operation));
+  const purges = schedules.filter((s) => s.purge);
   if (schedules.length) {
     out.push(
       `## ${section}. Scheduled work — the system principal's grants`,
@@ -361,9 +376,17 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       `| --- | --- | --- | --- |`,
       ...schedules.map(
         (s) =>
-          `| ${code(s.operation)} | ${s.cadence ? `every ${s.cadence.everyMinutes} min` : '—'} | ${code(`system:${s.module}`)} | ${sorted(s.permissions ?? []).map(code).join(', ') || '— none —'} |`,
+          `| ${code(s.operation)}${s.purge ? ` — purges a trashed ${code(s.purge.entityType)} after ${s.horizon} days` : ''} | ${s.cadence ? `every ${s.cadence.everyMinutes} min` : '—'} | ${code(`system:${s.module}`)} | ${sorted(s.permissions ?? []).map(code).join(', ') || '— none —'} |`,
       ),
       ``,
+      ...(purges.length
+        ? [
+            `A purge horizon's grant is scope-wide, and narrower than it reads: a key the system`,
+            `principal holds only for a purge is refused to it everywhere except the purge sweep's own`,
+            `call of that operation, one entity at a time, on an entity still in the bin past its horizon.`,
+            ``,
+          ]
+        : []),
     );
     section += 1;
   }

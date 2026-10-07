@@ -97,6 +97,13 @@ export const scheduleSpec = z.object({
   cadence: z.object({ everyMinutes: z.number().int().positive() }),
   input: z.record(z.string(), z.unknown()).optional(), // static input each run; the op re-parses it
   permissions: z.array(permissionKey).default([]), // what the op checks → system grant + review surface
+  // A PURGE HORIZON's schedule (#119), derived by `purgeSchedulesOf` — never written by hand.
+  // Present, the sweep does not invoke `operation` once with `input`: it runs it once per entity
+  // of `entityType` trashed longer than that entity's `purgeAfterDays`, each in its own
+  // transaction, passing only the id. `operation` must be the one the module declares
+  // `trashed: 'purges'` for that entity; the host refuses to register anything else. Optional +
+  // additive (D-28).
+  purge: z.object({ entityType: z.string().min(1) }).optional(),
 });
 export type ScheduleSpec = z.infer<typeof scheduleSpec>;
 

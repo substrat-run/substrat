@@ -440,6 +440,11 @@ import {
   isPrimaryScopeRow,
   asyncInvocationId,
   asyncLinePass,
+  assertNoCallerPurge,
+  purgeReportOf,
+  purgeStillDue,
+  registerTrashTargets,
+  type PurgePass,
   type AsyncLinePass,
   type EmittedReport,
   type FindingChange,
@@ -1317,6 +1322,16 @@ interface ScopeStubRpc {
   writeSystemGrant(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean>;
   /** The last time a schedule's operation ran on this scope (#383), or null if never. */
   scheduleLastRun(operation: string): Promise<string | null>;
+  /**
+   * #119: one pass of a purge schedule — the DO picks what is due by its own clock and the declared
+   * horizon, and purges it as the module's system principal. See the DO.
+   */
+  runPurgeSweep(
+    operation: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    systemDoorInstance: string,
+  ): Promise<PurgePass | SystemDoorMoved>;
   /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
   freshnessProbe(
     types: string[],
@@ -3624,6 +3639,15 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       this.predicateNames.set(name, manifest.id);
     }
+    // #119: the trash rules, refused here too so a bad module fails at construction, not at its
+    // scope's first wake. The scope holds the targets; the coordinator only needs the verdict.
+    registerTrashTargets(
+      manifest.id,
+      new Set(Object.keys(registration.operations ?? {})),
+      registration.operationInputs,
+      manifest.entityStates,
+      manifest.schedules,
+    );
     // #1705: after the checks above, so a refused module leaves nothing registered here.
     this.crossVertical.register(manifest, registration.imports);
     this.moduleIds.add(manifest.id);
@@ -5114,21 +5138,38 @@ export class CloudflareScopeHost implements ScopeHost {
       const startedAt = Date.now();
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
+      // #119: a purge horizon's batch was full and moved something — the schedule stays due, so the next pass continues.
+      let stillDue = false;
       try {
         // The gate above already answered for this pass; a fire that meets a restarted scope
         // is gated again by the door (#1834).
         door ??= await this.openSystemDoor(moduleId, tenantId, scopeId, gate);
         const scope = this.buildStub(tenantId, scopeId, undefined, undefined, door);
-        await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
+        if (schedule.purge) {
+          // #119: a purge horizon's schedule runs its operation once per due entity, each its own
+          // call and transaction — and the SCOPE decides which are due and runs them, so purge
+          // authority is never an argument any stub can pass (`runPurgeSweep`).
+          const pass = await door.through((instance) => stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance));
+          // The purges' events, delivered the way each invoke's own tail delivers them.
+          await this.drainExecutors(tenantId, scopeId, null);
+          stillDue = purgeStillDue(pass);
+          const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
+          report.errors.push(...outcome.errors);
+          if (outcome.failure) throw outcome.failure;
+        } else {
+          await scope.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
+        }
         report.fired += 1;
       } catch (err) {
         status = 'failed';
         failure = { error: err };
         report.failed += 1;
-        report.errors.push({
-          operation: schedule.operation,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        if (!schedule.purge) {
+          report.errors.push({
+            operation: schedule.operation,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       lines.write({
         kind: 'schedule',
@@ -5143,6 +5184,8 @@ export class CloudflareScopeHost implements ScopeHost {
         latenessMs: lastRun === null ? null : now - dueAt,
         ...(emitted ? { emitted } : {}),
       });
+      report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
+      if (stillDue) continue;
       // #1288: 'schedule', whatever this operation happens to be called — including
       // `freshness:<something>`, which is exactly the row the evaluator no longer eats.
       await stub.recordScheduleRun(
@@ -5152,7 +5195,6 @@ export class CloudflareScopeHost implements ScopeHost {
         'schedule',
         invocationId,
       );
-      report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
     lines.end();
     return report;
@@ -5230,6 +5272,9 @@ export class CloudflareScopeHost implements ScopeHost {
         input?: I,
         invokeOptions?: InvokeOptions,
       ): Promise<O> => {
+        // #119: purge authority is never an invoke option — only the scope's own `runPurgeSweep`
+        // purges — and an options object naming a cutoff is refused outright.
+        assertNoCallerPurge(invokeOptions);
         // Entitlement gate (§4.3): a module loads for a tenant only if the tenant holds its
         // SKU flag. The COORDINATOR gates the console-managed path against the shared CP
         // (`cp.tenantHoldsEntitlement`); for a hosted/CP-less scope that call is a trusting

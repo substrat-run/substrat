@@ -270,6 +270,18 @@ type PermissionRefCheck<O, PermKey extends string> = {
   readonly resolved?: never;
 };
 
+/**
+ * What `trashed` may say on this operation: `'admits' | 'purges'` where the leading check is
+ * `{ entity: E, idFrom }` and `E` declares `trash`, and nothing anywhere else.
+ */
+type TrashedShape<O, Entities> = O extends { permission: { entity: infer E; idFrom: infer F } }
+  ? E extends keyof Entities
+    ? Entities[E] extends { trash: object }
+      ? 'admits' | (Exclude<InputKeys<O>, F> extends never ? 'purges' : never)
+      : never
+    : never
+  : never;
+
 type OpAuthority<O, Entities, Engines, PermKey extends string> = O extends { narrows: unknown }
   ? {
       readonly narrows: {
@@ -681,6 +693,26 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * node-level: state the exception, never the rule.
    */
   readonly idempotency?: false;
+  /**
+   * This operation reaches an entity IN THE TRASH (#119). Absent — the default, and the right
+   * answer for nearly every operation — the HOST refuses it on a trashed entity before the
+   * guards and the handler run: `not_found` to a caller who holds the operation's key on the
+   * entity, and the same `forbidden` as on an active one to a caller who does not. So a binned
+   * entity is gone from everyone's point of view without each handler remembering to ask.
+   *
+   * - `'admits'` — the operation works on a trashed entity too: the restore, a read of the bin.
+   * - `'purges'` — the operation is the entity's PERMANENT delete. It admits a trashed entity,
+   *   and it is the one a declared `trash.purgeAfterDays` horizon runs (`purgeSchedulesOf`).
+   *   One per entity, and its input is the id and NOTHING else — not even an optional field, so a
+   *   purge can only ever reach the entity it was invoked for.
+   *
+   * Only legal where the host can see the entity: a leading `permission: { entity, idFrom }`
+   * naming an entity that declares `trash`. Anywhere else it is a compile error, because there
+   * would be nothing for it to opt out of. An operation that narrows `resolved`, by `refFrom`
+   * or through `narrows` is not refused by the host at all, and keeps its own check
+   * (`trashRefusalGapsOf` names them).
+   */
+  readonly trashed?: TrashedShape<O, Entities>;
   readonly emits?: {
     /**
      * The entity the event is about — one of THIS module's entities, or one of a
@@ -790,6 +822,7 @@ export function defineOperations<
     assertListsArePaged(operations);
     assertConcurrencyMovesVersion(operations);
     assertFieldBagsDeclareConcurrency(operations, entities, engines ?? []);
+    assertTrashedDeclarations(operations, entities);
     return operations;
   };
 }
@@ -1035,6 +1068,174 @@ export function operationConcurrencyOf(
     out[name] = { entity: decl.over, idFrom: decl.idFrom };
   }
   return out;
+}
+
+/**
+ * The entity an operation addresses by id, as the host reads it (#119).
+ *
+ * `key` is the operation's DECLARED leading check, which the host evaluates itself before it
+ * refuses a trashed entity — so a caller without the key meets the same `forbidden` there that
+ * the handler would have given on an active one, and learns nothing about the bin.
+ */
+export interface OperationTarget {
+  readonly entity: string;
+  readonly idFrom: string;
+  readonly key: string;
+  readonly trashed?: 'admits' | 'purges';
+}
+
+/**
+ * name → the entity each operation addresses by id, for the host (#119).
+ *
+ * Every operation whose leading check is `{ entity, idFrom }`, whether or not its entity
+ * declares `trash` — the host keeps the ones whose entity does. Handed over beside
+ * `operationInputs`, and required by the host from any module with a trashable entity, so a
+ * module cannot leave its binned entities reachable by forgetting the line.
+ */
+export function operationTargetsOf(
+  operations: Readonly<Record<string, object>>,
+): Record<string, OperationTarget> {
+  const out: Record<string, OperationTarget> = {};
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as { permission?: { key?: unknown; entity?: unknown; idFrom?: unknown }; trashed?: unknown };
+    const p = decl.permission;
+    if (typeof p !== 'object' || p === null) continue;
+    if (typeof p.key !== 'string' || typeof p.entity !== 'string' || typeof p.idFrom !== 'string') continue;
+    out[name] = {
+      entity: p.entity,
+      idFrom: p.idFrom,
+      key: p.key,
+      ...(decl.trashed === 'admits' || decl.trashed === 'purges' ? { trashed: decl.trashed } : {}),
+    };
+  }
+  return out;
+}
+
+/** How often a purge horizon's schedule runs (#119). The horizon is in days; hourly is plenty. */
+export const PURGE_CADENCE_MINUTES = 60;
+
+/**
+ * The schedules a module's purge horizons run as (#119), derived — spread into the manifest's
+ * `schedules` beside any the module writes:
+ *
+ * ```ts
+ * schedules: purgeSchedulesOf(todoOperations, todoEntities),
+ * ```
+ *
+ * One per entity declaring `trash.purgeAfterDays`, running the operation that declares
+ * `trashed: 'purges'` for it, holding exactly that operation's key. Being a schedule is what
+ * gives the purge everything a schedule already has: the module's system principal and its
+ * seated grant (rendered in `PERMISSIONS.md`), the kill switch, the lifecycle hold, the
+ * exclusion of preview copies, and a sweeper on a pushed deploy.
+ *
+ * Refuses a horizon with no purging operation, and a purging operation whose input needs
+ * more than the id — the sweep has nothing else to pass it.
+ */
+export function purgeSchedulesOf(
+  operations: Readonly<Record<string, object>>,
+  entities: Readonly<Record<string, EntityDef>>,
+): { operation: string; cadence: { everyMinutes: number }; permissions: string[]; purge: { entityType: string } }[] {
+  const targets = operationTargetsOf(operations);
+  const out = [];
+  for (const entityType of Object.keys(entities).sort()) {
+    const days = entities[entityType]?.trash?.purgeAfterDays;
+    if (days === undefined) continue;
+    const purging = Object.entries(targets).filter(([, t]) => t.entity === entityType && t.trashed === 'purges');
+    if (purging.length !== 1) {
+      throw new Error(
+        `model: '${entityType}' declares trash.purgeAfterDays but ` +
+          (purging.length === 0
+            ? "no operation declares `trashed: 'purges'` for it — the horizon has nothing to run.\n" +
+              "  Remedy: mark the entity's permanent delete `trashed: 'purges'`."
+            : `${purging.map(([n]) => `'${n}'`).join(', ')} all declare \`trashed: 'purges'\` for it — one permanent delete per entity.`),
+      );
+    }
+    const [operation, target] = purging[0]!;
+    out.push({
+      operation,
+      cadence: { everyMinutes: PURGE_CADENCE_MINUTES },
+      permissions: [target.key],
+      purge: { entityType },
+    });
+  }
+  return out;
+}
+
+/**
+ * The operations on a trashable entity the HOST cannot refuse on a trashed one (#119), because
+ * their check names the entity but not the input field carrying its id — it is `resolved` in the
+ * handler. Each keeps its own `ctx.entityState` check. `lint:model` prints them as warnings, so
+ * the gap is seen when a vertical is built rather than found in review.
+ *
+ * What it cannot name, and K-45 states: an operation that reaches a trashable entity with no
+ * entity in its check at all — a `narrows` walk, a `refFrom` check, a node-level key.
+ */
+export function trashRefusalGapsOf(
+  operations: Readonly<Record<string, object>>,
+  entities: Readonly<Record<string, EntityDef>>,
+): { operation: string; entity: string }[] {
+  const targets = operationTargetsOf(operations);
+  const out: { operation: string; entity: string }[] = [];
+  for (const [name, op] of Object.entries(operations).sort(([a], [b]) => a.localeCompare(b))) {
+    const checked = (op as { permission?: { entity?: unknown } }).permission?.entity;
+    if (typeof checked !== 'string' || !entities[checked]?.trash || targets[name]) continue;
+    out.push({ operation: name, entity: checked });
+  }
+  return out;
+}
+
+/**
+ * `trashed`'s compile-time rule, held at load time too (#119) — an operations object built
+ * around the types (a cast, a generated map) must not opt out of a refusal the host cannot
+ * then see.
+ */
+function assertTrashedDeclarations(
+  operations: Record<string, unknown>,
+  entities: Record<string, EntityDef>,
+): void {
+  const purges = new Map<string, string>();
+  const targets = operationTargetsOf(operations as Record<string, object>);
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as { trashed?: unknown; permission?: unknown; input?: z.ZodObject<z.ZodRawShape> };
+    if (decl.trashed === undefined) continue;
+    const target = targets[name];
+    if ((decl.trashed !== 'admits' && decl.trashed !== 'purges') || !target || !entities[target.entity]?.trash) {
+      throw new Error(
+        `model: '${name}' declares \`trashed: ${JSON.stringify(decl.trashed)}\` — it is 'admits' or 'purges', ` +
+          'and only on an operation whose check is `{ entity, idFrom }` over an entity that declares `trash`',
+      );
+    }
+    if (decl.trashed !== 'purges') continue;
+    const other = purges.get(target.entity);
+    if (other) {
+      throw new Error(`model: '${other}' and '${name}' both declare \`trashed: 'purges'\` for '${target.entity}' — one permanent delete per entity`);
+    }
+    purges.set(target.entity, name);
+    const extra = Object.keys(decl.input?.shape ?? {}).filter((field) => field !== target.idFrom);
+    if (extra.length > 0) {
+      throw new Error(
+        `model: '${name}' declares \`trashed: 'purges'\` but its input also takes ${extra.map((f) => `\`${f}\``).join(', ')} — ` +
+          `a purge's input is the id (\`${target.idFrom}\`) and nothing else, optional fields included`,
+      );
+    }
+    if (!isStrictObjectSchema(decl.input)) {
+      throw new Error(
+        `model: '${name}' declares \`trashed: 'purges'\` but its input is not a strict object — a passthrough or ` +
+          'default object would let the call carry, or quietly drop, fields beside the id.\n' +
+          `  Remedy: \`input: z.strictObject({ ${target.idFrom}: … })\`.`,
+      );
+    }
+  }
+}
+
+/**
+ * Whether `schema` is a zod object that REFUSES unknown keys (`z.strictObject`, `.strict()`) —
+ * what a `trashed: 'purges'` operation's input must be (#119), so that the parsed input is the id
+ * and nothing else: a passthrough object keeps an extra field, and a default one drops it silently.
+ */
+export function isStrictObjectSchema(schema: unknown): boolean {
+  const def = (schema as { _zod?: { def?: { type?: unknown; catchall?: { _zod?: { def?: { type?: unknown } } } } } } | undefined)?._zod?.def;
+  return def?.type === 'object' && def.catchall?._zod?.def?.type === 'never';
 }
 
 /**
@@ -1637,7 +1838,7 @@ const pagedInputFields = {
  */
 export function operationInputsOf<const Ops extends Record<string, object>>(
   operations: Ops,
-): Record<string, z.ZodType> {
+): Readonly<Record<string, z.ZodType>> {
   const inputs: Record<string, z.ZodType> = {};
   for (const [name, op] of Object.entries(operations)) {
     const decl = op as {
@@ -1682,7 +1883,42 @@ export function operationInputsOf<const Ops extends Record<string, object>>(
     if (!decl.input) continue;
     inputs[name] = decl.inputOptional ? decl.input.optional() : decl.input;
   }
-  return inputs;
+  // #119: the declared surface travels with the schemas, so the host DERIVES each operation's
+  // target from the same declaration it parses with — a module cannot hand it a partial map.
+  // Both are frozen, and the pair is recorded where only this module can write
+  // (`declaredSurfaceOf`), so neither can be edited or imitated after the fact.
+  const targets = operationTargetsOf(operations);
+  for (const target of Object.values(targets)) Object.freeze(target);
+  DECLARED_SURFACES.set(
+    inputs,
+    Object.freeze({ operations: Object.freeze(Object.keys(operations)), targets: Object.freeze(targets) }),
+  );
+  return Object.freeze(inputs);
+}
+
+/**
+ * What `operationInputsOf` records for each map it builds (#119): every declared operation's name
+ * and the entity each addresses by id. Deep-frozen.
+ */
+export interface DeclaredOperationSurface {
+  readonly operations: readonly string[];
+  readonly targets: Readonly<Record<string, Readonly<OperationTarget>>>;
+}
+
+/**
+ * Every map `operationInputsOf` built, and the surface it was built from (#119). Module-private
+ * and keyed by the map's identity: no property on the map carries the surface, so a copy, a spread
+ * or a hand-built map has none, and nothing outside this module can add one.
+ */
+const DECLARED_SURFACES = new WeakMap<object, DeclaredOperationSurface>();
+
+/**
+ * The declared surface an `operationInputs` map was derived from — `undefined` for any map
+ * `operationInputsOf` did not itself return (a hand-built one, a copy, or one built by a second
+ * copy of this package, whose record this one cannot read).
+ */
+export function declaredSurfaceOf(operationInputs: object | undefined): DeclaredOperationSurface | undefined {
+  return operationInputs === undefined ? undefined : DECLARED_SURFACES.get(operationInputs);
 }
 
 // ---------------------------------------------------------------------------

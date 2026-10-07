@@ -61,18 +61,27 @@ function rankOrder(hits: readonly { id: string }[], rows: readonly ItemRow[]): I
 }
 
 /**
- * The list, or a refusal — never a silent empty answer. A list in the bin is not found either
- * (#119).
+ * The list, or a refusal — never a silent empty answer.
  *
- * The kernel leaves binned lists out of the reads it composes; this is the read it does not
- * compose, so it asks. A binned list is gone from everyone's point of view until it is
- * restored, which is what makes the bin a delete. Only the permanent delete reaches into it.
+ * A binned list never gets this far in an operation addressed by `listId`: the HOST refuses it
+ * `not_found` before the handler runs, unless the operation declares `trashed` (#119). So this
+ * reads the row and nothing else.
  */
-function listOrThrow(ctx: OperationContext, id: string, binned: 'refuse' | 'allow' = 'refuse'): ListRow {
+function listOrThrow(ctx: OperationContext, id: string): ListRow {
   const row = ctx.sql.query<ListRow>('SELECT * FROM todo_lists WHERE id = ?', [id])[0];
-  if (!row || (binned === 'refuse' && ctx.entityState(listRef(id)) === 'trashed')) {
-    throw substratError('not_found', `list not found: ${id}`);
-  }
+  if (!row) throw substratError('not_found', `list not found: ${id}`);
+  return row;
+}
+
+/**
+ * The list an operation reached through something else — an item, a share. The host cannot see
+ * which list that is (the check is `resolved`), so this asks the state itself: a binned list is
+ * gone from everyone's point of view until it is restored, its items and shares with it. K-45
+ * names these operations as the ones still holding their own check.
+ */
+function liveListOrThrow(ctx: OperationContext, id: string): ListRow {
+  const row = listOrThrow(ctx, id);
+  if (ctx.entityState(listRef(id)) === 'trashed') throw substratError('not_found', `list not found: ${id}`);
   return row;
 }
 
@@ -80,7 +89,7 @@ function listOrThrow(ctx: OperationContext, id: string, binned: 'refuse' | 'allo
 function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; list: ListRow } {
   const item = ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE id = ?', [itemId])[0];
   if (!item) throw substratError('not_found', `item not found: ${itemId}`);
-  return { item, list: listOrThrow(ctx, item.list_id) };
+  return { item, list: liveListOrThrow(ctx, item.list_id) };
 }
 
 const operations = {
@@ -165,22 +174,22 @@ const operations = {
    * The four moves (#119). Each is the permission check and one kernel verb, which checks the
    * same declared key on the list again, refuses a move from the wrong state with a 409, and
    * records the move as a kernel event. The list's items and shares are untouched by all four.
+   *
+   * A binned list is `not_found` to the first three, not a 409: the host refuses it before they
+   * run, since none of them declares `trashed`. A missing one is the verb's own `not_found`.
    */
   'todo/archive-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
-    listOrThrow(ctx, input.listId); // a binned list is not found, not in the wrong state
     return { id: input.listId, state: await ctx.archive(listRef(input.listId)) };
   },
 
   'todo/unarchive-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
-    listOrThrow(ctx, input.listId); // a binned list is not found, not in the wrong state
     return { id: input.listId, state: await ctx.unarchive(listRef(input.listId)) };
   },
 
   'todo/trash-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listTrash, listRef(input.listId)));
-    listOrThrow(ctx, input.listId); // a binned list is not found, not in the wrong state
     return { id: input.listId, state: await ctx.trash(listRef(input.listId)) };
   },
 
@@ -210,8 +219,9 @@ const operations = {
 
   'todo/delete-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
-    // The permanent delete is the one way to empty the bin, so it reaches binned lists too.
-    listOrThrow(ctx, input.listId, 'allow');
+    // The permanent delete empties the bin, so it reaches binned lists too (`trashed: 'purges'`),
+    // and it is what the 30-day purge horizon runs — as todo's system principal.
+    listOrThrow(ctx, input.listId);
     ctx.sql.exec('DELETE FROM todo_items WHERE list_id = ?', [input.listId]);
     ctx.sql.exec('DELETE FROM todo_shares WHERE list_id = ?', [input.listId]);
     ctx.sql.exec('DELETE FROM todo_lists WHERE id = ?', [input.listId]);
@@ -442,8 +452,8 @@ const operations = {
     if (!share) throw substratError('not_found', `share not found: ${input.shareId}`);
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(share.list_id)));
     // A share on a binned list is as gone as the list: revoking it would change a list nobody
-    // can see until it is restored.
-    listOrThrow(ctx, share.list_id);
+    // can see until it is restored. Reached through the share, so the host cannot refuse it.
+    liveListOrThrow(ctx, share.list_id);
 
     ctx.sql.exec('DELETE FROM todo_shares WHERE id = ?', [input.shareId]);
     await ctx.revoke(share.principal as PrincipalId, TODO_PERM.listContribute, listRef(share.list_id));
@@ -470,7 +480,8 @@ export const todoModule: ModuleRegistration = {
   migrations: todoMigrations,
   // The host parses every invocation against the same declaration the routes and
   // the document come from, so "parse, don't trust" holds on every path in — HTTP,
-  // test, seed — rather than in the handlers that remembered (#953).
+  // test, seed — rather than in the handlers that remembered (#953). It also derives
+  // from it which list each operation addresses, so it refuses a binned one itself (#119).
   operationInputs: operationInputsOf(todoOperations),
   operations: operations as ModuleRegistration['operations'],
 };

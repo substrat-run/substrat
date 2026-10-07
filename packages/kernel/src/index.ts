@@ -243,7 +243,25 @@ export {
   statefulTablesOf,
   entityStateWhere,
   stateColumnsOf,
+  purgeIndexDdl,
 } from './entity-state.js';
+export {
+  PURGE_BATCH,
+  assertNoCallerPurge,
+  isUnreachableParent,
+  purgeCandidates,
+  purgeCutoffOf,
+  purgeDueOf,
+  purgeHeldBy,
+  purgeOnlyKeysOf,
+  purgeReportOf,
+  purgeStillDue,
+  refuseTrashedTarget,
+  registerTrashTargets,
+  runPurgePass,
+  withheldKeysFor,
+} from './entity-trash.js';
+export type { PurgeGateFacts, PurgePass, TrashRefusalDeps } from './entity-trash.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
 export { TRASH_SCAN_BUDGET, createTrashedReads, searchStateWhere, uncheckedView } from './entity-state-reads.js';
 export type { TrashedReadDeps, TrashedReads } from './entity-state-reads.js';

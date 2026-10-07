@@ -522,6 +522,12 @@ export interface OperationContext {
    * revives it and records that as one `entity.linked` spine event, since access resumes.
    *
    * Checks no permission: the operation does, in its own vocabulary.
+   *
+   * A parent in the TRASH (#119) is refused `not_found`: nothing new hangs off a binned
+   * entity, since it is gone from everyone's view until restored. A MISSING parent of a type that
+   * declares trash gets the identical refusal, so the two cannot be told apart. An ARCHIVED parent
+   * is allowed — archived is filed away and still readable, and whether one may still be added to
+   * is the vertical's rule, not the kernel's.
    */
   link(child: EntityRef, parent: EntityRef): void;
   /**
@@ -534,6 +540,9 @@ export interface OperationContext {
    *   move would make the child its own ancestor.
    * - `from` must be a live parent edge of `child`; `conflict` otherwise. Every other
    *   parent a multi-parent entity has is left alone.
+   * - A `to` in the TRASH is refused `not_found`, as `link` refuses one (#119) — the same refusal a
+   *   missing `to` of that type gets. `from` is not: moving a child out from under a binned
+   *   parent is how it is rescued.
    * - `from` equal to `to` is a no-op: nothing written, nothing emitted.
    * - A `to` that is ALREADY a live parent of `child` is the way to detach one parent of a
    *   multi-parent child (#2044): the `from` edge is tombstoned, the live `to` edge stays
@@ -1758,6 +1767,11 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * A name here that no operation binds is an error: it is a schema enforcing
    * nothing, and it reads as coverage. A bound operation with no entry is
    * allowed and means what it always meant — nothing was declared to parse.
+   *
+   * **It also carries the declared surface (#119).** `operationInputsOf` records, for the frozen
+   * map it returns, every declared operation and the entity each addresses by id. The host DERIVES
+   * its trash refusal from that — nothing else is handed over — and a module with a trashable
+   * entity must pass that map as returned, with every operation it binds declared in it.
    *
    * Typed structurally rather than as `z.ZodType` so the kernel keeps its single
    * dependency and no zod version is pinned by the scope-host contract. The

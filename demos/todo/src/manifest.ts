@@ -17,6 +17,7 @@ import {
   manifestOperations,
   moduleManifest,
   permissionKey,
+  purgeSchedulesOf,
   type EntityGrantShape,
 } from '@substrat-run/contracts';
 import { todoEntities, todoOperations } from '../spec/model.js';
@@ -97,5 +98,8 @@ export const todoManifest = moduleManifest.parse({
   // #811: derived from the operations' own `paged.over`, never written twice —
   // the index the kernel builds and the vocabulary the read offers are one fact.
   lists: listsDeclaredBy(todoOperations, todoEntities),
+  // #119: the 30-day purge horizon on lists, as the schedule that runs `delete-list` — derived,
+  // so the operation, the key the system principal is seated with and the horizon are one fact.
+  schedules: purgeSchedulesOf(todoOperations, todoEntities),
   entitlementKey: 'todo',
 });
