@@ -46,7 +46,8 @@ export const authMethodOf = (s: Microsoft365Secret): AuthMethod =>
 /**
  * Finish a candidate credential on the platform side, before it is probed and sealed.
  *
- * - A client secret: stored as given, and any generated key material dropped.
+ * - A client secret: stored as given, and any generated key material dropped — with the
+ *   connection's expiry cleared (`null`), since the certificate it described is gone.
  * - No client secret: the key is the platform's. A rotation that changes only the tenant's
  *   fields (a new sender, a corrected site) keeps the stored keypair, so the certificate the
  *   tenant already uploaded keeps working; a connection that has none, or whose certificate
@@ -58,10 +59,11 @@ export async function prepareMicrosoft365Candidate(
   candidate: Record<string, string>,
   previous: Record<string, string> | undefined,
   opts: { now: Date; commonName: string },
-): Promise<{ secret: Record<string, string>; expiresAt?: string }> {
+): Promise<{ secret: Record<string, string>; expiresAt: string | null }> {
   const secret = { ...candidate };
   for (const k of GENERATED) delete secret[k];
-  if (secret.clientSecret?.trim()) return { secret };
+  // Entra does not report a client secret's end to an app-only caller, so there is none to set.
+  if (secret.clientSecret?.trim()) return { secret, expiresAt: null };
   delete secret.clientSecret;
 
   const kept = previous?.privateKey && previous.certificate && previous.certificateNotAfter;

@@ -112,9 +112,14 @@ first send is the check.
   mailbox — the permission this setup deliberately leaves out.
 - **HTML body only.** A Graph message has one body; the plain-text part is not sent.
 - **Custom headers** must start with `X-`; others are left out.
+- **A failed send can be retried.** When Exchange throttles the mailbox (about 30 messages a
+  minute) or Graph is briefly unavailable, the connection shows the error, but the next send
+  still goes to Microsoft. The first one that succeeds marks the connection healthy again.
 
 ## Rotation and revocation
 
 A generated certificate is valid for a year, and its end is the connection's expiry. Editing the
-connection's other fields keeps the same certificate. Disabling or deleting the app under
+connection's other fields keeps the same certificate. Switching the connection to a client secret
+drops the certificate and clears that expiry with it, since Microsoft does not report a client
+secret's end to the app. Disabling or deleting the app under
 **Enterprise applications** revokes everything at once.

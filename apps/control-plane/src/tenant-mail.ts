@@ -77,7 +77,11 @@ export async function resolveTenantSender(
   // must not take mail through every other connection of the tenant down with it.
   const unanswered: Connection['id'][] = [];
   for (const connection of live) {
-    if (connection.status !== 'active') continue;
+    // `error` is health, not withdrawal: the last use failed (a throttle, a 5xx, a timeout) and
+    // the credential is still held, so a retry must reach the provider — and its success is what
+    // turns the connection active again. Refusing it here would hold mail until someone re-saved
+    // the connection. `expired` and `revoked` are the provider's and the tenant's no.
+    if (connection.status !== 'active' && connection.status !== 'error') continue;
     const sender = deps.senders[connection.provider];
     if (!sender) continue;
     let addresses: readonly string[];

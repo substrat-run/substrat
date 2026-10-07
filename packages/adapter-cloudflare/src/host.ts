@@ -8398,7 +8398,7 @@ export class CloudflareScopeHost implements ScopeHost {
         actor,
         id: ConnectionId,
         secret: ConnectionSecret,
-        expiresAt?: string,
+        expiresAt?: string | null,
         opts?: { rotatedBy?: string },
       ) => {
         const row = await this.cp.readConnection(id);
@@ -8409,7 +8409,7 @@ export class CloudflareScopeHost implements ScopeHost {
           id,
           sealed.keyId,
           sealed.ciphertext,
-          expiresAt ?? row.expires_at,
+          expiresAt === undefined ? row.expires_at : expiresAt,
           now,
         );
         await this.recordAdmin(
@@ -8421,7 +8421,7 @@ export class CloudflareScopeHost implements ScopeHost {
             id,
             provider: row.provider,
             rotatedAt: now,
-            expiresAt: expiresAt ?? row.expires_at,
+            expiresAt: expiresAt === undefined ? row.expires_at : expiresAt,
             // §3.5.1's attribution, rotate-side: the authorizing tenant principal,
             // never laundered into the actor column.
             ...(opts?.rotatedBy ? { rotatedBy: opts.rotatedBy } : {}),

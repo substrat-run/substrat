@@ -2237,10 +2237,7 @@ export default {
                 connectionInspectorsFor(c.env)[provider]?.probeCandidate?.(secret),
               ),
             // #2100: the provider's own half of the credential (a generated keypair).
-            prepareCandidate: (provider, candidate, previous) =>
-              Promise.resolve(
-                connectionInspectorsFor(c.env)[provider]?.prepareCandidate?.(candidate, previous),
-              ),
+            prepareCandidate: (provider) => connectionInspectorsFor(c.env)[provider]?.prepareCandidate,
           },
         );
         return c.json(result);

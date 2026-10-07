@@ -413,7 +413,7 @@ describe('relayConnectionUpsert — a provider that prepares its own credential 
     const seen: { previous: unknown; probed: unknown }[] = [];
     let probedSecret: unknown;
     const result = await relayConnectionUpsert(host, actor, request({ clientId: 'app-1' }), {
-      prepareCandidate: async (_provider, candidate, previous) => {
+      prepareCandidate: () => async (candidate, previous) => {
         seen.push({ previous, probed: undefined });
         return { secret: { ...candidate, privateKey: 'KEY-1' }, expiresAt: EXPIRES };
       },
@@ -433,7 +433,7 @@ describe('relayConnectionUpsert — a provider that prepares its own credential 
   it('hands the provider the live secret on a rotation, so what must survive an edit can', async () => {
     let previous: Record<string, string> | undefined;
     await relayConnectionUpsert(host, actor, request({ clientId: 'app-2' }), {
-      prepareCandidate: async (_provider, candidate, prev) => {
+      prepareCandidate: () => async (candidate, prev) => {
         previous = prev;
         return { secret: { ...candidate, privateKey: prev?.privateKey ?? 'NEW' } };
       },
@@ -443,7 +443,42 @@ describe('relayConnectionUpsert — a provider that prepares its own credential 
   });
 
   it('a provider with nothing to add leaves the candidate as given', async () => {
-    await relayConnectionUpsert(host, actor, request({ clientId: 'app-3' }), { prepareCandidate: async () => undefined });
+    await relayConnectionUpsert(host, actor, request({ clientId: 'app-3' }), { prepareCandidate: () => undefined });
     expect((await host.admin.openConnection(t, 'desk', 'mailbox'))?.secret).toEqual({ clientId: 'app-3' });
+  });
+
+  it("a provider's null expiry clears the one the connection held; an absent one keeps it", async () => {
+    const expiryOf = async () => (await host.admin.listConnections(staff, { tenantId: t, provider: 'mailbox' }))[0]!.expiresAt;
+    await relayConnectionUpsert(host, actor, request({ clientId: 'app-4' }), {
+      prepareCandidate: () => async (candidate) => ({ secret: candidate, expiresAt: EXPIRES }),
+    });
+    expect(await expiryOf()).toBe(EXPIRES);
+    await relayConnectionUpsert(host, actor, request({ clientId: 'app-5' }), {
+      prepareCandidate: () => async (candidate) => ({ secret: candidate }),
+    });
+    expect(await expiryOf()).toBe(EXPIRES);
+    // A certificate swapped for a client secret: the expiry described the certificate, now gone.
+    await relayConnectionUpsert(host, actor, request({ clientId: 'app-6', clientSecret: 'S' }), {
+      prepareCandidate: () => async (candidate) => ({ secret: candidate, expiresAt: null }),
+    });
+    expect(await expiryOf()).toBeNull();
+  });
+
+  it('a provider that prepares nothing rotates a credential the deployment can no longer open', async () => {
+    // The same directory under a sealing key it did not seal the live secret with.
+    const rekeyed = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k2', new Uint8Array(32).fill(7)) });
+    try {
+      await expect(rekeyed.admin.openConnection(t, 'desk', 'mailbox')).rejects.toThrow();
+      // Twin: a provider that does prepare needs the old secret, and says so rather than guessing.
+      await expect(
+        relayConnectionUpsert(rekeyed, actor, request({ clientId: 'app-7' }), {
+          prepareCandidate: () => async (candidate) => ({ secret: candidate }),
+        }),
+      ).rejects.toThrow();
+      await relayConnectionUpsert(rekeyed, actor, request({ clientId: 'app-7' }), { prepareCandidate: () => undefined });
+      expect((await rekeyed.admin.openConnection(t, 'desk', 'mailbox'))?.secret).toEqual({ clientId: 'app-7' });
+    } finally {
+      await rekeyed.close();
+    }
   });
 });

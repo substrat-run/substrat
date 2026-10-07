@@ -110,18 +110,24 @@ describe('sending as a tenant address (#2098)', () => {
     expect(m365.sent).toHaveLength(0);
   });
 
-  it('skips a connection that is not active, and one whose connector sends no mail', async () => {
+  it('skips an expired or revoked connection, and one whose connector sends no mail', async () => {
+    for (const status of ['expired', 'revoked'] as const) {
+      const m365 = recordingSender(['office@acme.example']);
+      const e = await refusal(
+        sendAsTenant(deps([connection('m365', { status }), connection('planima')], { m365: m365.sender }), input()),
+      );
+      expect(e.status).toBe(403);
+      expect(m365.sent).toHaveLength(0);
+    }
+  });
+
+  it('sends through a connection whose last use failed, so a retry after a throttle reaches the provider', async () => {
+    // A 429 or a 5xx records the use as failed and the adapter marks the connection `error`;
+    // refusing it here held every later send at a 403 until someone re-saved the connection.
     const m365 = recordingSender(['office@acme.example']);
-    const e = await refusal(
-      sendAsTenant(
-        deps([connection('m365', { status: 'expired' } as Partial<Connection>), connection('planima')], {
-          m365: m365.sender,
-        }),
-        input(),
-      ),
-    );
-    expect(e.status).toBe(403);
-    expect(m365.sent).toHaveLength(0);
+    const conn = connection('m365', { status: 'error', lastError: 'HTTP 429 from microsoft365' });
+    await sendAsTenant(deps([conn], { m365: m365.sender }), input());
+    expect(m365.sent.map((x) => x.connection.id)).toEqual([conn.id]);
   });
 
   it('refuses when two connections claim the address, rather than choosing one', async () => {

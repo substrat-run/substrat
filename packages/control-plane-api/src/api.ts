@@ -158,7 +158,7 @@ import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type Prev
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
-import { ConnectionRelayError, relayConnectionUpsert } from './connection-relay.js';
+import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -264,11 +264,9 @@ export interface ConnectionInspector {
    * Finish a candidate credential before it is probed and stored (#2100) — for a provider
    * where part of the credential is the platform's to make (a generated keypair). Gets the
    * live connection's secret when the upsert rotates one, so what must survive an edit can.
+   * An `expiresAt` of `null` clears the connection's expiry (`ConnectionCandidatePrepare`).
    */
-  prepareCandidate?: (
-    candidate: Record<string, string>,
-    previous: Record<string, string> | undefined,
-  ) => Promise<{ secret: Record<string, string>; expiresAt?: string }>;
+  prepareCandidate?: ConnectionCandidatePrepare;
   /**
    * The PUBLIC certificate the connection authenticates with, for the tenant to register on
    * the provider's side (#2100). `null` when this connection uses none (a client secret).
@@ -2366,11 +2364,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const probeCandidate = async (provider: string, secret: Record<string, string>) =>
     options.connectionInspectors?.[provider]?.probeCandidate?.(secret);
   /** #2100: the provider's own half of a credential, made before the probe sees it. */
-  const prepareCandidate = async (
-    provider: string,
-    candidate: Record<string, string>,
-    previous: Record<string, string> | undefined,
-  ) => options.connectionInspectors?.[provider]?.prepareCandidate?.(candidate, previous);
+  const prepareCandidate = (provider: string) => options.connectionInspectors?.[provider]?.prepareCandidate;
 
   const inspectableConnection = async (c: Context<{ Variables: Vars }>) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));

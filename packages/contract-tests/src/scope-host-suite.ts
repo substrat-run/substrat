@@ -5202,7 +5202,23 @@ export function scopeHostContractSuite(
         expect(JSON.stringify(log)).not.toContain('tok-relay-rotated');
       });
 
-      it('records health, and a success clears a prior error', async () => {
+      it('a rotation sets the expiry, keeps it when omitted, and clears it with null (#2100)', async () => {
+        const [row] = await host.admin.listConnections(staff, { tenantId: t1, vertical: 'callout' });
+        const expiry = async () =>
+          (await host.admin.listConnections(staff, { tenantId: t1, vertical: 'callout' })).find((c) => c.id === row!.id)!
+            .expiresAt;
+        const at = '2027-10-07T12:00:00.000Z';
+        await host.admin.updateConnectionSecret(staff, row!.id, { accessToken: 'tok-dated' }, at);
+        expect(await expiry()).toBe(at);
+        await host.admin.updateConnectionSecret(staff, row!.id, { accessToken: 'tok-kept' });
+        expect(await expiry()).toBe(at);
+        // The credential that had an end was replaced by one that has none (a certificate → a
+        // client secret): the old end must not stay on the connection, reading as this one's.
+        await host.admin.updateConnectionSecret(staff, row!.id, { accessToken: 'tok-undated' }, null);
+        expect(await expiry()).toBeNull();
+      });
+
+            it('records health, and a success clears a prior error', async () => {
         const [row] = await host.admin.listConnections(staff, {
           tenantId: t1,
           vertical: 'callout',

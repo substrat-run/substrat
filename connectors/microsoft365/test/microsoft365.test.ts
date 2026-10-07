@@ -167,7 +167,8 @@ describe('preparing a candidate on the platform side', () => {
     });
     expect(secret.privateKey).toBeUndefined();
     expect(secret.certificate).toBeUndefined();
-    expect(expiresAt).toBeUndefined();
+    // Cleared, not left: the expiry the connection held was the certificate's, and it is gone.
+    expect(expiresAt).toBeNull();
   });
 });
 
