@@ -555,14 +555,43 @@ export function verticalResolutionContractSuite(
       expect((await host.admin.resolveVerticalInstance(t, slug)).outcome).toBe('resolved');
     });
 
+    let secondary: ScopeId;
     it('two live instances are ambiguous — refused, never guessed', async () => {
-      await scope(t);
+      secondary = await scope(t);
       await expect(host.admin.resolveVerticalInstance(t, slug)).resolves.toEqual({
         outcome: 'ambiguous',
         tenantId: t,
         vertical: slug,
         count: 2,
       });
+    });
+
+    it('a caller chooses one of two targets; stale and foreign choices never redirect', async () => {
+      const caller = scopeId.parse(ulid());
+      const secondCaller = scopeId.parse(ulid());
+      for (const id of [caller, secondCaller]) {
+        await host.provisionScope(staff, { tenantId: t, scopeId: id, vertical: other });
+        await host.admin.activateScope(staff, t, id);
+      }
+      const read = () => host.admin.resolvePeerInstance(t, caller, slug);
+      expect((await read()).outcome).toBe('ambiguous');
+      await expect(host.admin.setPeerBinding(staff, t, caller, slug, primary)).resolves.toMatchObject({ changed: true });
+      await expect(read()).resolves.toEqual({ outcome: 'resolved', instance: { tenantId: t, scopeId: primary, vertical: slug } });
+      expect((await host.admin.resolvePeerInstance(t, secondCaller, slug)).outcome).toBe('ambiguous');
+      await host.admin.suspendScope(staff, t, primary);
+      expect((await read()).outcome).toBe('bound-unavailable');
+      // A remaining singleton is never silently substituted for an explicit choice.
+      expect(await host.admin.resolveVerticalInstance(t, slug)).toEqual({
+        outcome: 'resolved', instance: { tenantId: t, scopeId: secondary, vertical: slug },
+      });
+      await host.admin.unsuspendScope(staff, t, primary);
+      expect((await read()).outcome).toBe('resolved');
+      const foreign = (await host.admin.resolveVerticalInstance(u, slug));
+      if (foreign.outcome !== 'resolved') throw new Error('foreign fixture absent');
+      await expect(host.admin.setPeerBinding(staff, t, caller, slug, foreign.instance.scopeId)).rejects.toThrow();
+      expect((await read()).outcome).toBe('resolved');
+      await host.admin.setPeerBinding(staff, t, caller, slug, null);
+      expect((await read()).outcome).toBe('ambiguous');
     });
   });
 }

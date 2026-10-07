@@ -320,6 +320,22 @@ describe('peerInvokeHandler (#1706)', () => {
     expect(String(outcome.error)).toMatch(/runs 2 instances/);
     expect(calls).toHaveLength(0);
 
-    await host.admin.archiveScope(staff, t, second); // leave the fixture as we found it
+    // Queuing records a target slug, not a scope. Execution consults the binding then in force.
+    const queued = intent({ payload: { vertical: 'acme/crm', operation: 'customer/list' } });
+    await host.admin.setPeerBinding(staff, t, caller, 'acme/crm', second);
+    expect((await handler()(ctx, queued)).status).toBe('done');
+    expect(calls.at(-1)?.scopeId).toBe(second);
+    await host.admin.setPeerBinding(staff, t, caller, 'acme/crm', target);
+    expect((await handler()(ctx, intent({ payload: { vertical: 'acme/crm', operation: 'customer/list' } }))).status).toBe('done');
+    expect(calls.at(-1)?.scopeId).toBe(target);
+    await host.admin.setPeerBinding(staff, t, caller, 'acme/crm', second);
+
+    await host.admin.archiveScope(staff, t, second);
+    calls.length = 0;
+    const stale = await handler()(ctx, intent({ payload: { vertical: 'acme/crm', operation: 'customer/list' } }));
+    expect(stale).toMatchObject({ status: 'failed' });
+    expect(String(stale.error)).toMatch(/bound instance.*unavailable/);
+    expect(calls).toHaveLength(0);
+    await host.admin.setPeerBinding(staff, t, caller, 'acme/crm', null); // leave the fixture as we found it
   });
 });
