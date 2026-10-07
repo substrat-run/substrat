@@ -36,6 +36,26 @@ async function collect(source: GrantWalkStore, limit: number): Promise<string[]>
 }
 
 describe('grant-scoped depth-first walk', () => {
+  it('does not trust a tuple evaluator after its check method is replaced', async () => {
+    const subject = { kind: 'principal' as const, id: principalId.parse('01JZ00000000000000000000A1') };
+    const where = node.parse({ tenantId: '01JZ0000000000000000000001', scopeId: '01JZ0000000000000000000002' });
+    const scope: ScopeTupleReader = {
+      tuples: () => [], grant: () => undefined, parents: () => [], switchedOff: () => false,
+    };
+    const checker = createTupleEvaluator({
+      now: () => '2026-01-01T00:00:00Z', tenantTuples: () => [], getRole: () => undefined,
+      scopeFor: () => scope,
+    });
+    checker.check = async (_subject, _permission, _node, entity) => entity
+      ? { allowed: false, checked: permission, node: where }
+      : { allowed: true, proof: [] };
+    const result = await grantedEntitiesForContext(
+      checker, subject, permission, where, 'item', undefined,
+      (_key, entity) => checker.check(subject, permission, where, entity),
+    );
+    expect(result).toEqual({ kind: 'incomplete', reason: 'checker' });
+  });
+
   it('uses ctx.check for withheld, system override, and every returned candidate', async () => {
     const who = principalId.parse('01JZ00000000000000000000A1');
     const subject = { kind: 'principal' as const, id: who };
