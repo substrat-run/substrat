@@ -2023,6 +2023,18 @@ export const listMod: ModuleRegistration = {
         { continuation: ctx.pageContinuation('listorder:visible', query) },
       );
     }) as OperationHandler<never, unknown>,
+    'list/continuation-cap': (async (ctx) => {
+      const codec = ctx.pageContinuation('listorder:cap-probe', { filters: { kind: 'cap-probe' } });
+      let first: string | null = null;
+      let last: string | null = null;
+      for (let i = 0; i < 257; i++) {
+        last = await codec.seal(`hidden ${i}`, true);
+        if (i === 0) first = last;
+      }
+      let oldestRejected = false;
+      try { await codec.open(first!); } catch { oldestRejected = true; }
+      return { oldestRejected, lastPosition: await codec.open(last!) };
+    }) as OperationHandler<never, unknown>,
     // The read under test, passed straight through: the suite asserts on the
     // entries, the cursor and the total, which is where a naive keyset is wrong.
     'list/page': (async (ctx, input) => {

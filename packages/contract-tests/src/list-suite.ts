@@ -484,5 +484,10 @@ export function listContractSuite(
       expect(second.entries.map((r) => r['id'])).toEqual(['v2074']);
       expect(second.nextCursor).toMatch(/^sc1\./);
     });
+
+    it('evicts the oldest private locator at the per-scope cap', async () => {
+      const result = await stub.invoke<{ oldestRejected: boolean; lastPosition: string }>('list/continuation-cap', {});
+      expect(result).toEqual({ oldestRejected: true, lastPosition: 'hidden 256' });
+    });
   });
 }

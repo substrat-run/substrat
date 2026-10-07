@@ -15,7 +15,7 @@ const LIFETIME_MS = 15 * 60_000;
 const ROTATION_MS = 24 * 60 * 60_000;
 export const CONTINUATION_POSITION_CAP = 256;
 /** Remove this migration window at the next cursor-breaking release. */
-export const ACCEPT_LEGACY_VISIBLE_CURSORS = true;
+const ACCEPT_LEGACY_VISIBLE_CURSORS = true;
 
 export interface ContinuationKey {
   id: string;
