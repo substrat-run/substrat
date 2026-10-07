@@ -1,4 +1,4 @@
-import { shopProvider } from './seed.js';
+import { portalPerms, shopProvider } from './seed.js';
 import {
   platformActorId,
   principalId,
@@ -9,7 +9,6 @@ import {
 import { ulid } from '@substrat-run/kernel';
 import type { AuthSubject, DevLogin } from '@substrat-run/dev-issuer';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { SHOP_PERM } from './module.js';
 import type { ShopWorld } from './seed.js';
 import { ROLE_HINTS } from './personas.js';
 
@@ -120,11 +119,13 @@ async function provisionShopper(
     roleKey: 'shopper',
     node: { tenantId: world.t1, scopeId: world.s1 },
   });
-  await host.admin.grant(staff, {
+  // The declared `customer` shape, not its keys one by one (#2083): the marker it leaves is
+  // what lets a key the shape gains later reach this shopper at the next reconcile.
+  await host.admin.grantEntityShape(staff, {
     principalId: principal,
-    permission: SHOP_PERM.orderRead,
     node: { tenantId: world.t1, scopeId: world.s1 },
     entity: { entityType: 'customer', entityId: customer.id },
+    permissions: portalPerms,
     grantedBy: world.astrid,
   });
   await host.admin.linkIdentity(staff, {

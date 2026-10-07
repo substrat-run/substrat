@@ -12,6 +12,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { substratError } from '@substrat-run/contracts';
+import { PermissionDenied } from './permission-checker.js';
 import { explicitTupleSql } from './entity-grant.js';
 import { liveTupleSql } from './permission-eval.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
@@ -48,6 +49,12 @@ import type { SwitchSql } from './system-switch.js';
  *   at most what the pass's budget allows; the markers are the progress, since a marked pair is
  *   no longer a candidate, and a record tuple (`shape:<type>`, `shape-backfilled`, `scope:<id>`)
  *   ends it once a batch comes back short.
+ * - `holder: 'grantee'` (#2083), for a record that names no principal (a portal customer, a
+ *   contact): whoever holds a live key of the shape on such an entity was given it. Sound by
+ *   enforcement, not by promise: each pass records the shape's keys (`shape-grantee-key`), and
+ *   {@link assertDelegable} makes `ctx.grant` refuse them on that entity type from then on, so
+ *   only the shape grant can mint them. A tuple from before the first such pass cannot be told
+ *   apart, which the declaration's documentation says plainly.
  *
  * Only a shape declared `bootstrap: true` is reconciled: one a person is GIVEN on their own
  * record. A sharing shape, which people reach through `ctx.grant` (todo's `list`), is skipped
@@ -73,6 +80,13 @@ export function shapeTopUpBatch(batch: number = SHAPE_TOP_UP_BATCH): number {
 
 /** The backfill's run-once record: `(shape:<type>, backfilled, scope:<id>)`. */
 const BACKFILLED_RELATION = 'shape-backfilled';
+
+/**
+ * #2083: `(shape:<type>, shape-grantee-key, granted:<key>)` — a key of a `holder: 'grantee'`
+ * shape, which `ctx.grant` must not give on that entity type. Like the run-once record, its
+ * subject is no principal, so the checker's walk never reads it as authority.
+ */
+const GRANTEE_KEY_RELATION = 'shape-grantee-key';
 
 /** The writer of the top-up events: the kernel, as no module or person acted. */
 const KERNEL_ACTOR = { system: moduleId.parse('@substrat-run/kernel') };
@@ -131,6 +145,7 @@ export function topUpEntityGrantShapes(db: SwitchSql, pass: ShapePass): { topped
   // Here as well as at each entry point: a pass with no budget never reports done, so a caller
   // looping until it does would never stop.
   let budget = shapeTopUpBatch(pass.limit);
+  recordGranteeKeys(db, pass.shapes);
   let toppedUp = 0;
   for (const shape of pass.shapes) {
     // A sharing shape is never reconciled — not topped up and not backfilled (see `bootstrap`).
@@ -139,7 +154,7 @@ export function topUpEntityGrantShapes(db: SwitchSql, pass: ShapePass): { topped
     if (keys.length === 0) continue;
     const prefix = `${shape.entityType}:`;
     const json = JSON.stringify(keys);
-    budget -= backfill(db, pass.scopeId, shape, prefix, json, budget);
+    budget -= backfill(db, pass, shape, prefix, json, budget);
     if (budget === 0) return { toppedUp, done: false };
     const holders = db.all(
       `SELECT m.subject, m.object FROM _substrat_tuples m
@@ -201,9 +216,9 @@ export function topUpEntityGrantShapes(db: SwitchSql, pass: ShapePass): { topped
  * record when the batch comes back short. Returns how many it marked. See the module comment:
  * provenance only, from the shape's declared `holder`.
  */
-function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefix: string, json: string, budget: number): number {
+function backfill(db: SwitchSql, pass: ShapePass, shape: EntityGrantShape, prefix: string, json: string, budget: number): number {
   if (!shape.holder || budget === 0) return 0;
-  const record = [`shape:${shape.entityType}`, BACKFILLED_RELATION, `scope:${scopeId}`] as const;
+  const record = [`shape:${shape.entityType}`, BACKFILLED_RELATION, `scope:${pass.scopeId}`] as const;
   if (db.all('SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?', ...record).length > 0) {
     return 0;
   }
@@ -228,6 +243,25 @@ function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefi
       prefix,
       prefix.length + 1,
       json,
+      budget,
+    ) as { subject: string; object: string }[];
+  } else if (shape.holder === 'grantee') {
+    // Whoever holds a LIVE key of the shape on an entity of this type. Live, unlike the other two
+    // holders: with no record naming the person, a key taken back from them is no evidence they
+    // still belong there, and marking them would hand a revoked portal the next key it gains.
+    candidates = db.all(
+      `SELECT DISTINCT t.subject, t.object FROM _substrat_tuples t
+        WHERE substr(t.object, 1, ?) = ?
+          AND substr(t.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}'
+          AND t.relation IN (SELECT 'granted:' || value FROM json_each(?))
+          AND ${liveTupleSql('t')}
+          AND ${unmarked('t.subject', 't.object')}
+        ORDER BY t.subject, t.object
+        LIMIT ?`,
+      prefix.length,
+      prefix,
+      json,
+      pass.now,
       budget,
     ) as { subject: string; object: string }[];
   } else {
@@ -262,6 +296,50 @@ function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefi
     db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', ...record);
   }
   return candidates.length;
+}
+
+/**
+ * The keys of every `holder: 'grantee'` bootstrap shape, recorded so {@link assertDelegable} can
+ * refuse them to `ctx.grant`. A reconcile carries the reached version's whole reviewed registry,
+ * so the records are made to match it exactly: a declaration a later version drops stops
+ * refusing. Bounded by the declared keys, so it runs in every pass without a budget.
+ */
+function recordGranteeKeys(db: SwitchSql, shapes: readonly EntityGrantShape[]): void {
+  const rows = shapes
+    .filter((s) => s.bootstrap && s.holder === 'grantee')
+    .flatMap((s) => keysOf(s.permissions).map((k): [string, string] => [`shape:${s.entityType}`, `granted:${k}`]));
+  db.run(
+    // The subject range keeps it on the primary key: `shape:` rows only, never the whole table.
+    `DELETE FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?
+        AND NOT EXISTS (SELECT 1 FROM json_each(?) r
+                         WHERE json_extract(r.value, '$[0]') = _substrat_tuples.subject
+                           AND json_extract(r.value, '$[1]') = _substrat_tuples.object)`,
+    GRANTEE_KEY_RELATION,
+    JSON.stringify(rows),
+  );
+  for (const [subject, object] of rows) {
+    db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', subject, GRANTEE_KEY_RELATION, object);
+  }
+}
+
+/**
+ * `ctx.grant`'s refusal (#2083): a key of a `holder: 'grantee'` shape is given on that entity
+ * type only by the shape grant, which is what lets the backfill read any live holder of it as
+ * someone given the shape. `permission_denied`, before the caller's own check.
+ */
+export function assertDelegable(db: SwitchSql, permission: string, entity: EntityRef): void {
+  const declared = db.all(
+    'SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?',
+    `shape:${entity.entityType}`,
+    GRANTEE_KEY_RELATION,
+    `granted:${permission}`,
+  );
+  if (declared.length > 0) {
+    throw new PermissionDenied(
+      `cannot grant '${permission}' on ${entity.entityType}:${entity.entityId} — ` +
+        `it is a key of the declared '${entity.entityType}' shape, given only by the shape grant`,
+    );
+  }
 }
 
 /** The kernel's event for one top-up — the audit record, on the entity's own history. */

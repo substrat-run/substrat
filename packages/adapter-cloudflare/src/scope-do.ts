@@ -103,6 +103,7 @@ import {
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   seatScopeTuple,
+  assertDelegable,
   delegatedGrantSql,
   delegatedRevokeSql,
   grantEntityShapeIn,
@@ -7508,6 +7509,7 @@ export function defineScopeDO(
         grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.grant');
           entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
+          assertDelegable(this.switchSql(), permission, entity); // #2083: a 'grantee' shape's keys are the shape grant's alone
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(
