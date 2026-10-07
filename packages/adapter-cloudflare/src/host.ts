@@ -413,6 +413,8 @@ import {
   reassertOnRow,
   switchActionOf,
   switchAuditSubject,
+  recordAuditOutcome,
+  auditWarningOf,
   switchNotFoundMessage,
   recordWriteSuperseded,
   switchSubjectOf,
@@ -5806,7 +5808,7 @@ export class CloudflareScopeHost implements ScopeHost {
       key: string,
       reason: string,
       to: 'on' | 'off',
-    ): Promise<{ operationId: string; outcome: SwitchOutcome }> => {
+    ): Promise<{ operationId: string; outcome: SwitchOutcome; auditWarning?: string }> => {
       const { tenantId, scopeId } = node;
       const { vertical, delegated, move, attestFence } = await switchTarget(kind, tenantId, scopeId);
       const action = switchActionOf(kind, to);
@@ -5823,11 +5825,22 @@ export class CloudflareScopeHost implements ScopeHost {
       // admin log are separate, so no order makes the pair atomic; this one fails toward
       // "an intent with no recorded outcome" and never toward "a switch that moved with no
       // audit row". A retry after a crash re-audits even though it answers `changed: false`.
+      //
+      // #2089: every outcome row goes through the kernel's `recordAuditOutcome`, as the control
+      // plane's audited changes do. One that cannot be written is logged with the operation id,
+      // never swallowed; the call still answers with its own error (or, applied, with success and
+      // `auditWarning`), and the scheduled settle closes the intent as `unknown`.
       const operationId = ulid();
       const target = { tenantId, scopeId, vertical };
       const base = { operationId, ...switchAuditSubject(kind, key, to) };
       await this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason });
       const errorOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+      const recordOutcome = (row: { phase: 'applied' | 'refused' | 'failed' } & Record<string, unknown>) =>
+        recordAuditOutcome(() => this.recordAdmin(actor, action, target, null, { ...base, ...row }), {
+          flow: `${kind}-switch`,
+          operationId,
+          phase: row.phase,
+        }, (message, fields) => console.error(message, fields));
       // #2045 (Codex r3): the deployment's fence is attested BEFORE anything is recorded or moved. An
       // ON on a deployment built before it is refused here, with nothing written anywhere but the
       // audit. An OFF goes on: the kill switch must work on every deployment (see `UnattestedSwitch`).
@@ -5836,9 +5849,7 @@ export class CloudflareScopeHost implements ScopeHost {
           throw substratError('precondition_failed', `${unfencedMessage(scopeId)} Nothing was switched.`);
         }
       } catch (err) {
-        await this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', error: errorOf(err) }).catch(
-          () => undefined,
-        );
+        await recordOutcome({ phase: 'refused', error: errorOf(err) });
         throw err;
       }
       // The directory's record (#1674; #2029 for a peer), written BEFORE the scope moves, both
@@ -5855,15 +5866,13 @@ export class CloudflareScopeHost implements ScopeHost {
         // Nothing has moved: fail the call here, audited. An ON must not switch a scope on
         // whose record still says off (the next reconcile would switch it back off), and an
         // OFF must not leave a scope off that the record does not know of (#1823).
-        await this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) }).catch(
-          () => undefined,
-        );
+        await recordOutcome({ phase: 'failed', error: errorOf(err) });
         throw err;
       }
       // #2045: a newer call on this subject has recorded its position already: this one writes
       // nothing, here or in the scope, and says so.
       if (recordWriteSuperseded(prior, record)) {
-        await this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        await recordOutcome({ phase: 'refused', superseded: true });
         throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
       }
       let outcome: SwitchOutcome;
@@ -5882,13 +5891,12 @@ export class CloudflareScopeHost implements ScopeHost {
         // readback can settle the scope and nothing is put back: the record is this call's position
         // under the newest fence, and its write-ahead mark makes the next re-assert move the scope
         // to it, under that fence, whichever way it lies now.
-        await this.recordAdmin(actor, action, target, null, {
-          ...base,
+        await recordOutcome({
           phase: err instanceof UnattestedSwitch ? 'refused' : 'failed',
           error: errorOf(err),
           recordKept: true,
           reassertOwed: true,
-        }).catch(() => undefined);
+        });
         if (err instanceof UnattestedSwitch) throw substratError('precondition_failed', err.message);
         throw err;
       }
@@ -5896,7 +5904,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // record is that newer call's too (its write overwrote this one's, mark included), so nothing
       // is undone and no mark is this call's to clear.
       if (outcome.superseded) {
-        await this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        await recordOutcome({ phase: 'refused', superseded: true });
         throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
       }
       // A call that held nothing moved nothing, so its record write is undone: left `off`, it
@@ -5925,8 +5933,7 @@ export class CloudflareScopeHost implements ScopeHost {
       } else if (!unfenced) {
         owedError = await this.cp.clearSwitchOwed(kind, tenantId, scopeId, key, operationId).then(() => null, errorOf);
       }
-      await this.recordAdmin(actor, action, target, null, {
-        ...base,
+      const unrecorded = await recordOutcome({
         phase: outcome.held ? 'applied' : 'refused',
         changed: outcome.changed,
         permissions: outcome.permissions,
@@ -5941,7 +5948,7 @@ export class CloudflareScopeHost implements ScopeHost {
             (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
         );
       }
-      return { operationId, outcome };
+      return { operationId, outcome, ...(unrecorded ? { auditWarning: auditWarningOf('the switch', unrecorded) } : {}) };
     };
 
     /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
@@ -5951,13 +5958,14 @@ export class CloudflareScopeHost implements ScopeHost {
       to: 'on' | 'off',
     ): Promise<SystemSwitchResult> => {
       const input = systemSwitch.parse(raw);
-      const { operationId, outcome } = await switchSubjectAt(actor, 'system', input.node, input.moduleId, input.reason, to);
+      const { operationId, outcome, auditWarning } = await switchSubjectAt(actor, 'system', input.node, input.moduleId, input.reason, to);
       return {
         operationId,
         moduleId: input.moduleId,
         schedules: to,
         changed: outcome.changed,
         permissions: outcome.permissions as PermissionKey[],
+        ...(auditWarning ? { auditWarning } : {}),
       };
     };
 
@@ -5968,13 +5976,14 @@ export class CloudflareScopeHost implements ScopeHost {
       to: 'on' | 'off',
     ): Promise<PeerSwitchResult> => {
       const input = peerSwitch.parse(raw);
-      const { operationId, outcome } = await switchSubjectAt(actor, 'peer', input.node, input.vertical, input.reason, to);
+      const { operationId, outcome, auditWarning } = await switchSubjectAt(actor, 'peer', input.node, input.vertical, input.reason, to);
       return {
         operationId,
         vertical: input.vertical,
         calls: to,
         changed: outcome.changed,
         permissions: outcome.permissions as PermissionKey[],
+        ...(auditWarning ? { auditWarning } : {}),
       };
     };
 

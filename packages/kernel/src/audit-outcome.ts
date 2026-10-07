@@ -45,9 +45,8 @@ export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
 /** The structured line an outcome row that could not be written leaves, keyed so a log search finds every one. */
 export const UNRECORDED_OUTCOME_LOG = 'audit-outcome-unrecorded';
 
-/** Where an unwritten outcome is reported. */
+/** Where an unwritten outcome is reported: the host's error log (the kernel has none of its own). */
 export type AuditLogError = (message: string, fields: Record<string, unknown>) => void;
-const consoleError: AuditLogError = (message, fields) => console.error(message, fields);
 
 /**
  * Write one outcome row of an audited change (#2064, #2089 for the kill switches), never
@@ -61,7 +60,7 @@ const consoleError: AuditLogError = (message, fields) => console.error(message, 
 export async function recordAuditOutcome(
   write: () => unknown,
   line: { flow: string; operationId: string; phase: string },
-  logError: AuditLogError = consoleError,
+  logError: AuditLogError,
 ): Promise<string | null> {
   try {
     await write();
