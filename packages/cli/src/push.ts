@@ -1270,6 +1270,10 @@ export interface PushOptions {
    *  wants to send transactional mail. A request the console reviews — the `emailSender`
    *  capability itself stays a staff-flipped registry flag. */
   sendsEmail?: boolean;
+  /** Where the scope lifecycle is held (#1713), from package.json `substrat.lifecycle` —
+   *  `'router'` for a deployment that serves its own `/internal/*` surface. Validated by the
+   *  control plane (`lifecycleHold`). */
+  lifecycle?: unknown;
   /** The surfaces the vertical serves (K-26), from package.json `substrat.surfaces` —
    *  labels only; buys the dashboard a hostname-binding picker + a push-time warning. */
   surfaces?: readonly unknown[];
@@ -1666,6 +1670,7 @@ export async function push(
     ...(opts.requires ? { requires: opts.requires } : {}),
     ...(opts.provisions ? { provisions: opts.provisions } : {}),
     ...(opts.sendsEmail ? { sendsEmail: true } : {}),
+    ...(opts.lifecycle !== undefined ? { lifecycle: opts.lifecycle } : {}),
     ...(opts.usesModels ? { usesModels: true } : {}),
     ...(opts.surfaces ? { surfaces: opts.surfaces } : {}),
     // The emitted entity model (#1214) — metadata like envSpec/surfaces, not in any digest:
@@ -1806,6 +1811,8 @@ export interface VerticalMeta {
   provisions: readonly unknown[] | undefined;
   /** Declared email-sender intent (#303), from package.json `substrat.sendsEmail`. */
   sendsEmail: boolean | undefined;
+  /** Where the scope lifecycle is held (#1713), from package.json `substrat.lifecycle`. */
+  lifecycle: unknown;
   /** Declared model-runtime intent (#1054), from package.json `substrat.usesModels`. */
   usesModels: boolean | undefined;
   /** Declared surfaces (K-26), from package.json `substrat.surfaces`: `[{ name, label }]`. */
@@ -1830,7 +1837,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   let pkg: {
     name?: string;
     version?: string;
-    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; usesModels?: boolean; surfaces?: unknown[]; outbound?: unknown[]; calls?: unknown[] };
+    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; lifecycle?: unknown; usesModels?: boolean; surfaces?: unknown[]; outbound?: unknown[]; calls?: unknown[] };
   } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
@@ -1854,6 +1861,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
     requires: s?.requires,
     provisions: s?.provisions,
     sendsEmail: s?.sendsEmail,
+    lifecycle: s?.lifecycle,
     usesModels: s?.usesModels,
     surfaces: s?.surfaces,
     outbound: s?.outbound,

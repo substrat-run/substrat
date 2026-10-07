@@ -6758,6 +6758,8 @@ export class CloudflareScopeHost implements ScopeHost {
         if (parsed.provisions) installSpec.provisions = parsed.provisions;
         // Declared email-sender intent (#303) — the request half; the grant is its own column.
         if (parsed.sendsEmail) installSpec.sendsEmail = parsed.sendsEmail;
+        // Where the scope lifecycle is held (#1713) — read by the lifecycle delivery's targets.
+        if (parsed.lifecycle) installSpec.lifecycle = parsed.lifecycle;
         const installSpecJson = Object.keys(installSpec).length ? JSON.stringify(installSpec) : null;
         const existing = await this.cp.readVertical(parsed.slug);
         if (existing) {

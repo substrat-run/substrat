@@ -591,3 +591,23 @@ export const moduleManifest = z.object({
   }
 });
 export type ModuleManifest = z.infer<typeof moduleManifest>;
+
+/**
+ * Where a vertical's scope lifecycle is held (#1713), declared in package.json
+ * `substrat.lifecycle`. ABSENT is every vertical built on `@substrat-run/vertical-host`: the
+ * platform delivers each scope's lifecycle to `/internal/lifecycle`, and the deployment holds
+ * its own timers, retries and background work by it.
+ *
+ * `'router'` says the router's refusal of a held scope's requests (#1730) is the whole hold:
+ * the deployment does no work a request did not start, so there is nothing for a delivered
+ * lifecycle to hold, and the platform delivers none (nor asks it for a tenant record, #2016).
+ * For a deployment that serves its own `/internal/*` surface rather than vertical-host's —
+ * the auth-server is the one today — and which therefore has no route to deliver to.
+ *
+ * Declared, not granted: it exempts the deployment from nothing it could not already ignore,
+ * since the hold a delivery puts in place is enforced by the vertical's own bundle. A
+ * vertical-host vertical that declares it loses the hold on its timers, which is why it is a
+ * value naming where the hold is, not a switch.
+ */
+export const lifecycleHold = z.enum(['router']);
+export type LifecycleHold = z.infer<typeof lifecycleHold>;

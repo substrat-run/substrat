@@ -4559,7 +4559,7 @@ export class ControlPlaneDO extends DurableObject {
    * #1713: the scopes whose lifecycle a deployment must hold, with their lifecycle as this
    * directory holds it. A scope with a vertical (only a deployment serves one), past provisioning
    * and not reaped (a reaped store must not be recreated by a delivery), under a tenant that is
-   * not reaped. `scopeId` narrows it to one scope and `tenantId` to one tenant's scopes, the
+   * not reaped, of a vertical that does not declare its lifecycle held at the router. `scopeId` narrows it to one scope and `tenantId` to one tenant's scopes, the
    * fan-out of a tenant transition. With `drift`, only the scopes the heal sweep must deliver to:
    * a receipt that differs from the directory, and every scope held now. Re-delivering a held
    * scope every pass is what puts a hold back on a store a carry or a restore landed without it,
@@ -4578,6 +4578,10 @@ export class ControlPlaneDO extends DurableObject {
       's.vertical IS NOT NULL',
       "s.status NOT IN ('provisioning', 'reaped')",
       "t.status <> 'reaped'",
+      // A vertical that declares its lifecycle held at the router (`lifecycleHold`) has no route
+      // to deliver to and nothing a delivery would hold: none of its scopes is a target, for a
+      // transition, the heal's drift, or the #2016 tenant-record ask alike.
+      `COALESCE(CASE WHEN json_valid(v.install_spec) THEN json_extract(v.install_spec, '$.lifecycle') END, '') <> 'router'`,
     ];
     const params: (string | number)[] = [];
     if (filter.tenantId) {
@@ -4616,6 +4620,7 @@ export class ControlPlaneDO extends DurableObject {
                 ${epoch} AS epoch, COALESCE(rs.revision, 0) AS scope_rev, COALESCE(rt.revision, 0) AS tenant_rev
            FROM scopes s
            JOIN tenants t ON t.tenant_id = s.tenant_id
+           LEFT JOIN verticals v ON v.slug = s.vertical
            LEFT JOIN scope_lifecycle_receipts r ON r.scope_id = s.scope_id
            LEFT JOIN scope_tenant_asks a ON a.scope_id = s.scope_id
            LEFT JOIN lifecycle_revisions rs ON rs.subject = 'scope:' || s.scope_id

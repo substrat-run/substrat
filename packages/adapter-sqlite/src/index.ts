@@ -8212,6 +8212,8 @@ export class SqliteScopeHost implements ScopeHost {
         if (parsed.requires) installSpec.requires = parsed.requires;
         if (parsed.provisions) installSpec.provisions = parsed.provisions;
         if (parsed.sendsEmail) installSpec.sendsEmail = parsed.sendsEmail;
+        // Where the scope lifecycle is held (#1713) — read by the lifecycle delivery's targets.
+        if (parsed.lifecycle) installSpec.lifecycle = parsed.lifecycle;
         if (parsed.surfaces) installSpec.surfaces = parsed.surfaces;
         const installSpecJson = Object.keys(installSpec).length ? JSON.stringify(installSpec) : null;
         const existing = readVertical(parsed.slug);

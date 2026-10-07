@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { instant, permissionKey, tenantId, verticalSlug } from './ids.js';
-import { envVarSpec, capability } from './manifest.js';
+import { envVarSpec, capability, lifecycleHold } from './manifest.js';
 import { declaredSurface } from './routing.js';
 import { platformScriptCollision, platformScriptRefusal } from './script-names.js';
 
@@ -104,6 +104,12 @@ export const vertical = z.object({
    */
   sendsEmail: z.boolean().optional(),
   /**
+   * Where the vertical's scope lifecycle is held (#1713), carried on push from the manifest's
+   * `lifecycle` (`lifecycleHold`). `'router'` keeps its scopes out of the lifecycle delivery
+   * and the heal sweep entirely. Rides the install_spec bag, refreshed on every re-push.
+   */
+  lifecycle: lifecycleHold.optional(),
+  /**
    * Holds the EMAIL-SENDER capability (#303) — this vertical's scopes may POST to the control
    * plane's `/internal/email/send` relay and have transactional mail sent on their behalf. A
    * directory-backed staff grant, not deployment config: flipped by `setVerticalEmailSender`,
@@ -158,7 +164,7 @@ export const verticalServingState = z.object({
 export type VerticalServingState = z.infer<typeof verticalServingState>;
 
 export const registerVerticalInput = vertical
-  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, provisions: true, sendsEmail: true, surfaces: true, listed: true })
+  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, provisions: true, sendsEmail: true, lifecycle: true, surfaces: true, listed: true })
   .extend({
   /**
    * #1923: a slug that would deploy under one of the platform's own script names is refused

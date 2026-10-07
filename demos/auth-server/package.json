@@ -13,6 +13,7 @@
       "oidc-issuer"
     ],
     "sendsEmail": true,
+    "lifecycle": "router",
     "devServers": [
       {
         "name": "api",
