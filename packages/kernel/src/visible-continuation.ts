@@ -88,8 +88,9 @@ export function visibleContinuation(
   const query = binding.query && typeof binding.query === 'object' && !Array.isArray(binding.query)
     ? Object.fromEntries(Object.entries(binding.query).filter(([name]) =>
         !['cursor', 'limit', 'rowCursors', 'total'].includes(name)))
-    : binding.query;
-  const fingerprint = bindingHash({ ...binding, query });
+    : binding.query ?? {};
+  let fingerprint: Promise<string> | undefined;
+  const hash = () => (fingerprint ??= bindingHash({ ...binding, query }));
   const readKeys = async (): Promise<ContinuationKeys | null> => {
     try { return await store.keys(); } catch { throw restart(); }
   };
@@ -106,7 +107,7 @@ export function visibleContinuation(
         const expiresAt = at + LIFETIME_MS;
         const sealed = await box(keys.active).seal(JSON.stringify({ id, position }));
         await store.setPosition(id, { sealed, expiresAt });
-        const payload = JSON.stringify({ i: id, e: expiresAt, b: await fingerprint });
+        const payload = JSON.stringify({ i: id, e: expiresAt, b: await hash() });
         if (payload.length > TOKEN_PLAINTEXT_LENGTH) throw restart();
         const token = await box(keys.active).seal(payload.padEnd(TOKEN_PLAINTEXT_LENGTH, ' '));
         return `${TOKEN_PREFIX}.${keys.active.id}.${base64url(fromBase64(token.ciphertext))}`;
@@ -135,7 +136,7 @@ export function visibleContinuation(
         if (decoded.length !== TOKEN_PLAINTEXT_LENGTH) throw restart();
         const payload = JSON.parse(decoded.trimEnd()) as { i?: unknown; e?: unknown; b?: unknown };
         if (typeof payload.i !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(payload.i) ||
-            typeof payload.e !== 'number' || payload.e <= now() || payload.b !== await fingerprint) throw restart();
+            typeof payload.e !== 'number' || payload.e <= now() || payload.b !== await hash()) throw restart();
         const record = await store.position(payload.i, payload.e);
         if (!record || record.expiresAt !== payload.e || record.expiresAt <= now()) throw restart();
         const opened = JSON.parse(await box(selected).open(record.sealed)) as { id?: unknown; position?: unknown };

@@ -451,5 +451,26 @@ export function listContractSuite(
       }
       expect(seen).toEqual(['v1', 'v3', 'v2']);
     });
+
+    it('resumes a sealed empty page past more than the scan budget, on this adapter (#2074)', async () => {
+      for (const first of [0, 500, 1000, 1500, 2000]) {
+        await stub.invoke('list/add-hidden-batch', { first, count: first === 2000 ? 5 : 500 });
+      }
+      await stub.invoke('list/add', { id: 'v2074', number: '002005', status: 'open', kind: 'k2074' });
+      const query = { limit: 1, sort: 'number', filters: { kind: 'k2074' } };
+      const first = await stub.invoke<Page<Row>>('list/page-visible', query);
+      expect(first.entries).toEqual([]);
+      expect(first.nextCursor).toMatch(/^sc1\./);
+      expect(first.nextCursor).not.toContain('h001999');
+      const other = await host.getScope(principalId.parse(ulid()), t1, stub.scopeId);
+      await expectRestart(other.invoke('list/page-visible', { ...query, cursor: first.nextCursor }));
+      await expectRestart(stub.invoke('list/page-visible', {
+        ...query, filters: { kind: 'repair' }, cursor: first.nextCursor,
+      }));
+      const second = await stub.invoke<Page<Row>>('list/page-visible', { ...query, cursor: first.nextCursor });
+      expect(second.entries.map((r) => r['id'])).toEqual(['v2074']);
+      expect(second.nextCursor).toMatch(/^sc1\./);
+      expect(second.nextCursor?.length).toBe(first.nextCursor?.length);
+    });
   });
 }

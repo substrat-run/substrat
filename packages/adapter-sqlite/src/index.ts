@@ -3959,6 +3959,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.directory.prepare('DELETE FROM hostnames WHERE scope_id = ?').run(scopeId);
     rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
     forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
+    this.directory.prepare('DELETE FROM private_continuation_positions WHERE scope_id = ?').run(scopeId);
+    this.directory.prepare('DELETE FROM private_continuation_keys WHERE scope_id = ?').run(scopeId);
     this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
       forkedFrom: rec.forkedFrom,

@@ -450,8 +450,8 @@ const instantiateProtocolOp: OperationHandler<
 /**
  * #811. Paged with `pageVisible`, which is what a permission-filtered walk needs: a
  * page of 20 read from the table can leave 3 after the proof walk, so it reads on
- * past refused rows until the page is full, and mints the cursor from the last row
- * it RETURNS — a refused order's position never reaches the caller (#2073).
+ * past refused rows until the page is full or the budget is spent, then seals
+ * the continuation so a refused order's position never reaches the caller (#2074).
  */
 const portalOrdersOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ctx, input) =>
   pageVisible(

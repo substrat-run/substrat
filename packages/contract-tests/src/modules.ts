@@ -15,6 +15,7 @@ import {
   operationIdempotencyOptOutsOf,
   IDEMPOTENCY_RESULT_LIMIT,
   permissionKey,
+  pageVisible,
   principalId,
   assertTransition,
   nameRefusedRecord,
@@ -2001,6 +2002,26 @@ export const listMod: ModuleRegistration = {
         i.hold ?? null,
       ]);
       return { id: i.id };
+    }) as OperationHandler<never, unknown>,
+    'list/add-hidden-batch': (async (ctx, input) => {
+      const { first, count } = input as { first: number; count: number };
+      // One bounded SQL statement makes a >2,000-row workerd test affordable.
+      ctx.sql.exec(
+        `WITH RECURSIVE n(x) AS (
+           SELECT ? UNION ALL SELECT x + 1 FROM n WHERE x + 1 < ?
+         ) INSERT INTO list_orders (id, number, status, kind, hold)
+           SELECT printf('h%06d', x), printf('%06d', x), 'open', 'k2074', NULL FROM n`,
+        [first, first + count],
+      );
+    }) as OperationHandler<never, unknown>,
+    'list/page-visible': (async (ctx, input) => {
+      const query = input as { limit?: number; cursor?: string; sort?: string; filters?: Record<string, unknown> };
+      return pageVisible(
+        (params) => ctx.page<Record<string, unknown>>('listorder', { ...query, ...params }),
+        query,
+        (row) => String(row['id']).startsWith('v'),
+        { continuation: ctx.pageContinuation('listorder:visible', query) },
+      );
     }) as OperationHandler<never, unknown>,
     // The read under test, passed straight through: the suite asserts on the
     // entries, the cursor and the total, which is where a naive keyset is wrong.

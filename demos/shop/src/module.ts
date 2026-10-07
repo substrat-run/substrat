@@ -1022,9 +1022,8 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
  *
  * The kernel's walk over the order table, newest first, with the check per row on top
  * (#2080). `pageVisible` reads on past orders the caller cannot see until the page is full,
- * mints the cursor from the last order it RETURNS, and reads at most `VISIBLE_SCAN_BUDGET`
- * orders per call — so a customer's page costs a bounded number of checks, however many
- * orders the shop holds (#2073).
+ * seals a continuation at the `VISIBLE_SCAN_BUDGET` stop, so a customer's page
+ * costs a bounded number of checks and can resume without exposing hidden positions (#2074).
  */
 const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) =>
   pageVisible(

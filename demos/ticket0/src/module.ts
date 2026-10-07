@@ -7472,7 +7472,7 @@ const operations = {
    * conversation, through the parent edge) or a CC's (`readableAsCc`). `pageVisible` with a
    * batch test, so the CC proof is asked once per batch for the rows the walk refused rather
    * than once per row — a customer whose every conversation is their own pays nothing more —
-   * and the cursor is a visible conversation's, never one the caller cannot see (#2073).
+   * and the continuation hides every examined conversation's position (#2074).
    */
   'ticket0/my-conversations': async (ctx, input) =>
     pageVisible((p) => ctx.page<ConversationRow>('conversation', p), input, {
