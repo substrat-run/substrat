@@ -44,6 +44,7 @@ import {
   MAX_SEARCH_LIMIT,
   ulid,
   type ModuleRegistration,
+  type OnSubjectErased,
   type OperationContext,
   type OperationHandler,
   type SqlValue,
@@ -7858,6 +7859,39 @@ const HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** And names this many of the newest failures. Enough to see a pattern; not a log. */
 const HEALTH_RECENT = 10;
 
+/**
+ * Rows without a subject column follow their conversation's original contact. A message
+ * with an explicit author belongs to that author instead, even inside this conversation;
+ * only the old contact messages with no author_contact_id use the original contact.
+ */
+const ticket0SubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
+  const conversationIds =
+    'SELECT id FROM ticket0_conversations WHERE contact_id = ?';
+
+  const oldMessages = `FROM ticket0_messages
+    WHERE author_kind = 'contact' AND author_contact_id IS NULL
+      AND conversation_id IN (${conversationIds})
+      AND (body_text != '' OR body_html IS NOT NULL)`;
+  if (ctx.sql.query(`SELECT 1 ${oldMessages} LIMIT 1`, [subjectId]).length > 0) {
+    ctx.sql.exec(`UPDATE ticket0_messages SET body_text = '', body_html = NULL
+      WHERE id IN (SELECT id ${oldMessages})`, [subjectId]);
+  }
+
+  const csat = `FROM ticket0_csat WHERE comment IS NOT NULL
+    AND conversation_id IN (${conversationIds})`;
+  if (ctx.sql.query(`SELECT 1 ${csat} LIMIT 1`, [subjectId]).length > 0) {
+    ctx.sql.exec(`UPDATE ticket0_csat SET comment = NULL
+      WHERE conversation_id IN (SELECT conversation_id ${csat})`, [subjectId]);
+  }
+
+  const turns = `FROM ticket0_ai_turns WHERE error IS NOT NULL
+    AND conversation_id IN (${conversationIds})`;
+  if (ctx.sql.query(`SELECT 1 ${turns} LIMIT 1`, [subjectId]).length > 0) {
+    ctx.sql.exec(`UPDATE ticket0_ai_turns SET error = NULL
+      WHERE id IN (SELECT id ${turns})`, [subjectId]);
+  }
+};
+
 export const ticket0Module: ModuleRegistration = {
   manifest: ticket0Manifest,
   migrations: ticket0Migrations,
@@ -7870,5 +7904,6 @@ export const ticket0Module: ModuleRegistration = {
   // Without this the `concurrency` on the saved-reply operations is a promise
   // nothing keeps — the header arrives, nothing compares it, and every write lands.
   operationConcurrency: operationConcurrencyOf(ticket0Operations),
+  onSubjectErased: ticket0SubjectErased,
   operations: operations as ModuleRegistration['operations'],
 };

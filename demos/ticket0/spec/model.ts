@@ -694,6 +694,7 @@ export const ticket0Entities = defineEntities({
     }),
     key: ['external_id'],
     erasable: ['email', 'display_name'],
+    erasure: { subjects: ['id', 'principal'] },
     // The host site's own id for the person — often an address — vouched for, not written
     // here (#1088).
     outsideText: ['external_id'],
@@ -746,6 +747,7 @@ export const ticket0Entities = defineEntities({
     // All three are the person: the name outright, a picture of them by reference,
     // and a signature that in practice is the name again with a title under it.
     erasable: ['display_name', 'avatar_url', 'signature'],
+    erasure: { subjects: ['principal'] },
   },
 
   /**
@@ -986,6 +988,7 @@ export const ticket0Entities = defineEntities({
     // second edge reaches nothing the first does not.
     parents: ['conversation', 'publicThread'],
     erasable: ['body_text', 'body_html'],
+    erasure: { subjects: ['author_contact_id', 'author_principal'] },
     // Mail headers as they arrived: the sender's host writes both, freely (#1088).
     outsideText: ['email_message_id', 'email_in_reply_to'],
   },
@@ -1163,6 +1166,7 @@ export const ticket0Entities = defineEntities({
      * (`SAVED_REPLY_VARIABLES`), never a customer's details, into a canned answer.
      */
     erasable: ['title', 'body'],
+    erasure: { subjects: ['owner'], mode: 'delete' },
   },
 
   /** One satisfaction score per conversation, once. Keyed by the conversation for
@@ -1177,6 +1181,7 @@ export const ticket0Entities = defineEntities({
     }),
     primaryKey: ['conversation_id'],
     erasable: ['comment'],
+    erasure: { mode: 'custom' },
   },
 
   /**
@@ -1537,6 +1542,7 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['conversation'],
     erasable: ['error'],
+    erasure: { mode: 'custom' },
   },
 
   /**
