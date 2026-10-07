@@ -19,6 +19,7 @@ export type ErasureSql = (tenant: TenantId, scope: ScopeId, sql: string, params?
 export interface ErasureAdapter {
   sql: ErasureSql;
   prepare: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId) => Promise<void>;
+  beforeUpgrade?: (tenant: TenantId, scope: ScopeId, subject: DataSubjectId) => Promise<void>;
   upgrade?: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId) => Promise<void>;
   erase: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId, subject: DataSubjectId) => Promise<ModuleErasureCounts>;
 }
@@ -99,6 +100,7 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
         'https://example.test', ?, ?, ?)`, [id!, email!, `unsubscribe-${id}`, at, at]);
   }
 
+  await adapter.beforeUpgrade?.(tenant, scope, customerPrincipal);
   await adapter.upgrade?.(tenant, scope, actor);
 
   const customerReceipt = await adapter.erase(tenant, scope, actor, customerPrincipal);

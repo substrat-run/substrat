@@ -54,6 +54,7 @@ import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange, type
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
+  defineScopeDO,
   type ScopeSweepReport,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
@@ -2373,11 +2374,12 @@ describe('ticket0 on workerd — migration 0027, saved replies keyed per owner (
 });
 
 describe('ticket0 subject erasure on workerd', () => {
+  const raw: ErasureSql = async (_tenant, scope, sql, params = []) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+      [...state.storage.sql.exec(sql, ...params)].map((row) => ({ ...row })),
+    );
+
   it('erases only the customer and staff rows that belong to each subject', async () => {
-    const raw: ErasureSql = async (_tenant, scope, sql, params = []) =>
-      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
-        [...state.storage.sql.exec(sql, ...params)].map((row) => ({ ...row })),
-      );
     await checkTicket0SubjectErasure({
       sql: raw,
       prepare: async (tenant, scope) => {
@@ -2391,6 +2393,47 @@ describe('ticket0 subject erasure on workerd', () => {
           redactSubject(id: string): Promise<{ vertical: ModuleErasureCounts } | { failure: unknown }>;
         };
         const result = await stub.redactSubject(subject);
+        if ('failure' in result) throw new Error(JSON.stringify(result.failure));
+        return result.vertical;
+      },
+    });
+  }, 60_000);
+
+  it('shreds rows stored before the module declared erasure', async () => {
+    const oldModules = MODULES.map((module) => module.manifest.id === ticket0Manifest.id
+      ? { ...module, manifest: { ...module.manifest, erasure: undefined }, onSubjectErased: undefined }
+      : module);
+    const OldScopeDO = defineScopeDO(oldModules, {});
+    const CurrentScopeDO = defineScopeDO(MODULES, {});
+    type ErasureDO = DurableObject & {
+      migrate(): Promise<number | null>;
+      redactSubject(id: string): Promise<{ vertical: ModuleErasureCounts } | { failure: unknown }>;
+    };
+    // defineScopeDO's public return type is DurableObject; these are its scope RPCs.
+    const opened = (Type: typeof CurrentScopeDO, state: ConstructorParameters<typeof CurrentScopeDO>[0]): ErasureDO =>
+      new Type(state, env) as unknown as ErasureDO;
+    const stub = (scope: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(scope));
+    await checkTicket0SubjectErasure({
+      sql: raw,
+      prepare: async (_tenant, scope) => {
+        await runInDurableObject(stub(scope), (_instance, state) =>
+          opened(OldScopeDO, state).migrate());
+      },
+      beforeUpgrade: async (tenant, scope, subject) => {
+        const result = await runInDurableObject(stub(scope), (_instance, state) =>
+          opened(OldScopeDO, state).redactSubject(subject));
+        if ('failure' in result) throw new Error(JSON.stringify(result.failure));
+        expect(result.vertical.verticalRows).toEqual([]);
+        expect(await raw(tenant, scope, 'SELECT body_text FROM ticket0_messages WHERE id = ?', ['customer']))
+          .toEqual([{ body_text: 'Customer text' }]);
+      },
+      upgrade: async (_tenant, scope) => {
+        await runInDurableObject(stub(scope), (_instance, state) =>
+          opened(CurrentScopeDO, state).migrate());
+      },
+      erase: async (_tenant, scope, _actor, subject) => {
+        const result = await runInDurableObject(stub(scope), (_instance, state) =>
+          opened(CurrentScopeDO, state).redactSubject(subject));
         if ('failure' in result) throw new Error(JSON.stringify(result.failure));
         return result.vertical;
       },
