@@ -3,8 +3,16 @@ import { substratError, tokenizeSql } from '@substrat-run/contracts';
 
 /** Workerd's `_cf_*` tables back runtime-owned KV and alarms, not module data. */
 export function assertNoWorkerdStorage(sql: string): void {
-  if (tokenizeSql(sql).some((token) =>
-    token.text.split('.').some((part) => part.toLowerCase().startsWith('_cf_')))) {
+  const tokens = tokenizeSql(sql);
+  if (tokens.some((token, index) => {
+    if (!token.text.split('.').some((part) => part.toLowerCase().startsWith('_cf_'))) return false;
+    // Quoted tokens can also be string literals in an expression. A table name
+    // there still follows a source/target keyword, including when quoted.
+    if (!token.quoted) return true;
+    const before = tokens[index - 1];
+    return before && !before.quoted &&
+      ['FROM', 'JOIN', 'INTO', 'UPDATE', 'TABLE', 'REFERENCES', 'ON'].includes(before.text.toUpperCase());
+  })) {
     throw substratError('forbidden', 'ctx.sql cannot read workerd internal storage');
   }
 }

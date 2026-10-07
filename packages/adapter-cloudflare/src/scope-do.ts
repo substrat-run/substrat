@@ -1174,6 +1174,7 @@ export function defineScopeDO(
 ): new (ctx: DurableObjectState, env: ScopeDoEnv) => DurableObject {
   return class ScopeDO extends DurableObject<ScopeDoEnv> {
     private readonly sql: SqlStorage;
+    private continuationOrder = 0;
     /** DO storage KV is private to the adapter; neither module SQL nor dumps can read it. */
     private continuationStore(): ContinuationStore {
       const positionKey = (id: string, expiresAt: number) =>
@@ -1186,14 +1187,20 @@ export function defineScopeDO(
           return (await this.ctx.storage.get<ContinuationPosition>(positionKey(id, expiresAt))) ?? null;
         },
         setPosition: async (id, position) => {
-          await this.ctx.storage.put(positionKey(id, position.expiresAt), position);
+          // Several budget stops can land in one millisecond. Keep insertion
+          // order explicit so the cap always evicts the first locator minted.
+          this.continuationOrder = Math.max(Date.now() * 1_000, this.continuationOrder + 1);
+          await this.ctx.storage.put(positionKey(id, position.expiresAt), {
+            ...position, order: this.continuationOrder,
+          });
           await this.pruneContinuationPositions();
         },
       };
     }
     private async pruneContinuationPositions(): Promise<void> {
-      const positions = await this.ctx.storage.list<ContinuationPosition>({ prefix: 'continuation:position:' });
-      const live = [...positions].filter(([, record]) => record.expiresAt > Date.now());
+      const positions = await this.ctx.storage.list<ContinuationPosition & { order?: number }>({ prefix: 'continuation:position:' });
+      const live = [...positions].filter(([, record]) => record.expiresAt > Date.now())
+        .sort((a, b) => (a[1].order ?? 0) - (b[1].order ?? 0));
       const evict = new Set<string>(live.slice(0, Math.max(0, live.length - CONTINUATION_POSITION_CAP)).map(([name]) => name));
       for (const [name, record] of positions) {
         if (record.expiresAt <= Date.now() || evict.has(name)) await this.ctx.storage.delete(name);
