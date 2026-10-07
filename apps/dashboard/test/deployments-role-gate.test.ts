@@ -222,6 +222,7 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     const body = { vertical: 'acme/crm', targetScopeId: null };
     await refused(['PUT', route, body]);
     await allowed(['PUT', route, body], [200]);
+    planeCalls.length = 0;
     expect((await asRole('owner', 'PUT', `/api/apps/${ulid()}/peers/binding`, body)).status).toBe(404);
     expect(planeCalls).toEqual([]);
   });
