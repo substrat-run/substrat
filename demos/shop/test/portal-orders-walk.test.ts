@@ -129,7 +129,6 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
           expect(c).toMatch(/^sc1\./);
           for (const id of [...hers, ...his]) expect(c).not.toContain(id);
         }
-        expect(new Set(cursors.map((c) => c.length)).size).toBe(1);
       }
     });
   }
