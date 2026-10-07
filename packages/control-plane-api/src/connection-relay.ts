@@ -1,5 +1,6 @@
 import { isPrimaryScope, ulid, type ScopeHost } from '@substrat-run/kernel';
 import {
+  instant,
   connectionId,
   connectionRelayRequest,
   type ConnectionProbe,
@@ -67,6 +68,31 @@ export type ConnectionCandidateProbe = (
   secret: Record<string, string>,
 ) => Promise<ConnectionProbe | undefined>;
 
+/**
+ * Finish a candidate credential on the platform side, before it is probed and stored (#2100).
+ *
+ * For a provider where part of the credential is the PLATFORM's to make: Microsoft 365 with a
+ * certificate generates the keypair here, so the private key is created where it is sealed and
+ * never travels through the caller. `previous` is the live connection's plaintext secret when
+ * this upsert rotates one, so a provider can carry what must survive an edit (the keypair whose
+ * certificate the tenant already uploaded).
+ *
+ * `expiresAt`: a date lands on the connection, `null` clears the one it holds (the credential
+ * that had it is gone), and absent leaves it as it is.
+ */
+export type ConnectionCandidatePrepare = (
+  candidate: Record<string, string>,
+  previous: Record<string, string> | undefined,
+) => Promise<{ secret: Record<string, string>; expiresAt?: string | null }>;
+
+/**
+ * The provider's {@link ConnectionCandidatePrepare}, or `undefined` when it has none. A lookup
+ * rather than a call, so the relay opens the live credential only for a provider that will read
+ * it: a provider with no preparation must rotate even when the old secret no longer opens (a
+ * sealing key the deployment no longer holds), which is the case a rotation exists to repair.
+ */
+export type ConnectionCandidatePreparer = (provider: string) => ConnectionCandidatePrepare | undefined;
+
 /** What a preview or a fork is told when it asks to change a connection (#2005). */
 export const PREVIEW_CONNECTIONS_REFUSAL =
   "previews and forks cannot change a tenant's connections: this scope is a preview or a fork";
@@ -75,7 +101,7 @@ export async function relayConnectionUpsert(
   host: ScopeHost,
   actor: PlatformActorId,
   body: unknown,
-  options: { probeCandidate?: ConnectionCandidateProbe } = {},
+  options: { probeCandidate?: ConnectionCandidateProbe; prepareCandidate?: ConnectionCandidatePreparer } = {},
 ): Promise<ConnectionRelayResult> {
   const parsed = connectionRelayRequest.safeParse(body);
   if (!parsed.success) {
@@ -116,21 +142,11 @@ export async function relayConnectionUpsert(
   }
   const vertical = rec.vertical;
 
-  // Ask the provider before touching the store (#605). Deliberately here, ahead of every
-  // write below: a refused rotation must leave the live credential exactly as it was.
-  const probe = await options.probeCandidate?.(input.provider, input.secret);
-  if (probe && !probe.ok && probe.refused) {
-    throw new ConnectionRelayError(
-      probe.error ?? `${input.provider} refused these credentials`,
-      422,
-      probe,
-    );
-  }
-
   // `listConnections` already excludes revoked rows; expired/errored rows are still the
   // live row for this key — rotation is what revives them. The account leg matches
   // exactly (absent matches absent): a multi-account provider's second account is a new
-  // connection, not a rotation of the first.
+  // connection, not a rotation of the first. Read before the probe because a provider that
+  // finishes its own credential (#2100) needs the one this upsert would replace.
   const live = (
     await host.admin.listConnections(actor, {
       tenantId: input.tenantId,
@@ -138,6 +154,36 @@ export async function relayConnectionUpsert(
       provider: input.provider,
     })
   ).filter((c) => c.externalAccountRef === (input.externalAccountRef ?? null));
+
+  // #2100: the platform's half of the credential, made here — before the probe, so what is
+  // probed is exactly what is stored.
+  let secret = input.secret;
+  let expiresAt: string | null | undefined = input.expiresAt;
+  const prepare = options.prepareCandidate?.(input.provider);
+  if (prepare) {
+    const previous =
+      live.length === 1
+        ? (await host.admin.openConnection(input.tenantId, vertical, input.provider, input.externalAccountRef))?.secret
+        : undefined;
+    const prepared = await prepare(input.secret, previous);
+    secret = prepared.secret;
+    // Parsed: a provider's date becomes the same branded instant a caller's would be. `null` is
+    // the provider clearing an expiry whose credential it dropped (a certificate → a client secret).
+    expiresAt =
+      input.expiresAt ??
+      (prepared.expiresAt === undefined || prepared.expiresAt === null ? prepared.expiresAt : instant.parse(prepared.expiresAt));
+  }
+
+  // Ask the provider before touching the store (#605). Deliberately here, ahead of every
+  // write below: a refused rotation must leave the live credential exactly as it was.
+  const probe = await options.probeCandidate?.(input.provider, secret);
+  if (probe && !probe.ok && probe.refused) {
+    throw new ConnectionRelayError(
+      probe.error ?? `${input.provider} refused these credentials`,
+      422,
+      probe,
+    );
+  }
 
   let id;
   let created;
@@ -151,9 +197,10 @@ export async function relayConnectionUpsert(
       label: input.label ?? input.provider,
       externalAccountRef: input.externalAccountRef,
       scopes: input.scopes,
-      // Whatever the caller supplies; no shipped connector does (connections.md §3.6), so today this is undefined and the row reads "not reported".
-      expiresAt: input.expiresAt,
-      secret: input.secret,
+      // Whatever the caller supplies, else what the provider's own preparation knows (#2100: a
+      // generated certificate's end). Undefined reads "not reported" (connections.md §3.6).
+      expiresAt: expiresAt ?? undefined,
+      secret,
       // §3.5.1 — the authorizing tenant principal, proven by the vertical's own
       // `ctx.check` before the secret ever left the operation.
       createdBy: input.createdBy,
@@ -161,7 +208,7 @@ export async function relayConnectionUpsert(
     created = true;
   } else if (live.length === 1) {
     id = live[0]!.id;
-    await host.admin.updateConnectionSecret(actor, id, input.secret, input.expiresAt, {
+    await host.admin.updateConnectionSecret(actor, id, secret, expiresAt, {
       rotatedBy: input.createdBy,
     });
     created = false;

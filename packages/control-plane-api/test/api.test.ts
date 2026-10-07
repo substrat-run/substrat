@@ -1373,6 +1373,48 @@ describe('control-plane API', () => {
     expect((await ireq(`/tenants/${t1}/connections/${created.connectionId}/verify`, { method: 'POST' })).status).toBe(404);
   });
 
+  it("prepares the provider's half of a credential on the dashboard's path, and serves the public certificate (#2100)", async () => {
+    const sCert = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sCert, vertical: 'cert-vert' });
+    await host.admin.activateScope(staff, t1, sCert);
+    const PEM = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n';
+    const withCert = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      connectionInspectors: {
+        mailbox: {
+          prepareCandidate: async (candidate) => ({
+            secret: { ...candidate, privateKey: 'PLATFORM-MADE' },
+            expiresAt: '2027-10-07T12:00:00.000Z',
+          }),
+          certificate: async (_h, row) =>
+            row.label === 'no-cert' ? null : { pem: PEM, thumbprint: 'ABCDEF', notAfter: '2027-10-07T12:00:00.000Z' as never },
+        },
+      },
+    });
+    const creq = (path: string, init?: RequestInit) => withCert.request(path, { headers: auth, ...init });
+
+    const created = (await (
+      await creq(`/tenants/${t1}/connections`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ scopeId: sCert, provider: 'mailbox', secret: { clientId: 'c' }, createdBy: principalId.parse(ulid()) }),
+      })
+    ).json()) as { connectionId: string };
+    // The dashboard's door reaches the same preparation the vertical's relay does.
+    expect((await host.admin.openConnection(t1, 'cert-vert', 'mailbox'))?.secret).toEqual({ clientId: 'c', privateKey: 'PLATFORM-MADE' });
+
+    const cert = await creq(`/tenants/${t1}/connections/${created.connectionId}/certificate`);
+    expect(cert.status).toBe(200);
+    const body = await cert.text();
+    expect(JSON.parse(body)).toEqual({ pem: PEM, thumbprint: 'ABCDEF', notAfter: '2027-10-07T12:00:00.000Z' });
+    expect(body).not.toContain('PLATFORM-MADE');
+
+    // A foreign tenant's id is an absent one; no inspector, or no certificate, is a 404 too.
+    expect((await creq(`/tenants/${t2}/connections/${created.connectionId}/certificate`)).status).toBe(404);
+    expect((await req(`/tenants/${t1}/connections/${created.connectionId}/certificate`)).status).toBe(404);
+  });
+
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
 
   it('delivers per-instance config through the vertical that owns the scope', async () => {

@@ -3730,12 +3730,15 @@ export interface HostAdmin {
    * the audit metadata — the rotate-side analogue of `createdBy` on create
    * (§3.5.1). Omitted ⇒ the effecting actor stands alone, the platform-driven
    * refresh path.
+   *
+   * `expiresAt`: a date replaces the connection's expiry, `null` clears it (the credential
+   * that had one was replaced by one that has none), and omitted keeps it.
    */
   updateConnectionSecret(
     actor: PlatformActorId,
     id: ConnectionId,
     secret: ConnectionSecret,
-    expiresAt?: string,
+    expiresAt?: string | null,
     opts?: { rotatedBy?: string },
   ): Promise<void>;
 
