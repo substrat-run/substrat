@@ -97,12 +97,13 @@ export const portalPerms: PermissionKey[] = [SHOP_PERM.orderRead];
  * minted at runtime, so they can never be a build artifact; their shape can, and
  * it is what tells a reviewer which keys are reachable outside the role table.
  *
- * `customer` is a bootstrap shape (#2083): given whole with `grantEntityShape` when a
- * person is linked to their customer record, and topped up for every such person when
- * it grows.
+ * `customer` is a bootstrap shape (#2083): given whole with `grantEntityShape` to each person
+ * linked to a customer record, and topped up for all of them when it grows. A customer record
+ * names no principal and may have several people, so its holder is `'grantee'`: whoever holds a
+ * key of it there. That stays true because `ctx.grant` cannot give these keys on a customer.
  */
 export const ENTITY_GRANTS: EntityGrantShape[] = [
-  { entityType: 'customer', permissions: portalPerms, bootstrap: true },
+  { entityType: 'customer', permissions: portalPerms, bootstrap: true, holder: 'grantee' },
 ];
 
 /**

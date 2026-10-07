@@ -12,7 +12,7 @@ import {
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
-import { ENTITLEMENT_KEYS, MODULES, OWNER_ROLE_KEY, portalPerms, ROLES } from './provision.js';
+import { ENTITLEMENT_KEYS, ENTITY_GRANTS, MODULES, OWNER_ROLE_KEY, portalPerms, ROLES } from './provision.js';
 
 // The provisioning surface (modules, roles, grant shapes) lives in
 // provision.ts — node-free so the worker bundles it and `substrat push` reads
@@ -86,13 +86,14 @@ async function provisionShop(
  * Idempotent seed. Everything that mutates the control plane runs only on a
  * FRESH data dir (guarded by cast.json); on restart the tenants, roles, grants
  * and entities are already in the SQLite files, so we just rebuild the handle
- * object. Safe to call on every server start and on every test.
+ * object — and re-apply the portal grants, which are idempotent. Safe to call
+ * on every server start and on every test.
  */
 export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<BikeShopWorld> {
   const castPath = join(dir, 'cast.json');
   if (existsSync(castPath)) {
     const raw = JSON.parse(readFileSync(castPath, 'utf8')) as Record<string, string>;
-    return {
+    const world: BikeShopWorld = {
       t1: tenantId.parse(raw.t1),
       s1: scopeId.parse(raw.s1),
       t2: tenantId.parse(raw.t2),
@@ -107,6 +108,8 @@ export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<
       crescentId: raw.crescentId!,
       bianchiId: raw.bianchiId!,
     };
+    await grantPortals(host, world);
+    return world;
   }
 
   const staff = platformActorId.parse(ulid());
@@ -202,26 +205,38 @@ export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<
   world.crescentId = crescent.id;
   world.bianchiId = bianchi.id;
 
-  // Portal grants: entity-narrowed per customer (ENTITY_GRANTS). Lisbeth and
-  // Otto each hold workorder:read on their OWN customer record only — the walk
-  // workorder → bike → customer does the rest.
+  await grantPortals(host, world);
+
+  writeFileSync(castPath, JSON.stringify(world, null, 2));
+  return world;
+}
+
+/**
+ * Portal grants: the `customer` shape (ENTITY_GRANTS) on each customer's own
+ * record. Lisbeth and Otto each hold workorder:read on their OWN customer
+ * record only — the walk workorder → bike → customer does the rest.
+ *
+ * Given as the SHAPE, so a key you add to `portalPerms` later reaches them,
+ * and then topped up to the shape as it is now, which is what the platform's
+ * reconcile does for a deployed install. Both are idempotent, so this runs on
+ * every boot, and a world seeded before you added a key receives it.
+ */
+async function grantPortals(host: SqliteScopeHost, world: BikeShopWorld): Promise<void> {
+  const staff = platformActorId.parse(ulid());
+  const node = { tenantId: world.t1, scopeId: world.s1 };
   for (const [principal, customerId] of [
     [world.lisbeth, world.lisbethId],
     [world.otto, world.ottoId],
   ] as const) {
-    for (const permission of portalPerms) {
-      await host.admin.grant(staff, {
-        principalId: principal,
-        permission,
-        node: { tenantId: world.t1, scopeId: world.s1 },
-        entity: { entityType: 'customer', entityId: customerId },
-        grantedBy: world.greta,
-      });
-    }
+    await host.admin.grantEntityShape(staff, {
+      principalId: principal,
+      node,
+      entity: { entityType: 'customer', entityId: customerId },
+      permissions: portalPerms,
+      grantedBy: world.greta,
+    });
   }
-
-  writeFileSync(castPath, JSON.stringify(world, null, 2));
-  return world;
+  await host.admin.reconcileEntityGrantShapes(staff, node, ENTITY_GRANTS);
 }
 
 /**

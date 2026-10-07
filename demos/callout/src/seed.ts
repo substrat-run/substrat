@@ -16,6 +16,7 @@ import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
+  ENTITY_GRANTS,
   MODULES,
   portalPerms,
   provisionCallout,
@@ -229,21 +230,23 @@ export async function seedDemo(host: SqliteScopeHost, dir: string): Promise<Demo
     });
   }
 
-  // Portal grants (idempotent): entity-narrowed per customer — see ENTITY_GRANTS.
+  // Portal grants (idempotent): the declared `customer` shape on each person's customer record,
+  // with its holder marker (#2083) — see ENTITY_GRANTS.
   for (const [principal, customerId] of [
     [world.berit, world.grundenId],
     [world.styrbjorn, world.kontorshotelletId],
   ] as const) {
     if (!customerId) continue;
-    for (const permission of portalPerms) {
-      await host.admin.grant(staff, {
-        principalId: principal, permission,
-        node: { tenantId: world.t1, scopeId: world.s1 },
-        entity: { entityType: 'customer', entityId: customerId },
-        grantedBy: world.anna,
-      });
-    }
+    await host.admin.grantEntityShape(staff, {
+      principalId: principal,
+      node: { tenantId: world.t1, scopeId: world.s1 },
+      entity: { entityType: 'customer', entityId: customerId },
+      permissions: portalPerms,
+      grantedBy: world.anna,
+    });
   }
+  // ...and topped up to the shape as it is now, which is what a deployed install's reconcile does.
+  await host.admin.reconcileEntityGrantShapes(staff, { tenantId: world.t1, scopeId: world.s1 }, ENTITY_GRANTS);
 
   return world;
 }

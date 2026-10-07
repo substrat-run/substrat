@@ -6,6 +6,7 @@ import {
   principalId,
   scopeId,
   tenantId,
+  type EntityGrantShape,
   type PermissionKey,
   type PrincipalId,
   type RoleDefinition,
@@ -101,9 +102,14 @@ const portalPerms = [WO.read, PROTO.read, PROTO.countersign];
  * minted at runtime, so they can never be a build artifact; their shape can, and
  * it is what tells a reviewer which keys are reachable outside the role table —
  * protocol:countersign above all.
+ *
+ * `customer` is a bootstrap shape (#2083): given whole with `grantEntityShape` to each person
+ * linked to a customer record, and topped up for all of them when it grows. A customer record
+ * names no principal and may have several people, so its holder is `'grantee'`: whoever holds a
+ * key of it there. That stays true because `ctx.grant` cannot give these keys on a customer.
  */
-export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
-  { entityType: 'customer', permissions: portalPerms },
+export const ENTITY_GRANTS: EntityGrantShape[] = [
+  { entityType: 'customer', permissions: portalPerms, bootstrap: true, holder: 'grantee' },
 ];
 
 /**
@@ -308,27 +314,23 @@ export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<
     });
   }
 
-  // Portal grants (idempotent): entity-narrowed per customer — see ENTITY_GRANTS.
-  if (world.lisbethId) {
-    for (const permission of portalPerms) {
-      await host.admin.grant(staff, {
-        principalId: world.lisbeth, permission,
-        node: { tenantId: world.t1, scopeId: world.s1 },
-        entity: { entityType: 'customer', entityId: world.lisbethId },
-        grantedBy: world.greta,
-      });
-    }
+  // Portal grants (idempotent): the declared `customer` shape on each person's customer record,
+  // with its holder marker (#2083) — see ENTITY_GRANTS.
+  for (const [principal, customerId] of [
+    [world.lisbeth, world.lisbethId],
+    [world.otto, world.ottoId],
+  ] as const) {
+    if (!customerId) continue;
+    await host.admin.grantEntityShape(staff, {
+      principalId: principal,
+      node: { tenantId: world.t1, scopeId: world.s1 },
+      entity: { entityType: 'customer', entityId: customerId },
+      permissions: portalPerms,
+      grantedBy: world.greta,
+    });
   }
-  if (world.ottoId) {
-    for (const permission of portalPerms) {
-      await host.admin.grant(staff, {
-        principalId: world.otto, permission,
-        node: { tenantId: world.t1, scopeId: world.s1 },
-        entity: { entityType: 'customer', entityId: world.ottoId },
-        grantedBy: world.greta,
-      });
-    }
-  }
+  // ...and topped up to the shape as it is now, which is what a deployed install's reconcile does.
+  await host.admin.reconcileEntityGrantShapes(staff, { tenantId: world.t1, scopeId: world.s1 }, ENTITY_GRANTS);
 
   return world;
 }
