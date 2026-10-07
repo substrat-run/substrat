@@ -157,7 +157,7 @@ describe('sealed visible continuations (#2074)', () => {
 
   it('keeps the full scan budget for a read-only walk with a visible row after 1,500 refusals', async () => {
     const randomness = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((bytes) => {
-      bytes.fill(0);
+      new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).fill(0);
       return bytes;
     });
     try {

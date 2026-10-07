@@ -292,7 +292,7 @@ describe('ctx.pageTrashed walks past refused rows without handing out their posi
 
   it('keeps the full budget on a read-only trashed page after 1,500 refused rows', async () => {
     const randomness = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((bytes) => {
-      bytes.fill(0);
+      new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).fill(0);
       return bytes;
     });
     try {
