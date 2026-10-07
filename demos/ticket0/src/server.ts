@@ -27,7 +27,7 @@ import { globalFetch, type ScopeHost } from '@substrat-run/kernel';
 import { mountLiveReads } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution, type ModelHost } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import { T0_PERM, ticket0Manifest } from './manifest.js';
+import { ticket0Manifest } from './manifest.js';
 import { API_DOCUMENT } from './api.js';
 import {
   answerConversation,

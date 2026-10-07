@@ -18,7 +18,7 @@
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { principalId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, type Clock, type ModuleLogSink, type ScopeHost } from '@substrat-run/kernel';
-import { T0_PERM, ticket0Manifest } from './manifest.js';
+import { ticket0Manifest } from './manifest.js';
 import { ASSISTANT_NAME } from './module.js';
 // The module set and the role table live in `provision.ts` — the ONE place both this
 // node host and the deployed worker read them from. See the note at its head.

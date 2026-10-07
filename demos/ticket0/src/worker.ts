@@ -83,7 +83,7 @@ import {
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { API_DOCUMENT } from './api.js';
-import { T0_PERM, TICKET0_ENV, ticket0Manifest } from './manifest.js';
+import { TICKET0_ENV, ticket0Manifest } from './manifest.js';
 import {
   CONTACT_BOUND_ROLE,
   CONTACT_PORTAL,
