@@ -330,6 +330,13 @@ export function entityStateContractSuite(
       expect(await errOf(as.carol.invoke('state/sql', {
         sql: 'SELECT keyring FROM private_continuation_keys',
       }))).toBeTruthy();
+      if (adapterName === 'adapter-cloudflare') {
+        // DO KV shares workerd's SQLite internals. The module SQL wrapper must
+        // refuse their names before workerd can hand the keyring back.
+        const internal = await errOf(as.carol.invoke('state/sql', { sql: 'SELECT * FROM _cf_KV' }));
+        expect(errorCodeOf(internal)).toBe('forbidden');
+        expect(await as.carol.invoke('state/sql', { sql: 'SELECT 1 AS ok /* _cf_KV */' })).toEqual([{ ok: 1 }]);
+      }
       const replay = await errOf(as.bob.invoke('state/page-trashed', { limit: 1, cursor: first.nextCursor }));
       expect(replay).toMatchObject({ extensions: { reason: PAGE_CURSOR_RESTART } });
       expect(await as.carol.invoke<Page<Row>>('state/page-trashed', { limit: 1, cursor: first.nextCursor })).toEqual({
