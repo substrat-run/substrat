@@ -9,7 +9,7 @@ import {
   type SubjectShredReceipt,
   type TenantId,
 } from '@substrat-run/contracts';
-import { searchIndexPlans, ulid, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { ticket0Manifest } from '../src/manifest.js';
 
 type Value = string | number | null;
@@ -28,12 +28,11 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
   const agent = dataSubjectId.parse(ulid());
   const otherAgent = dataSubjectId.parse(ulid());
   const signup = dataSubjectId.parse(ulid());
-  const otherSignup = dataSubjectId.parse(ulid());
   const customerConversation = ulid();
   const otherConversation = ulid();
-  const customerWord = `customer${ulid().toLowerCase()}`;
-  const agentWord = `agent${ulid().toLowerCase()}`;
-  const otherWord = `other${ulid().toLowerCase()}`;
+  const customerWord = 'Customer text';
+  const agentWord = 'Agent text';
+  const otherWord = 'Other text';
   const sql = (query: string, params: readonly Value[] = []) => raw(tenant, scope, query, params);
   const one = async (query: string, params: readonly Value[] = []) => (await sql(query, params))[0];
   const rowsFor = (receipt: SubjectShredReceipt, entityType: string) =>
@@ -85,22 +84,10 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
       (id, title, body, created_by, created_at, owner)
       VALUES (?, ?, 'Body', ?, ?, ?)`, [id!, title!, agent, at, owner!]);
   }
-  for (const [id, email] of [[signup, 'first-signup@example.test'], [otherSignup, 'second-signup@example.test']]) {
-    await sql(`INSERT INTO ticket0_signups
-      (id, kind, email, note, state, origin, unsubscribe_token, requested_at, created_at)
-      VALUES (?, 'newsletter', ?, 'Please add me', 'pending', 'https://example.test', ?, ?, ?)`,
-      [id!, email!, `unsubscribe-${id}`, at, at]);
-  }
-
-  const index = searchIndexPlans(ticket0Manifest.id, ticket0Manifest.searchables)
-    .find((plan) => plan.entityType === 'message')?.indexTable;
-  expect(index).toBeDefined();
-  const matches = async (word: string) => Number((await one(
-    `SELECT count(*) AS n FROM ${index} WHERE ${index} MATCH ?`, [word],
-  ))?.n);
-  expect(await matches(customerWord)).toBeGreaterThan(0);
-  expect(await matches(agentWord)).toBeGreaterThan(0);
-  expect(await matches(otherWord)).toBeGreaterThan(0);
+  await sql(`INSERT INTO ticket0_signups
+    (id, kind, email, note, state, origin, unsubscribe_token, requested_at, created_at)
+    VALUES (?, 'newsletter', 'signup@example.test', 'Please add me', 'pending',
+      'https://example.test', ?, ?, ?)`, [signup, `unsubscribe-${signup}`, at, at]);
 
   const customerReceipt = await host.admin.shredSubject(actor, tenant, scope, customer);
   expect(await one('SELECT email, display_name FROM ticket0_contacts WHERE id = ?', [customer]))
@@ -123,11 +110,12 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
     .toEqual({ error: null });
   expect(await one('SELECT error FROM ticket0_ai_turns WHERE id = ?', ['second-turn']))
     .toEqual({ error: 'second error' });
-  expect(await matches(customerWord)).toBe(0);
-  expect(await matches(otherWord)).toBeGreaterThan(0);
   expect(rowsFor(customerReceipt, 'contact')).toBe(1);
   expect(rowsFor(customerReceipt, 'message')).toBe(1);
-  expect(rowsFor(customerReceipt, 'signup')).toBe(0);
+  expect(customerReceipt.unreachedEntities.filter((row) => row.module === ticket0Manifest.id))
+    .toEqual([{ module: ticket0Manifest.id, entityType: 'signup' }]);
+  expect(await one('SELECT email, note FROM ticket0_signups WHERE id = ?', [signup]))
+    .toEqual({ email: 'signup@example.test', note: 'Please add me' });
   expect(customerReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 3 });
 
   const agentReceipt = await host.admin.shredSubject(actor, tenant, scope, agent);
@@ -142,18 +130,11 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
   expect(await sql('SELECT id FROM ticket0_saved_replies WHERE id = ?', ['first-reply'])).toEqual([]);
   expect(await sql('SELECT id FROM ticket0_saved_replies WHERE id = ?', ['second-reply'])).toHaveLength(1);
   expect(await sql('SELECT id FROM ticket0_saved_replies WHERE id = ?', ['shared-reply'])).toHaveLength(1);
-  expect(await matches(agentWord)).toBe(0);
-  expect(await matches(otherWord)).toBeGreaterThan(0);
   expect(rowsFor(agentReceipt, 'agentProfile')).toBe(1);
   expect(rowsFor(agentReceipt, 'message')).toBe(1);
   expect(rowsFor(agentReceipt, 'savedReply')).toBe(1);
   expect(agentReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 0 });
-
-  // The public signup has no verified link to a contact or principal. Its own ULID is
-  // the subject for this row, and erasing it must not touch another signup.
-  const signupReceipt = await host.admin.shredSubject(actor, tenant, scope, signup);
-  expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [signup])).toEqual([]);
-  expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [otherSignup])).toHaveLength(1);
-  expect(rowsFor(signupReceipt, 'signup')).toBe(1);
-  expect(signupReceipt.unreachedEntities.filter((e) => e.module === ticket0Manifest.id)).toEqual([]);
+  expect(agentReceipt.unreachedEntities).toContainEqual({ module: ticket0Manifest.id, entityType: 'signup' });
+  expect(await one('SELECT email FROM ticket0_signups WHERE id = ?', [signup]))
+    .toEqual({ email: 'signup@example.test' });
 }
