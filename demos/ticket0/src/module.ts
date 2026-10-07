@@ -7859,35 +7859,45 @@ const HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000;
 const HEALTH_RECENT = 10;
 
 /**
- * Rows without a subject column follow their conversation's original contact. A message
- * with an explicit author belongs to that author instead, even inside this conversation;
- * only the old contact messages with no author_contact_id use the original contact.
+ * A contact can be erased by its row id or its principal. Resolve both to contact ids
+ * before following authored messages and conversation-linked rows. An explicit message
+ * author owns that message even inside another contact's conversation.
  */
 const ticket0SubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
-  const conversationIds =
-    'SELECT id FROM ticket0_conversations WHERE contact_id = ?';
+  const contactIds = 'SELECT id FROM ticket0_contacts WHERE id = ? OR principal = ?';
+  const conversationIds = `SELECT id FROM ticket0_conversations
+    WHERE contact_id IN (${contactIds})`;
+  const args = [subjectId, subjectId];
+
+  const authoredMessages = `FROM ticket0_messages
+    WHERE author_kind = 'contact' AND author_contact_id IN (${contactIds})
+      AND (body_text != '' OR body_html IS NOT NULL)`;
+  if (ctx.sql.query(`SELECT 1 ${authoredMessages} LIMIT 1`, args).length > 0) {
+    ctx.sql.exec(`UPDATE ticket0_messages SET body_text = '', body_html = NULL
+      WHERE id IN (SELECT id ${authoredMessages})`, args);
+  }
 
   const oldMessages = `FROM ticket0_messages
     WHERE author_kind = 'contact' AND author_contact_id IS NULL
       AND conversation_id IN (${conversationIds})
       AND (body_text != '' OR body_html IS NOT NULL)`;
-  if (ctx.sql.query(`SELECT 1 ${oldMessages} LIMIT 1`, [subjectId]).length > 0) {
+  if (ctx.sql.query(`SELECT 1 ${oldMessages} LIMIT 1`, args).length > 0) {
     ctx.sql.exec(`UPDATE ticket0_messages SET body_text = '', body_html = NULL
-      WHERE id IN (SELECT id ${oldMessages})`, [subjectId]);
+      WHERE id IN (SELECT id ${oldMessages})`, args);
   }
 
   const csat = `FROM ticket0_csat WHERE comment IS NOT NULL
     AND conversation_id IN (${conversationIds})`;
-  if (ctx.sql.query(`SELECT 1 ${csat} LIMIT 1`, [subjectId]).length > 0) {
+  if (ctx.sql.query(`SELECT 1 ${csat} LIMIT 1`, args).length > 0) {
     ctx.sql.exec(`UPDATE ticket0_csat SET comment = NULL
-      WHERE conversation_id IN (SELECT conversation_id ${csat})`, [subjectId]);
+      WHERE conversation_id IN (SELECT conversation_id ${csat})`, args);
   }
 
   const turns = `FROM ticket0_ai_turns WHERE error IS NOT NULL
     AND conversation_id IN (${conversationIds})`;
-  if (ctx.sql.query(`SELECT 1 ${turns} LIMIT 1`, [subjectId]).length > 0) {
+  if (ctx.sql.query(`SELECT 1 ${turns} LIMIT 1`, args).length > 0) {
     ctx.sql.exec(`UPDATE ticket0_ai_turns SET error = NULL
-      WHERE id IN (SELECT id ${turns})`, [subjectId]);
+      WHERE id IN (SELECT id ${turns})`, args);
   }
 };
 

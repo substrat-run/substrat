@@ -19,6 +19,7 @@ export type ErasureSql = (tenant: TenantId, scope: ScopeId, sql: string, params?
 export interface ErasureAdapter {
   sql: ErasureSql;
   prepare: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId) => Promise<void>;
+  upgrade?: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId) => Promise<void>;
   erase: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId, subject: DataSubjectId) => Promise<ModuleErasureCounts>;
 }
 
@@ -30,6 +31,7 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
   const tenant = tenantId.parse(ulid());
   const scope = scopeId.parse(ulid());
   const customer = dataSubjectId.parse(ulid());
+  const customerPrincipal = dataSubjectId.parse(ulid());
   const otherCustomer = dataSubjectId.parse(ulid());
   const agent = dataSubjectId.parse(ulid());
   const otherAgent = dataSubjectId.parse(ulid());
@@ -47,11 +49,12 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
 
   await adapter.prepare(tenant, scope, actor);
 
-  for (const [id, email, name] of [
-    [customer, 'first@example.test', 'First'],
-    [otherCustomer, 'second@example.test', 'Second'],
+  for (const [id, principal, email, name] of [
+    [customer, customerPrincipal, 'first@example.test', 'First'],
+    [otherCustomer, null, 'second@example.test', 'Second'],
   ]) {
-    await sql('INSERT INTO ticket0_contacts (id, email, display_name, created_at) VALUES (?, ?, ?, ?)', [id!, email!, name!, at]);
+    await sql('INSERT INTO ticket0_contacts (id, principal, email, display_name, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id!, principal, email!, name!, at]);
   }
   for (const [id, name] of [[agent, 'Agent One'], [otherAgent, 'Agent Two']]) {
     await sql('INSERT INTO ticket0_agent_profiles (principal, display_name, avatar_url, signature, created_at) VALUES (?, ?, ?, ?, ?)',
@@ -96,7 +99,9 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
         'https://example.test', ?, ?, ?)`, [id!, email!, `unsubscribe-${id}`, at, at]);
   }
 
-  const customerReceipt = await adapter.erase(tenant, scope, actor, customer);
+  await adapter.upgrade?.(tenant, scope, actor);
+
+  const customerReceipt = await adapter.erase(tenant, scope, actor, customerPrincipal);
   expect(await one('SELECT email, display_name FROM ticket0_contacts WHERE id = ?', [customer]))
     .toEqual({ email: null, display_name: null });
   expect(await one('SELECT email FROM ticket0_contacts WHERE id = ?', [otherCustomer]))
@@ -118,12 +123,12 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
   expect(await one('SELECT error FROM ticket0_ai_turns WHERE id = ?', ['second-turn']))
     .toEqual({ error: 'second error' });
   expect(rowsFor(customerReceipt, 'contact')).toBe(1);
-  expect(rowsFor(customerReceipt, 'message')).toBe(1);
+  expect(rowsFor(customerReceipt, 'message')).toBe(0);
   expect(rowsFor(customerReceipt, 'signup')).toBe(0);
   expect(customerReceipt.unreachedEntities.filter((row) => row.module === ticket0Manifest.id)).toEqual([]);
   expect(await one('SELECT email, note FROM ticket0_signups WHERE id = ?', [signup]))
     .toEqual({ email: 'signup@example.test', note: 'Please add me' });
-  expect(customerReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 3 });
+  expect(customerReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 4 });
 
   const agentReceipt = await adapter.erase(tenant, scope, actor, agent);
   expect(await one('SELECT display_name, avatar_url, signature FROM ticket0_agent_profiles WHERE principal = ?', [agent]))
@@ -152,4 +157,14 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
   expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [otherSignup])).toHaveLength(1);
   expect(rowsFor(signupReceipt, 'signup')).toBe(1);
   expect(signupReceipt.unreachedEntities.filter((row) => row.module === ticket0Manifest.id)).toEqual([]);
+
+  // The row id is also a valid erasure subject. Its authored messages were left
+  // intact by the principal shred, including the one in another conversation.
+  const otherReceipt = await adapter.erase(tenant, scope, actor, otherCustomer);
+  expect(await one('SELECT email FROM ticket0_contacts WHERE id = ?', [otherCustomer])).toEqual({ email: null });
+  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['other-contact'])).toEqual({ body_text: '' });
+  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['other-conversation'])).toEqual({ body_text: '' });
+  expect(rowsFor(otherReceipt, 'contact')).toBe(1);
+  expect(rowsFor(otherReceipt, 'message')).toBe(2);
+  expect(otherReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 2 });
 }
