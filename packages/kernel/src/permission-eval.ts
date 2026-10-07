@@ -13,6 +13,7 @@ import {
 import type { PermissionChecker } from './permission-checker.js';
 import { capabilityGrantOf, capabilityLive, type CapabilityRow } from './capability.js';
 import { isSwitchableSubjectKind } from './system-switch.js';
+import { walkGrantedEntities, type GrantWalkRow } from './grant-scoped-read.js';
 
 /**
  * The built-in constrained relationship-tuple evaluator (design doc §4.2, plan D-23),
@@ -58,6 +59,9 @@ export interface PermissionTupleRow {
  * construction, so all three live together.
  */
 export interface ScopeTupleReader {
+  /** Keyset grant root and reverse parent edge reads for grant-scoped enumeration. */
+  nextGrant?(subject: string, relation: string, after: string): GrantWalkRow | undefined;
+  nextChild?(parent: string, after: string): GrantWalkRow | undefined;
   /**
    * Scope-level tuples for `subject` whose relation starts with `relationPrefix`. A
    * pre-filter only: the adapters answer it with SQL `LIKE`, which ignores ASCII case and
@@ -463,6 +467,18 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
   }
 
   return {
+    grantedEntities: async (subject, permission, node, entityType, checkEntity, options) => {
+      if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
+      const scope = reader.scopeFor(node);
+      if (!scope?.nextGrant || !scope.nextChild) return { kind: 'incomplete', reason: 'checker' };
+      // The same subject expansion and liveness predicate `check` uses, including orgs.
+      const now = reader.now();
+      const subjects = (await subjectsOf(subject, node, now)).map((s) => s.ref);
+      return walkGrantedEntities(
+        { nextGrant: scope.nextGrant, nextChild: scope.nextChild },
+        subjects, permission, entityType, now, checkEntity, options,
+      );
+    },
     /**
      * The subject's effective permission set at the node, compared against `required`
      * (K-21, membership.md §5.1).
