@@ -63,12 +63,12 @@ export interface TrashedReadDeps {
   searchPlans: ReadonlyMap<string, SearchIndexPlan>;
   statePlans: ReadonlyMap<string, EntityStatePlan>;
   check: StateCheck;
-  /** Rows one trashed page may read looking for visible ones — `TRASH_SCAN_BUDGET` unless a test narrows it. */
+  /** Test override; a sealed production walk chooses a private budget up to `TRASH_SCAN_BUDGET`. */
   scanBudget?: number;
   continuation?: (entityType: string, params: PageParams) => ReturnType<OperationContext['pageContinuation']>;
 }
 
-/** How many binned rows one `ctx.pageTrashed` call reads, at most — `VISIBLE_SCAN_BUDGET`. */
+/** Maximum number of binned rows one `ctx.pageTrashed` call reads. */
 export const TRASH_SCAN_BUDGET = VISIBLE_SCAN_BUDGET;
 
 export type TrashedReads = Pick<OperationContext, 'pageTrashed' | 'searchTrashed'>;
@@ -133,7 +133,7 @@ export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
         params,
         async (row) => (await deps.check(key, { entityType, entityId: String(row[plan.idColumn]) })).allowed,
         {
-          scanBudget: deps.scanBudget ?? TRASH_SCAN_BUDGET,
+          scanBudget: deps.scanBudget,
           continuation: deps.continuation?.(entityType, params),
         },
       ) as Promise<Page<never>>;
