@@ -15,7 +15,9 @@ import { join } from 'node:path';
 import { platformActorId, principalId, scopeId, tenantId, type Page } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import type { DevLogin } from '@substrat-run/dev-issuer';
 import { SHOP_PERM } from '../src/module.js';
+import { oidcAdapter } from '../src/auth-adapters.js';
 import { buildShopHost, ENTITY_GRANTS, portalPerms, provisionShop, seedShop } from '../src/seed.js';
 
 let dir: string;
@@ -69,8 +71,13 @@ describe('a key the portal shape gains reaches a customer granted before markers
     const seedHost = buildShopHost(seedDir);
     try {
       const world = await seedShop(seedHost, seedDir);
+      // This shopper arrives after the seed's reconcile, so the run-once backfill cannot
+      // stand in for a shape grant on the sign-in path.
+      const login = { subject: async () => ({ sub: 'new-shopper', name: 'New Shopper', email: 'new@example.test' }) } as unknown as DevLogin;
+      const newcomer = await oidcAdapter(login, seedHost, world).resolve(new Headers());
       const grants = await seedHost.admin.auditLog(staff, { tenantId: world.t1, scopeId: world.s1, action: 'grantEntityShape' });
-      expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([world.elin, world.otto].sort());
+      expect(newcomer).not.toBeNull();
+      expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([world.elin, world.otto, newcomer!.principal].sort());
     } finally {
       await seedHost.close();
       rmSync(seedDir, { recursive: true, force: true });
