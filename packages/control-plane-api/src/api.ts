@@ -9021,7 +9021,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    // The target choice is the tenant's alone. Staff may inspect it through GET, but cannot
+    // choose a tenant's site on its behalf.
+    if (pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
     const body = peerBindingBody.parse(await c.req.json());
     const actor = c.get('actor');
     if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) return c.json({ error: 'app not found' }, 404);

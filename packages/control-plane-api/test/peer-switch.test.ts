@@ -240,6 +240,7 @@ describe('the peer switch routes (#1706)', () => {
     const path = `/tenants/${t}/scopes/${caller}/peer-bindings`;
     const body = (targetScopeId: string | null) => ({ vertical: 'acme/crm', targetScopeId });
     expect((await app.request(path, { method: 'PUT', headers: asOtherTenant, body: JSON.stringify(body(target)) })).status).toBe(403);
+    expect((await app.request(path, { method: 'PUT', headers: asStaff, body: JSON.stringify(body(target)) })).status).toBe(403);
     expect((await app.request(path, { method: 'PUT', headers: asTenant, body: JSON.stringify(body(foreign)) })).status).toBe(404);
     expect(await (await get(`${path}?vertical=acme%2Fcrm`, asTenant)).json()).toBeNull();
     const bound = await app.request(path, { method: 'PUT', headers: asTenant, body: JSON.stringify(body(target)) });
