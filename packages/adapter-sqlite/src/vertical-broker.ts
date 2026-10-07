@@ -79,9 +79,13 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
     Object.prototype.hasOwnProperty.call(hosts, vertical) ? hosts[vertical] : undefined;
   // The broker is one in-process harness spanning hosts; no individual host directory has
   // both endpoints. Production's directory keeps this row durably instead.
-  const bindings = new Map<string, { targetScopeId: ScopeId; invalidated: boolean }>();
+  const bindings = new Map<string, { targetScopeId: ScopeId; invalidated: boolean; archiveRevision: string | null }>();
   const bindingKey = (from: LocalVerticalCallerRef, target: string) =>
     JSON.stringify([from.tenantId, from.scopeId, target]);
+  const archiveRevision = async (host: SqliteScopeHost, tenantId: TenantId, scopeId: ScopeId) =>
+    (await host.admin.auditLog(LOCAL_BROKER_ACTOR, {
+      tenantId, scopeId, action: ['archiveScope', 'reapScope', 'deleteSnapshot'], order: 'desc', limit: 1,
+    }))[0]?.id ?? null;
 
   return {
     async setBinding(from, target, targetScopeId) {
@@ -104,7 +108,11 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
       }
       const key = bindingKey(caller, target_);
       if (selected === null) bindings.delete(key);
-      else bindings.set(key, { targetScopeId: selected, invalidated: false });
+      else bindings.set(key, {
+        targetScopeId: selected,
+        invalidated: false,
+        archiveRevision: await archiveRevision(hostOf(target_)!, caller.tenantId, selected),
+      });
     },
     clientFor(from) {
       const caller = {
@@ -143,11 +151,14 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
             ? await targetHost.admin.listScopes(LOCAL_BROKER_ACTOR, { tenantId: caller.tenantId, vertical: target_ })
             : [];
           const binding = bindings.get(bindingKey(caller, target_));
-          // An observed archive/removal permanently invalidates the choice; suspension
-          // only refuses while it lasts. The resolver also checks live state every time.
+          // The immutable audit ID catches even an archive and unarchive between calls.
+          // Suspension changes no archive revision, so it refuses only while suspended.
           if (binding && !binding.invalidated) {
             const chosen = scopes.find((scope) => scope.id === binding.targetScopeId);
-            if (!chosen || chosen.status === 'archived') binding.invalidated = true;
+            if (!chosen || chosen.status === 'archived' || !targetHost ||
+              await archiveRevision(targetHost, caller.tenantId, binding.targetScopeId) !== binding.archiveRevision) {
+              binding.invalidated = true;
+            }
           }
           const resolution = resolvePeerInstanceFrom(
             scopes, caller.tenantId, target_, binding?.targetScopeId ?? null, binding?.invalidated ?? false,

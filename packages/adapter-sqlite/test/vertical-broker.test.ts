@@ -253,6 +253,17 @@ describe('the local peer broker (#1706)', () => {
       await broker.setBinding(from, TARGET, crmSecond);
       await expect(call(caller)).resolves.toBeDefined();
     });
+
+    it('does not revive a choice when archive and unarchive both happen between calls', async () => {
+      const from = { vertical: PEER_CALLER, tenantId: t, scopeId: caller };
+      await broker.setBinding(from, TARGET, crmSecond);
+      await target.admin.archiveScope(staff, t, crmSecond);
+      await target.admin.unarchiveScope(staff, t, crmSecond);
+      expect(errorCodeOf(await refusal(call(caller)))).toBe('conflict');
+      await broker.setBinding(from, TARGET, crmSecond);
+      await expect(call(caller)).resolves.toBeDefined();
+    });
+
   });
 });
 
