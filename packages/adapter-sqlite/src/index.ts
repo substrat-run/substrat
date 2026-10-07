@@ -1766,6 +1766,9 @@ export class SqliteScopeHost implements ScopeHost {
 
   /** A private directory seam: module SQL and scope/directory exports never reach it. */
   private continuationStore(scopeId: ScopeId): ContinuationStore {
+    const pruneExpired = () => this.directory.prepare(
+      'DELETE FROM private_continuation_positions WHERE expires_at <= ?',
+    ).run(Date.parse(this.clock()));
     return {
       keys: async () => {
         const row = this.directory.prepare(
@@ -1780,8 +1783,7 @@ export class SqliteScopeHost implements ScopeHost {
         ).run(scopeId, JSON.stringify(keys));
       },
       position: async (id, expiresAt) => {
-        this.directory.prepare('DELETE FROM private_continuation_positions WHERE expires_at <= ?')
-          .run(Date.parse(this.clock()));
+        pruneExpired();
         const row = this.directory.prepare(
           `SELECT ciphertext FROM private_continuation_positions
            WHERE scope_id = ? AND expires_at = ? AND locator = ?`,
@@ -1789,8 +1791,7 @@ export class SqliteScopeHost implements ScopeHost {
         return row ? { sealed: JSON.parse(row.ciphertext) as ContinuationPosition['sealed'], expiresAt } : null;
       },
       setPosition: async (id, position) => {
-        this.directory.prepare('DELETE FROM private_continuation_positions WHERE expires_at <= ?')
-          .run(Date.parse(this.clock()));
+        pruneExpired();
         this.directory.prepare(
           `INSERT INTO private_continuation_positions (scope_id, expires_at, locator, ciphertext)
            VALUES (?, ?, ?, ?)`,

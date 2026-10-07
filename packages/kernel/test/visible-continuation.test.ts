@@ -8,7 +8,7 @@ import {
   type ContinuationStore,
 } from '../src/visible-continuation.js';
 
-function memoryStore(): ContinuationStore & { clearKeys(): void; stored(): ContinuationPosition[]; clearPositions(): void; keyWrites(): number } {
+function memoryStore(): ContinuationStore & { clearKeys(): void; stored(): ContinuationPosition[]; keyWrites(): number } {
   let keys: ContinuationKeys | null = null;
   let writes = 0;
   const positions = new Map<string, ContinuationPosition>();
@@ -21,7 +21,6 @@ function memoryStore(): ContinuationStore & { clearKeys(): void; stored(): Conti
       while (positions.size > CONTINUATION_POSITION_CAP) positions.delete(positions.keys().next().value!);
     },
     clearKeys: () => { keys = null; },
-    clearPositions: () => { positions.clear(); },
     stored: () => [...positions.values()],
     keyWrites: () => writes,
   };
