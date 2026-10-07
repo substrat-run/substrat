@@ -599,6 +599,36 @@ export function permissionContractSuite(
         expect((await probe(max, s4, PERM_USE, seat(lena))).allowed).toBe(false);
       });
 
+      /**
+       * #2083: `holder: 'grantee'`, for a portal record that names no principal. Everyone holding a
+       * key of the shape there is marked, and from that reconcile on `ctx.grant` cannot give those
+       * keys on that type — so "holds one" keeps meaning "was given the shape".
+       */
+      it("a 'grantee' shape reaches people granted before markers, and ctx.grant can no longer give its keys", async () => {
+        const room = (id: string): EntityRef => ({ entityType: 'room', entityId: id });
+        const shape = (permissions: PermissionKey[]) => [{ entityType: 'room', permissions, bootstrap: true as const, holder: 'grantee' as const }];
+        const nils = principalId.parse(ulid());
+        const ola = principalId.parse(ulid());
+        const pia = principalId.parse(ulid());
+        // Two people on one portal record, granted key by key before the declaration.
+        for (const who of [nils, ola]) {
+          await host.admin.grant(staff, { principalId: who, permission: PERM_READ, node, entity: room('r1'), grantedBy: alice });
+        }
+        await host.admin.reconcileEntityGrantShapes(staff, node, shape([PERM_READ]));
+        const share = async (permission: PermissionKey) =>
+          (await host.getScope(alice, t1, s4)).invoke('perm/share', { principal: pia, permission, entity: room('r2') }).then(
+            () => 'granted',
+            errorCodeOf,
+          );
+        expect(await share(PERM_READ)).toBe('permission_denied');
+        // The twin: a key outside the shape, on the same type, is still delegable.
+        expect(await share(PERM_USE)).toBe('granted');
+        await host.admin.reconcileEntityGrantShapes(staff, node, shape([PERM_READ, PERM_ADMIN]));
+        for (const who of [nils, ola]) expect((await probe(who, s4, PERM_ADMIN, room('r1'))).allowed).toBe(true);
+        // ...and the person ctx.granted the other key is no holder.
+        expect((await probe(pia, s4, PERM_ADMIN, room('r2'))).allowed).toBe(false);
+      });
+
       it.each([0, -1, 1.5, 5001])('refuses batch %s with validation_failed, before touching the scope', async (batch) => {
         const err = await reconcile(GROWN, batch).then(
           () => undefined,
