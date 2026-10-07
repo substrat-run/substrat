@@ -18,6 +18,7 @@ import {
   listsDeclaredBy,
   mapPage,
   pageOf,
+  pageVisible,
   type ListPage,
   type Page,
   operationInputsOf,
@@ -461,42 +462,35 @@ interface StockRow {
 }
 
 /**
- * The warehouse view: on-hand vs reserved, which `shop/catalog` deliberately
- * never exposes — it is browse-gated, and a shopper has no business reading the
- * reservation ledger. Same numbers `add-to-cart` enforces against, so the gap
- * between on-hand and available *is* the live cart holds.
- */
-/**
  * Page a list this vertical already has in memory, on one of its own fields.
  *
- * Used for the two reads the kernel cannot walk: the stock overview joins
- * products, variants and live reservations, and the portal list filters per ROW.
- * Both fold the whole set first and page after it, so every cursor is a row the
- * caller sees. A per-row filter over a `ctx.page` walk is `pageVisible` instead,
- * which bounds the scan as well (#2073).
+ * Used for the read the kernel cannot walk: the stock overview joins products,
+ * variants and live reservations, so it folds the whole set first and pages after
+ * it. A per-row filter is not this — it walks `ctx.page` with `pageVisible`, which
+ * bounds the scan, as `shop/portal-orders` does (#2073, #2080).
  *
- * `order` matters: a descending walk's cursor is exclusive the other way round.
- * The cursor field must be UNIQUE among the rows, which each call site's
+ * The cursor field must be UNIQUE among the rows, which the call site's
  * declaration in `operations.ts` states and this cannot check.
  */
-function pageBy<T>(
-  rows: T[],
-  page: ListPage,
-  key: (row: T) => string,
-  order: 'asc' | 'desc' = 'asc',
-): Page<T> {
+function pageBy<T>(rows: T[], page: ListPage, key: (row: T) => string): Page<T> {
   const limit = Math.min(page.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
   const cursor = page.cursor;
   const after =
     cursor === undefined
       ? 0
       : (() => {
-          const i = rows.findIndex((r) => (order === 'asc' ? key(r) > cursor : key(r) < cursor));
+          const i = rows.findIndex((r) => key(r) > cursor);
           return i < 0 ? rows.length : i;
         })();
   return pageOf(rows.slice(after, after + limit), limit, key);
 }
 
+/**
+ * The warehouse view: on-hand vs reserved, which `shop/catalog` deliberately
+ * never exposes — it is browse-gated, and a shopper has no business reading the
+ * reservation ledger. Same numbers `add-to-cart` enforces against, so the gap
+ * between on-hand and available *is* the live cart holds.
+ */
 const stockOverviewOp: OperationHandler<ListPage | undefined, Page<StockRow>> = async (
   ctx,
   page,
@@ -1023,19 +1017,21 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
   return { order, lines };
 };
 
-/** Portal listing: per-entity proof walks (order → customer), no node-level grant. */
-const portalOrdersOp: OperationHandler<ListPage | undefined, Page<OrderRow>> = async (
-  ctx,
-  page,
-) => {
-  const all = ctx.sql.query<OrderRow>('SELECT * FROM shop_orders ORDER BY number DESC');
-  const visible: OrderRow[] = [];
-  for (const order of all) {
-    const decision = await ctx.check(SHOP_PERM.orderRead, orderRef(order.id));
-    if (decision.allowed) visible.push(order);
-  }
-  return pageBy(visible, page ?? {}, (o) => o.id, 'desc');
-};
+/**
+ * Portal listing: per-entity proof walks (order → customer), no node-level grant.
+ *
+ * The kernel's walk over the order table, newest first, with the check per row on top
+ * (#2080). `pageVisible` reads on past orders the caller cannot see until the page is full,
+ * mints the cursor from the last order it RETURNS, and reads at most `VISIBLE_SCAN_BUDGET`
+ * orders per call — so a customer's page costs a bounded number of checks, however many
+ * orders the shop holds (#2073).
+ */
+const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) =>
+  pageVisible(
+    (p) => ctx.page<OrderRow>('order', { ...input, ...p }),
+    input,
+    async (order) => (await ctx.check(SHOP_PERM.orderRead, orderRef(order.id))).allowed,
+  );
 
 /** "My account": the customer the caller is authorized to read — their portal identity. */
 const myCustomerOp: OperationHandler<undefined, { id: string; number: string; name: string } | null> = async (

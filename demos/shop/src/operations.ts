@@ -247,9 +247,10 @@ export const shopOperations = defineOperations(shopEntities, SHOP_PERMISSIONS)({
       checks: ['order:read'],
     },
     output: orderRow,
-    // Newest first, as this list shipped. Ids are ULIDs, so an `id` walk is the
-    // `number` walk without a second column to break ties on.
-    paged: { sortKey: 'id', order: 'desc' },
+    // Newest first by `number`, as this list shipped (#2080). The walk is the
+    // kernel's, over the same `(number, id)` index `shop/orders` already declares;
+    // the per-row check on top is the handler's, through `pageVisible`.
+    paged: { over: { entity: 'order', sortable: ['number'] }, order: 'desc' },
   },
   'shop/my-customer': {
     summary: 'The customer record the caller may act for',
