@@ -69,11 +69,15 @@ export async function walkGrantedEntities(
   entityType: string,
   now: string,
   check: (entity: EntityRef) => Promise<boolean>,
-  options: { limit?: number; cursor?: string } = {},
+  options: { limit?: number; cursor?: string; workBudget?: number } = {},
 ): Promise<Extract<GrantedEntitiesPage, { kind: 'ids' }>> {
   const limit = options.limit ?? 50;
+  const workBudget = options.workBudget ?? GRANT_READ_WORK_BUDGET;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > GRANT_READ_MAX_LIMIT) {
     throw new Error(`grantedEntities limit must be 1..${GRANT_READ_MAX_LIMIT}`);
+  }
+  if (!Number.isSafeInteger(workBudget) || workBudget < 1 || workBudget > GRANT_READ_WORK_BUDGET) {
+    throw new Error(`grantedEntities work budget must be 1..${GRANT_READ_WORK_BUDGET}`);
   }
   const p: Position = options.cursor
     ? decode(options.cursor, permission, entityType)
@@ -83,7 +87,7 @@ export async function walkGrantedEntities(
   let work = 0;
   const relation = `granted:${permission}`;
   while (p.subject < subjects.length) {
-    if (work >= GRANT_READ_WORK_BUDGET || ids.length >= limit) {
+    if (work >= workBudget || ids.length >= limit) {
       return { kind: 'ids', ids, nextCursor: encode(p) };
     }
     if (p.stack.length === 0) {

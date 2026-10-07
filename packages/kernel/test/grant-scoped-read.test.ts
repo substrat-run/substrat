@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { permissionKey } from '@substrat-run/contracts';
-import { GRANT_READ_WORK_BUDGET, walkGrantedEntities, type GrantWalkRow, type GrantWalkStore } from '../src/grant-scoped-read.js';
+import { walkGrantedEntities, type GrantWalkRow, type GrantWalkStore } from '../src/grant-scoped-read.js';
 
 const permission = permissionKey.parse('item:read');
 const row = (subject: string, object: string, revoked_at: string | null = null): GrantWalkRow => ({
@@ -24,7 +24,7 @@ async function collect(source: GrantWalkStore, limit: number): Promise<string[]>
   for (let pageNo = 0; pageNo < 200; pageNo++) {
     const page = await walkGrantedEntities(
       source, ['principal:alice'], permission, 'item', '2026-01-01T00:00:00Z',
-      async () => true, { limit, cursor },
+      async () => true, { limit, cursor, workBudget: 8 },
     );
     ids.push(...page.ids);
     if (page.nextCursor === null) return ids;
@@ -47,7 +47,7 @@ describe('grant-scoped depth-first walk', () => {
   });
 
   it('returns a continuation at its work budget, then finishes a wide graph', async () => {
-    const children = Array.from({ length: GRANT_READ_WORK_BUDGET + 10 }, (_, i) =>
+    const children = Array.from({ length: 12 }, (_, i) =>
       row(`item:${String(i).padStart(5, '0')}`, 'box:root'));
     const ids = await collect(store([row('principal:alice', 'box:root')], children), 100);
     expect(new Set(ids).size).toBe(children.length);
