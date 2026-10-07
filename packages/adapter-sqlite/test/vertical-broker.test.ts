@@ -264,6 +264,13 @@ describe('the local peer broker (#1706)', () => {
       await expect(call(caller)).resolves.toBeDefined();
     });
 
+    it('a recreated local broker starts without its earlier in-memory choice', async () => {
+      const fresh = createLocalVerticalBroker({ [TARGET]: target, [PEER_CALLER]: callers });
+      const result = fresh.clientFor({ vertical: PEER_CALLER, tenantId: t, scopeId: caller })
+        .invoke(TARGET, 'peer/note', { id: ulid(), body: 'fresh broker' });
+      expect(errorCodeOf(await refusal(result))).toBe('conflict');
+    });
+
   });
 });
 

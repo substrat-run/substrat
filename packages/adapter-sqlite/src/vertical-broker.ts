@@ -64,7 +64,10 @@ export interface LocalVerticalClient {
 export interface LocalVerticalBroker {
   /** A client that speaks as `from` — the harness's own scope, and only that. */
   clientFor(from: LocalVerticalCallerRef): LocalVerticalClient;
-  /** Harness-owned choice across the caller and target hosts' separate directories. */
+  /**
+   * Harness-owned choice across the caller and target hosts' separate directories.
+   * Choices are in memory and disappear when this broker is recreated or the process restarts.
+   */
   setBinding(from: LocalVerticalCallerRef, target: string, targetScopeId: ScopeId | null): Promise<void>;
 }
 
