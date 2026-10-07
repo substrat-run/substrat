@@ -158,7 +158,6 @@ describe('the diff formatters', () => {
       '~ desk:read  “Read tickets” → “Read every ticket”',
       '- desk:old  Old',
       'grant shape ticket (removed): -desk:read',
-      '  existing holders keep desk:read: dropped from the shape but not retired',
     ]);
     expect(formatRegistryDiff(reg(), reg(), false)).toEqual(['none']);
     expect(formatRegistryDiff(null, reg(), true)[0]).toMatch(/serving version carries no permission registry/);

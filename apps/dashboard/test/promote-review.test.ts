@@ -104,7 +104,7 @@ describe('diffRegistries', () => {
       ['viewer', ['desk:read'], true],
     ]);
     expect(d.grantChanges).toEqual([
-      { entityType: 'ticket', added: [], removed: ['desk:read'], retired: [], kept: ['desk:read'], isNew: false, isGone: true },
+      { entityType: 'ticket', added: [], removed: ['desk:read'], retired: [], kept: [], isNew: false, isGone: true },
     ]);
     expect(registryDirection(d)).toBe('removes');
   });
@@ -143,7 +143,7 @@ describe('diffRegistries', () => {
  */
 describe('diffRegistries: a shape key retired or kept (#2082)', () => {
   const shaped = (permissions: string[], retired?: string[]) =>
-    reg({ entityGrants: [{ entityType: 'ticket', permissions, ...(retired ? { retired } : {}) }] });
+    reg({ entityGrants: [{ entityType: 'ticket', permissions, bootstrap: true, ...(retired ? { retired } : {}) }] });
 
   it('a key dropped without `retired` is kept by existing holders, and the diff says so', () => {
     const d = diffRegistries(shaped(['desk:read', 'desk:write']), shaped(['desk:read']));
@@ -169,6 +169,12 @@ describe('diffRegistries: a shape key retired or kept (#2082)', () => {
     expect(hasRegistryChange(d)).toBe(true);
     expect(d.grantChanges.map((g) => [g.removed, g.retired, g.kept])).toEqual([[[], ['desk:write'], []]]);
     expect(registryDirection(d)).toBe('removes');
+  });
+
+  it('a key dropped from a SHARING shape names no holders: it has none to keep or lose it', () => {
+    const d = diffRegistries(reg({ entityGrants: [{ entityType: 'ticket', permissions: ['desk:read', 'desk:write'] }] }), reg());
+    expect(d.grantChanges.map((g) => [g.removed, g.kept])).toEqual([[['desk:write'], []]]);
+    expect(grantShapeHolderNotes(d.grantChanges[0]!)).toEqual([]);
   });
 
   it('a retirement carried unchanged into the next version is not a change again', () => {

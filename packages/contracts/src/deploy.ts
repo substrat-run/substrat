@@ -568,8 +568,8 @@ export const entityGrantShape = z.object({
     .optional(),
   /**
    * #2082: keys this bootstrap shape USED TO carry, taken back from every existing holder. A key
-   * dropped from `permissions` alone stays with everyone who already held it (the reconcile is
-   * top-up only, and the promote diff says "existing holders keep it"). Listing it here is the
+   * dropped from `permissions` alone stays with everyone who already held it (the reconcile never
+   * removes a key on its own, and the promote diff says "existing holders keep it"). Listing it here is the
    * reviewed removal: at the next reconcile each person holding the shape's marker on an entity
    * of this type has that key's row there TOMBSTONED (K-21, never deleted), once per scope, with
    * one `entity.grants-retired` event per (person, entity).

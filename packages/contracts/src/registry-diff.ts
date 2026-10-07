@@ -9,7 +9,7 @@
 export interface RegistryLike {
   permissions: ReadonlyArray<{ key: string; description: string }>;
   roles: ReadonlyArray<{ key: string; permissions: readonly string[] }>;
-  entityGrants: ReadonlyArray<{ entityType: string; permissions: readonly string[]; retired?: readonly string[] }>;
+  entityGrants: ReadonlyArray<{ entityType: string; permissions: readonly string[]; bootstrap?: true; retired?: readonly string[] }>;
 }
 
 export interface RegistryDiff {
@@ -21,7 +21,8 @@ export interface RegistryDiff {
   /**
    * Entity-narrowed grant SHAPES that changed — which keys a per-entity grant may carry. #2082:
    * `retired` is the keys this version newly declares taken back from existing holders, and
-   * `kept` the keys it drops from the shape WITHOUT retiring them, which existing holders keep.
+   * `kept` the keys it drops from a bootstrap shape WITHOUT retiring them, which existing holders
+   * keep. A sharing shape has no holders to keep or lose anything, so its `kept` is empty.
    */
   grantChanges: Array<{
     entityType: string;
@@ -70,7 +71,8 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
     const added = gained(before?.permissions, after?.permissions);
     const removed = gained(after?.permissions, before?.permissions);
     const retired = gained(before?.retired, after?.retired);
-    const kept = removed.filter((k) => !(after?.retired ?? []).includes(k));
+    const bootstrap = !!(before?.bootstrap || after?.bootstrap);
+    const kept = bootstrap ? removed.filter((k) => !(after?.retired ?? []).includes(k)) : [];
     const isNew = !before && !!after;
     const isGone = !!before && !after;
     if (added.length || removed.length || retired.length || isNew || isGone) {
@@ -90,7 +92,8 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
  * #2082: what a grant-shape change does to the people who ALREADY hold the shape, one sentence
  * per key, for every reader of the diff to show as written. A key retired is taken from every
  * holder — and one tuple is one authority, so a direct grant of it on the same entity goes too.
- * A key dropped without being retired stays with them: the reconcile only ever tops up.
+ * A key dropped without being retired stays with them: the reconcile takes back only what a
+ * version declares retired.
  */
 export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][number], 'retired' | 'kept'>): string[] {
   return [
