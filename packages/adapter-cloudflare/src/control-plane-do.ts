@@ -126,6 +126,7 @@ import type {
   Tenant,
   TenantId,
   TenantStatus,
+  PeerInstanceResolution,
   VerticalResolution,
   ErrorCode,
 } from '@substrat-run/contracts';
@@ -2693,7 +2694,7 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** Binding is read at call execution, so a queued invoke follows the current explicit choice. */
-  resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string) {
+  resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string): PeerInstanceResolution {
     const rows = this.sql.exec(
       `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
        WHERE tenant_id = ? AND vertical = ?`, tenantId, vertical,
