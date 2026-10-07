@@ -5,7 +5,7 @@
 '@substrat-run/adapter-cloudflare': patch
 '@substrat-run/contract-tests': minor
 '@substrat-run/vertical-host': minor
-'@substrat-run/create-substrat': patch
+'create-substrat': patch
 ---
 
 `pageVisible` no longer hands a caller the position of a row it may not see (#2073). It used to return the cursor of the last row it EXAMINED, and a cursor carries its row's id and sort value, so a per-row-filtered read with `limit: 1` told a caller the id and sort value of every row the check refused. Every portal walk and the scaffold template used it.
