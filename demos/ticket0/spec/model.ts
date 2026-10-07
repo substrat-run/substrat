@@ -1158,12 +1158,9 @@ export const ticket0Entities = defineEntities({
      * event, which the compiler now refuses. That is also what keeps a PERSONAL reply
      * personal on the desk's trail: its events say which reply, never what it says.
      *
-     * What it does NOT do yet: reach the stored row. `shredSubject` redacts the spine and
-     * never a vertical's own table, so erasing a subject, a customer or the agent who owns
-     * a personal reply, leaves this row as it is, exactly as it leaves a message body or a
-     * signature. The `onSubjectErased` hook that would bring it in is unbuilt (#2068).
-     * Until then a shared reply is desk content tied to no customer: write placeholders
-     * (`SAVED_REPLY_VARIABLES`), never a customer's details, into a canned answer.
+     * A personal reply belongs to its `owner`, so erasing that staff principal removes
+     * the row. A shared reply has no subject: write placeholders
+     * (`SAVED_REPLY_VARIABLES`), never a customer's details, into desk content.
      */
     erasable: ['title', 'body'],
     erasure: { subjects: ['owner'], mode: 'delete' },

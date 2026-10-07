@@ -1373,9 +1373,8 @@ function attachmentLine(a: { filename: string; contentType: string; sizeBytes: n
  *
  * The filenames are the customer's words, and this note holds them exactly as every
  * other message holds a body: `message.erasable` names `body_text`, which is what keeps
- * it off every event (`shredSubject` redacts the outbox, never a vertical's own table),
- * and it is also why this note emits no event of its own. Whatever erases a customer's
- * messages from this desk reaches the note on the same terms — no better, no worse.
+ * it off every event, and it is also why this note emits no event of its own. A
+ * subject erasure blanks it with the customer's other authored messages.
  */
 function droppedAttachmentsNote(
   attachments: readonly { filename: string; contentType: string; sizeBytes: number }[],
