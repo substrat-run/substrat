@@ -250,7 +250,7 @@ export const shopOperations = defineOperations(shopEntities, SHOP_PERMISSIONS)({
     // Newest first by `number`, as this list shipped (#2080). The walk is the
     // kernel's, over the same `(number, id)` index `shop/orders` already declares;
     // the per-row check on top is the handler's, through `pageVisible`.
-    paged: { over: { entity: 'order', sortable: ['number'] }, order: 'desc' },
+    paged: { over: { entity: 'order', sortable: ['number'], filterable: ['id'] }, order: 'desc' },
   },
   'shop/my-customer': {
     summary: 'The customer record the caller may act for',

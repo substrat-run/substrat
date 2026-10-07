@@ -1026,19 +1026,25 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
  * orders per call — so a customer's page costs a bounded number of checks, however many
  * orders the shop holds (#2073).
  */
-const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) =>
-  pageVisible(
-    (p) => ctx.page<OrderRow>('order', { ...input, ...p }),
+const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) => {
+  // A complete order-id set includes grants directly on orders as well as grants
+  // inherited from customers. A customer-id filter alone can omit direct grants.
+  const ids = await completeGrantIds(ctx, 'order');
+  return pageVisible(
+    (p) => ctx.page<OrderRow>('order', {
+      ...input, ...p, ...(Array.isArray(ids) ? { filters: { id: ids } } : {}),
+    }),
     input,
     async (order) => (await ctx.check(SHOP_PERM.orderRead, orderRef(order.id))).allowed,
   );
+};
 
 /** Finish a small grant walk before using its ids as a complete SQL narrowing set. */
-async function customerGrantIds(ctx: OperationContext): Promise<'all' | 'incomplete' | string[]> {
+async function completeGrantIds(ctx: OperationContext, entityType: string): Promise<'all' | 'incomplete' | string[]> {
   const ids = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < 10; page++) {
-    const result = await ctx.grantedEntities(SHOP_PERM.orderRead, 'customer', { limit: 100, cursor });
+    const result = await ctx.grantedEntities(SHOP_PERM.orderRead, entityType, { limit: 100, cursor });
     if (result.kind !== 'ids') return result.kind;
     for (const id of result.ids) ids.add(id);
     if (result.nextCursor === null) return [...ids];
@@ -1051,7 +1057,7 @@ async function customerGrantIds(ctx: OperationContext): Promise<'all' | 'incompl
 const myCustomerOp: OperationHandler<undefined, { id: string; number: string; name: string } | null> = async (
   ctx,
 ) => {
-  const grants = await customerGrantIds(ctx);
+  const grants = await completeGrantIds(ctx, 'customer');
   if (grants === 'all') {
     const first = ctx.sql.query<{ id: string; number: string; name: string }>(
       'SELECT id, number, name FROM shop_customers ORDER BY number LIMIT 1',
