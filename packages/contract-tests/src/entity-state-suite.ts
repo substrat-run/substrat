@@ -338,7 +338,8 @@ export function entityStateContractSuite(
         expect(await as.carol.invoke('state/sql', { sql: 'SELECT 1 AS ok /* _cf_KV */' })).toEqual([{ ok: 1 }]);
         const consoleRead = await errOf(host.admin.queryScope(staff, t1, scope, { sql: 'SELECT * FROM _cf_KV' }));
         expect(errorCodeOf(consoleRead)).toBe('forbidden');
-        await expect(host.admin.readScopeTable(staff, t1, scope, { table: '_cf_KV' })).rejects.toBeTruthy();
+        await expect(host.admin.readScopeTable(staff, t1, scope, { table: '_cf_KV', limit: 1, offset: 0 }))
+          .rejects.toBeTruthy();
         expect((await host.admin.listScopeTables(staff, t1, scope)).some((table) => table.name.startsWith('_cf_'))).toBe(false);
       } else {
         // The private directory database is a distinct file, unreachable through the
