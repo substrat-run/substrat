@@ -10,6 +10,7 @@ import {
   facetRecencyContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  connectLinkContractSuite,
   causedByContractSuite,
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
@@ -88,6 +89,25 @@ inertScopeContractSuite('adapter-sqlite', async () => {
     },
   };
 });
+
+// connections.md §3.5.4: a vertical's mailed connect link, in the directory.
+connectLinkContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-connect-links-'));
+    const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (host, sql) => {
+    (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+  },
+);
 
 // #1748: findings — the tenant inbox, its lifecycle, rules and retention, on the directory.
 findingsContractSuite('adapter-sqlite', async () => {

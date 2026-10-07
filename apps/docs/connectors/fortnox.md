@@ -108,6 +108,14 @@ typed:
   and making them a dashboard member first would be the wrong door. Seven days by default,
   single-use, and revocable from the same card right up until it is spent.
 
+**From the vertical itself.** A bookkeeping bureau whose staff work in its own vertical does
+not need the dashboard for either door: the vertical starts the round for the person in front
+of it with [`requestConnectUrl`](/reference/vertical-host#requestconnecturl-request), or mints
+the copy-able link itself with
+[`mintConnectLink`](/reference/vertical-host#mintconnectlink-request-listconnectlinks-request-revokeconnectlink-request)
+and mails it to the client company's Fortnox administrator — the same single-use, revocable,
+seven-day link, listed on the dashboard card beside the ones minted there.
+
 Either way the closing page names **which company** was attached — name, organisation number,
 database number, and how many financial years the new credential can read. That naming is the
 point: a consent granted while signed into the wrong company-switcher entry looks identical to a

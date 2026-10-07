@@ -436,6 +436,17 @@ export {
 } from './connect-state.js';
 export type { ConnectStateClaim } from './connect-state.js';
 export {
+  CONNECT_LINKS_DDL,
+  consumeConnectLinkRow,
+  insertConnectLink,
+  listConnectLinks,
+  readConnectLink,
+  restoreConnectLinkRow,
+  revokeConnectLinkRow,
+  type ConnectLinkAudit,
+  type ConnectLinkKeyRow,
+} from './connect-links.js';
+export {
   PLATFORM_REQUEST_COLUMNS,
   platformRequestHistoryQuery,
   platformRequestOf,

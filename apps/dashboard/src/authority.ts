@@ -1,5 +1,7 @@
 import type {
   AdminLogEntry,
+  ConnectLink,
+  ConnectLinkConsume,
   Connection,
   ConnectionActivity,
   ConnectionActivitySource,
@@ -625,6 +627,65 @@ export class TenantNarrowedControlPlane {
   /** Revoke a connection (terminal — the sealed secret is deleted, grants tombstone). */
   revokeConnection(connectionId: string): Promise<void> {
     return this.call(`/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}`, { method: 'DELETE' });
+  }
+
+  /**
+   * A vertical's mailed connect links (connections.md §3.5.4) — the platform-held row a
+   * link round's signed state names. Every call names the vertical's SCOPE as well as this
+   * tenant: it is half the store's key, so another scope's link reads as absent.
+   */
+  listConnectLinks(scopeId: ScopeId, filter: { provider?: string; outstanding?: boolean } = {}): Promise<ConnectLink[]> {
+    const q = new URLSearchParams({ scopeId });
+    if (filter.provider) q.set('provider', filter.provider);
+    if (filter.outstanding) q.set('outstanding', '1');
+    return this.call<ConnectLink[]>(`/tenants/${this.tenantId}/connect-links?${q.toString()}`);
+  }
+
+  /** One link, or `undefined` when this scope holds no such link. */
+  async getConnectLink(scopeId: ScopeId, linkId: string): Promise<ConnectLink | undefined> {
+    try {
+      return await this.call<ConnectLink>(
+        `/tenants/${this.tenantId}/connect-links/${encodeURIComponent(linkId)}?scopeId=${encodeURIComponent(scopeId)}`,
+      );
+    } catch (e) {
+      if (e instanceof ControlPlaneError && e.status === 404) return undefined;
+      throw e;
+    }
+  }
+
+  /** The callback's spend — before the credential is stored, so exactly one round wins. */
+  consumeConnectLink(
+    scopeId: ScopeId,
+    linkId: string,
+    input: { provider: string; accountRef?: string; accountLabel?: string },
+  ): Promise<ConnectLinkConsume> {
+    return this.post<ConnectLinkConsume>(
+      `/tenants/${this.tenantId}/connect-links/${encodeURIComponent(linkId)}/consume`,
+      { scopeId, ...input },
+    );
+  }
+
+  /** Un-spend after a failed store. `false` when the link was not used, or has since lapsed. */
+  async restoreConnectLink(scopeId: ScopeId, linkId: string): Promise<boolean> {
+    const answer = await this.post<{ restored: boolean }>(
+      `/tenants/${this.tenantId}/connect-links/${encodeURIComponent(linkId)}/restore`,
+      { scopeId },
+    );
+    return answer?.restored === true;
+  }
+
+  /** Revoke (idempotent). `false` when this scope never held the link. */
+  async revokeConnectLink(scopeId: ScopeId, linkId: string): Promise<boolean> {
+    try {
+      await this.call(
+        `/tenants/${this.tenantId}/connect-links/${encodeURIComponent(linkId)}?scopeId=${encodeURIComponent(scopeId)}`,
+        { method: 'DELETE' },
+      );
+      return true;
+    } catch (e) {
+      if (e instanceof ControlPlaneError && e.status === 404) return false;
+      throw e;
+    }
   }
 
   /** provisioning → active, once the vertical has confirmed the scope exists. */

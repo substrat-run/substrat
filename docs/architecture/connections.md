@@ -456,7 +456,8 @@ in-session by the person who just pressed the button. Its expiry is minutes, and
 re-consents the **same company**, which the account leg of the connection key (§3.1.1.1)
 turns into a rotation in place rather than a duplicate — so the harm the row guarded against
 does not arise. The consent code is single-use at the provider regardless. Both rounds meet
-at one callback, which asks the row about liveness only when there is a row.
+at one callback, which asks the row about liveness only when there is a row. (A vertical
+that needs to MAIL a round to someone else is the other case again, and gets a row — §3.5.4.)
 
 **The two states are separate MAC families.** The link's key is HKDF from the dashboard's
 `SESSION_SECRET`; the platform round's is HKDF from `PLATFORM_SECRET` under its own purpose
@@ -477,6 +478,79 @@ it learns a landing from the return, and thereafter from the connector's own del
 payload (Fortnox's carries the `connectionId` and the organisation number). A read-back for
 "197 of 200 connected" is a separate question, and the §3.5 posture for it is a metadata-only
 read, never one that touches ciphertext.
+
+#### 3.5.4 The connect-link relay — a mailed round, held as a row
+
+§3.5.3 serves the bureau's own staff. It does not serve the other half of the same job: the
+person who must **approve** at Fortnox is the client company's administrator, not the
+bureau. The bureau mails them a link, and they open it days later, from an inbox, with no
+account on the bureau's vertical or on Substrat. §3.5.3 said a vertical-started round has no
+row because it is clicked in-session within minutes. A mailed link is clicked by someone
+else, days later, and that undoes each reason the row was unnecessary:
+
+- **It must be single-use.** A link forwarded once too often, or opened by a client who
+  administers two Fortnox companies, would otherwise connect a second company on a round
+  meant for one. The account leg of the key (§3.1.1.1) prevents a duplicate of the *same*
+  company; it does nothing about a *different* one.
+- **It must be revocable.** A bureau that mailed the wrong client, or lost the engagement,
+  has to be able to kill a link before it is opened. A signature cannot be withdrawn.
+- **It must expire on a scale of days, not minutes,** which is exactly the window over which
+  the first two matter.
+
+So the link is a row, `_substrat_connect_links`, held by the platform in the directory
+beside the connections it leads to — not in the vertical, which never sees the callback and
+so cannot enforce single-use on it, and not in the dashboard's scope, which belongs to the
+tenant's dashboard rather than to the vertical that minted the link. The DDL is kernel-owned
+(`CONNECT_LINKS_DDL`, `connect-links.ts`), and so are its statements, so the pure and hosted
+adapters build and run the same thing; `connectLinkContractSuite` holds both to it. Each row
+carries the tenant, the scope (half its key: another scope's link reads as absent), the
+vertical as the directory had it at mint, the provider, a status (`outstanding` / `used` /
+`revoked`), the authorizing principal, the vertical's opaque `subjectRef`, the return URL,
+the expiry, and what the consent attached once it is spent.
+
+The relays are `/internal/connections/connect-links` (mint → URL), `…/list` and `…/revoke`,
+under the same platform-secret gate and the same derivation as `connect-url`: the vertical is
+re-derived from the scope record, a preview or fork is refused (#2005), and a `returnUrl`
+must be a hostname bound to the scope. A link lives 7 days unless asked, and at most 30.
+That is a separate request shape, **not** a wider `ttlSeconds` on `connect-url`: the two
+are different authorities, and widening the URL's 15-minute clamp would have handed out
+week-long rounds with neither single-use nor revocation.
+
+`…/list` and `…/revoke` name links by id; neither browses a scope. The list requires
+`linkIds` (1 to 100, the ids the vertical's own mints answered) and returns those that are
+this tenant's and this scope's, omitting any other rather than refusing it; the vertical keeps
+each id on its own row beside the `subjectRef` it minted for. The reason is the gate, not the
+key: every pushed vertical holds the same shared platform-call credential, so the relay
+authenticates *a platform script*, not the vertical whose `(tenantId, scopeId)` it names. A
+browse would let any vertical that learned another tenant's two ids read that tenant's links —
+client company names, subject refs, the principals who minted them. Binding the caller to its
+scope is a platform-wide gap shared with mint, `connect-url` and `upsert`, and is tracked as
+such; until it closes, a read here takes holding the link's id.
+
+The signed state is the same `signConnectState` claim with one more field, `linkId`, and
+an `exp` equal to the row's expiry. The dashboard treats it as a platform round that has a
+row: the **landing** asks whether the row is outstanding and unexpired and spends nothing
+(a mail scanner or a link preview fetching the URL must not burn it); the **callback**
+consumes the row before it stores the credential — so of two racing callbacks exactly one
+connects, and a revoked link never reaches the store — and restores it if the store fails,
+so a platform fault costs a retry rather than a new link mailed to a client. The row is
+reached through the control plane's tenant routes (`/tenants/:t/connect-links…`) with the
+dashboard's tenant credential, as the callback's `upsertConnection` already is.
+
+Where the round ends is the vertical's call. With a `returnUrl`, success and every refusal
+return there as they do for §3.5.3, with `link=<id>` added and refusals as
+`?error=link_used|link_revoked|link_expired|link_unknown`. Without one, the platform's own
+pages close the round, and their copy sends the reader back to whoever sent the link — the
+client's administrator has no Substrat administrator to ask. The tenant admin sees an app's
+outstanding links on the dashboard's integrations card beside its own (marked
+`source: 'app'`) and can revoke them there.
+
+Every move of the row is in the admin log — mint, revoke, consume and restore — because
+restore clears `used_at`, and without those rows the directory would forget a link was ever
+spent. Each move commits in one directory transaction with its audit row: a consume whose
+audit write failed would otherwise leave the link spent, with no connection and no record,
+and its retry refused as `used`. Nothing on the row is a secret: the credential exists only after a consume, and it
+lands in the connection store, never here.
 
 ### 3.6 Token refresh
 

@@ -530,6 +530,23 @@ describe('connect-url relay — /internal/connections/connect-url', () => {
 });
 
 /**
+ * The connect-LINK relays' routes (connections.md §3.5.4) — the same gate again: a link is a
+ * longer-lived consent round than the URL, so an unconfigured deployment refusing to mint,
+ * list or revoke one for an anonymous caller matters more, not less. The logic is unit-tested
+ * against a real adapter in control-plane-api's connect-links suite.
+ */
+describe('connect-link relays — /internal/connections/connect-links{,/list,/revoke}', () => {
+  it.each(['', '/list', '/revoke'])('refuses %j when the platform secret is not configured (fails closed)', async (suffix) => {
+    const res = await SELF.fetch(`https://cp.test/internal/connections/connect-links${suffix}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
+      body: JSON.stringify({ tenantId: ulid(), scopeId: ulid(), provider: 'fortnox', createdBy: ulid(), linkId: ulid() }),
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+/**
  * The members surface (console → Members): the staff roster over /api/members*.
  * What's under test: the fail-closed gate, grant/revoke round-trips, attribution
  * (`added_by` = the acting staff actor), and the two K-21 invariants — revocation

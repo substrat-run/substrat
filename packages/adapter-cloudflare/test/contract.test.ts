@@ -36,6 +36,7 @@ import {
   capabilityContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  connectLinkContractSuite,
   causedByContractSuite,
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
@@ -121,6 +122,25 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
   });
   return { host, cleanup: async () => host.close() };
 });
+
+// connections.md §3.5.4: a vertical's mailed connect link — the kernel's statements, run inside
+// the ControlPlaneDO, which is where the hosted single-use guarantee has to hold.
+connectLinkContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      checker: UNSAFE_allowAllChecker,
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  async (_host, sql) => {
+    await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      state.storage.sql.exec(sql);
+    });
+  },
+);
 
 // #1748: findings — the directory half lives in the ControlPlaneDO, so this is the proof that
 // the kernel's statements (json_each, RETURNING, the upsert) run on DO SQLite.

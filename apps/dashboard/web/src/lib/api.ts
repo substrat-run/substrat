@@ -1192,6 +1192,8 @@ export interface ConnectLinkView {
   expiresAt: string;
   /** Present on the mint response only — the URL is never listed back. */
   url?: string;
+  /** On the list: minted here (`dashboard`) or by the app itself and mailed from it (`app`). */
+  source?: 'dashboard' | 'app';
 }
 
 /** `GET /api/integrations` */

@@ -9,13 +9,14 @@
  * reason to have one — presses Connect on the vertical's own screen, and the vertical's
  * operation is the permission-checked act.
  *
- * **Why this claim carries no link row.** The dashboard's connect link is minted, mailed,
- * and clicked days later by someone else, so it is a row: single-use, revocable, and dead
- * when the minting admin loses access. A vertical-minted round is clicked in-session by
+ * **Why an in-session claim carries no link row.** The dashboard's connect link is minted,
+ * mailed, and clicked days later by someone else, so it is a row: single-use, revocable, and
+ * dead when the minting admin loses access. A vertical-minted round is clicked in-session by
  * the person who just pressed the button, so the row would be state nobody reads. What
  * replaces it is the expiry — minutes, not a week — and the account leg of the connection
  * key: a replayed round re-consents the SAME company, which the store rotates in place
  * rather than duplicating (#1267). The consent code itself is single-use at the provider.
+ * A vertical's MAILED link is the other case again, and carries a row: `linkId`, below.
  *
  * **Why the kernel.** Two workers hold the halves — the control plane mints (it owns the
  * directory the vertical is re-derived from), the dashboard verifies (it owns the one
@@ -76,6 +77,14 @@ export interface ConnectStateClaim {
    * just landed without waiting to match on an organisation number.
    */
   subjectRef?: string;
+  /**
+   * Set when the round is a MAILED link (connections.md §3.5.4): the platform-held row in
+   * `_substrat_connect_links` that makes it single-use and revocable. The signature alone
+   * cannot be withdrawn, and a link lives days — so the callback asks this row, consumes it
+   * before storing, and refuses a round whose row is spent or revoked. Absent: an in-session
+   * round, which lives minutes and has no row (above). `exp` is then the row's own expiry.
+   */
+  linkId?: string;
   /** Epoch ms. */
   exp: number;
 }
@@ -190,6 +199,9 @@ export async function verifyConnectState(
     for (const field of ['tenantId', 'scopeId', 'vertical', 'provider', 'principal'] as const) {
       if (typeof claim[field] !== 'string' || !claim[field]) return null;
     }
+    // A link round with a malformed row reference would read as an in-session round — the
+    // one kind the callback spends nothing for — so it is refused, never downgraded.
+    if (claim.linkId !== undefined && (typeof claim.linkId !== 'string' || !claim.linkId)) return null;
     return claim;
   } catch {
     return null;

@@ -20,6 +20,15 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  CONNECT_LINKS_DDL,
+  consumeConnectLinkRow,
+  insertConnectLink as insertConnectLinkRow,
+  listConnectLinks as listConnectLinkRows,
+  readConnectLink as readConnectLinkRow,
+  restoreConnectLinkRow,
+  revokeConnectLinkRow,
+  type ConnectLinkAudit,
+  type ConnectLinkKeyRow,
   createFindingRule,
   findingOfOpsFailure,
   findingOfSweepRun,
@@ -120,6 +129,7 @@ import type {
 } from '@substrat-run/contracts';
 import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import type { FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
+import type { ConnectLink, ConnectLinkConsume } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1023,6 +1033,9 @@ const DIRECTORY_DDL = `
     updated_at    TEXT NOT NULL,
     PRIMARY KEY (connection_id, state_key)
   );
+  -- A vertical's mailed connect links (connections.md §3.5.4) — kernel-owned DDL, so
+  -- both adapters build the same table.
+  ${CONNECT_LINKS_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_identities (
     provider     TEXT NOT NULL,
     external_id  TEXT NOT NULL,
@@ -3893,6 +3906,58 @@ export class ControlPlaneDO extends DurableObject {
       id,
     );
     return true;
+  }
+
+  // -- a vertical's mailed connect links (connections.md §3.5.4) ------------------
+  // The kernel's statements (`connect-links.ts`), shared with the pure adapter. Each
+  // runs inside this single-threaded object with no await between its read and its
+  // write, which is what makes consume's single-use hold across racing callbacks here;
+  // the UPDATE's own WHERE holds it again regardless. `now` is the coordinator's. A move
+  // and the audit row it hands back commit in one unit: `audit` is the row the host
+  // minted (actor, attribution), completed here from what the move changed.
+
+  insertConnectLink(row: Parameters<typeof insertConnectLinkRow>[1], audit: AdminEntryInput): ConnectLink {
+    return this.auditedConnectLink(audit, (sql, write) => insertConnectLinkRow(sql, row, write));
+  }
+
+  readConnectLink(key: ConnectLinkKeyRow): ConnectLink | undefined {
+    return readConnectLinkRow(doRedactionSql(this.sql), key);
+  }
+
+  listConnectLinks(filter: Parameters<typeof listConnectLinkRows>[1], now: string): ConnectLink[] {
+    return listConnectLinkRows(doRedactionSql(this.sql), filter, now);
+  }
+
+  revokeConnectLink(key: ConnectLinkKeyRow, audit: AdminEntryInput): { link: ConnectLink; changed: boolean } | undefined {
+    return this.auditedConnectLink(audit, (sql, write) => revokeConnectLinkRow(sql, key, write));
+  }
+
+  consumeConnectLink(
+    input: Parameters<typeof consumeConnectLinkRow>[1],
+    now: string,
+    audit: AdminEntryInput,
+  ): ConnectLinkConsume {
+    return this.auditedConnectLink(audit, (sql, write) => consumeConnectLinkRow(sql, input, now, write));
+  }
+
+  restoreConnectLink(key: ConnectLinkKeyRow, now: string, audit: AdminEntryInput): ConnectLink | undefined {
+    return this.auditedConnectLink(audit, (sql, write) => restoreConnectLinkRow(sql, key, now, write));
+  }
+
+  private auditedConnectLink<R>(audit: AdminEntryInput, run: (sql: RedactionSql, write: (row: ConnectLinkAudit) => void) => R): R {
+    return this.ctx.storage.transactionSync(() =>
+      run(doRedactionSql(this.sql), (a) =>
+        this.recordAdmin({
+          ...audit,
+          action: a.action,
+          tenantId: a.target.tenantId,
+          scopeId: a.target.scopeId,
+          vertical: a.target.vertical,
+          before: a.before,
+          after: a.after,
+        }),
+      ),
+    );
   }
 
   /**

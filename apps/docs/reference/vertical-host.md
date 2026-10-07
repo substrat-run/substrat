@@ -411,6 +411,66 @@ that wants to answer `502` for both catches the two separately. The call goes th
 `POST /internal/connections/connect-url` on the control plane, under the platform secret
 injected into every dispatch script.
 
+## `mintConnectLink(request)`, `listConnectLinks(request)`, `revokeConnectLink(request)`
+
+The **mailed** sibling of `requestConnectUrl`. A bookkeeping bureau's staff work in the
+vertical, but the person who must approve at Fortnox is the client company's own
+administrator, who has no account anywhere and opens the link days later from an inbox. A
+connect URL lives fifteen minutes and cannot be withdrawn; a connect link is a row the
+platform holds, so it is **single-use** (the platform's callback spends it before storing the
+credential), **revocable**, and lives seven days unless you ask for up to thirty.
+
+```ts
+import { mintConnectLink, revokeConnectLink, ConnectLinkRequestError } from '@substrat-run/vertical-host';
+
+// module.ts — the authorizing act, exactly as for requestConnectUrl
+const inviteClientBooks: OperationHandler<{ clientId: string }, ConnectRequest> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(PERM.manageIntegrations));
+  // …
+  return { provider: 'fortnox', subjectRef: client.id };
+};
+
+// server.ts — the effect
+const request = await scope.invoke('crm/invite-client-books', { clientId });
+const { url, link } = await mintConnectLink({
+  controlPlaneUrl: env.CONTROL_PLANE_URL,
+  platformSecret: env.PLATFORM_SECRET,
+  tenantId, scopeId,
+  provider: request.provider,
+  createdBy: principal,                       // the principal whose check just passed
+  subjectRef: request.subjectRef,             // stored on the link, shown when you list it
+  ttlSeconds: 14 * 24 * 60 * 60,              // optional: default 7 days, at most 30
+});
+await sendMail(client.fortnoxAdmin, url);     // mail the URL; keep link.id, not the URL
+await scope.invoke('crm/record-books-link', { clientId, linkId: link.id }); // on your client row
+```
+
+**Keep the link id.** Store it on your own row beside the `subjectRef` it was minted for —
+the client row, here. Reading and revoking a link both name it by that id; there is no
+"every link this scope minted" read.
+
+`listConnectLinks({ …, linkIds, provider?, outstanding? })` answers the named links (1 to
+100 ids), newest first — each with its `status` (`outstanding`, `used`, `revoked`),
+`expiresAt`, and once spent, `usedAt`, `accountRef` and `accountLabel` (for Fortnox: the
+database number and the company name that consented). An id that is not one of this scope's
+links is left out of the answer rather than refused. `revokeConnectLink({ …, linkId })`
+withdraws one; it is idempotent, and a link that was already used answers `used` —
+disconnect the connection instead. Both are permission-checked acts like the mint: the
+operation checks and returns the ids, the harness calls the helper. Only this scope's links
+are reachable; for a revoke, another scope's id is a `404`, the same as an unknown one.
+
+Where the round ends is yours to choose. **Leave `returnUrl` out for a link mailed to someone
+with no account on your surface** — the round then ends on the platform's own page, whose copy
+sends the reader back to whoever sent the link. With a `returnUrl` (https, on a hostname
+bound to this scope), success and every refusal return there, as for `requestConnectUrl`,
+plus `link=<id>`; a spent, withdrawn, lapsed or unknown link arrives as
+`?error=link_used`, `link_revoked`, `link_expired` or `link_unknown`. A link is refused for a
+preview or a fork, and for a provider with no platform consent round. A refusal throws
+`ConnectLinkRequestError` with the relay's status. The calls go through
+`POST /internal/connections/connect-links`, `…/list` and `…/revoke` under the platform
+secret. The tenant's admin also sees your outstanding links on the dashboard's integrations
+card and can revoke them there.
+
 ## `createModelHost(options)` — from `@substrat-run/vertical-host/model`
 
 The platform's model host: governance around one language-model call, provider-neutral.

@@ -12,6 +12,10 @@
  *   connecting a client company, who have no dashboard account and no reason to have one.
  *   It has no row: minutes of life instead, and its authority is the `ctx.check` that
  *   vertical ran, carried in the state and stamped on the connection as `createdBy`.
+ * - A platform round carrying a `linkId` (§3.5.4) is the vertical's MAILED link — the
+ *   bureau sends it to the client company's administrator, who opens it days later. That
+ *   one has a row again, held by the platform beside the connections rather than in the
+ *   dashboard's scope, and it is asked, spent and restored exactly as a dashboard link is.
  *
  * Everything downstream is deliberately shared — one consent start, one callback, one
  * `redirect_uri` registered with the provider. What differs is only who is asked whether
@@ -23,6 +27,7 @@
  */
 
 import { verifyConnectState, type ConnectStateClaim } from '@substrat-run/kernel';
+import { scopeId, type ConnectLink, type ConnectLinkConsume, type ScopeId } from '@substrat-run/contracts';
 import { verifyClaim, CONNECT_LINK_PURPOSE } from './signed-token.js';
 
 /** The signed half of a connect link — names the row; the row decides liveness. */
@@ -107,5 +112,135 @@ export function connectReturn(round: ConnectRound, params: Record<string, string
   const url = new URL(round.claim.returnUrl);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   if (round.claim.subjectRef) url.searchParams.set('subjectRef', round.claim.subjectRef);
+  // The vertical kept the link's id from the mint; this is how it matches the landing to it.
+  if (round.claim.linkId) url.searchParams.set('link', round.claim.linkId);
   return url.toString();
+}
+
+/** Why a link round refuses — the dashboard's link and the platform's share the vocabulary. */
+export type LinkRefusal = 'unknown' | 'used' | 'revoked' | 'expired';
+
+/**
+ * Who the refusal and closing copy should send the reader back to. A dashboard link was
+ * minted by a Substrat administrator; a vertical's mailed link was sent by a bureau to a
+ * client company, whose administrator has no Substrat administrator to ask — only whoever
+ * sent them the link.
+ */
+export const linkSenderOf = (round: ConnectRound): 'dashboard' | 'sender' =>
+  round.kind === 'platform' && round.claim.linkId ? 'sender' : 'dashboard';
+
+/**
+ * The row behind a round, wherever it lives: in the minting tenant's dashboard scope (a
+ * dashboard link) or in the platform's directory (a vertical's mailed link). `null` for an
+ * in-session platform round, which has no row to ask and nothing to spend.
+ */
+export interface RoundLinkRow {
+  /** `null` when the row still opens; the reason when it does not. May throw on a platform fault. */
+  check(): Promise<LinkRefusal | null>;
+  /** Spend it, recording what the consent attached. `null` when this call won. */
+  consume(account: { accountRef: string; accountLabel?: string }): Promise<LinkRefusal | null>;
+  /** Undo a spend after the store failed. `true` when the link is openable again. */
+  restore(): Promise<boolean>;
+}
+
+/** The subset of the control-plane seam a vertical's link row is reached through. */
+export interface PlatformLinkPlane {
+  getConnectLink(scopeId: ScopeId, linkId: string): Promise<ConnectLink | undefined>;
+  consumeConnectLink(
+    scopeId: ScopeId,
+    linkId: string,
+    input: { provider: string; accountRef?: string; accountLabel?: string },
+  ): Promise<ConnectLinkConsume>;
+  restoreConnectLink(scopeId: ScopeId, linkId: string): Promise<boolean>;
+}
+
+/**
+ * The row of a vertical's mailed link, through the control plane (connections.md §3.5.4) —
+ * or `null` for a round that has none. `plane` is asked lazily, so a round with no row never
+ * mints a tenant credential just to be told so.
+ */
+export function platformLinkRow(
+  round: ConnectRound,
+  plane: () => PlatformLinkPlane,
+  nowMs: () => number,
+): RoundLinkRow | null {
+  if (round.kind !== 'platform' || !round.claim.linkId) return null;
+  const { claim } = round;
+  const linkId = claim.linkId!;
+  const scope = scopeId.parse(claim.scopeId);
+  return {
+    check: async () => {
+      const link = await plane().getConnectLink(scope, linkId);
+      if (!link || link.provider !== claim.provider) return 'unknown';
+      if (link.status !== 'outstanding') return link.status;
+      return Date.parse(link.expiresAt) <= nowMs() ? 'expired' : null;
+    },
+    consume: async (account) => {
+      const result = await plane().consumeConnectLink(scope, linkId, { provider: claim.provider, ...account });
+      return result.ok ? null : result.reason;
+    },
+    restore: () => plane().restoreConnectLink(scope, linkId),
+  };
+}
+
+/**
+ * The landing's question: does the row still stand? Asked, never spent — a mail scanner or
+ * a link preview fetching the URL must not burn a link the recipient has not opened yet. A
+ * fault reaching the row refuses (logged, because a platform fault wears the same refusal).
+ */
+export async function linkRefusalAtLanding(row: RoundLinkRow | null): Promise<LinkRefusal | null> {
+  if (!row) return null;
+  try {
+    return await row.check();
+  } catch (e) {
+    console.error('connect-link liveness check failed', e);
+    return 'unknown';
+  }
+}
+
+export type ConsentSettlement =
+  | { ok: true }
+  | { ok: false; at: 'consume'; reason: LinkRefusal }
+  | { ok: false; at: 'store'; error: unknown; restored: boolean };
+
+/**
+ * The callback's order, once the provider has answered: spend the row, THEN store the
+ * credential, and un-spend the row if the store fails.
+ *
+ * Consume first is what makes a link single-use under a race — of two callbacks for one
+ * link, exactly one gets past it — and it keeps a revoked link from ever reaching the
+ * store. The restore is best effort: the consent's code is spent either way, but the LINK
+ * still stands, so a platform hiccup costs a retry rather than a new link mailed out. Only
+ * the callback that won the consume holds a `used` row, so the guard is not weakened.
+ */
+export async function settleConsent(
+  row: RoundLinkRow | null,
+  account: { accountRef: string; accountLabel?: string },
+  store: () => Promise<void>,
+): Promise<ConsentSettlement> {
+  if (row) {
+    let refused: LinkRefusal | null;
+    try {
+      refused = await row.consume(account);
+    } catch (e) {
+      console.error('connect-link consume failed', e);
+      return { ok: false, at: 'consume', reason: 'unknown' };
+    }
+    if (refused) return { ok: false, at: 'consume', reason: refused };
+  }
+  try {
+    await store();
+    return { ok: true };
+  } catch (error) {
+    let restored = false;
+    if (row) {
+      try {
+        restored = await row.restore();
+      } catch (restoreErr) {
+        // The refusal copy falls back to asking for a new link.
+        console.error('connect-link restore failed', restoreErr);
+      }
+    }
+    return { ok: false, at: 'store', error, restored };
+  }
 }

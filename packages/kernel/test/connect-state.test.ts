@@ -59,6 +59,18 @@ describe('connect state — the signed half of a platform-minted consent round',
     expect(await verifyConnectState(SECRET, `${swapped}.${sig}`, Date.now())).toBeNull();
   });
 
+  // connections.md §3.5.4: a mailed link's state names its row. Carried through intact —
+  // and a malformed reference is refused outright, never read as an in-session round (the
+  // one kind the callback spends nothing for).
+  it('carries a link round\'s row reference, and refuses a malformed one', async () => {
+    const linked = await signConnectState(SECRET, claim({ linkId: '01J0000000000000000000LNK' }));
+    expect(await verifyConnectState(SECRET, linked, Date.now())).toMatchObject({ linkId: '01J0000000000000000000LNK' });
+    for (const linkId of ['', 42, null] as unknown as string[]) {
+      const token = await signConnectState(SECRET, claim({ linkId }));
+      expect(await verifyConnectState(SECRET, token, Date.now())).toBeNull();
+    }
+  });
+
   it('rejects an expired round', async () => {
     const token = await signConnectState(SECRET, claim({ exp: Date.now() + 1000 }));
     expect(await verifyConnectState(SECRET, token, Date.now() + 2000)).toBeNull();

@@ -16,7 +16,7 @@
  * Deploy: `pnpm --filter @substrat-run/control-plane deploy` (builds the console,
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
 import {
   parsePlatformBaseDomains,
@@ -97,6 +97,9 @@ import {
   relayConnectionUpsert,
   ConnectionRelayError,
   relayConnectUrl,
+  relayConnectLinkMint,
+  relayConnectLinkList,
+  relayConnectLinkRevoke,
   ConnectUrlRelayError,
   provisionSiblingHandler,
   archiveScopeHandler,
@@ -2226,6 +2229,47 @@ export default {
         throw e;
       }
     });
+
+    // The connect-LINK relays (connections.md §3.5.4) — the mailed sibling of the URL above.
+    // A bureau's staff start the round, but the person who must approve at Fortnox is the
+    // client company's administrator, who opens a mailed link days later. So the link is a
+    // directory row the signed state names: the dashboard's callback consumes it before
+    // storing (single-use), and revoking it kills the URL. Same gate and same derivation as
+    // connect-url; list and revoke are confined to the named scope by the store's own key.
+    const connectLinkRelay =
+      (run: (host: ReturnType<typeof hostFor>, body: unknown, env: Env) => Promise<unknown>) =>
+      async (c: Context<{ Bindings: Env }>) => {
+        try {
+          assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+        } catch (e) {
+          if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+          throw e;
+        }
+        try {
+          return c.json(await run(hostFor(c.env), await c.req.json().catch(() => ({})), c.env));
+        } catch (e) {
+          if (e instanceof ConnectUrlRelayError) return c.json({ error: e.message }, e.status);
+          throw e;
+        }
+      };
+    app.post(
+      '/internal/connections/connect-links',
+      connectLinkRelay((host, body, env) =>
+        relayConnectLinkMint(host, CONNECTION_RELAY_ACTOR, body, {
+          ...(env.PLATFORM_CONNECT_URL ? { connectOrigin: env.PLATFORM_CONNECT_URL } : {}),
+          ...(env.PLATFORM_SECRET ? { platformSecret: env.PLATFORM_SECRET } : {}),
+          flows: connectFlowsFor(),
+        }),
+      ),
+    );
+    app.post(
+      '/internal/connections/connect-links/list',
+      connectLinkRelay((host, body) => relayConnectLinkList(host, CONNECTION_RELAY_ACTOR, body)),
+    );
+    app.post(
+      '/internal/connections/connect-links/revoke',
+      connectLinkRelay((host, body) => relayConnectLinkRevoke(host, CONNECTION_RELAY_ACTOR, body)),
+    );
 
     // The connector webhook ingresses (#574 phase 2, #96): for a CP-less dispatch vertical
     // the capability URL terminates HERE, not on the vertical — the dispatch ledger the token

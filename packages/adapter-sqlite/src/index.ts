@@ -69,6 +69,10 @@ import {
   subjectRef,
   requestFingerprint,
   createConnectionInput,
+  connectLinkFilter,
+  connectLinkKey,
+  consumeConnectLinkInput,
+  mintConnectLinkInput,
   projectedConnectionGrant,
   projectedConnectionKey,
   moduleManifest,
@@ -116,6 +120,10 @@ import {
   type ConnectionId,
   type ConnectionSecret,
   type CreateConnectionInput,
+  type ConnectLinkFilter,
+  type ConnectLinkKey,
+  type ConsumeConnectLinkInput,
+  type MintConnectLinkInput,
   type ModuleId,
   type ScheduleSpec,
   type SystemGrant,
@@ -294,6 +302,14 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  CONNECT_LINKS_DDL,
+  consumeConnectLinkRow,
+  insertConnectLink,
+  listConnectLinks as listConnectLinkRows,
+  readConnectLink,
+  restoreConnectLinkRow,
+  revokeConnectLinkRow,
+  type ConnectLinkAudit,
   createFindingRule,
   findingOfOpsFailure,
   findingOfSweepRun,
@@ -2275,6 +2291,9 @@ export class SqliteScopeHost implements ScopeHost {
         updated_at    TEXT NOT NULL,
         PRIMARY KEY (connection_id, state_key)
       );
+      -- A vertical's mailed connect links (connections.md §3.5.4) — kernel-owned DDL, so
+      -- both adapters build the same table.
+      ${CONNECT_LINKS_DDL}
       CREATE TABLE IF NOT EXISTS _substrat_identities (
         provider     TEXT NOT NULL,
         external_id  TEXT NOT NULL,
@@ -6641,6 +6660,19 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
+   * A connect-link move and the audit row it hands back, in ONE directory transaction
+   * (connections.md §3.5.4): a consume whose audit write failed must not leave the link spent
+   * with no connection and no record.
+   */
+  private auditedConnectLink<R>(actor: PlatformActorId, run: (sql: RedactionSql, audit: (row: ConnectLinkAudit) => void) => R): R {
+    return this.directory.transaction(() =>
+      run(redactionSqlOf(this.directory), (a) =>
+        this.recordAdmin(actor, a.action, a.target, a.before, a.after),
+      ),
+    )();
+  }
+
+  /**
    * #559: one ops-failure row with its issue and finding, in one transaction (a savepoint when
    * the caller holds one: #2064's settle writes it beside the `unknown` row it reports).
    */
@@ -10553,6 +10585,64 @@ export class SqliteScopeHost implements ScopeHost {
           { status: row.status },
           { id, provider: row.provider, status: 'revoked', revokedAt: now },
         );
+      },
+
+      // -- a vertical's mailed connect links (connections.md §3.5.4) --------------
+      // The statements are the kernel's (`connect-links.ts`), shared with the hosted
+      // adapter; what is here is the clock, the parse at the edge, and the transaction:
+      // each move commits with the audit row it hands back, or not at all.
+
+      mintConnectLink: async (actor: PlatformActorId, raw: MintConnectLinkInput) => {
+        const input = mintConnectLinkInput.parse(raw);
+        return this.auditedConnectLink(actor, (sql, audit) =>
+          insertConnectLink(
+            sql,
+            {
+              id: ulid(),
+              tenantId: input.tenantId,
+              scopeId: input.scopeId,
+              vertical: input.vertical,
+              provider: input.provider,
+              createdBy: input.createdBy,
+              subjectRef: input.subjectRef ?? null,
+              returnUrl: input.returnUrl ?? null,
+              createdAt: this.clock(),
+              expiresAt: input.expiresAt,
+            },
+            audit,
+          ),
+        );
+      },
+
+      getConnectLink: async (actor: PlatformActorId, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        const link = readConnectLink(redactionSqlOf(this.directory), key);
+        this.recordAccess(actor, 'getConnectLink', key, { id: key.id }, link ? 1 : 0);
+        return link;
+      },
+
+      listConnectLinks: async (actor: PlatformActorId, raw: ConnectLinkFilter) => {
+        const filter = connectLinkFilter.parse(raw);
+        const links = listConnectLinkRows(redactionSqlOf(this.directory), filter, this.clock());
+        this.recordAccess(actor, 'listConnectLinks', filter, filter, links.length);
+        return links;
+      },
+
+      revokeConnectLink: async (actor: PlatformActorId, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        // Idempotent, and a no-op is not audited (the statement hands back no row for one).
+        return this.auditedConnectLink(actor, (sql, audit) => revokeConnectLinkRow(sql, key, audit))?.link;
+      },
+
+      consumeConnectLink: async (actor: PlatformActorId, raw: ConsumeConnectLinkInput) => {
+        const input = consumeConnectLinkInput.parse(raw);
+        return this.auditedConnectLink(actor, (sql, audit) => consumeConnectLinkRow(sql, input, this.clock(), audit));
+      },
+
+      restoreConnectLink: async (actor: PlatformActorId, raw: ConnectLinkKey) => {
+        const key = connectLinkKey.parse(raw);
+        const link = this.auditedConnectLink(actor, (sql, audit) => restoreConnectLinkRow(sql, key, this.clock(), audit));
+        return link !== undefined;
       },
 
       openConnection: async (

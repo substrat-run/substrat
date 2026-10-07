@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { instant, tenantId } from './ids.js';
+import { instant, scopeId, tenantId } from './ids.js';
 
 /**
  * The integrations hub's connection store (#101, design/connections.md §3).
@@ -138,6 +138,99 @@ export interface OpenConnection {
   secret: ConnectionSecret;
   expiresAt: string | null;
 }
+
+/**
+ * A connect LINK held by the platform (connections.md §3.5.4) — a provider consent round a
+ * vertical minted to be mailed: opened days later by someone else (a client company's
+ * Fortnox administrator, for a bookkeeping bureau), so it is a row rather than a signature
+ * alone. Single-use, revocable, expiring. The signed state names the row; the row decides
+ * whether the round still stands.
+ *
+ * Keyed by its SCOPE as well as its tenant: every read and write names both, and a link of
+ * another scope answers exactly as an absent one does. Nothing here is a secret — the
+ * credential only exists after a round is consumed, and it lands in the connection store.
+ */
+export const connectLinkId = z.string().regex(ULID).brand<'ConnectLinkId'>();
+export type ConnectLinkId = z.infer<typeof connectLinkId>;
+
+export const connectLinkStatus = z.enum(['outstanding', 'used', 'revoked']);
+export type ConnectLinkStatus = z.infer<typeof connectLinkStatus>;
+
+export const connectLink = z.object({
+  id: connectLinkId,
+  tenantId,
+  /** The vertical's scope — where the connection lands, and the link's own key. */
+  scopeId,
+  /** The vertical the directory had for the scope at mint. Carried for the log. */
+  vertical: z.string().min(1),
+  provider: connectionProvider,
+  /** `used` and `revoked` are terminal, except that a failed store restores `used`. */
+  status: connectLinkStatus,
+  /** The tenant principal whose in-scope check authorized the mint (§3.5.1). */
+  createdBy: z.string().min(1),
+  /** The vertical's own opaque reference for what is being connected — echoed, never parsed. */
+  subjectRef: z.string().nullable(),
+  /** Where the round returns; checked against the scope's hostnames at mint. */
+  returnUrl: z.string().nullable(),
+  createdAt: instant,
+  expiresAt: instant,
+  usedAt: instant.nullable(),
+  /** What the consent attached (Fortnox: the DatabaseNumber) — recorded at consume. */
+  accountRef: z.string().nullable(),
+  /** The provider's name for that account (a company name) — recorded at consume. */
+  accountLabel: z.string().nullable(),
+});
+export type ConnectLink = z.infer<typeof connectLink>;
+
+export const mintConnectLinkInput = z.object({
+  tenantId,
+  scopeId,
+  vertical: z.string().min(1),
+  provider: connectionProvider,
+  createdBy: z.string().min(1),
+  subjectRef: z.string().min(1).max(256).optional(),
+  returnUrl: z.string().url().optional(),
+  /** Decided by the caller (the relay's TTL), not judged by the store. */
+  expiresAt: instant,
+});
+export type MintConnectLinkInput = z.input<typeof mintConnectLinkInput>;
+
+/** Which link — always within one tenant AND one scope. */
+export const connectLinkKey = z.object({ tenantId, scopeId, id: connectLinkId });
+export type ConnectLinkKey = z.input<typeof connectLinkKey>;
+
+export const connectLinkFilter = z.object({
+  tenantId,
+  scopeId: scopeId.optional(),
+  /** Only these links. An empty list matches nothing; ids outside the tenant/scope are omitted. */
+  ids: z.array(connectLinkId).optional(),
+  provider: connectionProvider.optional(),
+  /** Outstanding AND unexpired only — the links that can still be opened. */
+  outstandingOnly: z.boolean().optional(),
+});
+export type ConnectLinkFilter = z.input<typeof connectLinkFilter>;
+
+export const consumeConnectLinkInput = connectLinkKey.extend({
+  /** A link minted for one provider never settles a round for another. */
+  provider: connectionProvider,
+  accountRef: z.string().max(256).optional(),
+  accountLabel: z.string().max(256).optional(),
+});
+export type ConsumeConnectLinkInput = z.input<typeof consumeConnectLinkInput>;
+
+/**
+ * Why a consume was refused, as a value: the callback answers differently for each, and
+ * telling them apart by error text is how a wording change becomes a wrong screen.
+ * `unknown` covers another scope's or tenant's link too — no oracle for which exist.
+ */
+export const connectLinkRefusal = z.enum(['unknown', 'used', 'revoked', 'expired']);
+export type ConnectLinkRefusal = z.infer<typeof connectLinkRefusal>;
+
+export const connectLinkConsume = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), link: connectLink }),
+  z.object({ ok: z.literal(false), reason: connectLinkRefusal }),
+]);
+export type ConnectLinkConsume = z.infer<typeof connectLinkConsume>;
 
 /**
  * One provider-named fact about a connection — the readable half of a probe or an
