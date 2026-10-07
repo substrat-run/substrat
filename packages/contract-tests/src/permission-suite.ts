@@ -219,7 +219,7 @@ export function permissionContractSuite(
       const other = principalId.parse(ulid());
       const org = orgId.parse(ulid());
       const entity: EntityRef = { entityType: 'item', entityId: `org-grant-${ulid()}` };
-      await host.admin.createOrg(staff, { id: org, tenantId: t1, slug: `grant-${ulid()}`, name: 'Grant Org' });
+      await host.admin.createOrg(staff, { id: org, tenantId: t1, slug: `grant-${ulid().toLowerCase()}`, name: 'Grant Org' });
       await host.admin.addMember(staff, t1, member, org);
       await host.admin.grantToOrg(staff, org, PERM_READ, { tenantId: t1, scopeId: s1 }, entity);
       expect(await grantedIds(member, 'item')).toContain(entity.entityId);
