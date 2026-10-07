@@ -5174,7 +5174,7 @@ export class CloudflareScopeHost implements ScopeHost {
       const startedAt = Date.now();
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
-      // #119: a purge horizon's batch was full and moved something — the schedule stays due, so the next pass continues.
+      // #119, #2096: more of a purge horizon's lap is due — the schedule stays due, so the next pass continues it.
       let stillDue = false;
       try {
         // The gate above already answered for this pass; a fire that meets a restarted scope

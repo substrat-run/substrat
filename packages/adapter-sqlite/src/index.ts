@@ -246,7 +246,6 @@ import {
   entityStateMigrations,
   assertNoCallerPurge,
   isUnreachableParent,
-  advancePurgeLap,
   heldPurgePass,
   purgeDueOf,
   purgeHeldBy,
@@ -4876,7 +4875,7 @@ export class SqliteScopeHost implements ScopeHost {
       const startedAt = Date.now();
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
-      // #119: a purge horizon's batch was full and moved something — the schedule stays due, so the next pass continues.
+      // #119, #2096: more of a purge horizon's lap is due — the schedule stays due, so the next pass continues it.
       let stillDue = false;
       try {
         if (schedule.purge) {
@@ -4968,12 +4967,14 @@ export class SqliteScopeHost implements ScopeHost {
     });
     if ('held' in due) return heldPurgePass(due.held);
     const stub = await this.openSystemScope(moduleId, tenantId, scopeId, true);
-    const pass = await runPurgePass(due, async (entityId) => {
-      await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid() });
-    });
-    // #2096: the lap moves on whatever its purges did, so failures cannot hold the walk's head.
-    await rt.actor.turn(() => advancePurgeLap(spineSql(rt.db), operation, due, pass));
-    return pass;
+    return runPurgePass(
+      operation,
+      due,
+      async (entityId) => {
+        await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid() });
+      },
+      (write) => rt.actor.turn(() => write(spineSql(rt.db))),
+    );
   }
 
   /**

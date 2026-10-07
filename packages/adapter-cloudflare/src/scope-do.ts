@@ -328,7 +328,6 @@ import {
   assertNoCallerPurge,
   isUnreachableParent,
   PURGE_BATCH,
-  advancePurgeLap,
   heldPurgePass,
   lifecycleRefusal,
   purgeHeldBy,
@@ -4864,7 +4863,7 @@ export function defineScopeDO(
         new Date().toISOString(),
         PURGE_BATCH,
       );
-      const pass = await runPurgePass(due, async (entityId) => {
+      return runPurgePass(operation, due, async (entityId) => {
         await this.#invokeOrThrow(
           operation,
           { [due.idFrom]: entityId },
@@ -4881,10 +4880,7 @@ export function defineScopeDO(
           systemDoorInstance,
           true,
         );
-      });
-      // #2096: the lap moves on whatever its purges did, so failures cannot hold the walk's head.
-      advancePurgeLap(doSpineSql(this.sql), operation, due, pass);
-      return pass;
+      }, (write) => write(doSpineSql(this.sql)));
     }
 
     /**

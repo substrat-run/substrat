@@ -253,7 +253,6 @@ export {
 } from './entity-state.js';
 export {
   PURGE_BATCH,
-  advancePurgeLap,
   assertNoCallerPurge,
   heldPurgePass,
   isUnreachableParent,
@@ -261,18 +260,15 @@ export {
   purgeCutoffOf,
   purgeDueOf,
   purgeHeldBy,
-  purgeLapOf,
   purgeOnlyKeysOf,
   purgeReportOf,
   purgeStillDue,
   refuseTrashedTarget,
   registerTrashTargets,
-  readPurgeLap,
   runPurgePass,
   withheldKeysFor,
-  writePurgeLap,
 } from './entity-trash.js';
-export type { PurgeDue, PurgeGateFacts, PurgeKey, PurgeLap, PurgePass, TrashRefusalDeps } from './entity-trash.js';
+export type { PurgeDue, PurgeGateFacts, PurgePass, TrashRefusalDeps } from './entity-trash.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
 export {
   afterMigration,

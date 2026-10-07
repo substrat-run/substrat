@@ -236,17 +236,12 @@ export function readPurgeLap(sql: ScopedSql, operation: string): PurgeLap {
   return purgeLapOf(row?.purge_cursor);
 }
 
-/**
- * Write the lap a pass leaves behind — the next one's start, or NULL when this pass closed the lap.
- * Touches `purge_cursor` alone: when the run happened and how it ended stay the coordinator's to
- * write. A row this creates has no `last_run_at`, which reads as never run — due, as it should be.
- */
-export function writePurgeLap(sql: ScopedSql, operation: string, lap: PurgeLap | null): void {
-  const stored = lap?.after ? JSON.stringify({ at: lap.after.at, id: lap.after.id, failed: lap.failed }) : null;
+/** Store a lap's next start (NULL when none), touching `purge_cursor` alone — see `runPurgePass`. */
+function writePurgeLap(sql: ScopedSql, operation: string, lap: PurgeLap | null): void {
   sql.exec(
     `INSERT INTO _substrat_schedule_state (kind, schedule_op, purge_cursor) VALUES ('schedule', ?, ?)
      ON CONFLICT(kind, schedule_op) DO UPDATE SET purge_cursor = excluded.purge_cursor`,
-    [operation, stored],
+    [operation, lap?.after ? JSON.stringify({ at: lap.after.at, id: lap.after.id, failed: lap.failed }) : null],
   );
 }
 
@@ -257,12 +252,10 @@ export interface PurgeDue {
   readonly idFrom: string;
   /** The ids this pass tries, in the walk's order. */
   readonly ids: string[];
-  /** Whether more is due after these — the lap continues on the next pass. */
-  readonly more: boolean;
   /** The lap as this pass found it. */
   readonly lap: PurgeLap;
-  /** The key of the last id this pass tries, where the next pass resumes. */
-  readonly last: PurgeKey | null;
+  /** Where the next pass resumes when more is due after these ids — or null: this pass closes the lap. */
+  readonly next: PurgeKey | null;
 }
 
 /**
@@ -293,19 +286,9 @@ export function purgeDueOf(
     cutoff,
     idFrom: target.idFrom,
     ids: batch.map((k) => k.id),
-    more: keys.length > limit,
     lap,
-    last: batch.at(-1) ?? null,
+    next: keys.length > limit ? batch.at(-1)! : null,
   };
-}
-
-/**
- * Record what a pass did to its lap (#2096): resume after its last id with its failures added
- * while more is due, or close the lap. Called after the pass, so a pass cut short repeats its batch
- * rather than skipping it — a purge is idempotent by state.
- */
-export function advancePurgeLap(sql: ScopedSql, operation: string, due: PurgeDue, pass: PurgePass): void {
-  writePurgeLap(sql, operation, due.more && due.last ? { after: due.last, failed: due.lap.failed + pass.errors.length } : null);
 }
 
 /**
@@ -356,8 +339,9 @@ export interface PurgePass {
   /**
    * Purges that failed in the EARLIER passes of the lap this pass closed (#2096) — so the cadence
    * row this pass writes says the lap failed, even when this batch did not. 0 while the lap goes on.
+   * Absent, like `more`, from a scope running code older than the lap, which ran no lap.
    */
-  lapFailed: number;
+  lapFailed?: number;
   /** Why the scope ran no purge at all this pass (`purgeHeldBy`), when its gate held it. */
   held?: string;
 }
@@ -368,17 +352,25 @@ export function heldPurgePass(held: string): PurgePass {
 }
 
 /**
- * Run one pass of a purge schedule over the ids the adapter selected (`purgeDueOf`): one invoke per
- * entity, each its own transaction, so a crash or a failure loses nothing already committed and
- * the next pass simply selects what is left. An entity that was restored (`purge_not_due`) or is
- * already gone (`not_found`) is skipped, never a failure — the purge is idempotent by state.
- * The adapter then records the lap (`advancePurgeLap`).
+ * Run one pass of a purge schedule over the ids the adapter selected (`purgeDueOf`), then record
+ * what it did to its lap (#2096). One invoke per entity, each its own transaction, so a crash or a
+ * failure loses nothing already committed and the next pass simply selects what is left. An entity
+ * that was restored (`purge_not_due`) or is already gone (`not_found`) is skipped, never a failure —
+ * the purge is idempotent by state.
+ *
+ * Then the lap moves on WHATEVER its purges did — that is the whole of #2096: resume after this
+ * batch with its failures added while more is due, or close the lap. After the pass, so a pass cut
+ * short repeats its batch rather than skipping it. `inScope` runs the write against the scope's
+ * spine, in the turn the adapter's storage needs.
  */
 export async function runPurgePass(
-  due: Pick<PurgeDue, 'ids' | 'more' | 'lap'>,
+  operation: string,
+  due: PurgeDue,
   purgeOne: (entityId: string) => Promise<void>,
+  inScope: (write: (sql: ScopedSql) => void) => unknown,
 ): Promise<PurgePass> {
-  const pass: PurgePass = { purged: 0, skipped: 0, errors: [], more: due.more, lapFailed: due.more ? 0 : due.lap.failed };
+  const more = due.next !== null;
+  const pass: PurgePass = { purged: 0, skipped: 0, errors: [], more, lapFailed: more ? 0 : due.lap.failed };
   for (const entityId of due.ids) {
     try {
       await purgeOne(entityId);
@@ -393,6 +385,11 @@ export async function runPurgePass(
       pass.errors.push({ entityId, error: err instanceof Error ? err.message : String(err) });
     }
   }
+  // A lap that began at the oldest and closes in this pass leaves the cursor NULL, as it found it.
+  if (more || due.lap.after !== null) {
+    const next = due.next ? { after: due.next, failed: due.lap.failed + pass.errors.length } : null;
+    await inScope((sql) => writePurgeLap(sql, operation, next));
+  }
   return pass;
 }
 
@@ -401,10 +398,11 @@ export async function runPurgePass(
  * than waiting the cadence: more is due after its batch (#2096). It cannot spin (#2087): every pass
  * moves the lap strictly forward, whatever its purges did, and the pass that runs out of due
  * entities closes the lap and records the run — so a cadence window holds one lap, and an entity
- * that keeps failing is tried once per window, not once per sweep tick.
+ * that keeps failing is tried once per window, not once per sweep tick. A scope running code older
+ * than the lap answers no `more`, and its pass waits its cadence.
  */
 export function purgeStillDue(pass: PurgePass): boolean {
-  return pass.more;
+  return pass.more === true;
 }
 
 /**
@@ -430,14 +428,10 @@ export function purgeReportOf(
   pass: PurgePass,
 ): { errors: { operation: string; error: string }[]; failure?: Error } {
   const errors = pass.errors.map((e) => ({ operation: `${operation} (${entityType}:${e.entityId})`, error: e.error }));
-  // An older DO answers without `lapFailed`; it ran no lap, so nothing earlier failed.
   const earlier = pass.lapFailed ?? 0;
   if (errors.length === 0 && earlier === 0) return { errors };
-  const counts = [
-    ...(errors.length > 0 ? [`${errors.length} purge(s) of ${entityType} failed`] : []),
-    ...(earlier > 0 ? [`${earlier} failed earlier in this lap`] : []),
-  ];
-  return { errors, failure: new Error(`${counts.join('; ')}; they stay in the bin and are retried`) };
+  const counts = [errors.length > 0 && `${errors.length} purge(s) of ${entityType} failed`, earlier > 0 && `${earlier} failed earlier in this lap`];
+  return { errors, failure: new Error(`${counts.filter(Boolean).join('; ')}; they stay in the bin and are retried`) };
 }
 
 /**
