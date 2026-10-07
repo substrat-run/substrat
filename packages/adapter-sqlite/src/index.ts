@@ -3906,9 +3906,11 @@ export class SqliteScopeHost implements ScopeHost {
     // orphaned bytes with no record (the §9 hazard).
     this.directory.prepare('DELETE FROM hostnames WHERE scope_id = ?').run(scopeId);
     rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
-    this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE target_scope_id = ?').run(scopeId);
-    forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
-    this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
+    this.directory.transaction(() => {
+      this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE target_scope_id = ?').run(scopeId);
+      forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
+      this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
+    })();
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
       forkedFrom: rec.forkedFrom,
       forkedAt: rec.forkedAt,
