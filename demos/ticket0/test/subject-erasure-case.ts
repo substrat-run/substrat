@@ -5,21 +5,27 @@ import {
   platformActorId,
   scopeId,
   tenantId,
+  type DataSubjectId,
+  type PlatformActorId,
   type ScopeId,
-  type SubjectShredReceipt,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type ModuleErasureCounts } from '@substrat-run/kernel';
 import { ticket0Manifest } from '../src/manifest.js';
 
 type Value = string | number | null;
 type Row = Record<string, unknown>;
 export type ErasureSql = (tenant: TenantId, scope: ScopeId, sql: string, params?: readonly Value[]) => Promise<Row[]>;
+export interface ErasureAdapter {
+  sql: ErasureSql;
+  prepare: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId) => Promise<void>;
+  erase: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId, subject: DataSubjectId) => Promise<ModuleErasureCounts>;
+}
 
 const at = '2026-01-01T00:00:00.000Z';
 
 /** The setup writes through the adapter's real scope SQLite, not a mocked module context. */
-export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSql): Promise<void> {
+export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promise<void> {
   const actor = platformActorId.parse(ulid());
   const tenant = tenantId.parse(ulid());
   const scope = scopeId.parse(ulid());
@@ -34,15 +40,12 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
   const customerWord = 'Customer text';
   const agentWord = 'Agent text';
   const otherWord = 'Other text';
-  const sql = (query: string, params: readonly Value[] = []) => raw(tenant, scope, query, params);
+  const sql = (query: string, params: readonly Value[] = []) => adapter.sql(tenant, scope, query, params);
   const one = async (query: string, params: readonly Value[] = []) => (await sql(query, params))[0];
-  const rowsFor = (receipt: SubjectShredReceipt, entityType: string) =>
+  const rowsFor = (receipt: ModuleErasureCounts, entityType: string) =>
     receipt.verticalRows.find((r) => r.module === ticket0Manifest.id && r.entityType === entityType)?.rows;
 
-  await host.admin.createTenant(actor, { id: tenant, slug: `erasure-${tenant.toLowerCase()}`, name: 'Erasure' });
-  await host.admin.grantEntitlement(actor, tenant, 'ticket0');
-  await host.provisionScope(actor, { tenantId: tenant, scopeId: scope, vertical: 'ticket0' });
-  await host.admin.activateScope(actor, tenant, scope);
+  await adapter.prepare(tenant, scope, actor);
 
   for (const [id, email, name] of [
     [customer, 'first@example.test', 'First'],
@@ -92,7 +95,7 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
         'https://example.test', ?, ?, ?)`, [id!, email!, `unsubscribe-${id}`, at, at]);
   }
 
-  const customerReceipt = await host.admin.shredSubject(actor, tenant, scope, customer);
+  const customerReceipt = await adapter.erase(tenant, scope, actor, customer);
   expect(await one('SELECT email, display_name FROM ticket0_contacts WHERE id = ?', [customer]))
     .toEqual({ email: null, display_name: null });
   expect(await one('SELECT email FROM ticket0_contacts WHERE id = ?', [otherCustomer]))
@@ -121,7 +124,7 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
     .toEqual({ email: 'signup@example.test', note: 'Please add me' });
   expect(customerReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 3 });
 
-  const agentReceipt = await host.admin.shredSubject(actor, tenant, scope, agent);
+  const agentReceipt = await adapter.erase(tenant, scope, actor, agent);
   expect(await one('SELECT display_name, signature FROM ticket0_agent_profiles WHERE principal = ?', [agent]))
     .toEqual({ display_name: '', signature: null });
   expect(await one('SELECT display_name FROM ticket0_agent_profiles WHERE principal = ?', [otherAgent]))
@@ -143,7 +146,7 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
 
   // A public signup proves no link to a contact or principal. Its own id is the
   // subject for this row; a separate shred deletes exactly that signup.
-  const signupReceipt = await host.admin.shredSubject(actor, tenant, scope, signup);
+  const signupReceipt = await adapter.erase(tenant, scope, actor, signup);
   expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [signup])).toEqual([]);
   expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [otherSignup])).toHaveLength(1);
   expect(rowsFor(signupReceipt, 'signup')).toBe(1);

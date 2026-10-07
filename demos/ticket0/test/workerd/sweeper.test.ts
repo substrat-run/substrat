@@ -50,7 +50,7 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange, type LiveFrame } from '@substrat-run/kernel';
+import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange, type LiveFrame, type ModuleErasureCounts } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
@@ -247,21 +247,6 @@ describe('ticket0 on workerd — the deployment sweeps its own desks (#1646)', (
     expect(await roster()).toEqual([legacy]);
     expect((await sweep()).scopes).toBe(1);
   });
-});
-
-describe('ticket0 subject erasure on workerd', () => {
-  it('erases only the customer and staff rows that belong to each subject', async () => {
-    const h = host();
-    const raw: ErasureSql = async (_tenant, scope, sql, params = []) =>
-      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
-        [...state.storage.sql.exec(sql, ...params)].map((row) => ({ ...row })),
-      );
-    try {
-      await checkTicket0SubjectErasure(h, raw);
-    } finally {
-      await h.close();
-    }
-  }, 60_000);
 });
 
 /** What a Durable Object's SQLite refuses a `LIKE` pattern beyond — asked of the runtime below. */
@@ -2385,4 +2370,30 @@ describe('ticket0 on workerd — migration 0027, saved replies keyed per owner (
     expect(result.keyed).toEqual(['unique', 'inserted', 'unique']);
     expect(result.folders).toBe(1);
   });
+});
+
+describe('ticket0 subject erasure on workerd', () => {
+  it('erases only the customer and staff rows that belong to each subject', async () => {
+    const raw: ErasureSql = async (_tenant, scope, sql, params = []) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+        [...state.storage.sql.exec(sql, ...params)].map((row) => ({ ...row })),
+      );
+    await checkTicket0SubjectErasure({
+      sql: raw,
+      prepare: async (tenant, scope) => {
+        const response = await platform('/internal/provision', {
+          tenantId: tenant, scopeId: scope, owner, entitlements,
+        });
+        expect(response.status).toBe(201);
+      },
+      erase: async (_tenant, scope, _actor, subject) => {
+        const stub = env.SCOPE.get(env.SCOPE.idFromName(scope)) as DurableObjectStub & {
+          redactSubject(id: string): Promise<{ vertical: ModuleErasureCounts } | { failure: unknown }>;
+        };
+        const result = await stub.redactSubject(subject);
+        if ('failure' in result) throw new Error(JSON.stringify(result.failure));
+        return result.vertical;
+      },
+    });
+  }, 60_000);
 });

@@ -25,6 +25,15 @@ describe('ticket0 subject erasure on SQLite', () => {
   });
 
   it('erases only the customer and staff rows that belong to each subject', async () => {
-    await checkTicket0SubjectErasure(host, raw);
+    await checkTicket0SubjectErasure({
+      sql: raw,
+      prepare: async (tenant, scope, actor) => {
+        await host.admin.createTenant(actor, { id: tenant, slug: `erasure-${tenant.toLowerCase()}`, name: 'Erasure' });
+        await host.admin.grantEntitlement(actor, tenant, 'ticket0');
+        await host.provisionScope(actor, { tenantId: tenant, scopeId: scope, vertical: 'ticket0' });
+        await host.admin.activateScope(actor, tenant, scope);
+      },
+      erase: async (tenant, scope, actor, subject) => host.admin.shredSubject(actor, tenant, scope, subject),
+    });
   }, 60_000);
 });
