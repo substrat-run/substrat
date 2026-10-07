@@ -1016,7 +1016,7 @@ const requestCheckOp: OperationHandler<
 
 const CHECK_LOG_DDL = `CREATE TABLE IF NOT EXISTS perm_check_log (
   event_id TEXT PRIMARY KEY, permission TEXT NOT NULL, allowed INTEGER NOT NULL,
-  threw TEXT, grant_threw TEXT)`;
+  threw TEXT, grant_threw TEXT, grant_read_kind TEXT)`;
 
 /**
  * Runs as the system actor, whose `ctx.check` is allowed by construction. With
@@ -1029,10 +1029,12 @@ const checkRequestedConsumer: ConsumerHandler = async (ctx, event) => {
   const permission = p.permission as PermissionKey; // the cast under test
   if (!p.swallow) {
     assertAllowed(await ctx.check(permission));
+    const grantRead = await ctx.grantedEntities(permission, 'item');
     ctx.sql.exec(CHECK_LOG_DDL);
-    ctx.sql.exec('INSERT INTO perm_check_log (event_id, permission, allowed) VALUES (?, ?, 1)', [
+    ctx.sql.exec('INSERT INTO perm_check_log (event_id, permission, allowed, grant_read_kind) VALUES (?, ?, 1, ?)', [
       event.id,
       p.permission,
+      grantRead.kind,
     ]);
     return;
   }
@@ -1063,7 +1065,7 @@ const readCheckLogOp: OperationHandler<undefined, unknown> = (ctx) => {
   ctx.sql.exec(CHECK_LOG_DDL);
   return {
     log: ctx.sql.query(
-      'SELECT event_id, permission, allowed, threw, grant_threw FROM perm_check_log ORDER BY event_id',
+      'SELECT event_id, permission, allowed, threw, grant_threw, grant_read_kind FROM perm_check_log ORDER BY event_id',
     ),
     deliveries: ctx.sql.query(
       `SELECT d.event_id, d.error, json_extract(o.payload, '$.permission') AS permission
@@ -2563,6 +2565,7 @@ export const capMod: ModuleRegistration = {
       assertAllowed(decision);
       return { read: entity, proof: decision.proof };
     }) as OperationHandler<never, unknown>,
+    'cap/granted-entities': ((ctx) => ctx.grantedEntities(CAP_READ, 'doc')) as OperationHandler<never, unknown>,
     // A node-level read: a capability holds no node-level authority, so this refuses it.
     'cap/read-all': (async (ctx) => {
       assertAllowed(await ctx.check(CAP_READ));

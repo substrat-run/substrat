@@ -1376,7 +1376,7 @@ export function permissionContractSuite(
       // was allowed here, and `ctx.grant` wrote it into `_substrat_tuples`.
       describe('the system-actor path (a consumer), which never reaches the checker', () => {
         type CheckLog = {
-          log: { event_id: string; permission: string; allowed: number; threw: string | null; grant_threw: string | null }[];
+          log: { event_id: string; permission: string; allowed: number; threw: string | null; grant_threw: string | null; grant_read_kind: string | null }[];
           deliveries: { event_id: string; error: string | null; permission: string }[];
           tuples: { subject: string; relation: string; object: string }[];
         };
@@ -1400,7 +1400,8 @@ export function permissionContractSuite(
           const mine = out.deliveries.filter((d) => d.permission === PERM_READ);
           expect(mine).toHaveLength(1);
           expect(mine[0]!.error).toBeNull();
-          expect(out.log.filter((r) => r.permission === PERM_READ).map((r) => r.allowed)).toEqual([1]);
+          expect(out.log.filter((r) => r.permission === PERM_READ).map((r) => [r.allowed, r.grant_read_kind]))
+            .toEqual([[1, 'all']]);
         });
 
         it('caught and ignored: no allow, and ctx.grant writes no tuple under the cast key', async () => {
