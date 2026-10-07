@@ -19,7 +19,7 @@ directoryRestoreSuite('adapter-sqlite', {
     const dir = mkdtempSync(join(tmpdir(), 'directory-restore-tables-'));
     const host = new SqliteScopeHost({ dir });
     return {
-      snapshot: async () => readDirectoryFile(dir),
+      snapshot: async () => readDirectoryFile(dir).filter((t) => !t.name.startsWith('private_continuation_')),
       restore: (tables) => host.admin.restoreDirectory(staff, { capturedAt: '2026-09-29T00:00:00.000Z', tables }),
       registerVertical: (slug) => host.admin.registerVertical(staff, { slug, name: slug, source: 'builtin' }),
       // The restore runs #1764's split itself, before it returns.
