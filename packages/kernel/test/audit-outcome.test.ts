@@ -10,8 +10,13 @@ import {
   readAuditedOperations,
   SETTLE_OUTCOME_SQL,
   settleOutcomeParamsOf,
+  AUDITED_CHANGE_ACTIONS,
+  UNRECORDED_OUTCOME_LOG,
+  recordAuditOutcome,
+  unknownOutcomeOf,
   type AuditedOperationSqlRow,
 } from '../src/audit-outcome.js';
+import { SWITCH_ACTIONS } from '../src/system-switch-record.js';
 
 /**
  * #2064: an audited operation's effective outcome is a PRIORITY over its rows, never an order.
@@ -150,5 +155,65 @@ describe('the operation-id reads', () => {
     insert(d, 'transferOwner', 'tenantless', 'applied', null, null);
     expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('tenantless', { tenantId: null, scopeId: null })))).toBeTruthy();
     expect(d.prepare(SETTLE_OUTCOME_SQL).get(...settleOutcomeParamsOf(ref('tenantless')))).toBeUndefined();
+  });
+});
+
+/**
+ * #2089: the outcome write every audited change makes — the control plane's flows and both
+ * adapters' kill switches — through one helper that never swallows a failure.
+ */
+describe('recordAuditOutcome', () => {
+  const line = { flow: 'system-switch', operationId: 'op-1', phase: 'refused' };
+
+  it('a row that lands answers null and logs nothing', async () => {
+    const logged: unknown[] = [];
+    const written: string[] = [];
+    expect(await recordAuditOutcome(() => written.push('row'), line, (...a) => logged.push(a))).toBeNull();
+    expect(await recordAuditOutcome(async () => written.push('async row'), line, (...a) => logged.push(a))).toBeNull();
+    expect(written).toEqual(['row', 'async row']);
+    expect(logged).toEqual([]);
+  });
+
+  it('a row that throws, sync or async, answers its message and logs it with the operation', async () => {
+    for (const write of [
+      () => {
+        throw new Error('log down');
+      },
+      () => Promise.reject(new Error('log down')),
+    ]) {
+      const logged: unknown[] = [];
+      expect(await recordAuditOutcome(write, line, (...a) => logged.push(a))).toBe('log down');
+      expect(logged).toEqual([[UNRECORDED_OUTCOME_LOG, { ...line, auditError: 'log down' }]]);
+    }
+  });
+});
+
+describe('unknownOutcomeOf, for a kill switch (#2089)', () => {
+  const intent = (action: string, after: Record<string, unknown>) => ({
+    id: 'row-1', action, tenant_id: 't1', scope_id: 's1', vertical: null, after: JSON.stringify(after),
+  });
+
+  it('every switch call action is settled', () => {
+    for (const action of SWITCH_ACTIONS) expect(AUDITED_CHANGE_ACTIONS).toContain(action);
+    expect([...SWITCH_ACTIONS].sort()).toEqual(['restoreToPeer', 'restoreToSystem', 'revokeFromPeer', 'revokeFromSystem']);
+  });
+
+  it("the unknown row is the intent's own fields, phase unknown, with the error capped", () => {
+    const after = { operationId: 'op-1', moduleId: '@m/x', schedules: 'off', phase: 'intent', reason: 'incident' };
+    const outcome = unknownOutcomeOf(intent('revokeFromSystem', after), 'row-1', 'e'.repeat(1000));
+    expect(outcome.after).toEqual({ ...after, phase: 'unknown', error: 'e'.repeat(300) });
+    expect(outcome.operation).toEqual({ action: 'revokeFromSystem', operationId: 'op-1', tenantId: 't1', scopeId: 's1' });
+    expect(outcome.failure).toMatchObject({ operation: 'audit.revokeFromSystem', stage: 'outcome-unknown', reference: 'op-1' });
+    const peer = { operationId: 'op-2', vertical: 'acme/crm', calls: 'on', phase: 'intent', reason: 'resolved' };
+    expect(unknownOutcomeOf(intent('restoreToPeer', peer), 'row-1', 'why').after).toEqual({ ...peer, phase: 'unknown', error: 'why' });
+  });
+
+  it('an outcome row, a re-assert row, or an id the contract refuses is not a switch intent to settle', () => {
+    const base = { moduleId: '@m/x', schedules: 'off', reason: 'r' };
+    expect(() => unknownOutcomeOf(intent('revokeFromSystem', { ...base, operationId: 'op', phase: 'applied' }), 'row-1', 'x')).toThrow(/no audited-change intent/);
+    expect(() => unknownOutcomeOf(intent('reassertSystemSwitch', { ...base, operationId: 'op', phase: 'intent' }), 'row-1', 'x')).toThrow(/no audited-change intent/);
+    expect(() => unknownOutcomeOf(intent('revokeFromSystem', { ...base, operationId: '\ud800', phase: 'intent' }), 'row-1', 'x')).toThrow(/no audited-change intent/);
+    // Twin: the same intent with a well-formed id settles.
+    expect(unknownOutcomeOf(intent('revokeFromSystem', { ...base, operationId: 'op', phase: 'intent' }), 'row-1', 'x').operationId).toBe('op');
   });
 });
