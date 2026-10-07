@@ -359,6 +359,7 @@ export type {
   AttachmentTextBounds,
   ExtractionOutcome,
   ExtractionSignal,
+  ExtractionTimers,
 } from './attachment-extractor.js';
 export {
   CursorMismatch,

@@ -6,6 +6,7 @@ import {
   chooseAttachmentExtractor,
   runAttachmentExtractor,
   type ExtractionOutcome,
+  type ExtractionSignal,
 } from '@substrat-run/kernel';
 import {
   DEFAULT_EXTRACTOR_BOUNDS,
@@ -14,6 +15,7 @@ import {
   htmlExtractor,
   type ExtractorBounds,
 } from '../src/index.js';
+import { afterAbort, cpuMs, expectAbortedPromptly } from './timing.js';
 import { zip, type Part } from './zip.js';
 
 /**
@@ -461,12 +463,12 @@ describe('CPU bounded by construction: inputs that made the old regular expressi
    * Each of these is a megabyte or two of one opener that never closes. A regex that rescans
    * from every opener to the end of the file does ~10^12 steps on them; a forward scan does one
    * pass. The bound below is generous by orders of magnitude for a linear pass and far short of
-   * what the quadratic version needed.
+   * what the quadratic version needed — in CPU time, which a loaded machine does not stretch.
    */
   const fast = async (label: string, run: () => Promise<unknown>) => {
-    const started = performance.now();
+    const started = cpuMs();
     await run();
-    expect(performance.now() - started, label).toBeLessThan(2_000);
+    expect(cpuMs() - started, label).toBeLessThan(2_000);
   };
 
   it('html: unclosed tags, comments, scripts and bare `<` by the million', async () => {
@@ -500,7 +502,7 @@ describe("the kernel's abort: a bundled parser stops promptly on a large VALID f
     setTimeout(() => controller.abort(), ms);
     return controller.signal;
   };
-  const input = (body: Uint8Array, contentType: string, signal: AbortSignal) => ({
+  const input = (body: Uint8Array, contentType: string, signal: ExtractionSignal) => ({
     body,
     contentType,
     filename: 'f',
@@ -513,28 +515,19 @@ describe("the kernel's abort: a bundled parser stops promptly on a large VALID f
     const file = await zip([{ name: 'word/document.xml', data: enc(docxXml(para.repeat(300_000))) }]);
     const docx = docxExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 64 * 1024 * 1024 });
 
-    const fullStart = performance.now();
     const full = await docx.extract(input(file, DOCX, new AbortController().signal));
-    const fullMs = performance.now() - fullStart;
     expect('text' in full).toBe(true);
 
-    const start = performance.now();
-    const aborted = await docx.extract(input(file, DOCX, abortAfter(10)));
-    const abortedMs = performance.now() - start;
-    expect(aborted).toEqual({ failed: 'the extraction was aborted' });
-    expect(abortedMs).toBeLessThan(10 + 150);
-    expect(abortedMs).toBeLessThan(fullMs);
-    // The bound is `abortedMs` above. The test's own clock also pays for building a 24 MB file
-    // and parsing it to the end once, which is the yardstick, not the thing under test: on a
-    // loaded machine that alone outlasts the default five seconds.
+    expectAbortedPromptly(await afterAbort((signal) => docx.extract(input(file, DOCX, signal)), 10));
+    // The bound is the counted work above. The test's own clock also pays for building a 24 MB
+    // file and parsing it to the end once: on a loaded machine that alone outlasts the default
+    // five seconds, so this timeout is a hang guard, never the bound.
   }, 30_000);
 
   it('html: the same, mid-scan; and an already-aborted signal stops before any work', async () => {
     const page = enc(`<p>${'word <b>bold</b> '.repeat(400_000)}</p>`);
     const html = htmlExtractor({ maxInputBytes: 64 * 1024 * 1024, maxInflatedBytes: 1 });
-    const start = performance.now();
-    expect(await html.extract(input(page, 'text/html', abortAfter(5)))).toEqual({ failed: 'the extraction was aborted' });
-    expect(performance.now() - start).toBeLessThan(5 + 150);
+    expectAbortedPromptly(await afterAbort((signal) => html.extract(input(page, 'text/html', signal)), 5));
     const done = new AbortController();
     done.abort();
     expect(await html.extract(input(page, 'text/html', done.signal))).toEqual({ failed: 'the extraction was aborted' });
@@ -634,13 +627,9 @@ describe("the kernel's abort: a bundled parser stops promptly on a large VALID f
   it('and an abort lands INSIDE that one construct, within a stride of the deadline', async () => {
     const pages = [`<p>kept</p><!--${filler}`, `<p>kept</p><div title="${filler}`, `<p>kept</p><script>${filler}`];
     for (const page of pages) {
-      const start = performance.now();
-      expect(await html.extract(input(enc(page), 'text/html', abortAfter(5)))).toEqual({ failed: 'the extraction was aborted' });
-      expect(performance.now() - start).toBeLessThan(5 + 150);
+      expectAbortedPromptly(await afterAbort((signal) => html.extract(input(enc(page), 'text/html', signal)), 5), page.slice(0, 20));
     }
     const file = await zip([{ name: 'word/document.xml', data: enc(docxXml(`<w:t a="${filler}`)) }]);
-    const start = performance.now();
-    expect(await docx.extract(input(file, DOCX, abortAfter(5)))).toEqual({ failed: 'the extraction was aborted' });
-    expect(performance.now() - start).toBeLessThan(5 + 150);
+    expectAbortedPromptly(await afterAbort((signal) => docx.extract(input(file, DOCX, signal)), 5));
   });
 });
