@@ -49,6 +49,15 @@ const portalOf = async (who: ReturnType<typeof principalId.parse>) =>
   })) as Page<{ id: string }>).entries.map((c) => c.id);
 
 describe('a key the contact portal gains reaches a customer granted before markers (#2083)', () => {
+  it('the seeded customer receives one audited shape grant', async () => {
+    const grants = await host.admin.auditLog(world.staff, {
+      tenantId: world.substrat.tenant,
+      scopeId: world.substrat.scope,
+      action: 'grantEntityShape',
+    });
+    expect(grants.map((entry) => (entry.after as { principalId: string }).principalId)).toEqual([world.substrat.customer.principal]);
+  });
+
   it('the contact shape is a bootstrap shape whose holder is whoever holds a key of it; a follower is shared', () => {
     expect(ENTITY_GRANTS).toEqual([
       { entityType: 'contact', permissions: CONTACT_PORTAL, bootstrap: true, holder: 'grantee' },

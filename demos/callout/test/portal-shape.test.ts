@@ -17,7 +17,7 @@ import { ulid } from '@substrat-run/kernel';
 import { PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ENTITY_GRANTS, portalPerms, provisionCallout } from '../src/provision.js';
-import { buildDemoHost } from '../src/seed.js';
+import { buildDemoHost, seedDemo } from '../src/seed.js';
 
 let dir: string;
 let host: SqliteScopeHost;
@@ -56,6 +56,19 @@ const sees = async () =>
   );
 
 describe('a key the portal shape gains reaches a customer granted before markers (#2083)', () => {
+  it('the seeded customers each receive one audited shape grant', async () => {
+    const seedDir = mkdtempSync(join(tmpdir(), 'callout-seed-shape-'));
+    const seedHost = buildDemoHost(seedDir);
+    try {
+      const world = await seedDemo(seedHost, seedDir);
+      const grants = await seedHost.admin.auditLog(staff, { tenantId: world.t1, scopeId: world.s1, action: 'grantEntityShape' });
+      expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([world.berit, world.styrbjorn].sort());
+    } finally {
+      await seedHost.close();
+      rmSync(seedDir, { recursive: true, force: true });
+    }
+  });
+
   it('the declared shape is a bootstrap shape whose holder is whoever holds a key of it', () => {
     expect(ENTITY_GRANTS).toEqual([{ entityType: 'customer', permissions: portalPerms, bootstrap: true, holder: 'grantee' }]);
   });

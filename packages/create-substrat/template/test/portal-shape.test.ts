@@ -54,6 +54,11 @@ describe('a key the portal shape gains reaches a customer granted before markers
   const sees = async () =>
     (await (await host.getScope(kerstin, w.t2, w.s2)).invoke<Page<{ id: string }>>('shop/portal-repairs')).entries.map((o) => o.id);
 
+  it('the seeded customers each receive one audited shape grant', async () => {
+    const grants = await host.admin.auditLog(staff, { tenantId: w.t1, scopeId: w.s1, action: 'grantEntityShape' });
+    expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([w.lisbeth, w.otto].sort());
+  });
+
   it('the shape is declared bootstrap, and its holder is whoever holds a key of it', () => {
     expect(ENTITY_GRANTS).toEqual([{ entityType: 'customer', permissions: portalPerms, bootstrap: true, holder: 'grantee' }]);
   });

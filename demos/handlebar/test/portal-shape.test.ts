@@ -16,7 +16,7 @@ import { platformActorId, principalId, scopeId, tenantId, type Page } from '@sub
 import { ulid } from '@substrat-run/kernel';
 import { PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { buildBikeShopHost, ENTITY_GRANTS, provisionHandlebar } from '../src/seed.js';
+import { buildBikeShopHost, ENTITY_GRANTS, provisionHandlebar, seedBikeShop } from '../src/seed.js';
 
 let dir: string;
 let host: SqliteScopeHost;
@@ -55,6 +55,19 @@ const sees = async () =>
   );
 
 describe('the keys the portal shape gained reach a customer granted before markers (#2083)', () => {
+  it('the seeded customers each receive one audited shape grant', async () => {
+    const seedDir = mkdtempSync(join(tmpdir(), 'handlebar-seed-shape-'));
+    const seedHost = buildBikeShopHost(seedDir);
+    try {
+      const world = await seedBikeShop(seedHost, seedDir);
+      const grants = await seedHost.admin.auditLog(staff, { tenantId: world.t1, scopeId: world.s1, action: 'grantEntityShape' });
+      expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([world.lisbeth, world.otto].sort());
+    } finally {
+      await seedHost.close();
+      rmSync(seedDir, { recursive: true, force: true });
+    }
+  });
+
   it('the declared shape is a bootstrap shape whose holder is whoever holds a key of it', () => {
     expect(ENTITY_GRANTS).toMatchObject([{ entityType: 'customer', bootstrap: true, holder: 'grantee' }]);
   });

@@ -16,7 +16,7 @@ import { platformActorId, principalId, scopeId, tenantId, type Page } from '@sub
 import { ulid } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { SHOP_PERM } from '../src/module.js';
-import { buildShopHost, ENTITY_GRANTS, portalPerms, provisionShop } from '../src/seed.js';
+import { buildShopHost, ENTITY_GRANTS, portalPerms, provisionShop, seedShop } from '../src/seed.js';
 
 let dir: string;
 let host: SqliteScopeHost;
@@ -64,6 +64,19 @@ const sees = async () =>
   );
 
 describe('a key the portal shape gains reaches a customer granted before markers (#2083)', () => {
+  it('the seeded shoppers each receive one audited shape grant', async () => {
+    const seedDir = mkdtempSync(join(tmpdir(), 'shop-seed-shape-'));
+    const seedHost = buildShopHost(seedDir);
+    try {
+      const world = await seedShop(seedHost, seedDir);
+      const grants = await seedHost.admin.auditLog(staff, { tenantId: world.t1, scopeId: world.s1, action: 'grantEntityShape' });
+      expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([world.elin, world.otto].sort());
+    } finally {
+      await seedHost.close();
+      rmSync(seedDir, { recursive: true, force: true });
+    }
+  });
+
   it('the declared shape is a bootstrap shape whose holder is whoever holds a key of it', () => {
     expect(ENTITY_GRANTS).toEqual([{ entityType: 'customer', permissions: portalPerms, bootstrap: true, holder: 'grantee' }]);
   });
