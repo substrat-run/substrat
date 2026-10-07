@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
+import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, ulid, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   atomicContractSuite,
@@ -41,11 +41,14 @@ import {
   inputParseContractSuite,
   entityStateContractSuite,
   entityStateMigrationContractSuite,
+  entityTrashContractSuite,
+  TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
+import { errorCodeOf, moduleId, platformActorId } from '@substrat-run/contracts';
 import { SqliteScopeHost } from '../src/index.js';
 
 scopeHostContractSuite('adapter-sqlite', async () => {
@@ -542,6 +545,63 @@ entityStateMigrationContractSuite(
       const rt = rebuildRuntime(tenant, scope);
       rt.db.prepare('DELETE FROM _substrat_migrations WHERE module_id = ? AND version = ?').run(moduleId, version);
       rt.appliedMigrations.delete(`${moduleId}@${version}`);
+    },
+  },
+);
+
+// #119 PR 2: the host's trash refusal, the link refusal and the purge horizon. The DEFAULT
+// checker, for the suite above's reason: the refusal's ORDER is a permission property.
+let trashHost: SqliteScopeHost | undefined;
+entityTrashContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-trash-'));
+    const host = new SqliteScopeHost({ dir });
+    trashHost = host;
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (tenant, scope, sql, params = []) => {
+    const internals = trashHost as unknown as {
+      runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
+    };
+    internals.runtime(tenant, scope).db.prepare(sql).run(...params);
+  },
+  {
+    // This adapter has no RPC: its own door is the system stub and the host's private sweep.
+    direct: {
+      claimPurge: async (tenant, scope, operation, input) => {
+        const system = await trashHost!.getSystemScope(moduleId.parse(TRASH_MODULE_ID), tenant, scope);
+        // Every claim the stub could carry: an option, and an argument past its surface.
+        const invoke = system.invoke as (...a: unknown[]) => Promise<unknown>;
+        return invoke(operation, input, { purge: true }, true).then(
+          () => 'ok',
+          (e: unknown) => errorCodeOf(e) ?? 'unknown',
+        );
+      },
+      runPurgeSweep: async (tenant, scope, operation) => {
+        const internals = trashHost as unknown as {
+          runPurgeSweep(m: string, t: typeof tenant, s: typeof scope, op: string): Promise<{ purged: number; skipped: number; held?: string }>;
+        };
+        return internals.runPurgeSweep(TRASH_MODULE_ID, tenant, scope, operation);
+      },
+      // The directory is this adapter's authority for both.
+      holdLifecycle: async (tenant, scope, held) => {
+        const staff = platformActorId.parse(ulid());
+        await (held ? trashHost!.admin.suspendScope(staff, tenant, scope) : trashHost!.admin.unsuspendScope(staff, tenant, scope));
+      },
+      // Already the directory's: every scope row names its tenant.
+      recordTenant: async () => undefined,
+      unrecordedTenant: 'refused',
+      markCopy: async (_tenant, scope) => {
+        const internals = trashHost as unknown as { directory: { prepare(q: string): { run(...a: unknown[]): unknown } } };
+        internals.directory.prepare(`UPDATE scopes SET kind = 'preview' WHERE scope_id = ?`).run(scope);
+      },
     },
   },
 );

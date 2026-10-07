@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { moduleManifest, permissionKey, platformActorId, principalId, scopeId, tenantId, type Page } from '@substrat-run/contracts';
+import { moduleManifest, operationInputsOf, permissionKey, platformActorId, principalId, scopeId, tenantId, type Page } from '@substrat-run/contracts';
 import {
   moduleMigrations,
   ulid,
@@ -48,6 +48,9 @@ const manifestOf = (withStates: boolean) =>
 const modOf = (withStates: boolean): ModuleRegistration => ({
   manifest: manifestOf(withStates),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE up_notes (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);' }],
+  // A trashable module declares every operation it binds (#119 PR 2); none of these narrows to an
+  // entity by id, so there is nothing for the host to refuse.
+  operationInputs: operationInputsOf({ 'up/add': {}, 'up/page': {}, 'up/archive': {} }),
   operations: {
     'up/add': (async (ctx, input) => {
       const id = (input as { id: string }).id;

@@ -10,7 +10,7 @@
  * Every operation is a thin pass-through to the verb or read under test, and checks nothing
  * itself: the KERNEL's check of the declared key is what the suite is asserting on.
  */
-import { moduleManifest, type EntityRef } from '@substrat-run/contracts';
+import { moduleManifest, operationInputsOf, type EntityRef } from '@substrat-run/contracts';
 import {
   listIndexPlans,
   listQuery,
@@ -150,6 +150,15 @@ export const stateMod: ModuleRegistration = {
 };
 
 /**
+ * #119 PR 2: every operation above declared, each with no input and no entity-narrowed check. They
+ * reach the entity through a raw `id`, deliberately, so the verbs' and readers' own refusals are
+ * what `entityStateContractSuite` sees — the host's refusal is `entityTrashContractSuite`'s. A
+ * trashable module must declare everything it binds, so this one says, in the host's terms, that
+ * none of them addresses an entity by id.
+ */
+stateMod.operationInputs = operationInputsOf(Object.fromEntries(Object.keys(stateMod.operations!).map((name) => [name, {}])));
+
+/**
  * The fixture behind `entityStateMigrationContractSuite` (#2090): authored migrations that
  * REBUILD a table, the create-copy-rename SQLite needs for a column type change or a dropped
  * constraint.
@@ -280,3 +289,6 @@ export const rebuildMod: ModuleRegistration = {
         .map((r) => r.title)) as Handler,
   },
 };
+
+/** Its operations declared the same way as `stateMod`'s, so a trashable module registers (#119). */
+rebuildMod.operationInputs = operationInputsOf(Object.fromEntries(Object.keys(rebuildMod.operations!).map((name) => [name, {}])));

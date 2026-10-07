@@ -41,6 +41,11 @@ export interface EntityEdgeDeps {
   emit: (event: DomainEventInput) => void;
   /** K-42's read-only refusal, for the effecting verbs. */
   assertWrites: (verb: string) => void;
+  /**
+   * Is this entity out of reach as a parent (#119) — its type declares trash, and it is binned or
+   * missing (`isUnreachableParent`)? Refused by `link` and as `relink`'s `to`, one answer for both.
+   */
+  isUnreachableParent: (entity: EntityRef) => boolean;
 }
 
 export type EntityEdgeVerbs = Pick<OperationContext, 'link' | 'relink'>;
@@ -53,6 +58,18 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
         `${verb}: undeclared entity relation: ${child.entityType} → ${parent.entityType} ` +
           `(declare it in a module manifest's entityRelations)`,
       );
+    }
+  };
+
+  /**
+   * A binned entity is gone from everyone's view until it is restored (#119), so nothing new
+   * hangs off it. The refusal is the one a MISSING parent of the same type gets, word for word:
+   * `link` checks no permission, so a refusal that named the trash would tell a caller who may not
+   * see the parent that it exists. An ARCHIVED parent passes: archived is filed away and readable.
+   */
+  const assertParentReachable = (verb: string, parent: EntityRef) => {
+    if (deps.isUnreachableParent(parent)) {
+      throw substratError('not_found', `${verb}: ${parent.entityType}:${parent.entityId} not found`);
     }
   };
 
@@ -125,6 +142,7 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       const c = entityObjectRef(child, 'ctx.link'); // #1856: an edge the walk can read back
       const p = entityObjectRef(parent, 'ctx.link');
       assertDeclared('ctx.link', child, parent);
+      assertParentReachable('ctx.link', parent);
       // Refuse a parent that is the child itself or already beneath it (#1875) — same question
       // `relink` asks of `to`, same walk.
       assertNoCycle('ctx.link', 'link', c, p);
@@ -151,6 +169,7 @@ export function createEntityEdgeVerbs(deps: EntityEdgeDeps): EntityEdgeVerbs {
       // whether or not its relation is still declared, so an edge that grants must stay
       // movable. What `from` must be is an edge that exists.
       assertDeclared('ctx.relink', child, to);
+      assertParentReachable('ctx.relink', to);
       // The walk's own `live` predicate, so "is a parent" means what a check means by it.
       const live = deps.sql.query(
         `SELECT 1 AS live FROM _substrat_tuples

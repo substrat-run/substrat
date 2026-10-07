@@ -359,10 +359,12 @@ describe('runtime DDL on a stateful table (#119, Codex r3)', () => {
  * that derived it — the journal is what says which objects the table is owed (#2090).
  */
 const derivedFixture = (journaled: (version: string) => boolean = () => true) => {
+  // With a purge horizon, so the purge sweep's index (#119) is one of the things owed.
+  const purged = { ...both, purgeAfterDays: 3 };
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
   db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
-  const decl = { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [both] };
+  const decl = { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [purged] };
   for (const m of moduleMigrations({ manifest: decl })) {
     db.exec(m.sql);
     if (journaled(m.version)) db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
@@ -372,7 +374,7 @@ const derivedFixture = (journaled: (version: string) => boolean = () => true) =>
     exec: () => ({ changes: 0 }),
   } as never;
   const state = new Map();
-  addStatePlans(state, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+  addStatePlans(state, '@m', [purged], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
   const plans = { state, lists: new Map(listIndexPlans('@m', decl.lists, [both]).map((p) => [p.entityType, p])), search: new Map() };
   /** The kernel-prefixed triggers and indexes, by name. */
   const derived = () =>
@@ -409,6 +411,7 @@ describe('afterRuntimeDdl', () => {
     ['born trigger', 'DROP TRIGGER _substrat_state_docs_born'],
     ['moved trigger', 'DROP TRIGGER _substrat_state_docs_moved'],
     ['list index', 'DROP INDEX _substrat_list_m_doc_title_archived'],
+    ['purge index', 'DROP INDEX _substrat_purge_docs'],
   ] as const) {
     it(`puts back its ${what}`, () => {
       const { db, definitions, check } = build();
@@ -434,7 +437,7 @@ describe('repairDerivedObjects / assertEntityStateColumns (#2090)', () => {
   it('puts back what a create-copy-rename rebuild dropped', () => {
     const { db, sql, plans, derived } = build();
     const before = derived();
-    expect(before).toHaveLength(5);
+    expect(before).toHaveLength(6);
     db.exec(rebuild);
     expect(derived()).toEqual([]);
     repairDerivedObjects(sql, (ddl) => db.exec(ddl), plans, { after: 'migration x' });

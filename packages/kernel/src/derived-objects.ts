@@ -6,6 +6,7 @@
  * | `_substrat_archived_at` / `_substrat_trashed_at` (#119) | state | fail closed: it cannot be invented again |
  * | the `born` / `moved` archive/trash guard triggers (#119) | derived | put back |
  * | the derived list indexes, partial per view on a stateful table (#811) | derived | put back |
+| the purge sweep's partial index on a trashable table with a horizon (#119) | derived | put back |
  * | the search index and the three triggers keeping it in step (#827) | derived | rebuilt from the rows |
  *
  * The search triggers are a privacy fact, not only a freshness one: subject erasure rewrites a
@@ -56,6 +57,9 @@ import {
   entityStateGuardVersion,
   entityStateTriggerDdl,
   entityStateTriggerObjects,
+  purgeIndexObjects,
+  purgeIndexRepairDdl,
+  purgeIndexVersion,
   stateColumnVersionsOf,
   type EntityStatePlan,
 } from './entity-state.js';
@@ -150,6 +154,10 @@ function expectations(sql: ScopedSql, plans: DerivedPlans): TableExpectation[] {
     if (columns.length) e.columns = columns;
     if (applied(plan.moduleId, entityStateGuardVersion(plan))) {
       e.derived.push({ objects: entityStateTriggerObjects(plan), ddl: entityStateTriggerDdl(plan) });
+    }
+    const purge = purgeIndexObjects(plan);
+    if (purge.length && applied(plan.moduleId, purgeIndexVersion(plan))) {
+      e.derived.push({ objects: purge, ddl: purgeIndexRepairDdl(plan) });
     }
   }
   for (const plan of plans.lists.values()) {

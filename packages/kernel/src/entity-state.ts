@@ -68,6 +68,8 @@ export interface EntityStatePlan {
   readonly archivePermission?: PermissionKey;
   /** Present when the entity can be trashed. */
   readonly trashPermission?: PermissionKey;
+  /** Present when a trashed entity is purged after this many days (`entity-trash.ts`). */
+  readonly purgeAfterDays?: number;
 }
 
 /** The operation's own check — a pass is recorded as one of its authorizations (K-34). */
@@ -98,6 +100,9 @@ export function entityStatePlans(
     if (!decl.archivePermission && !decl.trashPermission) {
       throw new Error(`entity state: ${where} declares neither an archive nor a trash permission`);
     }
+    if (decl.purgeAfterDays !== undefined && !decl.trashPermission) {
+      throw new Error(`entity state: ${where} declares a purge horizon and no trash — only a trashed entity is purged`);
+    }
     plans.push({
       moduleId,
       entityType: decl.entityType,
@@ -105,6 +110,7 @@ export function entityStatePlans(
       idColumn: assertSqlIdentifier('entity state', 'an id column', decl.idColumn ?? 'id', where),
       ...(decl.archivePermission ? { archivePermission: decl.archivePermission } : {}),
       ...(decl.trashPermission ? { trashPermission: decl.trashPermission } : {}),
+      ...(decl.purgeAfterDays !== undefined ? { purgeAfterDays: decl.purgeAfterDays } : {}),
     });
   }
   return plans;
@@ -133,6 +139,9 @@ export function entityStateMigrations(
     }
     // After the columns they name.
     out.push({ version: entityStateGuardVersion(plan), sql: entityStateTriggerDdl(plan) });
+    // The purge sweep's walk (#119): the oldest trashed rows first, without reading the rest of
+    // the bin. Its own version, so declaring a horizon later adds it and re-runs nothing.
+    if (plan.purgeAfterDays !== undefined) out.push({ version: purgeIndexVersion(plan), sql: purgeIndexDdl(plan) });
   }
   return out;
 }
@@ -142,6 +151,44 @@ export const stateColumnVersionsOf = (plan: EntityStatePlan): { version: string;
   ...(plan.archivePermission ? [{ version: `state/${plan.entityType}:archive`, column: ARCHIVED_AT_COLUMN }] : []),
   ...(plan.trashPermission ? [{ version: `state/${plan.entityType}:trash`, column: TRASHED_AT_COLUMN }] : []),
 ];
+
+/** The purge index's migration version (#119) — present only on a plan with a purge horizon. */
+export const purgeIndexVersion = (plan: EntityStatePlan): string => `state/${plan.entityType}:purge`;
+
+/**
+ * The partial index the purge sweep walks (#119): trashed rows only, oldest trash first, so a
+ * sweep reads the due rows and nothing else. Its name is kernel-prefixed, so the reserved
+ * namespace. Empty for a plan without a purge horizon.
+ */
+export function purgeIndexObjects(plan: EntityStatePlan): DerivedObject[] {
+  if (plan.purgeAfterDays === undefined) return [];
+  const name = `_substrat_purge_${plan.table}`;
+  return [
+    {
+      name,
+      type: 'index',
+      table: plan.table,
+      sql: `CREATE INDEX ${name} ON ${plan.table} (${TRASHED_AT_COLUMN}, ${plan.idColumn}) WHERE ${TRASHED_AT_COLUMN} IS NOT NULL`,
+    },
+  ];
+}
+
+/**
+ * The purge index's DDL. `IF NOT EXISTS` because a dump load runs it again after the rows are
+ * in; a repair that finds it wrong drops it first (`purgeIndexRepairDdl`).
+ */
+export function purgeIndexDdl(plan: EntityStatePlan): string {
+  return purgeIndexObjects(plan)
+    .map((idx) => `${idx.sql.replace(/^CREATE INDEX /, 'CREATE INDEX IF NOT EXISTS ')};`)
+    .join('\n');
+}
+
+/** Drop-then-create, for a purge index the catalogue holds under its name but not as emitted. */
+export function purgeIndexRepairDdl(plan: EntityStatePlan): string {
+  return purgeIndexObjects(plan)
+    .flatMap((idx) => [`DROP INDEX IF EXISTS ${idx.name};`, `${idx.sql};`])
+    .join('\n');
+}
 
 /**
  * The guard triggers' version. By which columns they guard, so declaring a trash on an
@@ -322,7 +369,7 @@ export function entityStateWhere(
 }
 
 /** The two columns as one row holds them. */
-interface StateRow {
+export interface StateRow {
   readonly archived_at: string | null;
   readonly trashed_at: string | null;
 }
@@ -331,7 +378,7 @@ const stateOf = (row: StateRow): EntityStateName =>
   row.trashed_at !== null ? 'trashed' : row.archived_at !== null ? 'archived' : 'active';
 
 /** One row's two columns, or `undefined` when the row does not exist. */
-function readStateRow(sql: ScopedSql, plan: EntityStatePlan, entityId: string): StateRow | undefined {
+export function readStateRow(sql: ScopedSql, plan: EntityStatePlan, entityId: string): StateRow | undefined {
   const columns = stateColumnsOf(plan);
   return sql.query<StateRow>(
     `SELECT ${columns.archive ? ARCHIVED_AT_COLUMN : 'NULL'} AS archived_at, ` +
