@@ -540,70 +540,6 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
   });
   const bounds = { ...DEFAULT_ATTACHMENT_TEXT_BOUNDS, maxTextBytes: 100, timeoutMs: 50 };
 
-  it('cuts oversized output at the cap and records it truncated — the extractor told only as a hint', async () => {
-    let hint = 0;
-    const out = await runAttachmentExtractor(
-      answering(async ({ maxTextBytes }) => {
-        hint = maxTextBytes;
-        return { text: 'é'.repeat(10_000) };
-      }),
-      input,
-      bounds,
-    );
-    expect(hint).toBe(100);
-    expect(out).toMatchObject({ status: 'indexed', extractor: 'rogue', truncated: true });
-    expect(enc((out as { text: string }).text).length).toBe(100);
-  });
-
-  it('normalizes what comes back, and records whitespace-only text as empty', async () => {
-    expect(await runAttachmentExtractor(answering(async () => ({ text: 'a\u0000\r\n\r\n\r\n\r\nb\t\t c' })), input, bounds)).toEqual({
-      status: 'indexed',
-      extractor: 'rogue',
-      text: 'a\n\nb c',
-      truncated: false,
-    });
-    expect(await runAttachmentExtractor(answering(async () => ({ text: ' \n\t ' })), input, bounds)).toEqual({
-      status: 'empty',
-      extractor: 'rogue',
-    });
-  });
-
-  it('records a throw as failed — never its message, which is the parser\'s text and may quote the file', async () => {
-    const thrown = await runAttachmentExtractor(
-      answering(async () => {
-        throw new RangeError('could not parse near SECRET CONTRACT TEXT');
-      }),
-      input,
-      bounds,
-    );
-    expect(thrown).toEqual({ status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' threw (RangeError)" });
-    // A synchronous throw, and a thrown non-Error, are the same outcome.
-    const sync = answering((() => {
-      throw 'a bare string';
-    }) as unknown as AttachmentExtractor['extract']);
-    expect(await runAttachmentExtractor(sync, input, bounds)).toEqual({
-      status: 'failed',
-      extractor: 'rogue',
-      detail: "extractor 'rogue' threw (a value)",
-    });
-  });
-
-  const timedOut = { status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' did not answer within 50 ms" };
-
-  it('records an extractor that does not answer within the budget as failed, and aborts its signal', async () => {
-    let seen: ExtractionSignal | undefined;
-    const hung = await runAttachmentExtractor(
-      answering(({ signal }) => {
-        seen = signal;
-        return new Promise(() => {});
-      }),
-      input,
-      bounds,
-    );
-    expect(hung).toEqual(timedOut);
-    expect(seen?.aborted).toBe(true);
-  });
-
   /**
    * Timers on a clock only the test moves (#2085). A synchronous extractor "runs for" `ms` by
    * calling `elapse(ms)`: the clock moves and nothing fires, as on a thread that never yields.
@@ -634,6 +570,73 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
     };
     return { timers, elapse: (ms: number) => void (now += ms) };
   };
+
+  /**
+   * For a row about what an extractor ANSWERS rather than when: the budget runs on a clock
+   * nobody moves, so its deadline never comes due and a busy machine cannot turn the answer
+   * into a timeout.
+   */
+  const answer = (extractor: AttachmentExtractor) => runAttachmentExtractor(extractor, input, bounds, virtualTimers().timers);
+
+  it('cuts oversized output at the cap and records it truncated — the extractor told only as a hint', async () => {
+    let hint = 0;
+    const out = await answer(
+      answering(async ({ maxTextBytes }) => {
+        hint = maxTextBytes;
+        return { text: 'é'.repeat(10_000) };
+      }),
+    );
+    expect(hint).toBe(100);
+    expect(out).toMatchObject({ status: 'indexed', extractor: 'rogue', truncated: true });
+    expect(enc((out as { text: string }).text).length).toBe(100);
+  });
+
+  it('normalizes what comes back, and records whitespace-only text as empty', async () => {
+    expect(await answer(answering(async () => ({ text: 'a\u0000\r\n\r\n\r\n\r\nb\t\t c' })))).toEqual({
+      status: 'indexed',
+      extractor: 'rogue',
+      text: 'a\n\nb c',
+      truncated: false,
+    });
+    expect(await answer(answering(async () => ({ text: ' \n\t ' })))).toEqual({
+      status: 'empty',
+      extractor: 'rogue',
+    });
+  });
+
+  it('records a throw as failed — never its message, which is the parser\'s text and may quote the file', async () => {
+    const thrown = await answer(
+      answering(async () => {
+        throw new RangeError('could not parse near SECRET CONTRACT TEXT');
+      }),
+    );
+    expect(thrown).toEqual({ status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' threw (RangeError)" });
+    // A synchronous throw, and a thrown non-Error, are the same outcome.
+    const sync = answering((() => {
+      throw 'a bare string';
+    }) as unknown as AttachmentExtractor['extract']);
+    expect(await answer(sync)).toEqual({
+      status: 'failed',
+      extractor: 'rogue',
+      detail: "extractor 'rogue' threw (a value)",
+    });
+  });
+
+  const timedOut = { status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' did not answer within 50 ms" };
+
+  it('records an extractor that does not answer within the budget as failed, and aborts its signal', async () => {
+    let seen: ExtractionSignal | undefined;
+    const hung = await runAttachmentExtractor(
+      answering(({ signal }) => {
+        seen = signal;
+        return new Promise(() => {});
+      }),
+      input,
+      bounds,
+    );
+    expect(hung).toEqual(timedOut);
+    expect(seen?.aborted).toBe(true);
+  });
 
   it('discards the late answer of a SYNCHRONOUS extractor that ran past the budget — never indexed', async () => {
     const synchronous = (ms: number, then: () => AttachmentExtractorResult) => {
@@ -698,19 +701,19 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
 
   it('records a result of the wrong shape as failed — and a claimed failure, cut short', async () => {
     for (const wrong of [undefined, null, 7, 'text', {}, { text: 5 }, { text: 'x', truncated: 'yes' }, { failed: 'x', text: 'y' }]) {
-      expect(await runAttachmentExtractor(answering(async () => wrong as never), input, bounds), JSON.stringify(wrong)).toEqual({
+      expect(await answer(answering(async () => wrong as never)), JSON.stringify(wrong)).toEqual({
         status: 'failed',
         extractor: 'rogue',
         detail: "extractor 'rogue' returned an unreadable result",
       });
     }
-    const long = await runAttachmentExtractor(answering(async () => ({ failed: 'x'.repeat(5000) })), input, bounds);
+    const long = await answer(answering(async () => ({ failed: 'x'.repeat(5000) })));
     expect(long).toMatchObject({ status: 'failed', extractor: 'rogue' });
     expect((long as { detail: string }).detail).toHaveLength(500);
   });
 
   it('keeps an extractor\'s own early stop on the record', async () => {
-    expect(await runAttachmentExtractor(answering(async () => ({ text: 'short', truncated: true })), input, bounds)).toEqual({
+    expect(await answer(answering(async () => ({ text: 'short', truncated: true })))).toEqual({
       status: 'indexed',
       extractor: 'rogue',
       text: 'short',
