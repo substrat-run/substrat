@@ -40,8 +40,8 @@ import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountPortalLive } from '../harness/portal-live.js';
 import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
 import { senderFor, sweepOutbound, type OutboundSender } from '../harness/relay.js';
-import { buildHost, linkDevPersonas, seed, type Desk, type World } from './seed.js';
-import { CONTACT_BOUND_ROLE, HUMAN_ROLES, STAFF_ROLES } from './provision.js';
+import { buildHost, linkDevPersonas, reconcilePortalGrants, seed, type Desk, type World } from './seed.js';
+import { CONTACT_BOUND_ROLE, CONTACT_PORTAL, HUMAN_ROLES, STAFF_ROLES } from './provision.js';
 import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
 import { startDemoSites } from '../harness/demo-site.js';
@@ -85,6 +85,8 @@ async function boot() {
   // boundary, so `world.staff` is a plain string until parsed.
   const staff = platformActorId.parse(world.staff);
   await linkDevPersonas(host, { ...world, staff });
+  // #2083: a cast seeded before a key was added to CONTACT_PORTAL receives it here.
+  await reconcilePortalGrants(host, { ...world, staff });
 
   const port = Number(process.env.PORT ?? 8874);
   const apiOrigin = process.env.PUBLIC_ORIGIN ?? `http://localhost:${port}`;
@@ -193,7 +195,7 @@ async function boot() {
         host,
         actor: staff,
         provider: DEV_PROVIDER,
-        portalPermission: T0_PERM.conversationReadOwn,
+        portalPermissions: CONTACT_PORTAL,
         caller: caller ? { tenantId: caller.tenantId, scopeId: caller.scopeId } : null,
       });
     },
