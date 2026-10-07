@@ -33,6 +33,7 @@
  * registry the fields are checked against. So there is no second description of
  * where a customer lives — the model already said it.
  */
+import type { DerivedObject } from './derived-object.js';
 import type { SqlMigration } from './scope-host.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
 import type { EntityStateName } from '@substrat-run/contracts';
@@ -235,31 +236,60 @@ function tokenizeClause(tokenizer: SearchTokenizer): string {
  * rebuild at the end reconstructs it from rows that never moved.
  */
 export function searchIndexDdl(plan: SearchIndexPlan): string {
+  const [table, ...triggers] = searchIndexObjects(plan);
+  return [
+    ...triggers.map((t) => `DROP TRIGGER IF EXISTS ${t.name};`),
+    `DROP TABLE IF EXISTS ${table!.name};`,
+    `${table!.sql};`,
+    ...triggers.map((t) => `${t.sql};`),
+    `INSERT INTO ${plan.indexTable}(${plan.indexTable}) VALUES('rebuild');`,
+  ].join('\n');
+}
+
+/**
+ * What `searchIndexDdl` creates, each with its CREATE statement: the FTS table, then the three
+ * triggers that keep it in step (insert, delete, update).
+ */
+export function searchIndexObjects(plan: SearchIndexPlan): DerivedObject[] {
   const idx = plan.indexTable;
   const cols = plan.fields.join(', ');
   const newCols = plan.fields.map((f) => `new.${f}`).join(', ');
   const oldCols = plan.fields.map((f) => `old.${f}`).join(', ');
+  const trigger = (suffix: string, lines: string[]): DerivedObject => ({
+    name: `${idx}_${suffix}`,
+    type: 'trigger',
+    table: plan.table,
+    sql: lines.join('\n'),
+  });
   return [
-    `DROP TRIGGER IF EXISTS ${idx}_ai;`,
-    `DROP TRIGGER IF EXISTS ${idx}_ad;`,
-    `DROP TRIGGER IF EXISTS ${idx}_au;`,
-    `DROP TABLE IF EXISTS ${idx};`,
-    `CREATE VIRTUAL TABLE ${idx} USING fts5(`,
-    `  ${cols},`,
-    `  content='${plan.table}', content_rowid='rowid', ${tokenizeClause(plan.tokenizer)}`,
-    `);`,
-    `CREATE TRIGGER ${idx}_ai AFTER INSERT ON ${plan.table} BEGIN`,
-    `  INSERT INTO ${idx}(rowid, ${cols}) VALUES (new.rowid, ${newCols});`,
-    `END;`,
-    `CREATE TRIGGER ${idx}_ad AFTER DELETE ON ${plan.table} BEGIN`,
-    `  INSERT INTO ${idx}(${idx}, rowid, ${cols}) VALUES('delete', old.rowid, ${oldCols});`,
-    `END;`,
-    `CREATE TRIGGER ${idx}_au AFTER UPDATE ON ${plan.table} BEGIN`,
-    `  INSERT INTO ${idx}(${idx}, rowid, ${cols}) VALUES('delete', old.rowid, ${oldCols});`,
-    `  INSERT INTO ${idx}(rowid, ${cols}) VALUES (new.rowid, ${newCols});`,
-    `END;`,
-    `INSERT INTO ${idx}(${idx}) VALUES('rebuild');`,
-  ].join('\n');
+    {
+      name: idx,
+      type: 'table',
+      table: idx,
+      sql: [
+        `CREATE VIRTUAL TABLE ${idx} USING fts5(`,
+        `  ${cols},`,
+        `  content='${plan.table}', content_rowid='rowid', ${tokenizeClause(plan.tokenizer)}`,
+        `)`,
+      ].join('\n'),
+    },
+    trigger('ai', [
+      `CREATE TRIGGER ${idx}_ai AFTER INSERT ON ${plan.table} BEGIN`,
+      `  INSERT INTO ${idx}(rowid, ${cols}) VALUES (new.rowid, ${newCols});`,
+      `END`,
+    ]),
+    trigger('ad', [
+      `CREATE TRIGGER ${idx}_ad AFTER DELETE ON ${plan.table} BEGIN`,
+      `  INSERT INTO ${idx}(${idx}, rowid, ${cols}) VALUES('delete', old.rowid, ${oldCols});`,
+      `END`,
+    ]),
+    trigger('au', [
+      `CREATE TRIGGER ${idx}_au AFTER UPDATE ON ${plan.table} BEGIN`,
+      `  INSERT INTO ${idx}(${idx}, rowid, ${cols}) VALUES('delete', old.rowid, ${oldCols});`,
+      `  INSERT INTO ${idx}(rowid, ${cols}) VALUES (new.rowid, ${newCols});`,
+      `END`,
+    ]),
+  ];
 }
 
 /**
@@ -280,10 +310,15 @@ export function searchIndexMigrations(
   searchables: readonly SearchableDeclaration[] | undefined,
 ): SqlMigration[] {
   return searchIndexPlans(moduleId, searchables).map((plan) => ({
-    version: `search/${plan.entityType}:${plan.tokenizer}:${plan.fields.join('+')}`,
+    version: searchIndexVersion(plan),
     sql: searchIndexDdl(plan),
   }));
 }
+
+/** One plan's migration version — the declaration itself, as above. */
+export const searchIndexVersion = (plan: SearchIndexPlan): string =>
+  `search/${plan.entityType}:${plan.tokenizer}:${plan.fields.join('+')}`;
+
 
 /**
  * Index the plans by entity type for a whole scope, refusing an ambiguity.

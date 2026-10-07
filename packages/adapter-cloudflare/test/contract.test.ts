@@ -63,6 +63,7 @@ import {
   listContractSuite,
   migrationDigestContractSuite,
   entityStateContractSuite,
+  entityStateMigrationContractSuite,
   entityTrashContractSuite,
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
@@ -5306,6 +5307,34 @@ entityStateContractSuite(
     await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
       state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
     });
+  },
+);
+
+const scopeStub = (scope: string) => env.SCOPE.get(env.SCOPE.idFromName(scope));
+// #2090: an authored rebuild of a table the kernel derived onto, on the DO's migration pass — the re-derived
+// triggers and partial indexes proven in workerd's SQLite. `rebuildMod` is in
+// `contractTestModules`, so the ScopeDO carries it at code time.
+entityStateMigrationContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  {
+    sql: (_tenant, scope, sql) =>
+      runInDurableObject(scopeStub(scope), (_, state) =>
+        state.storage.sql.exec(sql).toArray() as Record<string, unknown>[],
+      ),
+    // The journal row, and the instance's `applied` set that `retryMigrations` reads pending from.
+    forget: (_tenant, scope, moduleId, version) =>
+      runInDurableObject(scopeStub(scope), (instance, state) => {
+        state.storage.sql.exec('DELETE FROM _substrat_migrations WHERE module_id = ? AND version = ?', moduleId, version);
+        (instance as unknown as { applied: Set<string> }).applied.delete(`${moduleId}@${version}`);
+      }),
   },
 );
 

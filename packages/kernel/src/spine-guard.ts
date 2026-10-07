@@ -35,6 +35,7 @@
  * them, so a forge chained after a legitimate write must not slip past.
  */
 import { namesSpineTable, referencedTablesIn, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
+import { blankSqlComments, executableSqlStatements, splitSqlStatements } from './sql-statements.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 
 /**
@@ -232,6 +233,23 @@ export function assertNoStatefulDdl(sql: string, statefulTables: ReadonlySet<str
       }
     }
   }
+}
+
+/**
+ * Whether `pieces` — `splitSqlStatements(sql)` — are the whole of `sql`: each found, in order, as
+ * an unaltered substring, and nothing left between or after them but whitespace, `;` and
+ * comments. The splitter never rewrites text, so this holds by construction; it is the check a
+ * multi-statement call is refused on rather than run in pieces nobody can account for.
+ */
+export function piecesReproduce(sql: string, pieces: readonly string[]): boolean {
+  const filler = (gap: string) => /^[\s;]*$/.test(blankSqlComments(gap));
+  let at = 0;
+  for (const piece of pieces) {
+    const found = sql.indexOf(piece, at);
+    if (found < 0 || !filler(sql.slice(at, found))) return false;
+    at = found + piece.length;
+  }
+  return filler(sql.slice(at));
 }
 
 /** Does this SQL change the schema — any statement in it a CREATE, ALTER or DROP? */
@@ -470,15 +488,44 @@ export function guardSpine(
    */
   afterDdl?: () => void,
 ): ScopedSql {
-  const follow = <R>(sql: string, run: () => R): R => {
+  /**
+   * One call, judged whole. A call that changes the schema runs as the kernel's shared splitter
+   * cuts it (#2084), one statement at a time, as EXECUTABLE text — comments blanked, so the DDL
+   * SQLite stores carries none and a later `DROP COLUMN` of its last column does not fail on a
+   * Durable Object. Where the scope has a check to run after DDL, it runs right after each schema
+   * change and before the next statement (#2090, Codex r3): a Durable Object's `exec` runs a
+   * whole batch, so `rebuild; write; search` in one call would otherwise read the index before
+   * its triggers were back. `last` runs the final statement as the caller asked (a query returns
+   * its rows), the rest through `exec`. Parameters cannot be told apart between statements, so a
+   * multi-statement call that changes the schema binds none; nor does one the splitter's pieces
+   * cannot account for run at all.
+   */
+  const follow = <R>(sql: string, params: readonly SqlValue[] | undefined, last: (statement: string) => R): R => {
     assertNoSpineWrite(sql, statefulTables);
-    const result = run();
-    if (afterDdl && changesSchema(sql)) afterDdl();
+    if (!changesSchema(sql)) return last(sql);
+    const statements = executableSqlStatements(sql);
+    const refuse = (message: string): never => {
+      throw substratError(
+        'validation_failed',
+        `a ctx.sql call that changes the schema ${message} — split it into one call per statement`,
+        { errors: [{ path: 'sql', message: `${statements.length} statements` }] },
+      );
+    };
+    if (statements.length > 1) {
+      if (params?.length) refuse('and binds parameters runs one statement');
+      if (!piecesReproduce(sql, splitSqlStatements(sql))) refuse('could not be split into its statements with confidence');
+    }
+    let result!: R;
+    (statements.length ? statements : [sql]).forEach((statement, i, all) => {
+      if (i === all.length - 1) result = last(statement);
+      else inner.exec(statement);
+      if (afterDdl && changesSchema(statement)) afterDdl();
+    });
     return result;
   };
   return {
     query: <T = Record<string, SqlValue>>(sql: string, params?: readonly SqlValue[]): T[] =>
-      follow(sql, () => inner.query<T>(sql, params)),
-    exec: (sql: string, params?: readonly SqlValue[]) => follow(sql, () => inner.exec(sql, params)),
+      follow(sql, params, (statement) => inner.query<T>(statement, params)),
+    exec: (sql: string, params?: readonly SqlValue[]) => follow(sql, params, (statement) => inner.exec(statement, params)),
   };
 }

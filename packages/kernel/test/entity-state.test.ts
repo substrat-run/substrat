@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { piecesReproduce } from '../src/spine-guard.js';
 import { describe, expect, it } from 'vitest';
 import { errorCodeOf, permissionKey } from '@substrat-run/contracts';
 import {
@@ -11,10 +12,14 @@ import {
   moduleMigrations,
   addStatePlans,
   createTrashedReads,
-  assertEntityStateIntact,
+  assertEntityStateColumns,
+  afterRuntimeDdl,
+  derivesAnything,
+  repairDerivedObjects,
+  StateColumnLost,
   assertNoStatefulDdl,
   changesSchema,
-  stateListIndexNames,
+  guardSpine,
   cursorOf,
   listQuery,
 } from '../src/index.js';
@@ -349,40 +354,244 @@ describe('runtime DDL on a stateful table (#119, Codex r3)', () => {
   });
 });
 
-describe('assertEntityStateIntact', () => {
-  // With a purge horizon, so the purge sweep's index (#119 PR 2) is one of the things checked.
+/**
+ * A `docs` table carrying everything its declaration derives, with a journal of the migrations
+ * that derived it — the journal is what says which objects the table is owed (#2090).
+ */
+const derivedFixture = (journaled: (version: string) => boolean = () => true) => {
+  // With a purge horizon, so the purge sweep's index (#119) is one of the things owed.
   const purged = { ...both, purgeAfterDays: 3 };
-  const build = () => {
-    const db = new DatabaseSync(':memory:');
-    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
-    for (const m of moduleMigrations({
-      manifest: { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [purged] },
-    }))
-      db.exec(m.sql);
-    const sql = { query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[], exec: () => ({ changes: 0 }) };
-    const plans = new Map();
-    addStatePlans(plans, '@m', [purged], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
-    const indexes = stateListIndexNames(listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]));
-    return { db, check: () => assertEntityStateIntact(sql as never, plans, indexes) };
-  };
-  it('passes a table carrying everything the kernel derived', () => expect(() => build().check()).not.toThrow());
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
+  db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
+  const decl = { id: '@m', lists: [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], entityStates: [purged] };
+  for (const m of moduleMigrations({ manifest: decl })) {
+    db.exec(m.sql);
+    if (journaled(m.version)) db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
+  }
+  const sql = {
+    query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[],
+    exec: () => ({ changes: 0 }),
+  } as never;
+  const state = new Map();
+  addStatePlans(state, '@m', [purged], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+  const plans = { state, lists: new Map(listIndexPlans('@m', decl.lists, [both]).map((p) => [p.entityType, p])), search: new Map() };
+  /** The kernel-prefixed triggers and indexes, by name. */
+  const derived = () =>
+    (db.prepare(`SELECT name FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\' ORDER BY name`).all() as { name: string }[]).map(
+      (r) => r.name,
+    );
+  /** Every kernel-prefixed trigger and index, name → its stored CREATE statement. */
+  const definitions = () =>
+    Object.fromEntries(
+      (db.prepare(`SELECT name, sql FROM sqlite_master WHERE type <> 'table' AND name LIKE '\\_substrat\\_%' ESCAPE '\\'`).all() as {
+        name: string;
+        sql: string;
+      }[]).map((r) => [r.name, r.sql]),
+    );
+  return { db, sql, plans, derived, definitions, check: () => afterRuntimeDdl(sql, (ddl) => db.exec(ddl), plans) };
+};
+
+describe('afterRuntimeDdl', () => {
+  it('is wanted on any scope that derives anything — a search index alone included', () => {
+    const none = { state: new Map(), lists: new Map(), search: new Map() };
+    expect(derivesAnything(none)).toBe(false);
+    expect(derivesAnything({ ...none, search: new Map([['doc', {} as never]]) })).toBe(true);
+    expect(derivesAnything({ ...none, lists: new Map([['doc', {} as never]]) })).toBe(true);
+    expect(derivesAnything({ ...none, state: new Map([['doc', {} as never]]) })).toBe(true);
+  });
+  const build = () => derivedFixture();
+  it('changes nothing on a table carrying everything the kernel derived', () => {
+    const { definitions, check } = build();
+    const before = definitions();
+    check();
+    expect(definitions()).toEqual(before);
+  });
   for (const [what, ddl] of [
     ['born trigger', 'DROP TRIGGER _substrat_state_docs_born'],
     ['moved trigger', 'DROP TRIGGER _substrat_state_docs_moved'],
     ['list index', 'DROP INDEX _substrat_list_m_doc_title_archived'],
     ['purge index', 'DROP INDEX _substrat_purge_docs'],
-    ['column', 'ALTER TABLE docs DROP COLUMN _substrat_trashed_at'],
   ] as const) {
-    it(`fails closed without its ${what}`, () => {
-      const { db, check } = build();
-      if (what === 'column') {
-        // SQLite will not drop a column a trigger or partial index names, so those go first.
-        for (const { name, type } of db.prepare(`SELECT name, type FROM sqlite_master WHERE name LIKE '\\_substrat\\_%' ESCAPE '\\'`).all() as { name: string; type: string }[]) {
-          db.exec(`DROP ${type.toUpperCase()} ${name}`);
-        }
-      }
+    it(`puts back its ${what}`, () => {
+      const { db, definitions, check } = build();
+      const before = definitions();
       db.exec(ddl);
-      expect(check).toThrow(/without/);
+      check();
+      expect(definitions()).toEqual(before);
     });
   }
+  it('fails closed without a state column — it cannot be derived again', () => {
+    const { db, check, derived } = build();
+    // SQLite will not drop a column a trigger or partial index names, so those go first.
+    for (const name of derived()) db.exec(`DROP ${name.startsWith('_substrat_state_') ? 'TRIGGER' : 'INDEX'} ${name}`);
+    db.exec('ALTER TABLE docs DROP COLUMN _substrat_trashed_at');
+    expect(check).toThrow(/runtime DDL left 'docs' without _substrat_trashed_at/);
+  });
 });
+
+describe('repairDerivedObjects / assertEntityStateColumns (#2090)', () => {
+  const build = derivedFixture;
+  const rebuild = 'CREATE TABLE d2 AS SELECT * FROM docs; DROP TABLE docs; ALTER TABLE d2 RENAME TO docs;';
+
+  it('puts back what a create-copy-rename rebuild dropped', () => {
+    const { db, sql, plans, derived } = build();
+    const before = derived();
+    expect(before).toHaveLength(6);
+    db.exec(rebuild);
+    expect(derived()).toEqual([]);
+    repairDerivedObjects(sql, (ddl) => db.exec(ddl), plans, { after: 'migration x' });
+    expect(derived()).toEqual(before);
+  });
+
+  it('owes a table only what its journal says was derived', () => {
+    // The trash column and everything after it have not run yet: mid-upgrade, not broken.
+    const { db, sql, plans, derived } = build((v) => v === 'state/doc:archive');
+    for (const name of derived()) db.exec(`DROP ${name.startsWith('_substrat_state_') ? 'TRIGGER' : 'INDEX'} ${name}`);
+    db.exec('ALTER TABLE docs DROP COLUMN _substrat_trashed_at');
+    expect(() => assertEntityStateColumns(sql, plans, 'migration x')).not.toThrow();
+    repairDerivedObjects(
+      sql,
+      () => {
+        throw new Error('nothing is owed');
+      },
+      plans,
+      { after: 'migration x' },
+    );
+    // The journaled column is owed, and its loss fails closed.
+    db.exec('ALTER TABLE docs DROP COLUMN _substrat_archived_at');
+    expect(() => assertEntityStateColumns(sql, plans, 'migration x')).toThrow(/migration x left 'docs' without _substrat_archived_at/);
+  });
+
+  it('derives nothing onto a table missing a state column it is owed, and names the migration that added it', () => {
+    const { db, sql, plans } = build();
+    db.exec('CREATE TABLE d2 AS SELECT id, title, _substrat_archived_at FROM docs; DROP TABLE docs; ALTER TABLE d2 RENAME TO docs;');
+    const ran: string[] = [];
+    const err = (() => {
+      try {
+        repairDerivedObjects(sql, (ddl) => ran.push(ddl), plans, { after: 'migration x' });
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(StateColumnLost);
+    expect((err as StateColumnLost).migration).toBe('@m@state/doc:trash');
+    expect(String((err as Error).message)).toMatch(/migration x left 'docs' without _substrat_trashed_at/);
+    expect(ran).toEqual([]);
+    expect(() => assertEntityStateColumns(sql, plans, 'migration x')).toThrow(/without _substrat_trashed_at/);
+  });
+
+  it('skips a table a restored dump did not carry, and still refuses one it carried without its column', () => {
+    const { db, sql, plans } = build();
+    db.exec('DROP TABLE docs');
+    expect(() => repairDerivedObjects(sql, () => undefined, plans, { after: 'the dump', absentTable: 'skip' })).not.toThrow();
+    expect(() => repairDerivedObjects(sql, () => undefined, plans, { after: 'the dump' })).toThrow(/without its table/);
+    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT, _substrat_archived_at TEXT)');
+    expect(() => repairDerivedObjects(sql, () => undefined, plans, { after: 'the dump', absentTable: 'skip' })).toThrow(
+      /the dump left 'docs' without _substrat_trashed_at/,
+    );
+  });
+
+  it('compares the text exactly: a guard keyed on another spelling of the entity type is re-created (Codex r2 on #2091)', () => {
+    // Two spaces in the entity type: a whitespace-folding comparison would take the one-space
+    // spelling for the same guard, which checks another authorization row.
+    const spaced = { ...both, entityType: 'doc  x' };
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE docs (id TEXT PRIMARY KEY, title TEXT)');
+    db.exec('CREATE TABLE _substrat_migrations (module_id TEXT, version TEXT)');
+    for (const m of moduleMigrations({ manifest: { id: '@m', entityStates: [spaced] } })) {
+      db.exec(m.sql);
+      db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?)').run('@m', m.version);
+    }
+    const sql = {
+      query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as never[],
+      exec: () => ({ changes: 0 }),
+    } as never;
+    const state = new Map();
+    addStatePlans(state, '@m', [spaced], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
+    const plans = { state, lists: new Map(), search: new Map() };
+    const stored = () =>
+      (db.prepare(`SELECT sql FROM sqlite_master WHERE name = '_substrat_state_docs_moved'`).get() as { sql: string }).sql;
+    const emitted = stored();
+    expect(emitted).toContain("entity_type = 'doc  x'");
+    db.exec(`DROP TRIGGER _substrat_state_docs_moved; ${emitted.replace("'doc  x'", "'doc x'")}`);
+    expect(stored()).toContain("entity_type = 'doc x'");
+    const ran: string[] = [];
+    repairDerivedObjects(sql, (ddl) => (ran.push(ddl), db.exec(ddl)), plans, { after: 'x' });
+    expect(ran).toHaveLength(1);
+    expect(stored()).toBe(emitted);
+  });
+
+  it('judges a derived object by its definition: a same-named index on other columns is re-created, a matching one is not', () => {
+    const { db, sql, plans } = build();
+    const ran: string[] = [];
+    repairDerivedObjects(sql, (ddl) => ran.push(ddl), plans, { after: 'x' });
+    expect(ran).toEqual([]);
+    db.exec('DROP INDEX _substrat_list_m_doc_title_archived; CREATE INDEX _substrat_list_m_doc_title_archived ON docs (id)');
+    repairDerivedObjects(sql, (ddl) => ran.push(ddl), plans, { after: 'x' });
+    expect(ran).toHaveLength(1);
+    expect(ran[0]).toMatch(/CREATE INDEX _substrat_list_m_doc_title_archived ON docs \(title, id\) WHERE/);
+  });
+});
+
+describe('guardSpine: a schema change runs one executable statement at a time (#2090, Codex r3)', () => {
+  const recording = () => {
+    const calls: string[] = [];
+    const inner = {
+      query: (q: string) => (calls.push(`query ${q}`), [{ q }]) as never[],
+      exec: (q: string) => (calls.push(`exec ${q}`), { changes: 1 }),
+    };
+    return { calls, sql: guardSpine(inner, undefined, () => calls.push('afterDdl')) };
+  };
+
+  it('runs the check right after each schema change, before the next statement', () => {
+    const { calls, sql } = recording();
+    const rows = sql.query('CREATE TABLE n AS SELECT 1 AS x; DROP TABLE o; INSERT INTO n VALUES (2); SELECT x FROM n');
+    expect(calls).toEqual([
+      'exec CREATE TABLE n AS SELECT 1 AS x',
+      'afterDdl',
+      'exec DROP TABLE o',
+      'afterDdl',
+      'exec INSERT INTO n VALUES (2)',
+      'query SELECT x FROM n',
+    ]);
+    expect(rows).toEqual([{ q: 'SELECT x FROM n' }]);
+  });
+
+  it('twin: a call that changes no schema runs whole and as written, comments included', () => {
+    const { calls, sql } = recording();
+    sql.exec('INSERT INTO n VALUES (1); -- one\nINSERT INTO n VALUES (2)');
+    expect(calls).toEqual(['exec INSERT INTO n VALUES (1); -- one\nINSERT INTO n VALUES (2)']);
+  });
+
+  it('runs a schema change with its comments blanked, so the DDL SQLite stores carries none (#2084)', () => {
+    const { calls, sql } = recording();
+    sql.exec("CREATE TABLE p (\n  x TEXT, -- the x\n  y TEXT /* last */\n);");
+    expect(calls).toEqual(['exec CREATE TABLE p (\n  x TEXT,         \n  y TEXT           \n)', 'afterDdl']);
+    // A string that merely looks like a comment is the statement's own text, and stays.
+    sql.exec("CREATE TABLE q (x TEXT DEFAULT '-- not a comment')");
+    expect(calls.at(-2)).toBe("exec CREATE TABLE q (x TEXT DEFAULT '-- not a comment')");
+  });
+
+  it('blanks comments with no after-DDL check installed too — every runtime schema change', () => {
+    const calls: string[] = [];
+    const sql = guardSpine({ query: () => [] as never[], exec: (q: string) => (calls.push(q), { changes: 0 }) });
+    sql.exec('CREATE TABLE r (x TEXT -- c\n)');
+    expect(calls).toEqual(['CREATE TABLE r (x TEXT     \n)']);
+  });
+
+  it('accepts pieces only when they are the whole input — in order, unaltered, nothing between but `;`, space and comments', () => {
+    const sql = 'CREATE TABLE a (x); /* note */ ; SELECT 1;';
+    expect(piecesReproduce(sql, ['CREATE TABLE a (x)', 'SELECT 1'])).toBe(true);
+    expect(piecesReproduce(sql, ['CREATE TABLE a (x)'])).toBe(false); // a statement left over
+    expect(piecesReproduce(sql, ['SELECT 1', 'CREATE TABLE a (x)'])).toBe(false); // out of order
+    expect(piecesReproduce(sql, ['CREATE TABLE a (y)', 'SELECT 1'])).toBe(false); // altered
+  });
+
+  it('refuses a multi-statement schema change that binds parameters', () => {
+    const { calls, sql } = recording();
+    expect(() => sql.exec('CREATE TABLE q (x); INSERT INTO q VALUES (?)', ['a'])).toThrow(/binds parameters runs one statement/);
+    expect(calls).toEqual([]);
+  });
+});
+

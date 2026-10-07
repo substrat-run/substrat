@@ -236,7 +236,6 @@ import {
   uncheckedView,
   addStatePlans,
   entityStateMigrations,
-  entityStateTriggerDdl,
   assertNoCallerPurge,
   isUnreachableParent,
   PURGE_BATCH,
@@ -245,7 +244,6 @@ import {
   lifecycleRefusal,
   type PurgeGateFacts,
   type PurgePass,
-  purgeIndexDdl,
   purgeOnlyKeysOf,
   purgeReportOf,
   purgeStillDue,
@@ -254,8 +252,12 @@ import {
   runPurgePass,
   withheldKeysFor,
   statefulTablesOf,
-  assertEntityStateIntact,
-  stateListIndexNames,
+  afterMigration,
+  afterRuntimeDdl,
+  derivesAnything,
+  repairDerivedObjects,
+  StateColumnLost,
+  type DerivedPlans,
   type EntityStatePlan,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
@@ -517,7 +519,6 @@ import {
   type RunSub,
   NotSearchable,
   NotListable,
-  listIndexDdl,
   listIndexMigrations,
   listIndexPlans,
   listQuery,
@@ -536,7 +537,6 @@ import {
   type ListIndexPlan,
   type PageParams,
   isSearchIndexTable,
-  searchIndexDdl,
   searchIndexMigrations,
   searchIndexPlans,
   searchLimit,
@@ -775,6 +775,12 @@ interface ScopeRuntime {
   actor: ScopeActor;
   /** `module@version` → the SQL digest its journal row recorded, null for a row from before #2066. */
   appliedMigrations: Map<string, string | null>;
+  /**
+   * #2090: this runtime has checked and repaired what the kernel derived onto the scope's tables
+   * — on its first migration pass, or the last migration of one. Unset again by `migrateScope`,
+   * which always repairs.
+   */
+  derivedRepaired: boolean;
   /**
    * The event-id mint for THIS scope (#1335). Per scope, not per host: `ORDER BY id`
    * is an ordering over one scope's outbox, so a busy scope's floor has no business
@@ -3740,34 +3746,15 @@ export class SqliteScopeHost implements ScopeHost {
         const stmt = db.prepare(insert);
         for (const row of t.rows) stmt.run(...(row as unknown[]));
       }
-      // Rebuild the derived search indexes over the rows just loaded (#827). The DDL
-      // drops and recreates, so this also repairs an index the dump left stale, and
-      // the triggers it recreates are what keep the restored scope in step from here.
-      // Skipped for a plan whose content table this dump did not carry — a restore
-      // must not invent a table for an index to point at.
-      const present = new Set(
-        (
-          db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as {
-            name: string;
-          }[]
-        ).map((r) => r.name),
-      );
-      for (const plan of this.searchPlans.values()) {
-        if (present.has(plan.table)) execSqlStatements(db, searchIndexDdl(plan));
-      }
-      // #119: the guard triggers went with the dropped table. Put back AFTER the rows, which
-      // may legitimately arrive archived or trashed.
-      for (const plan of this.statePlans.values()) {
-        if (!present.has(plan.table)) continue;
-        execSqlStatements(db, entityStateTriggerDdl(plan));
-        // And the purge sweep's index, which went with it (#119 PR 2).
-        if (plan.purgeAfterDays !== undefined) db.exec(purgeIndexDdl(plan));
-      }
-      // #811 / #119: the derived list indexes went with it too, and a load never put them back —
-      // an archivable entity's partial indexes are part of what the kernel checks after DDL.
-      for (const plan of this.listPlans.values()) {
-        if (present.has(plan.table)) execSqlStatements(db, listIndexDdl(plan));
-      }
+      // #827 / #119 / #811: the search triggers, the archive/trash guard triggers, the purge
+      // sweep's index and the derived list indexes went with the dropped tables, and the search index points at rows that are
+      // gone. Put back, and the search index rebuilt, AFTER the rows — which may legitimately
+      // arrive archived or trashed — as the dump's own journal says they were derived (#2090).
+      // A plan whose table this dump did not carry is skipped: a restore must not invent one.
+      repairDerivedObjects(spineSql(db), (ddl) => execSqlStatements(db, ddl), this.derivedPlans(), {
+        after: 'the restored dump',
+        absentTable: 'skip',
+      });
       // #1575: attachment text is not in a dump, so a load left it as it was. Drop the
       // text of attachments the dump did not bring back, and queue extraction for those
       // it brought back without text — the bytes decide what that run finds.
@@ -6066,9 +6053,13 @@ export class SqliteScopeHost implements ScopeHost {
     // a failure recorded by the deployment that does.
     // A scope that applied different SQL (#2066) is not a noop: the pass below fails it.
     const plan = await planMigrations(this.modules.values(), rt.appliedMigrations);
-    if (plan.pending.length === 0 && !plan.diverged) return { status: 'noop' };
+    const pending = plan.pending.length > 0 || plan.diverged !== undefined;
+    // #2090: with nothing pending, the pass still checks and repairs what the kernel derived —
+    // the one way a scope stripped before that check existed is ever put right.
+    if (!pending) rt.derivedRepaired = false;
     try {
       await this.applyPendingMigrations(rt, plan);
+      if (!pending) return { status: 'noop' };
       return { status: 'migrated', schemaVersion: String(rt.appliedMigrations.size) };
     } catch {
       // `applyPendingMigrations` already projected the failure (finally-path);
@@ -11871,9 +11862,10 @@ export class SqliteScopeHost implements ScopeHost {
             rt.db,
             true,
             statefulTablesOf(statePlans),
-            // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
-            statePlans.size
-              ? () => assertEntityStateIntact(spineSql(rt.db), statePlans, stateListIndexNames(listPlans.values()))
+            // #119 / #2090: after runtime DDL, inside this operation's transaction, what the kernel
+            // derived onto any table is repaired — and a lost state column fails the operation.
+            derivesAnything(this.derivedPlans())
+              ? () => afterRuntimeDdl(spineSql(rt.db), (ddl) => execSqlStatements(rt.db, ddl), this.derivedPlans())
               : undefined,
           ),
         ),
@@ -12177,6 +12169,39 @@ export class SqliteScopeHost implements ScopeHost {
     return ctxRef;
   }
 
+  /** Every registered module's derivation plans — what `repairDerivedObjects` and its checks read. */
+  private derivedPlans(): DerivedPlans {
+    return { state: this.statePlans, lists: this.listPlans, search: this.searchPlans };
+  }
+
+  /**
+   * #2090: a pass with nothing pending, once per runtime — check and repair what the kernel
+   * derived onto the scope's tables, in a transaction of its own. Its migrations are journaled
+   * and will never run again, so this is what reaches a scope stripped before the migration
+   * pass checked. A lost state column fails the scope closed like a failed migration, named by
+   * the journaled migration that added the column; every later call tries again and fails again.
+   */
+  private async repairDerived(rt: ScopeRuntime): Promise<void> {
+    let failure: { version: string; error: string } | undefined;
+    await rt.actor.enqueue(() => {
+      rt.db.exec('BEGIN IMMEDIATE');
+      try {
+        repairDerivedObjects(spineSql(rt.db), (ddl) => execSqlStatements(rt.db, ddl), this.derivedPlans(), {
+          after: 'an applied migration',
+        });
+        rt.db.exec('COMMIT');
+      } catch (err) {
+        rt.db.exec('ROLLBACK');
+        failure = { version: err instanceof StateColumnLost ? err.migration : 'kernel@derived-objects', error: (err as Error).message };
+      }
+    });
+    if (failure) {
+      this.recordMigrationState(rt, failure);
+      throw migrationFailedError(failure.version, failure.error);
+    }
+    rt.derivedRepaired = true;
+  }
+
   private async applyPendingMigrations(rt: ScopeRuntime, plan?: MigrationPlan): Promise<void> {
     const { pending, diverged } = plan ?? (await planMigrations(this.modules.values(), rt.appliedMigrations));
     if (diverged) {
@@ -12184,14 +12209,18 @@ export class SqliteScopeHost implements ScopeHost {
       throw migrationFailedError(diverged.version, diverged.error);
     }
     // Nothing pending → nothing to record. A scope provisioned before any module
-    // registers legitimately sits at schema_version '0'.
-    if (pending.length === 0) return;
+    // registers legitimately sits at schema_version '0'. Still, once per runtime, what the
+    // kernel derived onto the tables is checked and repaired (#2090).
+    if (pending.length === 0) {
+      if (!rt.derivedRepaired) await this.repairDerived(rt);
+      return;
+    }
     // The failing `module@version` and its cause, captured structurally rather than
     // re-parsed out of the thrown message — the directory record has to name both.
     let failure: { version: string; error: string } | undefined;
     try {
       await rt.actor.enqueue(() => {
-        for (const { moduleId, migration, digest, authored } of pending) {
+        for (const [i, { moduleId, migration, digest, authored }] of pending.entries()) {
           const key = `${moduleId}@${migration.version}`;
           if (rt.appliedMigrations.has(key)) continue;
           rt.db.exec('BEGIN IMMEDIATE');
@@ -12218,6 +12247,10 @@ export class SqliteScopeHost implements ScopeHost {
               // same splitter the Durable Object runs, so both hosts execute identical statements.
               const steps = runMigrationStatements(spineSql(rt.db), migration.sql, (stmt) => rt.db.exec(stmt));
               assertTablesWithinColumnLimit(rt.db);
+              // #2090: the state columns this migration must have left, and after the last of the
+              // pass, the triggers and indexes a create-copy-rename rebuild dropped.
+              const last = i === pending.length - 1;
+              afterMigration(spineSql(rt.db), (ddl) => execSqlStatements(rt.db, ddl), this.derivedPlans(), key, last);
               const after = (rt.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
               // After the count: `rows_changed` is the migration's own, never the kernel's bookkeeping.
               recordOwnershipSteps(spineSql(rt.db), moduleId, steps, this.clock());
@@ -12243,6 +12276,7 @@ export class SqliteScopeHost implements ScopeHost {
           rt.appliedMigrations.set(key, recorded);
         }
       });
+      rt.derivedRepaired = true;
     } finally {
       // `finally`, not the success path: a scope that failed closed is exactly the
       // one the fleet needs to see, and projecting only on success is what let a
@@ -12546,6 +12580,7 @@ export class SqliteScopeHost implements ScopeHost {
       reader: null,
       actor: new ScopeActor(),
       appliedMigrations,
+      derivedRepaired: false,
       mintEventId,
       invocationId: null,
     };

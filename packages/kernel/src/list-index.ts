@@ -45,6 +45,7 @@ import { PAGE_CURSOR_RESTART, SubstratError, ULID_PATTERN, z } from '@substrat-r
 import { fromBase64url, toBase64url } from './base64url.js';
 import type { EntityStateDeclaration, EntityStateName } from '@substrat-run/contracts';
 import { entityStatePlans, entityStateWhere, stateColumnsOf, viewsOf, type StateColumns } from './entity-state.js';
+import type { DerivedObject } from './derived-object.js';
 import type { SqlMigration } from './scope-host.js';
 import { SQL_IDENTIFIER, assertSqlIdentifier } from './sql-identifier.js';
 
@@ -269,15 +270,19 @@ export function listIndexColumns(
  * old ones. An index is derived data; nothing is lost by dropping it.
  */
 export function listIndexDdl(plan: ListIndexPlan): string {
-  const lines: string[] = [];
-  for (const idx of listIndexColumns(plan)) {
-    lines.push(`DROP INDEX IF EXISTS ${idx.name};`);
-    lines.push(
-      `CREATE INDEX ${idx.name} ON ${plan.table} (${idx.columns.join(', ')})` +
-        `${idx.where ? ` WHERE ${idx.where}` : ''};`,
-    );
-  }
-  return lines.join('\n');
+  return listIndexObjects(plan)
+    .flatMap((idx) => [`DROP INDEX IF EXISTS ${idx.name};`, `${idx.sql};`])
+    .join('\n');
+}
+
+/** The plan's indexes, each with its CREATE statement — what `listIndexDdl` runs. */
+export function listIndexObjects(plan: ListIndexPlan): DerivedObject[] {
+  return listIndexColumns(plan).map((idx) => ({
+    name: idx.name,
+    type: 'index',
+    table: plan.table,
+    sql: `CREATE INDEX ${idx.name} ON ${plan.table} (${idx.columns.join(', ')})${idx.where ? ` WHERE ${idx.where}` : ''}`,
+  }));
 }
 
 /**
@@ -299,14 +304,19 @@ export function listIndexMigrations(
   entityStates?: readonly EntityStateDeclaration[],
 ): SqlMigration[] {
   return listIndexPlans(moduleId, lists, entityStates).map((plan) => ({
-    // The views are part of the declaration the DDL depends on (#119): declaring a trash
-    // makes every index partial, so the version moves and the indexes are rebuilt.
-    version:
-      `list/${plan.entityType}:${plan.sortable.join('+')}:${plan.filterable.join('+')}` +
-      (plan.states ? `:${viewsOf(plan.states).join('+')}` : ''),
+    version: listIndexVersion(plan),
     sql: listIndexDdl(plan),
   }));
 }
+
+/**
+ * One plan's migration version. The views are part of the declaration the DDL depends on
+ * (#119): declaring a trash makes every index partial, so the version moves and the indexes
+ * are rebuilt.
+ */
+export const listIndexVersion = (plan: ListIndexPlan): string =>
+  `list/${plan.entityType}:${plan.sortable.join('+')}:${plan.filterable.join('+')}` +
+  (plan.states ? `:${viewsOf(plan.states).join('+')}` : '');
 
 /**
  * Index the plans by entity type for a whole scope, refusing an ambiguity — the
@@ -620,14 +630,4 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
     order,
     view: params.view ?? 'active',
   };
-}
-
-/** The derived list indexes on each stateful table (#119), by table — what `assertEntityStateIntact` checks. */
-export function stateListIndexNames(plans: Iterable<ListIndexPlan>): Map<string, string[]> {
-  const out = new Map<string, string[]>();
-  for (const plan of plans) {
-    if (!plan.states) continue;
-    out.set(plan.table, [...(out.get(plan.table) ?? []), ...listIndexColumns(plan).map((i) => i.name)]);
-  }
-  return out;
 }

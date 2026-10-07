@@ -22,6 +22,7 @@ export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';
 export { migrationDigestContractSuite } from './migration-digest-suite.js';
 export { entityStateContractSuite } from './entity-state-suite.js';
+export { entityStateMigrationContractSuite, type RawScopeAccess } from './entity-state-migration-suite.js';
 export { stateMod } from './entity-state-module.js';
 export { trashMod, TRASH_MODULE_ID, TBOX_PURGE_DAYS } from './entity-trash-module.js';
 export { entityTrashContractSuite } from './entity-trash-suite.js';

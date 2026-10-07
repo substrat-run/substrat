@@ -40,6 +40,7 @@ import {
   migrationDigestContractSuite,
   inputParseContractSuite,
   entityStateContractSuite,
+  entityStateMigrationContractSuite,
   entityTrashContractSuite,
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
@@ -482,6 +483,17 @@ migrationDigestContractSuite('adapter-sqlite', async () => {
   };
 });
 
+/** A scope's own connection and migration memory, past `ctx.sql` — the harness's way in. */
+const scopeRuntimeOf = (host: SqliteScopeHost | undefined, tenant: unknown, scope: unknown) =>
+  (
+    host as unknown as {
+      runtime(t: unknown, s: unknown): {
+        db: { prepare(q: string): { reader: boolean; all(...a: unknown[]): unknown[]; run(...a: unknown[]): unknown } };
+        appliedMigrations: Set<string>;
+      };
+    }
+  ).runtime(tenant, scope);
+
 // #119: archive and trash. The DEFAULT checker: what is pinned is that the kernel checks the
 // DECLARED key, which an allow-all checker would pass whether it was checked or not.
 let stateHost: SqliteScopeHost | undefined;
@@ -501,10 +513,39 @@ entityStateContractSuite(
   },
   // The scope's own connection, past `ctx.sql`.
   async (tenant, scope, sql, params = []) => {
-    const internals = stateHost as unknown as {
-      runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
+    scopeRuntimeOf(stateHost, tenant, scope).db.prepare(sql).run(...params);
+  },
+);
+
+// #2090: an authored rebuild of a table the kernel derived onto, on the pure host's migration pass.
+let rebuildHost: SqliteScopeHost | undefined;
+const rebuildRuntime = (tenant: unknown, scope: unknown) => scopeRuntimeOf(rebuildHost, tenant, scope);
+entityStateMigrationContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-rebuild-'));
+    const host = new SqliteScopeHost({ dir });
+    rebuildHost = host;
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
     };
-    internals.runtime(tenant, scope).db.prepare(sql).run(...params);
+  },
+  {
+    sql: async (tenant, scope, sql) => {
+      const stmt = rebuildRuntime(tenant, scope).db.prepare(sql);
+      if (stmt.reader) return stmt.all() as Record<string, unknown>[];
+      stmt.run();
+      return [];
+    },
+    forget: async (tenant, scope, moduleId, version) => {
+      const rt = rebuildRuntime(tenant, scope);
+      rt.db.prepare('DELETE FROM _substrat_migrations WHERE module_id = ? AND version = ?').run(moduleId, version);
+      rt.appliedMigrations.delete(`${moduleId}@${version}`);
+    },
   },
 );
 

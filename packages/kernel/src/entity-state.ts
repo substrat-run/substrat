@@ -55,6 +55,7 @@ import {
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
 import type { OperationContext, ScopedSql, SqlMigration } from './scope-host.js';
+import type { DerivedObject } from './derived-object.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
 
 /** A resolved declaration: everything the DDL, the reads and the verbs need. */
@@ -133,47 +134,70 @@ export function entityStateMigrations(
 ): SqlMigration[] {
   const out: SqlMigration[] = [];
   for (const plan of entityStatePlans(moduleId, declarations)) {
-    if (plan.archivePermission) {
-      out.push({
-        version: `state/${plan.entityType}:archive`,
-        sql: `ALTER TABLE ${plan.table} ADD COLUMN ${ARCHIVED_AT_COLUMN} TEXT;`,
-      });
+    for (const { version, column } of stateColumnVersionsOf(plan)) {
+      out.push({ version, sql: `ALTER TABLE ${plan.table} ADD COLUMN ${column} TEXT;` });
     }
-    if (plan.trashPermission) {
-      out.push({
-        version: `state/${plan.entityType}:trash`,
-        sql: `ALTER TABLE ${plan.table} ADD COLUMN ${TRASHED_AT_COLUMN} TEXT;`,
-      });
-    }
-    // After the columns they name. Versioned by which columns they guard, so declaring a trash
-    // on an archivable entity rebuilds them to guard both.
-    out.push({ version: `state/${plan.entityType}:guard:${columnNamesOf(plan).join('+')}`, sql: entityStateTriggerDdl(plan) });
+    // After the columns they name.
+    out.push({ version: entityStateGuardVersion(plan), sql: entityStateTriggerDdl(plan) });
     // The purge sweep's walk (#119): the oldest trashed rows first, without reading the rest of
     // the bin. Its own version, so declaring a horizon later adds it and re-runs nothing.
-    if (plan.purgeAfterDays !== undefined) out.push({ version: `state/${plan.entityType}:purge`, sql: purgeIndexDdl(plan) });
+    if (plan.purgeAfterDays !== undefined) out.push({ version: purgeIndexVersion(plan), sql: purgeIndexDdl(plan) });
   }
   return out;
 }
 
-/** The purge index's name on a plan's table (#119) — kernel-prefixed, so the reserved namespace. */
-const purgeIndexName = (plan: EntityStatePlan): string => `_substrat_purge_${plan.table}`;
+/** The column migrations' versions, and the column each adds — what the journal says a table holds. */
+export const stateColumnVersionsOf = (plan: EntityStatePlan): { version: string; column: string }[] => [
+  ...(plan.archivePermission ? [{ version: `state/${plan.entityType}:archive`, column: ARCHIVED_AT_COLUMN }] : []),
+  ...(plan.trashPermission ? [{ version: `state/${plan.entityType}:trash`, column: TRASHED_AT_COLUMN }] : []),
+];
+
+/** The purge index's migration version (#119) — present only on a plan with a purge horizon. */
+export const purgeIndexVersion = (plan: EntityStatePlan): string => `state/${plan.entityType}:purge`;
 
 /**
- * The partial index the purge sweep walks: trashed rows only, oldest trash first, so a sweep
- * reads the due rows and nothing else. `IF NOT EXISTS` because a dump load runs it again after
- * the rows are in.
+ * The partial index the purge sweep walks (#119): trashed rows only, oldest trash first, so a
+ * sweep reads the due rows and nothing else. Its name is kernel-prefixed, so the reserved
+ * namespace. Empty for a plan without a purge horizon.
  */
-export function purgeIndexDdl(plan: EntityStatePlan): string {
-  return (
-    `CREATE INDEX IF NOT EXISTS ${purgeIndexName(plan)} ON ${plan.table} (${TRASHED_AT_COLUMN}, ${plan.idColumn}) ` +
-    `WHERE ${TRASHED_AT_COLUMN} IS NOT NULL;`
-  );
+export function purgeIndexObjects(plan: EntityStatePlan): DerivedObject[] {
+  if (plan.purgeAfterDays === undefined) return [];
+  const name = `_substrat_purge_${plan.table}`;
+  return [
+    {
+      name,
+      type: 'index',
+      table: plan.table,
+      sql: `CREATE INDEX ${name} ON ${plan.table} (${TRASHED_AT_COLUMN}, ${plan.idColumn}) WHERE ${TRASHED_AT_COLUMN} IS NOT NULL`,
+    },
+  ];
 }
 
-const columnNamesOf = (plan: EntityStatePlan): string[] => [
-  ...(plan.archivePermission ? ['archive'] : []),
-  ...(plan.trashPermission ? ['trash'] : []),
-];
+/**
+ * The purge index's DDL. `IF NOT EXISTS` because a dump load runs it again after the rows are
+ * in; a repair that finds it wrong drops it first (`purgeIndexRepairDdl`).
+ */
+export function purgeIndexDdl(plan: EntityStatePlan): string {
+  return purgeIndexObjects(plan)
+    .map((idx) => `${idx.sql.replace(/^CREATE INDEX /, 'CREATE INDEX IF NOT EXISTS ')};`)
+    .join('\n');
+}
+
+/** Drop-then-create, for a purge index the catalogue holds under its name but not as emitted. */
+export function purgeIndexRepairDdl(plan: EntityStatePlan): string {
+  return purgeIndexObjects(plan)
+    .flatMap((idx) => [`DROP INDEX IF EXISTS ${idx.name};`, `${idx.sql};`])
+    .join('\n');
+}
+
+/**
+ * The guard triggers' version. By which columns they guard, so declaring a trash on an
+ * archivable entity rebuilds them to guard both.
+ */
+export const entityStateGuardVersion = (plan: EntityStatePlan): string => {
+  const { archive, trash } = stateColumnsOf(plan);
+  return `state/${plan.entityType}:guard:${[...(archive ? ['archive'] : []), ...(trash ? ['trash'] : [])].join('+')}`;
+};
 
 /** The prefix of every trigger this module derives — kernel-owned, so the reserved one. */
 export const ENTITY_STATE_TRIGGER_PREFIX = '_substrat_state_';
@@ -219,23 +243,30 @@ const literal = (value: string): string => `'${value.replace(/'/g, "''")}'`;
  * legitimately born trashed, so the triggers are put back only after them.
  */
 export function entityStateTriggerDdl(plan: EntityStatePlan): string {
+  return entityStateTriggerObjects(plan)
+    .flatMap((t) => [`DROP TRIGGER IF EXISTS ${t.name};`, `${t.sql};`])
+    .join('\n');
+}
+
+/** The two guard triggers `entityStateTriggerDdl` creates, each with its CREATE statement. */
+export function entityStateTriggerObjects(plan: EntityStatePlan): DerivedObject[] {
   const born = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_born`;
   const moved = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_moved`;
-  const columns = [
-    ...(plan.archivePermission ? [ARCHIVED_AT_COLUMN] : []),
-    ...(plan.trashPermission ? [TRASHED_AT_COLUMN] : []),
-  ];
+  const columns = stateColumnVersionsOf(plan).map((c) => c.column);
+  const trigger = (name: string, lines: string[]): DerivedObject => ({ name, type: 'trigger', table: plan.table, sql: lines.join('\n') });
   return [
-    `DROP TRIGGER IF EXISTS ${born};`,
-    `CREATE TRIGGER ${born} BEFORE INSERT ON ${plan.table} WHEN ${columns.map((c) => `NEW.${c} IS NOT NULL`).join(' OR ')} BEGIN`,
-    `  SELECT RAISE(ABORT, 'a row is never inserted archived or trashed - ctx.archive and ctx.trash move it (#119)');`,
-    `END;`,
-    `DROP TRIGGER IF EXISTS ${moved};`,
-    `CREATE TRIGGER ${moved} BEFORE UPDATE OF ${columns.join(', ')} ON ${plan.table}`,
-    `WHEN NOT EXISTS (SELECT 1 FROM ${ENTITY_STATE_MOVES_TABLE} WHERE entity_type = ${literal(plan.entityType)} AND entity_id = OLD.${plan.idColumn}) BEGIN`,
-    `  SELECT RAISE(ABORT, 'archive and trash state moves only through ctx.archive, ctx.trash and ctx.restore (#119)');`,
-    `END;`,
-  ].join('\n');
+    trigger(born, [
+      `CREATE TRIGGER ${born} BEFORE INSERT ON ${plan.table} WHEN ${columns.map((c) => `NEW.${c} IS NOT NULL`).join(' OR ')} BEGIN`,
+      `  SELECT RAISE(ABORT, 'a row is never inserted archived or trashed - ctx.archive and ctx.trash move it (#119)');`,
+      `END`,
+    ]),
+    trigger(moved, [
+      `CREATE TRIGGER ${moved} BEFORE UPDATE OF ${columns.join(', ')} ON ${plan.table}`,
+      `WHEN NOT EXISTS (SELECT 1 FROM ${ENTITY_STATE_MOVES_TABLE} WHERE entity_type = ${literal(plan.entityType)} AND entity_id = OLD.${plan.idColumn}) BEGIN`,
+      `  SELECT RAISE(ABORT, 'archive and trash state moves only through ctx.archive, ctx.trash and ctx.restore (#119)');`,
+      `END`,
+    ]),
+  ];
 }
 
 /**
@@ -480,54 +511,4 @@ export function createEntityStateVerbs(deps: EntityStateDeps): EntityStateVerbs 
       return row ? stateOf(row) : null;
     },
   };
-}
-
-/**
- * After runtime DDL (#119, Codex r3): does every stateful table still carry what the kernel
- * derived for it? The guard refuses the DDL known to take it away; this is the check that does not
- * depend on having known. Read from `main`'s own catalogue, so a same-named temp object cannot
- * stand in for the real table. Throws — the operation and its DDL roll back — rather than
- * re-deriving: a schema the kernel did not expect is not one to repair silently.
- *
- * `indexes` names the derived list indexes each stateful table must keep, by table.
- */
-export function assertEntityStateIntact(
-  sql: ScopedSql,
-  plans: ReadonlyMap<string, EntityStatePlan>,
-  indexes: ReadonlyMap<string, readonly string[]> = new Map(),
-): void {
-  for (const plan of plans.values()) {
-    const fail = (what: string): never => {
-      throw substratError(
-        'internal',
-        `runtime DDL left '${plan.table}' without ${what} — its archive/trash guarantees depend on it; nothing was changed`,
-      );
-    };
-    const objects = new Map(
-      sql
-        .query<{ type: string; name: string }>(
-          `SELECT type, name FROM main.sqlite_master WHERE tbl_name = ? COLLATE NOCASE`,
-          [plan.table],
-        )
-        .map((r) => [r.name.toLowerCase(), r.type]),
-    );
-    if (objects.get(plan.table.toLowerCase()) !== 'table') fail('its table');
-    const columns = new Set(
-      sql
-        .query<{ name: string }>(`SELECT name FROM pragma_table_info(?, 'main')`, [plan.table])
-        .map((r) => r.name.toLowerCase()),
-    );
-    if (plan.archivePermission && !columns.has(ARCHIVED_AT_COLUMN)) fail(ARCHIVED_AT_COLUMN);
-    if (plan.trashPermission && !columns.has(TRASHED_AT_COLUMN)) fail(TRASHED_AT_COLUMN);
-    for (const suffix of ['born', 'moved']) {
-      const trigger = `${ENTITY_STATE_TRIGGER_PREFIX}${plan.table}_${suffix}`.toLowerCase();
-      if (objects.get(trigger) !== 'trigger') fail(`its ${suffix} trigger`);
-    }
-    for (const index of indexes.get(plan.table) ?? []) {
-      if (objects.get(index.toLowerCase()) !== 'index') fail(`its list index ${index}`);
-    }
-    if (plan.purgeAfterDays !== undefined && objects.get(purgeIndexName(plan).toLowerCase()) !== 'index') {
-      fail(`its purge index ${purgeIndexName(plan)}`);
-    }
-  }
 }

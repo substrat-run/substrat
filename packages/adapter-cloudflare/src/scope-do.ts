@@ -152,10 +152,8 @@ import {
   type RunSub,
   NotSearchable,
   isSearchIndexTable,
-  searchIndexDdl,
   searchIndexPlans,
   NotListable,
-  listIndexDdl,
   listIndexPlans,
   moduleMigrations,
   MIGRATION_DIGEST_FENCE_DDL,
@@ -327,7 +325,6 @@ import {
   searchStateWhere,
   uncheckedView,
   addStatePlans,
-  entityStateTriggerDdl,
   assertNoCallerPurge,
   isUnreachableParent,
   PURGE_BATCH,
@@ -335,7 +332,6 @@ import {
   purgeHeldBy,
   type PurgeGateFacts,
   purgeDueOf,
-  purgeIndexDdl,
   purgeOnlyKeysOf,
   runPurgePass,
   type PurgePass,
@@ -343,8 +339,12 @@ import {
   registerTrashTargets,
   withheldKeysFor,
   statefulTablesOf,
-  assertEntityStateIntact,
-  stateListIndexNames,
+  afterMigration,
+  afterRuntimeDdl,
+  derivesAnything,
+  repairDerivedObjects,
+  StateColumnLost,
+  type DerivedPlans,
   type EntityStatePlan,
   exchangeCapability,
   guardSecrets,
@@ -5340,6 +5340,40 @@ export function defineScopeDO(
       return this.migrationPromise;
     }
 
+    /** Every registered module's derivation plans — what `repairDerivedObjects` and its checks read. */
+    private derivedPlans(): DerivedPlans {
+      return { state: this.statePlans, lists: this.listPlans, search: this.searchPlans };
+    }
+
+    /** A multi-statement script on this DO's own handle, one statement per exec. */
+    private runScript(ddl: string): void {
+      for (const stmt of executableSqlStatements(ddl)) this.sql.exec(stmt);
+    }
+
+    /**
+     * #2090: the repair a pass with nothing pending runs, in a transaction of its own. A lost
+     * state column fails the scope closed like a failed migration, named by the journaled
+     * migration that added the column — the pure host's `repairDerived`.
+     */
+    private async repairDerived(): Promise<void> {
+      try {
+        await this.revision.transaction(async () => {
+          this.revisionSuspended = true;
+          try {
+            repairDerivedObjects(doSpineSql(this.sql), (ddl) => this.runScript(ddl), this.derivedPlans(), {
+              after: 'an applied migration',
+            });
+          } finally {
+            this.revisionSuspended = false;
+          }
+        });
+      } catch (err) {
+        const version = err instanceof StateColumnLost ? err.migration : 'kernel@derived-objects';
+        this.lastFailure = { version, error: (err as Error).message };
+        throw migrationFailedError(version, (err as Error).message);
+      }
+    }
+
     /** Resolves true if this call applied at least one migration. */
     private async applyPendingMigrations(): Promise<boolean> {
       const { pending, diverged } = await planMigrations(this.modules.values(), this.applied);
@@ -5348,7 +5382,13 @@ export function defineScopeDO(
         this.lastFailure = diverged;
         throw migrationFailedError(diverged.version, diverged.error);
       }
-      if (pending.length === 0) return false;
+      if (pending.length === 0) {
+        // #2090: once per pass — so once per wake, and on every `retryMigrations` — check and
+        // repair what the kernel derived onto the tables. Their migrations are journaled and will
+        // never run again, so this is what reaches a scope stripped before the pass checked.
+        await this.queue.enqueue(async () => this.repairDerived());
+        return false;
+      }
       this.migrationRuns += 1;
       await this.queue.enqueue(async () => {
         // #286: bookmark the instant before an UPGRADE migrates live data — the
@@ -5377,7 +5417,7 @@ export function defineScopeDO(
             // (#278) remains the fallback rewind point.
           }
         }
-        for (const { moduleId, migration, digest, authored } of pending) {
+        for (const [i, { moduleId, migration, digest, authored }] of pending.entries()) {
           const key = `${moduleId}@${migration.version}`;
           if (this.applied.has(key)) continue;
           let recorded: string | null = digest;
@@ -5413,6 +5453,10 @@ export function defineScopeDO(
                   steps = runMigrationStatements(doSpineSql(this.sql), migration.sql, (stmt) => {
                     this.sql.exec(stmt);
                   });
+                  // #2090: the state columns this migration must have left, and after the last of
+                  // the pass, the triggers and indexes a create-copy-rename rebuild dropped.
+                  const last = i === pending.length - 1;
+                  afterMigration(doSpineSql(this.sql), (ddl) => this.runScript(ddl), this.derivedPlans(), key, last);
                 } finally {
                   this.revisionSuspended = false;
                 }
@@ -6455,6 +6499,17 @@ export function defineScopeDO(
           if (destScopeId) {
             this.rewriteScopeTuples(destScopeId, sourceScopeId && { scopeId: sourceScopeId, exact }, new Date().toISOString());
           }
+          // #827 / #119 / #811: the search triggers, the archive/trash guard triggers, the purge
+          // sweep's index and the derived list indexes went with the dropped tables, and the search index points at rows
+          // that are gone. Repaired, and the search index rebuilt, AFTER the rows — which may
+          // legitimately arrive archived or trashed — as the dump's own journal says they were
+          // derived (#2090). Inside the replay's transaction: a dump whose journal owes a table a
+          // state column it does not carry rolls the whole load back. A plan whose table this dump
+          // did not carry is skipped: a restore must not invent one.
+          repairDerivedObjects(doSpineSql(this.sql), (ddl) => this.runScript(ddl), this.derivedPlans(), {
+            after: 'the restored dump',
+            absentTable: 'skip',
+          });
           // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
           // the spine and the re-point. A switch that throws rolls the whole restore back, so
           // the dump's grants never commit live without the switch that should cover them.
@@ -6466,37 +6521,6 @@ export function defineScopeDO(
         }
       });
       this.carriedAwayCopy = this.metaValue(CARRIED_AWAY_KEY) !== null;
-      // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
-      // create, so it also repairs an index a dump left stale, and the triggers it
-      // recreates are what keep the restored scope in step from here. Skipped for a plan
-      // whose content table this dump did not carry — a restore must not invent a table
-      // for an index to point at.
-      const present = new Set(
-        (
-          this.sql
-            .exec(`SELECT name FROM sqlite_master WHERE type = 'table'`)
-            .toArray() as unknown as { name: string }[]
-        ).map((r) => r.name),
-      );
-      for (const plan of this.searchPlans.values()) {
-        if (!present.has(plan.table)) continue;
-        for (const stmt of executableSqlStatements(searchIndexDdl(plan))) this.sql.exec(stmt);
-      }
-      // #119: the never-born-archived trigger went with the dropped table. Put back AFTER the
-      // rows, which may legitimately arrive archived or trashed.
-      for (const plan of this.statePlans.values()) {
-        if (!present.has(plan.table)) continue;
-        for (const stmt of executableSqlStatements(entityStateTriggerDdl(plan))) this.sql.exec(stmt);
-        // And the purge sweep's index, which went with it (#119 PR 2).
-        if (plan.purgeAfterDays !== undefined) this.sql.exec(purgeIndexDdl(plan));
-      }
-      // #811 / #119: the derived list indexes went with the dropped table too, and a load never
-      // put them back — an archivable entity's partial indexes are part of what the kernel
-      // checks after DDL.
-      for (const plan of this.listPlans.values()) {
-        if (!present.has(plan.table)) continue;
-        for (const stmt of executableSqlStatements(listIndexDdl(plan))) this.sql.exec(stmt);
-      }
       // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
       // as on a wake. A copy's own events then sort above every copied one, which is what
       // `emittedHere()` relies on. A dump whose top id is no ULID leaves the floor where it was.
@@ -7342,9 +7366,10 @@ export function defineScopeDO(
           doScopedSql(
             sql,
             statefulTablesOf(statePlans),
-            // #119: after runtime DDL, the stateful tables must still carry what the kernel derived.
-            statePlans.size
-              ? () => assertEntityStateIntact(doSpineSql(sql), statePlans, stateListIndexNames(listPlans.values()))
+            // #119 / #2090: after runtime DDL, inside this operation's transaction, what the kernel
+            // derived onto any table is repaired — and a lost state column fails the operation.
+            derivesAnything(this.derivedPlans())
+              ? () => afterRuntimeDdl(doSpineSql(sql), (ddl) => this.runScript(ddl), this.derivedPlans())
               : undefined,
           ),
           minted,

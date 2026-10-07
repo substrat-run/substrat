@@ -237,7 +237,6 @@ export {
   entityStateMigrations,
   entityStatePlans,
   entityStateTriggerDdl,
-  assertEntityStateIntact,
   ENTITY_STATE_MOVES_DDL,
   ENTITY_STATE_MOVES_TABLE,
   statefulTablesOf,
@@ -263,6 +262,15 @@ export {
 } from './entity-trash.js';
 export type { PurgeGateFacts, PurgePass, TrashRefusalDeps } from './entity-trash.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
+export {
+  afterMigration,
+  afterRuntimeDdl,
+  assertEntityStateColumns,
+  derivesAnything,
+  repairDerivedObjects,
+  StateColumnLost,
+} from './derived-objects.js';
+export type { DerivedPlans } from './derived-objects.js';
 export { TRASH_SCAN_BUDGET, createTrashedReads, searchStateWhere, uncheckedView } from './entity-state-reads.js';
 export type { TrashedReadDeps, TrashedReads } from './entity-state-reads.js';
 export { createAtomic } from './sub-transaction.js';
@@ -357,7 +365,6 @@ export {
   listIndexDdl,
   listIndexMigrations,
   listIndexPlans,
-  stateListIndexNames,
   listPlansByEntityType,
   listQuery,
   splitCursor,
