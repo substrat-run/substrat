@@ -51,6 +51,8 @@ it('the hosted peer read routes only to the caller’s explicit live target', as
   expect((await read()).outcome).toBe('ambiguous');
   await host.admin.setPeerBinding(actor, tenant, caller, 'acme/crm', second);
   expect((await read()).target?.scope_id).toBe(second);
+  // A stale/forged tenant claim cannot borrow this caller's saved binding.
+  expect((await dir.peerCallTarget(foreignTenant, caller, 'acme/board-room', 'acme/crm')).caller.state).toBe('unknown');
   await host.admin.suspendScope(actor, tenant, second);
   expect((await read()).outcome).toBe('bound-unavailable');
   await host.admin.unsuspendScope(actor, tenant, second);
