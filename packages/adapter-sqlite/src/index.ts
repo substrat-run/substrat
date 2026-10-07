@@ -399,6 +399,7 @@ import {
   collectPeers,
   peerSeats,
   resolveVerticalInstanceFrom,
+  resolvePeerInstanceFrom,
   type PeerDeclarations,
   peerGrantsStatus,
   systemGrantsStatus,
@@ -8133,6 +8134,33 @@ export class SqliteScopeHost implements ScopeHost {
           tenantId,
           vertical,
         );
+      },
+      resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
+        const binding = this.directory.prepare(
+          'SELECT target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+        ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string } | undefined;
+        const rows = this.directory.prepare(
+          `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
+           WHERE tenant_id = ? AND vertical = ?`,
+        ).all(tenantId, vertical) as {
+          scope_id: string; tenant_id: string; vertical: string | null; status: string;
+          kind: string | null; forked_from: string | null;
+        }[];
+        return resolvePeerInstanceFrom(rows.map((r) => ({
+          id: r.scope_id as ScopeId,
+          tenantId: r.tenant_id as TenantId,
+          vertical: r.vertical,
+          status: r.status as ScopeStatus,
+          kind: r.kind ?? '',
+          forkedFrom: r.forked_from as ScopeId | null,
+        })), tenantId, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null);
+      },
+      peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
+        const row = this.directory.prepare(
+          'SELECT target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+        ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string } | undefined;
+        this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
+        return row ? { tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id as ScopeId } : undefined;
       },
       resolveHostname: async (raw: string) => {
         // The router's per-request read. No actor, not logged — same carve-out as

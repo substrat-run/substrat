@@ -553,7 +553,11 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
       }
     }
     // 2. The target instance, in the caller's tenant only.
-    const resolution = await admin.resolveVerticalInstance(ctx.tenantId, payload.vertical);
+    // A queued call resolves at execution, under the binding currently in force.
+    const resolution = await admin.resolvePeerInstance(ctx.tenantId, ctx.scopeId, payload.vertical);
+    if (resolution.outcome === 'bound-unavailable') {
+      return { status: 'failed', error: `the bound instance of '${payload.vertical}' is unavailable; rebind or clear this app's peer binding` };
+    }
     if (resolution.outcome === 'not-installed') {
       return { status: 'failed', error: `vertical '${payload.vertical}' is not installed in this tenant` };
     }

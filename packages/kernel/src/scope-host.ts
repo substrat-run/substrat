@@ -83,6 +83,8 @@ import type {
   PeerSwitchResult,
   VerticalCaller,
   VerticalResolution,
+  PeerBinding,
+  PeerInstanceResolution,
   CreateOrgInput,
   Node,
   Org,
@@ -2809,6 +2811,12 @@ export interface HostAdmin {
    * per-call path, before any staff member is involved.
    */
   resolveVerticalInstance(tenantId: TenantId, vertical: string): Promise<VerticalResolution>;
+
+  /** Resolve for one caller at execution time. An explicit stale binding refuses without fallback. */
+  resolvePeerInstance(tenantId: TenantId, callerScopeId: ScopeId, vertical: string): Promise<PeerInstanceResolution>;
+
+  /** Read the caller's explicit choice, if any. Tenant-scoped and recorded as an admin read. */
+  peerBinding(actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string): Promise<PeerBinding | undefined>;
 
   // -- tenant registry (control-plane.md §4.1) -------------------------------
 

@@ -238,6 +238,8 @@ import {
   peerSwitchOutcome,
   verticalCaller,
   verticalResolution,
+  peerInstanceResolution,
+  peerBinding as peerBindingSchema,
   verticalSlug,
   entityObjectRef,
   type Coverage,
@@ -720,6 +722,8 @@ interface ControlPlaneStub {
   readRoute(hostname: string): Promise<RouteRow | undefined>;
   /** #1706: "vertical Y in tenant T", by the kernel's one rule — see `HostAdmin.resolveVerticalInstance`. */
   resolveVerticalInstance(tenantId: string, vertical: string): Promise<VerticalResolution>;
+  resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string): Promise<unknown>;
+  peerBinding(tenantId: string, callerScopeId: string, vertical: string): Promise<{ target_scope_id: string } | undefined>;
   demoteCanonical(scopeId: string, surface: string): Promise<void>;
   upsertHostname(h: {
     hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null;
@@ -6739,6 +6743,13 @@ export class CloudflareScopeHost implements ScopeHost {
       // the kernel's one rule. No actor, not logged — `resolveHostname`'s machine-path reason.
       resolveVerticalInstance: async (tenantId: TenantId, vertical: string): Promise<VerticalResolution> =>
         verticalResolution.parse(await this.cp.resolveVerticalInstance(tenantId, verticalSlug.parse(vertical))),
+      resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) =>
+        peerInstanceResolution.parse(await this.cp.resolvePeerInstance(tenantId, callerScopeId, verticalSlug.parse(vertical))),
+      peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
+        const row = await this.cp.peerBinding(tenantId, callerScopeId, verticalSlug.parse(vertical));
+        await this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
+        return row ? peerBindingSchema.parse({ tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id }) : undefined;
+      },
       resolveHostname: async (raw: string) =>
         // The router's per-request read. No actor, not logged — the same machine-path
         // carve-out resolveIdentity has (K-24). Shares its mapping with the router's

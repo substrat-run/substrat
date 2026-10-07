@@ -111,10 +111,13 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
           const target_ = verticalSlug.parse(target);
           const targetHost = hostOf(target_);
           const resolution = targetHost
-            ? await targetHost.admin.resolveVerticalInstance(caller.tenantId, target_)
+            ? await targetHost.admin.resolvePeerInstance(caller.tenantId, caller.scopeId, target_)
             : ({ outcome: 'not-installed', tenantId: caller.tenantId, vertical: target_ } as const);
           if (resolution.outcome === 'not-installed') {
             throw substratError('not_found', `vertical '${target_}' is not installed in this tenant`);
+          }
+          if (resolution.outcome === 'bound-unavailable') {
+            throw substratError('conflict', `the bound instance of '${target_}' is unavailable; rebind or clear this app's peer binding`);
           }
           if (resolution.outcome === 'ambiguous') {
             throw substratError(

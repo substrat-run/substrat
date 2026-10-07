@@ -676,6 +676,7 @@ export {
   resolveVerticalInstanceFrom,
   switchPeer,
 } from './peer.js';
+export { PEER_BINDINGS_DDL, resolvePeerInstanceFrom } from './peer.js';
 export type { PeerDeclaration, PeerDeclarations, PeerGrantsRow, PeerSeat, VerticalInstanceCandidate } from './peer.js';
 export {
   DENIAL_COLUMNS,

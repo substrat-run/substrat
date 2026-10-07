@@ -87,6 +87,7 @@ import {
   ulid,
   isPrimaryScopeRow,
   resolveVerticalInstanceFrom,
+  resolvePeerInstanceFrom,
   LEGACY_SCOPE_ROWS_BACKFILL,
   loadDirectoryDump,
   type ImpersonationRow,
@@ -341,7 +342,7 @@ export type PeerCallerState = 'ok' | 'unknown' | 'not-primary' | 'inactive';
 /** What `peerCallTarget` answers: the caller's standing, and the resolved target (or why not). */
 export interface PeerCallTargetRow {
   caller: { state: PeerCallerState; status: string | null };
-  outcome: 'resolved' | 'not-installed' | 'ambiguous';
+  outcome: 'resolved' | 'not-installed' | 'ambiguous' | 'bound-unavailable';
   /** How many live instances, when `ambiguous`. Zero otherwise. */
   count: number;
   target: PeerCandidateRow | null;
@@ -2687,6 +2688,36 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
+  /** Binding is read at call execution, so a queued invoke follows the current explicit choice. */
+  resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string) {
+    const rows = this.sql.exec(
+      `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
+       WHERE tenant_id = ? AND vertical = ?`, tenantId, vertical,
+    ).toArray() as unknown as {
+      scope_id: string; tenant_id: string; vertical: string | null; status: string;
+      kind: string | null; forked_from: string | null;
+    }[];
+    const binding = this.sql.exec(
+      'SELECT target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+      tenantId, callerScopeId, vertical,
+    ).toArray()[0] as { target_scope_id: string } | undefined;
+    return resolvePeerInstanceFrom(rows.map((r) => ({
+      id: r.scope_id as ScopeId,
+      tenantId: r.tenant_id as TenantId,
+      vertical: r.vertical,
+      status: r.status as ScopeStatus,
+      kind: r.kind ?? '',
+      forkedFrom: r.forked_from as ScopeId | null,
+    })), tenantId as TenantId, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null);
+  }
+
+  peerBinding(tenantId: string, callerScopeId: string, vertical: string) {
+    return this.sql.exec(
+      'SELECT target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+      tenantId, callerScopeId, vertical,
+    ).toArray()[0] as { target_scope_id: string } | undefined;
+  }
+
   /**
    * Everything the router needs to place ONE peer call (#1706), in one round trip: the
    * CALLER's own scope record, and the target instance of `vertical` in that tenant with the
@@ -2732,7 +2763,8 @@ export class ControlPlaneDO extends DurableObject {
         vertical,
       )
       .toArray() as unknown as PeerCandidateRow[];
-    const resolution = resolveVerticalInstanceFrom(
+    const binding = this.peerBinding(tenantId, callerScopeId, vertical);
+    const resolution = resolvePeerInstanceFrom(
       candidates.map((r) => ({
         id: r.scope_id as ScopeId,
         tenantId: r.tenant_id as TenantId,
@@ -2743,6 +2775,7 @@ export class ControlPlaneDO extends DurableObject {
       })),
       tenantId as TenantId,
       vertical,
+      (binding?.target_scope_id as ScopeId | undefined) ?? null,
     );
     const target =
       resolution.outcome === 'resolved'

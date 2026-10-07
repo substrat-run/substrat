@@ -155,7 +155,7 @@ interface PeerCallReader {
 /** `peerCallTarget`'s answer, as the router reads it. */
 export interface PeerCallTargetRowLike {
   caller: { state: 'ok' | 'unknown' | 'not-primary' | 'inactive'; status: string | null };
-  outcome: 'resolved' | 'not-installed' | 'ambiguous';
+  outcome: 'resolved' | 'not-installed' | 'ambiguous' | 'bound-unavailable';
   count: number;
   target: {
     scope_id: string;
@@ -258,6 +258,13 @@ export function createPeerCallResolver(
         message:
           `this tenant runs ${row.count} instances of '${target}' — a call cannot pick one; ` +
           'bind the instance first',
+      };
+    }
+    if (row.outcome === 'bound-unavailable') {
+      return {
+        outcome: 'refused',
+        code: 'conflict',
+        message: `the bound instance of '${target}' is unavailable; rebind or clear this app's peer binding`,
       };
     }
     if (row.outcome === 'not-installed' || !row.target) {
