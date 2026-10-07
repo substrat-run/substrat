@@ -254,6 +254,7 @@ export {
 export {
   PURGE_BATCH,
   assertNoCallerPurge,
+  heldPurgePass,
   isUnreachableParent,
   purgeCandidates,
   purgeCutoffOf,
@@ -267,7 +268,7 @@ export {
   runPurgePass,
   withheldKeysFor,
 } from './entity-trash.js';
-export type { PurgeGateFacts, PurgePass, TrashRefusalDeps } from './entity-trash.js';
+export type { PurgeDue, PurgeGateFacts, PurgePass, TrashRefusalDeps } from './entity-trash.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
 export {
   afterMigration,

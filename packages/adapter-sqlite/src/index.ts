@@ -246,7 +246,7 @@ import {
   entityStateMigrations,
   assertNoCallerPurge,
   isUnreachableParent,
-  PURGE_BATCH,
+  heldPurgePass,
   purgeDueOf,
   purgeHeldBy,
   lifecycleRefusal,
@@ -4875,7 +4875,7 @@ export class SqliteScopeHost implements ScopeHost {
       const startedAt = Date.now();
       let emitted: EmittedReport | undefined;
       let failure: { error: unknown } | undefined;
-      // #119: a purge horizon's batch was full and moved something — the schedule stays due, so the next pass continues.
+      // #119, #2096: more of a purge horizon's lap is due — the schedule stays due, so the next pass continues it.
       let stillDue = false;
       try {
         if (schedule.purge) {
@@ -4965,11 +4965,16 @@ export class SqliteScopeHost implements ScopeHost {
         ? { held }
         : purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, now);
     });
-    if ('held' in due) return { purged: 0, skipped: 0, errors: [], full: false, held: due.held };
+    if ('held' in due) return heldPurgePass(due.held);
     const stub = await this.openSystemScope(moduleId, tenantId, scopeId, true);
-    return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
-      await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid() });
-    });
+    return runPurgePass(
+      operation,
+      due,
+      async (entityId) => {
+        await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid() });
+      },
+      (write) => rt.actor.turn(() => write(spineSql(rt.db))),
+    );
   }
 
   /**
@@ -12618,6 +12623,9 @@ export class SqliteScopeHost implements ScopeHost {
     // from the kernel's (now widened) DDL when it runs — so by the time this ALTER
     // executes, the table always already has `kind` in its key, never `invocation_id`.
     this.ensureColumn(db, '_substrat_schedule_state', 'invocation_id', 'invocation_id TEXT');
+    // #2096: a purge horizon's lap in progress, on a scope DB built before the column. NULL is the
+    // start of a lap — the honest reading of every row already there. After the #1288 rebuild, as above.
+    this.ensureColumn(db, '_substrat_schedule_state', 'purge_cursor', 'purge_cursor TEXT');
     this.ensureColumn(db, '_substrat_job_runs', 'subject_id', 'subject_id TEXT');
     // #2034: the lease, on a scope DB built before it. NULL = nobody holds the run.
     this.ensureColumn(db, '_substrat_job_runs', 'lease_owner', 'lease_owner TEXT');

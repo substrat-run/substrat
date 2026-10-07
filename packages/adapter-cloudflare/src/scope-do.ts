@@ -328,6 +328,7 @@ import {
   assertNoCallerPurge,
   isUnreachableParent,
   PURGE_BATCH,
+  heldPurgePass,
   lifecycleRefusal,
   purgeHeldBy,
   type PurgeGateFacts,
@@ -4853,7 +4854,7 @@ export function defineScopeDO(
       // #119: the gate the coordinator applies before any schedule fires, applied here from what
       // this scope records of it (`purgeGateFacts`). A foreign tenant throws.
       const held = purgeHeldBy(this.purgeGateFacts(schedule.moduleId, tenantId));
-      if (held !== null) return { purged: 0, skipped: 0, errors: [], full: false, held };
+      if (held !== null) return heldPurgePass(held);
       const due = purgeDueOf(
         doSpineSql(this.sql),
         this.statePlans,
@@ -4863,7 +4864,7 @@ export function defineScopeDO(
         new Date().toISOString(),
         PURGE_BATCH,
       );
-      return runPurgePass(due.ids, PURGE_BATCH, async (entityId) => {
+      return runPurgePass(operation, due, async (entityId) => {
         await this.#invokeOrThrow(
           operation,
           { [due.idFrom]: entityId },
@@ -4880,7 +4881,7 @@ export function defineScopeDO(
           systemDoorInstance,
           true,
         );
-      });
+      }, (write) => write(doSpineSql(this.sql)));
     }
 
     /**
@@ -6230,6 +6231,9 @@ export function defineScopeDO(
         // every legacy row — a past run's id cannot be recovered afterwards, exactly
         // as the other #1525 columns above argued.
         'ALTER TABLE _substrat_schedule_state ADD COLUMN invocation_id TEXT',
+        // #2096: a purge horizon's lap in progress, on a scope DO built before the column. NULL is
+        // the start of a lap — the honest reading of every row already there.
+        'ALTER TABLE _substrat_schedule_state ADD COLUMN purge_cursor TEXT',
         // #2009: the copy classification on a scope DO built before it (NULL reads as a copy;
         // see `COPY_ORIGIN_DDL`).
         'ALTER TABLE _substrat_copy_origin ADD COLUMN is_copy INTEGER',
