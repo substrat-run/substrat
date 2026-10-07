@@ -1,6 +1,7 @@
 /** Private, short-lived positions for a per-row-filtered walk (#2074). */
 import { PAGE_CURSOR_RESTART, substratError } from '@substrat-run/contracts';
 import { fromBase64, toBase64, webCryptoSecretBox, type SealedSecret } from './secret-box.js';
+import { isPlainPageCursor } from './list-index.js';
 
 declare const crypto: {
   getRandomValues<T extends Uint8Array>(bytes: T): T;
@@ -11,6 +12,9 @@ const TOKEN_PREFIX = 'sc1';
 const TOKEN_PLAINTEXT_LENGTH = 192;
 const LIFETIME_MS = 15 * 60_000;
 const ROTATION_MS = 24 * 60 * 60_000;
+export const CONTINUATION_POSITION_CAP = 256;
+/** Remove this migration window at the next cursor-breaking release. */
+export const ACCEPT_LEGACY_VISIBLE_CURSORS = true;
 
 export interface ContinuationKey {
   id: string;
@@ -75,12 +79,11 @@ function box(material: ContinuationKey) {
   return webCryptoSecretBox(material.id, bytes);
 }
 
-/** Fixed wire length, even when a sort value is arbitrarily long. */
+/** Full visible pages are stateless; only a hidden budget stop needs a private locator. */
 export function visibleContinuation(
   store: ContinuationStore,
   binding: ContinuationBinding,
   now: () => number = Date.now,
-  legacy?: (cursor: string) => Promise<boolean>,
   legacyUsed?: () => void,
 ) {
   // Pagination mechanics do not change the rows in the walk. Every other input,
@@ -95,7 +98,7 @@ export function visibleContinuation(
     try { return await store.keys(); } catch { throw restart(); }
   };
   return {
-    async seal(position: string): Promise<string> {
+    async seal(position: string, hidden = true): Promise<string> {
       try {
         const at = now();
         let keys = await readKeys();
@@ -103,13 +106,19 @@ export function visibleContinuation(
           keys = { active: key(at), ...(keys ? { previous: keys.active } : {}) };
           await store.setKeys(keys);
         }
-        const id = base64url(random(16));
         const expiresAt = at + LIFETIME_MS;
-        const sealed = await box(keys.active).seal(JSON.stringify({ id, position }));
-        await store.setPosition(id, { sealed, expiresAt });
-        const payload = JSON.stringify({ i: id, e: expiresAt, b: await hash() });
-        if (payload.length > TOKEN_PLAINTEXT_LENGTH) throw restart();
-        const token = await box(keys.active).seal(payload.padEnd(TOKEN_PLAINTEXT_LENGTH, ' '));
+        let payload: string;
+        if (hidden) {
+          const id = base64url(random(16));
+          const sealed = await box(keys.active).seal(JSON.stringify({ id, position }));
+          await store.setPosition(id, { sealed, expiresAt });
+          payload = JSON.stringify({ i: id, e: expiresAt, b: await hash() });
+          if (payload.length > TOKEN_PLAINTEXT_LENGTH) throw restart();
+          payload = payload.padEnd(TOKEN_PLAINTEXT_LENGTH, ' ');
+        } else {
+          payload = JSON.stringify({ p: position, e: expiresAt, b: await hash() });
+        }
+        const token = await box(keys.active).seal(payload);
         return `${TOKEN_PREFIX}.${keys.active.id}.${base64url(fromBase64(token.ciphertext))}`;
       } catch {
         throw restart();
@@ -118,7 +127,7 @@ export function visibleContinuation(
     async open(cursor: string): Promise<string> {
       if (!cursor.startsWith(`${TOKEN_PREFIX}.`)) {
         try {
-          if (legacy && await legacy(cursor)) {
+          if (ACCEPT_LEGACY_VISIBLE_CURSORS && isPlainPageCursor(cursor)) {
             legacyUsed?.();
             return cursor;
           }
@@ -133,10 +142,14 @@ export function visibleContinuation(
         const selected = [keys?.active, keys?.previous].find((candidate) => candidate?.id === parts[1]);
         if (!selected) throw restart();
         const decoded = await box(selected).open({ keyId: selected.id, ciphertext: toBase64(unbase64url(parts[2]!)) });
-        if (decoded.length !== TOKEN_PLAINTEXT_LENGTH) throw restart();
-        const payload = JSON.parse(decoded.trimEnd()) as { i?: unknown; e?: unknown; b?: unknown };
-        if (typeof payload.i !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(payload.i) ||
-            typeof payload.e !== 'number' || payload.e <= now() || payload.b !== await hash()) throw restart();
+        const payload = JSON.parse(decoded.trimEnd()) as { i?: unknown; p?: unknown; e?: unknown; b?: unknown };
+        if (typeof payload.e !== 'number' || payload.e <= now() || payload.b !== await hash()) throw restart();
+        if ('p' in payload) {
+          if (typeof payload.p !== 'string') throw restart();
+          return payload.p;
+        }
+        if (decoded.length !== TOKEN_PLAINTEXT_LENGTH ||
+            typeof payload.i !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(payload.i)) throw restart();
         const record = await store.position(payload.i, payload.e);
         if (!record || record.expiresAt !== payload.e || record.expiresAt <= now()) throw restart();
         const opened = JSON.parse(await box(selected).open(record.sealed)) as { id?: unknown; position?: unknown };

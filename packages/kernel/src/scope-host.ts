@@ -285,9 +285,9 @@ export interface OperationContext {
   readonly scopeId: ScopeId;
   readonly principal: PrincipalId;
   /** Seal positions for one filtered list under this scope, caller and operation. */
-  pageContinuation(list: string, query: unknown, legacyVisible?: (cursor: string) => Promise<boolean>): {
+  pageContinuation(list: string, query: unknown): {
     open(cursor: string): Promise<string>;
-    seal(position: string): Promise<string>;
+    seal(position: string, hidden: boolean): Promise<string>;
   };
   readonly sql: ScopedSql;
   /**

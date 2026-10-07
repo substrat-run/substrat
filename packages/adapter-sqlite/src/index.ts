@@ -240,6 +240,7 @@ import {
   createEntityEdgeVerbs,
   createEntityStateVerbs,
   createTrashedReads,
+  CONTINUATION_POSITION_CAP,
   visibleContinuation,
   type ContinuationStore,
   type ContinuationKeys,
@@ -1779,6 +1780,8 @@ export class SqliteScopeHost implements ScopeHost {
         ).run(scopeId, JSON.stringify(keys));
       },
       position: async (id, expiresAt) => {
+        this.directory.prepare('DELETE FROM private_continuation_positions WHERE expires_at <= ?')
+          .run(Date.parse(this.clock()));
         const row = this.directory.prepare(
           `SELECT ciphertext FROM private_continuation_positions
            WHERE scope_id = ? AND expires_at = ? AND locator = ?`,
@@ -1792,6 +1795,11 @@ export class SqliteScopeHost implements ScopeHost {
           `INSERT INTO private_continuation_positions (scope_id, expires_at, locator, ciphertext)
            VALUES (?, ?, ?, ?)`,
         ).run(scopeId, position.expiresAt, id, JSON.stringify(position.sealed));
+        this.directory.prepare(
+          `DELETE FROM private_continuation_positions WHERE rowid IN (
+             SELECT rowid FROM private_continuation_positions WHERE scope_id = ?
+             ORDER BY rowid DESC LIMIT -1 OFFSET ?)`,
+        ).run(scopeId, CONTINUATION_POSITION_CAP);
       },
     };
   }
@@ -12018,11 +12026,10 @@ export class SqliteScopeHost implements ScopeHost {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       principal,
-      pageContinuation: (list, query, legacyVisible) => visibleContinuation(
+      pageContinuation: (list, query) => visibleContinuation(
         this.continuationStore(rt.scopeId),
         { scopeId: rt.scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },
         () => Date.parse(this.clock()),
-        legacyVisible,
         () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),
       ),
       sql: guardSecrets(

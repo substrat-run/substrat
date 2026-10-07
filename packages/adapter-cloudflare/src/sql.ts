@@ -2,7 +2,7 @@ import { guardSpine, type RedactionSql, type ScopedSql, type SqlValue } from '@s
 import { substratError, tokenizeSql } from '@substrat-run/contracts';
 
 /** Workerd's `_cf_*` tables back runtime-owned KV and alarms, not module data. */
-function assertNoWorkerdStorage(sql: string): void {
+export function assertNoWorkerdStorage(sql: string): void {
   if (tokenizeSql(sql).some((token) =>
     token.text.split('.').some((part) => part.toLowerCase().startsWith('_cf_')))) {
     throw substratError('forbidden', 'ctx.sql cannot read workerd internal storage');

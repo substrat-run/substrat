@@ -336,6 +336,16 @@ export function entityStateContractSuite(
         const internal = await errOf(as.carol.invoke('state/sql', { sql: 'SELECT * FROM _cf_KV' }));
         expect(errorCodeOf(internal)).toBe('forbidden');
         expect(await as.carol.invoke('state/sql', { sql: 'SELECT 1 AS ok /* _cf_KV */' })).toEqual([{ ok: 1 }]);
+        const consoleRead = await errOf(host.admin.queryScope(staff, t1, scope, { sql: 'SELECT * FROM _cf_KV' }));
+        expect(errorCodeOf(consoleRead)).toBe('forbidden');
+        await expect(host.admin.readScopeTable(staff, t1, scope, { table: '_cf_KV' })).rejects.toBeTruthy();
+        expect((await host.admin.listScopeTables(staff, t1, scope)).some((table) => table.name.startsWith('_cf_'))).toBe(false);
+      } else {
+        // The private directory database is a distinct file, unreachable through the
+        // scope console as well as the module SQL seam.
+        await expect(host.admin.queryScope(staff, t1, scope, {
+          sql: 'SELECT keyring FROM private_continuation_keys',
+        })).rejects.toBeTruthy();
       }
       const replay = await errOf(as.bob.invoke('state/page-trashed', { limit: 1, cursor: first.nextCursor }));
       expect(replay).toMatchObject({ extensions: { reason: PAGE_CURSOR_RESTART } });

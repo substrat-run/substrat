@@ -468,6 +468,14 @@ function envelopeOf(cursor: string): z.infer<typeof cursorEnvelope> | undefined 
   }
 }
 
+/** Migration gate for filtered walks: their old input was a plain ctx.page cursor. */
+export function isPlainPageCursor(cursor: string): boolean {
+  if (envelopeOf(cursor)) return true;
+  if (ULID_PATTERN.test(cursor)) return true;
+  const at = cursor.lastIndexOf('|');
+  return at >= 0 && ULID_PATTERN.test(cursor.slice(at + 1));
+}
+
 /**
  * A pre-#2001 cursor, recognised only by its exact old shape: `<value>|<id>` with the
  * id a ULID, or — for a walk sorted by the id itself — the bare ULID. Split on the LAST

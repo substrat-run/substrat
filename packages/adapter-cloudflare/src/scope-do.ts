@@ -293,7 +293,7 @@ import {
 } from './live-reads.js';
 import { replyOf, type DoReply } from './do-reply.js';
 import { OperationQueue } from './serialization.js';
-import { doScopedSql, doBuiltColumnsOf, doRedactionSql, doSpineSql } from './sql.js';
+import { assertNoWorkerdStorage, doScopedSql, doBuiltColumnsOf, doRedactionSql, doSpineSql } from './sql.js';
 import {
   actorOf,
   admitPeer,
@@ -322,6 +322,7 @@ import {
   createEntityEdgeVerbs,
   createEntityStateVerbs,
   createTrashedReads,
+  CONTINUATION_POSITION_CAP,
   visibleContinuation,
   type ContinuationStore,
   type ContinuationKeys,
@@ -1177,22 +1178,24 @@ export function defineScopeDO(
     private continuationStore(): ContinuationStore {
       const positionKey = (id: string, expiresAt: number) =>
         `continuation:position:${String(expiresAt).padStart(13, '0')}:${id}`;
+      const prunePositions = async () => {
+        const positions = await this.ctx.storage.list<ContinuationPosition>({ prefix: 'continuation:position:' });
+        const live = [...positions].filter(([, record]) => record.expiresAt > Date.now());
+        const evict = new Set<string>(live.slice(0, Math.max(0, live.length - CONTINUATION_POSITION_CAP)).map(([name]) => name));
+        for (const [name, record] of positions) {
+          if (record.expiresAt <= Date.now() || evict.has(name)) await this.ctx.storage.delete(name);
+        }
+      };
       return {
         keys: async () => (await this.ctx.storage.get<ContinuationKeys>('continuation:keys')) ?? null,
         setKeys: async (keys) => { await this.ctx.storage.put('continuation:keys', keys); },
-        position: async (id, expiresAt) =>
-          (await this.ctx.storage.get<ContinuationPosition>(positionKey(id, expiresAt))) ?? null,
+        position: async (id, expiresAt) => {
+          await prunePositions();
+          return (await this.ctx.storage.get<ContinuationPosition>(positionKey(id, expiresAt))) ?? null;
+        },
         setPosition: async (id, position) => {
           await this.ctx.storage.put(positionKey(id, position.expiresAt), position);
-          // Expiry is the leading part of the key, so this bounded pass always
-          // removes the oldest records first. A busy scope pays at most 100 deletes.
-          const old = await this.ctx.storage.list<ContinuationPosition>({
-            prefix: 'continuation:position:', limit: 100,
-          });
-          for (const [name, record] of old) {
-            if (record.expiresAt > Date.now()) break;
-            await this.ctx.storage.delete(name);
-          }
+          await prunePositions();
         },
       };
     }
@@ -6040,6 +6043,7 @@ export function defineScopeDO(
 
     private async readOnlyQuery(sql: string): Promise<ScopeQueryResult> {
       const stmt = assertReadOnlyQuery(sql);
+      assertNoWorkerdStorage(stmt);
       let result: ScopeQueryResult | undefined;
       const rollback = new Error('read-only console rollback');
       try {
@@ -6593,6 +6597,8 @@ export function defineScopeDO(
       // The KV key never travels in a SQL dump. A load into this same DO would
       // otherwise retain its old epoch, so explicitly invalidate all old tokens.
       await this.ctx.storage.delete('continuation:keys');
+      const oldPositions = await this.ctx.storage.list<ContinuationPosition>({ prefix: 'continuation:position:' });
+      for (const name of oldPositions.keys()) await this.ctx.storage.delete(name);
       return switched;
     }
 
@@ -7397,11 +7403,10 @@ export function defineScopeDO(
         // #1672: a capability's own id stands in so the type holds — it is not a person, and
         // the event actor says what it is instead. Every other door passes its own value.
         principal: capabilityId ? (capabilityId as unknown as PrincipalId) : principal,
-        pageContinuation: (list, query, legacyVisible) => visibleContinuation(
+        pageContinuation: (list, query) => visibleContinuation(
           this.continuationStore(),
           { scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },
           Date.now,
-          legacyVisible,
           () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),
         ),
         sql: guardSecrets(
