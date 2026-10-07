@@ -1050,12 +1050,15 @@ const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> =
   );
 };
 
+const GRANT_PAGE_LIMIT = 100;
+const GRANT_PAGE_BUDGET = 10;
+
 /** Finish a small grant walk before using its union of ids as a SQL narrowing set. */
 async function completeGrantIds(ctx: OperationContext, entityType: string): Promise<'all' | 'incomplete' | string[]> {
   const ids = new Set<string>();
   let cursor: string | undefined;
-  for (let page = 0; page < 10; page++) {
-    const result = await ctx.grantedEntities(SHOP_PERM.orderRead, entityType, { limit: 100, cursor });
+  for (let page = 0; page < GRANT_PAGE_BUDGET; page++) {
+    const result = await ctx.grantedEntities(SHOP_PERM.orderRead, entityType, { limit: GRANT_PAGE_LIMIT, cursor });
     if (result.kind !== 'ids') return result.kind;
     for (const id of result.ids) ids.add(id);
     if (result.nextCursor === null) return [...ids];
@@ -1070,8 +1073,8 @@ const myCustomerOp: OperationHandler<undefined, { id: string; number: string; na
 ) => {
   let cursor: string | undefined;
   let fallbackReason = 'grant-read-budget';
-  for (let page = 0; page < 10; page++) {
-    const grants = await ctx.grantedEntities(SHOP_PERM.orderRead, 'customer', { limit: 100, cursor });
+  for (let page = 0; page < GRANT_PAGE_BUDGET; page++) {
+    const grants = await ctx.grantedEntities(SHOP_PERM.orderRead, 'customer', { limit: GRANT_PAGE_LIMIT, cursor });
     if (grants.kind === 'all') {
       const first = ctx.sql.query<{ id: string; number: string; name: string }>(
         'SELECT id, number, name FROM shop_customers ORDER BY number LIMIT 1',
