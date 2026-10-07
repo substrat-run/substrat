@@ -307,14 +307,8 @@ export function attachmentTextContractSuite(
         }
         // Every one of these is NEWER than old.txt. A scan bound applied before the gate would
         // have spent itself on them and handed bob nothing.
-        // Keep the producer path, but pipeline a small batch of independent uploads.
-        // A thousand sequential DO round trips can exhaust this test's time budget
-        // after the larger adapter suite has already populated its runtime.
-        for (let i = 0; i < 1001; i += 20) {
-          await Promise.all(Array.from({ length: Math.min(20, 1001 - i) }, (_, offset) => {
-            const n = i + offset;
-            return upload(s, item('denied'), `hidden-${n}.txt`, 'text/plain', bytes(`the margay ledger, hidden ${n}`));
-          }));
+        for (let i = 0; i < 1001; i += 1) {
+          await upload(s, item('denied'), `hidden-${i}.txt`, 'text/plain', bytes(`the margay ledger, hidden ${i}`));
         }
         await extract(s);
         await extract(control);
