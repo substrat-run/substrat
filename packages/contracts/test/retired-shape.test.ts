@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildPermissionRegistry, pushedPermissionRegistry, retiredShapeProblems, type EntityGrantShape } from '../src/deploy.js';
 
-const shape = (over: Partial<EntityGrantShape> = {}) =>
+const shape = (over: { permissions?: string[]; bootstrap?: true; retired?: string[] } = {}) =>
   ({ entityType: 'employee', permissions: ['emp:read'], bootstrap: true, retired: ['emp:cancel'], ...over }) as EntityGrantShape;
 const build = (entityGrants: EntityGrantShape[]) => buildPermissionRegistry({ modules: [], roles: [], entityGrants });
 
