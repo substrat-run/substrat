@@ -834,3 +834,56 @@ describe('the tenant-record walk rotates past deployments that never answer (#20
     expect(await bookkeepingOf(leftOver)).toEqual({ asks: 0, receipts: 0 });
   });
 });
+
+/**
+ * A vertical that declares its lifecycle held at the router (`substrat.lifecycle: 'router'`) is
+ * delivered none. The auth-server serves its own `/internal/*` surface with no lifecycle route, so
+ * every delivery answered 501 and every heal pass wrote an ops failure for it (#2016's ask made
+ * that every pass for every active scope). The declaration rides the install spec and refreshes on
+ * every re-push, so dropping it puts the scopes back in the delivery.
+ */
+describe('a vertical whose lifecycle is held at the router is delivered none (#1713)', () => {
+  const actor = platformActorId.parse(ulid());
+  const delivered: string[] = [];
+  const lifecycleDelegation: LifecycleDelegation = {
+    deliver: async ({ scopeId: s }) => {
+      delivered.push(s);
+      throw new Error('auth-server does not implement POST /internal/lifecycle');
+    },
+  };
+  const directoryName = `router-held-${ulid()}`;
+  const directory = {
+    idFromName: () => env.CONTROL_PLANE.idFromName(directoryName),
+    get: (id: DurableObjectId) => env.CONTROL_PLANE.get(id),
+  } as unknown as DurableObjectNamespace;
+  const platform = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: directory, lifecycleDelegation });
+  beforeAll(() => warmControlPlane(directory));
+
+  it('no delivery, no tenant-record ask and no ops failure, until a re-push drops the declaration', async () => {
+    const t = tenantId.parse(ulid());
+    await platform().admin.createTenant(actor, { id: t, slug: `held-${t.toLowerCase()}`, name: 'Held' });
+    const slug = `held-${ulid().toLowerCase().slice(-10)}`;
+    const register = (lifecycle?: 'router') =>
+      platform().admin.registerVertical(actor, { slug, name: 'Held', source: 'cli', ownerTenant: t, ...(lifecycle ? { lifecycle } : {}) });
+    await register('router');
+    expect((await platform().admin.listVerticals(actor)).find((v) => v.slug === slug)?.lifecycle).toBe('router');
+
+    const live = scopeId.parse(ulid());
+    const held = scopeId.parse(ulid());
+    for (const s of [live, held]) {
+      await platform().provisionScope(actor, { tenantId: t, scopeId: s, vertical: slug });
+      await platform().admin.activateScope(actor, t, s);
+    }
+    await platform().admin.suspendScope(actor, t, held); // a transition: delivered nowhere
+    const healed = await platform().healLifecycles(actor, { limit: 1000 }); // drift + the #2016 ask
+    expect(healed).toEqual({ attempted: 0, delivered: 0, failed: 0 });
+    expect(delivered).toEqual([]);
+    for (const s of [live, held]) expect(await platform().admin.listOpsFailures(actor, { scopeId: s })).toEqual([]);
+
+    // A re-push without the declaration refreshes the install spec, and the held scope is a target again.
+    await register();
+    await platform().healLifecycles(actor, { limit: 1000 });
+    expect(delivered).toContain(held);
+    expect((await platform().admin.listOpsFailures(actor, { scopeId: held })).map((f) => f.stage)).toContain('deliver');
+  });
+});

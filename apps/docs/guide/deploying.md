@@ -208,6 +208,15 @@ lives in the version rather than in a setting, so it shows up in the diff. This 
 model: **declare the request, get it granted, call what the platform hands over — never bind the
 raw resource.**
 
+One more field in the block is not a request but a statement about your deployment:
+`lifecycle`. Leave it out. A vertical built on `@substrat-run/vertical-host` receives each
+scope's lifecycle (active, suspended, archived) and holds its own timers, retries and
+background work by it. `"lifecycle": "router"` is for a deployment that serves its own
+`/internal/*` surface and does no work a request did not start — the auth-server is the one
+in the repo. It says the router's refusal of a held scope's requests is the whole hold, so
+the platform delivers it no lifecycle. Declared on a vertical-host vertical, it would leave
+that vertical's timers running through a suspension.
+
 Entitlements are delivered to your vertical **with provisioning** and projected locally; your
 per-operation gate fails closed on anything the tenant doesn't hold. If a live install ever
 ends up missing one (granted later, or repaired), the control plane re-delivers through your

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
-import { envVarSpec, capability, declaredEntityType, freshnessSpec, scheduleSpec, type ModuleManifest } from './manifest.js';
+import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, scheduleSpec, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
@@ -1062,6 +1062,9 @@ export const deployManifest = z.object({
    *  the staff-flipped `emailSender` grant is set. A request, never a grant — refreshed on
    *  every re-push, feeds the console's requested/granted review surface. */
   sendsEmail: z.boolean().optional(),
+  /** Where this vertical's scope lifecycle is held (package.json `substrat.lifecycle`) —
+   *  `lifecycleHold` says what the one value means. */
+  lifecycle: lifecycleHold.optional(),
   /** DECLARED model-runtime intent (#1054): this vertical answers with a language model and
    *  wants the platform's model runtime bound as `env.AI` — package.json
    *  `substrat.usesModels`. Versioned with the code, like `outbound` and for the same

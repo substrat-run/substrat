@@ -7416,6 +7416,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // `emailSender` grant itself is never touched by a push. Refreshes on every re-push
       // like the rest of the install spec, exactly because it grants nothing.
       ...(manifest.sendsEmail ? { sendsEmail: true } : {}),
+      // Where the scope lifecycle is held (#1713): `'router'` keeps the vertical's scopes out of
+      // the lifecycle delivery. Refreshes on every re-push like the rest of the install spec.
+      ...(manifest.lifecycle ? { lifecycle: manifest.lifecycle } : {}),
       // The declared surfaces (K-26) ride like envSpec: registry metadata for the
       // hostname-binding picker, never behavior. Not part of any admission digest.
       ...(manifest.surfaces ? { surfaces: manifest.surfaces } : {}),

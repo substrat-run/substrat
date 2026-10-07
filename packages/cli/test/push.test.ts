@@ -692,6 +692,7 @@ describe('cli.ts — every declared field readVerticalMeta reads reaches push()'
           requires: [],
           provisions: [],
           sendsEmail: true,
+          lifecycle: 'router',
           usesModels: true,
           surfaces: [],
           outbound: [],
