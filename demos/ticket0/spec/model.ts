@@ -1595,8 +1595,9 @@ export const ticket0Entities = defineEntities({
    *
    * `email` and `note` are `erasable`, and that is most of why this table belongs in a
    * vertical rather than in whatever form service was the alternative: it makes the
-   * address uncarryable by any event, and reachable by the erasure the desk already
-   * has. What the events carry is the id, the kind and the state — never the person.
+   * address uncarryable by any event. The row's own id is its erasure subject because
+   * this public form has no verified contact or staff identity. What the events carry
+   * is the id, the kind and the state — never the person.
    */
   signup: {
     table: 'ticket0_signups',
@@ -1654,6 +1655,10 @@ export const ticket0Entities = defineEntities({
     }),
     key: ['kind', 'email'],
     erasable: ['email', 'note'],
+    // Public signup knows no verified contact or staff principal. Its own id is the
+    // only subject link it can prove; a person with a contact and a signup needs two
+    // erasure calls, one for each id.
+    erasure: { subjects: ['id'], mode: 'delete' },
   },
 });
 

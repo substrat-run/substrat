@@ -190,10 +190,9 @@ export const ticket0Manifest = moduleManifest.parse({
    * an identifier a person never types, and not `heading_path`, which is already a
    * prefix of the title in every source we ingest.
    *
-   * Nothing on `message` is indexed, deliberately. Message bodies are `erasable`, and
-   * an index over an erasable field is a second copy of it that the erasure would have
-   * to know about. Searching conversations is worth doing and worth doing on purpose,
-   * in its own change, with that question answered.
+   * Message body text is indexed too. The erasure reaches its FTS segments under
+   * secure-delete, so the index does not retain an erased person's words. The
+   * conversation search operation still uses LIKE for its own ranking and filters.
    *
    * The live reads (#938) are what the inbox and the conversation view hear instead of
    * waiting for their next poll. The scope checks each frame's key against the
@@ -223,7 +222,10 @@ export const ticket0Manifest = moduleManifest.parse({
    *   entity types declared here are announced on either.
    */
   ...manifestEntities(ticket0Entities, {
-    searchables: [{ entityType: 'kbArticle', fields: ['title', 'body'] }],
+    searchables: [
+      { entityType: 'kbArticle', fields: ['title', 'body'] },
+      { entityType: 'message', fields: ['body_text'] },
+    ],
     liveTargets: [
       { entityType: 'conversation', readPermission: 'conversation:read' },
       { entityType: 'message', readPermission: 'conversation:read' },
