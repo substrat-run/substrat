@@ -724,6 +724,10 @@ interface ControlPlaneStub {
   resolveVerticalInstance(tenantId: string, vertical: string): Promise<VerticalResolution>;
   resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string): Promise<unknown>;
   peerBinding(tenantId: string, callerScopeId: string, vertical: string): Promise<{ target_scope_id: string } | undefined>;
+  setPeerBinding(tenantId: string, callerScopeId: string, vertical: string, targetScopeId: string | null): Promise<
+    { ok: true; changed: boolean; previous: string | null } |
+    { ok: false; code: 'not_found'; message: string }
+  >;
   demoteCanonical(scopeId: string, surface: string): Promise<void>;
   upsertHostname(h: {
     hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null;
@@ -6749,6 +6753,11 @@ export class CloudflareScopeHost implements ScopeHost {
         const row = await this.cp.peerBinding(tenantId, callerScopeId, verticalSlug.parse(vertical));
         await this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
         return row ? peerBindingSchema.parse({ tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id }) : undefined;
+      },
+      setPeerBinding: async (_actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string, targetScopeId: ScopeId | null) => {
+        const answer = await this.cp.setPeerBinding(tenantId, callerScopeId, verticalSlug.parse(vertical), targetScopeId);
+        if (!answer.ok) throw substratError(answer.code, answer.message);
+        return { changed: answer.changed, previous: answer.previous as ScopeId | null };
       },
       resolveHostname: async (raw: string) =>
         // The router's per-request read. No actor, not logged — the same machine-path

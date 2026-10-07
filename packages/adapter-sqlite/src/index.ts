@@ -8162,6 +8162,43 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
         return row ? { tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id as ScopeId } : undefined;
       },
+      setPeerBinding: async (_actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string, targetScopeId: ScopeId | null) =>
+        this.directory.transaction(() => {
+          const caller = this.directory.prepare(
+            'SELECT tenant_id, status, kind, forked_from FROM scopes WHERE scope_id = ?',
+          ).get(callerScopeId) as { tenant_id: string; status: string; kind: string | null; forked_from: string | null } | undefined;
+          if (!caller || caller.tenant_id !== tenantId || caller.status !== 'active' || !isPrimaryScopeRow(caller)) {
+            throw substratError('not_found', 'calling app is not a live primary scope in this tenant');
+          }
+          if (targetScopeId !== null) {
+            const target = this.directory.prepare(
+              'SELECT tenant_id, vertical, status, kind, forked_from FROM scopes WHERE scope_id = ?',
+            ).get(targetScopeId) as {
+              tenant_id: string; vertical: string | null; status: string;
+              kind: string | null; forked_from: string | null;
+            } | undefined;
+            if (!target || target.tenant_id !== tenantId || target.vertical !== vertical || target.status !== 'active' || !isPrimaryScopeRow(target)) {
+              throw substratError('not_found', 'target is not a live primary instance of this vertical in this tenant');
+            }
+          }
+          const key = [tenantId, callerScopeId, vertical] as const;
+          const previous = (this.directory.prepare(
+            'SELECT target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+          ).get(...key) as { target_scope_id: string } | undefined)?.target_scope_id as ScopeId | undefined;
+          if ((previous ?? null) === targetScopeId) return { changed: false, previous: previous ?? null };
+          if (targetScopeId === null) {
+            this.directory.prepare(
+              'DELETE FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+            ).run(...key);
+          } else {
+            this.directory.prepare(
+              `INSERT INTO peer_bindings (tenant_id, caller_scope_id, vertical, target_scope_id)
+               VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, caller_scope_id, vertical)
+               DO UPDATE SET target_scope_id = excluded.target_scope_id`,
+            ).run(...key, targetScopeId);
+          }
+          return { changed: true, previous: previous ?? null };
+        })(),
       resolveHostname: async (raw: string) => {
         // The router's per-request read. No actor, not logged — same carve-out as
         // resolveIdentity (K-24): this is a machine path, not a staff read.

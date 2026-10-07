@@ -2718,6 +2718,40 @@ export class ControlPlaneDO extends DurableObject {
     ).toArray()[0] as { target_scope_id: string } | undefined;
   }
 
+  /** Directory write and endpoint checks share this DO's serialized unit. */
+  setPeerBinding(tenantId: string, callerScopeId: string, vertical: string, targetScopeId: string | null) {
+    const caller = this.sql.exec(
+      'SELECT tenant_id, status, kind, forked_from FROM scopes WHERE scope_id = ?', callerScopeId,
+    ).toArray()[0] as { tenant_id: string; status: string; kind: string | null; forked_from: string | null } | undefined;
+    if (!caller || caller.tenant_id !== tenantId || caller.status !== 'active' || !isPrimaryScopeRow(caller)) {
+      return { ok: false as const, code: 'not_found' as const, message: 'calling app is not a live primary scope in this tenant' };
+    }
+    if (targetScopeId !== null) {
+      const target = this.sql.exec(
+        'SELECT tenant_id, vertical, status, kind, forked_from FROM scopes WHERE scope_id = ?', targetScopeId,
+      ).toArray()[0] as { tenant_id: string; vertical: string | null; status: string; kind: string | null; forked_from: string | null } | undefined;
+      if (!target || target.tenant_id !== tenantId || target.vertical !== vertical || target.status !== 'active' || !isPrimaryScopeRow(target)) {
+        return { ok: false as const, code: 'not_found' as const, message: 'target is not a live primary instance of this vertical in this tenant' };
+      }
+    }
+    const previous = this.peerBinding(tenantId, callerScopeId, vertical)?.target_scope_id ?? null;
+    if (previous === targetScopeId) return { ok: true as const, changed: false, previous };
+    if (targetScopeId === null) {
+      this.sql.exec(
+        'DELETE FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+        tenantId, callerScopeId, vertical,
+      );
+    } else {
+      this.sql.exec(
+        `INSERT INTO peer_bindings (tenant_id, caller_scope_id, vertical, target_scope_id)
+         VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, caller_scope_id, vertical)
+         DO UPDATE SET target_scope_id = excluded.target_scope_id`,
+        tenantId, callerScopeId, vertical, targetScopeId,
+      );
+    }
+    return { ok: true as const, changed: true, previous };
+  }
+
   /**
    * Everything the router needs to place ONE peer call (#1706), in one round trip: the
    * CALLER's own scope record, and the target instance of `vertical` in that tenant with the
