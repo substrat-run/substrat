@@ -3,28 +3,38 @@ import type { FetchLike } from '@substrat-run/kernel';
 import { fromBase64, generateCertificate, thumbprintS256, toBase64Url } from './x509.js';
 
 /**
- * The stored credential — one tenant's app registration, app-only, in its own Entra directory.
+ * How a connection signs in — one tenant's app registration, app-only, in its own Entra
+ * directory. Every Microsoft 365 connector's credential is this plus what that connector reaches
+ * (the mail connector's sender addresses), and each connector is its OWN app registration: the
+ * mail app holds no SharePoint permission and a documents app holds no Exchange scope, so one
+ * credential leaking reaches one of them.
  *
- * What the tenant types: the directory and application ids, the addresses it allowed the app
- * to send as (scoped in Exchange with RBAC for Applications), the SharePoint site it granted,
- * and — only if it chose a client secret over our certificate — the secret.
+ * What the tenant types: the directory and application ids, and — only if it chose a client
+ * secret over our certificate — the secret.
  *
  * What the platform adds (`prepareMicrosoft365Candidate`): with no client secret, a keypair and
  * a self-signed certificate generated for THIS connection. The private key is sealed with the
  * rest of the secret and never leaves the platform; the tenant downloads the certificate.
  */
-export const microsoft365Secret = z.object({
+export const microsoft365App = z.object({
   tenantId: z.string().trim().min(1),
   clientId: z.string().trim().min(1),
-  /** Comma- or whitespace-separated addresses. */
-  senders: z.string().trim().min(1),
-  siteUrl: z.string().trim().url(),
   clientSecret: z.string().optional(),
   privateKey: z.string().optional(),
   certificate: z.string().optional(),
   certificateNotAfter: z.string().optional(),
 });
-export type Microsoft365Secret = z.infer<typeof microsoft365Secret>;
+export type Microsoft365App = z.infer<typeof microsoft365App>;
+
+/**
+ * The mail connector's credential: the app, and the addresses the tenant allowed it to send as
+ * (scoped in Exchange with RBAC for Applications).
+ */
+export const microsoft365MailSecret = microsoft365App.extend({
+  /** Comma- or whitespace-separated addresses. */
+  senders: z.string().trim().min(1),
+});
+export type Microsoft365MailSecret = z.infer<typeof microsoft365MailSecret>;
 
 /** The fields only the platform may write — never accepted from a caller's candidate. */
 const GENERATED = ['privateKey', 'certificate', 'certificateNotAfter'] as const;
@@ -32,7 +42,7 @@ const GENERATED = ['privateKey', 'certificate', 'certificateNotAfter'] as const;
 export const LOGIN_BASE = 'https://login.microsoftonline.com';
 export const GRAPH_BASE = 'https://graph.microsoft.com';
 
-export function sendersOf(secret: Pick<Microsoft365Secret, 'senders'>): string[] {
+export function sendersOf(secret: Pick<Microsoft365MailSecret, 'senders'>): string[] {
   return secret.senders
     .split(/[\s,;]+/)
     .map((s) => s.trim())
@@ -40,7 +50,7 @@ export function sendersOf(secret: Pick<Microsoft365Secret, 'senders'>): string[]
 }
 
 export type AuthMethod = 'certificate' | 'client-secret';
-export const authMethodOf = (s: Microsoft365Secret): AuthMethod =>
+export const authMethodOf = (s: Microsoft365App): AuthMethod =>
   s.clientSecret?.trim() ? 'client-secret' : 'certificate';
 
 /**
@@ -49,7 +59,7 @@ export const authMethodOf = (s: Microsoft365Secret): AuthMethod =>
  * - A client secret: stored as given, and any generated key material dropped — with the
  *   connection's expiry cleared (`null`), since the certificate it described is gone.
  * - No client secret: the key is the platform's. A rotation that changes only the tenant's
- *   fields (a new sender, a corrected site) keeps the stored keypair, so the certificate the
+ *   fields (a new sender address) keeps the stored keypair, so the certificate the
  *   tenant already uploaded keeps working; a connection that has none, or whose certificate
  *   has lapsed, gets a new one.
  *
@@ -108,7 +118,7 @@ export type TokenOutcome =
  */
 export async function acquireToken(
   fetchImpl: FetchLike,
-  secret: Microsoft365Secret,
+  secret: Microsoft365App,
   opts: { loginBase?: string; now: Date },
 ): Promise<TokenOutcome> {
   const loginBase = opts.loginBase ?? LOGIN_BASE;
@@ -180,7 +190,7 @@ export function classifyTokenError(
   return { ok: false, refused: status === 400 || status === 401, error: said };
 }
 
-async function clientAssertion(secret: Microsoft365Secret, audience: string, now: Date): Promise<string> {
+async function clientAssertion(secret: Microsoft365App, audience: string, now: Date): Promise<string> {
   const iat = Math.floor(now.getTime() / 1000);
   const header = { alg: 'PS256', typ: 'JWT', 'x5t#S256': await thumbprintS256(secret.certificate!) };
   const claims = {

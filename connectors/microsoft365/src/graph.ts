@@ -33,25 +33,6 @@ export class GraphError extends Error {
  */
 export const MAX_ATTACHMENT_BYTES = Math.floor(2.5 * 1024 * 1024);
 
-export interface SiteInfo {
-  id: string;
-  displayName: string;
-  webUrl: string;
-}
-
-/** `https://acme.sharepoint.com/sites/Team` → Graph's `sites/{host}:/sites/Team`. */
-export function sitePath(siteUrl: string): string {
-  const url = new URL(siteUrl);
-  const path = url.pathname.replace(/\/+$/, '');
-  return path ? `sites/${url.hostname}:${path}` : `sites/${url.hostname}`;
-}
-
-export async function readSite(client: GraphClient, siteUrl: string): Promise<SiteInfo> {
-  const res = await call(client, 'GET', sitePath(siteUrl));
-  const body = (await res.json()) as Partial<SiteInfo>;
-  return { id: String(body.id ?? ''), displayName: String(body.displayName ?? ''), webUrl: String(body.webUrl ?? siteUrl) };
-}
-
 /**
  * Send one message as `mail.from` with `POST /users/{from}/sendMail`.
  *

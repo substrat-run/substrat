@@ -2,17 +2,20 @@
  * `@substrat-run/connector-microsoft365` — a tenant's own Microsoft 365, over Microsoft Graph
  * with app-only client credentials in the tenant's own Entra directory (#2100).
  *
- * Host code, never module code. What it does today is send mail as the tenant: it implements
- * the kernel's `MailSender`, so the platform's email relay routes a vertical's message to it
- * when the message's `from` is one of the connection's addresses (#2098). Documents in a Teams
- * channel's SharePoint folder are #2101.
+ * Host code, never module code. One package, one connector per capability, each its own
+ * provider and its own app registration in the tenant's directory. Today that is mail
+ * (`microsoft365-mail`): it implements the kernel's `MailSender`, so the platform's email relay
+ * routes a vertical's message to it when the message's `from` is one of the connection's
+ * addresses (#2098). Documents in a Teams channel's SharePoint folder are a second connector
+ * (#2101), with a credential, a health and a set of grants of its own, so a site that fails to
+ * sync never marks mail as failing and a vertical that only sends mail holds nothing that lands
+ * files.
  *
- * **Least privilege is the tenant's, and this connector assumes it.** The app registration
- * holds only `Sites.Selected` in Entra; the right to send is granted in Exchange with RBAC for
- * Applications, scoped to the sender mailboxes, and the right to a site is granted per site.
- * So the app can send as the addresses the tenant chose and no other, cannot read any mailbox,
- * and reaches no site it was not given. A send Exchange refuses is reported as outside the
- * scope the tenant granted.
+ * **Least privilege is the tenant's, and this connector assumes it.** The mail app registration
+ * holds no Graph application permission at all: the right to send is granted in Exchange with
+ * RBAC for Applications, scoped to the sender mailboxes. So the app can send as the addresses
+ * the tenant chose and no other, and cannot read any mailbox. A send Exchange refuses is
+ * reported as outside the scope the tenant granted.
  *
  * **The keypair is the platform's, one per connection.** With no client secret, the platform
  * generates a keypair and a self-signed certificate when the connection is created
@@ -30,20 +33,21 @@ import {
   type ConnectionProbe,
 } from '@substrat-run/contracts';
 import { settleConnectionUse, type FetchLike, type HostAdmin, type MailSender, type ScopeHost } from '@substrat-run/kernel';
-import { acquireToken, authMethodOf, microsoft365Secret, sendersOf, type Microsoft365Secret } from './credential.js';
-import { GraphError, readSite, sendMail, type GraphClient } from './graph.js';
+import { acquireToken, authMethodOf, microsoft365MailSecret, sendersOf, type Microsoft365MailSecret } from './credential.js';
+import { GraphError, sendMail, type GraphClient } from './graph.js';
 import { certificatePem, thumbprintSha1Hex } from './x509.js';
 
 export {
   prepareMicrosoft365Candidate,
-  microsoft365Secret,
+  microsoft365App,
+  microsoft365MailSecret,
   sendersOf,
   classifyTokenError,
   LOGIN_BASE,
   GRAPH_BASE,
 } from './credential.js';
-export type { Microsoft365Secret, AuthMethod, TokenOutcome } from './credential.js';
-export { GraphError, MAX_ATTACHMENT_BYTES, sitePath } from './graph.js';
+export type { Microsoft365App, Microsoft365MailSecret, AuthMethod, TokenOutcome } from './credential.js';
+export { GraphError, MAX_ATTACHMENT_BYTES } from './graph.js';
 export {
   generateCertificate,
   certificatePem,
@@ -52,14 +56,14 @@ export {
   CERTIFICATE_VALIDITY_DAYS,
 } from './x509.js';
 
-export const MICROSOFT365_PROVIDER = 'microsoft365';
+export const MICROSOFT365_MAIL_PROVIDER = 'microsoft365-mail';
 
 /**
  * No standing grants. Sending mail lands nothing in a scope; an attachment a message carries
  * is read as this connection, so the tenant grants that read on the target it means to send
  * from — per vertical, which is why no fixed key can be named here.
  */
-export const MICROSOFT365_CONNECTION_GRANTS: readonly string[] = [];
+export const MICROSOFT365_MAIL_CONNECTION_GRANTS: readonly string[] = [];
 
 export interface Microsoft365Options {
   fetch: FetchLike;
@@ -76,11 +80,11 @@ const nowOf = (o: Microsoft365Options) => (o.now ? o.now() : new Date());
 const loginOf = (o: Microsoft365Options) => (o.loginBase ? { loginBase: o.loginBase } : {});
 
 /** Check a credential that is not stored yet — the connect-time gate. */
-export async function probeMicrosoft365Secret(
+export async function probeMicrosoft365MailSecret(
   raw: Record<string, string>,
   options: Microsoft365Options,
 ): Promise<ConnectionProbe> {
-  const parsed = microsoft365Secret.safeParse(raw);
+  const parsed = microsoft365MailSecret.safeParse(raw);
   if (!parsed.success) {
     const fields = parsed.error.issues.map((i) => i.path.join('.')).join(', ');
     return probeOf({ ok: false, refused: true, error: `incomplete credential: ${fields}` });
@@ -89,7 +93,7 @@ export async function probeMicrosoft365Secret(
 }
 
 /** Check the live connection's credential — **Test connection**. */
-export async function probeMicrosoft365Connection(
+export async function probeMicrosoft365MailConnection(
   host: ScopeHost,
   connection: ConnectionRef,
   options: Microsoft365Options,
@@ -98,9 +102,15 @@ export async function probeMicrosoft365Connection(
   return probeWith(conn.fetch, conn.secret, options);
 }
 
+/**
+ * Sign-in is the whole probe. The token comes from the tenant's own directory endpoint, so a
+ * token is the proof that this app is registered in the directory the tenant named, and the
+ * directory is what the probe names. Nothing past it can be read: the app deliberately holds
+ * no Graph permission that reads, and mail cannot be checked without sending.
+ */
 async function probeWith(
   fetchImpl: FetchLike,
-  secret: Microsoft365Secret,
+  secret: Microsoft365MailSecret,
   options: Microsoft365Options,
 ): Promise<ConnectionProbe> {
   const facts = [
@@ -112,34 +122,16 @@ async function probeWith(
   ];
   const token = await acquireToken(fetchImpl, secret, { now: nowOf(options), ...loginOf(options) });
   if (!token.ok) return probeOf({ ok: false, refused: token.refused, error: token.error, facts });
-  try {
-    const site = await readSite(graph(fetchImpl, token.accessToken, options), secret.siteUrl);
-    return probeOf({
-      ok: true,
-      accountRef: site.id || null,
-      accountLabel: site.displayName || site.webUrl,
-      // Mail cannot be probed without sending: the app deliberately cannot read a mailbox.
-      facts: [...facts, { label: 'Mail', value: 'not verified until the first send' }],
-    });
-  } catch (e) {
-    if (e instanceof GraphError && (e.status === 401 || e.status === 403)) {
-      // Signed in, but the site is not granted (yet): a SharePoint admin's step, still to do.
-      return probeOf({
-        ok: false,
-        refused: false,
-        error: `signed in, but this app has no access to ${secret.siteUrl} yet — grant it Read on the site (Sites.Selected)`,
-        facts,
-      });
-    }
-    if (e instanceof GraphError && e.status === 404) {
-      return probeOf({ ok: false, refused: true, error: `no SharePoint site at ${secret.siteUrl}`, facts });
-    }
-    return probeOf({ ok: false, refused: false, error: e instanceof Error ? e.message : String(e), facts });
-  }
+  return probeOf({
+    ok: true,
+    accountRef: secret.tenantId,
+    accountLabel: `Entra directory ${secret.tenantId}`,
+    facts: [...facts, { label: 'Mail', value: 'not verified until the first send' }],
+  });
 }
 
 /** The stored credential, reduced: identifiers whole, the client secret masked, no key. */
-export async function microsoft365CredentialSummary(
+export async function microsoft365MailCredentialSummary(
   host: ScopeHost,
   connection: ConnectionRef,
 ): Promise<ConnectionCredential> {
@@ -148,7 +140,6 @@ export async function microsoft365CredentialSummary(
     { key: 'tenantId', label: 'Directory (tenant) ID', value: secret.tenantId, masked: false },
     { key: 'clientId', label: 'Application (client) ID', value: secret.clientId, masked: false },
     { key: 'senders', label: 'Sends as', value: sendersOf(secret).join(', ').slice(0, 200), masked: false },
-    { key: 'siteUrl', label: 'SharePoint site', value: secret.siteUrl.slice(0, 200), masked: false },
   ];
   if (authMethodOf(secret) === 'client-secret') {
     fields.push({ key: 'clientSecret', label: 'Client secret', value: mask(secret.clientSecret!), masked: true });
@@ -170,7 +161,7 @@ export async function microsoft365CredentialSummary(
 }
 
 /** The public certificate the tenant uploads to its app registration; `null` with a client secret. */
-export async function microsoft365Certificate(
+export async function microsoft365MailCertificate(
   host: ScopeHost,
   connection: ConnectionRef,
 ): Promise<ConnectionCertificate | null> {
@@ -220,20 +211,20 @@ async function openSecret(admin: HostAdmin, connection: ConnectionRef) {
   const open = await admin.openConnection(
     tenantIdSchema.parse(connection.tenantId),
     connection.vertical,
-    MICROSOFT365_PROVIDER,
+    MICROSOFT365_MAIL_PROVIDER,
   );
   if (!open) {
     throw new Error(
-      `no live '${MICROSOFT365_PROVIDER}' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`,
+      `no live '${MICROSOFT365_MAIL_PROVIDER}' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`,
     );
   }
   // The row the caller named and the credential opened must be the same connection.
   if (open.id !== connection.id) {
     throw new Error(
-      `connection ${connection.id} is not the live '${MICROSOFT365_PROVIDER}' connection (${open.id}) for this tenant`,
+      `connection ${connection.id} is not the live '${MICROSOFT365_MAIL_PROVIDER}' connection (${open.id}) for this tenant`,
     );
   }
-  return { open, secret: microsoft365Secret.parse(open.secret) };
+  return { open, secret: microsoft365MailSecret.parse(open.secret) };
 }
 
 /** The live connection, its parsed secret, and egress that records health against it. */
@@ -246,13 +237,13 @@ async function openMicrosoft365Connection(admin: HostAdmin, options: Microsoft36
       const res = await options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
       await admin.recordConnectionUse(
         open.id,
-        settleConnectionUse(MICROSOFT365_PROVIDER, Date.now() - started, { response: res }),
+        settleConnectionUse(MICROSOFT365_MAIL_PROVIDER, Date.now() - started, { response: res }),
       );
       return res;
     } catch (err) {
       await admin.recordConnectionUse(
         open.id,
-        settleConnectionUse(MICROSOFT365_PROVIDER, Date.now() - started, { error: err }),
+        settleConnectionUse(MICROSOFT365_MAIL_PROVIDER, Date.now() - started, { error: err }),
       );
       throw err;
     }

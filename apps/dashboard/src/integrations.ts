@@ -173,9 +173,9 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // correct, and a re-paste rotates it in place — which is what a re-paste should do
     // when there is only ever one.
   },
-  microsoft365: {
-    provider: 'microsoft365',
-    name: 'Microsoft 365',
+  'microsoft365-mail': {
+    provider: 'microsoft365-mail',
+    name: 'Microsoft 365 mail',
     description:
       "Send mail as your organisation's own addresses through an app registration in your Entra directory. " +
       'Leave the client secret empty and a certificate is generated for this connection: download it here ' +
@@ -185,10 +185,9 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       { key: 'tenantId', label: 'Directory (tenant) ID', secret: false, placeholder: '00000000-0000-0000-0000-000000000000' },
       { key: 'clientId', label: 'Application (client) ID', secret: false, placeholder: '00000000-0000-0000-0000-000000000000' },
       { key: 'senders', label: 'Sender addresses (comma-separated)', secret: false, placeholder: 'noreply@example.com' },
-      { key: 'siteUrl', label: 'SharePoint site URL', secret: false, placeholder: 'https://example.sharepoint.com/sites/Team' },
       { key: 'clientSecret', label: 'Client secret', secret: true, optional: true, placeholder: 'leave empty to use a certificate' },
     ],
-    // Mail lands nothing in a scope, so no standing grant (`MICROSOFT365_CONNECTION_GRANTS`).
+    // Mail lands nothing in a scope, so no standing grant (`MICROSOFT365_MAIL_CONNECTION_GRANTS`).
     grants: [],
     sendsMail: true,
     certificate: true,

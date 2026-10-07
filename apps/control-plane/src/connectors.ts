@@ -35,13 +35,14 @@ import {
   sweepPlanimaPlan,
 } from '@substrat-run/connector-planima';
 import {
-  MICROSOFT365_CONNECTION_GRANTS,
-  microsoft365Certificate,
-  microsoft365CredentialSummary,
+  MICROSOFT365_MAIL_CONNECTION_GRANTS,
+  MICROSOFT365_MAIL_PROVIDER,
+  microsoft365MailCertificate,
+  microsoft365MailCredentialSummary,
   microsoft365MailSender,
   prepareMicrosoft365Candidate,
-  probeMicrosoft365Connection,
-  probeMicrosoft365Secret,
+  probeMicrosoft365MailConnection,
+  probeMicrosoft365MailSecret,
 } from '@substrat-run/connector-microsoft365';
 
 /**
@@ -387,9 +388,10 @@ const PLANIMA: ConnectorRegistration = {
 };
 
 /**
- * Microsoft 365 (#2100) — a tenant's own mailbox, as a `MailSender` behind the email relay
+ * Microsoft 365 mail (#2100) — a tenant's own mailbox, as a `MailSender` behind the email relay
  * (#2098). App-only Graph in the tenant's directory; no dispatch, no callback, no consent round
- * (the app registration is the tenant's, so the credential is typed into the door).
+ * (the app registration is the tenant's, so the credential is typed into the door). Documents
+ * are a separate connector with its own app registration (#2101), not a second half of this one.
  *
  * `prepareCandidate` is what makes the certificate path work: with no client secret it
  * generates this connection's keypair on the plane, before the probe, and keeps it across an
@@ -397,21 +399,20 @@ const PLANIMA: ConnectorRegistration = {
  * certificate. The connection is saved before the tenant can upload that certificate, which is
  * why the connector reports "not on the app registration yet" as inconclusive.
  */
-const MICROSOFT365: ConnectorRegistration = {
-  provider: 'microsoft365',
-  grants: MICROSOFT365_CONNECTION_GRANTS,
+const MICROSOFT365_MAIL: ConnectorRegistration = {
+  provider: MICROSOFT365_MAIL_PROVIDER,
+  grants: MICROSOFT365_MAIL_CONNECTION_GRANTS,
   inspector: (env) => ({
-    probe: async (h, row) => probeMicrosoft365Connection(h, row, microsoft365Options(env)),
-    credential: (h, row) => microsoft365CredentialSummary(h, row),
-    probeCandidate: async (secret) => probeMicrosoft365Secret(secret, microsoft365Options(env)),
+    probe: async (h, row) => probeMicrosoft365MailConnection(h, row, microsoft365Options(env)),
+    credential: (h, row) => microsoft365MailCredentialSummary(h, row),
+    probeCandidate: async (secret) => probeMicrosoft365MailSecret(secret, microsoft365Options(env)),
     prepareCandidate: (candidate, previous) =>
       prepareMicrosoft365Candidate(candidate, previous, { now: new Date(), commonName: 'Substrat' }),
-    certificate: (h, row) => microsoft365Certificate(h, row),
+    certificate: (h, row) => microsoft365MailCertificate(h, row),
   }),
-  // Nothing to poll: mail is sent on request, and Microsoft holds nothing the platform mirrors
-  // yet (documents, #2101, will). A sweeper that does nothing says so rather than being absent,
-  // because the registration requires one.
-  sweep: () => async () => ({ swept: false, reason: 'microsoft365 has nothing to poll' }),
+  // Nothing to poll: mail is sent on request. A sweeper that does nothing says so rather than
+  // being absent, because the registration requires one.
+  sweep: () => async () => ({ swept: false, reason: 'microsoft365-mail has nothing to poll' }),
   mail: (env) => microsoft365MailSender(microsoft365Options(env)),
 };
 
@@ -428,7 +429,7 @@ function microsoft365Options(env: ConnectorEnv) {
  * — the inspector map, the drain handlers, the sweeper map, the declared grants and the
  * callback routes in `worker.ts` are all derived from this array.
  */
-export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, MICROSOFT365];
+export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, MICROSOFT365_MAIL];
 
 /** The `{ provider → inspector }` shape `control-plane-api` and the relay both take. */
 export function connectionInspectorsFor(env: ConnectorEnv): Record<string, ConnectionInspector> {

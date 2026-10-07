@@ -7,12 +7,11 @@ import {
   MAX_ATTACHMENT_BYTES,
   classifyTokenError,
   generateCertificate,
-  microsoft365Certificate,
-  microsoft365CredentialSummary,
+  microsoft365MailCertificate,
+  microsoft365MailCredentialSummary,
   microsoft365MailSender,
   prepareMicrosoft365Candidate,
-  probeMicrosoft365Secret,
-  sitePath,
+  probeMicrosoft365MailSecret,
   thumbprintS256,
 } from '../src/index.js';
 
@@ -31,7 +30,6 @@ const base = {
   tenantId: '11111111-2222-3333-4444-555555555555',
   clientId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
   senders: 'noreply@acme.example, office@acme.example',
-  siteUrl: 'https://acme.sharepoint.com/sites/Team',
 };
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: string };
@@ -56,9 +54,6 @@ function microsoft(routes: Routes) {
 }
 
 const tokenOk: Routes = { '/oauth2/v2.0/token': { status: 200, body: { access_token: 'TOKEN' } } };
-const siteOk: Routes = {
-  '/v1.0/sites/': { status: 200, body: { id: 'acme.sharepoint.com,1,2', displayName: 'Team', webUrl: base.siteUrl } },
-};
 const entraError = (codes: number[], status = 400): Routes => ({
   '/oauth2/v2.0/token': {
     status,
@@ -83,8 +78,8 @@ describe('the generated certificate', () => {
 describe('the client assertion', () => {
   it("is PS256, names the key by x5t#S256, and is signed by the certificate's key", async () => {
     const secret = await withCert();
-    const ms = microsoft({ ...tokenOk, ...siteOk });
-    const probe = await probeMicrosoft365Secret(secret, { fetch: ms.fetchImpl, now: () => NOW });
+    const ms = microsoft(tokenOk);
+    const probe = await probeMicrosoft365MailSecret(secret, { fetch: ms.fetchImpl, now: () => NOW });
     expect(probe.ok).toBe(true);
 
     const form = new URLSearchParams(ms.calls[0]!.body);
@@ -115,8 +110,8 @@ describe('the client assertion', () => {
   });
 
   it('with a client secret, sends the secret and no assertion', async () => {
-    const ms = microsoft({ ...tokenOk, ...siteOk });
-    await probeMicrosoft365Secret({ ...base, clientSecret: 'S3CRET-value' }, { fetch: ms.fetchImpl, now: () => NOW });
+    const ms = microsoft(tokenOk);
+    await probeMicrosoft365MailSecret({ ...base, clientSecret: 'S3CRET-value' }, { fetch: ms.fetchImpl, now: () => NOW });
     const form = new URLSearchParams(ms.calls[0]!.body);
     expect(form.get('client_secret')).toBe('S3CRET-value');
     expect(form.get('client_assertion')).toBeNull();
@@ -174,14 +169,26 @@ describe('preparing a candidate on the platform side', () => {
 
 describe('what the probe says', () => {
   const probe = async (routes: Routes, secret?: Record<string, string>) =>
-    probeMicrosoft365Secret(secret ?? (await withCert()), { fetch: microsoft(routes).fetchImpl, now: () => NOW });
+    probeMicrosoft365MailSecret(secret ?? (await withCert()), { fetch: microsoft(routes).fetchImpl, now: () => NOW });
 
-  it('names the site when sign-in and site access both work', async () => {
-    expect(await probe({ ...tokenOk, ...siteOk })).toMatchObject({
-      ok: true,
-      accountLabel: 'Team',
-      accountRef: 'acme.sharepoint.com,1,2',
-    });
+  it('a sign-in names the directory it proved, calls nothing past the token, and leaves mail unverified', async () => {
+    const ms = microsoft(tokenOk);
+    const p = await probeMicrosoft365MailSecret(await withCert(), { fetch: ms.fetchImpl, now: () => NOW });
+    expect(p).toMatchObject({ ok: true, accountRef: base.tenantId });
+    expect(p.accountLabel).toContain(base.tenantId);
+    expect(p.facts).toContainEqual({ label: 'Mail', value: 'not verified until the first send' });
+    // The mail app holds no Graph permission that reads: nothing is asked of Graph at all.
+    expect(ms.calls.map((c) => new URL(c.url).pathname)).toEqual([`/${base.tenantId}/oauth2/v2.0/token`]);
+  });
+
+  it('a credential carrying a SharePoint site is not asked about it — documents are their own connector', async () => {
+    const ms = microsoft(tokenOk);
+    const p = await probeMicrosoft365MailSecret(
+      { ...(await withCert()), siteUrl: 'https://acme.sharepoint.com/sites/Team' },
+      { fetch: ms.fetchImpl, now: () => NOW },
+    );
+    expect(p.ok).toBe(true);
+    expect(ms.calls.some((c) => c.url.includes('/sites/'))).toBe(false);
   });
 
   it('a certificate not on the app registration yet is inconclusive, so the connection can be saved first', async () => {
@@ -201,24 +208,13 @@ describe('what the probe says', () => {
     expect(p.error).toContain(says);
   });
 
-  it('signed in but the site not granted yet is inconclusive', async () => {
-    const p = await probe({ ...tokenOk, '/v1.0/sites/': { status: 403, body: { error: { code: 'accessDenied', message: 'x' } } } });
-    expect(p).toMatchObject({ ok: false, refused: false });
-    expect(p.error).toContain('no access');
-  });
-
-  it('a site that does not exist is a refusal', async () => {
-    const p = await probe({ ...tokenOk, '/v1.0/sites/': { status: 404, body: { error: { code: 'itemNotFound', message: 'x' } } } });
-    expect(p).toMatchObject({ ok: false, refused: true });
-  });
-
   it('Microsoft being down is inconclusive, never a refusal', () => {
     expect(classifyTokenError(503, {})).toMatchObject({ ok: false, refused: false });
   });
 
   it('an incomplete credential is refused before any request', async () => {
     const ms = microsoft({});
-    const p = await probeMicrosoft365Secret({ tenantId: 'x' }, { fetch: ms.fetchImpl });
+    const p = await probeMicrosoft365MailSecret({ tenantId: 'x' }, { fetch: ms.fetchImpl });
     expect(p.refused).toBe(true);
     expect(ms.calls).toHaveLength(0);
   });
@@ -229,7 +225,7 @@ describe('a connection: summary, certificate and mail', () => {
     id: '01CONN',
     tenantId: '01HZZZZZZZZZZZZZZZZZZZZZZZ',
     vertical: 'desk',
-    provider: 'microsoft365',
+    provider: 'microsoft365-mail',
   } as unknown as Connection;
   const hostWith = (secret: Record<string, string>) => {
     const uses: unknown[] = [];
@@ -254,16 +250,16 @@ describe('a connection: summary, certificate and mail', () => {
 
   it('the summary never shows key material, and shows the thumbprint Entra shows', async () => {
     const secret = await withCert();
-    const summary = await microsoft365CredentialSummary(hostWith(secret).host, conn);
+    const summary = await microsoft365MailCredentialSummary(hostWith(secret).host, conn);
     expect(JSON.stringify(summary)).not.toContain(secret.privateKey!);
     expect(summary.fields.find((f) => f.key === 'certificate')!.value).toMatch(/^[0-9A-F]{40}$/);
   });
 
   it('serves the public certificate as PEM, with the SHA-1 thumbprint — and nothing with a client secret', async () => {
-    const cert = await microsoft365Certificate(hostWith(await withCert()).host, conn);
+    const cert = await microsoft365MailCertificate(hostWith(await withCert()).host, conn);
     expect(cert!.pem).toMatch(/^-----BEGIN CERTIFICATE-----\n/);
     expect(new X509Certificate(cert!.pem).fingerprint.replace(/:/g, '')).toBe(cert!.thumbprint);
-    expect(await microsoft365Certificate(hostWith({ ...base, clientSecret: 'S' }).host, conn)).toBeNull();
+    expect(await microsoft365MailCertificate(hostWith({ ...base, clientSecret: 'S' }).host, conn)).toBeNull();
   });
 
   it('sends with sendMail as the from address, inline attachments, X- headers only, health recorded', async () => {
@@ -320,12 +316,5 @@ describe('a connection: summary, certificate and mail', () => {
     await expect(
       microsoft365MailSender({ fetch: microsoft({}).fetchImpl }).senders(hostWith(await withCert()).host, other),
     ).rejects.toThrow(/not the live/);
-  });
-});
-
-describe('sitePath', () => {
-  it("maps a site URL onto Graph's host-and-path address", () => {
-    expect(sitePath('https://acme.sharepoint.com/sites/Team/')).toBe('sites/acme.sharepoint.com:/sites/Team');
-    expect(sitePath('https://acme.sharepoint.com')).toBe('sites/acme.sharepoint.com');
   });
 });

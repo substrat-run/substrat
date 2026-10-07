@@ -8,12 +8,11 @@ import { PROVIDERS, parseProviderSecret } from '../src/integrations.js';
  * rather than stored as ''.
  */
 describe('parseProviderSecret with an optional field (#2100)', () => {
-  const m365 = PROVIDERS.microsoft365!;
+  const m365 = PROVIDERS['microsoft365-mail']!;
   const filled = {
     tenantId: 't',
     clientId: 'c',
     senders: 'noreply@acme.example',
-    siteUrl: 'https://acme.sharepoint.com/sites/Team',
   };
 
   it('accepts the credential without the optional field, and leaves it out', () => {
