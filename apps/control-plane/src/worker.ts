@@ -19,6 +19,7 @@
 import { Hono, type Context } from 'hono';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
 import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv } from './relay-caller.js';
+import { sendAsTenant, TenantMailRefusal } from './tenant-mail.js';
 import {
   parsePlatformBaseDomains,
   platformActorId,
@@ -144,6 +145,7 @@ import {
   CONNECTORS,
   connectionInspectorsFor,
   connectorGrantsFor,
+  mailSendersFor,
   connectFlowsFor,
   connectorSweepersFor,
   type ConnectorEnv,
@@ -2112,10 +2114,13 @@ export default {
     // PLATFORM_SECRET. That secret is shared across every dispatch script, so it only proves "a
     // platform script is calling" — WHICH vertical is re-derived from THIS directory's record for
     // the named scope, and the `emailSender` grant is checked against that vertical. So a script
-    // that holds the secret but lacks the grant is still refused, and the FROM address is always
-    // the platform's onboarded sender, never the caller's choice. When the call came through the
+    // that holds the secret but lacks the grant is still refused. When the call came through the
     // egress worker's `RelayGateway`, the caller is PROVEN as well, and a body naming any scope
     // but the caller's own is refused (`checkRelayCaller`) — the same check every relay below runs.
+    //
+    // Who sends it (#2098): with no `from`, the platform's onboarded sender, never an address the
+    // caller picked. With a `from`, the tenant's own mail connection that covers that address
+    // (`sendAsTenant`) — only for a proven caller, and never the platform's sender as a fallback.
     app.post('/internal/email/send', async (c) => {
       try {
         assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
@@ -2130,7 +2135,12 @@ export default {
       if (!parsed.success) {
         return c.json({ error: 'tenantId, scopeId (ULIDs) and {to, subject, html, text} are required' }, 400);
       }
-      const { tenantId: t, scopeId: s, to, subject, html, text, fromName } = parsed.data;
+      const { tenantId: t, scopeId: s, to, subject, html, text, fromName, from, attachments } = parsed.data;
+      // #2098: the platform's own sender carries no files — attachments are read as the tenant
+      // connection that sends, and the platform's sender is not one.
+      if (attachments?.length && !from) {
+        return c.json({ error: "attachments ride only with `from` — the platform's own sender carries none" }, 400);
+      }
       const host = hostFor(c.env);
       const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
       if (!rec?.vertical) return c.json({ error: 'scope has no vertical bound' }, 404);
@@ -2145,14 +2155,51 @@ export default {
           403,
         );
       }
-      const result = await transportFor(c.env).send({
-        to,
-        from: senderFor(c.env, fromName),
-        subject,
-        html,
-        text,
-      });
-      return c.json({ sent: true, ...result });
+      if (!from) {
+        const result = await transportFor(c.env).send({
+          to,
+          from: senderFor(c.env, fromName),
+          subject,
+          html,
+          text,
+        });
+        return c.json({ sent: true, ...result });
+      }
+      // #2098: sending as a tenant's own address. Never on the platform credential alone — the
+      // body's scope is the caller's claim until the platform has proven who is calling (#2103),
+      // and here that claim would decide whose mailbox the message leaves from.
+      if (!caller.proven) {
+        return c.json(
+          { error: 'sending as a tenant address needs a proven caller — call the relay from the vertical\'s worker, not from inside a Durable Object' },
+          403,
+        );
+      }
+      try {
+        const result = await sendAsTenant(
+          {
+            host,
+            actor: SWEEP_ACTOR,
+            senders: mailSendersFor(c.env),
+            openAttachment: async (connectionId, attachmentId) =>
+              (await host.getConnectorAttachments(connectionId, s)).open(attachmentId),
+          },
+          {
+            tenantId: t,
+            vertical: rec.vertical,
+            from,
+            ...(fromName ? { fromName } : {}),
+            to,
+            subject,
+            html,
+            text,
+            attachmentIds: (attachments ?? []).map((a) => a.attachmentId),
+          },
+        );
+        return c.json({ sent: true, ...result });
+      } catch (e) {
+        if (e instanceof TenantMailRefusal) return c.json({ error: e.message }, e.status);
+        throw e;
+      }
     });
 
     // The connection relay (connections.md §3.5.2) — a tenant admin connects a provider

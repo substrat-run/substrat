@@ -15,9 +15,11 @@ import {
  * privileged top-level worker, and the vertical reaches it through the `/internal/email/send`
  * relay rather than by holding a binding of its own.
  *
- * The message body (recipient, subject, html/text) comes from the vertical; the FROM
- * address is ALWAYS the platform's onboarded sender, never the vertical's choice — a
- * vertical must not be able to send as an arbitrary address on the platform's domain.
+ * The message body (recipient, subject, html/text) comes from the vertical; when this
+ * transport sends it, the FROM address is ALWAYS the platform's onboarded sender, never the
+ * vertical's choice — a vertical must not be able to send as an arbitrary address on the
+ * platform's domain. Mail sent as a tenant's OWN address does not come through here at all: it
+ * goes through that tenant's mail connection (`tenant-mail.ts`, #2098).
  */
 interface EmailEnv {
   /** The Cloudflare Email Service `send_email` binding, when configured. */

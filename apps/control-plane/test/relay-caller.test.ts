@@ -124,6 +124,37 @@ describe('the relay holds a proven caller to its own scope', () => {
     });
   });
 
+  describe("sending as a tenant's own address (#2098)", () => {
+    const asTenant = (over: object = {}) => ({ ...mail(tA, sA), from: 'office@acme.example', ...over });
+
+    it('is never available on the platform credential alone: an unproven caller is refused', async () => {
+      const before = sent.length;
+      const res = await direct('/internal/email/send', asTenant());
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toContain('proven caller');
+      expect(sent).toHaveLength(before);
+    });
+
+    it('a proven caller naming an address no connection covers is refused, and the platform does not send it instead', async () => {
+      const before = sent.length;
+      const res = await viaGateway('/internal/email/send', asTenant(), callerHeader(tA, sA));
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toContain("'office@acme.example'");
+      expect(sent).toHaveLength(before);
+    });
+
+    it("attachments without `from` are a 400 — the platform's own sender carries none", async () => {
+      const before = sent.length;
+      const res = await viaGateway(
+        '/internal/email/send',
+        { ...mail(tA, sA), attachments: [{ attachmentId: '01ATT' }] },
+        callerHeader(tA, sA),
+      );
+      expect(res.status).toBe(400);
+      expect(sent).toHaveLength(before);
+    });
+  });
+
   describe('the connection relays', () => {
     const upsert = (t: string, s: string) => ({
       tenantId: t,

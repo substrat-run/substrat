@@ -1,4 +1,10 @@
-import { globalFetch, type ConnectorHandler, type ConnectorSweeper, type ScopeHost } from '@substrat-run/kernel';
+import {
+  globalFetch,
+  type ConnectorHandler,
+  type ConnectorSweeper,
+  type MailSender,
+  type ScopeHost,
+} from '@substrat-run/kernel';
 import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
@@ -174,6 +180,16 @@ export interface ConnectorRegistration {
     /** Absolute path on the connect origin, taking the signed state as `?token=`. */
     readonly startPath: string;
   };
+  /**
+   * #2098 — this connection can send mail as addresses the tenant owns. The email relay
+   * routes a vertical's message to it when the message's `from` is one of its `senders`.
+   * Absent is a complete connector that sends no mail.
+   *
+   * The dashboard door says the same thing with `sendsMail` (`pnpm lint:connector-grants`
+   * holds the two equal), so a tenant can tell from the door that this connection will send
+   * as them.
+   */
+  mail?(env: ConnectorEnv): MailSender;
 }
 
 /**
@@ -380,6 +396,11 @@ export function connectFlowsFor(): Readonly<Record<string, ConnectFlowSpec | und
   return Object.fromEntries(
     CONNECTORS.flatMap((c) => (c.consent ? [[c.provider, { startPath: c.consent.startPath }]] : [])),
   );
+}
+
+/** The `{ provider → mail sender }` shape the email relay routes a tenant `from` through (#2098). */
+export function mailSendersFor(env: ConnectorEnv): Readonly<Record<string, MailSender>> {
+  return Object.fromEntries(CONNECTORS.flatMap((c) => (c.mail ? [[c.provider, c.mail(env)]] : [])));
 }
 
 /** The `{ provider → declared grants }` shape `createControlPlaneApi` takes (#726). */

@@ -112,6 +112,35 @@ describe('CloudflareEmailTransport', () => {
     expect(result).toEqual({ delivered: [], queued: ['slow@example.com'], bounced: ['bad@example.com'] });
   });
 
+  it('sends file attachments as the binding expects them (#2098)', async () => {
+    const binding = fakeBinding({ delivered: [], queued: [], permanent_bounces: [] });
+    const content = new TextEncoder().encode('%PDF-1.4');
+    await new CloudflareEmailTransport(binding).send(
+      invite({ attachments: [{ filename: 'offer.pdf', contentType: 'application/pdf', content }] }),
+    );
+    expect((binding.calls[0] as { attachments: unknown }).attachments).toEqual([
+      { content, filename: 'offer.pdf', type: 'application/pdf', disposition: 'attachment' },
+    ]);
+  });
+
+  it('refuses an attachment named by id — only the relay can read the scope', async () => {
+    const binding = fakeBinding({ delivered: [] });
+    await expect(
+      new CloudflareEmailTransport(binding).send(invite({ attachments: [{ attachmentId: '01ATT' }] })),
+    ).rejects.toThrow(/only the platform relay can read/);
+    expect(binding.calls).toHaveLength(0);
+  });
+
+  it('refuses a file attachment with no filename or type, before the binding', async () => {
+    const binding = fakeBinding({ delivered: [] });
+    await expect(
+      new CloudflareEmailTransport(binding).send(
+        invite({ attachments: [{ filename: '', contentType: 'text/plain', content: new Uint8Array() }] }),
+      ),
+    ).rejects.toThrow(EmailError);
+    expect(binding.calls).toHaveLength(0);
+  });
+
   it('validates before ever calling the binding', async () => {
     const binding = fakeBinding({ delivered: [] });
     const mail = new CloudflareEmailTransport(binding);
@@ -158,6 +187,43 @@ describe('the platform email relay transport (#303)', () => {
    * browser's redirect chain and the person watching saw a page that never finished. Two more
    * services are behind this hop, which is two more things that can be slow.
    */
+  describe('who it sends as (#2098)', () => {
+    const body = (calls: { init: { body: string } }[]) => JSON.parse(calls[0]!.init.body) as Record<string, unknown>;
+
+    it("by default sends as the platform: the message's own address is never forwarded", async () => {
+      const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true } });
+      await new PlatformRelayEmailTransport(opts(fetchImpl)).send(relayInvite());
+      expect(body(calls)).not.toHaveProperty('from');
+      expect(body(calls).fromName).toBe('Substrat Auth');
+    });
+
+    it("with sender: 'from', asks for the message's address and carries attachments by id", async () => {
+      const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true } });
+      await new PlatformRelayEmailTransport({ ...opts(fetchImpl), sender: 'from' }).send(
+        relayInvite({ from: { email: 'office@acme.example' }, attachments: [{ attachmentId: '01ATT' }] }),
+      );
+      expect(body(calls)).toMatchObject({ from: 'office@acme.example', attachments: [{ attachmentId: '01ATT' }] });
+    });
+
+    it('never puts file bytes in the relay request', async () => {
+      const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true } });
+      await expect(
+        new PlatformRelayEmailTransport({ ...opts(fetchImpl), sender: 'from' }).send(
+          relayInvite({ attachments: [{ filename: 'a.txt', contentType: 'text/plain', content: new Uint8Array([1]) }] }),
+        ),
+      ).rejects.toThrow(/by id/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("refuses attachments on the platform's own sender, before any request", async () => {
+      const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true } });
+      await expect(
+        new PlatformRelayEmailTransport(opts(fetchImpl)).send(relayInvite({ attachments: [{ attachmentId: '01ATT' }] })),
+      ).rejects.toThrow(/carries no attachments/);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
   it('passes an abort signal, so a slow relay cannot hang whoever is waiting on it', async () => {
     const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true } });
 

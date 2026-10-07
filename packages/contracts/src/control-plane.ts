@@ -1324,15 +1324,23 @@ export const adminLogEntry = z.object({
 });
 export type AdminLogEntry = z.infer<typeof adminLogEntry>;
 
+/** How many files one relayed message may carry (#2098). */
+export const EMAIL_RELAY_MAX_ATTACHMENTS = 20;
+
 /**
  * The body a hosted vertical POSTs to the control plane's `/internal/email/send` relay (#303).
  * A vertical that holds the `emailSender` grant cannot bind `send_email` itself (WfP dispatch
  * scripts have no such binding and the §4 sandbox refuses it), so it hands the message here and
  * the platform sends it. `(tenantId, scopeId)` name the caller so the relay can resolve the
  * scope's vertical and check the grant against THAT vertical — holding the shared PLATFORM_SECRET
- * is not enough. The FROM address is the platform's onboarded sender, NEVER the vertical's choice;
- * `fromName` is only the display name. Both `html` and `text` are required — the transport port
- * enforces a text part so no provider can drop it.
+ * is not enough. With no `from`, the FROM address is the platform's onboarded sender and `fromName`
+ * is only its display name. Both `html` and `text` are required — the transport port enforces a
+ * text part so no provider can drop it.
+ *
+ * `from` (#2098) asks to send as a tenant's own address instead. It is never taken on the
+ * caller's word: the relay sends only through a live connection of the tenant whose mail sender
+ * says it may send as that address, and only for a caller the platform has proven (#2103).
+ * Attachments ride with `from` only, named by id and read as that connection.
  */
 export const emailRelayRequest = z.object({
   tenantId,
@@ -1341,8 +1349,15 @@ export const emailRelayRequest = z.object({
   subject: z.string().min(1),
   html: z.string().min(1),
   text: z.string().min(1),
-  /** Optional display name for the FROM (e.g. "Substrat Auth"); the address stays platform-owned. */
+  /** Optional display name for the FROM (e.g. "Substrat Auth"). */
   fromName: z.string().min(1).optional(),
+  /** Send as this address, through the tenant's mail connection that covers it (#2098). */
+  from: z.string().email().optional(),
+  /** Files from the sending scope, by attachment id. Only with `from`. */
+  attachments: z
+    .array(z.object({ attachmentId: z.string().min(1) }).strict())
+    .max(EMAIL_RELAY_MAX_ATTACHMENTS)
+    .optional(),
 });
 export type EmailRelayRequest = z.infer<typeof emailRelayRequest>;
 

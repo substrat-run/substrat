@@ -99,6 +99,13 @@ export {
   recordConnectorCall,
   settleConnectionUse,
 } from './connector-calls.js';
+export type {
+  MailAddress,
+  MailSender,
+  MailSendResult,
+  OutboundMail,
+  OutboundMailAttachment,
+} from './mail-sender.js';
 export {
   assertRedrainWindow,
   attachmentBlobKey,

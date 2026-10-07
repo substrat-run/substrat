@@ -59,6 +59,14 @@ export interface ProviderSpec {
    * rotation-in-place is exactly what a re-paste should do.
    */
   accountRefField?: string;
+  /**
+   * #2098 — the connection sends mail as the tenant: the platform's email relay routes a
+   * message whose `from` is one of its addresses through it. Said on the door because it is
+   * part of what the tenant authorizes by connecting. Must agree with the connector's own
+   * registration (`mail` in `apps/control-plane/src/connectors.ts`), which
+   * `pnpm lint:connector-grants` checks in both directions.
+   */
+  sendsMail?: true;
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {

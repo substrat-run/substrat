@@ -182,6 +182,12 @@ deliberately won't let you bind for yourself:
   through a relay, and your code just uses the ordinary `EmailTransport` seam — the auth-server's
   Better-Auth `sendResetPassword` callback is the reference. The declaration is a **request**;
   it does nothing until a staff member grants the `emailSender` capability in the console.
+  Mail goes out from the platform's address unless you ask otherwise: construct the
+  `PlatformRelayEmailTransport` with `sender: 'from'` and the message is sent as its own
+  `from.email`, through the tenant's connected mailbox that covers it, with any attachments named
+  by id (`{ attachmentId }`). An address none of the tenant's connections covers is refused, never
+  sent as the platform instead. Send from your worker, not from inside a Durable Object: sending
+  as a tenant address needs the platform to know which vertical is calling.
 - `provisions` — the verticals your manager app creates tenants of (the tenant-provisioner
   request), turned on the same way (`setVerticalTenantProvisioner`).
 - `usesModels` — set it (`"usesModels": true`) if your vertical answers with a language model.
