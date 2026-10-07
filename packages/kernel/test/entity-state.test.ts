@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { piecesReproduce } from '../src/spine-guard.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, permissionKey } from '@substrat-run/contracts';
 import {
   assertNoReservedColumnWrite,
@@ -291,18 +291,27 @@ describe('ctx.pageTrashed walks past refused rows without handing out their posi
   });
 
   it('keeps the full budget on a read-only trashed page after 1,500 refused rows', async () => {
-    const rows = Array.from({ length: 1_502 }, (_, i) => ({
-      id: `d${String(i).padStart(4, '0')}`,
-      title: `t${String(i).padStart(4, '0')}`,
-    }));
-    const readonly = {
-      writable: false,
-      open: async (cursor: string) => cursor,
-      seal: async (position: string, hidden: boolean) => hidden ? null : position,
-    };
-    const page = await setup(rows).reads(new Set(['d1500']), undefined, readonly).pageTrashed('doc', { limit: 1 });
-    expect(page.entries.map((row) => (row as { id: string }).id)).toEqual(['d1500']);
-    expect(page.nextCursor).not.toBeNull();
+    const randomness = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((bytes) => {
+      bytes.fill(0);
+      return bytes;
+    });
+    try {
+      const rows = Array.from({ length: 1_502 }, (_, i) => ({
+        id: `d${String(i).padStart(4, '0')}`,
+        title: `t${String(i).padStart(4, '0')}`,
+      }));
+      const readonly = {
+        writable: false,
+        open: async (cursor: string) => cursor,
+        seal: async (position: string, hidden: boolean) => hidden ? null : position,
+      };
+      const page = await setup(rows).reads(new Set(['d1500']), undefined, readonly).pageTrashed('doc', { limit: 1 });
+      expect(page.entries.map((row) => (row as { id: string }).id)).toEqual(['d1500']);
+      expect(page.nextCursor).not.toBeNull();
+      expect(randomness).not.toHaveBeenCalled();
+    } finally {
+      randomness.mockRestore();
+    }
   });
 });
 
