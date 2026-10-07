@@ -1775,13 +1775,18 @@ export const permMod: ModuleRegistration = {
       never,
       unknown
     >,
-    // #2071: the kernel's `entity.grants-topped-up` events on one entity, oldest first.
+    // #2071: the kernel's `entity.grants-topped-up` events on one entity, oldest first — or,
+    // given `type`, its `entity.grants-retired` ones (#2082).
     'perm/topped-up': (async (ctx, input) =>
       ctx.sql
         .query<{ payload: string; actor: string; operation: string | null; authorization: string | null }>(
           `SELECT payload, actor, operation, authorization FROM _substrat_outbox
-            WHERE type = 'entity.grants-topped-up' AND entity_type = ? AND entity_id = ? ORDER BY id`,
-          [(input as EntityRef).entityType, (input as EntityRef).entityId],
+            WHERE type = ? AND entity_type = ? AND entity_id = ? ORDER BY id`,
+          [
+            (input as { type?: string }).type ?? 'entity.grants-topped-up',
+            (input as EntityRef).entityType,
+            (input as EntityRef).entityId,
+          ],
         )
         .map((r) => ({ ...r, payload: JSON.parse(r.payload), actor: JSON.parse(r.actor) }))) as OperationHandler<never, unknown>,
     'perm/unshare': (async (ctx, input) => {
