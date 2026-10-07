@@ -330,12 +330,13 @@ return pageOf(rows, limit, (row) => row.article);
 ```
 
 For the permission-walk case, `pageVisible` reads on past rows the check refuses until
-the page is full or the `VISIBLE_SCAN_BUDGET` (2 000) is spent. A filtered read returns
+the page is full or its private, randomly drawn scan budget (1 000–2 000 rows) is spent. A filtered read returns
 a sealed continuation when it stops at the budget, even with no visible entries, so a
 caller can follow the next `Link` to reach later visible rows. This budget-stop token
 is fixed-length and does not expose the last examined row's id or sort value. A full
 page gets a stateless sealed continuation from its last visible row. The caller can still observe
-that an empty page with a next link spent its budget without finding a visible row;
+that an empty page with a next link passed 1 000–2 000 hidden rows. A short page
+with a next link reveals the same range minus its visible entry count;
 end-of-walk and variable request timing are also observable (#2074, K-45).
 
 For the third case — a list the handler has **already folded in memory**, because the read
