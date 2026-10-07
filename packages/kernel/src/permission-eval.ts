@@ -10,10 +10,57 @@ import {
   type RelationTuple,
   type RoleDefinition,
 } from '@substrat-run/contracts';
-import { markNodeWideTupleChecker, type PermissionChecker } from './permission-checker.js';
+import type { PermissionChecker } from './permission-checker.js';
 import { capabilityGrantOf, capabilityLive, type CapabilityRow } from './capability.js';
 import { isSwitchableSubjectKind } from './system-switch.js';
-import { walkGrantedEntities, type GrantWalkRow } from './grant-scoped-read.js';
+import { walkGrantedEntities, type GrantedEntitiesPage, type GrantWalkRow } from './grant-scoped-read.js';
+
+// Only createTupleEvaluator can register a checker. A provider cannot claim the
+// built-in tuple algebra's node-wide semantics for its own implementation.
+const nodeWideTupleCheckers = new WeakSet<PermissionChecker>();
+function trustTupleChecker<T extends PermissionChecker>(checker: T): T {
+  const check = Object.getOwnPropertyDescriptor(checker, 'check');
+  if (!check || !('value' in check) || typeof check.value !== 'function') {
+    throw new TypeError('tuple evaluator check must be an own method');
+  }
+  Object.freeze(checker);
+  nodeWideTupleCheckers.add(checker);
+  return checker;
+}
+
+/** The one result selector both adapter contexts call, using their own `ctx.check` path. */
+export async function grantedEntitiesForContext(
+  checker: PermissionChecker,
+  subject: CheckSubject,
+  permission: PermissionKey,
+  node: Node,
+  entityType: string,
+  options: { limit?: number; cursor?: string } | undefined,
+  runCheck: (permission: PermissionKey, entity?: EntityRef) => Promise<Decision>,
+  withheld?: ReadonlySet<string>,
+  nodeOverride = false,
+): Promise<GrantedEntitiesPage> {
+  if (withheld?.has(permission)) return { kind: 'ids', ids: [], nextCursor: null };
+  if ((await runCheck(permission)).allowed) {
+    return nodeOverride || nodeWideTupleCheckers.has(checker)
+      ? { kind: 'all' }
+      : { kind: 'incomplete', reason: 'checker' };
+  }
+  if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
+  if (!checker.grantedEntities) return { kind: 'incomplete', reason: 'checker' };
+  const page = await checker.grantedEntities(
+    subject, permission, node, entityType,
+    async (entity) => (await runCheck(permission, entity)).allowed,
+    options,
+  );
+  if (page.kind === 'all') return { kind: 'incomplete', reason: 'checker' };
+  if (page.kind === 'incomplete') return page;
+  const ids: string[] = [];
+  for (const id of page.ids) {
+    if ((await runCheck(permission, { entityType, entityId: id })).allowed) ids.push(id);
+  }
+  return { ...page, ids };
+}
 
 /**
  * The built-in constrained relationship-tuple evaluator (design doc §4.2, plan D-23),
@@ -466,7 +513,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     return deny;
   }
 
-  return markNodeWideTupleChecker({
+  return trustTupleChecker({
     grantedEntities: async (subject, permission, node, entityType, checkEntity, options) => {
       if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
       const scope = reader.scopeFor(node);

@@ -78,25 +78,6 @@ export interface PermissionChecker {
   ): Promise<Coverage>;
 }
 
-// A node allow from the built-in tuple algebra covers every entity at that node.
-// Only the unchanged built-in tuple evaluator has node-wide check semantics.
-// Freeze its methods before marking it so a checker cannot change what ctx.check
-// does between the node decision and this marker's lookup.
-const nodeWideTupleCheckers = new WeakMap<PermissionChecker, PermissionChecker['check']>();
-export function markNodeWideTupleChecker<T extends PermissionChecker>(checker: T): T {
-  const check = Object.getOwnPropertyDescriptor(checker, 'check');
-  if (!check || !('value' in check) || typeof check.value !== 'function') {
-    throw new TypeError('tuple evaluator check must be an own method');
-  }
-  Object.freeze(checker);
-  nodeWideTupleCheckers.set(checker, check.value);
-  return checker;
-}
-export const isNodeWideTupleChecker = (checker: PermissionChecker): boolean => {
-  const originalCheck = nodeWideTupleCheckers.get(checker);
-  return originalCheck !== undefined && originalCheck === checker.check;
-};
-
 /**
  * What `canAssign` throws, in an operation and on the host, for a role the tenant does not
  * define (#1931). One builder and one recogniser: a caller that must tell "no such role" apart

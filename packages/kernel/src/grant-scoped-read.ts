@@ -1,6 +1,5 @@
-import type { CheckSubject, Decision, EntityRef, Node, PermissionKey } from '@substrat-run/contracts';
+import type { EntityRef, PermissionKey } from '@substrat-run/contracts';
 import { fromBase64url, toBase64url } from './base64url.js';
-import { isNodeWideTupleChecker, type PermissionChecker } from './permission-checker.js';
 
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 declare const TextDecoder: new (label: string, options: { fatal: boolean }) => { decode(input: Uint8Array): string };
@@ -42,40 +41,6 @@ const decoder = new TextDecoder('utf-8', { fatal: true });
 
 const live = (row: GrantWalkRow, now: string): boolean =>
   row.revoked_at === null && (row.expires_at === null || row.expires_at > now);
-
-/** The one result selector both adapter contexts call, using their own `ctx.check` path. */
-export async function grantedEntitiesForContext(
-  checker: PermissionChecker,
-  subject: CheckSubject,
-  permission: PermissionKey,
-  node: Node,
-  entityType: string,
-  options: { limit?: number; cursor?: string } | undefined,
-  runCheck: (permission: PermissionKey, entity?: EntityRef) => Promise<Decision>,
-  withheld?: ReadonlySet<string>,
-  nodeOverride = false,
-): Promise<GrantedEntitiesPage> {
-  if (withheld?.has(permission)) return { kind: 'ids', ids: [], nextCursor: null };
-  if ((await runCheck(permission)).allowed) {
-    return nodeOverride || isNodeWideTupleChecker(checker)
-      ? { kind: 'all' }
-      : { kind: 'incomplete', reason: 'checker' };
-  }
-  if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
-  if (!checker.grantedEntities) return { kind: 'incomplete', reason: 'checker' };
-  const page = await checker.grantedEntities(
-    subject, permission, node, entityType,
-    async (entity) => (await runCheck(permission, entity)).allowed,
-    options,
-  );
-  if (page.kind === 'all') return { kind: 'incomplete', reason: 'checker' };
-  if (page.kind === 'incomplete') return page;
-  const ids: string[] = [];
-  for (const id of page.ids) {
-    if ((await runCheck(permission, { entityType, entityId: id })).allowed) ids.push(id);
-  }
-  return { ...page, ids };
-}
 
 function decode(cursor: string, permission: PermissionKey, entityType: string): Position {
   try {

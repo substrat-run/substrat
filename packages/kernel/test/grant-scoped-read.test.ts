@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { capabilityId, node, permissionKey, principalId } from '@substrat-run/contracts';
-import { grantedEntitiesForContext, walkGrantedEntities, type GrantWalkRow, type GrantWalkStore } from '../src/grant-scoped-read.js';
-import { createTupleEvaluator, type PermissionTupleRow, type ScopeTupleReader } from '../src/permission-eval.js';
+import { walkGrantedEntities, type GrantWalkRow, type GrantWalkStore } from '../src/grant-scoped-read.js';
+import { createTupleEvaluator, grantedEntitiesForContext, type PermissionTupleRow, type ScopeTupleReader } from '../src/permission-eval.js';
+import * as permissionCheckerModule from '../src/permission-checker.js';
 import type { PermissionChecker } from '../src/permission-checker.js';
 
 const permission = permissionKey.parse('item:read');
@@ -36,6 +37,25 @@ async function collect(source: GrantWalkStore, limit: number): Promise<string[]>
 }
 
 describe('grant-scoped depth-first walk', () => {
+  it('cannot mark a pre-frozen custom checker as node-wide', async () => {
+    const subject = { kind: 'principal' as const, id: principalId.parse('01JZ00000000000000000000A1') };
+    const where = node.parse({ tenantId: '01JZ0000000000000000000001', scopeId: '01JZ0000000000000000000002' });
+    const fake: PermissionChecker = Object.freeze({
+      check: async (...args: Parameters<PermissionChecker['check']>) => args[3]
+        ? { allowed: false as const, checked: permission, node: where }
+        : { allowed: true as const, proof: [] },
+      covers: async () => ({ covered: true, missing: [] }),
+    });
+    const read = (candidate: PermissionChecker) => grantedEntitiesForContext(
+      candidate, subject, permission, where, 'item', undefined,
+      (key, entity) => candidate.check(subject, key, where, entity),
+    );
+    expect('markNodeWideTupleChecker' in permissionCheckerModule).toBe(false);
+    expect((await fake.check(subject, permission, where, { entityType: 'item', entityId: 'hidden' })).allowed).toBe(false);
+    expect(await read(fake)).toEqual({ kind: 'incomplete', reason: 'checker' });
+    expect(await read(Object.freeze(new Proxy(fake, {})))).toEqual({ kind: 'incomplete', reason: 'checker' });
+  });
+
   it('trusts only the unchanged tuple evaluator for node-wide results', async () => {
     const subject = { kind: 'principal' as const, id: principalId.parse('01JZ00000000000000000000A1') };
     const where = node.parse({ tenantId: '01JZ0000000000000000000001', scopeId: '01JZ0000000000000000000002' });
