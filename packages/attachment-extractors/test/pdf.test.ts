@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
   EXTRACTION_STRIDE,
@@ -13,6 +13,7 @@ import {
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
 import { PDF_RETAINED_BASE, PDF_RETAINED_FACTOR, pdfCMap, pdfCodeMap, pdfDecoders, pdfExtract, pdfFontCosts, pdfLexer } from '../src/pdf.js';
 import { CALL_COST, Pace, Retained } from '../src/shared.js';
+import { afterAbort, cpuMs, expectStoppedPromptly } from './timing.js';
 import { zip } from './zip.js';
 
 /** A `Pace` that counts the work charged to it: what a decoder did, not only what it returned. */
@@ -957,27 +958,13 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
 // within a budget when left alone — never holding the thread longer than a stride's work for
 // the whole of it. A new shape is one line in the table.
 
-// The rows that bound the thread being HELD are CPU time (`cpuMs`), because holding the thread
-// is spending CPU on it without a turn — and CPU time, unlike the wall clock, is not stretched
-// by other processes starving this one. What an extraction does once ABORTED is counted
-// (`afterAbort`), not timed at all: the work it charges and the turns it takes (#2085).
+// The rows that bound the thread being HELD are CPU time, and what an extraction does once
+// ABORTED is counted, not timed (#2085) — `./timing.ts` says why.
 
 /** The most CPU spent between two turns of the loop, start to finish: a stride's work, with room. */
 const HOLD_MS = 150;
 /** The most CPU spent before a 5 ms abort timer gets its turn. */
 const TIMER_SLACK_MS = 150;
-/**
- * The work an aborted extraction may still charge: the rest of the stride it was in, "give or
- * take the few characters a search must see whole" (`Pace`) — a step's fixed cost of slack. An
- * abort that lands at a yield other than a checkpoint (a decoder's own await) is noticed at the
- * next one, a stride on: under load that is where it lands, 8 units past the stride.
- */
-const ABORTED_UNITS = EXTRACTION_STRIDE + CALL_COST;
-/**
- * The loop turns an aborted extraction may take to answer: it answers at its next checkpoint,
- * and a timer's abort lands only at one, so none today — two allow a checkpoint's own yield.
- */
-const ABORTED_TURNS = 2;
 /** The most CPU a shape may spend settling, unaborted. */
 const SETTLE_MS = 3_000;
 /**
@@ -1130,11 +1117,6 @@ const abortedMidway = (body: Uint8Array, afterMs = 0) =>
     () => new Promise((resolve) => setTimeout(resolve, afterMs)),
   );
 
-/** It stopped within the stride it was in, and answered at its next checkpoint. */
-function expectStoppedPromptly(after: { units: number; turns: number }, label?: string): void {
-  expect(after.units, label ?? 'work done after the abort').toBeLessThanOrEqual(ABORTED_UNITS);
-  expect(after.turns, label ?? 'turns taken to answer after the abort').toBeLessThanOrEqual(ABORTED_TURNS);
-}
 
 /**
  * The longest the thread was held while `body` was extracted: the widest gap between ticks of a
@@ -1156,44 +1138,7 @@ async function longestHold(body: Uint8Array, extractor: AttachmentExtractor = pd
   return Math.max(worst, cpuMs() - last);
 }
 
-/**
- * Milliseconds of CPU this thread has spent. Starvation by other processes stretches the wall
- * clock but not this, so a bound on it is a bound on the work done, at any load (#2085).
- */
-function cpuMs(): number {
-  const { user, system } = process.threadCpuUsage();
-  return (user + system) / 1000;
-}
 
-/**
- * What an extraction does once its signal is aborted, counted rather than timed (#2085): the
- * units of work it charges to its `Pace` after the abort, and the turns of the event loop it
- * takes to answer. Work bounds what a parser does after it should have stopped; turns bound
- * how long it may sit idle — awaiting a timer, say — before it notices. Neither moves with the
- * machine's load, where an elapsed time measures both and the scheduler besides.
- */
-async function afterAbort(
-  extract: (signal: { aborted: boolean }) => Promise<unknown>,
-  abortWhen: () => Promise<void>,
-): Promise<{ answer: unknown; units: number; turns: number }> {
-  const charge = vi.spyOn(Pace.prototype, 'charge');
-  try {
-    const signal = { aborted: false };
-    const extracting = extract(signal);
-    await abortWhen();
-    signal.aborted = true;
-    const from = charge.mock.calls.length;
-    let turns = 0;
-    let answered = false;
-    const spin = () => setImmediate(() => answered || ((turns += 1), spin()));
-    spin();
-    const answer = await extracting;
-    answered = true;
-    return { answer, units: charge.mock.calls.slice(from).reduce((n, [units]) => n + units, 0), turns };
-  } finally {
-    charge.mockRestore();
-  }
-}
 
 // A collector to call, so a peak is measured from a settled heap rather than from garbage.
 setFlagsFromString('--expose-gc');

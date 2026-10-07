@@ -629,16 +629,26 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
   const timedOut = { status: 'failed', extractor: 'rogue', detail: "extractor 'rogue' did not answer within 50 ms" };
 
   it('records an extractor that does not answer within the budget as failed, and aborts its signal', async () => {
+    // One that never settles cannot hold the budget open: when the clock reaches the deadline,
+    // the run is decided without it.
+    const clock = virtualTimers();
     let seen: ExtractionSignal | undefined;
-    const hung = await runAttachmentExtractor(
+    const hung = runAttachmentExtractor(
       answering(({ signal }) => {
         seen = signal;
         return new Promise(() => {});
       }),
       input,
       bounds,
+      clock.timers,
     );
-    expect(hung).toEqual(timedOut);
+    await new Promise((r) => setImmediate(r));
+    expect(seen?.aborted).toBe(false);
+    clock.elapse(49);
+    await new Promise((r) => setImmediate(r));
+    expect(seen?.aborted).toBe(false);
+    clock.elapse(1);
+    expect(await hung).toEqual(timedOut);
     expect(seen?.aborted).toBe(true);
   });
 
