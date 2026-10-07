@@ -659,7 +659,7 @@ mountInvites(app, {
       },
       assignRole: (principal, roleKey) =>
         host.assignScopeRole(node.scopeId, principalId.parse(principal), roleKey),
-      // The declared shape, not its key (#2083): the marker it leaves is what lets a key
+      // The declared shape (#2083): the marker it leaves is what lets a key
       // CONTACT_PORTAL gains later reach this customer at the platform's next reconcile.
       grantContactPortal: (principal, contactId) =>
         host.grantEntityShapeLocal(

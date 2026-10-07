@@ -715,11 +715,6 @@ export async function seed(host: ScopeHost): Promise<World> {
 }
 
 /**
- * Bind each dev persona's OIDC `sub` to its principal — the ordinary identity-directory
- * seam, run on every boot rather than only on a fresh seed, because the world is cached
- * and `seed()` does not run again once it exists.
- */
-/**
  * Top every customer up to the portal shape as it is now (#2083), on both desks: a world
  * seeded before a key was added to `CONTACT_PORTAL` receives it, and a desk's dev reconcile
  * also records the declaration `ctx.grant` then refuses. What a deployed desk's reconcile
@@ -731,6 +726,11 @@ export async function reconcilePortalGrants(host: ScopeHost, world: World): Prom
   }
 }
 
+/**
+ * Bind each dev persona's OIDC `sub` to its principal — the ordinary identity-directory
+ * seam, run on every boot rather than only on a fresh seed, because the world is cached
+ * and `seed()` does not run again once it exists.
+ */
 export async function linkDevPersonas(host: ScopeHost, world: World): Promise<void> {
   await host.admin.registerIdentityPool(world.staff, {
     provider: DEV_PROVIDER,

@@ -105,13 +105,8 @@ interface VerticalModule {
 const bootstrapCell = (g: EntityGrantLike): string => {
   if (!g.bootstrap) return 'no — shared';
   if (!g.holder) return 'yes — holders given it from now on';
-  const whose =
-    g.holder === 'self'
-      ? 'the entity id is the principal'
-      : g.holder === 'grantee'
-        ? // #2083: the one holder a reviewer must read as an enforcement claim, so it says so.
-          'whoever holds a key of it here; `ctx.grant` cannot give these keys'
-        : `\`${g.holder.table}.${g.holder.principalColumn}\` names the principal`;
+  if (g.holder === 'grantee') return 'yes — whoever holds a key of it here; `ctx.grant` cannot give these keys';
+  const whose = g.holder === 'self' ? 'the entity id is the principal' : `\`${g.holder.table}.${g.holder.principalColumn}\` names the principal`;
   return `yes — ${whose}`;
 };
 
