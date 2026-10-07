@@ -31,9 +31,11 @@ import {
   runAttachmentExtractor,
   truncateUtf8,
   type AttachmentExtractor,
+  type AttachmentExtractorResult,
   type AttachmentTextBounds,
   type ExtractionOutcome,
   type ExtractionSignal,
+  type ExtractionTimers,
 } from '../src/attachment-extractor.js';
 import { JOB_RUN_DDL, type JobPassContext } from '../src/job-run.js';
 import { attachmentSha256, type ScopedSql, type SqlValue } from '../src/scope-host.js';
@@ -602,52 +604,80 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
     expect(seen?.aborted).toBe(true);
   });
 
-  it('discards the late answer of a SYNCHRONOUS extractor that ran past the budget — never indexed', async () => {
-    const busy = (ms: number) => {
-      const end = Date.now() + ms;
-      while (Date.now() < end) {
-        // a parser that never yields
-      }
+  /**
+   * Timers on a clock only the test moves (#2085). A synchronous extractor "runs for" `ms` by
+   * calling `elapse(ms)`: the clock moves and nothing fires, as on a thread that never yields.
+   * A timer fires once the clock has reached it, earliest due first, one per real turn of the
+   * loop — so what the budget decides is a function of the clock, never of how loaded the
+   * machine is. Nothing fires that the clock has not reached, so a timer nobody elapses past
+   * simply never runs.
+   */
+  const virtualTimers = () => {
+    let now = 0;
+    let seq = 0;
+    const pending = new Map<number, { at: number; fn: () => void }>();
+    const pump = () =>
+      setImmediate(() => {
+        const due = [...pending].filter(([, t]) => t.at <= now).sort(([a, x], [b, y]) => x.at - y.at || a - b)[0];
+        if (!due) return;
+        pending.delete(due[0]);
+        due[1].fn();
+        pump();
+      });
+    const timers: ExtractionTimers = {
+      setTimeout: (fn, ms) => {
+        pending.set(++seq, { at: now + ms, fn });
+        pump();
+        return seq;
+      },
+      clearTimeout: (handle) => void pending.delete(handle as number),
     };
-    const late = answering((async () => {
-      busy(120);
-      return { text: 'arrived after the deadline' };
-    }) as AttachmentExtractor['extract']);
-    expect(await runAttachmentExtractor(late, input, bounds)).toEqual(timedOut);
+    return { timers, elapse: (ms: number) => void (now += ms) };
+  };
+
+  it('discards the late answer of a SYNCHRONOUS extractor that ran past the budget — never indexed', async () => {
+    const synchronous = (ms: number, then: () => AttachmentExtractorResult) => {
+      const clock = virtualTimers();
+      const extractor = answering((() => {
+        clock.elapse(ms); // a parser that never yields, for `ms` of the budget's clock
+        return then();
+      }) as unknown as AttachmentExtractor['extract']);
+      return runAttachmentExtractor(extractor, input, bounds, clock.timers);
+    };
+    expect(await synchronous(120, () => ({ text: 'arrived after the deadline' }))).toEqual(timedOut);
     // The same for one that throws late: the deadline decides, not the throw.
-    const lateThrow = answering((() => {
-      busy(120);
-      throw new Error('late');
-    }) as unknown as AttachmentExtractor['extract']);
-    expect(await runAttachmentExtractor(lateThrow, input, bounds)).toEqual(timedOut);
-    // The twin: a synchronous extractor inside the budget is indexed.
-    const quick = answering((async () => {
-      busy(5);
-      return { text: 'in time' };
-    }) as AttachmentExtractor['extract']);
-    expect(await runAttachmentExtractor(quick, input, bounds)).toMatchObject({ status: 'indexed', text: 'in time' });
+    await expect(
+      synchronous(120, () => {
+        throw new Error('late');
+      }),
+    ).resolves.toEqual(timedOut);
+    // The twin: a synchronous extractor inside the budget is indexed — and the edge either side.
+    expect(await synchronous(5, () => ({ text: 'in time' }))).toMatchObject({ status: 'indexed', text: 'in time' });
+    expect(await synchronous(49, () => ({ text: 'in time' }))).toMatchObject({ status: 'indexed', text: 'in time' });
+    expect(await synchronous(50, () => ({ text: 'at the deadline' }))).toEqual(timedOut);
   });
 
   it('ignores what an aborted async extractor answers later — a resolution or a rejection', async () => {
-    const started = Date.now();
-    let resolvedAt = 0;
+    let resolved = false;
     const slow = answering(
       () =>
         new Promise((resolve) =>
           setTimeout(() => {
-            resolvedAt = Date.now();
+            resolved = true;
             resolve({ text: 'too late' });
           }, 200),
         ),
     );
     expect(await runAttachmentExtractor(slow, input, bounds)).toEqual(timedOut);
-    const answeredAt = Date.now();
-    expect(answeredAt - started).toBeLessThan(200);
+    // Answered at the deadline, not after the late answer: timers run in order of when they
+    // are due, so the 50 ms deadline always precedes the 200 ms answer, however loaded the
+    // machine — an ordering, where an elapsed-time bound would be a race.
+    expect(resolved).toBe(false);
     // A later rejection is swallowed, not an unhandled rejection that fails the suite.
     const rejectsLate = answering(() => new Promise((_, reject) => setTimeout(() => reject(new Error('late')), 100)));
     expect(await runAttachmentExtractor(rejectsLate, input, bounds)).toEqual(timedOut);
     await new Promise((r) => setTimeout(r, 250));
-    expect(resolvedAt).toBeGreaterThan(answeredAt);
+    expect(resolved).toBe(true);
   });
 
   it('lets a COOPERATIVE extractor see the abort and stop', async () => {

@@ -282,7 +282,25 @@ export function normalizeExtractedText(text: string): string {
  * order of when they are due, so this one cannot run before a deadline that has already
  * passed, whichever phase of the loop the extractor returned in. It runs once per extraction.
  */
-const nextTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+const nextTurn = (timers: ExtractionTimers): Promise<void> => new Promise((resolve) => timers.setTimeout(resolve, 0));
+
+/**
+ * The timers the time budget runs on: the deadline, and the turn owed to it after a
+ * synchronous extractor returns. Both go through the same pair, because the guarantee is an
+ * ORDER between them — the deadline, if it passed, runs first. The runtime's own by default; a
+ * caller that passes others (a test, on a clock it moves itself) moves both together, so the
+ * outcome is decided by that clock rather than by how busy the machine is (#2085).
+ */
+export interface ExtractionTimers {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+/** The runtime's timers, called bare — workerd throws `Illegal invocation` on `obj.setTimeout(…)`. */
+const RUNTIME_TIMERS: ExtractionTimers = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle),
+};
 
 const TIMED_OUT = Symbol('timed out');
 
@@ -298,6 +316,7 @@ export async function runAttachmentExtractor(
   extractor: AttachmentExtractor,
   input: { body: Uint8Array; contentType: string; filename: string },
   bounds: AttachmentTextBounds = DEFAULT_ATTACHMENT_TEXT_BOUNDS,
+  timers: ExtractionTimers = RUNTIME_TIMERS,
 ): Promise<ExtractionOutcome> {
   const failed = (detail: string): ExtractionOutcome => ({
     status: 'failed',
@@ -308,7 +327,7 @@ export async function runAttachmentExtractor(
   const controller = new AbortController();
   let timedOut = false;
   let onTimeout: (value: typeof TIMED_OUT) => void = () => {};
-  const timer = setTimeout(() => {
+  const timer = timers.setTimeout(() => {
     timedOut = true;
     controller.abort();
     onTimeout(TIMED_OUT);
@@ -331,8 +350,8 @@ export async function runAttachmentExtractor(
   }
   // A SYNCHRONOUS extractor returns before its timer can run, however long it took. Give the
   // timer the turn it was owed: if the deadline passed meanwhile, the answer is discarded.
-  if (!timedOut) await nextTurn();
-  clearTimeout(timer);
+  if (!timedOut) await nextTurn(timers);
+  timers.clearTimeout(timer);
   if (timedOut || result === TIMED_OUT) return timeout;
   if (didThrow) {
     // The message is the parser's text and may quote the file; only its kind is recorded.
