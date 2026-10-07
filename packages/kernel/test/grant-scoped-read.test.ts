@@ -44,7 +44,7 @@ describe('grant-scoped depth-first walk', () => {
       check: async (...args: Parameters<PermissionChecker['check']>) => args[3]
         ? { allowed: false as const, checked: permission, node: where }
         : { allowed: true as const, proof: [] },
-      covers: async () => ({ covered: true, missing: [] }),
+      covers: async () => ({ covered: true as const, missing: [] as [] }),
     });
     const read = (candidate: PermissionChecker) => grantedEntitiesForContext(
       candidate, subject, permission, where, 'item', undefined,
