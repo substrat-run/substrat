@@ -50,6 +50,7 @@ import {
   scheduleMod,
   jobRunContractSuite,
   systemSwitchContractSuite,
+  adminRowFaultSql,
   peerContractSuite,
   verticalResolutionContractSuite,
   scopeHostContractSuite,
@@ -265,6 +266,20 @@ capabilityContractSuite('adapter-cloudflare', async () => {
 // instance resolution, answered by the ControlPlaneDO's directory. CP-full and co-located, so the
 // switch and `peerCovers` reach this namespace's own ScopeDO. DO SQLite is not node SQLite: the
 // seat, the switch's marker predicate and the admission's reads run here as they run hosted.
+/**
+ * #2089: the kill-switch suites' outcome-row fault — a trigger on the directory singleton the
+ * host writes its admin log to, scoped to one scope and one phase.
+ */
+const refuseAdminRows = async (scope: string, phase: string) => {
+  const { create, drop } = adminRowFaultSql(scope, phase);
+  const exec = (sql: string) =>
+    runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      state.storage.sql.exec(sql);
+    });
+  await exec(create);
+  return () => exec(drop);
+};
+
 const peerFixture = async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
@@ -281,7 +296,7 @@ const peerFixture = async () => {
     await internals.cp.writeTenantTuple(tenant, subject, `granted:${permission}`, `tenant:${tenant}`, null);
     await internals.fanOut(tenant);
   };
-  return { host, seatTenantGrant, cleanup: async () => host.close() };
+  return { host, seatTenantGrant, refuseAdminRows, cleanup: async () => host.close() };
 };
 peerContractSuite('adapter-cloudflare', peerFixture);
 verticalResolutionContractSuite('adapter-cloudflare', peerFixture);
@@ -388,7 +403,7 @@ systemSwitchContractSuite('adapter-cloudflare', async () => {
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
-  return { host, cleanup: async () => host.close() };
+  return { host, refuseAdminRows, cleanup: async () => host.close() };
 });
 
 // #1823: the same suite with tenant tuples PROJECTED into each scope, as production runs.
@@ -401,7 +416,7 @@ systemSwitchContractSuite('adapter-cloudflare, scope-local permissions', async (
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     scopeLocalPermissions: true,
   });
-  return { host, cleanup: async () => host.close() };
+  return { host, refuseAdminRows, cleanup: async () => host.close() };
 });
 
 /**

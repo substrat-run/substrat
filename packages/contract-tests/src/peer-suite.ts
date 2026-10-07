@@ -37,6 +37,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
+import { expectAnswered, expectSettledUnknown, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
 import { PEER_CALLER, PEER_LISTENER, peerMod } from './modules.js';
 
 const READ = permissionKey.parse('peer:read');
@@ -73,13 +74,13 @@ const refusal = (p: Promise<unknown>): Promise<unknown> =>
  * platform verb writes one yet — peer grants are seated per scope — so each adapter writes the
  * directory's tenant tuple itself, the one the day such a verb lands will write.
  */
-export interface PeerFixture extends ScopeHostFixture {
+export interface PeerFixture extends ScopeHostFixture, AdminRowFault {
   seatTenantGrant(tenantId: TenantId, subject: string, permission: PermissionKey): Promise<void>;
 }
 
 export function peerContractSuite(adapterName: string, makeFixture: () => Promise<PeerFixture>): void {
   describe(`peer door (#1706): ${adapterName}`, () => {
-    let fixture: ScopeHostFixture;
+    let fixture: PeerFixture;
     let host: ScopeHost;
     const staff = platformActorId.parse(ulid());
     const t = tenantId.parse(ulid());
@@ -389,6 +390,43 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
         await second.invoke('peer/note', { id: 'idem-2', body: 'two' }, { idempotencyKey: 'k-1' });
         const row = (await outbox()).find((r) => r.entity_id === 'idem-2')!;
         expect(JSON.parse(row.actor)).toEqual({ vertical: PEER_CALLER, scope: secondCaller });
+      });
+    });
+
+    describe('an outcome row the log cannot take (#2089)', () => {
+      const where = (action: 'revokeFromPeer' | 'restoreToPeer', operationId: string) => ({ tenantId: t, scopeId: s, action, operationId });
+
+      it("a refusal whose row is refused still answers its own not_found, logs the operation, and the settle closes it unknown", async () => {
+        const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'refused', () => off('acme/stranger'));
+        expect(errorCodeOf((settled as PromiseRejectedResult).reason)).toBe('not_found');
+        expect(unrecorded).toEqual([
+          { flow: 'peer-switch', operationId: expect.any(String), phase: 'refused', auditError: expect.stringMatching(/test fault/) },
+        ]);
+        await expectSettledUnknown(host, staff, where('revokeFromPeer', unrecorded[0]!.operationId as string), {
+          vertical: 'acme/stranger',
+          calls: 'off',
+        });
+      });
+
+      it('a switch that moved but whose applied row is refused answers success with auditWarning, and the settle closes it unknown', async () => {
+        const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'applied', () => off(PEER_LISTENER));
+        const result = (settled as PromiseFulfilledResult<Awaited<ReturnType<typeof off>>>).value;
+        expect(result).toMatchObject({
+          vertical: PEER_LISTENER,
+          calls: 'off',
+          changed: true,
+          auditWarning: expect.stringMatching(/^the switch completed, but its outcome could not be written to the admin log: .*test fault/),
+        });
+        expect(await held(PEER_LISTENER)).toEqual([]);
+        expect(unrecorded).toEqual([
+          { flow: 'peer-switch', operationId: result.operationId, phase: 'applied', auditError: expect.stringMatching(/test fault/) },
+        ]);
+        await expectSettledUnknown(host, staff, where('revokeFromPeer', result.operationId), { vertical: PEER_LISTENER, calls: 'off' });
+
+        // Twin: the restore's applied row lands — no warning, nothing to settle.
+        const restored = await on(PEER_LISTENER);
+        expect(restored).not.toHaveProperty('auditWarning');
+        await expectAnswered(host, staff, where('restoreToPeer', restored.operationId), 'applied');
       });
     });
   });

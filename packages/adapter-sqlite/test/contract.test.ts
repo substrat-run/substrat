@@ -26,6 +26,7 @@ import {
   scheduleEntitlementContractSuite,
   jobRunContractSuite,
   systemSwitchContractSuite,
+  adminRowFaultSql,
   peerContractSuite,
   verticalResolutionContractSuite,
   scopeHostContractSuite,
@@ -268,6 +269,7 @@ systemSwitchContractSuite('adapter-sqlite', async () => {
   });
   return {
     host,
+    refuseAdminRows: refuseAdminRowsOf(host),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
@@ -278,6 +280,14 @@ systemSwitchContractSuite('adapter-sqlite', async () => {
 // #1706: the peer door and the instance resolution. The DEFAULT checker, for the capability
 // suite's reason: half of what the door pins is that a peer holds exactly its declared keys,
 // and an allow-all checker would make every refusal in it pass for the wrong reason.
+/** #2089: the kill-switch suites' outcome-row fault — a trigger on this host's directory. */
+const refuseAdminRowsOf = (host: SqliteScopeHost) => async (scope: string, phase: string) => {
+  const directory = (host as unknown as { directory: { exec(q: string): void } }).directory;
+  const { create, drop } = adminRowFaultSql(scope, phase);
+  directory.exec(create);
+  return async () => directory.exec(drop);
+};
+
 const peerFixture = (prefix: string) => async () => {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   const host = new SqliteScopeHost({
@@ -296,6 +306,7 @@ const peerFixture = (prefix: string) => async () => {
         )
         .run(tenant, subject, `granted:${permission}`, `tenant:${tenant}`);
     },
+    refuseAdminRows: refuseAdminRowsOf(host),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

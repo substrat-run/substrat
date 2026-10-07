@@ -54,6 +54,8 @@ export {
   type VerticalEventsFixture,
 } from './vertical-events-suite.js';
 export { peerContractSuite, verticalResolutionContractSuite } from './peer-suite.js';
+export { adminRowFaultSql } from './switch-audit-fault.js';
+export type { AdminRowFault } from './switch-audit-fault.js';
 export { inputParseContractSuite } from './input-parse-suite.js';
 export { spineGuardContractSuite } from './spine-guard-suite.js';
 export { scopeRepointContractSuite } from './scope-repoint-suite.js';
