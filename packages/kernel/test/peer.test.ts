@@ -247,7 +247,7 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
     const expected = { outcome: 'bound-unavailable', tenantId: T, vertical: 'acme/crm', targetScopeId: chosen.id };
     expect(resolvePeerInstanceFrom([chosen, other], T, 'acme/crm', chosen.id)).toEqual(expected);
     expect(resolvePeerInstanceFrom([other], T, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, tenantId: U }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, tenantId: U, status: 'active' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', vertical: 'acme/other' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', kind: 'preview' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id).outcome).toBe('resolved');
