@@ -354,6 +354,21 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
         portal()(t);
         expect(markers(t)).toEqual([]);
       });
+
+      it('a live retired key finds a legacy holder, then retirement and top-up both apply', () => {
+        const t = fresh();
+        const anna = who();
+        contactTuple(t, anna, 'conv:read-own', 'c1');
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
+          retired: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, removed: ['conv:read-own'] }],
+          toppedUp: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, added: ['conv:reply-own'] }],
+          done: true,
+        });
+        expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%' ORDER BY relation").all(`principal:${anna}`, 'contact:c1')).toEqual([
+          { relation: 'granted:conv:read-own', revoked_at: NOW },
+          { relation: 'granted:conv:reply-own', revoked_at: null },
+        ]);
+      });
     });
   });
 
