@@ -104,6 +104,7 @@ describe('sealed visible continuations (#2074)', () => {
       { query: { ...binding.query, sort: 'created_at' } },
       { query: { ...binding.query, filters: { status: ['closed'] } } },
       { query: { ...binding.query, grantConstraint: 'grant-b' } },
+      { query: { ...binding.query, grantConstraint: new Set(['grant-b']) } },
     ];
     for (const change of changes) {
       await expect(visibleContinuation(store, { ...binding, ...change }, () => 1_000).open(token))

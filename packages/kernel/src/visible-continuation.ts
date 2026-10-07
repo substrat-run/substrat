@@ -64,6 +64,9 @@ const key = (now: number): ContinuationKey => ({ id: base64url(random(9)), mater
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value instanceof Set) return `[${[...value].map(canonical).sort().join(',')}]`;
+  if (value instanceof Map) return `{${[...value].map(([k, v]) => [canonical(k), canonical(v)] as const)
+    .sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}:${v}`).join(',')}}`;
   return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
 }
