@@ -283,18 +283,19 @@ systemSwitchContractSuite('adapter-sqlite', async () => {
 // suite's reason: half of what the door pins is that a peer holds exactly its declared keys,
 // and an allow-all checker would make every refusal in it pass for the wrong reason.
 /** #2089: the kill-switch suites' outcome-row fault — a trigger on this host's directory. */
+const execDirectorySql = (host: SqliteScopeHost, sql: string) =>
+  (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+
 const refuseAdminRowsOf = (host: SqliteScopeHost) => async (scope: string, phase: string) => {
-  const directory = (host as unknown as { directory: { exec(q: string): void } }).directory;
   const { create, drop } = adminRowFaultSql(scope, phase);
-  directory.exec(create);
-  return async () => directory.exec(drop);
+  execDirectorySql(host, create);
+  return async () => execDirectorySql(host, drop);
 };
 
 const refuseSwitchRecordOf = (host: SqliteScopeHost) => async (scope: string, kind: 'system' | 'peer') => {
-  const directory = (host as unknown as { directory: { exec(q: string): void } }).directory;
   const { create, drop } = switchRecordFaultSql(scope, kind);
-  for (const sql of create) directory.exec(sql);
-  return async () => { for (const sql of drop) directory.exec(sql); };
+  for (const sql of create) execDirectorySql(host, sql);
+  return async () => { for (const sql of drop) execDirectorySql(host, sql); };
 };
 
 const peerFixture = (prefix: string) => async () => {
