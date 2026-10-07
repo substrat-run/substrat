@@ -66,7 +66,11 @@ describe('grant-scoped depth-first walk', () => {
       },
     );
     expect(result).toEqual({ kind: 'ids', ids: ['visible'], nextCursor: null });
-    expect(checked).toEqual(['node', 'visible']);
+    expect(checked).toEqual(['node', 'visible', 'visible']);
+    checker.grantedEntities = async () => ({ kind: 'ids', ids: ['hidden'], nextCursor: null });
+    expect(await grantedEntitiesForContext(
+      checker, subject, permission, where, 'item', undefined, denied,
+    )).toEqual({ kind: 'ids', ids: [], nextCursor: null });
   });
 
   it('terminates on cycles and includes both sides of a diamond once as a set', async () => {

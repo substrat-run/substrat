@@ -55,11 +55,18 @@ export async function grantedEntitiesForContext(
   if ((await runCheck(permission)).allowed) return { kind: 'all' };
   if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
   if (!checker.grantedEntities) return { kind: 'incomplete', reason: 'checker' };
-  return checker.grantedEntities(
+  const page = await checker.grantedEntities(
     subject, permission, node, entityType,
     async (entity) => (await runCheck(permission, entity)).allowed,
     options,
   );
+  if (page.kind === 'all') return { kind: 'incomplete', reason: 'checker' };
+  if (page.kind === 'incomplete') return page;
+  const ids: string[] = [];
+  for (const id of page.ids) {
+    if ((await runCheck(permission, { entityType, entityId: id })).allowed) ids.push(id);
+  }
+  return { ...page, ids };
 }
 
 function decode(cursor: string, permission: PermissionKey, entityType: string): Position {
