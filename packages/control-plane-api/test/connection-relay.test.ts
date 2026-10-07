@@ -372,3 +372,78 @@ describe('relayConnectionUpsert — a preview or a fork cannot change a connecti
     expect((await relayConnectionUpsert(host, actor, request(install, 'ROTATED'))).created).toBe(false);
   });
 });
+
+/**
+ * #2100: a provider may finish its own credential on the platform side before it is probed and
+ * stored — Microsoft 365 generates a connection's keypair here. What the relay owes it: the
+ * previous secret on a rotation (so a keypair survives an edit), the probe seeing exactly what
+ * is stored, and the provider's expiry landing on the row.
+ */
+describe('relayConnectionUpsert — a provider that prepares its own credential (#2100)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const actor = platformActorId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const admin = principalId.parse(ulid());
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-conn-prepare-'));
+    host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k1', new Uint8Array(32).fill(9)) });
+    await host.admin.createTenant(staff, { id: t, slug: 'prep', name: 'Prep' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'desk' });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const request = (secret: Record<string, string>) => ({
+    tenantId: t,
+    scopeId: s,
+    provider: 'mailbox',
+    secret,
+    grants: [],
+    createdBy: admin,
+  });
+  const EXPIRES = '2027-10-07T12:00:00.000Z';
+
+  it('stores what the provider prepared, probes that, and records its expiry', async () => {
+    const seen: { previous: unknown; probed: unknown }[] = [];
+    let probedSecret: unknown;
+    const result = await relayConnectionUpsert(host, actor, request({ clientId: 'app-1' }), {
+      prepareCandidate: async (_provider, candidate, previous) => {
+        seen.push({ previous, probed: undefined });
+        return { secret: { ...candidate, privateKey: 'KEY-1' }, expiresAt: EXPIRES };
+      },
+      probeCandidate: async (_provider, secret) => {
+        probedSecret = secret;
+        return { ok: false, refused: false, accountRef: null, accountLabel: null, facts: [], error: 'not yet' };
+      },
+    });
+    expect(seen[0]!.previous).toBeUndefined();
+    expect(probedSecret).toEqual({ clientId: 'app-1', privateKey: 'KEY-1' });
+    expect((await host.admin.openConnection(t, 'desk', 'mailbox'))?.secret).toEqual({ clientId: 'app-1', privateKey: 'KEY-1' });
+    const [row] = await host.admin.listConnections(staff, { tenantId: t, provider: 'mailbox' });
+    expect(row!.id).toBe(result.connectionId);
+    expect(row!.expiresAt).toBe(EXPIRES);
+  });
+
+  it('hands the provider the live secret on a rotation, so what must survive an edit can', async () => {
+    let previous: Record<string, string> | undefined;
+    await relayConnectionUpsert(host, actor, request({ clientId: 'app-2' }), {
+      prepareCandidate: async (_provider, candidate, prev) => {
+        previous = prev;
+        return { secret: { ...candidate, privateKey: prev?.privateKey ?? 'NEW' } };
+      },
+    });
+    expect(previous).toEqual({ clientId: 'app-1', privateKey: 'KEY-1' });
+    expect((await host.admin.openConnection(t, 'desk', 'mailbox'))?.secret).toEqual({ clientId: 'app-2', privateKey: 'KEY-1' });
+  });
+
+  it('a provider with nothing to add leaves the candidate as given', async () => {
+    await relayConnectionUpsert(host, actor, request({ clientId: 'app-3' }), { prepareCandidate: async () => undefined });
+    expect((await host.admin.openConnection(t, 'desk', 'mailbox'))?.secret).toEqual({ clientId: 'app-3' });
+  });
+});

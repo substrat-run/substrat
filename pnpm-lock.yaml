@@ -239,6 +239,9 @@ importers:
       '@substrat-run/connector-fortnox':
         specifier: workspace:^
         version: link:../../connectors/fortnox
+      '@substrat-run/connector-microsoft365':
+        specifier: workspace:^
+        version: link:../../connectors/microsoft365
       '@substrat-run/connector-planima':
         specifier: workspace:^
         version: link:../../connectors/planima
@@ -534,6 +537,25 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@26.6.3)(@vitest/ui@3.2.7)(jsdom@26.1.0)(tsx@4.23.15)(yaml@2.9.1)
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+
+  connectors/microsoft365:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:^
+        version: link:../../packages/kernel
+    devDependencies:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -9383,7 +9405,7 @@ snapshots:
       set-cookie-parser: 3.1.0
       vue: 3.5.43(typescript@7.0.2)
       yaml: 2.9.1
-      zod: 4.4.3
+      zod: 4.6.5
     transitivePeerDependencies:
       - '@vue/composition-api'
       - async-validator
@@ -9611,7 +9633,7 @@ snapshots:
       '@scalar/helpers': 0.16.0
       nanoid: 5.1.16
       type-fest: 5.10.0
-      zod: 4.4.3
+      zod: 4.6.5
 
   '@scalar/use-codemirror@0.14.15(typescript@7.0.2)':
     dependencies:

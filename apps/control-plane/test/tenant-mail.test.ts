@@ -134,6 +134,18 @@ describe('sending as a tenant address (#2098)', () => {
     expect([...a.sent, ...b.sent]).toHaveLength(0);
   });
 
+  it("a provider's refusal comes back as a 502 carrying the connector's own words (#2100)", async () => {
+    const refusing: MailSender = {
+      senders: async () => ['office@acme.example'],
+      send: async () => {
+        throw new Error('Exchange refused to send as office@acme.example — outside the scope the tenant granted');
+      },
+    };
+    const e = await refusal(sendAsTenant(deps([connection('m365')], { m365: refusing }), input()));
+    expect(e.status).toBe(502);
+    expect(e.message).toContain('outside the scope the tenant granted');
+  });
+
   describe('a connection that cannot say what it covers', () => {
     const broken: MailSender = {
       senders: async () => {

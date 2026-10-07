@@ -26,7 +26,7 @@ import type {
 /** A refusal the relay answers with, carrying its HTTP status. */
 export class TenantMailRefusal extends Error {
   constructor(
-    readonly status: 400 | 403 | 409 | 413 | 503,
+    readonly status: 400 | 403 | 409 | 413 | 502 | 503,
     message: string,
   ) {
     super(message);
@@ -151,7 +151,7 @@ export async function sendAsTenant(deps: TenantMailDeps, input: TenantMailInput)
     attachments.push({ filename: opened.record.filename, contentType: opened.contentType, content: opened.body });
   }
 
-  return sender.send(deps.host, connection, {
+  const mail = {
     from: prepared.from,
     to: prepared.to,
     ...(prepared.replyTo ? { replyTo: prepared.replyTo } : {}),
@@ -160,7 +160,14 @@ export async function sendAsTenant(deps: TenantMailDeps, input: TenantMailInput)
     text: prepared.text,
     ...(prepared.headers ? { headers: prepared.headers } : {}),
     attachments,
-  });
+  };
+  try {
+    return await sender.send(deps.host, connection, mail);
+  } catch (e) {
+    // The provider's refusal, said as the connector worded it (#2100: "outside the scope the
+    // tenant granted"), rather than a bare 500 that tells the vertical nothing.
+    throw new TenantMailRefusal(502, `the tenant's mail connection could not send: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 async function openAs(deps: TenantMailDeps, connection: Connection, attachmentId: string): Promise<OpenedAttachment> {

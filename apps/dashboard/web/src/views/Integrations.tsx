@@ -388,6 +388,33 @@ function IntegrationDetail({
           </div>
         )}
 
+        {/* #2100: the certificate the platform generated for this connection. Public — the
+            private key never leaves the plane — and the tenant's next step until it is uploaded. */}
+        {activity?.certificate && (
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+              Certificate
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px', fontSize: 12 }}>
+              <span style={{ color: 'var(--text-tertiary)' }}>Thumbprint</span>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                {activity.certificate.thumbprint}
+              </span>
+              <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
+              <span style={{ color: 'var(--text-secondary)' }}>{activity.certificate.notAfter.slice(0, 10)}</span>
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <Button variant="secondary" size="sm" onClick={() => downloadCertificate(activity.certificate!.pem, provider.provider)}>
+                Download certificate (.cer)
+              </Button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
+              Upload it to your app registration under Certificates &amp; secrets, then test the connection. The
+              thumbprint Entra shows should match the one above. The private key stays with the platform.
+            </div>
+          </div>
+        )}
+
         {/* What a leaked token could invoke — the live tuples, not the catalog's claim. */}
         {activity && activity.grants.length > 0 && (
           <div>
@@ -534,7 +561,7 @@ function ConnectDialog({
   const [links, setLinks] = useState<ConnectLinkView[]>([]);
   /** The link just minted for sharing — shown once; listing never returns the URL. */
   const [minted, setMinted] = useState<{ url: string; expiresAt: string; copied: boolean } | null>(null);
-  const complete = provider.fields.every((f) => (values[f.key] ?? '').trim() !== '') && target !== '';
+  const complete = provider.fields.every((f) => f.optional || (values[f.key] ?? '').trim() !== '') && target !== '';
 
   useEffect(() => {
     if (!redirect || DEV_MOCK || target === '') return;
@@ -602,7 +629,13 @@ function ConnectDialog({
     setRefusal(null);
     setUnavailable(null);
     try {
-      const secret = Object.fromEntries(provider.fields.map((f) => [f.key, values[f.key]!.trim()]));
+      // An optional field left empty is left out, not sent as '' (#2100).
+      const secret = Object.fromEntries(
+        provider.fields.flatMap((f) => {
+          const v = (values[f.key] ?? '').trim();
+          return v ? [[f.key, v]] : [];
+        }),
+      );
       await api.connectIntegration(target, provider.provider, { secret });
       onDone();
     } catch (e) {
@@ -755,7 +788,7 @@ function ConnectDialog({
           provider.fields.map((f) => (
             <Input
               key={f.key}
-              label={f.label}
+              label={f.optional ? `${f.label} (optional)` : f.label}
               type={f.secret ? 'password' : 'text'}
               placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
               value={values[f.key] ?? ''}
@@ -1151,4 +1184,14 @@ export function Integrations() {
       )}
     </Page>
   );
+}
+
+/** Save a PEM certificate as a `.cer` file — Entra's upload accepts PEM under that name. */
+function downloadCertificate(pem: string, provider: string): void {
+  const url = URL.createObjectURL(new Blob([pem], { type: 'application/x-x509-ca-cert' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `substrat-${provider}.cer`;
+  a.click();
+  URL.revokeObjectURL(url);
 }

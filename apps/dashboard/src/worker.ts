@@ -3595,7 +3595,7 @@ async function activityRoute(c: Context<{ Bindings: Env }>) {
   const { connectionId, cp, connection, spec } = await inspectableConnection(c);
   const scopeId = c.req.param('scopeId')!;
   const source = c.req.query('source') === 'provider' ? ('provider' as const) : ('ledger' as const);
-  const [activity, grants, credential, intents, sweepRuns] = await Promise.all([
+  const [activity, grants, credential, intents, sweepRuns, certificate] = await Promise.all([
     cp.connectionActivity(connectionId, { live: c.req.query('live') === '1', source }),
     // Best-effort, all of them: a plane too old to serve grants, the credential view or the
     // intent journal must not cost the activity itself.
@@ -3609,12 +3609,16 @@ async function activityRoute(c: Context<{ Bindings: Env }>) {
     // connection last swept, and how did it go". listSweepRuns already tolerates a
     // plane predating the route.
     cp.listSweepRuns({ kind: 'connector', connectionId, limit: 20 }),
+    // #2100: only for a provider whose door says it can sign in with a generated certificate.
+    spec.certificate ? cp.connectionCertificate(connectionId) : Promise.resolve(null),
   ]);
   return c.json({
     ...activity,
     grants: grants.filter((g) => g.connectionId === connectionId).map((g) => g.permission),
     // Identifiers whole, secrets masked by the connector — never a usable credential.
     credential: credential.fields,
+    // Public: the certificate the tenant uploads to the provider. The key never leaves the plane.
+    certificate,
     // Current health, read in this request. The list page's copy can be minutes old.
     connection: connectionView(connection),
     // #1232: newest first — the strip renders it verbatim.
