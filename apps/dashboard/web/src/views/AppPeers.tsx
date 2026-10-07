@@ -157,7 +157,7 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
   const callers = view.callers ?? [];
   // The whole panel is hidden only when there is genuinely nothing to say in EITHER
   // direction and no read failed. A failed mirror read is something to say.
-  if (!showPeerDisclosure(view)) return null;
+  if (!showPeerDisclosure(view) && !warning && !notice) return null;
 
   return (
     <section style={card}>
