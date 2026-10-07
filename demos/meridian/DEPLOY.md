@@ -1,6 +1,6 @@
 # Deploying Meridian to the hosted platform
 
-Meridian is now a **sandbox-clean, control-plane-less vertical** (like Callout), so it can be
+Meridian is now a **sandbox-clean, control-plane-less vertical** (like ticket0), so it can be
 pushed into the platform's Workers-for-Platforms **dispatch namespace** and provisioned by the
 shared control plane. Its only bindings are its own three Durable Object classes — `SCOPE` (one per
 scope), `AUTH` (the per-tenant `IdentityDO`) and `SWEEPER` (the deployment's own timer, which runs

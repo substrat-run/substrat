@@ -4,8 +4,8 @@
  * The in-scope functions are the surface: `defineTemplate`, `instantiateProtocol`,
  * `fillProtocol`, `signProtocol`, `countersignProtocol`, `voidProtocol` and the
  * reads beside them. A vertical imports those into its own operations and runs them
- * inside its own transaction — Callout's `callout/instantiate-protocol` is a
- * permission check and one call. The fourteen registered operations below are the
+ * inside its own transaction — such an operation can be a permission check and
+ * one call. The fourteen registered operations below are the
  * engine's default HTTP-reachable bindings, not a second way in
  * (`operations.ts` says the same thing about `defineEngineRoutes`).
  *
@@ -435,9 +435,9 @@ export const protocolMigrations = [
   // Legacy content parses as checklist by normalisation at read time instead.
   //
   // Column names and order are preserved for every pre-existing column so that
-  // Callout's `0003-protocols-to-engine` extraction handoff — which INSERTs
-  // into these tables by explicit column list and runs after this migration —
-  // keeps working untouched.
+  // the former Callout demo's `0003-protocols-to-engine` extraction handoff —
+  // which INSERTed into these tables by explicit column list and ran after this
+  // migration — kept working untouched.
   {
     version: '0002-signature-requests',
     sql: `
@@ -895,7 +895,7 @@ async function verifyFrozen(
 //  pole 1 — VERTICAL-COMPOSED (milestone A): the vertical calls requireSigned()
 //    inside its own operation before the engine transition. Right when the
 //    policy is CONDITIONAL on vertical data ("only montage orders need an
-//    self-inspection" — demos/callout): the condition is vertical vocabulary, and the
+//    self-inspection" — the former Callout demo): the condition is vertical vocabulary, and the
 //    kernel must never learn it. Weakness: it is glue an edit can silently drop.
 //
 //  pole 2 — MANIFEST-DECLARED (milestone C): the engine contributes the named

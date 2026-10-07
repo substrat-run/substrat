@@ -16,7 +16,7 @@ Status: **built** — the engine ships on npm
 > issue [#634](https://github.com/substrat-run/substrat/issues/634) (consumer #2:
 > resource planning on a live route-planning surface). The extraction template is
 > `engine-protocol` out of Callout — including the one-time R5 data-handoff migration
-> (`demos/callout/src/migrations.ts`, `0003-protocols-to-engine`).
+> (`0003-protocols-to-engine`, in the since-removed Callout demo's `src/migrations.ts`).
 >
 > **Scope guard, stated once:** this engine answers *"is this subject covered by an
 > approved absence on this date, per an append-only ledger"*. It is **not** the

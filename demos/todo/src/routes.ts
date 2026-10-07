@@ -3,8 +3,9 @@
  *
  * There is no route table here. Method, path and which input fields the path
  * carries are declared on the operations themselves and compile-checked there,
- * so `mountOperations` derives the table at mount time. Callout's hand-written
- * equivalent is 164 lines, and it had already drifted from its own declarations.
+ * so `mountOperations` derives the table at mount time. The former Callout demo's
+ * hand-written equivalent was 164 lines, and it had already drifted from its own
+ * declarations.
  */
 import type { Context, Hono } from 'hono';
 import { mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';

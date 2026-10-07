@@ -4,8 +4,8 @@
  * The in-scope functions are the surface: `createWorkOrder`, `assignWorkOrder`,
  * `startWorkOrder`, `reportTime`, `reportMaterial`, `completeWorkOrder`,
  * `closeWorkOrder`, `getReportedLines`, `listOrders`. A vertical imports those into
- * its OWN operations and runs them inside its own transaction — Callout's
- * `callout/complete-workorder` is a permission check and one call.
+ * its OWN operations and runs them inside its own transaction — Handlebar's
+ * `bike-shop/close-repair` is a permission check and one call.
  *
  * So the registered operations below are thin by design: each is
  * `assertAllowed(await ctx.check(PERM.…))` plus the matching export, and it is the
@@ -120,7 +120,7 @@ import {
 } from '@substrat-run/kernel';
 
 // ============================================================================
-// The work-order engine (demos/callout/spec/testrun.md §4.2/§5.2). Owns the state
+// The work-order engine (docs/rfc/callout-testrun.md §4.2/§5.2). Owns the state
 // machine and the append-only invariants; knows NOTHING about pricing (the
 // vertical's job) or invoicing (a sibling engine, reached only via events).
 // ============================================================================

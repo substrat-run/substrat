@@ -54,7 +54,8 @@ export type ResolveStub = (c: Context) => Promise<ScopeStub>;
  *
  * Not accepted as a parameter type: every property is optional, and
  * TypeScript's weak-type rule then rejects an operation sharing NONE of them —
- * which `callout/whoami` (narrows, no input, no http) genuinely does. Same
+ * which the former Callout demo's `callout/whoami` (narrows, no input, no http)
+ * genuinely did. Same
  * reason `permissionsUsedBy` takes `Record<string, object>`.
  */
 interface HttpDecl {

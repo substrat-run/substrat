@@ -6,8 +6,8 @@ beans (whole/ground × 250 g/1 kg) and brewing gear, checkout **mot faktura** (o
 ## Overview
 
 Kallkälla is deliberately the *third* vertical, doing a different job than the work-order shops
-([Callout](/verticals/callout), [Handlebar](/verticals/handlebar)). It proves three things they
-can't:
+([Handlebar](/verticals/handlebar), and the field-service demo before it). It proves three
+things they can't:
 
 - **A published engine reused across a genuinely different domain.** [`invoicing`](/engines/invoicing/)
   builds an invoice basis from a **retail order**, not a service work order — the same

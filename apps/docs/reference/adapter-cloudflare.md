@@ -78,7 +78,7 @@ export { ControlPlaneDO };
 export default {
   async fetch(req, env) {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
-    // authenticate → getScope → invoke (the Callout demo wires a full Hono API + an OIDC relying party)
+    // authenticate → getScope → invoke (the ticket0 demo wires a full Hono API + an OIDC relying party)
     const stub = await host.getScope(principal, tenantId, scopeId);
     return Response.json(await stub.invoke('workorder/list', {}));
   },
@@ -101,7 +101,7 @@ Two options change the topology:
   its role definitions locally, receives only scope-level assignments, provisions via
   `provisionScopeLocal`, and trusts the router-asserted node for tenancy/lifecycle. This is what
   lets a vertical deploy as its own isolated Workers-for-Platforms script with no platform
-  binding — the shape [Callout](/verticals/callout) ships in.
+  binding — the shape [ticket0](/verticals/ticket0) ships in.
 
 ## How the semantics map
 

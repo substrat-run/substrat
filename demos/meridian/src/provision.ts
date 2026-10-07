@@ -75,7 +75,7 @@ export interface MeridianInstance {
  * vertical so their tables exist when its journal runs — protocol for
  * onboarding, absence for the 0003 extraction handoff (which INSERTs into
  * absence_*). Exported for the permission checkpoint emitter (parity with
- * demos/callout).
+ * demos/handlebar).
  */
 export const MODULES = [protocolModule, absenceModule, meridianModule];
 
@@ -127,8 +127,8 @@ export const ROLES: RoleDefinition[] = [
 /**
  * What an employee receives, narrowed to their own employee record. Note
  * PROTO.sign: onboarding is *employee-signed* here (they e-sign their own
- * acknowledgements) — vertical policy that differs from Callout, where the
- * arbetsledare signs. Same engine, different who-signs; the grant draws the line.
+ * acknowledgements) — vertical policy that differs from Handlebar, where the
+ * workshop signs. Same engine, different who-signs; the grant draws the line.
  */
 export const EMPLOYEE_SELF: PermissionKey[] = [
   HR_PERM.absenceRead,

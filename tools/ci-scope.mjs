@@ -280,7 +280,7 @@ export const WEIGHTS = {
   'demos/ticket0': 73, 'demos/auth-server': 65, 'packages/adapter-sqlite': 43, 'apps/control-plane': 30,
   'packages/control-plane-api': 26, 'packages/attachment-extractors': 24, 'packages/cli': 23,
   'packages/kernel': 22, 'apps/dashboard': 21, 'apps/dashboard/web': 20, 'demos/meridian': 20,
-  'packages/builder-workspace': 14, 'demos/callout': 11, 'packages/contracts': 11, 'engines/invoicing': 10,
+  'packages/builder-workspace': 14, 'packages/contracts': 11, 'engines/invoicing': 10,
   'connectors/scrive': 10, 'demos/manyfold': 10, 'packages/vertical-host': 9, 'engines/invites': 9,
   'engines/booking': 8, 'apps/console': 8, 'demos/handlebar': 8, 'engines/absence': 7, 'engines/protocol': 7,
   'demos/tock': 6, 'packages/oidc-rp': 6, 'engines/workorder': 6, 'connectors/fortnox': 5, 'demos/todo': 5,

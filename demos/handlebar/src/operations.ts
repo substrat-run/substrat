@@ -101,7 +101,7 @@ export const timelineInput = z.object({
  * `facility_id` as two snake_case columns and publishes one `EntityRef` in
  * camelCase. Only the published type is what an operation returns.
  */
-/** The engine entity registries this vertical composes — see Callout's note (#865). */
+/** The engine entity registries this vertical composes — see #865. */
 const HANDLEBAR_ENGINE_ENTITIES = [workorderEntities, protocolEntities, invoicingEntities] as const;
 
 export const handlebarOperations = defineOperations(
@@ -112,7 +112,7 @@ export const handlebarOperations = defineOperations(
   'bike-shop/whoami': {
     summary: "Report the caller's role in this workshop",
     // No permission gates it: answering "what may I do" must work for everyone,
-    // including a principal who may do nothing. Same shape as `callout/whoami`.
+    // including a principal who may do nothing.
     narrows: {
       reason: 'every principal may ask what they themselves may do',
       // Also probes the workorder engine's `report`, which the ENGINE declares.
@@ -283,7 +283,7 @@ export const handlebarWorkorderRoutes = defineEngineRoutes(workorderOperations)(
 /**
  * The protocol engine's operations, at Handlebar's URLs.
  *
- * `protocol/list-for-entity` is absent for the reason Callout gives at length: it
+ * `protocol/list-for-entity` is absent, as it was from the former Callout demo: it
  * takes an entity-agnostic `entityType`, and binding it would let a caller list the
  * protocols on anything at all. `GET /repairs/{id}/protocols` supplies that constant
  * by hand, and stays hand-written.

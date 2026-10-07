@@ -4,7 +4,7 @@
  *
  * Drives the tier-1 gates (§9.1) over a `LocalWorkspace`. This is phase 1 of the
  * spike: no model, no container, no UI — the proof that the seam can carry the
- * existing Callout build before anything is generated into it.
+ * existing demo build before anything is generated into it.
  */
 import { formatGateRun, runGates } from './gates.js';
 import { LocalWorkspace } from './local.js';

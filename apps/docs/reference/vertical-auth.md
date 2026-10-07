@@ -98,7 +98,7 @@ try {
 }
 ```
 
-`callout`, `meridian`, `manyfold` and `ticket0` all mount it. The `create-substrat` template
+`meridian`, `manyfold` and `ticket0` all mount it. The `create-substrat` template
 deliberately does **not**: its `config-do.ts` mirrors the same `scope_config` table shape so a
 project can swap the binding and adopt vertical-auth later, which is why the scaffold and a
 demo look different here.

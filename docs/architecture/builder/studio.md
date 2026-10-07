@@ -32,7 +32,7 @@ scopes what is actually proposed, which is much smaller.
 
 The local loop already exists and works: Claude Code, the two skills
 (`.claude/skills/substrat`, `.claude/skills/new-vertical`), a checkout, and
-`pnpm callout-demo dev`. A designer interviews the user into `spec/concept.md`, a builder turns
+a demo's `pnpm --filter @substrat-run/demo-<name> dev`. A designer interviews the user into `spec/concept.md`, a builder turns
 that into `demos/<name>/src/module.ts`, and the scenario test says whether it holds.
 
 The studio is that loop with the laptop replaced by a container and the terminal replaced by a
@@ -672,8 +672,8 @@ write them.
 
 This is the piece that does not exist yet and the one that makes updates safe.
 
-`demos/callout/test/scenario.test.ts` is not a unit-test suite — it is a **numbered narrative
-mirroring the spec**: 13 steps, each an `it` tracing a step of `spec/concept.md` §8, from
+The Callout demo's scenario test (the demo has since been removed) was not a unit-test suite —
+it was a **numbered narrative mirroring the spec**: 13 steps, each an `it` tracing a step of `spec/concept.md` §8, from
 "anna creates a work order" through "the guard: a montage order cannot complete without a signed
 self-inspection." The test *is* the spec, executable.
 
@@ -776,7 +776,7 @@ Shipped with the mechanism, per the D-45 rule:
 
 1. **Workspace, then image.** `Workspace` (§3) with `LocalWorkspace` first, the four tier-1 gates
    (§9.1) wired to exit codes, then the Dockerfile and `ContainerWorkspace` against the same
-   interface. No model, no UI. Provable by driving the existing Callout build through the interface
+   interface. No model, no UI. Provable by driving an existing demo build through the interface
    by hand — if that does not work, nothing after it will. Local-first ordering is deliberate: it
    keeps mode A (§3.1) honest rather than letting it become a retrofit of the container path.
 2. **Generator + chat + evals.** `ClaudeGenerator`, `BuildEvent`, the Agents SDK session, chat

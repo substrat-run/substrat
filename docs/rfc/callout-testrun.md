@@ -1,9 +1,17 @@
+---
+status: historical
+layer: plan
+description: The original test-run spec the first engines (workorder, invoicing) were cut from — kept after the Callout demo was removed.
+---
+
+<!-- Retained from demos/callout/spec/testrun.md when the demo was removed (2026-10-07). It is the original test-run spec the first engines were cut from: engine headers, K-16 and the kernel design cite its sections. Nothing below was revised. -->
+
 # FSM demo — implementation spec for the pure-SQLite test run
 
 Status: draft v0.2 (adds §4.1b/§5.1b protocols — engine-protocol.md milestone A) · Last updated: 2026-07-14
 
-> Companion to [concept.md](concept.md) (the concept) and
-> [kernel-design.md](../../../docs/architecture/kernel-design.md) (the contracts). This document is the
+> Companion to [concept.md](callout-concept.md) (the concept) and
+> [kernel-design.md](../architecture/kernel-design.md) (the contracts). This document is the
 > implementation-level spec: concrete schemas, operations, events, permissions, and the
 > scenario script — detailed enough to build and run end-to-end on
 > `@substrat-run/adapter-sqlite` with **no UI, no HTTP, no Cloudflare** — and to derive the
@@ -16,12 +24,12 @@ load → work order lifecycle → priced completion → event → invoicing line
 isolation → cross-tenant attack fails. Everything observable in plain `.sqlite` files.
 
 **Non-goals for this run:** UI (§7.4 composes later against the same operations — the
-individual views are specified in [views.md](views.md)), HTTP surface
+individual views are specified in `views.md` (removed with the demo)), HTTP surface
 (zod-openapi wraps the same operations later), protocols *engine*, scheduling, Tier 2,
 notifications, documents, custom fields, offline, Cloudflare adapter.
 
 > **Amendment (v0.2).** Protocols/self-inspections are now IN — as **vertical code**
-> per [engine-protocol.md](../../../docs/engines/protocol.md) milestone A
+> per [engine-protocol.md](../engines/protocol.md) milestone A
 > (§4.1b, §5.1b, scenario steps 10–13). The protocols *engine* stays a non-goal:
 > extraction happens at milestone B, when Handlebar's second shape forces it.
 
@@ -86,7 +94,7 @@ crosses a module boundary.
 
 ### 4.1b `demos/callout` protocols (vertical, milestone A) — migration 0002
 
-The [engine-protocol.md](../../../docs/engines/protocol.md) §3 domain model as
+The [engine-protocol.md](../engines/protocol.md) §3 domain model as
 `callout_*` tables — deliberately engine-shaped so the milestone-B extraction diff
 is mostly a rename. Migration `0002-protocols`, appended to the journal (0001 shipped).
 

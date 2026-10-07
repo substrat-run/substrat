@@ -190,7 +190,7 @@ export const absenceOperations = defineOperations(absenceEntities, ABSENCE_PERMI
     // `effectiveDate` is the order and is NOT unique — it is caller-supplied, so
     // an accrual dated last year may be written today. The cursor is therefore
     // the (effectiveDate, id) pair, the same pair the SQL orders by; `sortKey`
-    // names the field a reader sorts by, as Callout's timeline does over a rowid.
+    // names the field a reader sorts by, as Handlebar's timeline does over a rowid.
     paged: { sortKey: 'effectiveDate' },
   },
 });

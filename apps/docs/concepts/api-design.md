@@ -433,7 +433,7 @@ neither moves the version, both commit, and both get a 200 with an `ETag` assert
 write was serialised. `concurrency.over` is therefore compile-checked against the
 operation's declared `emits`.
 
-Adopting this in Callout is what revealed that `create-facility` had never emitted at all —
+Adopting this in the Callout demo (since removed) is what revealed that `create-facility` had never emitted at all —
 so every facility it created had no version, and no conditional update against one could
 ever have succeeded.
 :::

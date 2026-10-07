@@ -5,8 +5,8 @@ import { z } from 'zod';
  * engine-workorder's entity (#697/#707).
  *
  * A composing vertical needs the entity-type constant — Handlebar declares
- * `{ entityType: 'workorder', parentType: 'bike' }`, Callout leaves it at the
- * engine's `facility` — and the row schema, so an operation returning a work
+ * `{ entityType: 'workorder', parentType: 'bike' }`, where a vertical may also
+ * leave it at the engine's `facility` — and the row schema, so an operation returning a work
  * order can declare an `output` without transcribing this engine's shape.
  *
  * ## `parents` is where the plural came from
@@ -35,7 +35,7 @@ export const workorderEntities = defineEntities({
     fields: z.object({
       id: z.string(),
       number: z.number(),
-      /** The parent ref, entity-agnostic: a facility in Callout, a bike in Handlebar. */
+      /** The parent ref, entity-agnostic: a `facility` by default, a bike in Handlebar. */
       facility_type: z.string(),
       facility_id: z.string(),
       customer_type: z.string(),
