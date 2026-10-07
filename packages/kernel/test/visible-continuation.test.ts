@@ -109,8 +109,10 @@ describe('sealed visible continuations (#2074)', () => {
       await expect(visibleContinuation(store, { ...binding, ...change }, () => 1_000).open(token))
         .rejects.toThrow(/restart paging/);
     }
-    const last = token.at(-1) === 'A' ? 'B' : 'A';
-    await expect(codec.open(token.slice(0, -1) + last)).rejects.toThrow(/restart paging/);
+    const payloadAt = token.lastIndexOf('.') + 1;
+    const changed = token[payloadAt] === 'A' ? 'B' : 'A';
+    await expect(codec.open(token.slice(0, payloadAt) + changed + token.slice(payloadAt + 1)))
+      .rejects.toThrow(/restart paging/);
   });
 
   it('expires, rotates while the prior key has live tokens, and invalidates on restore', async () => {
