@@ -74,6 +74,7 @@ import {
   createOrgInput,
   roleKey as roleKeySchema,
   peerSwitch,
+  verticalSlug,
   systemSwitch,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
@@ -1245,6 +1246,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/migrations$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/owner-seat$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/peer-grants$/, pin: 'path' },
+  { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/peer-bindings$/, pin: 'path' },
+  { method: 'PUT', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/peer-bindings$/, pin: 'path' },
   // The peer switch (#1706): on is POST, off is DELETE, on the tenant's own scope.
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/peer-grants$/, pin: 'path' },
   { method: 'DELETE', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/peer-grants$/, pin: 'path' },
@@ -8997,6 +9000,48 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     }
     return c.json(await c.var.admin.peerGrantsStatus(actor, { tenantId, scopeId }));
+  });
+
+  // #1720: a caller's explicit target is a tenant decision. The dashboard checks its own
+  // app-management permission; this route confines the tenant and both directory endpoints.
+  const peerBindingBody = z.object({ vertical: verticalSlug, targetScopeId: scopeIdSchema.nullable() }).strict();
+  app.get('/tenants/:tenantId/scopes/:scopeId/peer-bindings', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const vertical = verticalSlug.parse(c.req.query('vertical'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const actor = c.get('actor');
+    if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) return c.json({ error: 'app not found' }, 404);
+    return c.json(await c.var.admin.peerBinding(actor, tenantId, scopeId, vertical) ?? null);
+  });
+  app.put('/tenants/:tenantId/scopes/:scopeId/peer-bindings', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const pin = confinedTenant(c.get('principal'));
+    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    const body = peerBindingBody.parse(await c.req.json());
+    const actor = c.get('actor');
+    if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) return c.json({ error: 'app not found' }, 404);
+    const operationId = ulid();
+    const base = { tenantId, scopeId, operationId, vertical: body.vertical, targetScopeId: body.targetScopeId };
+    const done = await auditedChange({
+      flow: 'peer-binding', operationId,
+      run: async () => {
+        try {
+          return await c.var.admin.setPeerBinding(actor, tenantId, scopeId, body.vertical, body.targetScopeId);
+        } catch (e) {
+          if (errorCodeOf(e) === 'not_found') throw new ControlPlaneError(404, e instanceof Error ? e.message : String(e));
+          throw e;
+        }
+      },
+      refused: (e) => e instanceof ControlPlaneError && e.status < 500,
+      record: (row) => c.var.admin.recordPeerBindingChange(actor,
+        row.phase === 'applied'
+          ? { ...base, phase: 'applied', changed: row.result.changed, previousScopeId: row.result.previous }
+          : { ...base, ...row }),
+    });
+    return auditedAnswer(c, done, 'the peer binding', (result, audit) => c.json({ ...result, ...audit }));
   });
 
   // Orgs: the portal-customer grouping (§4.1). Creating one mints no permission —

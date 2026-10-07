@@ -29,6 +29,7 @@ import type {
   OpsFailureEntry,
   Page,
   PeerGrantsStatusEntry,
+  PeerBinding,
   PeerSwitchResult,
   PermissionDenial,
   PermissionRegistry,
@@ -427,6 +428,9 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // which `ControlPlaneError` relays verbatim (never a wrong `on`).
   peerGrantsStatus = (t: TenantId, s: ScopeId): Promise<PeerGrantsStatusEntry[]> =>
     this.call(`/tenants/${t}/scopes/${s}/peer-grants`);
+
+  peerBinding = (t: TenantId, s: ScopeId, vertical: string): Promise<PeerBinding | null> =>
+    this.call(`/tenants/${t}/scopes/${s}/peer-bindings?${new URLSearchParams({ vertical })}`);
   // DELETE on the switch route — `reason` is required server-side and lands on the admin
   // log beside the actor, exactly as the schedule switch's does.
   switchPeerOff = (t: TenantId, s: ScopeId, vertical: string, reason: string): Promise<PeerSwitchResult> =>
