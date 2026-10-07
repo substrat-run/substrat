@@ -176,8 +176,9 @@ function denialParams(scopeId: ScopeId, filter?: DenialFilter): URLSearchParams 
 /**
  * How long an AUDITED vertical call may run (#2064): the owner hand-over and the member changes,
  * and (#2089) the kill switches' delegated calls — a switch makes at most three (the fence
- * preflight, the move and one retry), well inside the settle's hour. The control plane writes an `intent` row before such a call and its outcome after, and the
- * scheduled settle calls an intent with no outcome `unknown` once its grace window has passed.
+ * preflight, the move and one retry), well inside the settle's hour. An `intent` row is written
+ * before the call and its outcome after. The scheduled settle calls an intent with no outcome
+ * `unknown` once its grace window has passed.
  * This bound is what keeps a live call from being settled: `settleUnrecordedOutcomes` refuses a
  * grace window that does not exceed it. A call past it is answered 504 and audited `failed`,
  * which means what `failed` always means: it may have stopped part-way.
