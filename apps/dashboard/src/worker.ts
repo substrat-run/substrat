@@ -2191,14 +2191,18 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
 
   const { runningId } = await runningDeclarations(cp, scope, slug);
   const declared = runningId ? await cp.versionCalls(slug, runningId) : null;
-  const targets = [...new Set(declared ?? [])];
+  const bindings = await cp.peerBindings(scope);
+  const targets = [...new Set([...(declared ?? []), ...bindings.map((b) => b.vertical)])];
   const outgoing = await Promise.all(
     targets.map(async (vertical) => {
       const scopes = await cp.listScopes(vertical);
-      const binding = await cp.peerBinding(scope, vertical);
+      const binding = bindings.find((b) => b.vertical === vertical);
       const choices = (scopes ?? []).filter((s) => s.tenantId === node.tenantId && s.vertical === vertical && s.status === 'active' && isPrimaryScope(s))
         .map((s) => ({ scopeId: s.id, name: s.name }));
       const choice = { vertical, boundScopeId: binding?.targetScopeId ?? null, invalidated: binding?.invalidated ?? false, candidates: choices };
+      if (declared !== null && !declared.includes(vertical)) {
+        return { call: { state: 'not-declared' as const, vertical }, choice };
+      }
       const target = targetScopeOf(scopes ?? [], node.tenantId, vertical, binding?.targetScopeId ?? null, binding?.invalidated ?? false);
       if (target === null || 'ambiguous' in target) {
         return { call: declaredCallState({ vertical, caller: slug, target, entries: [] }), choice };

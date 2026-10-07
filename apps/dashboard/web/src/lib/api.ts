@@ -1340,6 +1340,7 @@ export type DeclaredCallRow =
   | { state: 'not-installed'; vertical: string }
   | { state: 'ambiguous'; vertical: string; count: number }
   | { state: 'bound-unavailable'; vertical: string }
+  | { state: 'not-declared'; vertical: string }
   | { state: 'allowed'; vertical: string; scopeId: string }
   | {
       state: 'switched-off';

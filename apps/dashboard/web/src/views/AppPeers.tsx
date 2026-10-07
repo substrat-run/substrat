@@ -23,6 +23,7 @@ import { relativeTime } from '../lib/format';
 const CALL_STATE: Record<DeclaredCallRow['state'], { kind: PillKind; label: string }> = {
   ambiguous: { kind: 'warning', label: 'Multiple instances' },
   'bound-unavailable': { kind: 'warning', label: 'Bound instance unavailable' },
+  'not-declared': { kind: 'neutral', label: 'No longer declared' },
   allowed: { kind: 'success', label: 'Grants active' },
   // Not a fault, and deliberately neutral rather than warning: declaring a call on an app
   // the tenant does not run is the ordinary state of a freshly installed vertical.
@@ -46,6 +47,8 @@ function callLine(row: DeclaredCallRow): string {
       return `You run ${row.count} active instances of ${row.vertical}. Calls are refused until you choose one.`;
     case 'bound-unavailable':
       return `The chosen instance of ${row.vertical} is unavailable. Rebind or clear the choice; calls are refused meanwhile.`;
+    case 'not-declared':
+      return `This version does not declare calls to ${row.vertical}. The saved target choice can be cleared.`;
     case 'allowed':
       return `Grants are active at ${row.vertical}. Its manifest separately decides which operations this app may invoke.`;
     case 'switched-off':

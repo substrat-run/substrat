@@ -2106,10 +2106,9 @@ export class TenantNarrowedControlPlane {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-grants`);
   }
 
-  /** This caller's explicit target choice, if any; a stale choice remains visible. */
-  peerBinding(scopeId: ScopeId, vertical: string): Promise<PeerBinding | null> {
-    const q = new URLSearchParams({ vertical });
-    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-bindings?${q}`);
+  /** All retained choices, including targets no longer declared by the current version. */
+  peerBindings(scopeId: ScopeId): Promise<PeerBinding[]> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-bindings`);
   }
 
   /** Set or clear the choice. A null target explicitly returns to slug resolution. */

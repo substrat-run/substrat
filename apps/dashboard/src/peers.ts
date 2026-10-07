@@ -23,6 +23,7 @@ export type DeclaredCallState =
   | { state: 'not-installed'; vertical: string }
   | { state: 'ambiguous'; vertical: string; count: number }
   | { state: 'bound-unavailable'; vertical: string }
+  | { state: 'not-declared'; vertical: string }
   /** Installed, and this app is admitted at its door right now. */
   | { state: 'allowed'; vertical: string; scopeId: string }
   /** Installed, and this app is switched off there — by someone, for a reason, at a time. */
@@ -100,6 +101,8 @@ export function declaredCallLine(entry: DeclaredCallState): string {
       return `${entry.count} active instances of ${entry.vertical} — calls are refused until one target can be resolved.`;
     case 'bound-unavailable':
       return `The bound instance of ${entry.vertical} is unavailable — rebind or clear the choice.`;
+    case 'not-declared':
+      return `The current version does not declare calls to ${entry.vertical}; its old binding can be cleared.`;
     case 'allowed':
       return `Grants are active at ${entry.vertical}. Its manifest separately decides which operations this app may invoke.`;
     case 'switched-off':
