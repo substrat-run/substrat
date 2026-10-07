@@ -2818,6 +2818,8 @@ export interface HostAdmin {
 
   /** Read the caller's explicit choice, if any. Tenant-scoped and recorded as an admin read. */
   peerBinding(actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string): Promise<PeerBinding | undefined>;
+  /** Every explicit target choice this calling scope currently holds. */
+  peerBindings(actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId): Promise<PeerBinding[]>;
 
   /** Bind or clear this caller's target. Both endpoints are checked in the directory at write. */
   setPeerBinding(

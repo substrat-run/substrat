@@ -8163,6 +8163,13 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
         return row ? { tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id as ScopeId } : undefined;
       },
+      peerBindings: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId) => {
+        const rows = this.directory.prepare(
+          'SELECT vertical, target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? ORDER BY vertical',
+        ).all(tenantId, callerScopeId) as { vertical: string; target_scope_id: string }[];
+        this.recordAccess(actor, 'peerBindings', { tenantId, scopeId: callerScopeId }, null, rows.length);
+        return rows.map((r) => ({ tenantId, callerScopeId, vertical: r.vertical, targetScopeId: r.target_scope_id as ScopeId }));
+      },
       setPeerBinding: async (_actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string, targetScopeId: ScopeId | null) =>
         this.directory.transaction(() => {
           const caller = this.directory.prepare(

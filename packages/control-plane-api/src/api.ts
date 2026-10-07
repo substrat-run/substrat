@@ -9008,12 +9008,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/scopes/:scopeId/peer-bindings', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
-    const vertical = verticalSlug.parse(c.req.query('vertical'));
+    const vertical = c.req.query('vertical');
     const pin = confinedTenant(c.get('principal'));
     if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
     const actor = c.get('actor');
     if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) return c.json({ error: 'app not found' }, 404);
-    return c.json(await c.var.admin.peerBinding(actor, tenantId, scopeId, vertical) ?? null);
+    return c.json(vertical === undefined
+      ? await c.var.admin.peerBindings(actor, tenantId, scopeId)
+      : await c.var.admin.peerBinding(actor, tenantId, scopeId, verticalSlug.parse(vertical)) ?? null);
   });
   app.put('/tenants/:tenantId/scopes/:scopeId/peer-bindings', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));

@@ -2719,6 +2719,13 @@ export class ControlPlaneDO extends DurableObject {
     ).toArray()[0] as { target_scope_id: string } | undefined;
   }
 
+  peerBindings(tenantId: string, callerScopeId: string) {
+    return this.sql.exec(
+      'SELECT vertical, target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? ORDER BY vertical',
+      tenantId, callerScopeId,
+    ).toArray() as { vertical: string; target_scope_id: string }[];
+  }
+
   /** Directory write and endpoint checks share this DO's serialized unit. */
   setPeerBinding(tenantId: string, callerScopeId: string, vertical: string, targetScopeId: string | null) {
     const caller = this.sql.exec(

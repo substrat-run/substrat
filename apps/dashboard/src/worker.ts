@@ -26,7 +26,7 @@ import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, memberInviteInput, memberRoleInput, importCursorMove, findingKind, findingRuleInput, findingStatus, findingStatusInput, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
-import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
+import { globalFetch, ulid, isPrimaryScope, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
@@ -2192,18 +2192,23 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
   const { runningId } = await runningDeclarations(cp, scope, slug);
   const declared = runningId ? await cp.versionCalls(slug, runningId) : null;
   const targets = [...new Set(declared ?? [])];
-  const calls = await Promise.all(
+  const outgoing = await Promise.all(
     targets.map(async (vertical) => {
       const scopes = await cp.listScopes(vertical);
-      const target = targetScopeOf(scopes ?? [], node.tenantId, vertical);
+      const binding = await cp.peerBinding(scope, vertical);
+      const choices = (scopes ?? []).filter((s) => s.tenantId === node.tenantId && s.vertical === vertical && s.status === 'active' && isPrimaryScope(s))
+        .map((s) => ({ scopeId: s.id, name: s.name }));
+      const choice = { vertical, boundScopeId: binding?.targetScopeId ?? null, candidates: choices };
+      const target = targetScopeOf(scopes ?? [], node.tenantId, vertical, binding?.targetScopeId ?? null);
       if (target === null || 'ambiguous' in target) {
-        return declaredCallState({ vertical, caller: slug, target, entries: [] });
+        return { call: declaredCallState({ vertical, caller: slug, target, entries: [] }), choice };
       }
+      if ('boundUnavailable' in target) return { call: declaredCallState({ vertical, caller: slug, target, entries: [] }), choice };
       const read = await cp
         .peerGrants(scopeId.parse(target.scopeId))
         .then((entries) => ({ entries, error: null as string | null }))
         .catch((e: unknown) => ({ entries: null, error: e instanceof Error ? e.message : String(e) }));
-      return declaredCallState({ vertical, caller: slug, target, entries: read.entries, readError: read.error });
+      return { call: declaredCallState({ vertical, caller: slug, target, entries: read.entries, readError: read.error }), choice };
     }),
   );
 
@@ -2211,7 +2216,8 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
     // `null` is a fact: this version predates the declaration and is unenforced, which a
     // reader must be able to tell from a version that declares it calls nothing (`[]`).
     declares: declared,
-    calls,
+    calls: outgoing.map((row) => row.call),
+    bindingChoices: outgoing.map((row) => row.choice),
     callers: callers.entries,
     callersError: callers.error,
   });
@@ -2237,6 +2243,21 @@ app.post('/api/apps/:scopeId/peers/switch', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const result = await cp.switchPeer(scopeId.parse(appRow.app_scope_id), body.vertical, body.to, body.reason);
   return c.json(result);
+});
+
+/** One tenant admin's explicit target choice for this calling app. */
+app.put('/api/apps/:scopeId/peers/binding', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  await assertMayManageApps(host, node);
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const body = z.object({ vertical: z.string().min(1), targetScopeId: scopeId.nullable() }).strict().parse(await c.req.json());
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  return c.json(await cp.setPeerBinding(scopeId.parse(appRow.app_scope_id), body.vertical, body.targetScopeId));
 });
 
 /**

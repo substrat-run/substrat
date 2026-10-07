@@ -22,6 +22,7 @@ import { relativeTime } from '../lib/format';
 
 const CALL_STATE: Record<DeclaredCallRow['state'], { kind: PillKind; label: string }> = {
   ambiguous: { kind: 'warning', label: 'Multiple instances' },
+  'bound-unavailable': { kind: 'warning', label: 'Bound instance unavailable' },
   allowed: { kind: 'success', label: 'Grants active' },
   // Not a fault, and deliberately neutral rather than warning: declaring a call on an app
   // the tenant does not run is the ordinary state of a freshly installed vertical.
@@ -42,7 +43,9 @@ function callLine(row: DeclaredCallRow): string {
     case 'not-installed':
       return `You do not run ${row.vertical}. Nothing is wrong — this app simply has nowhere to call.`;
     case 'ambiguous':
-      return `You run ${row.count} active instances of ${row.vertical}. Calls are refused; instance binding is not available yet.`;
+      return `You run ${row.count} active instances of ${row.vertical}. Calls are refused until you choose one.`;
+    case 'bound-unavailable':
+      return `The chosen instance of ${row.vertical} is unavailable. Rebind or clear the choice; calls are refused meanwhile.`;
     case 'allowed':
       return `Grants are active at ${row.vertical}. Its manifest separately decides which operations this app may invoke.`;
     case 'switched-off':
@@ -63,7 +66,35 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
   const [reason, setReason] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selection, setSelection] = useState<Record<string, string>>({});
   const switching = useRef(false);
+
+  async function saveBinding(vertical: string, targetScopeId: string | null) {
+    if (switching.current) return;
+    switching.current = true;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const outcome = await api.setAppPeerBinding(scopeId, vertical, targetScopeId);
+      const fresh = await api.appPeers(scopeId);
+      setView(fresh);
+      setSelection((prior) => ({ ...prior, [vertical]: targetScopeId ?? '' }));
+      setNotice(outcome.auditWarning ?? 'Target choice updated.');
+    } catch (e) {
+      // A failed transport may have applied the write. Re-read instead of offering a blind retry.
+      try {
+        setView(await api.appPeers(scopeId));
+        setNotice(`Could not confirm the target choice (${String(e)}). Check the choice shown below before trying again.`);
+      } catch (readError) {
+        setView(null);
+        setFailed(true);
+        setNotice(`Could not confirm the target choice (${String(e)}), and its current state could not be read (${String(readError)}). Reload before trying again.`);
+      }
+    } finally {
+      switching.current = false;
+      setBusy(false);
+    }
+  }
 
   async function confirmSwitch() {
     if (!dialog || switching.current || !validPeerReason(reason)) return;
@@ -169,6 +200,24 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
                 <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: '18px' }}>
                   {callLine(row)}
                 </span>
+                {(() => {
+                  const choice = view.bindingChoices.find((c) => c.vertical === row.vertical);
+                  if (!choice) return null;
+                  const selected = selection[row.vertical] ?? choice.boundScopeId ?? '';
+                  return <>
+                    <select aria-label={`Target instance for ${row.vertical}`} value={selected} disabled={busy}
+                      onChange={(e) => setSelection((prior) => ({ ...prior, [row.vertical]: e.target.value }))}>
+                      <option value="">No explicit choice</option>
+                      {choice.boundScopeId && !choice.candidates.some((c) => c.scopeId === choice.boundScopeId) &&
+                        <option value={choice.boundScopeId}>Unavailable bound instance</option>}
+                      {choice.candidates.map((c) => <option key={c.scopeId} value={c.scopeId}>{c.name}</option>)}
+                    </select>
+                    <Button size="sm" disabled={busy || selected === (choice.boundScopeId ?? '')}
+                      onClick={() => void saveBinding(row.vertical, selected || null)}>Save target</Button>
+                    {choice.boundScopeId && <Button size="sm" variant="secondary" disabled={busy}
+                      onClick={() => void saveBinding(row.vertical, null)}>Clear choice</Button>}
+                  </>;
+                })()}
               </li>
             ))}
           </ul>
