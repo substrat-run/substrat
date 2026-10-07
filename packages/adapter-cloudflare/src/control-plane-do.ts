@@ -1965,6 +1965,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_system_switches', // #1674: the schedule switch's record, per scope
       '_substrat_membership_fences', // #1184: the latest removal, per principal
       '_substrat_peer_switches', // #2029: the peer switch's record, per scope
+      'peer_bindings', // #1720: a tenant's explicit caller-to-target choices
       '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
       '_substrat_findings', // #1748: the tenant's findings
       '_substrat_finding_rules', // #1748: the tenant's suppress rules
