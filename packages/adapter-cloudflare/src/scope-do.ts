@@ -2272,10 +2272,11 @@ export function defineScopeDO(
       relation: string,
       object: string,
       expiresAt: string | null,
-    ): Promise<void> {
-      await this.queue.enqueue(() => {
+    ): Promise<DoReply<null>> {
+      return replyOf(() => this.queue.enqueue(() => {
         writeExplicitTupleIn(this.switchSql(), subject, relation, object, { kind: 'replace', expiresAt });
-      });
+        return null;
+      }));
     }
 
     /**

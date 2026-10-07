@@ -647,9 +647,15 @@ export function permissionContractSuite(
         await host.admin.grantEntityShape(staff, { principalId: marked, node: at, entity: room('marked'), permissions: [PERM_READ], grantedBy: alice });
         const shape = [{ entityType: 'retiringRoom', permissions: [PERM_USE, PERM_ADMIN], retired: [PERM_READ], bootstrap: true as const, holder: 'grantee' as const }];
         expect(await host.admin.reconcileEntityGrantShapes(staff, at, shape)).toEqual({ toppedUp: 2, retired: 1 });
+        const marker = async (who: PrincipalId, id: string) =>
+          (await host.getScope(alice, t1, scope)).invoke<{ revoked_at: string | null }[]>('perm/shape-marker', {
+            principal: who,
+            entity: room(id),
+          });
         for (const [who, id] of [[oldLive, 'old-live'], [oldDead, 'old-dead']] as const) {
           expect((await probe(who, scope, PERM_ADMIN, room(id))).allowed).toBe(false);
           expect((await probe(who, scope, PERM_USE, room(id))).allowed).toBe(false);
+          expect(await marker(who, id)).toEqual([]);
         }
         // The old direct grant is still live, but it is not a shape marker; its tombstoned twin
         // remains denied. A marked K-only holder instead keeps the marker and receives the new keys.
@@ -658,6 +664,7 @@ export function permissionContractSuite(
         for (const [who, id] of [[current, 'current'], [marked, 'marked']] as const) {
           expect((await probe(who, scope, PERM_ADMIN, room(id))).allowed).toBe(true);
           expect((await probe(who, scope, PERM_READ, room(id))).allowed).toBe(false);
+          expect(await marker(who, id)).toEqual([{ revoked_at: null }]);
         }
         expect(await host.admin.reconcileEntityGrantShapes(staff, at, shape)).toEqual({ toppedUp: 0, retired: 0 });
         expect((await probe(marked, scope, PERM_READ, room('marked'))).allowed).toBe(false);

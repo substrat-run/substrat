@@ -5674,6 +5674,13 @@ describe('#1856 — grantEntityLocal refuses a ref the permission graph cannot h
     await host.topUpEntityGrantShapesLocal(t, s, [
       { entityType: 'localRoom', permissions: [USE], retired: [READ], bootstrap: true, holder: 'grantee' },
     ]);
+    const protectedRows = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) =>
+      state.storage.sql.exec("SELECT subject, object FROM _substrat_tuples WHERE relation = 'shape-grantee-key' ORDER BY object").toArray(),
+    );
+    expect(protectedRows).toEqual([
+      { subject: 'shape:localRoom', object: `granted:${READ}` },
+      { subject: 'shape:localRoom', object: `granted:${USE}` },
+    ]);
     for (const key of [USE, READ]) {
       const err = await host.grantEntityLocal(s, who, key, entity).then(
         () => undefined,
