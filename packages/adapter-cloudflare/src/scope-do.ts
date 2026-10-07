@@ -1176,14 +1176,14 @@ export function defineScopeDO(
     private readonly sql: SqlStorage;
     private continuationOrder = 0;
     /** DO storage KV is private to the adapter; neither module SQL nor dumps can read it. */
-    private continuationStore(): ContinuationStore {
+    private continuationStore(writable: boolean): ContinuationStore {
       const positionKey = (id: string, expiresAt: number) =>
         `continuation:position:${String(expiresAt).padStart(13, '0')}:${id}`;
       return {
         keys: async () => (await this.ctx.storage.get<ContinuationKeys>('continuation:keys')) ?? null,
         setKeys: async (keys) => { await this.ctx.storage.put('continuation:keys', keys); },
         position: async (id, expiresAt) => {
-          await this.pruneContinuationPositions();
+          if (writable) await this.pruneContinuationPositions();
           return (await this.ctx.storage.get<ContinuationPosition>(positionKey(id, expiresAt))) ?? null;
         },
         setPosition: async (id, position) => {
@@ -7412,7 +7412,7 @@ export function defineScopeDO(
         // the event actor says what it is instead. Every other door passes its own value.
         principal: capabilityId ? (capabilityId as unknown as PrincipalId) : principal,
         pageContinuation: (list, query) => visibleContinuation(
-          this.continuationStore(),
+          this.continuationStore(impersonation?.mode !== 'read-only' && !this.isCopy()),
           { scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },
           Date.now,
           () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),

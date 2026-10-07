@@ -1765,7 +1765,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly directory: Database.Database;
 
   /** A private directory seam: module SQL and scope/directory exports never reach it. */
-  private continuationStore(scopeId: ScopeId): ContinuationStore {
+  private continuationStore(scopeId: ScopeId, writable: boolean): ContinuationStore {
     const pruneExpired = () => this.directory.prepare(
       'DELETE FROM private_continuation_positions WHERE expires_at <= ?',
     ).run(Date.parse(this.clock()));
@@ -1783,7 +1783,7 @@ export class SqliteScopeHost implements ScopeHost {
         ).run(scopeId, JSON.stringify(keys));
       },
       position: async (id, expiresAt) => {
-        pruneExpired();
+        if (writable) pruneExpired();
         const row = this.directory.prepare(
           `SELECT ciphertext FROM private_continuation_positions
            WHERE scope_id = ? AND expires_at = ? AND locator = ?`,
@@ -12031,7 +12031,7 @@ export class SqliteScopeHost implements ScopeHost {
       scopeId: rt.scopeId,
       principal,
       pageContinuation: (list, query) => visibleContinuation(
-        this.continuationStore(rt.scopeId),
+        this.continuationStore(rt.scopeId, impersonation?.mode !== 'read-only' && this.isPrimaryInDirectory(rt.scopeId)),
         { scopeId: rt.scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },
         () => Date.parse(this.clock()),
         () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),
