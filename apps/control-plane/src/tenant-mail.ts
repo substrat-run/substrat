@@ -26,7 +26,7 @@ import type {
 /** A refusal the relay answers with, carrying its HTTP status. */
 export class TenantMailRefusal extends Error {
   constructor(
-    readonly status: 400 | 403 | 409 | 413,
+    readonly status: 400 | 403 | 409 | 413 | 503,
     message: string,
   ) {
     super(message);
@@ -73,14 +73,33 @@ export async function resolveTenantSender(
     vertical: input.vertical,
   });
   const covering: { connection: Connection; sender: MailSender }[] = [];
+  // One connection that cannot answer (a secret that will not open, a provider that is down)
+  // must not take mail through every other connection of the tenant down with it.
+  const unanswered: Connection['id'][] = [];
   for (const connection of live) {
     if (connection.status !== 'active') continue;
     const sender = deps.senders[connection.provider];
     if (!sender) continue;
-    const addresses = await sender.senders(deps.host, connection);
+    let addresses: readonly string[];
+    try {
+      addresses = await sender.senders(deps.host, connection);
+    } catch {
+      unanswered.push(connection.id);
+      continue;
+    }
     if (addresses.some((a) => a.toLowerCase() === wanted)) covering.push({ connection, sender });
   }
   const [only, ...more] = covering;
+  // Nothing covers it, but a connection that did not answer might have: say that, rather than
+  // a 403 claiming the address is covered by nothing, which would send someone looking for a
+  // configuration mistake that is not there.
+  if (!only && unanswered.length > 0) {
+    throw new TenantMailRefusal(
+      503,
+      `no mail connection that answered may send as '${input.from}', and ${unanswered.length} could ` +
+        `not be asked (${unanswered.join(', ')}) — try again, or check those connections`,
+    );
+  }
   if (!only) {
     throw new TenantMailRefusal(
       403,

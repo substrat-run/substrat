@@ -134,6 +134,33 @@ describe('sending as a tenant address (#2098)', () => {
     expect([...a.sent, ...b.sent]).toHaveLength(0);
   });
 
+  describe('a connection that cannot say what it covers', () => {
+    const broken: MailSender = {
+      senders: async () => {
+        throw new Error('secret will not open');
+      },
+      send: async () => {
+        throw new Error('never');
+      },
+    };
+
+    it('does not stop the connection that does cover the address', async () => {
+      const m365 = recordingSender(['office@acme.example']);
+      await sendAsTenant(
+        deps([connection('gws'), connection('m365')], { gws: broken, m365: m365.sender }),
+        input(),
+      );
+      expect(m365.sent).toHaveLength(1);
+    });
+
+    it('when nothing that answered covers the address, is a 503 naming it, not a 403 claiming no coverage', async () => {
+      const conn = connection('gws');
+      const e = await refusal(sendAsTenant(deps([conn], { gws: broken }), input()));
+      expect(e.status).toBe(503);
+      expect(e.message).toContain(conn.id);
+    });
+  });
+
   describe('attachments, read as the sending connection', () => {
     const file = (filename: string, bytes: number): OpenedAttachment =>
       ({ record: { filename }, body: new Uint8Array(bytes), contentType: 'application/pdf' }) as unknown as OpenedAttachment;
