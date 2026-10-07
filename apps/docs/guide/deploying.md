@@ -188,6 +188,25 @@ deliberately won't let you bind for yourself:
   by id (`{ attachmentId }`). An address none of the tenant's connections covers is refused, never
   sent as the platform instead. Send from your worker, not from inside a Durable Object: sending
   as a tenant address needs the platform to know which vertical is calling.
+
+  **Mail that an operation sends belongs in the operation.** The relay call above happens
+  outside your transaction: if the operation fails after it, the mail has still gone, and a
+  send that fails is not retried. Call `requestEmail(ctx, { to, subject, html, text, from?,
+  fromName?, attachments?, about?, subjectId? })` from `@substrat-run/kernel` inside the operation instead.
+  It writes the send into the same transaction, so a failed operation sends nothing. Once the
+  operation commits, the platform sends the mail through the same two routes as the relay. It
+  retries a throttled or failing provider (waiting as long as the provider's `Retry-After` asks)
+  and then reports the result as an event your module can consume:
+
+  - `email.sent` carries the provider's message id when it gives one.
+  - `email.refused` means a refusal the platform will not retry.
+  - `email.dead-lettered` means it gave up after repeated transient failures.
+
+  Each event names the `request` id that `requestEmail` returned. It is written on the `about`
+  entity when you name one, so that entity's history shows the mail. If the recipient is a
+  person in your data, pass their `subjectId`. The queued send holds their address and the
+  message, and erasing that subject cancels a send that has not gone yet and removes both. The direct relay stays for
+  code that has no operation around it, such as the auth-server's sign-in mail.
 - `provisions` — the verticals your manager app creates tenants of (the tenant-provisioner
   request), turned on the same way (`setVerticalTenantProvisioner`).
 - `usesModels` — set it (`"usesModels": true`) if your vertical answers with a language model.

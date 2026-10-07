@@ -28,6 +28,7 @@ import {
   type PlatformActorId,
   type PlatformRequest,
   type PlatformRequestFailure,
+  type PlatformOutcomeEvent,
   type Scope,
   type ScopeId,
   type ScopeLifecycle,
@@ -95,9 +96,19 @@ const RECORD_KINDS: ReadonlySet<string> = new Set([MODEL_USAGE_KIND, SWEEP_RUNS_
 
 /** What a handler reports for one intent; `result` is persisted (COALESCE'd) for two-phase idempotency. */
 export interface PlatformRequestOutcome {
-  status: 'done' | 'failed' | 'pending';
+  /**
+   * `deferred` (#2102): the handler did not try this pass — the intent is waiting out a
+   * provider's `Retry-After`, or a throttle another intent of the same pass met. Nothing is
+   * settled, so no attempt is counted: an attempt is something the provider saw.
+   */
+  status: 'done' | 'failed' | 'pending' | 'deferred';
   result?: unknown;
   error?: string;
+  /**
+   * #2102: the event the settle writes into the scope, saying what became of the intent. Only
+   * on a terminal outcome — the scope refuses one on `pending`.
+   */
+  event?: PlatformOutcomeEvent;
   /**
    * WHO refused (#841) — journaled beside `error` so a reader never has to infer it from the
    * message. A handler that does not attribute leaves this undefined and the column stays
@@ -207,6 +218,10 @@ export async function drainScopePlatformRequests(
         };
       }
     }
+    if (outcome.status === 'deferred') {
+      report.pending++;
+      continue;
+    }
     // The attempt ceiling (#570): `attempts` counts SETTLED passes, so this pass is
     // attempts + 1. At the ceiling a still-pending outcome settles `failed` carrying its
     // last error — the truth the proposer's read actually surfaces — and the give-up
@@ -258,13 +273,17 @@ export async function drainScopePlatformRequests(
     // No special case for a refused row: the tolerant read only ever hands back a row whose
     // id satisfies the contract, so its settle is refused for the same reasons any settle
     // is — transiently — and propagates the same way, surfacing the outage.
+    // Never `deferred` here (it `continue`d above); said again because the ceiling's
+    // reassignments widen what the compiler can see.
+    const status = outcome.status === 'deferred' ? 'pending' : outcome.status;
     await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, request.id, {
-      status: outcome.status,
+      status,
       result: outcome.result,
       lastError: outcome.error ?? null,
       failure: outcome.failure ?? null,
+      ...(outcome.event ? { event: outcome.event } : {}),
     });
-    report[outcome.status]++;
+    report[status]++;
   }
   return report;
 }

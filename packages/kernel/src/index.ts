@@ -99,6 +99,9 @@ export {
   recordConnectorCall,
   settleConnectionUse,
 } from './connector-calls.js';
+export { requestEmail, settlePlatformRequestIn } from './email-intent.js';
+export type { OutcomeEventStamp, PlatformRequestSettle } from './email-intent.js';
+export { KERNEL_ACTOR, kernelOutboxInsertSql } from './kernel-outbox.js';
 export type {
   MailAddress,
   MailSender,

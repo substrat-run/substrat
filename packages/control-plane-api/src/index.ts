@@ -81,6 +81,16 @@ export {
 export { reconcilePayloadFor, reconcileThenReassert, reviewedEntityGrants, switchCarryFor, type SwitchCarry } from './reconcile.js';
 export type { ReconcilePayload, ReconcileGatherAdmin } from './reconcile.js';
 export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
+export {
+  sendEmailHandler,
+  sendFailureStatus,
+  retryAfterSecondsOf,
+  MAX_EMAIL_SEND_ATTEMPTS,
+  EMAIL_RETRY_BASE_MS,
+  EMAIL_RETRY_MAX_MS,
+  type EmailSent,
+  type SendEmailDeps,
+} from './email-intent.js';
 // #1978: moving here from the kernel — the drain is its only reader.
 export {
   isTerminalDispatchFailure,

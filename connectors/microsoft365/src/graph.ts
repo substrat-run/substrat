@@ -7,22 +7,37 @@ export interface GraphClient {
   fetch(input: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<{
     ok: boolean;
     status: number;
+    /** Read for `Retry-After` on a throttle (#2102). Optional: a test fetch may omit it. */
+    headers?: { get(name: string): string | null };
     json(): Promise<unknown>;
   }>;
   accessToken: string;
   graphBase?: string;
 }
 
-/** A Graph refusal, with the HTTP status and Graph's own error code. */
+/**
+ * A Graph refusal, with the HTTP status and Graph's own error code — and, on a throttle, the
+ * seconds Graph asked us to wait (`Retry-After`), which the platform's retry honours (#2102).
+ */
 export class GraphError extends Error {
   constructor(
     readonly status: number,
     readonly code: string | undefined,
     message: string,
+    readonly retryAfter?: number,
   ) {
     super(message);
     this.name = 'GraphError';
   }
+}
+
+/** `Retry-After` as seconds: Graph sends a delay, but an HTTP date is legal too. */
+export function retryAfterSeconds(value: string | null | undefined, now: number = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, Math.ceil((at - now) / 1000)) : undefined;
 }
 
 /**
@@ -110,5 +125,10 @@ async function call(client: GraphClient, method: string, path: string, body?: un
   });
   if (res.ok) return res;
   const err = ((await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } }).error;
-  throw new GraphError(res.status, err?.code, err?.message ?? `Graph answered ${res.status}`);
+  throw new GraphError(
+    res.status,
+    err?.code,
+    err?.message ?? `Graph answered ${res.status}`,
+    retryAfterSeconds(res.headers?.get('retry-after')),
+  );
 }

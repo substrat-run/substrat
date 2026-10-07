@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { ATTACHMENT_ADDED, ATTACHMENT_REMOVED } from '../src/attachments.js';
 import { CAPABILITY_EXERCISED, CAPABILITY_MINTED, CAPABILITY_REVOKED } from '../src/capability.js';
+import { EMAIL_DEAD_LETTERED, EMAIL_REFUSED, EMAIL_SENT } from '../src/email-intent.js';
 import { errorCodeOf } from '../src/errors.js';
 import {
   KERNEL_AUTHORED_EVENT_TYPES,
@@ -26,7 +27,7 @@ const codeOf = (fn: () => void): string | undefined => {
 };
 
 describe('kernel-authored event types (#1864)', () => {
-  it('is exactly the thirteen types the kernel writes', () => {
+  it('is exactly the sixteen types the kernel writes', () => {
     expect([...KERNEL_AUTHORED_EVENT_TYPES].sort()).toEqual(
       [
         ATTACHMENT_ADDED,
@@ -45,6 +46,10 @@ describe('kernel-authored event types (#1864)', () => {
         ENTITY_GRANTS_TOPPED_UP,
         // #2082: and so is a retirement — a grant taken back by the reviewed registry, no operation.
         ENTITY_GRANTS_RETIRED,
+        // #2102: what became of a requested email — written by the platform's settle, never forged.
+        EMAIL_SENT,
+        EMAIL_REFUSED,
+        EMAIL_DEAD_LETTERED,
       ].sort(),
     );
   });
@@ -82,7 +87,7 @@ describe('kernel-authored event types (#1864)', () => {
         // a frozen array throws in strict mode; either way, nothing may have changed
       }
     }
-    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(13);
+    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(16);
     for (const type of [ENTITY_RELINKED, ENTITY_LINKED, CAPABILITY_MINTED, ATTACHMENT_ADDED]) {
       expect(codeOf(() => assertModuleEmittableType(type))).toBe('validation_failed');
       expect(isKernelAuthoredEventType(type)).toBe(true);

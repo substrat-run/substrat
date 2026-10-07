@@ -464,6 +464,7 @@ import {
   type ConnectLinkKeyRow,
 } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
+import type { PlatformRequestSettle } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -1139,6 +1140,13 @@ interface ScopeStubRpc {
     lastError: string | null,
     /** #841 attribution, JSON-encoded. Defaulted in the DO so an older stub still binds. */
     lastFailure?: string | null,
+  ): Promise<void>;
+  /** #2102: a settle that writes an outcome event, in the settle's transaction. */
+  settlePlatformRequestWithEvent(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    id: PlatformRequestId,
+    outcome: PlatformRequestSettle,
   ): Promise<void>;
   /** #574 phase 3: enqueue a `connector:<provider>` intent + journal the delivery, atomically. */
   routeExecutorEventToPlatform(
@@ -3090,15 +3098,16 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
-    outcome: {
-      status: PlatformRequestStatus;
-      result?: unknown;
-      lastError?: string | null;
-      failure?: PlatformRequestFailure | null;
-    },
+    outcome: PlatformRequestSettle,
   ): Promise<void> {
     await this.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
+    // #2102: an outcome event travels by the verb that writes it; every other settle keeps the
+    // positional one, so it still reaches a DO class that predates the event.
+    if (outcome.event) {
+      await this.scopeStub(scopeId).settlePlatformRequestWithEvent(tenantId, scopeId, id, outcome);
+      return;
+    }
     await this.scopeStub(scopeId).settlePlatformRequest(
       id,
       outcome.status,

@@ -680,6 +680,8 @@ import {
   grantEntityShapeIn,
   shapeTopUpBatch,
   topUpEntityGrantShapes,
+  settlePlatformRequestIn,
+  type PlatformRequestSettle,
 } from '@substrat-run/kernel';
 import {
   ADMIN_LOG_INDEXES_SQL,
@@ -6166,39 +6168,28 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
-    outcome: {
-      status: PlatformRequestStatus;
-      result?: unknown;
-      lastError?: string | null;
-      failure?: PlatformRequestFailure | null;
-    },
+    outcome: PlatformRequestSettle,
   ): Promise<void> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    await rt.actor.enqueue(() => {
-      // Compare-and-set on `pending` (#1600 review). The drain reads pending rows, runs a
-      // handler, then settles — and between the read and the settle a subject erasure can
-      // redact the row. Settling by `id` alone let that stale pass overwrite the redaction
-      // and write a provider's reply, which can quote the person, back into `last_error`.
-      // Nothing legitimate is refused by this: `listPlatformRequests` returns only pending
-      // rows, so every settle in the tree targets one that was pending when it was read.
-      // A settle that finds the row already terminal does nothing, deliberately silently —
-      // throwing would make the drain's blanket catch retry a row that is correctly over.
-      rt.db
-        .prepare(
-          `UPDATE _substrat_platform_requests
-             SET status = ?, result = COALESCE(?, result), last_error = ?, last_failure = ?,
-                 attempts = attempts + 1, settled_at = ?
-           WHERE id = ? AND status = 'pending'`,
-        )
-        .run(
-          outcome.status,
-          outcome.result === undefined ? null : JSON.stringify(outcome.result),
-          outcome.lastError ?? null,
-          outcome.failure == null ? null : JSON.stringify(outcome.failure),
-          outcome.status === 'pending' ? null : new Date().toISOString(),
-          id,
-        );
+    await rt.actor.enqueue(async () => {
+      // The kernel's one settle (#2102): compare-and-set on `pending` (#1600 review), and the
+      // outcome event written in the same transaction, only by the settle that moved the row.
+      rt.db.transaction(() =>
+        settlePlatformRequestIn(switchSqlOf(rt.db), id, outcome, {
+          tenantId: rt.tenantId,
+          scopeId: rt.scopeId,
+          now: new Date().toISOString(),
+          mintEventId: (ms) => rt.mintEventId(ms),
+          version: this.versionId,
+        }),
+      )();
+      // What the event announces reaches this scope's consumers and executors in the same
+      // tail, as an import's events do. A settle that wrote none has nothing to deliver.
+      if (outcome.event) {
+        await this.dispatch(rt, null);
+        await this.dispatchExecutors(rt, null);
+      }
     });
   }
 
