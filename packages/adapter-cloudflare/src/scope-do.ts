@@ -7458,6 +7458,7 @@ export function defineScopeDO(
           const permission = assertPermissionKey(unparsed);
           return grantedEntitiesForContext(
             checker, subject, permission, { tenantId, scopeId }, entityType, options, runCheck, withheld,
+            Boolean(systemActor),
           );
         },
         canAssign: runCanAssign,

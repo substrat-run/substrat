@@ -78,6 +78,16 @@ export interface PermissionChecker {
   ): Promise<Coverage>;
 }
 
+// A node allow from the built-in tuple algebra covers every entity at that node.
+// Keep this as an identity mark rather than a public checker option: a pluggable
+// checker may allow the node while denying an individual entity.
+const nodeWideTupleCheckers = new WeakSet<PermissionChecker>();
+export function markNodeWideTupleChecker<T extends PermissionChecker>(checker: T): T {
+  nodeWideTupleCheckers.add(checker);
+  return checker;
+}
+export const isNodeWideTupleChecker = (checker: PermissionChecker): boolean => nodeWideTupleCheckers.has(checker);
+
 /**
  * What `canAssign` throws, in an operation and on the host, for a role the tenant does not
  * define (#1931). One builder and one recogniser: a caller that must tell "no such role" apart

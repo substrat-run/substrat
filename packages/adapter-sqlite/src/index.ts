@@ -12051,7 +12051,7 @@ export class SqliteScopeHost implements ScopeHost {
         const permission = assertPermissionKey(unparsed);
         return grantedEntitiesForContext(
           checker, subject, permission, { tenantId: rt.tenantId, scopeId: rt.scopeId },
-          entityType, options, runCheck, withheld,
+          entityType, options, runCheck, withheld, Boolean(overrideActor),
         );
       },
       canAssign: runCanAssign,

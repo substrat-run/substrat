@@ -53,8 +53,12 @@ describe('grant-scoped depth-first walk', () => {
     const allowed = async () => ({ allowed: true as const, proof: [] });
     expect(await grantedEntitiesForContext(checker, subject, permission, where, 'item', undefined, allowed, new Set([permission])))
       .toEqual({ kind: 'ids', ids: [], nextCursor: null });
-    expect(await grantedEntitiesForContext(checker, subject, permission, where, 'item', undefined, allowed))
+    expect(await grantedEntitiesForContext(checker, subject, permission, where, 'item', undefined, allowed, undefined, true))
       .toEqual({ kind: 'all' });
+    expect(await grantedEntitiesForContext(
+      checker, subject, permission, where, 'item', undefined,
+      async (_key, entity) => entity ? denied() : allowed(),
+    )).toEqual({ kind: 'incomplete', reason: 'checker' });
     expect(await grantedEntitiesForContext(checker, { kind: 'capability', id: capabilityId.parse('01JZ00000000000000000000C1') }, permission, where, 'item', undefined, denied))
       .toEqual({ kind: 'incomplete', reason: 'capability' });
     const checked: string[] = [];

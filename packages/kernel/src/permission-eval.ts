@@ -10,7 +10,7 @@ import {
   type RelationTuple,
   type RoleDefinition,
 } from '@substrat-run/contracts';
-import type { PermissionChecker } from './permission-checker.js';
+import { markNodeWideTupleChecker, type PermissionChecker } from './permission-checker.js';
 import { capabilityGrantOf, capabilityLive, type CapabilityRow } from './capability.js';
 import { isSwitchableSubjectKind } from './system-switch.js';
 import { walkGrantedEntities, type GrantWalkRow } from './grant-scoped-read.js';
@@ -466,7 +466,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     return deny;
   }
 
-  return {
+  return markNodeWideTupleChecker({
     grantedEntities: async (subject, permission, node, entityType, checkEntity, options) => {
       if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
       const scope = reader.scopeFor(node);
@@ -532,7 +532,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     },
 
     check,
-  };
+  });
 
 }
 

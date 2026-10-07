@@ -1,6 +1,6 @@
 import type { CheckSubject, Decision, EntityRef, Node, PermissionKey } from '@substrat-run/contracts';
 import { fromBase64url, toBase64url } from './base64url.js';
-import type { PermissionChecker } from './permission-checker.js';
+import { isNodeWideTupleChecker, type PermissionChecker } from './permission-checker.js';
 
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 declare const TextDecoder: new (label: string, options: { fatal: boolean }) => { decode(input: Uint8Array): string };
@@ -53,9 +53,14 @@ export async function grantedEntitiesForContext(
   options: { limit?: number; cursor?: string } | undefined,
   runCheck: (permission: PermissionKey, entity?: EntityRef) => Promise<Decision>,
   withheld?: ReadonlySet<string>,
+  nodeOverride = false,
 ): Promise<GrantedEntitiesPage> {
   if (withheld?.has(permission)) return { kind: 'ids', ids: [], nextCursor: null };
-  if ((await runCheck(permission)).allowed) return { kind: 'all' };
+  if ((await runCheck(permission)).allowed) {
+    return nodeOverride || isNodeWideTupleChecker(checker)
+      ? { kind: 'all' }
+      : { kind: 'incomplete', reason: 'checker' };
+  }
   if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
   if (!checker.grantedEntities) return { kind: 'incomplete', reason: 'checker' };
   const page = await checker.grantedEntities(
