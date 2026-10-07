@@ -49,6 +49,7 @@ import {
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
   PEER_SWITCHES_DDL,
+  PEER_BINDINGS_DDL,
   SWITCH_OWED_DDL,
   clearSwitchOwed,
   markSwitchOwed,
@@ -776,6 +777,7 @@ const DIRECTORY_DDL = `
     serving_ref TEXT,
     created_at TEXT NOT NULL
   );
+  ${PEER_BINDINGS_DDL}
   CREATE TABLE IF NOT EXISTS hostnames (
     hostname      TEXT PRIMARY KEY,
     tenant_id     TEXT NOT NULL,

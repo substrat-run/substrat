@@ -97,6 +97,22 @@ export const verticalResolution = z.discriminatedUnion('outcome', [
 ]);
 export type VerticalResolution = z.infer<typeof verticalResolution>;
 
+/** A peer binding is an explicit choice by the tenant for one calling scope and target slug. */
+export const peerBinding = z.object({
+  tenantId,
+  callerScopeId: scopeId,
+  vertical: verticalSlug,
+  targetScopeId: scopeId,
+});
+export type PeerBinding = z.infer<typeof peerBinding>;
+
+/** A stale explicit choice refuses the call, even if another instance is now the only live one. */
+export const peerInstanceResolution = z.discriminatedUnion('outcome', [
+  ...verticalResolution.options,
+  z.object({ outcome: z.literal('bound-unavailable'), tenantId, vertical: verticalSlug, targetScopeId: scopeId }),
+]);
+export type PeerInstanceResolution = z.infer<typeof peerInstanceResolution>;
+
 /**
  * The per-(scope, peer) kill switch (#1706) — a tenant turning one calling vertical off on one
  * scope, and back on, WITHOUT a push. `HostAdmin.revokeFromPeer` / `restoreToPeer`, the mirror of

@@ -407,6 +407,7 @@ import {
   systemSwitchedOffMessage,
   tenantSystemSwitchedOffMessage,
   PEER_SWITCHES_DDL,
+  PEER_BINDINGS_DDL,
   SWITCH_OWED_DDL,
   SWITCH_FENCES_DDL,
   TABLE_OWNERS_DDL,
@@ -1991,6 +1992,7 @@ export class SqliteScopeHost implements ScopeHost {
         archived_at TEXT,
         created_at TEXT NOT NULL
       );
+      ${PEER_BINDINGS_DDL}
       -- The hostname map (K-26). A single environment-wide router resolves against
       -- this before dispatching to the vertical's worker.
       --
