@@ -18,8 +18,15 @@ import {
   purgeCutoffOf,
   purgeHeldBy,
   purgeOnlyKeysOf,
+  purgeReportOf,
+  purgeStillDue,
+  purgeDueOf,
+  purgeLapOf,
+  readPurgeLap,
+  advancePurgeLap,
   registerTrashTargets,
   runPurgePass,
+  SCHEDULE_STATE_DDL,
   type PurgeGateFacts,
 } from '../src/index.js';
 
@@ -263,7 +270,7 @@ describe('runPurgePass', () => {
       },
     };
     const ids = Object.keys(outcomes);
-    const pass = await runPurgePass(ids, ids.length, async (id) => outcomes[id]!());
+    const pass = await runPurgePass({ ids, more: true, lap: { after: null, failed: 3 } }, async (id) => outcomes[id]!());
     expect(pass).toEqual({
       purged: 1,
       skipped: 3,
@@ -271,9 +278,17 @@ describe('runPurgePass', () => {
         { entityId: 'refused', error: 'nope' },
         { entityId: 'boom', error: 'crashed' },
       ],
-      full: true,
+      more: true,
+      // The lap goes on: its earlier failures are carried in the cursor, not reported yet.
+      lapFailed: 0,
     });
-    expect((await runPurgePass(['a'], 2, async () => undefined)).full).toBe(false);
+    // The pass that closes a lap reports the lap's earlier failures, so its cadence row keeps them.
+    const closing = await runPurgePass({ ids: ['a'], more: false, lap: { after: { at: 'x', id: 'y' }, failed: 3 } }, async () => undefined);
+    expect(closing).toMatchObject({ purged: 1, errors: [], more: false, lapFailed: 3 });
+    expect(purgeReportOf('b/delete', 'box', closing).failure?.message).toMatch(/3 failed earlier in this lap/);
+    // Twin: a lap with no failures anywhere reports none.
+    const clean = await runPurgePass({ ids: ['a'], more: false, lap: { after: { at: 'x', id: 'y' }, failed: 0 } }, async () => undefined);
+    expect(purgeReportOf('b/delete', 'box', clean).failure).toBeUndefined();
   });
 });
 
@@ -301,11 +316,131 @@ describe('the purge walk', () => {
     const [plan] = entityStatePlans('m', [horizon]);
     const cutoff = purgeCutoffOf('2026-01-12T00:00:00.000Z', 7);
     expect(cutoff).toBe('2026-01-05T00:00:00.000Z');
-    expect(purgeCandidates(sql, plan!, cutoff)).toEqual(['older', 'old']);
-    expect(purgeCandidates(sql, plan!, cutoff, 1)).toEqual(['older']);
+    const ids = (keys: { id: string }[]) => keys.map((k) => k.id);
+    expect(ids(purgeCandidates(sql, plan!, cutoff))).toEqual(['older', 'old']);
+    expect(ids(purgeCandidates(sql, plan!, cutoff, 1))).toEqual(['older']);
+    // After a key: compared as a value, so it places the walk whether or not that row still exists.
+    expect(ids(purgeCandidates(sql, plan!, cutoff, 5, { at: '2026-01-01T00:00:00.000Z', id: 'older' }))).toEqual(['old']);
+    expect(ids(purgeCandidates(sql, plan!, cutoff, 5, { at: '2026-01-01T12:00:00.000Z', id: 'gone' }))).toEqual(['old']);
     const detail = (db.prepare(`EXPLAIN QUERY PLAN SELECT id FROM boxes WHERE _substrat_trashed_at IS NOT NULL AND _substrat_trashed_at <= ? ORDER BY _substrat_trashed_at, id LIMIT 5`).all('x') as { detail: string }[])
       .map((r) => r.detail)
       .join(' | ');
     expect(detail).toContain('_substrat_purge_boxes');
+  });
+});
+
+describe('the purge lap (#2096)', () => {
+  const NOW = '2026-02-01T00:00:00.000Z';
+  const DUE = (n: number) => new Date(Date.parse('2026-01-01T00:00:00.000Z') + n * 60_000).toISOString();
+  const setup = (count: number) => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE boxes (id TEXT PRIMARY KEY, name TEXT)');
+    db.exec('CREATE TABLE _substrat_state_moves (entity_type TEXT, entity_id TEXT)');
+    db.exec(SCHEDULE_STATE_DDL);
+    for (const m of entityStateMigrations('m', [horizon])) db.exec(m.sql);
+    const sql = {
+      query: <T>(q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as T[],
+      exec: (q: string, p: readonly unknown[] = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
+    };
+    const move = (id: string, when: string | null) => {
+      db.prepare("INSERT INTO _substrat_state_moves VALUES ('box', ?)").run(id);
+      db.prepare('UPDATE boxes SET _substrat_trashed_at = ? WHERE id = ?').run(when, id);
+      db.prepare('DELETE FROM _substrat_state_moves').run();
+    };
+    const bin = (id: string, minute: number) => {
+      db.prepare('INSERT INTO boxes (id, name) VALUES (?, ?)').run(id, id);
+      move(id, DUE(minute));
+    };
+    for (let i = 0; i < count; i++) bin(`b${String(i).padStart(3, '0')}`, i);
+    const plans = new Map(entityStatePlans('m', [horizon]).map((p) => [p.entityType, p]));
+    const targets = new Map([['b/delete', purgeTarget]]);
+    /** One pass: entities in `failing` throw, every other one is deleted. */
+    const pass = async (failing: ReadonlySet<string>, limit: number) => {
+      const due = purgeDueOf(sql, plans, targets, 'b/delete', 'box', NOW, limit);
+      const p = await runPurgePass(due, async (id) => {
+        if (failing.has(id)) throw new Error(`stuck ${id}`);
+        db.prepare('DELETE FROM boxes WHERE id = ?').run(id);
+      });
+      advancePurgeLap(sql, 'b/delete', due, p);
+      return { due, pass: p };
+    };
+    const left = () => (db.prepare('SELECT id FROM boxes ORDER BY id').all() as { id: string }[]).map((r) => r.id);
+    return { db, sql, pass, left, bin, move };
+  };
+
+  it('walks past a head that always fails: everything behind it is purged in the same lap, and the failures are tried every lap', async () => {
+    const { sql, pass, left } = setup(7);
+    const failing = new Set(['b000', 'b001', 'b002']);
+    const first = await pass(failing, 3);
+    expect(first.pass).toMatchObject({ purged: 0, more: true, lapFailed: 0 });
+    expect(first.pass.errors.map((e) => e.entityId)).toEqual(['b000', 'b001', 'b002']);
+    expect(purgeStillDue(first.pass)).toBe(true);
+    expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: { at: DUE(2), id: 'b002' }, failed: 3 });
+    const second = await pass(failing, 3);
+    expect(second.pass).toMatchObject({ purged: 3, errors: [], more: true });
+    const third = await pass(failing, 3);
+    // The tail: the lap closes, the cursor clears, and the closing pass carries the lap's failures.
+    expect(third.pass).toMatchObject({ purged: 1, errors: [], more: false, lapFailed: 3 });
+    expect(purgeStillDue(third.pass)).toBe(false);
+    expect(purgeReportOf('b/delete', 'box', third.pass).failure).toBeDefined();
+    expect(sql.query('SELECT purge_cursor FROM _substrat_schedule_state')).toEqual([{ purge_cursor: null }]);
+    expect(left()).toEqual(['b000', 'b001', 'b002']);
+    // The next lap starts at the oldest again: the failures are tried, and reported, again.
+    const again = await pass(failing, 3);
+    expect(again.pass.errors.map((e) => e.entityId)).toEqual(['b000', 'b001', 'b002']);
+    // Exactly a batch left: the peek knows nothing follows, so the lap closes in this pass (#2087).
+    expect(again.pass).toMatchObject({ more: false, lapFailed: 0 });
+  });
+
+  it('twin: nothing fails, and the lap purges the whole bin batch by batch with no failure recorded', async () => {
+    const { pass, left } = setup(7);
+    const outcomes = [];
+    for (let i = 0; i < 3; i++) outcomes.push((await pass(new Set(), 3)).pass);
+    expect(outcomes.map((p) => [p.purged, p.more])).toEqual([[3, true], [3, true], [1, false]]);
+    expect(outcomes.every((p) => p.lapFailed === 0 && p.errors.length === 0)).toBe(true);
+    expect(left()).toEqual([]);
+  });
+
+  it('a bin that changes mid-lap: a restored or vanished cursor entity still places the walk, and one binned behind the cursor waits for the next lap', async () => {
+    const { db, pass, left, bin, move } = setup(6);
+    const failing = new Set(['b000', 'b001']);
+    await pass(failing, 2);
+    // The cursor is b001. It is restored, and b003 — ahead of it — is purged by someone else.
+    move('b001', null);
+    db.prepare('DELETE FROM boxes WHERE id = ?').run('b003');
+    // Binned, due, and BEHIND the cursor (an older trash instant than b001's).
+    bin('a-late', 0);
+    const second = await pass(failing, 2);
+    expect(second.due.ids).toEqual(['b002', 'b004']);
+    const third = await pass(failing, 2);
+    expect(third.due.ids).toEqual(['b005']);
+    expect(third.pass.more).toBe(false);
+    expect(left()).toEqual(['a-late', 'b000', 'b001']);
+    // The next lap reaches the one binned behind the cursor.
+    const next = await pass(failing, 2);
+    expect(next.due.ids).toEqual(['a-late', 'b000']); // same instant as b000; the id breaks the tie
+    expect(left()).toEqual(['b000', 'b001']);
+  });
+
+  it('a cursor this code cannot read, or none at all, is the start of a lap', () => {
+    expect(purgeLapOf(null)).toEqual({ after: null, failed: 0 });
+    expect(purgeLapOf(undefined)).toEqual({ after: null, failed: 0 });
+    expect(purgeLapOf('not json')).toEqual({ after: null, failed: 0 });
+    expect(purgeLapOf('{"at":1,"id":"x"}')).toEqual({ after: null, failed: 0 });
+    expect(purgeLapOf('{"at":"t","id":"x","failed":-4}')).toEqual({ after: { at: 't', id: 'x' }, failed: 0 });
+    // Twin: a cursor it wrote.
+    expect(purgeLapOf('{"at":"t","id":"x","failed":4}')).toEqual({ after: { at: 't', id: 'x' }, failed: 4 });
+  });
+
+  it('a cadence row written before the column — NULL cursor, a run already recorded — starts a lap and keeps the run', async () => {
+    const { sql, pass } = setup(3);
+    sql.exec(
+      "INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status) VALUES ('schedule', 'b/delete', '2020-01-01T00:00:00.000Z', 'ok')",
+    );
+    const first = await pass(new Set(), 2);
+    expect(first.due.ids).toEqual(['b000', 'b001']);
+    expect(sql.query("SELECT last_run_at, last_status FROM _substrat_schedule_state WHERE schedule_op = 'b/delete'")).toEqual([
+      { last_run_at: '2020-01-01T00:00:00.000Z', last_status: 'ok' },
+    ]);
   });
 });

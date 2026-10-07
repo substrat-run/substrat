@@ -97,6 +97,9 @@ describe('#1525: _substrat_schedule_state ALTERs invocation_id in on a DO create
           )[0]!.sql,
       );
       expect(shapeAfterFirstWake).toMatch(/invocation_id/);
+      // #2096's column rides the same ALTER list, so the same two wakes hold it: it arrives on the
+      // first and the repeat is tolerated on the second (`getScope` below).
+      expect(shapeAfterFirstWake).toMatch(/purge_cursor/);
 
       // Fire through the real path: nothing has ever run on this scope, so `sched/tick`
       // and the #1288 collision fixture (`freshness:sched.ticked`, declared as a
