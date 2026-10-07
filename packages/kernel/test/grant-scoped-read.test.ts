@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { node, permissionKey, principalId } from '@substrat-run/contracts';
-import { walkGrantedEntities, type GrantWalkRow, type GrantWalkStore } from '../src/grant-scoped-read.js';
+import { capabilityId, node, permissionKey, principalId } from '@substrat-run/contracts';
+import { grantedEntitiesForContext, walkGrantedEntities, type GrantWalkRow, type GrantWalkStore } from '../src/grant-scoped-read.js';
 import { createTupleEvaluator, type PermissionTupleRow, type ScopeTupleReader } from '../src/permission-eval.js';
+import type { PermissionChecker } from '../src/permission-checker.js';
 
 const permission = permissionKey.parse('item:read');
 const row = (subject: string, object: string, revoked_at: string | null = null): GrantWalkRow => ({
@@ -35,6 +36,39 @@ async function collect(source: GrantWalkStore, limit: number): Promise<string[]>
 }
 
 describe('grant-scoped depth-first walk', () => {
+  it('uses ctx.check for withheld, system override, and every returned candidate', async () => {
+    const who = principalId.parse('01JZ00000000000000000000A1');
+    const subject = { kind: 'principal' as const, id: who };
+    const where = node.parse({ tenantId: '01JZ0000000000000000000001', scopeId: '01JZ0000000000000000000002' });
+    const checker: PermissionChecker = {
+      check: async () => ({ allowed: false, checked: permission, node: where }),
+      covers: async () => ({ covered: true, missing: [] }),
+      grantedEntities: async (_s, _p, _n, _t, checkEntity) => ({
+        kind: 'ids',
+        ids: (await checkEntity({ entityType: 'item', entityId: 'visible' })) ? ['visible'] : [],
+        nextCursor: null,
+      }),
+    };
+    const denied = async () => ({ allowed: false as const, checked: permission, node: where });
+    const allowed = async () => ({ allowed: true as const, proof: [] });
+    expect(await grantedEntitiesForContext(checker, subject, permission, where, 'item', undefined, allowed, new Set([permission])))
+      .toEqual({ kind: 'ids', ids: [], nextCursor: null });
+    expect(await grantedEntitiesForContext(checker, subject, permission, where, 'item', undefined, allowed))
+      .toEqual({ kind: 'all' });
+    expect(await grantedEntitiesForContext(checker, { kind: 'capability', id: capabilityId.parse('01JZ00000000000000000000C1') }, permission, where, 'item', undefined, denied))
+      .toEqual({ kind: 'incomplete', reason: 'capability' });
+    const checked: string[] = [];
+    const result = await grantedEntitiesForContext(
+      checker, subject, permission, where, 'item', undefined,
+      async (_key, entity) => {
+        checked.push(entity?.entityId ?? 'node');
+        return entity ? allowed() : denied();
+      },
+    );
+    expect(result).toEqual({ kind: 'ids', ids: ['visible'], nextCursor: null });
+    expect(checked).toEqual(['node', 'visible']);
+  });
+
   it('terminates on cycles and includes both sides of a diamond once as a set', async () => {
     const source = store(
       [row('principal:alice', 'box:root')],

@@ -393,7 +393,7 @@ import type {
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
-import { GRANT_CHILDREN_INDEX_DDL } from '@substrat-run/kernel';
+import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -7456,13 +7456,8 @@ export function defineScopeDO(
         check: runCheck,
         grantedEntities: async (unparsed, entityType, options) => {
           const permission = assertPermissionKey(unparsed);
-          if (withheld?.has(permission)) return { kind: 'ids', ids: [], nextCursor: null };
-          if ((await runCheck(permission)).allowed) return { kind: 'all' };
-          if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
-          if (!checker.grantedEntities) return { kind: 'incomplete', reason: 'checker' };
-          return checker.grantedEntities(
-            subject, permission, { tenantId, scopeId }, entityType,
-            async (entity) => (await runCheck(permission, entity)).allowed, options,
+          return grantedEntitiesForContext(
+            checker, subject, permission, { tenantId, scopeId }, entityType, options, runCheck, withheld,
           );
         },
         canAssign: runCanAssign,

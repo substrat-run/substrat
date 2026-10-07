@@ -1,5 +1,6 @@
-import type { EntityRef, PermissionKey } from '@substrat-run/contracts';
+import type { CheckSubject, Decision, EntityRef, Node, PermissionKey } from '@substrat-run/contracts';
 import { fromBase64url, toBase64url } from './base64url.js';
+import type { PermissionChecker } from './permission-checker.js';
 
 /** Added to both scope schemas and their on-wake upgrade path. */
 export const GRANT_CHILDREN_INDEX_DDL =
@@ -38,6 +39,28 @@ const decoder = new TextDecoder('utf-8', { fatal: true });
 
 const live = (row: GrantWalkRow, now: string): boolean =>
   row.revoked_at === null && (row.expires_at === null || row.expires_at > now);
+
+/** The one result selector both adapter contexts call, using their own `ctx.check` path. */
+export async function grantedEntitiesForContext(
+  checker: PermissionChecker,
+  subject: CheckSubject,
+  permission: PermissionKey,
+  node: Node,
+  entityType: string,
+  options: { limit?: number; cursor?: string } | undefined,
+  runCheck: (permission: PermissionKey, entity?: EntityRef) => Promise<Decision>,
+  withheld?: ReadonlySet<string>,
+): Promise<GrantedEntitiesPage> {
+  if (withheld?.has(permission)) return { kind: 'ids', ids: [], nextCursor: null };
+  if ((await runCheck(permission)).allowed) return { kind: 'all' };
+  if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
+  if (!checker.grantedEntities) return { kind: 'incomplete', reason: 'checker' };
+  return checker.grantedEntities(
+    subject, permission, node, entityType,
+    async (entity) => (await runCheck(permission, entity)).allowed,
+    options,
+  );
+}
 
 function decode(cursor: string, permission: PermissionKey, entityType: string): Position {
   try {

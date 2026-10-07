@@ -692,7 +692,7 @@ import {
   type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
-import { GRANT_CHILDREN_INDEX_DDL } from '@substrat-run/kernel';
+import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker, directoryTenantReader } from './checker.js';
@@ -12049,13 +12049,9 @@ export class SqliteScopeHost implements ScopeHost {
       check: runCheck,
       grantedEntities: async (unparsed, entityType, options) => {
         const permission = assertPermissionKey(unparsed);
-        if (withheld?.has(permission)) return { kind: 'ids', ids: [], nextCursor: null };
-        if ((await runCheck(permission)).allowed) return { kind: 'all' };
-        if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
-        if (!checker.grantedEntities) return { kind: 'incomplete', reason: 'checker' };
-        return checker.grantedEntities(
-          subject, permission, { tenantId: rt.tenantId, scopeId: rt.scopeId }, entityType,
-          async (entity) => (await runCheck(permission, entity)).allowed, options,
+        return grantedEntitiesForContext(
+          checker, subject, permission, { tenantId: rt.tenantId, scopeId: rt.scopeId },
+          entityType, options, runCheck, withheld,
         );
       },
       canAssign: runCanAssign,
