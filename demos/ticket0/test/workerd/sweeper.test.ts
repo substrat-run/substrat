@@ -65,6 +65,7 @@ import { ticket0Migrations } from '../../src/migrations.generated.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
 import { listsBefore0027 } from '../before-0027.js';
 import { DESK_TABLES, populateDesk } from '../desk-fixture.js';
+import { checkTicket0SubjectErasure, type ErasureSql } from '../subject-erasure-case.js';
 import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex, sorts, type Shape } from '../desk-read-shapes.js';
 
 interface Conversation {
@@ -246,6 +247,21 @@ describe('ticket0 on workerd — the deployment sweeps its own desks (#1646)', (
     expect(await roster()).toEqual([legacy]);
     expect((await sweep()).scopes).toBe(1);
   });
+});
+
+describe('ticket0 subject erasure on workerd', () => {
+  it('erases only the customer and staff rows that belong to each subject', async () => {
+    const h = host();
+    const raw: ErasureSql = async (_tenant, scope, sql, params = []) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+        [...state.storage.sql.exec(sql, ...params)].map((row) => ({ ...row })),
+      );
+    try {
+      await checkTicket0SubjectErasure(h, raw);
+    } finally {
+      await h.close();
+    }
+  }, 60_000);
 });
 
 /** What a Durable Object's SQLite refuses a `LIKE` pattern beyond — asked of the runtime below. */
