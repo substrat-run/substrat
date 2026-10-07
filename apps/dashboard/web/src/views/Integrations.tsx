@@ -274,7 +274,8 @@ function IntegrationDetail({
     setActivity(null);
     setActivityErr(null);
     api
-      .integrationActivity(scopeId, provider.provider, { live, source })
+      // By id: in a fleet the provider's routes would otherwise answer for another company.
+      .integrationActivity(scopeId, provider.provider, { live, source, connectionId: connection.id })
       .then((v) => {
         if (!alive) return;
         setActivity(v);
@@ -284,7 +285,7 @@ function IntegrationDetail({
     return () => {
       alive = false;
     };
-  }, [scopeId, provider.provider, live, source]);
+  }, [scopeId, provider.provider, connection.id, live, source]);
 
   const verify = async () => {
     if (probing) return;
@@ -293,7 +294,7 @@ function IntegrationDetail({
     try {
       if (DEV_MOCK) setProbe(MOCK_CONNECTION_PROBE);
       else {
-        const result = await api.verifyIntegration(scopeId, provider.provider);
+        const result = await api.verifyIntegration(scopeId, provider.provider, connection.id);
         setProbe(result);
         // The probe just wrote health; show what it wrote, not what we loaded before it.
         if (result.connection) setHealth(result.connection);
@@ -490,6 +491,10 @@ function IntegrationDetail({
  * they need no dashboard login. The credential form stays behind a toggle as the
  * operator fallback. Rotation is the same consent round again (it rotates the live
  * connection in place), so the dialog is identical either way.
+ *
+ * A `multiAccount` provider (#1267) keys a connection on the company the approver picks,
+ * so each round connects ONE company and a new company is a new connection — never a
+ * rotation. A bureau mails one link per client, which is why the copy says so.
  */
 function ConnectDialog({
   provider,
@@ -499,7 +504,14 @@ function ConnectDialog({
   onDone,
   onClose,
 }: {
-  provider: { provider: string; name: string; monogram: string; fields: ProviderField[]; connectFlow?: 'redirect' | null };
+  provider: {
+    provider: string;
+    name: string;
+    monogram: string;
+    fields: ProviderField[];
+    connectFlow?: 'redirect' | null;
+    multiAccount?: boolean;
+  };
   rotate: boolean;
   /** The fixed target app (the per-app tab). Omit to render the account-level picker. */
   scopeId?: string;
@@ -508,6 +520,7 @@ function ConnectDialog({
   onClose: () => void;
 }) {
   const redirect = provider.connectFlow === 'redirect';
+  const fleet = provider.multiAccount === true;
   const [manual, setManual] = useState(!redirect);
   const [values, setValues] = useState<Record<string, string>>({});
   const [target, setTarget] = useState<string>(scopeId ?? pickTarget?.[0]?.scopeId ?? '');
@@ -610,7 +623,7 @@ function ConnectDialog({
   return (
     <Dialog
       open
-      title={`${rotate ? 'Rotate' : 'Connect'} ${provider.name}`}
+      title={rotate ? `Rotate ${provider.name}` : fleet ? `Connect a ${provider.name} company` : `Connect ${provider.name}`}
       confirmLabel={
         redirect && !manual
           ? busy
@@ -630,7 +643,15 @@ function ConnectDialog({
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Monogram text={provider.monogram} size={32} />
           <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-            {redirect && !manual ? (
+            {redirect && !manual && fleet ? (
+              <>
+                Each approval at {provider.name} connects ONE company — the one its administrator picks there — and
+                seals the credential in the connection vault. To add more companies, mint more links: one per company.
+                {rotate
+                  ? ' Re-approving as the same company keeps its connection and every grant on it; approving a different company adds that company instead.'
+                  : ''}
+              </>
+            ) : redirect && !manual ? (
               <>
                 Connecting happens at {provider.name}: an administrator of your {provider.name} account approves once,
                 and the credential is sealed in the connection vault — nothing is typed here.
@@ -672,7 +693,11 @@ function ConnectDialog({
         {scopeId === undefined && pickTarget && (
           <Select
             label="Connect for"
-            options={pickTarget.map((t) => ({ value: t.scopeId, label: t.connected ? `${t.name} (rotates the existing connection)` : t.name }))}
+            // A fleet provider's new company is a new connection, so nothing is rotated.
+            options={pickTarget.map((t) => ({
+              value: t.scopeId,
+              label: t.connected && !fleet ? `${t.name} (rotates the existing connection)` : t.name,
+            }))}
             value={target}
             onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTarget(e.target.value)}
             style={{ width: 320 }}
@@ -685,11 +710,14 @@ function ConnectDialog({
         {redirect && !manual && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Button variant="ghost" size="sm" onClick={copyLink} disabled={target === '' || busy}>
+              {/* For a fleet the link IS the main path — one mailed per client company. */}
+              <Button variant={fleet ? 'secondary' : 'ghost'} size="sm" onClick={copyLink} disabled={target === '' || busy}>
                 Copy connect link
               </Button>
               <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-                For whoever administers {provider.name} — no dashboard login needed. Single-use, valid 7 days.
+                {fleet
+                  ? `One link per company — send each company's ${provider.name} administrator their own. No dashboard login needed. Single-use, valid 7 days.`
+                  : `For whoever administers ${provider.name} — no dashboard login needed. Single-use, valid 7 days.`}
               </span>
             </div>
             {minted && (
@@ -748,13 +776,54 @@ function ConnectDialog({
   );
 }
 
+/**
+ * A fleet provider's connections on one app (#1267) — one row per connected company, each
+ * addressed by its own id, so Details and Disconnect act on that company and no other.
+ */
+function FleetRows({
+  provider,
+  onDetail,
+  onDisconnect,
+}: {
+  provider: AppIntegration;
+  onDetail: (c: ConnectionView) => void;
+  onDisconnect: (c: ConnectionView) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
+      {provider.connections.map((c) => (
+        <div key={c.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, flexWrap: 'wrap' }}>
+              <Pill kind={STATUS[c.status].kind}>{STATUS[c.status].label}</Pill>
+              <span style={{ color: 'var(--text-primary)' }}>{c.label}</span>
+              {c.externalAccountRef && <MonoTag>{c.externalAccountRef}</MonoTag>}
+            </div>
+            <HealthLine conn={c} />
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => onDetail(c)}>
+            Details
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => onDisconnect(c)}>
+            Disconnect
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** The per-app Settings → Integrations tab. */
 export function AppIntegrations({ app }: { app: AppRow }) {
   const [view, setView] = useState<AppIntegration[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ provider: AppIntegration; rotate: boolean } | null>(null);
-  const [detail, setDetail] = useState<AppIntegration | null>(null);
-  const [disconnect, setDisconnect] = useState<AppIntegration | null>(null);
+  const [detail, setDetail] = useState<{ provider: AppIntegration; connection: ConnectionView } | null>(null);
+  /**
+   * `addressed` disconnects that one row by id (a fleet's company); otherwise the
+   * provider's single connection, through the un-addressed route as before.
+   */
+  const [disconnect, setDisconnect] = useState<{ provider: AppIntegration; connection: ConnectionView; addressed: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [nonce, setNonce] = useState(0);
 
@@ -782,7 +851,11 @@ export function AppIntegrations({ app }: { app: AppRow }) {
     if (!disconnect || busy) return;
     setBusy(true);
     try {
-      await api.disconnectIntegration(app.app_scope_id, disconnect.provider);
+      await api.disconnectIntegration(
+        app.app_scope_id,
+        disconnect.provider.provider,
+        disconnect.addressed ? disconnect.connection.id : undefined,
+      );
     } catch {
       // The refetch below shows the surviving state either way.
     }
@@ -806,6 +879,46 @@ export function AppIntegrations({ app }: { app: AppRow }) {
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
         {view.map((p) => {
+          if (p.multiAccount) {
+            const n = p.connections.length;
+            const unhealthy = p.connections.filter((c) => c.status !== 'active').length;
+            const s: { kind: PillKind; label: string } =
+              n === 0
+                ? { kind: 'neutral', label: 'Not connected' }
+                : {
+                    kind: unhealthy > 0 ? 'warning' : 'success',
+                    label: `${n} ${n === 1 ? 'company' : 'companies'}${unhealthy > 0 ? ` · ${unhealthy} need${unhealthy === 1 ? 's' : ''} attention` : ''}`,
+                  };
+            return (
+              // Full width: a bureau's fleet is a list, and it grows one client at a time.
+              <div key={p.provider} style={{ ...card, padding: 16, display: 'flex', gap: 12, alignItems: 'flex-start', gridColumn: '1 / -1' }}>
+                <Monogram text={p.monogram} />
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{p.name}</span>
+                    <Pill kind={s.kind}>{s.label}</Pill>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{p.description}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+                    One connection per {p.name} company. Each connect link connects one company; mint another for the next.
+                  </div>
+                  {n === 0 && p.required && (
+                    <div style={{ fontSize: 11.5, color: 'var(--status-warning-fg)' }}>
+                      Required by this app — work for a company waits until that company is connected, then delivers.
+                    </div>
+                  )}
+                  <FleetRows
+                    provider={p}
+                    onDetail={(c) => setDetail({ provider: p, connection: c })}
+                    onDisconnect={(c) => setDisconnect({ provider: p, connection: c, addressed: true })}
+                  />
+                </div>
+                <Button variant="secondary" size="sm" onClick={() => setDialog({ provider: p, rotate: false })}>
+                  {n === 0 ? 'Connect a company' : 'Connect another company'}
+                </Button>
+              </div>
+            );
+          }
           const s = p.connection ? STATUS[p.connection.status] : { kind: 'neutral' as PillKind, label: 'Not connected' };
           return (
             <div key={p.provider} style={{ ...card, padding: 16, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
@@ -828,12 +941,18 @@ export function AppIntegrations({ app }: { app: AppRow }) {
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => (p.connection ? setDetail(p) : setDialog({ provider: p, rotate: false }))}
+                  onClick={() =>
+                    p.connection ? setDetail({ provider: p, connection: p.connection }) : setDialog({ provider: p, rotate: false })
+                  }
                 >
                   {p.connection ? 'Details' : 'Connect'}
                 </Button>
                 {p.connection && (
-                  <Button variant="ghost" size="sm" onClick={() => setDisconnect(p)}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDisconnect({ provider: p, connection: p.connection!, addressed: false })}
+                  >
                     Disconnect
                   </Button>
                 )}
@@ -856,13 +975,14 @@ export function AppIntegrations({ app }: { app: AppRow }) {
         />
       )}
 
-      {detail?.connection && (
+      {detail && (
         <IntegrationDetail
-          provider={detail}
+          provider={detail.provider}
           scopeId={app.app_scope_id}
           connection={detail.connection}
           onRotate={() => {
-            setDialog({ provider: detail, rotate: true });
+            // From a fleet row this is a re-consent for that same company.
+            setDialog({ provider: detail.provider, rotate: true });
             setDetail(null);
           }}
           onClose={() => {
@@ -874,14 +994,25 @@ export function AppIntegrations({ app }: { app: AppRow }) {
 
       <Dialog
         open={!!disconnect}
-        title={disconnect ? `Disconnect ${disconnect.name}` : ''}
+        title={disconnect ? (disconnect.addressed ? `Disconnect ${disconnect.connection.label}` : `Disconnect ${disconnect.provider.name}`) : ''}
         confirmLabel={busy ? 'Disconnecting…' : 'Disconnect'}
         danger
         onCancel={() => setDisconnect(null)}
         onConfirm={confirmDisconnect}
       >
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55 }}>
-          The stored credential is deleted and every grant it carried is revoked — this cannot be undone. Deliveries already queued stay queued and resume if you reconnect. Other apps of the same kind share this connection and lose it too.
+          {disconnect?.addressed ? (
+            <>
+              {disconnect.connection.label}
+              {disconnect.connection.externalAccountRef ? ` (${disconnect.connection.externalAccountRef})` : ''} loses its{' '}
+              {disconnect.provider.name} connection: the stored credential is deleted and every grant it carried is revoked —
+              this cannot be undone. Every other connected company is unaffected. Deliveries already queued for this
+              company stay queued and resume if it is connected again. Other apps of the same kind share this connection
+              and lose it too.
+            </>
+          ) : (
+            'The stored credential is deleted and every grant it carried is revoked — this cannot be undone. Deliveries already queued stay queued and resume if you reconnect. Other apps of the same kind share this connection and lose it too.'
+          )}
         </div>
       </Dialog>
     </div>
@@ -958,23 +1089,32 @@ export function Integrations() {
                     <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>No installed app declares this integration yet.</div>
                   )}
                 </div>
-                {/* Manage used to open the empty connect form, which read as "your
-                    credentials are gone". A connected provider opens its detail; the
-                    rotate form is one click further in, where replacing a credential
-                    belongs. */}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    const first = p.connections[0];
-                    const scope = first?.apps[0]?.scopeId ?? p.connectTargets.find((t) => t.connected)?.scopeId;
-                    if (first && scope) setDetail({ provider: p, scopeId: scope, connection: first });
-                    else setDialog(p);
-                  }}
-                  disabled={p.connectTargets.length === 0 && !connected}
-                >
-                  {connected ? 'Manage' : 'Connect'}
-                </Button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                  {/* Manage used to open the empty connect form, which read as "your
+                      credentials are gone". A connected provider opens its detail; the
+                      rotate form is one click further in, where replacing a credential
+                      belongs. */}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      const first = p.connections[0];
+                      const scope = first?.apps[0]?.scopeId ?? p.connectTargets.find((t) => t.connected)?.scopeId;
+                      if (first && scope) setDetail({ provider: p, scopeId: scope, connection: first });
+                      else setDialog(p);
+                    }}
+                    disabled={p.connectTargets.length === 0 && !connected}
+                  >
+                    {connected ? 'Manage' : 'Connect'}
+                  </Button>
+                  {/* A fleet provider (#1267) keeps growing: Manage opens one company, so
+                      adding the next one needs its own door. */}
+                  {p.multiAccount && connected && p.connectTargets.length > 0 && (
+                    <Button variant="ghost" size="sm" onClick={() => setDialog(p)}>
+                      Connect another
+                    </Button>
+                  )}
+                </div>
               </div>
             );
           })}

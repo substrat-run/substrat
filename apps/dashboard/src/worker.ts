@@ -3357,6 +3357,9 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
   // Advertised only when the flow is actually usable on THIS deployment — a declared
   // flow with no platform client pair would render a Connect button that 503s.
   connectFlow: spec.connectFlow === 'redirect' && fortnoxConfig(env) !== null ? ('redirect' as const) : null,
+  // A connection per external account (#1267): a bureau connects one Fortnox company per
+  // client, so the UI lists a fleet and keeps offering "connect another" instead of rotate.
+  multiAccount: spec.accountRefField !== undefined,
 });
 
 /**
@@ -3389,7 +3392,10 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
       return {
         ...providerForm(PROVIDERS[p]!, c.env),
         required: required.includes(p),
+        // The single-connection answer, kept for clients that predate the fleet.
         connection: live ? connectionView(live) : null,
+        // Every live row, newest first — one per company for an account-keyed provider.
+        connections: liveConnectionsFor(rows, p).map(connectionView),
       };
     }),
   });
@@ -3484,8 +3490,24 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
 });
 
 /**
+ * Disconnect ONE connection of a fleet (#1267 follow-up) — the door the un-addressed route
+ * above refuses to guess for. The id only selects among this app's own live rows for this
+ * provider (`inspectableConnection`), so it can never reach another vertical's connection.
+ */
+app.delete('/api/apps/:scopeId/integrations/:provider/connections/:connectionId', async (c) => {
+  const { connectionId, cp } = await inspectableConnection(c);
+  await cp.revokeConnection(connectionId);
+  return c.body(null, 204);
+});
+
+/**
  * Resolve one app's live connection for a provider, with the caller's own permission
  * proven first — the shared preamble of the two inspection routes below.
+ *
+ * A `:connectionId` in the path addresses one row of an account-keyed fleet; it is
+ * resolved AMONG the live rows of this app's vertical and this provider, never trusted
+ * on its own, so an id from another provider or vertical is the same 404 as no row.
+ * Without one, the route answers for `liveConnectionFor`'s pick, as it always has.
  *
  * `dashboard/begin-connection` is re-used deliberately: reading what a credential has
  * DONE (which documents went out, to which signatories) is the same class of act as
@@ -3500,6 +3522,8 @@ async function inspectableConnection(
   spec: ProviderSpec;
   /** The row as the directory holds it RIGHT NOW — health included. */
   connection: Connection;
+  /** Re-read the SAME row — after a probe has rewritten its health. */
+  reread: () => Promise<Connection | undefined>;
 }> {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
@@ -3512,13 +3536,21 @@ async function inspectableConnection(
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
   const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
-  const live = liveConnectionFor(rows, spec.provider);
+  const wanted = c.req.param('connectionId');
+  const live =
+    wanted === undefined
+      ? liveConnectionFor(rows, spec.provider)
+      : liveConnectionsFor(rows, spec.provider).find((r) => r.id === wanted);
   if (!live) throw new HTTPException(404, { message: 'not connected' });
   // Inspection runs on the plane: it is the only place the sealed secret can be opened,
   // and only the connector's own projection is safe to serve (the raw ledger row is
   // connector bookkeeping — Scrive's carries the callback capability token).
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return { connectionId: live.id, cp, spec, connection: live };
+  const reread = async () =>
+    (await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug)).find(
+      (r) => r.id === live.id && r.status !== 'revoked',
+    );
+  return { connectionId: live.id, cp, spec, connection: live, reread };
 }
 
 /**
@@ -3527,23 +3559,19 @@ async function inspectableConnection(
  * the provider said. A rejected key is a 200 with `ok: false`, because the provider
  * answering "no" is a successful verification.
  */
-app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
-  const { connectionId, cp, spec } = await inspectableConnection(c);
+async function verifyRoute(c: Context<{ Bindings: Env }>) {
+  const { connectionId, cp, reread } = await inspectableConnection(c);
   const probe = await cp.verifyConnection(connectionId);
   // Re-read the row AFTER the probe. The probe rides the sanctioned fetch, so it just
   // wrote health — a success clears `last_error` and lifts the row out of `error`. Without
   // this the caller would render a fresh "Credential accepted" beside the stale error that
-  // the very same call just resolved, which is what a console must never do.
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  let connection = null;
-  if (node) {
-    const rows = await connectionsFor(c.env, node.tenantId, node.principal);
-    const live = liveConnectionFor(rows, spec.provider);
-    connection = live ? connectionView(live) : null;
-  }
-  return c.json({ ...probe, ...(connection ? { connection } : {}) });
-});
+  // the very same call just resolved, which is what a console must never do. By id: in a
+  // fleet, "the provider's connection" is another company's row.
+  const live = await reread();
+  return c.json({ ...probe, ...(live ? { connection: connectionView(live) } : {}) });
+}
+app.post('/api/apps/:scopeId/integrations/:provider/verify', verifyRoute);
+app.post('/api/apps/:scopeId/integrations/:provider/connections/:connectionId/verify', verifyRoute);
 
 /**
  * What this integration has done, and what it is allowed to do (#605): the connector's
@@ -3551,7 +3579,7 @@ app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
  * provider token could invoke exactly these". `?live=1` also asks the provider for
  * current state; the answer reports whether it got it.
  */
-app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
+async function activityRoute(c: Context<{ Bindings: Env }>) {
   const { connectionId, cp, connection, spec } = await inspectableConnection(c);
   const scopeId = c.req.param('scopeId')!;
   const source = c.req.query('source') === 'provider' ? ('provider' as const) : ('ledger' as const);
@@ -3604,7 +3632,9 @@ app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
           : '',
     })),
   });
-});
+}
+app.get('/api/apps/:scopeId/integrations/:provider/activity', activityRoute);
+app.get('/api/apps/:scopeId/integrations/:provider/connections/:connectionId/activity', activityRoute);
 
 /**
  * The account-level Integrations page (dashboard-ui.md §4.8): every known provider, the

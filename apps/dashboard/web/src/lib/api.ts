@@ -1139,8 +1139,17 @@ export interface AppIntegration {
    * declared — or declared but unconfigured on this deployment.
    */
   connectFlow: 'redirect' | null;
+  /**
+   * One connection per external account (#1267) — a bureau connects one Fortnox company
+   * per client. The card then lists `connections` and offers "connect another"; a new
+   * consent adds a row rather than rotating one.
+   */
+  multiAccount: boolean;
   required: boolean;
+  /** The single-connection answer (the null-ref row, else the newest). */
   connection: ConnectionView | null;
+  /** Every live connection for this provider, newest first. */
+  connections: ConnectionView[];
 }
 
 /** `GET /api/apps/:scope/integrations` */
@@ -1159,6 +1168,8 @@ export interface AccountIntegration {
   fields: ProviderField[];
   /** See {@link AppIntegration.connectFlow}. */
   connectFlow: 'redirect' | null;
+  /** See {@link AppIntegration.multiAccount}. */
+  multiAccount?: boolean;
   connections: Array<
     ConnectionView & {
       vertical: string;
@@ -1629,6 +1640,11 @@ export interface ObservabilityLogEvent {
   raw?: unknown;
 }
 
+/** One provider's routes on one app, or one connection's when a fleet row is addressed. */
+const integrationPath = (scopeId: string, provider: string, connectionId?: string) =>
+  `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}` +
+  (connectionId ? `/connections/${encodeURIComponent(connectionId)}` : '');
+
 export const api = {
   /** `null` when there is no session (the worker answers 401); onboarding when teamless. */
   me: async (): Promise<MeResult | null> => {
@@ -1867,29 +1883,35 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`,
       { method: 'POST', body: JSON.stringify(input) },
     ),
-  /** Ask the provider whether the stored credential works, and whose account it is. */
-  verifyIntegration: (scopeId: string, provider: string) =>
-    call<ConnectionProbeView & { connection?: ConnectionView }>(
-      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/verify`,
-      { method: 'POST' },
-    ),
+  /**
+   * Ask the provider whether the stored credential works, and whose account it is.
+   * `connectionId` addresses one row of a fleet; without it the route picks the
+   * provider's single connection.
+   */
+  verifyIntegration: (scopeId: string, provider: string, connectionId?: string) =>
+    call<ConnectionProbeView & { connection?: ConnectionView }>(`${integrationPath(scopeId, provider, connectionId)}/verify`, {
+      method: 'POST',
+    }),
   /** What the connection has done (or what the provider holds), plus grants and the masked credential. */
   integrationActivity: (
     scopeId: string,
     provider: string,
-    opts: { live?: boolean; source?: 'ledger' | 'provider' } = {},
+    opts: { live?: boolean; source?: 'ledger' | 'provider'; connectionId?: string } = {},
   ) => {
     const q = new URLSearchParams();
     if (opts.live) q.set('live', '1');
     if (opts.source === 'provider') q.set('source', 'provider');
     const qs = q.toString();
     return call<ConnectionActivityView>(
-      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/activity${qs ? `?${qs}` : ''}`,
+      `${integrationPath(scopeId, provider, opts.connectionId)}/activity${qs ? `?${qs}` : ''}`,
     );
   },
-  /** Disconnect a provider (terminal — reconnecting creates a new connection). */
-  disconnectIntegration: (scopeId: string, provider: string) =>
-    call<void>(`/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`, { method: 'DELETE' }),
+  /**
+   * Disconnect a provider (terminal — reconnecting creates a new connection). Without
+   * `connectionId` the server refuses (409) when several accounts are connected.
+   */
+  disconnectIntegration: (scopeId: string, provider: string, connectionId?: string) =>
+    call<void>(integrationPath(scopeId, provider, connectionId), { method: 'DELETE' }),
   /**
    * Mint a consent-round connect link (#1220). The `url` in the answer is both the
    * Connect button's destination (navigate to it now) and the copyable link for a
