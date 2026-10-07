@@ -2751,6 +2751,10 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
       state.storage.sql.exec(`UPDATE _substrat_job_runs SET next_attempt_at = NULL WHERE status = 'running'`);
     });
+  // Leave headroom beyond the 100 ms minimum lease for workerd's wall clock
+  // and an overloaded runner before asking a rival to claim the run.
+  const waitPastShortestLease = () =>
+    new Promise<void>((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 500));
   /** The ticks the scope's storage holds: what actually ran through the door. */
   const ticksIn = async (s: ScopeId) =>
     (await host.exportScopeLocal(s)).find((table) => table.name === 'sched_ticks')?.rows.length ?? 0;
@@ -2858,7 +2862,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     let rival: unknown = null;
     counting.afterJobClaim = async () => {
       counting.afterJobClaim = null;
-      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      await waitPastShortestLease();
       rival = await jobDeployment().runDueJobs(t, s);
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1, completed: 0 });
@@ -2901,7 +2905,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     let rival: unknown = null;
     counting.beforeJobBegin = async () => {
       counting.beforeJobBegin = null;
-      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      await waitPastShortestLease();
       rival = await jobDeployment().runDueJobs(t, s);
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
@@ -2918,7 +2922,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const counting = countingScopes(env.SCOPE);
     counting.beforeJobBegin = async () => {
       counting.beforeJobBegin = null;
-      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      await waitPastShortestLease();
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
     // Still the claim's own lease, so only the DO's own clock can have refused the stamp.
