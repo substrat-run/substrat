@@ -355,19 +355,51 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
         expect(markers(t)).toEqual([]);
       });
 
-      it('a live retired key finds a legacy holder, then retirement and top-up both apply', () => {
+      it('a retired key alone, live or tombstoned, does not create a grantee marker or top-up', () => {
+        const t = fresh();
+        const [anna, bo] = [who(), who()];
+        contactTuple(t, anna, 'conv:read-own', 'c1');
+        contactTuple(t, bo, 'conv:read-own', 'c2', NOW);
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
+          retired: [],
+          toppedUp: [],
+          done: true,
+        });
+        expect(markers(t)).toEqual([]);
+        expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%'").all(`principal:${anna}`, 'contact:c1')).toEqual([
+          { relation: 'granted:conv:read-own', revoked_at: null },
+        ]);
+      });
+
+      it('a current live key still finds a legacy grantee, including one with a tombstoned retired key', () => {
         const t = fresh();
         const anna = who();
-        contactTuple(t, anna, 'conv:read-own', 'c1');
+        contactTuple(t, anna, 'conv:read-own', 'c1', NOW);
+        contactTuple(t, anna, 'conv:reply-own', 'c1');
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own', 'conv:write-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
+          retired: [],
+          toppedUp: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, added: ['conv:write-own'] }],
+          done: true,
+        });
+        expect(markers(t)).toEqual([`principal:${anna} contact:c1`]);
+      });
+
+      it('a marked K-only holder keeps the marker, retires K and receives the current key', () => {
+        const t = fresh();
+        const anna = who();
+        grantEntityShapeIn(t.sql, anna, { entityType: 'contact', entityId: 'c1' }, ['conv:read-own']);
         expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
           retired: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, removed: ['conv:read-own'] }],
           toppedUp: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, added: ['conv:reply-own'] }],
           done: true,
         });
+        expect(markers(t)).toEqual([`principal:${anna} contact:c1`]);
         expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%' ORDER BY relation").all(`principal:${anna}`, 'contact:c1')).toEqual([
           { relation: 'granted:conv:read-own', revoked_at: NOW },
           { relation: 'granted:conv:reply-own', revoked_at: null },
         ]);
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own', 'conv:write-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }]).toppedUp.map((e) => e.added)).toEqual([['conv:write-own']]);
+        expect(t.db.prepare("SELECT revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation = 'granted:conv:read-own'").get(`principal:${anna}`, 'contact:c1')).toEqual({ revoked_at: NOW });
       });
     });
   });
@@ -416,6 +448,13 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       expect([refusal(t, 'conv:read-own'), refusal(t, 'conv:reply-own')]).toEqual(['permission_denied', 'grantable']);
       t.pass([{ ...grantee, holder: undefined }]);
       expect(refusal(t, 'conv:read-own')).toBe('grantable');
+    });
+
+    it('a retired key remains protected when it leaves current permissions', () => {
+      const t = fresh();
+      t.pass([{ ...grantee, permissions: ['conv:reply-own'], retired: ['conv:read-own'] }]);
+      expect([refusal(t, 'conv:read-own'), refusal(t, 'conv:reply-own')]).toEqual(['permission_denied', 'permission_denied']);
+      expect(refusal(t, 'conv:write-own')).toBe('grantable');
     });
   });
 

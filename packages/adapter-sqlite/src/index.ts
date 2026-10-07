@@ -675,9 +675,8 @@ import {
 } from '@substrat-run/kernel';
 import {
   attributedView,
-  assertDelegable,
-  delegatedGrantSql,
   delegatedRevokeSql,
+  writeExplicitTupleIn,
   grantEntityShapeIn,
   shapeTopUpBatch,
   topUpEntityGrantShapes,
@@ -7152,12 +7151,7 @@ export class SqliteScopeHost implements ScopeHost {
     ) => {
       if (!node.scopeId) throw new Error('scope tuple requires node.scopeId');
       const rt = this.runtime(node.tenantId, node.scopeId);
-      rt.db
-        .prepare(
-          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-           VALUES (?, ?, ?, ?)`,
-        )
-        .run(subject, relation, object, expiresAt ?? null);
+      writeExplicitTupleIn(switchSqlOf(rt.db), subject, relation, object, { kind: 'replace', expiresAt: expiresAt ?? null });
     };
 
     const writeGrant = (
@@ -12124,7 +12118,6 @@ export class SqliteScopeHost implements ScopeHost {
       grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
         assertImpersonationWrites(impersonation, 'ctx.grant');
         entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
-        assertDelegable(switchSqlOf(rt.db), permission, entity); // #2083: a 'grantee' shape's keys are the shape grant's alone
         const held = await runCheck(permission, entity);
         if (!held.allowed) {
           throw new PermissionDenied(
@@ -12133,8 +12126,7 @@ export class SqliteScopeHost implements ScopeHost {
           );
         }
         // #2071: an explicit grant, so it clears a tombstone `revoke` left.
-        const g = delegatedGrantSql(principal, permission, `${entity.entityType}:${entity.entityId}`);
-        rt.db.prepare(g.sql).run(...g.params);
+        writeExplicitTupleIn(switchSqlOf(rt.db), `principal:${principal}`, `granted:${permission}`, `${entity.entityType}:${entity.entityId}`, { kind: 'delegated' });
       },
       /**
        * Withdraw a grant this caller could have made. Same guardrails, same reason — but NOT

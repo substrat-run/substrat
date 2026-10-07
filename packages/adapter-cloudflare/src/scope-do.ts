@@ -103,9 +103,8 @@ import {
   type PlatformRequestRedactionCandidate,
   type SubjectRedactionCounts,
   seatScopeTuple,
-  assertDelegable,
-  delegatedGrantSql,
   delegatedRevokeSql,
+  writeExplicitTupleIn,
   grantEntityShapeIn,
   topUpEntityGrantShapes,
   applyScopeRoleChange,
@@ -2275,14 +2274,7 @@ export function defineScopeDO(
       expiresAt: string | null,
     ): Promise<void> {
       await this.queue.enqueue(() => {
-        this.sql.exec(
-          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-           VALUES (?, ?, ?, ?)`,
-          subject,
-          relation,
-          object,
-          expiresAt,
-        );
+        writeExplicitTupleIn(this.switchSql(), subject, relation, object, { kind: 'replace', expiresAt });
       });
     }
 
@@ -4236,14 +4228,7 @@ export function defineScopeDO(
     ): Promise<boolean> {
       return this.queue.enqueue(() => {
         if (systemSwitchedOff(this.switchSql(), moduleId)) return false;
-        this.sql.exec(
-          `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at)
-           VALUES (?, ?, ?, ?)`,
-          `system:${moduleId}`,
-          relation,
-          object,
-          expiresAt,
-        );
+        writeExplicitTupleIn(this.switchSql(), `system:${moduleId}`, relation, object, { kind: 'replace', expiresAt });
         return true;
       });
     }
@@ -7514,7 +7499,6 @@ export function defineScopeDO(
         grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.grant');
           entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
-          assertDelegable(this.switchSql(), permission, entity); // #2083: a 'grantee' shape's keys are the shape grant's alone
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(
@@ -7523,8 +7507,7 @@ export function defineScopeDO(
             );
           }
           // #2071: an explicit grant, so it clears a tombstone `revoke` left.
-          const g = delegatedGrantSql(principal, permission, `${entity.entityType}:${entity.entityId}`);
-          sql.exec(g.sql, ...g.params);
+          writeExplicitTupleIn(this.switchSql(), `principal:${principal}`, `granted:${permission}`, `${entity.entityType}:${entity.entityId}`, { kind: 'delegated' });
         },
         /**
          * Deliberately NOT the #1856 grammar check `grant` and `link` make: a revoke writes

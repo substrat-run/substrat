@@ -629,6 +629,69 @@ export function permissionContractSuite(
         expect((await probe(pia, s4, PERM_ADMIN, room('r2'))).allowed).toBe(false);
       });
 
+      it('a grantee retirement reads current live keys for backfill, preserves an existing marker, and never tops up the retired key', async () => {
+        const scope = scopeId.parse(ulid());
+        const at = { tenantId: t1, scopeId: scope };
+        const room = (id: string): EntityRef => ({ entityType: 'retiringRoom', entityId: id });
+        const [oldLive, oldDead, current, marked] = Array.from({ length: 4 }, () => principalId.parse(ulid()));
+        await host.provisionScope(staff, { ...at, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, scope);
+        for (const [who, id] of [[oldLive, 'old-live'], [oldDead, 'old-dead']] as const) {
+          await host.admin.grant(staff, { principalId: who, permission: PERM_READ, node: at, entity: room(id), grantedBy: alice });
+        }
+        await (await host.getScope(alice, t1, scope)).invoke('perm/unshare', { principal: oldDead, permission: PERM_READ, entity: room('old-dead') });
+        await host.admin.grant(staff, { principalId: current, permission: PERM_USE, node: at, entity: room('current'), grantedBy: alice });
+        await host.admin.grantEntityShape(staff, { principalId: marked, node: at, entity: room('marked'), permissions: [PERM_READ], grantedBy: alice });
+        const shape = [{ entityType: 'retiringRoom', permissions: [PERM_USE, PERM_ADMIN], retired: [PERM_READ], bootstrap: true as const, holder: 'grantee' as const }];
+        expect(await host.admin.reconcileEntityGrantShapes(staff, at, shape)).toEqual({ toppedUp: 2, retired: 1 });
+        for (const [who, id] of [[oldLive, 'old-live'], [oldDead, 'old-dead']] as const) {
+          expect((await probe(who, scope, PERM_ADMIN, room(id))).allowed).toBe(false);
+          expect((await probe(who, scope, PERM_USE, room(id))).allowed).toBe(false);
+        }
+        // The old direct grant is still live, but it is not a shape marker; its tombstoned twin
+        // remains denied. A marked K-only holder instead keeps the marker and receives the new keys.
+        expect((await probe(oldLive, scope, PERM_READ, room('old-live'))).allowed).toBe(true);
+        expect((await probe(oldDead, scope, PERM_READ, room('old-dead'))).allowed).toBe(false);
+        for (const [who, id] of [[current, 'current'], [marked, 'marked']] as const) {
+          expect((await probe(who, scope, PERM_ADMIN, room(id))).allowed).toBe(true);
+          expect((await probe(who, scope, PERM_READ, room(id))).allowed).toBe(false);
+        }
+        expect(await host.admin.reconcileEntityGrantShapes(staff, at, shape)).toEqual({ toppedUp: 0, retired: 0 });
+        expect((await probe(marked, scope, PERM_READ, room('marked'))).allowed).toBe(false);
+      });
+
+      it('after a grantee declaration, direct writers refuse current and retired keys; shape grants still work', async () => {
+        const scope = scopeId.parse(ulid());
+        const at = { tenantId: t1, scopeId: scope };
+        const room = (id: string): EntityRef => ({ entityType: 'guardedRoom', entityId: id });
+        const [later, shaped] = [principalId.parse(ulid()), principalId.parse(ulid())];
+        await host.provisionScope(staff, { ...at, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, scope);
+        await host.admin.reconcileEntityGrantShapes(staff, at, [
+          { entityType: 'guardedRoom', permissions: [PERM_USE], retired: [PERM_READ], bootstrap: true, holder: 'grantee' },
+        ]);
+        for (const permission of [PERM_USE, PERM_READ]) {
+          await expectRefusal(host.admin.grant(staff, { principalId: later, permission, node: at, entity: room('r1'), grantedBy: alice }), 'permission_denied');
+          await expectRefusal(host.admin.grantToOrg(staff, acme, permission, at, room('r1')), 'permission_denied');
+          await expectRefusal(
+            (await host.getScope(alice, t1, scope)).invoke('perm/share', { principal: later, permission, entity: room('r1') }),
+            'permission_denied',
+          );
+        }
+        expect((await probe(later, scope, PERM_USE, room('r1'))).allowed).toBe(false);
+        // Protection is entity-type narrow; an unrelated key on the same type and a scoped
+        // grant of the same key remain valid, while the shape grant writes its marker atomically.
+        await host.admin.grant(staff, { principalId: later, permission: PERM_ADMIN, node: at, entity: room('r1'), grantedBy: alice });
+        await host.admin.grant(staff, { principalId: later, permission: PERM_USE, node: at, grantedBy: alice });
+        await host.admin.grantEntityShape(staff, { principalId: shaped, node: at, entity: room('r2'), permissions: [PERM_USE], grantedBy: alice });
+        expect((await probe(shaped, scope, PERM_USE, room('r2'))).allowed).toBe(true);
+        await host.admin.reconcileEntityGrantShapes(staff, at, [
+          { entityType: 'guardedRoom', permissions: [PERM_USE, PERM_ADMIN], retired: [PERM_READ], bootstrap: true, holder: 'grantee' },
+        ]);
+        expect((await probe(shaped, scope, PERM_ADMIN, room('r2'))).allowed).toBe(true);
+        expect((await probe(shaped, scope, PERM_READ, room('r2'))).allowed).toBe(false);
+      });
+
       it.each([0, -1, 1.5, 5001])('refuses batch %s with validation_failed, before touching the scope', async (batch) => {
         const err = await reconcile(GROWN, batch).then(
           () => undefined,

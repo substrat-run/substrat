@@ -14,8 +14,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { assertKernelAuthoredType, substratError } from '@substrat-run/contracts';
-import { PermissionDenied } from './permission-checker.js';
-import { explicitTupleSql } from './entity-grant.js';
+import { GRANTEE_KEY_RELATION, explicitTupleSql } from './entity-grant.js';
 import { liveTupleSql } from './permission-eval.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
 import type { SwitchSql } from './system-switch.js';
@@ -62,7 +61,7 @@ import type { SwitchSql } from './system-switch.js';
  * - `holder: 'grantee'` (#2083), for a record that names no principal (a portal customer, a
  *   contact): whoever holds a live key of the shape on such an entity was given it. Sound by
  *   enforcement, not by promise: each pass records the shape's keys (`shape-grantee-key`), and
- *   {@link assertDelegable} makes `ctx.grant` refuse them on that entity type from then on, so
+ *   the explicit tuple writer makes non-shape grants refuse them on that entity type, so
  *   only the shape grant can mint them. A tuple from before the first such pass cannot be told
  *   apart, which the declaration's documentation says plainly.
  *
@@ -95,13 +94,6 @@ const RETIRED_RELATION = 'shape-retired:';
 
 /** The subject and object of a shape's run-once records on one scope. */
 const recordRefs = (entityType: string, scopeId: string) => [`shape:${entityType}`, `scope:${scopeId}`] as const;
-
-/**
- * #2083: `(shape:<type>, shape-grantee-key, granted:<key>)` — a key of a `holder: 'grantee'`
- * shape, which `ctx.grant` must not give on that entity type. Like the run-once record, its
- * subject is no principal, so the checker's walk never reads it as authority.
- */
-const GRANTEE_KEY_RELATION = 'shape-grantee-key';
 
 /** The writer of the top-up events: the kernel, as no module or person acted. */
 const KERNEL_ACTOR = { system: moduleId.parse('@substrat-run/kernel') };
@@ -169,8 +161,9 @@ export function topUpEntityGrantShapes(
     if (keys.length === 0 && gone.length === 0) continue;
     const prefix = `${shape.entityType}:`;
     const json = JSON.stringify(keys);
-    // The backfill's evidence is any key the shape carried, a retired one included.
-    budget -= backfill(db, pass, shape, prefix, JSON.stringify([...keys, ...gone]), budget);
+    // A grantee is evidenced by a CURRENT live key. Retired keys still evidence the own-record
+    // holders, whose identity comes from their entity or table row rather than from the key.
+    budget -= backfill(db, pass, shape, prefix, JSON.stringify(shape.holder === 'grantee' ? keys : [...keys, ...gone]), budget);
     if (budget === 0) return { toppedUp, retired, done: false };
     reopenRetirements(db, pass, shape.entityType, keys);
     const took = retire(db, pass, shape.entityType, prefix, gone, budget);
@@ -418,15 +411,15 @@ function backfill(db: SwitchSql, pass: ShapePass, shape: EntityGrantShape, prefi
 }
 
 /**
- * The keys of every `holder: 'grantee'` bootstrap shape, recorded so {@link assertDelegable} can
- * refuse them to `ctx.grant`. A reconcile carries the reached version's whole reviewed registry,
+ * The current and retired keys of every `holder: 'grantee'` bootstrap shape, recorded so the
+ * explicit tuple writer can refuse them to every non-shape grant. A reconcile carries the reached version's whole reviewed registry,
  * so the records are made to match it exactly: a declaration a later version drops stops
  * refusing. Bounded by the declared keys, so it runs in every pass without a budget.
  */
 function recordGranteeKeys(db: SwitchSql, shapes: readonly EntityGrantShape[]): void {
   const rows = shapes
     .filter((s) => s.bootstrap && s.holder === 'grantee')
-    .flatMap((s) => keysOf(s.permissions).map((k): [string, string] => [`shape:${s.entityType}`, `granted:${k}`]));
+    .flatMap((s) => keysOf([...s.permissions, ...(s.retired ?? [])]).map((k): [string, string] => [`shape:${s.entityType}`, `granted:${k}`]));
   db.run(
     // The subject range keeps it on the primary key: `shape:` rows only, never the whole table.
     `DELETE FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?
@@ -438,26 +431,6 @@ function recordGranteeKeys(db: SwitchSql, shapes: readonly EntityGrantShape[]): 
   );
   for (const [subject, object] of rows) {
     db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', subject, GRANTEE_KEY_RELATION, object);
-  }
-}
-
-/**
- * `ctx.grant`'s refusal (#2083): a key of a `holder: 'grantee'` shape is given on that entity
- * type only by the shape grant, which is what lets the backfill read any live holder of it as
- * someone given the shape. `permission_denied`, before the caller's own check.
- */
-export function assertDelegable(db: SwitchSql, permission: string, entity: EntityRef): void {
-  const declared = db.all(
-    'SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?',
-    `shape:${entity.entityType}`,
-    GRANTEE_KEY_RELATION,
-    `granted:${permission}`,
-  );
-  if (declared.length > 0) {
-    throw new PermissionDenied(
-      `cannot grant '${permission}' on ${entity.entityType}:${entity.entityId} — ` +
-        `it is a key of the declared '${entity.entityType}' shape, given only by the shape grant`,
-    );
   }
 }
 
