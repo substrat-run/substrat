@@ -931,6 +931,11 @@ const probeOp: OperationHandler<{ permission: PermissionKey; entity?: EntityRef 
   input,
 ) => ctx.check(input.permission, input.entity);
 
+const grantedEntitiesOp: OperationHandler<
+  { permission: PermissionKey; entityType: string; limit?: number; cursor?: string },
+  unknown
+> = (ctx, input) => ctx.grantedEntities(input.permission, input.entityType, input);
+
 // Assert a permission, then emit — the shape a real mutating operation has. Exercises
 // K-34 (the emitted event carries the passed check as `authorization`) and, when the
 // check is refused, K-35 (assertAllowed throws → the host records a denial and rolls back).
@@ -1713,6 +1718,7 @@ export const permMod: ModuleRegistration = {
     'perm/link': linkOp as OperationHandler<never, unknown>,
     'perm/relink': relinkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
+    'perm/granted-entities': grantedEntitiesOp as OperationHandler<never, unknown>,
     'perm/authorized-emit': authorizedEmitOp as OperationHandler<never, unknown>,
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
