@@ -52,8 +52,9 @@ export function targetScopeOf(
   tenantId: TenantId,
   vertical: string,
   boundScopeId: ScopeId | null = null,
+  invalidated = false,
 ): { scopeId: string } | { ambiguous: true; count: number } | { boundUnavailable: true } | null {
-  const resolution = resolvePeerInstanceFrom(scopes as unknown as VerticalInstanceCandidate[], tenantId, vertical, boundScopeId);
+  const resolution = resolvePeerInstanceFrom(scopes as unknown as VerticalInstanceCandidate[], tenantId, vertical, boundScopeId, invalidated);
   if (resolution.outcome === 'resolved') return { scopeId: resolution.instance.scopeId };
   if (resolution.outcome === 'ambiguous') return { ambiguous: true, count: resolution.count };
   if (resolution.outcome === 'bound-unavailable') return { boundUnavailable: true };

@@ -251,5 +251,6 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', vertical: 'acme/other' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', kind: 'preview' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id).outcome).toBe('resolved');
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id, true)).toEqual(expected);
   });
 });

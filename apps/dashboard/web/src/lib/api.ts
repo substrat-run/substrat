@@ -1362,7 +1362,7 @@ export interface AppPeersView {
   /** What the running version declares it calls. `null` = a version that predates the field. */
   declares: string[] | null;
   calls: DeclaredCallRow[];
-  bindingChoices: { vertical: string; boundScopeId: string | null; candidates: { scopeId: string; name: string }[] }[];
+  bindingChoices: { vertical: string; boundScopeId: string | null; invalidated: boolean; candidates: { scopeId: string; name: string }[] }[];
   /** The mirror: who may call in here. `null` when the read itself failed. */
   callers: PeerCallerRow[] | null;
   callersError: string | null;

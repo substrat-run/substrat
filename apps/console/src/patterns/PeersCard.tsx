@@ -219,7 +219,7 @@ export function PeersCard({
           : bindings.length === 0 ? <p>No explicit target choices.</p>
             : <Table<PeerBinding> rows={bindings} columns={[
               { header: 'Target vertical', key: 'vertical', mono: true },
-              { header: 'Bound instance', render: (row) => <code>{row.targetScopeId}</code> },
+              { header: 'Bound instance', render: (row) => <span><code>{row.targetScopeId}</code>{row.invalidated && ' · invalidated'}</span> },
             ]} />}
 
       <Dialog

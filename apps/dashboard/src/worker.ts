@@ -2198,8 +2198,8 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
       const binding = await cp.peerBinding(scope, vertical);
       const choices = (scopes ?? []).filter((s) => s.tenantId === node.tenantId && s.vertical === vertical && s.status === 'active' && isPrimaryScope(s))
         .map((s) => ({ scopeId: s.id, name: s.name }));
-      const choice = { vertical, boundScopeId: binding?.targetScopeId ?? null, candidates: choices };
-      const target = targetScopeOf(scopes ?? [], node.tenantId, vertical, binding?.targetScopeId ?? null);
+      const choice = { vertical, boundScopeId: binding?.targetScopeId ?? null, invalidated: binding?.invalidated ?? false, candidates: choices };
+      const target = targetScopeOf(scopes ?? [], node.tenantId, vertical, binding?.targetScopeId ?? null, binding?.invalidated ?? false);
       if (target === null || 'ambiguous' in target) {
         return { call: declaredCallState({ vertical, caller: slug, target, entries: [] }), choice };
       }

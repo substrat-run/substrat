@@ -724,8 +724,8 @@ interface ControlPlaneStub {
   /** #1706: "vertical Y in tenant T", by the kernel's one rule — see `HostAdmin.resolveVerticalInstance`. */
   resolveVerticalInstance(tenantId: string, vertical: string): Promise<VerticalResolution>;
   resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string): Promise<unknown>;
-  peerBinding(tenantId: string, callerScopeId: string, vertical: string): Promise<{ target_scope_id: string } | undefined>;
-  peerBindings(tenantId: string, callerScopeId: string): Promise<{ vertical: string; target_scope_id: string }[]>;
+  peerBinding(tenantId: string, callerScopeId: string, vertical: string): Promise<{ target_scope_id: string; invalidated: number } | undefined>;
+  peerBindings(tenantId: string, callerScopeId: string): Promise<{ vertical: string; target_scope_id: string; invalidated: number }[]>;
   setPeerBinding(tenantId: string, callerScopeId: string, vertical: string, targetScopeId: string | null): Promise<
     { ok: true; changed: boolean; previous: string | null } |
     { ok: false; code: 'not_found'; message: string }
@@ -6754,12 +6754,12 @@ export class CloudflareScopeHost implements ScopeHost {
       peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const row = await this.cp.peerBinding(tenantId, callerScopeId, verticalSlug.parse(vertical));
         await this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
-        return row ? peerBindingSchema.parse({ tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id }) : undefined;
+        return row ? peerBindingSchema.parse({ tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id, invalidated: row.invalidated === 1 }) : undefined;
       },
       peerBindings: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId) => {
         const rows = await this.cp.peerBindings(tenantId, callerScopeId);
         await this.recordAccess(actor, 'peerBindings', { tenantId, scopeId: callerScopeId }, null, rows.length);
-        return rows.map((r) => peerBindingSchema.parse({ tenantId, callerScopeId, vertical: r.vertical, targetScopeId: r.target_scope_id }));
+        return rows.map((r) => peerBindingSchema.parse({ tenantId, callerScopeId, vertical: r.vertical, targetScopeId: r.target_scope_id, invalidated: r.invalidated === 1 }));
       },
       setPeerBinding: async (_actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string, targetScopeId: ScopeId | null) => {
         const answer = await this.cp.setPeerBinding(tenantId, callerScopeId, verticalSlug.parse(vertical), targetScopeId);

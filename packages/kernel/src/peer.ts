@@ -68,6 +68,7 @@ export const PEER_BINDINGS_DDL = `
     caller_scope_id TEXT NOT NULL,
     vertical TEXT NOT NULL,
     target_scope_id TEXT NOT NULL,
+    invalidated INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (tenant_id, caller_scope_id, vertical)
   );
   CREATE INDEX IF NOT EXISTS peer_bindings_target ON peer_bindings (target_scope_id);
@@ -268,9 +269,11 @@ export function resolvePeerInstanceFrom(
   tenantId: TenantId,
   vertical: string,
   boundScopeId: ScopeId | null,
+  invalidated = false,
 ): PeerInstanceResolution {
   const candidates = [...scopes];
   if (boundScopeId === null) return resolveVerticalInstanceFrom(candidates, tenantId, vertical);
+  if (invalidated) return { outcome: 'bound-unavailable', tenantId, vertical, targetScopeId: boundScopeId };
   const target = candidates.find((scope) =>
     scope.id === boundScopeId && scope.tenantId === tenantId && scope.vertical === vertical &&
     scope.status === 'active' && isPrimaryScope(scope),

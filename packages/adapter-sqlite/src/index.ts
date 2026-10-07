@@ -3906,6 +3906,7 @@ export class SqliteScopeHost implements ScopeHost {
     // orphaned bytes with no record (the §9 hazard).
     this.directory.prepare('DELETE FROM hostnames WHERE scope_id = ?').run(scopeId);
     rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
+    this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE target_scope_id = ?').run(scopeId);
     forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
     this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
@@ -7069,6 +7070,9 @@ export class SqliteScopeHost implements ScopeHost {
         } else {
           this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
         }
+        if (to === 'archived' || to === 'reaped') {
+          this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE tenant_id = ? AND target_scope_id = ?').run(tenantId, scopeId);
+        }
         if (to === 'reaped') forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
         // The audit target carries the scope's vertical (control-plane.md §4.4:
         // "vertical stays null until §4.2 lifecycle actions that name one"). It is
@@ -8138,8 +8142,8 @@ export class SqliteScopeHost implements ScopeHost {
       },
       resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const binding = this.directory.prepare(
-          'SELECT target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
-        ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string } | undefined;
+          'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+        ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string; invalidated: number } | undefined;
         const rows = this.directory.prepare(
           `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
            WHERE tenant_id = ? AND vertical = ?`,
@@ -8154,21 +8158,21 @@ export class SqliteScopeHost implements ScopeHost {
           status: r.status as ScopeStatus,
           kind: r.kind ?? '',
           forkedFrom: r.forked_from as ScopeId | null,
-        })), tenantId, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null);
+        })), tenantId, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
       },
       peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const row = this.directory.prepare(
-          'SELECT target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
-        ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string } | undefined;
+          'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+        ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string; invalidated: number } | undefined;
         this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
-        return row ? { tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id as ScopeId } : undefined;
+        return row ? { tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id as ScopeId, invalidated: row.invalidated === 1 } : undefined;
       },
       peerBindings: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId) => {
         const rows = this.directory.prepare(
-          'SELECT vertical, target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? ORDER BY vertical',
-        ).all(tenantId, callerScopeId) as { vertical: string; target_scope_id: string }[];
+          'SELECT vertical, target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? ORDER BY vertical',
+        ).all(tenantId, callerScopeId) as { vertical: string; target_scope_id: string; invalidated: number }[];
         this.recordAccess(actor, 'peerBindings', { tenantId, scopeId: callerScopeId }, null, rows.length);
-        return rows.map((r) => ({ tenantId, callerScopeId, vertical: r.vertical, targetScopeId: r.target_scope_id as ScopeId }));
+        return rows.map((r) => ({ tenantId, callerScopeId, vertical: r.vertical, targetScopeId: r.target_scope_id as ScopeId, invalidated: r.invalidated === 1 }));
       },
       setPeerBinding: async (_actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string, targetScopeId: ScopeId | null) =>
         this.directory.transaction(() => {
@@ -8190,10 +8194,11 @@ export class SqliteScopeHost implements ScopeHost {
             }
           }
           const key = [tenantId, callerScopeId, vertical] as const;
-          const previous = (this.directory.prepare(
-            'SELECT target_scope_id FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
-          ).get(...key) as { target_scope_id: string } | undefined)?.target_scope_id as ScopeId | undefined;
-          if ((previous ?? null) === targetScopeId) return { changed: false, previous: previous ?? null };
+          const before = this.directory.prepare(
+            'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+          ).get(...key) as { target_scope_id: string; invalidated: number } | undefined;
+          const previous = before?.target_scope_id as ScopeId | undefined;
+          if ((previous ?? null) === targetScopeId && before?.invalidated !== 1) return { changed: false, previous: previous ?? null };
           if (targetScopeId === null) {
             this.directory.prepare(
               'DELETE FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
@@ -8202,7 +8207,7 @@ export class SqliteScopeHost implements ScopeHost {
             this.directory.prepare(
               `INSERT INTO peer_bindings (tenant_id, caller_scope_id, vertical, target_scope_id)
                VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, caller_scope_id, vertical)
-               DO UPDATE SET target_scope_id = excluded.target_scope_id`,
+               DO UPDATE SET target_scope_id = excluded.target_scope_id, invalidated = 0`,
             ).run(...key, targetScopeId);
           }
           return { changed: true, previous: previous ?? null };

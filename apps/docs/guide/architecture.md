@@ -203,7 +203,8 @@ target refuses while suspended and works again after it is restored. An archived
 bound target remains an unavailable choice until the admin clears or changes it; the platform
 never substitutes another instance. A queued `peer-invoke` names the vertical, and resolves its
 target **when the drain executes it**. A binding changed after enqueue therefore changes where
-that queued call goes.
+that queued call goes. Archiving invalidates a choice durably; unarchiving the same target does
+not reactivate that choice until the admin binds it again.
 
 ### The refusals, and what each means
 

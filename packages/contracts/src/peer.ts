@@ -103,6 +103,7 @@ export const peerBinding = z.object({
   callerScopeId: scopeId,
   vertical: verticalSlug,
   targetScopeId: scopeId,
+  invalidated: z.boolean(),
 });
 export type PeerBinding = z.infer<typeof peerBinding>;
 

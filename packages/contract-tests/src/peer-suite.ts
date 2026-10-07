@@ -586,6 +586,12 @@ export function verticalResolutionContractSuite(
       });
       await host.admin.unsuspendScope(staff, t, primary);
       expect((await read()).outcome).toBe('resolved');
+      await host.admin.archiveScope(staff, t, primary);
+      expect((await read()).outcome).toBe('bound-unavailable');
+      await host.admin.unarchiveScope(staff, t, primary);
+      expect((await read()).outcome).toBe('bound-unavailable');
+      await expect(host.admin.setPeerBinding(staff, t, caller, slug, primary)).resolves.toMatchObject({ changed: true });
+      expect((await read()).outcome).toBe('resolved');
       const foreign = (await host.admin.resolveVerticalInstance(u, slug));
       if (foreign.outcome !== 'resolved') throw new Error('foreign fixture absent');
       await expect(host.admin.setPeerBinding(staff, t, caller, slug, foreign.instance.scopeId)).rejects.toThrow();

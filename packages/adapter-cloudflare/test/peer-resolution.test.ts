@@ -55,6 +55,11 @@ it('the hosted peer read routes only to the caller’s explicit live target', as
   expect((await read()).outcome).toBe('bound-unavailable');
   await host.admin.unsuspendScope(actor, tenant, second);
   expect((await read()).target?.scope_id).toBe(second);
+  await host.admin.archiveScope(actor, tenant, second);
+  await host.admin.unarchiveScope(actor, tenant, second);
+  expect((await read()).outcome).toBe('bound-unavailable');
+  await host.admin.setPeerBinding(actor, tenant, caller, 'acme/crm', second);
+  expect((await read()).target?.scope_id).toBe(second);
   await expect(host.admin.setPeerBinding(actor, tenant, caller, 'acme/crm', foreign)).rejects.toThrow();
   expect((await read()).target?.scope_id).toBe(second);
 });
