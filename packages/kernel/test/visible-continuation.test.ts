@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pageVisible } from '@substrat-run/contracts';
+import { pageOf, pageVisible, VISIBLE_SCAN_BUDGET } from '@substrat-run/contracts';
 import {
   CONTINUATION_POSITION_CAP,
   visibleContinuation,
@@ -153,6 +153,29 @@ describe('sealed visible continuations (#2074)', () => {
     expect(page).toEqual({ entries: [], nextCursor: null });
     expect(store.stored()).toEqual([]);
     expect(await store.keys()).toBeNull();
+  });
+
+  it('keeps the full scan budget for a read-only walk with a visible row after 1,500 refusals', async () => {
+    const store = memoryStore();
+    const readonly = visibleContinuation(store, binding, () => 1_000, undefined, false);
+    const rows = Array.from({ length: 1_600 }, (_, i) => ({ id: `r${String(i).padStart(4, '0')}` }));
+    const page = await pageVisible(
+      ({ limit, cursor, rowCursors }) => pageOf(
+        rows.filter((row) => cursor === undefined || row.id > cursor).slice(0, limit),
+        limit,
+        (row) => row.id,
+        rowCursors,
+      ),
+      { limit: 1 },
+      (row) => row.id === 'r1500',
+      { continuation: readonly },
+    );
+    expect(page.entries).toEqual([{ id: 'r1500' }]);
+    expect(page.nextCursor).toBe('r1500');
+    expect(readonly.writable).toBe(false);
+    expect(VISIBLE_SCAN_BUDGET).toBeGreaterThan(1_500);
+    expect(store.stored()).toEqual([]);
+    expect(store.keyWrites()).toBe(0);
   });
 
   it('uses a visible plain cursor on a read-only full page without a key, then seals with a key', async () => {

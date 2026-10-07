@@ -330,7 +330,8 @@ return pageOf(rows, limit, (row) => row.article);
 ```
 
 For the permission-walk case, `pageVisible` reads on past rows the check refuses until
-the page is full or its private, randomly drawn scan budget (1 000–2 000 rows) is spent. A filtered read returns
+the page is full or its private, randomly drawn scan budget (1 000–2 000 rows) is spent.
+Read-only and copy walks use a fixed 2 000-row budget because they return no cursor at a budget stop. A filtered read returns
 a sealed continuation when it stops at the budget, even with no visible entries, so a
 caller can follow the next `Link` to reach later visible rows. This budget-stop token
 is fixed-length and does not expose the last examined row's id or sort value. A full

@@ -121,6 +121,7 @@ export function visibleContinuation(
     try { return await store.keys(); } catch { throw restart(); }
   };
   return {
+    writable,
     async seal(position: string, hidden = true): Promise<string | null> {
       // A read-only invocation (including a copy) cannot persist a hidden
       // position. It keeps the former bounded-walk result at this budget stop.

@@ -286,6 +286,8 @@ export interface OperationContext {
   readonly principal: PrincipalId;
   /** Seal positions for one filtered list under this scope, caller and operation. */
   pageContinuation(list: string, query: unknown): {
+    /** Read-only and copy walks cannot persist a hidden budget-stop position. */
+    writable?: boolean;
     open(cursor: string): Promise<string>;
     seal(position: string, hidden: boolean): Promise<string | null>;
   };
