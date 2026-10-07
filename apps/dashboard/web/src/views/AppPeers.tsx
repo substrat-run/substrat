@@ -204,7 +204,11 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
                   const choice = view.bindingChoices.find((c) => c.vertical === row.vertical);
                   if (!choice) return null;
                   const selected = selection[row.vertical] ?? choice.boundScopeId ?? '';
+                  const boundName = choice.candidates.find((c) => c.scopeId === choice.boundScopeId)?.name;
                   return <>
+                    {choice.boundScopeId && <span style={{ fontSize: 12.5 }}>
+                      Calls {row.vertical} → {choice.invalidated ? 'invalidated choice' : boundName ?? 'unavailable instance'}
+                    </span>}
                     <select aria-label={`Target instance for ${row.vertical}`} value={selected} disabled={busy}
                       onChange={(e) => setSelection((prior) => ({ ...prior, [row.vertical]: e.target.value }))}>
                       <option value="">No explicit choice</option>
