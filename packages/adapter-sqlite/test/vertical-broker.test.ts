@@ -77,6 +77,7 @@ describe('the local peer broker (#1706)', () => {
   };
 
   let crm: ScopeId; // the target instance in t
+  let crmSecond: ScopeId; // the second target instance in t
   let crmElsewhere: ScopeId; // an instance of the same vertical in `other`
   let caller: ScopeId; // the calling instance in t
 
@@ -222,8 +223,35 @@ describe('the local peer broker (#1706)', () => {
     });
 
     it('two live instances of the target in one tenant: a conflict, never a guess', async () => {
-      await scopeOn(target, t, TARGET);
+      crmSecond = await scopeOn(target, t, TARGET);
       expect(errorCodeOf(await refusal(call(caller)))).toBe('conflict');
+    });
+
+    it('binds across the two hosts, calls the chosen target, then clears back to ambiguity', async () => {
+      const from = { vertical: PEER_CALLER, tenantId: t, scopeId: caller };
+      expect(errorCodeOf(await refusal(broker.setBinding(from, TARGET, crmElsewhere)))).toBe('not_found');
+      await broker.setBinding(from, TARGET, crmSecond);
+      const id = ulid();
+      await expect(call(caller, t, id)).resolves.toEqual({ id });
+      expect((await outbox(t, crmSecond)).some((row) => row.entity_id === id)).toBe(true);
+      expect((await outbox(t, crm)).some((row) => row.entity_id === id)).toBe(false);
+      await broker.setBinding(from, TARGET, null);
+      expect(errorCodeOf(await refusal(call(caller)))).toBe('conflict');
+    });
+
+    it('refuses a suspended choice temporarily and an observed archived choice until rebound', async () => {
+      const from = { vertical: PEER_CALLER, tenantId: t, scopeId: caller };
+      await broker.setBinding(from, TARGET, crmSecond);
+      await target.admin.suspendScope(staff, t, crmSecond);
+      expect(errorCodeOf(await refusal(call(caller)))).toBe('conflict');
+      await target.admin.unsuspendScope(staff, t, crmSecond);
+      await expect(call(caller)).resolves.toBeDefined();
+      await target.admin.archiveScope(staff, t, crmSecond);
+      expect(errorCodeOf(await refusal(call(caller)))).toBe('conflict');
+      await target.admin.unarchiveScope(staff, t, crmSecond);
+      expect(errorCodeOf(await refusal(call(caller)))).toBe('conflict');
+      await broker.setBinding(from, TARGET, crmSecond);
+      await expect(call(caller)).resolves.toBeDefined();
     });
   });
 });
