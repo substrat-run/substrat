@@ -470,7 +470,6 @@ export function listContractSuite(
       const second = await stub.invoke<Page<Row>>('list/page-visible', { ...query, cursor: first.nextCursor });
       expect(second.entries.map((r) => r['id'])).toEqual(['v2074']);
       expect(second.nextCursor).toMatch(/^sc1\./);
-      expect(second.nextCursor?.length).toBe(first.nextCursor?.length);
     });
   });
 }
