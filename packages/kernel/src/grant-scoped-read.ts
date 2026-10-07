@@ -2,6 +2,9 @@ import type { CheckSubject, Decision, EntityRef, Node, PermissionKey } from '@su
 import { fromBase64url, toBase64url } from './base64url.js';
 import type { PermissionChecker } from './permission-checker.js';
 
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
+declare const TextDecoder: new (label: string, options: { fatal: boolean }) => { decode(input: Uint8Array): string };
+
 /** Added to both scope schemas and their on-wake upgrade path. */
 export const GRANT_CHILDREN_INDEX_DDL =
   'CREATE INDEX IF NOT EXISTS _substrat_tuples_object_relation_subject ON _substrat_tuples (object, relation, subject)';
