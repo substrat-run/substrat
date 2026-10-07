@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { pageVisible } from '@substrat-run/contracts';
 import {
   CONTINUATION_POSITION_CAP,
   visibleContinuation,
@@ -57,6 +58,10 @@ describe('sealed visible continuations (#2074)', () => {
     expect(store.stored()).toEqual([]);
     expect(long.length).toBeGreaterThan(short.length);
     expect(await codec.open(long)).toBe('long-visible-sort'.repeat(1_000));
+    await expect(visibleContinuation(store, { ...binding, principal: 'principal:bob' }, () => 1_000).open(long))
+      .rejects.toThrow(/restart paging/);
+    await expect(visibleContinuation(store, binding, () => 1_000 + 15 * 60_000).open(short))
+      .rejects.toThrow(/restart paging/);
   });
 
   it('requires restart when the oldest budget-stop locator is evicted', async () => {
@@ -72,9 +77,19 @@ describe('sealed visible continuations (#2074)', () => {
     const used: string[] = [];
     const codec = visibleContinuation(memoryStore(), binding, () => 1_000, () => { used.push('legacy'); });
     const old = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
-    expect(await codec.open(old)).toBe(old);
+    const next = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
+    const page = await pageVisible(
+      ({ cursor }) => {
+        expect(cursor).toBe(old);
+        return { entries: [{ id: next }], rowCursors: [next], nextCursor: next };
+      },
+      { cursor: old, limit: 1 },
+      () => true,
+      { continuation: codec },
+    );
     expect(used).toEqual(['legacy']);
-    expect(await codec.seal(old, false)).toMatch(/^sc1\./);
+    expect(page.nextCursor).toMatch(/^sc1\./);
+    expect(await codec.open(page.nextCursor!)).toBe(next);
     await expect(codec.open('not a cursor')).rejects.toThrow(/restart paging/);
   });
 
