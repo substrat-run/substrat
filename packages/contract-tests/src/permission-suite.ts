@@ -633,7 +633,10 @@ export function permissionContractSuite(
         const scope = scopeId.parse(ulid());
         const at = { tenantId: t1, scopeId: scope };
         const room = (id: string): EntityRef => ({ entityType: 'retiringRoom', entityId: id });
-        const [oldLive, oldDead, current, marked] = Array.from({ length: 4 }, () => principalId.parse(ulid()));
+        const oldLive = principalId.parse(ulid());
+        const oldDead = principalId.parse(ulid());
+        const current = principalId.parse(ulid());
+        const marked = principalId.parse(ulid());
         await host.provisionScope(staff, { ...at, vertical: 'perm-vertical' });
         await host.admin.activateScope(staff, t1, scope);
         for (const [who, id] of [[oldLive, 'old-live'], [oldDead, 'old-dead']] as const) {
