@@ -1033,10 +1033,41 @@ const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> =
     async (order) => (await ctx.check(SHOP_PERM.orderRead, orderRef(order.id))).allowed,
   );
 
+/** Finish a small grant walk before using its ids as a complete SQL narrowing set. */
+async function customerGrantIds(ctx: OperationContext): Promise<'all' | 'incomplete' | string[]> {
+  const ids = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < 10; page++) {
+    const result = await ctx.grantedEntities(SHOP_PERM.orderRead, 'customer', { limit: 100, cursor });
+    if (result.kind !== 'ids') return result.kind;
+    for (const id of result.ids) ids.add(id);
+    if (result.nextCursor === null) return [...ids];
+    cursor = result.nextCursor;
+  }
+  return 'incomplete';
+}
+
 /** "My account": the customer the caller is authorized to read — their portal identity. */
 const myCustomerOp: OperationHandler<undefined, { id: string; number: string; name: string } | null> = async (
   ctx,
 ) => {
+  const grants = await customerGrantIds(ctx);
+  if (grants === 'all') {
+    const first = ctx.sql.query<{ id: string; number: string; name: string }>(
+      'SELECT id, number, name FROM shop_customers ORDER BY number LIMIT 1',
+    )[0];
+    if (!first) return null;
+    if ((await ctx.check(SHOP_PERM.orderRead, customerRef(first.id))).allowed) return first;
+  } else if (grants !== 'incomplete') {
+    if (grants.length === 0) return null;
+    const first = ctx.sql.query<{ id: string; number: string; name: string }>(
+      'SELECT id, number, name FROM shop_customers WHERE id IN (SELECT value FROM json_each(?)) ORDER BY number LIMIT 1',
+      [JSON.stringify(grants)],
+    )[0];
+    if (!first) return null;
+    if ((await ctx.check(SHOP_PERM.orderRead, customerRef(first.id))).allowed) return first;
+  }
+  // A capability or a very large grant graph cannot be narrowed by this read.
   const all = ctx.sql.query<{ id: string; number: string; name: string }>(
     'SELECT id, number, name FROM shop_customers ORDER BY number',
   );
