@@ -169,7 +169,11 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
   granted with `host.admin.grantEntityShape` (`grantEntityShapeLocal` in a worker), never key by
   key. The platform's reconcile reads it from the version's reviewed registry, so a key added to
   it later reaches the people who already hold it (#2071); there is nothing to pass at the
-  mount. A sharing shape, reached through `ctx.grant`, carries no flag and is never reconciled. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
+  mount. Declare its `holder` too, so people granted before that are found: `'self'` (the entity
+  id is the principal), `{ table, idColumn, principalColumn }` (your row names the principal),
+  or `'grantee'` for a portal record that names nobody and may have several people (a customer,
+  a contact). With `'grantee'`, `ctx.grant` can no longer give the shape's keys on that type
+  (#2083). A sharing shape, reached through `ctx.grant`, carries no flag and is never reconciled. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
   `--check`ed in CI.
 - `src/personas.ts`: the dev cast, one per role the scenario needs, including one who
   lives in the *other* tenant.
