@@ -36,24 +36,36 @@ async function collect(source: GrantWalkStore, limit: number): Promise<string[]>
 }
 
 describe('grant-scoped depth-first walk', () => {
-  it('does not trust a tuple evaluator after its check method is replaced', async () => {
+  it('trusts only the unchanged tuple evaluator for node-wide results', async () => {
     const subject = { kind: 'principal' as const, id: principalId.parse('01JZ00000000000000000000A1') };
     const where = node.parse({ tenantId: '01JZ0000000000000000000001', scopeId: '01JZ0000000000000000000002' });
+    const grant: PermissionTupleRow = {
+      subject: `principal:${subject.id}`, relation: `granted:${permission}`, object: `scope:${where.scopeId}`,
+      expires_at: null, revoked_at: null,
+    };
     const scope: ScopeTupleReader = {
-      tuples: () => [], grant: () => undefined, parents: () => [], switchedOff: () => false,
+      tuples: (s, prefix) => s === grant.subject && grant.relation.startsWith(prefix) ? [grant] : [],
+      grant: (s, relation, object) => s === grant.subject && relation === grant.relation && object === grant.object ? grant : undefined,
+      parents: () => [], switchedOff: () => false,
     };
     const checker = createTupleEvaluator({
       now: () => '2026-01-01T00:00:00Z', tenantTuples: () => [], getRole: () => undefined,
       scopeFor: () => scope,
     });
-    checker.check = async (_subject, _permission, _node, entity) => entity
-      ? { allowed: false, checked: permission, node: where }
-      : { allowed: true, proof: [] };
-    const result = await grantedEntitiesForContext(
-      checker, subject, permission, where, 'item', undefined,
-      (_key, entity) => checker.check(subject, permission, where, entity),
+    const read = (candidate: PermissionChecker) => grantedEntitiesForContext(
+      candidate, subject, permission, where, 'item', undefined,
+      (key, entity) => candidate.check(subject, key, where, entity),
     );
-    expect(result).toEqual({ kind: 'incomplete', reason: 'checker' });
+    expect(await read(checker)).toEqual({ kind: 'all' });
+    expect(Object.isFrozen(checker)).toBe(true);
+    expect(() => { checker.check = async () => ({ allowed: false, checked: permission, node: where }); }).toThrow(TypeError);
+    expect(() => Object.defineProperty(checker, 'check', { get: () => checker.check })).toThrow(TypeError);
+    expect(() => { checker.covers = async () => ({ covered: true, missing: [] }); }).toThrow(TypeError);
+    expect(() => { checker.grantedEntities = async () => ({ kind: 'all' }); }).toThrow(TypeError);
+    expect(() => Object.setPrototypeOf(checker, {})).toThrow(TypeError);
+    expect(await read({ ...checker })).toEqual({ kind: 'incomplete', reason: 'checker' });
+    expect(await read(new Proxy(checker, {}))).toEqual({ kind: 'incomplete', reason: 'checker' });
+    expect(await read(checker)).toEqual({ kind: 'all' });
   });
 
   it('uses ctx.check for withheld, system override, and every returned candidate', async () => {

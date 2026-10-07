@@ -79,11 +79,17 @@ export interface PermissionChecker {
 }
 
 // A node allow from the built-in tuple algebra covers every entity at that node.
-// Trust the original check method, not just the object: a pluggable checker may
-// replace check to allow the node while denying an individual entity.
+// Only the unchanged built-in tuple evaluator has node-wide check semantics.
+// Freeze its methods before marking it so a checker cannot change what ctx.check
+// does between the node decision and this marker's lookup.
 const nodeWideTupleCheckers = new WeakMap<PermissionChecker, PermissionChecker['check']>();
 export function markNodeWideTupleChecker<T extends PermissionChecker>(checker: T): T {
-  nodeWideTupleCheckers.set(checker, checker.check);
+  const check = Object.getOwnPropertyDescriptor(checker, 'check');
+  if (!check || !('value' in check) || typeof check.value !== 'function') {
+    throw new TypeError('tuple evaluator check must be an own method');
+  }
+  Object.freeze(checker);
+  nodeWideTupleCheckers.set(checker, check.value);
   return checker;
 }
 export const isNodeWideTupleChecker = (checker: PermissionChecker): boolean => {
