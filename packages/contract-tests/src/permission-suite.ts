@@ -224,6 +224,8 @@ export function permissionContractSuite(
       await host.admin.grantToOrg(staff, org, PERM_READ, { tenantId: t1, scopeId: s1 }, entity);
       expect(await grantedIds(member, 'item')).toContain(entity.entityId);
       expect(await grantedIds(other, 'item')).toEqual([]);
+      await host.admin.removeMember(staff, t1, member, org);
+      expect(await grantedIds(member, 'item')).toEqual([]);
     });
 
     /**
