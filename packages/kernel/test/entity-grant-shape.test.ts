@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import { errorCodeOf } from '@substrat-run/contracts';
-import { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, type SwitchSql } from '../src/index.js';
+import { assertDelegable, grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, type SwitchSql } from '../src/index.js';
 
 /**
  * The declared shape's reconcile (#2071), over a bare `_substrat_tuples`. The edges the
@@ -306,6 +306,92 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       ownTuple(t, late, 'list:manage', late);
       own(['list:manage'])(t);
       expect(markers(t)).toHaveLength(5);
+    });
+
+    describe("holder: 'grantee' — whoever holds a key of it on that type (#2083)", () => {
+      const PORTAL = ['conv:read-own'];
+      const portal = (permissions = PORTAL) => (t: ReturnType<typeof fresh>) =>
+        t.pass([{ entityType: 'contact', permissions, bootstrap: true, holder: 'grantee' }]);
+      const contactTuple = (t: ReturnType<typeof fresh>, p: PrincipalId, key: string, id: string, revokedAt: string | null = null) =>
+        t.db
+          .prepare('INSERT INTO _substrat_tuples (subject, relation, object, revoked_at) VALUES (?, ?, ?, ?)')
+          .run(`principal:${p}`, `granted:${key}`, `contact:${id}`, revokedAt);
+
+      it('every person holding a live key of it on a record of that type is marked — several on one record too', () => {
+        const t = fresh();
+        const [anna, bo] = [who(), who()];
+        contactTuple(t, anna, 'conv:read-own', 'c1');
+        contactTuple(t, bo, 'conv:read-own', 'c1');
+        portal()(t);
+        expect(markers(t)).toEqual([`principal:${anna} contact:c1`, `principal:${bo} contact:c1`].sort());
+        // ...so a pre-existing holder receives the key the shape gains.
+        expect(portal(['conv:read-own', 'conv:reply-own'])(t).map((u) => u.added)).toEqual([['conv:reply-own'], ['conv:reply-own']]);
+      });
+
+      it('a key taken back is no evidence: a person whose only key is tombstoned is not marked, and gains nothing', () => {
+        const t = fresh();
+        const anna = who();
+        contactTuple(t, anna, 'conv:read-own', 'c1', NOW);
+        portal()(t);
+        expect(markers(t)).toEqual([]);
+        expect(portal(['conv:read-own', 'conv:reply-own'])(t)).toEqual([]);
+      });
+
+      it('a key of another type, or another key on this type, marks nobody', () => {
+        const t = fresh();
+        const anna = who();
+        contactTuple(t, anna, 'contact:read', 'c1');
+        t.tuple(anna, 'granted:conv:read-own', 'e1'); // the shape's key, on an employee
+        portal()(t);
+        expect(markers(t)).toEqual([]);
+      });
+    });
+  });
+
+  describe("a 'grantee' shape's keys are the shape grant's alone (#2083)", () => {
+    const grantee = { entityType: 'contact', permissions: ['conv:read-own'], bootstrap: true, holder: 'grantee' };
+    const contact = { entityType: 'contact', entityId: 'c1' };
+    const refusal = (t: ReturnType<typeof fresh>, key: string, entity: { entityType: string; entityId: string } = contact) => {
+      const sql: SwitchSql = { all: (q, ...p) => t.db.prepare(q).all(...p) as Record<string, unknown>[], run: () => undefined };
+      try {
+        assertDelegable(sql, key, entity);
+        return 'grantable';
+      } catch (e) {
+        return errorCodeOf(e);
+      }
+    };
+
+    it('ctx.grant is refused a key of it on that entity type once a pass has carried the declaration', () => {
+      const t = fresh();
+      expect(refusal(t, 'conv:read-own')).toBe('grantable'); // before any reconcile: nothing declared here yet
+      t.pass([grantee]);
+      expect(refusal(t, 'conv:read-own')).toBe('permission_denied');
+    });
+
+    it('...while another key on the same type, and the same key on another type, stay grantable', () => {
+      const t = fresh();
+      t.pass([grantee]);
+      expect(refusal(t, 'contact:read')).toBe('grantable');
+      expect(refusal(t, 'conv:read-own', { entityType: 'conversation', entityId: 'v1' })).toBe('grantable');
+    });
+
+    it('a shape with any other holder, or a sharing shape, refuses nothing', () => {
+      const t = fresh();
+      t.pass([
+        { ...grantee, holder: 'self' },
+        { entityType: 'contact', permissions: ['conv:read-own'] },
+      ]);
+      expect(refusal(t, 'conv:read-own')).toBe('grantable');
+    });
+
+    it('the records follow the registry each pass carries: a declaration dropped, or a key dropped, stops refusing', () => {
+      const t = fresh();
+      t.pass([{ ...grantee, permissions: ['conv:read-own', 'conv:reply-own'] }]);
+      expect(refusal(t, 'conv:reply-own')).toBe('permission_denied');
+      t.pass([grantee]);
+      expect([refusal(t, 'conv:read-own'), refusal(t, 'conv:reply-own')]).toEqual(['permission_denied', 'grantable']);
+      t.pass([{ ...grantee, holder: undefined }]);
+      expect(refusal(t, 'conv:read-own')).toBe('grantable');
     });
   });
 
