@@ -408,6 +408,36 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
         });
       });
 
+      it('a failed directory write keeps its own error when its failed row is refused, and settles unknown', async () => {
+        const latestOperation = async () =>
+          ((await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'revokeFromPeer', order: 'desc', limit: 1 }))[0]!.after as {
+            operationId: string;
+          }).operationId;
+        const liftRecord = await fixture.refuseSwitchRecord(s, 'peer');
+        try {
+          const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'failed', () => off(PEER_LISTENER));
+          expect(settled.status).toBe('rejected');
+          expect(String((settled as PromiseRejectedResult).reason)).toMatch(/peer switch record was refused/);
+          expect(unrecorded).toEqual([
+            { flow: 'peer-switch', operationId: expect.any(String), phase: 'failed', auditError: expect.stringMatching(/test fault/) },
+          ]);
+          const operationId = unrecorded[0]!.operationId as string;
+          expect(await latestOperation()).toBe(operationId);
+          await expectSettledUnknown(host, staff, where('revokeFromPeer', operationId), {
+            vertical: PEER_LISTENER,
+            calls: 'off',
+          });
+
+          // Twin: the same directory error with a writable failed row has an answered intent.
+          const twin = await withRefusedOutcome(fixture, s, 'applied', () => off(PEER_LISTENER));
+          expect(String((twin.settled as PromiseRejectedResult).reason)).toMatch(/peer switch record was refused/);
+          expect(twin.unrecorded).toEqual([]);
+          await expectAnswered(host, staff, where('revokeFromPeer', await latestOperation()), 'failed');
+        } finally {
+          await liftRecord();
+        }
+      });
+
       it('a switch that moved but whose applied row is refused answers success with auditWarning, and the settle closes it unknown', async () => {
         const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'applied', () => off(PEER_LISTENER));
         const result = (settled as PromiseFulfilledResult<Awaited<ReturnType<typeof off>>>).value;

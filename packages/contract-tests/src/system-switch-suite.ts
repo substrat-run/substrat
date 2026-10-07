@@ -279,6 +279,35 @@ export function systemSwitchContractSuite(
         await expectAnswered(host, staff, { tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId }, 'refused');
       });
 
+      it('a failed directory write keeps its own error when its failed row is refused, and settles unknown', async () => {
+        const s = await newScope();
+        const liftRecord = await fixture.refuseSwitchRecord(s, 'system');
+        try {
+          const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'failed', () => off(s));
+          expect(settled.status).toBe('rejected');
+          expect(String((settled as PromiseRejectedResult).reason)).toMatch(/system switch record was refused/);
+          expect(unrecorded).toEqual([
+            { flow: 'system-switch', operationId: expect.any(String), phase: 'failed', auditError: expect.stringMatching(/test fault/) },
+          ]);
+          const operationId = unrecorded[0]!.operationId as string;
+          expect(await latestOperation(s, 'revokeFromSystem')).toBe(operationId);
+          await expectSettledUnknown(host, staff, { tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId }, {
+            moduleId: SCHED,
+            schedules: 'off',
+          });
+
+          // Twin: the same directory error with a writable failed row has an answered intent.
+          const twin = await withRefusedOutcome(fixture, s, 'applied', () => off(s));
+          expect(String((twin.settled as PromiseRejectedResult).reason)).toMatch(/system switch record was refused/);
+          expect(twin.unrecorded).toEqual([]);
+          await expectAnswered(host, staff, {
+            tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId: await latestOperation(s, 'revokeFromSystem'),
+          }, 'failed');
+        } finally {
+          await liftRecord();
+        }
+      });
+
       it('a switch that moved but whose applied row is refused answers success with auditWarning, and the settle closes it unknown', async () => {
         const s = await newScope();
         const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'applied', () => off(s));

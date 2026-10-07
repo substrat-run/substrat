@@ -10,6 +10,7 @@ import { UNRECORDED_OUTCOME_LOG, type ScopeHost } from '@substrat-run/kernel';
  */
 export interface AdminRowFault {
   refuseAdminRows(scopeId: ScopeId, phase: 'applied' | 'refused' | 'failed'): Promise<() => Promise<void>>;
+  refuseSwitchRecord(scopeId: ScopeId, kind: 'system' | 'peer'): Promise<() => Promise<void>>;
 }
 
 /** The trigger both adapters' fixtures install, and the statement that drops it. */
@@ -20,6 +21,20 @@ export function adminRowFaultSql(scopeId: string, phase: string): { create: stri
       WHEN NEW.scope_id = '${scopeId}' AND json_extract(NEW.after, '$.phase') = '${phase}'
       BEGIN SELECT RAISE(ABORT, 'the admin log refused the ${phase} row (test fault)'); END`,
     drop: `DROP TRIGGER IF EXISTS ${name}`,
+  };
+}
+
+/** Reject a switch's directory write before the scope moves, to drive its `failed` outcome. */
+export function switchRecordFaultSql(scopeId: string, kind: 'system' | 'peer'): { create: string[]; drop: string[] } {
+  const table = kind === 'system' ? '_substrat_system_switches' : '_substrat_peer_switches';
+  const name = `test_refuse_${kind}_record_${scopeId.toLowerCase()}`;
+  const fault = `SELECT RAISE(ABORT, 'the ${kind} switch record was refused (test fault)')`;
+  return {
+    create: ['INSERT', 'UPDATE'].map((verb) =>
+      `CREATE TRIGGER ${name}_${verb.toLowerCase()} BEFORE ${verb} ON ${table}
+       WHEN NEW.scope_id = '${scopeId}' BEGIN ${fault}; END`,
+    ),
+    drop: ['insert', 'update'].map((verb) => `DROP TRIGGER IF EXISTS ${name}_${verb}`),
   };
 }
 
@@ -78,7 +93,7 @@ export async function expectAnswered(
   host: ScopeHost,
   staff: PlatformActorId,
   where: { tenantId: TenantId; scopeId: ScopeId; action: AdminAction; operationId: string },
-  phase: 'applied' | 'refused',
+  phase: 'applied' | 'refused' | 'failed',
 ): Promise<void> {
   const rows = (await host.admin.auditLog(staff, { tenantId: where.tenantId, scopeId: where.scopeId, action: where.action }))
     .filter((r) => (r.after as { operationId?: string }).operationId === where.operationId);

@@ -51,6 +51,7 @@ import {
   jobRunContractSuite,
   systemSwitchContractSuite,
   adminRowFaultSql,
+  switchRecordFaultSql,
   peerContractSuite,
   verticalResolutionContractSuite,
   scopeHostContractSuite,
@@ -280,6 +281,16 @@ const refuseAdminRows = async (scope: string, phase: string) => {
   return () => exec(drop);
 };
 
+const refuseSwitchRecord = async (scope: string, kind: 'system' | 'peer') => {
+  const { create, drop } = switchRecordFaultSql(scope, kind);
+  const exec = (sql: string) =>
+    runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      state.storage.sql.exec(sql);
+    });
+  for (const sql of create) await exec(sql);
+  return async () => { for (const sql of drop) await exec(sql); };
+};
+
 const peerFixture = async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
@@ -296,7 +307,7 @@ const peerFixture = async () => {
     await internals.cp.writeTenantTuple(tenant, subject, `granted:${permission}`, `tenant:${tenant}`, null);
     await internals.fanOut(tenant);
   };
-  return { host, seatTenantGrant, refuseAdminRows, cleanup: async () => host.close() };
+  return { host, seatTenantGrant, refuseAdminRows, refuseSwitchRecord, cleanup: async () => host.close() };
 };
 peerContractSuite('adapter-cloudflare', peerFixture);
 verticalResolutionContractSuite('adapter-cloudflare', peerFixture);
@@ -403,7 +414,7 @@ systemSwitchContractSuite('adapter-cloudflare', async () => {
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
-  return { host, refuseAdminRows, cleanup: async () => host.close() };
+  return { host, refuseAdminRows, refuseSwitchRecord, cleanup: async () => host.close() };
 });
 
 // #1823: the same suite with tenant tuples PROJECTED into each scope, as production runs.
@@ -416,7 +427,7 @@ systemSwitchContractSuite('adapter-cloudflare, scope-local permissions', async (
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     scopeLocalPermissions: true,
   });
-  return { host, refuseAdminRows, cleanup: async () => host.close() };
+  return { host, refuseAdminRows, refuseSwitchRecord, cleanup: async () => host.close() };
 });
 
 /**

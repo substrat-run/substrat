@@ -27,6 +27,7 @@ import {
   jobRunContractSuite,
   systemSwitchContractSuite,
   adminRowFaultSql,
+  switchRecordFaultSql,
   peerContractSuite,
   verticalResolutionContractSuite,
   scopeHostContractSuite,
@@ -270,6 +271,7 @@ systemSwitchContractSuite('adapter-sqlite', async () => {
   return {
     host,
     refuseAdminRows: refuseAdminRowsOf(host),
+    refuseSwitchRecord: refuseSwitchRecordOf(host),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
@@ -286,6 +288,13 @@ const refuseAdminRowsOf = (host: SqliteScopeHost) => async (scope: string, phase
   const { create, drop } = adminRowFaultSql(scope, phase);
   directory.exec(create);
   return async () => directory.exec(drop);
+};
+
+const refuseSwitchRecordOf = (host: SqliteScopeHost) => async (scope: string, kind: 'system' | 'peer') => {
+  const directory = (host as unknown as { directory: { exec(q: string): void } }).directory;
+  const { create, drop } = switchRecordFaultSql(scope, kind);
+  for (const sql of create) directory.exec(sql);
+  return async () => { for (const sql of drop) directory.exec(sql); };
 };
 
 const peerFixture = (prefix: string) => async () => {
@@ -307,6 +316,7 @@ const peerFixture = (prefix: string) => async () => {
         .run(tenant, subject, `granted:${permission}`, `tenant:${tenant}`);
     },
     refuseAdminRows: refuseAdminRowsOf(host),
+    refuseSwitchRecord: refuseSwitchRecordOf(host),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
