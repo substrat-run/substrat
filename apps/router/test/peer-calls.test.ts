@@ -130,6 +130,14 @@ const entrypoint = (env: Partial<Env>) => ({
 });
 
 describe('the router’s peer entrypoint (#1706)', () => {
+  it('keeps the unbound singleton on one directory round trip', async () => {
+    const cp = directory(); // The default directory has one eligible target and no binding.
+    const outcome = await entrypoint({ CONTROL_PLANE: cp, DISPATCH: dispatch() as never }).invoke(caller(), request());
+
+    expect(outcome).toMatchObject({ ok: true });
+    expect(cp.asked()).toHaveLength(1);
+  });
+
   it('dispatches the resolved instance, with the platform secret and the caller the platform named', async () => {
     const cp = directory();
     const d = dispatch();
