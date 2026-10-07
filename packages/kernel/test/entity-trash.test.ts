@@ -21,14 +21,12 @@ import {
   purgeReportOf,
   purgeStillDue,
   purgeDueOf,
-  purgeLapOf,
-  readPurgeLap,
-  advancePurgeLap,
   registerTrashTargets,
   runPurgePass,
   SCHEDULE_STATE_DDL,
   type PurgeGateFacts,
 } from '../src/index.js';
+import { purgeLapOf, readPurgeLap, type PurgeDue } from '../src/entity-trash.js';
 
 /**
  * The kernel half of #119 PR 2 that needs no host: registration's refusals, the purge pass's
@@ -52,6 +50,12 @@ const declared = {
   'b/rename': { permission: { key: 'box:read', entity: 'box', idFrom: 'boxId' }, input: z.object({ boxId: z.string(), name: z.string() }) },
 };
 const inputs = operationInputsOf(declared);
+
+/** A `ScopedSql` over an in-memory database. */
+const sqlOf = (db: DatabaseSync) => ({
+  query: <T>(q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as T[],
+  exec: (q: string, p: readonly unknown[] = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
+});
 
 describe('registerTrashTargets', () => {
   it('derives the targets from the declared surface, and requires one from a module with a trashable entity', () => {
@@ -248,6 +252,12 @@ describe('purgeOnlyKeysOf', () => {
 });
 
 describe('runPurgePass', () => {
+  /** A pass over `ids`, as a lap at `after` with `failed` earlier failures finds it; the lap write is recorded, not run. */
+  const passOver = async (ids: string[], lap: { more: boolean; failed: number }, purgeOne: (id: string) => Promise<void>) => {
+    const after = { at: 'x', id: 'y' };
+    const due: PurgeDue = { cutoff: 'c', idFrom: 'boxId', ids, lap: { after, failed: lap.failed }, next: lap.more ? { at: 'x', id: ids.at(-1)! } : null };
+    return runPurgePass('b/delete', due, purgeOne, () => undefined);
+  };
   it('counts restored and already-gone entities as skipped, other throws as errors, and marks a full batch', async () => {
     const outcomes: Record<string, () => void> = {
       a: () => undefined,
@@ -270,7 +280,7 @@ describe('runPurgePass', () => {
       },
     };
     const ids = Object.keys(outcomes);
-    const pass = await runPurgePass({ ids, more: true, lap: { after: null, failed: 3 } }, async (id) => outcomes[id]!());
+    const pass = await passOver(ids, { more: true, failed: 3 }, async (id) => outcomes[id]!());
     expect(pass).toEqual({
       purged: 1,
       skipped: 3,
@@ -283,11 +293,11 @@ describe('runPurgePass', () => {
       lapFailed: 0,
     });
     // The pass that closes a lap reports the lap's earlier failures, so its cadence row keeps them.
-    const closing = await runPurgePass({ ids: ['a'], more: false, lap: { after: { at: 'x', id: 'y' }, failed: 3 } }, async () => undefined);
+    const closing = await passOver(['a'], { more: false, failed: 3 }, async () => undefined);
     expect(closing).toMatchObject({ purged: 1, errors: [], more: false, lapFailed: 3 });
     expect(purgeReportOf('b/delete', 'box', closing).failure?.message).toMatch(/3 failed earlier in this lap/);
     // Twin: a lap with no failures anywhere reports none.
-    const clean = await runPurgePass({ ids: ['a'], more: false, lap: { after: { at: 'x', id: 'y' }, failed: 0 } }, async () => undefined);
+    const clean = await passOver(['a'], { more: false, failed: 0 }, async () => undefined);
     expect(purgeReportOf('b/delete', 'box', clean).failure).toBeUndefined();
   });
 });
@@ -309,10 +319,7 @@ describe('the purge walk', () => {
     at('older', '2026-01-01T00:00:00.000Z');
     at('old', '2026-01-02T00:00:00.000Z');
     at('young', '2026-01-20T00:00:00.000Z');
-    const sql = {
-      query: <T>(q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as T[],
-      exec: (q: string, p: readonly unknown[] = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
-    };
+    const sql = sqlOf(db);
     const [plan] = entityStatePlans('m', [horizon]);
     const cutoff = purgeCutoffOf('2026-01-12T00:00:00.000Z', 7);
     expect(cutoff).toBe('2026-01-05T00:00:00.000Z');
@@ -338,10 +345,7 @@ describe('the purge lap (#2096)', () => {
     db.exec('CREATE TABLE _substrat_state_moves (entity_type TEXT, entity_id TEXT)');
     db.exec(SCHEDULE_STATE_DDL);
     for (const m of entityStateMigrations('m', [horizon])) db.exec(m.sql);
-    const sql = {
-      query: <T>(q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as T[],
-      exec: (q: string, p: readonly unknown[] = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
-    };
+    const sql = sqlOf(db);
     const move = (id: string, when: string | null) => {
       db.prepare("INSERT INTO _substrat_state_moves VALUES ('box', ?)").run(id);
       db.prepare('UPDATE boxes SET _substrat_trashed_at = ? WHERE id = ?').run(when, id);
@@ -357,11 +361,15 @@ describe('the purge lap (#2096)', () => {
     /** One pass: entities in `failing` throw, every other one is deleted. */
     const pass = async (failing: ReadonlySet<string>, limit: number) => {
       const due = purgeDueOf(sql, plans, targets, 'b/delete', 'box', NOW, limit);
-      const p = await runPurgePass(due, async (id) => {
-        if (failing.has(id)) throw new Error(`stuck ${id}`);
-        db.prepare('DELETE FROM boxes WHERE id = ?').run(id);
-      });
-      advancePurgeLap(sql, 'b/delete', due, p);
+      const p = await runPurgePass(
+        'b/delete',
+        due,
+        async (id) => {
+          if (failing.has(id)) throw new Error(`stuck ${id}`);
+          db.prepare('DELETE FROM boxes WHERE id = ?').run(id);
+        },
+        (write) => write(sql),
+      );
       return { due, pass: p };
     };
     const left = () => (db.prepare('SELECT id FROM boxes ORDER BY id').all() as { id: string }[]).map((r) => r.id);

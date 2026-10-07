@@ -153,6 +153,31 @@ export function entityTrashContractSuite(
     const exists = async (s: ScopeId, boxId: string) =>
       ((await (await stub(alice, s)).invoke('trash/box-exists', { boxId })) as { exists: boolean }).exists;
     const sweep = (s: ScopeId) => host.runDueSchedules(MODULE, t, s);
+    /**
+     * Bin `count` boxes in one call and make them all due in one set-based backdate, so a case spends
+     * its time on the sweep it asserts rather than on setting it up. They share one trash instant, so
+     * the walk's order is the id's; the first `exploding` of them fail every purge.
+     */
+    const dueBoxes = async (s: ScopeId, count: number, exploding = 0): Promise<string[]> => {
+      const prefix = ulid().slice(0, 20);
+      const { ids } = (await (await stub(alice, s)).invoke('trash/bin-many', { prefix, count })) as { ids: string[] };
+      const at = new Date(Date.now() - (TBOX_PURGE_DAYS + 1) * DAY).toISOString();
+      const mine = `id >= '${prefix}' AND id < '${prefix}~'`;
+      await raw(t, s, `INSERT INTO _substrat_state_moves (entity_type, entity_id) SELECT 'tbox', id FROM trash_boxes WHERE ${mine}`);
+      await raw(t, s, `UPDATE trash_boxes SET _substrat_trashed_at = ? WHERE ${mine}`, [at]);
+      if (exploding > 0) await raw(t, s, `UPDATE trash_boxes SET name = ? WHERE ${mine} AND id <= ?`, [EXPLODING_BOX, ids[exploding - 1]!]);
+      await raw(t, s, `DELETE FROM _substrat_state_moves WHERE entity_type = 'tbox'`);
+      return ids;
+    };
+    const alive = async (s: ScopeId, boxes: readonly string[]) => (await Promise.all(boxes.map((b) => exists(s, b)))).filter(Boolean).length;
+    /** Move the purge schedule's run into the past only where it recorded `failed` — then, and only then, it is due again. */
+    const rearmIfFailed = (s: ScopeId) =>
+      raw(
+        t,
+        s,
+        `UPDATE _substrat_schedule_state SET last_run_at = '2020-01-01T00:00:00.000Z'
+          WHERE kind = 'schedule' AND schedule_op = 'trash/delete-box' AND last_status = 'failed'`,
+      );
 
     beforeAll(async () => {
       fixture = await makeFixture();
@@ -498,23 +523,12 @@ export function entityTrashContractSuite(
 
       it('a full batch leaves the schedule due; the next pass finishes the bin, and then it waits its cadence', async () => {
         const s = await freshScope();
-        // One call bins the whole batch and one set-based backdate makes it due, so the case
-        // spends its time on the sweep it asserts rather than on setting it up.
-        const prefix = ulid().slice(0, 20);
-        const { ids: boxes } = (await (await stub(alice, s)).invoke('trash/bin-many', { prefix, count: PURGE_BATCH + 1 })) as {
-          ids: string[];
-        };
-        const at = new Date(Date.now() - (TBOX_PURGE_DAYS + 1) * DAY).toISOString();
-        const mine = `id >= '${prefix}' AND id < '${prefix}~'`;
-        await raw(t, s, `INSERT INTO _substrat_state_moves (entity_type, entity_id) SELECT 'tbox', id FROM trash_boxes WHERE ${mine}`);
-        await raw(t, s, `UPDATE trash_boxes SET _substrat_trashed_at = ? WHERE ${mine}`, [at]);
-        await raw(t, s, `DELETE FROM _substrat_state_moves WHERE entity_type = 'tbox'`);
-        const left = async () => (await Promise.all(boxes.map((b) => exists(s, b)))).filter(Boolean).length;
+        const boxes = await dueBoxes(s, PURGE_BATCH + 1);
         expect((await sweep(s)).fired).toBe(1);
-        expect(await left()).toBe(1);
+        expect(await alive(s, boxes)).toBe(1);
         await sweep(s);
-        expect(await left()).toBe(0);
-        // Not full this time, so the cadence row was written: a third pass is inside its window.
+        expect(await alive(s, boxes)).toBe(0);
+        // Nothing more was due, so the lap closed and the cadence row was written: a third pass is inside its window.
         const late = await dueBox(s);
         expect(await sweep(s)).toMatchObject({ fired: 0, skipped: 1 });
         expect(await exists(s, late)).toBe(true);
@@ -522,36 +536,21 @@ export function entityTrashContractSuite(
 
       it('a full batch that only fails waits its cadence — it does not spin on the same failures', async () => {
         const s = await freshScope();
-        const prefix = ulid().slice(0, 20);
-        await (await stub(alice, s)).invoke('trash/bin-many', { prefix, count: PURGE_BATCH });
-        const at = new Date(Date.now() - (TBOX_PURGE_DAYS + 1) * DAY).toISOString();
-        const mine = `id >= '${prefix}' AND id < '${prefix}~'`;
-        await raw(t, s, `INSERT INTO _substrat_state_moves (entity_type, entity_id) SELECT 'tbox', id FROM trash_boxes WHERE ${mine}`);
-        await raw(t, s, `UPDATE trash_boxes SET _substrat_trashed_at = ?, name = ? WHERE ${mine}`, [at, EXPLODING_BOX]);
-        await raw(t, s, `DELETE FROM _substrat_state_moves WHERE entity_type = 'tbox'`);
+        await dueBoxes(s, PURGE_BATCH, PURGE_BATCH);
         const first = await sweep(s);
         expect(first.failed).toBe(1);
         expect(first.errors).toHaveLength(PURGE_BATCH);
-        // The batch was full but moved nothing: the run is recorded, so the next pass is inside
-        // its window rather than re-running the same failing batch.
+        // The batch was full and moved nothing, and nothing more is due, so the lap closed and the
+        // run is recorded: the next pass is inside its window rather than re-running the same failures.
         expect(await sweep(s)).toMatchObject({ fired: 0, failed: 0, skipped: 1 });
       }, 60_000);
 
       it('a head that always fails does not starve the bin behind it (#2096): one lap reaches everything due, and the failures are reported every lap', async () => {
         const s = await freshScope();
-        const prefix = ulid().slice(0, 20);
-        const { ids } = (await (await stub(alice, s)).invoke('trash/bin-many', { prefix, count: PURGE_BATCH + 5 })) as { ids: string[] };
-        // The oldest PURGE_BATCH explode on every purge; the five behind them are ordinary. All share
-        // one trash instant, so the walk's order is the id's — the exploding ones first.
+        // The oldest PURGE_BATCH explode on every purge; the five behind them are ordinary.
+        const ids = await dueBoxes(s, PURGE_BATCH + 5, PURGE_BATCH);
         const failing = ids.slice(0, PURGE_BATCH);
         const behind = ids.slice(PURGE_BATCH);
-        const at = new Date(Date.now() - (TBOX_PURGE_DAYS + 1) * DAY).toISOString();
-        const mine = `id >= '${prefix}' AND id < '${prefix}~'`;
-        await raw(t, s, `INSERT INTO _substrat_state_moves (entity_type, entity_id) SELECT 'tbox', id FROM trash_boxes WHERE ${mine}`);
-        await raw(t, s, `UPDATE trash_boxes SET _substrat_trashed_at = ? WHERE ${mine}`, [at]);
-        await raw(t, s, `UPDATE trash_boxes SET name = ? WHERE id <= ?`, [EXPLODING_BOX, failing.at(-1)!]);
-        await raw(t, s, `DELETE FROM _substrat_state_moves WHERE entity_type = 'tbox'`);
-        const alive = async (list: readonly string[]) => (await Promise.all(list.map((b) => exists(s, b)))).filter(Boolean).length;
 
         // Pass 1 tries the failing head, reports every failure, and leaves the lap going.
         const first = await sweep(s);
@@ -568,22 +567,17 @@ export function entityTrashContractSuite(
         const second = await sweep(s);
         expect(second).toMatchObject({ fired: 0, failed: 1 });
         expect(second.errors).toEqual([]);
-        expect(await alive(behind.slice(1))).toBe(0);
+        expect(await alive(s, behind.slice(1))).toBe(0);
         expect(await exists(s, behind[0]!)).toBe(true);
-        expect(await alive(failing)).toBe(PURGE_BATCH);
+        expect(await alive(s, failing)).toBe(PURGE_BATCH);
         // The one binned behind the cursor waits for the next lap.
         expect(await exists(s, late)).toBe(true);
         // No spin (#2087): the closed lap is the cadence's run, so the next pass is inside its window.
         expect(await sweep(s)).toMatchObject({ fired: 0, failed: 0, skipped: 1 });
 
-        // The closed lap's row says `failed`: move only a FAILED row's run into the past, and the
-        // schedule is due again — a row that read `ok` would stay inside its window.
-        await raw(
-          t,
-          s,
-          `UPDATE _substrat_schedule_state SET last_run_at = '2020-01-01T00:00:00.000Z'
-            WHERE kind = 'schedule' AND schedule_op = 'trash/delete-box' AND last_status = 'failed'`,
-        );
+        // The closed lap's row says `failed`: re-armed only if it does, the schedule is due again — a
+        // row that read `ok` would stay inside its window.
+        await rearmIfFailed(s);
         // The next lap starts at the oldest: the late box goes, and the failing head is tried — and
         // reported — again.
         const next = await sweep(s);
@@ -592,28 +586,17 @@ export function entityTrashContractSuite(
         expect(await exists(s, late)).toBe(false);
         const closing = await sweep(s);
         expect(closing.errors).toHaveLength(1);
-        expect(await alive(failing)).toBe(PURGE_BATCH);
+        expect(await alive(s, failing)).toBe(PURGE_BATCH);
       }, 120_000);
 
       it('twin (#2096): nothing fails, and the same bin is purged in two passes with no failure recorded', async () => {
         const s = await freshScope();
-        const prefix = ulid().slice(0, 20);
-        const { ids } = (await (await stub(alice, s)).invoke('trash/bin-many', { prefix, count: PURGE_BATCH + 5 })) as { ids: string[] };
-        const at = new Date(Date.now() - (TBOX_PURGE_DAYS + 1) * DAY).toISOString();
-        const mine = `id >= '${prefix}' AND id < '${prefix}~'`;
-        await raw(t, s, `INSERT INTO _substrat_state_moves (entity_type, entity_id) SELECT 'tbox', id FROM trash_boxes WHERE ${mine}`);
-        await raw(t, s, `UPDATE trash_boxes SET _substrat_trashed_at = ? WHERE ${mine}`, [at]);
-        await raw(t, s, `DELETE FROM _substrat_state_moves WHERE entity_type = 'tbox'`);
+        const ids = await dueBoxes(s, PURGE_BATCH + 5);
         expect(await sweep(s)).toMatchObject({ fired: 1, failed: 0 });
         expect(await sweep(s)).toMatchObject({ fired: 1, failed: 0, errors: [] });
-        expect((await Promise.all(ids.map((b) => exists(s, b)))).some(Boolean)).toBe(false);
+        expect(await alive(s, ids)).toBe(0);
         // The lap closed `ok`: the probe that re-arms a failed row finds none, so it stays inside its window.
-        await raw(
-          t,
-          s,
-          `UPDATE _substrat_schedule_state SET last_run_at = '2020-01-01T00:00:00.000Z'
-            WHERE kind = 'schedule' AND schedule_op = 'trash/delete-box' AND last_status = 'failed'`,
-        );
+        await rearmIfFailed(s);
         expect(await sweep(s)).toMatchObject({ fired: 0, skipped: 1 });
       }, 60_000);
 
