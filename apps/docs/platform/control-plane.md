@@ -52,7 +52,13 @@ Beyond the base registry, a few capabilities have landed that are worth naming:
   platform-held relay that checks the grant on every call. Authentication reuses the `PLATFORM_SECRET`
   the uploader already injects into every dispatch script; the relay re-derives *which* vertical is
   calling from the named `(tenant, scope)` and checks the grant against that, so holding the shared
-  secret is not enough. The `from` address is always the platform's onboarded sender.
+  secret is not enough. With no `from` in the request, the message goes out from the platform's
+  onboarded sender. With one, the relay sends it through the tenant's own mail connection that may
+  send as that address (a connector implementing the kernel's `MailSender`), and refuses an address
+  no connection covers rather than sending it as the platform. That path is open only to a caller
+  the platform has proven (the egress worker hands the relay the dispatched caller through its
+  `RelayGateway` entrypoint), and attachments, named by id, ride only on it: they are read as the
+  sending connection, so a file goes out only where the tenant granted that connection read.
 - **Platform-mediated inference: the `AI` binding.** The one capability handed over as a real
   runtime binding rather than a relay. A vertical still cannot *declare* `ai` — the allowlist
   refuses it, exactly as above — but a version that declares `substrat.usesModels` (#1054) has

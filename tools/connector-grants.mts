@@ -60,7 +60,7 @@ if (CONNECTORS.length === 0) {
   fail('connector wiring: no connector registrations to check — refusing to report green', 2);
 }
 
-const catalog = PROVIDERS as Record<string, { grants?: readonly string[] } | undefined>;
+const catalog = PROVIDERS as Record<string, { grants?: readonly string[]; sendsMail?: true } | undefined>;
 const problems: string[] = [];
 
 for (const connector of CONNECTORS) {
@@ -82,6 +82,19 @@ for (const connector of CONNECTORS) {
           entry.grants?.length ? entry.grants.map((g) => `\`${g}\``).join(', ') : 'nothing'
         }). A tenant connecting through the dashboard would hold a credential that works ` +
         `and a return path that cannot write.`,
+    );
+  }
+  // #2098: whether the connection sends mail as the tenant is said twice — on the door, where
+  // the tenant reads it, and on the registration, where the relay acts on it. Either alone is
+  // a door that hides what connecting authorizes, or one that promises mail nothing sends.
+  const registersMail = typeof connector.mail === 'function';
+  if (registersMail !== (entry.sendsMail === true)) {
+    problems.push(
+      registersMail
+        ? `${provider}: the connector registers a mail sender, but the dashboard door does not ` +
+            `say \`sendsMail: true\` — a tenant connecting it would not be told it sends mail as them`
+        : `${provider}: the dashboard door says \`sendsMail: true\`, but the connector registers ` +
+            `no mail sender — the relay would refuse every message sent as its addresses`,
     );
   }
   // Belt to the type's braces — see the header.
@@ -112,12 +125,13 @@ if (problems.length > 0) {
   console.error(
     `\nAdd the key to the provider's \`grants\` in apps/dashboard/src/integrations.ts, drop it ` +
       `from the connector's declaration if the authority now rides the dispatch (#726), or add ` +
-      `the missing entry to \`CONNECTORS\` in apps/control-plane/src/connectors.ts.`,
+      `the missing entry to \`CONNECTORS\` in apps/control-plane/src/connectors.ts. For mail, make ` +
+      `the door's \`sendsMail\` and the registration's \`mail\` agree.`,
   );
   process.exit(1);
 }
 
 console.log(
   `connector wiring: ${CONNECTORS.length} connector${CONNECTORS.length === 1 ? '' : 's'} checked ` +
-    `— each has a door, a probe, and every declared grant the door carries`,
+    `— each has a door, a probe, every declared grant the door carries, and the same answer on mail`,
 );

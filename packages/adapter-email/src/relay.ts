@@ -1,5 +1,6 @@
 import {
   EmailError,
+  isAttachmentRef,
   prepareMessage,
   type EmailMessage,
   type EmailTransport,
@@ -46,6 +47,18 @@ export interface PlatformRelayOptions {
    * at the one place that knows it is talking to a network.
    */
   timeoutMs?: number;
+  /**
+   * Who the message is sent as (#2098). `'platform'` (the default) is the platform's own
+   * onboarded address, as it always was: the message's `from.email` is ignored and only its
+   * display name is forwarded, so a caller that fills `from` with any placeholder keeps working.
+   *
+   * `'from'` asks the relay to send as the message's `from.email`, which must be an address
+   * one of the tenant's own mail connections (a Microsoft 365 mailbox, say) may send as — the
+   * relay refuses one that none covers rather than falling back to the platform's. It is also
+   * the only way to send attachments, which travel by id (`{ attachmentId }`) and are read on
+   * the platform side as that connection.
+   */
+  sender?: 'platform' | 'from';
 }
 
 /**
@@ -101,6 +114,21 @@ export class PlatformRelayEmailTransport implements EmailTransport {
     if (!recipient || rest.length) {
       throw new EmailError(`the platform email relay sends to one recipient at a time (got ${m.to.length})`);
     }
+    const asFrom = this.opts.sender === 'from';
+    const attachmentIds = (m.attachments ?? []).map((a) => {
+      if (!isAttachmentRef(a)) {
+        throw new EmailError(
+          `the platform email relay carries attachments by id ({ attachmentId }), never bytes — ` +
+            `'${a.filename}' was given as bytes`,
+        );
+      }
+      return { attachmentId: a.attachmentId };
+    });
+    if (attachmentIds.length && !asFrom) {
+      throw new EmailError(
+        `the platform's own sender carries no attachments — send as a tenant address (sender: 'from') to attach files`,
+      );
+    }
     // Called in an arrow, never handed on: the package is kernel-free by design, so it
     // cannot use `globalFetch` and carries the same one-liner (see `lint:bound-fetch`).
     const fetchImpl: FetchLike =
@@ -131,6 +159,8 @@ export class PlatformRelayEmailTransport implements EmailTransport {
         html: m.html,
         text: m.text,
         ...(m.from.name ? { fromName: m.from.name } : {}),
+        ...(asFrom ? { from: m.from.email } : {}),
+        ...(attachmentIds.length ? { attachments: attachmentIds } : {}),
       }),
     });
     if (!res.ok) {

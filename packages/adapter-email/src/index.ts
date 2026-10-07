@@ -28,9 +28,14 @@ export {
   type SendResult,
   type EmailTransport,
   type PreparedMessage,
+  type EmailAttachment,
+  type EmailAttachmentRef,
+  type EmailFileAttachment,
   EmailError,
   prepareMessage,
   addressEmail,
+  fileAttachments,
+  isAttachmentRef,
 } from './transport.js';
 export { CloudflareEmailTransport, type SendEmailBinding } from './cloudflare.js';
 export { PlatformRelayEmailTransport, type PlatformRelayOptions } from './relay.js';

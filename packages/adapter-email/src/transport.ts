@@ -20,6 +20,33 @@ export interface EmailAddress {
 export type EmailRecipient = string | EmailAddress;
 
 /**
+ * A file sent with a message, as bytes — what a transport that talks to a provider sends.
+ */
+export interface EmailFileAttachment {
+  filename: string;
+  /** The MIME type, e.g. `application/pdf`. */
+  contentType: string;
+  content: Uint8Array;
+}
+
+/**
+ * A file sent with a message, named by the id of an attachment in the sending scope (#2098).
+ * Only the platform relay carries these: it reads the bytes on the platform side, as the
+ * connection that sends, so a hosted vertical never ships file bytes in the request. A
+ * transport that talks to a provider directly refuses one.
+ */
+export interface EmailAttachmentRef {
+  attachmentId: string;
+}
+
+export type EmailAttachment = EmailFileAttachment | EmailAttachmentRef;
+
+/** Is this attachment a reference by id rather than bytes? */
+export function isAttachmentRef(attachment: EmailAttachment): attachment is EmailAttachmentRef {
+  return 'attachmentId' in attachment;
+}
+
+/**
  * One transactional message. Both `html` and `text` are required: some clients
  * render only the text part, and a missing text part is a spam signal
  * (deliverability best practice, enforced by `prepareMessage`).
@@ -33,6 +60,8 @@ export interface EmailMessage {
   text: string;
   /** Extra headers (e.g. `List-Unsubscribe`, an idempotency key). */
   headers?: Record<string, string>;
+  /** Files sent with the message — bytes for a provider transport, ids for the relay. */
+  attachments?: EmailAttachment[];
 }
 
 /**
@@ -72,6 +101,8 @@ export interface PreparedMessage {
   html: string;
   text: string;
   headers?: Record<string, string>;
+  /** Present only when the message carried any. */
+  attachments?: EmailAttachment[];
 }
 
 /** The bare address of a recipient/sender — what a `SendResult` list carries. */
@@ -96,6 +127,15 @@ export function prepareMessage(message: EmailMessage): PreparedMessage {
   if (!message.html?.trim()) throw new EmailError('email has no html body');
   if (!message.text?.trim()) throw new EmailError('email has no text body');
 
+  const attachments = message.attachments ?? [];
+  for (const a of attachments) {
+    if (isAttachmentRef(a)) {
+      if (!a.attachmentId?.trim()) throw new EmailError('email attachment has an empty id');
+    } else if (!a.filename?.trim() || !a.contentType?.trim()) {
+      throw new EmailError('email attachment needs a filename and a content type');
+    }
+  }
+
   return {
     to,
     from: coerceAddress(message.from),
@@ -104,7 +144,25 @@ export function prepareMessage(message: EmailMessage): PreparedMessage {
     html: message.html,
     text: message.text,
     headers: message.headers,
+    ...(attachments.length ? { attachments } : {}),
   };
+}
+
+/**
+ * The byte attachments of a prepared message, for a transport that sends to a provider. A
+ * reference by id cannot be resolved there — only the platform relay can read the scope —
+ * so it is a programmer error, not something to drop silently.
+ */
+export function fileAttachments(m: PreparedMessage): EmailFileAttachment[] {
+  return (m.attachments ?? []).map((a) => {
+    if (isAttachmentRef(a)) {
+      throw new EmailError(
+        `attachment '${a.attachmentId}' is named by id, which only the platform relay can read — ` +
+          `this transport sends bytes`,
+      );
+    }
+    return a;
+  });
 }
 
 /**

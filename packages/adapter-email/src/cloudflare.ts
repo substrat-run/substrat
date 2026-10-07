@@ -3,6 +3,7 @@ import {
   type EmailMessage,
   type EmailTransport,
   type SendResult,
+  fileAttachments,
   prepareMessage,
 } from './transport.js';
 
@@ -26,10 +27,19 @@ export interface SendEmailBinding {
     html?: string;
     text?: string;
     headers?: Record<string, string>;
+    attachments?: BindingAttachment[];
   }): Promise<CloudflareSendResponse>;
 }
 
 type BindingAddress = string | { email: string; name?: string };
+
+/** The binding's attachment shape (Email Service Workers API): binary or base64 content. */
+interface BindingAttachment {
+  content: Uint8Array;
+  filename: string;
+  type: string;
+  disposition: 'attachment' | 'inline';
+}
 
 /** CF returns immediate per-recipient feedback; the REST surface wraps it in `result`. */
 interface CloudflareSendBody {
@@ -55,6 +65,7 @@ export class CloudflareEmailTransport implements EmailTransport {
 
   async send(message: EmailMessage): Promise<SendResult> {
     const m = prepareMessage(message);
+    const attachments = fileAttachments(m);
     const response = await this.binding.send({
       to: m.to.map(toBinding),
       from: toBinding(m.from),
@@ -63,6 +74,17 @@ export class CloudflareEmailTransport implements EmailTransport {
       html: m.html,
       text: m.text,
       ...(m.headers ? { headers: m.headers } : {}),
+      // The whole message, attachments included, must stay under the service's 5 MiB.
+      ...(attachments.length
+        ? {
+            attachments: attachments.map((a) => ({
+              content: a.content,
+              filename: a.filename,
+              type: a.contentType,
+              disposition: 'attachment' as const,
+            })),
+          }
+        : {}),
     });
     // The Workers binding returns the body directly; the REST surface wraps it
     // in `result` — accept either so the same transport works over both.
