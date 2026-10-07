@@ -95,6 +95,23 @@ describe('sealed visible continuations (#2074)', () => {
     await expect(codec.open('not a cursor')).rejects.toThrow(/restart paging/);
   });
 
+  it('never returns a hidden plain position after a legacy input reaches the budget', async () => {
+    const codec = visibleContinuation(memoryStore(), binding, () => 1_000);
+    const old = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const hidden = 'hidden-row-private-sort-value';
+    const page = await pageVisible(
+      ({ cursor }) => {
+        expect(cursor).toBe(old);
+        return { entries: [{ id: hidden }], rowCursors: [hidden], nextCursor: hidden };
+      },
+      { cursor: old, limit: 1 }, () => false,
+      { scanBudget: 1, continuation: codec },
+    );
+    expect(page).toEqual({ entries: [], nextCursor: expect.stringMatching(/^sc1\./) });
+    expect(page.nextCursor).not.toContain(hidden);
+    expect(await codec.open(page.nextCursor!)).toBe(hidden);
+  });
+
   it('refuses tampering and replay under another caller, scope, list, sort, filter or grant constraint', async () => {
     const store = memoryStore();
     const codec = visibleContinuation(store, binding, () => 1_000);
