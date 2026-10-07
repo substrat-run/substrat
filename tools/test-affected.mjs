@@ -18,6 +18,7 @@
 //   pnpm test:affected                  # build + test the affected packages
 //   pnpm test:affected --dry-run        # print the selection and stop
 //   pnpm test:affected --base <ref>     # diff against another ref
+//   pnpm test:affected --no-bail        # finish all selected packages before reporting failures
 //
 // A push to main still runs everything in CI; this does not replace that.
 
@@ -75,6 +76,7 @@ function main(argv) {
     return i === -1 ? undefined : argv[i + 1];
   };
   const dryRun = argv.includes('--dry-run');
+  const noBail = argv.includes('--no-bail');
   const base = arg('--base') ?? git('merge-base', 'HEAD', 'origin/main').trim();
   const files = [
     ...new Set([
@@ -109,7 +111,10 @@ function main(argv) {
   if ('everything' in result) {
     console.log(`test:affected: everything — ${result.everything}`);
     for (const d of result.detail ?? []) console.log(`  ${d}`);
-    if (!dryRun) run('pnpm', ['run', 'test']);
+    if (!dryRun && noBail) {
+      run('pnpm', ['run', 'build']);
+      run('pnpm', ['-r', '--no-bail', '--filter=!./.builder/projects/**', 'test'], preloads);
+    } else if (!dryRun) run('pnpm', ['run', 'test']);
     return;
   }
   const names = result.selected.map((p) => p.name);
@@ -124,7 +129,7 @@ function main(argv) {
   }
   if (dryRun) return;
   run('pnpm', ['-r', ...buildNames(names, all).map((n) => `--filter=${n}...`), 'build']);
-  run('pnpm', ['-r', ...names.map((n) => `--filter=${n}`), 'test'], preloads);
+  run('pnpm', ['-r', ...(noBail ? ['--no-bail'] : []), ...names.map((n) => `--filter=${n}`), 'test'], preloads);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main(process.argv.slice(2));
