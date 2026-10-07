@@ -13,7 +13,9 @@ describe('ticket0 subject erasure on SQLite', () => {
     const db = new Database(join(dir, `${tenant}__${scope}.sqlite`));
     try {
       const statement = db.prepare(sql);
-      return statement.reader ? statement.all(...params) as Record<string, unknown>[] : (statement.run(...params), []);
+      if (statement.reader) return statement.all(...params) as Record<string, unknown>[];
+      statement.run(...params);
+      return [];
     } finally {
       db.close();
     }
