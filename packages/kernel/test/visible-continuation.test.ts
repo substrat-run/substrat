@@ -45,7 +45,7 @@ describe('sealed visible continuations (#2074)', () => {
     const codec = visibleContinuation(memoryStore(), binding, () => 1_000);
     const short = await codec.seal('a');
     const long = await codec.seal('secret-sort-value'.repeat(2_000));
-    expect(long.length).toBe(short.length);
+    expect(long!.length).toBe(short!.length);
     expect(await codec.open(long!)).toBe('secret-sort-value'.repeat(2_000));
   });
 
@@ -56,7 +56,7 @@ describe('sealed visible continuations (#2074)', () => {
     const long = await codec.seal('long-visible-sort'.repeat(1_000), false);
     expect(short).toMatch(/^sc1\./);
     expect(store.stored()).toEqual([]);
-    expect(long.length).toBeGreaterThan(short.length);
+    expect(long!.length).toBeGreaterThan(short!.length);
     expect(await codec.open(long!)).toBe('long-visible-sort'.repeat(1_000));
     await expect(visibleContinuation(store, { ...binding, principal: 'principal:bob' }, () => 1_000).open(long!))
       .rejects.toThrow(/restart paging/);
