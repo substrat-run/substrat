@@ -121,6 +121,13 @@ const d1 = { entityType: 'doc', entityId: 'd1' };
 const d3 = { entityType: 'doc', entityId: 'd3' };
 
 describe('the evaluator’s capability branch', () => {
+  it('marks grant enumeration incomplete for a capability subject', async () => {
+    const checker = createTupleEvaluator(readerFor({ cap: capRow() }));
+    expect(await checker.grantedEntities!(capability, READ, NODE, 'doc', async () => true)).toEqual({
+      kind: 'incomplete', reason: 'capability',
+    });
+  });
+
   it('allows its key on an entity beneath its root, proving it through the walk and the minter', async () => {
     const decision = await createTupleEvaluator(readerFor({ cap: capRow() })).check(
       capability,
