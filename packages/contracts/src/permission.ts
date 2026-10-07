@@ -458,6 +458,26 @@ export const entityGrantsToppedUpPayload = z.object({
 export type EntityGrantsToppedUpPayload = z.infer<typeof entityGrantsToppedUpPayload>;
 
 /**
+ * A key a declared entity-grant SHAPE retired (#2082) was taken back from a person who held the
+ * shape on an entity. The kernel writes it at reconcile, one per (person, entity), when the
+ * reviewed registry of the version reached declares the key under the shape's `retired`. The
+ * key's row is TOMBSTONED (K-21), never deleted, and the deploy that did it is the outbox
+ * row's `version`. Entity: the entity the shape is held on.
+ *
+ * One tuple is one authority: a direct `ctx.grant` of the same key to the same person on the
+ * same entity is the same row, so it goes too.
+ */
+export const ENTITY_GRANTS_RETIRED = 'entity.grants-retired';
+
+export const entityGrantsRetiredPayload = z.object({
+  entity: entityRef,
+  principal: principalId,
+  /** The retired keys this person no longer holds on the entity, sorted. */
+  removed: z.array(permissionKey).min(1),
+});
+export type EntityGrantsRetiredPayload = z.infer<typeof entityGrantsRetiredPayload>;
+
+/**
  * The marker a declared shape's grant leaves beside its keys (#2071):
  * `(principal:<id>, bootstrap, <entityType>:<id>)`. It says "this person was given the
  * declared shape on this entity", which no set of keys can say — someone ctx.granted one of

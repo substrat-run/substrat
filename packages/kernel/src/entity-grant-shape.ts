@@ -1,7 +1,9 @@
 import {
+  ENTITY_GRANTS_RETIRED,
   ENTITY_GRANTS_TOPPED_UP,
   ENTITY_SHAPE_MARKER_RELATION,
   domainEvent,
+  entityGrantsRetiredPayload,
   entityGrantsToppedUpPayload,
   entityObjectRef,
   eventId,
@@ -11,7 +13,7 @@ import {
   type EntityRef,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { substratError } from '@substrat-run/contracts';
+import { assertKernelAuthoredType, substratError } from '@substrat-run/contracts';
 import { explicitTupleSql } from './entity-grant.js';
 import { liveTupleSql } from './permission-eval.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
@@ -36,8 +38,16 @@ import type { SwitchSql } from './system-switch.js';
  *   `entity.grants-topped-up` event beside it. Each live marker whose
  *   entity lacks a key of the CURRENT shape gets that key. A key with any row at all is
  *   skipped, and that includes a tombstone (K-21): a key someone took back from that person
- *   stays taken back. Top-up only. A key dropped from the shape is left where it is, because
- *   silently revoking authority on a deploy is the riskier mistake.
+ *   stays taken back. A key merely dropped from the shape is left where it is, because silently
+ *   revoking authority on a deploy is the riskier mistake.
+ * - The retirement (#2082), in the same pass and budget, between the backfill and the top-up: a
+ *   key the shape declares `retired` is tombstoned for every live marker that still holds it
+ *   live, with one `entity.grants-retired` event per (person, entity). The tombstones are the
+ *   progress; a record tuple (`shape:<type>`, `shape-retired:<key>`, `scope:<id>`) ends it once
+ *   a batch comes back short, so a key granted to a holder again afterwards is left alone. A key
+ *   back in the shape's `permissions` tombstones that record, so a later release may retire it
+ *   again. One tuple is one authority: a direct grant of the key on the same entity to the same
+ *   person is that row, and goes with it.
  * - The backfill, inside the same budget, until it is done once per (scope, entity type): how
  *   people granted before markers existed become holders. It reads PROVENANCE, never key sets.
  *   The shape's declared `holder` says whose record each entity is (`'self'`: the entity id is
@@ -73,6 +83,8 @@ export function shapeTopUpBatch(batch: number = SHAPE_TOP_UP_BATCH): number {
 
 /** The backfill's run-once record: `(shape:<type>, backfilled, scope:<id>)`. */
 const BACKFILLED_RELATION = 'shape-backfilled';
+/** A retirement's run-once record, per key: `(shape:<type>, shape-retired:<key>, scope:<id>)`. */
+const RETIRED_RELATION = 'shape-retired:';
 
 /** The writer of the top-up events: the kernel, as no module or person acted. */
 const KERNEL_ACTOR = { system: moduleId.parse('@substrat-run/kernel') };
@@ -84,6 +96,13 @@ interface ShapeTopUp {
   principal: PrincipalId;
   entity: EntityRef;
   added: string[];
+}
+
+/** One (person, entity) a pass took retired keys back from. */
+interface ShapeRetirement {
+  principal: PrincipalId;
+  entity: EntityRef;
+  removed: string[];
 }
 
 const keysOf = (permissions: readonly string[]): string[] => [...new Set(permissions)].sort();
@@ -122,25 +141,39 @@ export interface ShapePass {
 
 /**
  * One pass of the reconcile over one scope, at most `limit` rows of work: backfill marks for any
- * shape whose backfill is not done here, then holders topped up, each with its
+ * shape whose backfill is not done here, then holders whose retired keys are taken back, each
+ * with its `entity.grants-retired` event, then holders topped up, each with its
  * `entity.grants-topped-up` event. `done` is false when the budget ran out, and the caller runs
  * another pass. Run it inside ONE transaction, so the keys and their events commit together.
  * Re-running a finished scope writes nothing.
  */
-export function topUpEntityGrantShapes(db: SwitchSql, pass: ShapePass): { toppedUp: number; done: boolean } {
+export function topUpEntityGrantShapes(
+  db: SwitchSql,
+  pass: ShapePass,
+): { toppedUp: number; retired: number; done: boolean } {
   // Here as well as at each entry point: a pass with no budget never reports done, so a caller
   // looping until it does would never stop.
   let budget = shapeTopUpBatch(pass.limit);
   let toppedUp = 0;
+  let retired = 0;
   for (const shape of pass.shapes) {
-    // A sharing shape is never reconciled — not topped up and not backfilled (see `bootstrap`).
+    // A sharing shape is never reconciled — not topped up, not backfilled, nothing retired.
     if (!shape.bootstrap) continue;
     const keys = keysOf(shape.permissions);
-    if (keys.length === 0) continue;
+    // A key the shape grants is never taken back, whatever the declaration says.
+    const gone = keysOf(shape.retired ?? []).filter((k) => !keys.includes(k));
+    if (keys.length === 0 && gone.length === 0) continue;
     const prefix = `${shape.entityType}:`;
     const json = JSON.stringify(keys);
-    budget -= backfill(db, pass.scopeId, shape, prefix, json, budget);
-    if (budget === 0) return { toppedUp, done: false };
+    // The backfill's evidence is any key the shape carried, a retired one included.
+    budget -= backfill(db, pass.scopeId, shape, prefix, JSON.stringify([...keys, ...gone]), budget);
+    if (budget === 0) return { toppedUp, retired, done: false };
+    reopenRetirements(db, pass, shape.entityType, keys);
+    const took = retire(db, pass, shape.entityType, prefix, gone, budget);
+    budget -= took;
+    retired += took;
+    if (budget === 0) return { toppedUp, retired, done: false };
+    if (keys.length === 0) continue;
     const holders = db.all(
       `SELECT m.subject, m.object FROM _substrat_tuples m
         WHERE m.relation = ? AND ${liveTupleSql('m')}
@@ -191,9 +224,107 @@ export function topUpEntityGrantShapes(db: SwitchSql, pass: ShapePass): { topped
     }
     budget -= holders.length;
     toppedUp += holders.length;
-    if (budget === 0) return { toppedUp, done: false };
+    if (budget === 0) return { toppedUp, retired, done: false };
   }
-  return { toppedUp, done: true };
+  return { toppedUp, retired, done: true };
+}
+
+/**
+ * One bounded batch of a shape's retirement: at most `budget` (person, entity) pairs, each a
+ * live marker still holding a retired key live there, whose retired keys are tombstoned with one
+ * event. Keys whose retirement already finished on this scope are skipped, and a short batch
+ * records the rest finished. Returns how many pairs it took keys from.
+ */
+function retire(db: SwitchSql, pass: ShapePass, entityType: string, prefix: string, gone: readonly string[], budget: number): number {
+  const shapeRef = `shape:${entityType}`;
+  const scopeRef = `scope:${pass.scopeId}`;
+  const open = gone.filter(
+    (k) =>
+      db.all(
+        `SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+        shapeRef,
+        `${RETIRED_RELATION}${k}`,
+        scopeRef,
+      ).length === 0,
+  );
+  if (open.length === 0) return 0;
+  const json = JSON.stringify(open);
+  const holders = db.all(
+    `SELECT m.subject, m.object FROM _substrat_tuples m
+      WHERE m.relation = ? AND ${liveTupleSql('m')}
+        AND substr(m.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}'
+        AND substr(m.object, 1, ?) = ?
+        AND EXISTS (SELECT 1 FROM _substrat_tuples t
+                     WHERE t.subject = m.subject AND t.object = m.object AND t.revoked_at IS NULL
+                       AND t.relation IN (SELECT 'granted:' || value FROM json_each(?)))
+      ORDER BY m.subject, m.object
+      LIMIT ?`,
+    ENTITY_SHAPE_MARKER_RELATION,
+    pass.now,
+    prefix.length,
+    prefix,
+    json,
+    budget,
+  ) as { subject: string; object: string }[];
+  for (const h of holders) {
+    const removed = (
+      db.all(
+        `SELECT substr(relation, 9) AS key FROM _substrat_tuples
+          WHERE subject = ? AND object = ? AND revoked_at IS NULL
+            AND relation IN (SELECT 'granted:' || value FROM json_each(?))
+          ORDER BY relation`,
+        h.subject,
+        h.object,
+        json,
+      ) as { key: string }[]
+    ).map((r) => r.key);
+    db.run(
+      `UPDATE _substrat_tuples SET revoked_at = ?
+        WHERE subject = ? AND object = ? AND revoked_at IS NULL
+          AND relation IN (SELECT 'granted:' || value FROM json_each(?))`,
+      pass.now,
+      h.subject,
+      h.object,
+      json,
+    );
+    const st = outboxInsertSql(
+      shapeRetiredEvent(pass, {
+        principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
+        entity: { entityType, entityId: h.object.slice(prefix.length) },
+        removed,
+      }),
+      pass.version,
+    );
+    db.run(st.sql, ...st.params);
+  }
+  if (holders.length < budget) {
+    for (const k of open) {
+      db.run(
+        'INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)',
+        shapeRef,
+        `${RETIRED_RELATION}${k}`,
+        scopeRef,
+      );
+    }
+  }
+  return holders.length;
+}
+
+/**
+ * A key back in the shape ends its retirement's record (tombstoned, like any tuple), so a later
+ * release that drops and retires it again runs the retirement again.
+ */
+function reopenRetirements(db: SwitchSql, pass: ShapePass, entityType: string, keys: readonly string[]): void {
+  if (keys.length === 0) return;
+  db.run(
+    `UPDATE _substrat_tuples SET revoked_at = ?
+      WHERE subject = ? AND object = ? AND revoked_at IS NULL
+        AND relation IN (SELECT '${RETIRED_RELATION}' || value FROM json_each(?))`,
+    pass.now,
+    `shape:${entityType}`,
+    `scope:${pass.scopeId}`,
+    JSON.stringify(keys),
+  );
 }
 
 /**
@@ -264,6 +395,22 @@ function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefi
   return candidates.length;
 }
 
+/** The kernel's event for one retirement — the audit record, on the entity's own history. */
+function shapeRetiredEvent(pass: ShapePass, retirement: ShapeRetirement): DomainEvent {
+  return domainEvent.parse({
+    id: eventId.parse(pass.mintEventId(Date.parse(pass.now))),
+    type: ENTITY_GRANTS_RETIRED,
+    schemaVersion: 1,
+    occurredAt: pass.now,
+    tenantId: pass.tenantId,
+    scopeId: pass.scopeId,
+    actor: KERNEL_ACTOR,
+    entity: retirement.entity,
+    piiClass: 'none',
+    payload: entityGrantsRetiredPayload.parse(retirement),
+  });
+}
+
 /** The kernel's event for one top-up — the audit record, on the entity's own history. */
 function shapeTopUpEvent(pass: ShapePass, topUp: ShapeTopUp): DomainEvent {
   return domainEvent.parse({
@@ -287,6 +434,7 @@ function shapeTopUpEvent(pass: ShapePass, topUp: ShapeTopUp): DomainEvent {
  * `version` is the deploy that wrote it.
  */
 function outboxInsertSql(e: DomainEvent, version: string | null): { sql: string; params: (string | number | null)[] } {
+  assertKernelAuthoredType(e.type);
   return {
     sql: `INSERT INTO _substrat_outbox
             (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,

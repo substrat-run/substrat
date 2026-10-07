@@ -2333,14 +2333,15 @@ export function defineScopeDO(
 
     /**
      * One bounded pass of a declared shape's reconcile (#2071), with its events, in ONE
-     * transaction: how many it topped up, and whether the scope is done.
+     * transaction: how many it topped up, how many it took retired keys from (#2082), and
+     * whether the scope is done.
      */
     async topUpEntityGrantShapes(
       tenantId: string,
       scopeId: string,
       shapes: readonly EntityGrantShape[],
       limit: number,
-    ): Promise<{ toppedUp: number; done: boolean }> {
+    ): Promise<{ toppedUp: number; retired: number; done: boolean }> {
       return this.queue.enqueue(() =>
         this.revision.transactionSync(() =>
           topUpEntityGrantShapes(this.switchSql(), {

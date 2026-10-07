@@ -1947,8 +1947,10 @@ export interface HostAdmin {
   /**
    * Top every holder of each declared shape up to the shape as it is now (#2071): a key the
    * shape gained is granted to each person holding the shape's marker on an entity of that
-   * type. Never a key revoked from that person there (its K-21 tombstone stays), and never a
-   * removal: a key dropped from the shape is left in place. Until it is done on a scope, a
+   * type. Never a key revoked from that person there (its K-21 tombstone stays). A key merely
+   * dropped from the shape is left in place; a key the shape declares `retired` (#2082) is taken
+   * back from every holder instead, its row tombstoned, once per scope — including a direct grant
+   * of that key to the holder on the same entity, which is the same row. Until it is done on a scope, a
    * shape that declares a `holder` is also backfilled: each person its holder relationship names
    * as the owner of an entity (`'self'`, or the vertical's own column) is marked if they hold a
    * key of the shape there. Never inferred from key sets, so a grant delegated on someone else's
@@ -1961,15 +1963,17 @@ export interface HostAdmin {
    *
    * Bounded: `batch` rows of work (default 500, an integer from 1 to 5000, or `validation_failed`)
    * per scope transaction, backfill included, repeated until a pass finishes — so it is safe
-   * on a large scope, and finishes on a re-run if interrupted. Each (person, entity) topped up is an `entity.grants-topped-up` event on the entity. Audited
-   * as `reconcileEntityGrantShapes` when it changed anything. Returns how many it topped up.
+   * on a large scope, and finishes on a re-run if interrupted. Each (person, entity) topped up is
+   * an `entity.grants-topped-up` event on the entity, and each one retired keys were taken from an
+   * `entity.grants-retired` event. Audited as `reconcileEntityGrantShapes` when it changed
+   * anything. Returns how many (person, entity) it topped up, and how many it retired keys from.
    */
   reconcileEntityGrantShapes(
     actor: PlatformActorId,
     node: { tenantId: TenantId; scopeId: ScopeId },
     shapes: readonly EntityGrantShape[],
     opts?: { batch?: number },
-  ): Promise<{ toppedUp: number }>;
+  ): Promise<{ toppedUp: number; retired: number }>;
   /** Grant to an organization (portal customers); members reach it via membership tuples. */
   /**
    * Grant a permission to a CONNECTION (#97) — how a connector is allowed to

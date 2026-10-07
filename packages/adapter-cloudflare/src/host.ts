@@ -1450,13 +1450,13 @@ interface ScopeStubRpc {
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
   /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
   grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
-  /** One bounded pass of the shape reconcile with its events (#2071). */
+  /** One bounded pass of the shape reconcile with its events (#2071, retirements #2082). */
   topUpEntityGrantShapes(
     tenantId: string,
     scopeId: string,
     shapes: readonly EntityGrantShape[],
     limit: number,
-  ): Promise<{ toppedUp: number; done: boolean }>;
+  ): Promise<{ toppedUp: number; retired: number; done: boolean }>;
   /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
   writeTuple(
     subject: string,
@@ -6391,11 +6391,11 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, 'grantEntityShape', grant.node, null, grant);
       },
       reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
-        const toppedUp = await this.topUpEntityGrantShapesLocal(node.tenantId, node.scopeId, shapes, opts?.batch);
-        if (toppedUp > 0) {
-          await this.recordAdmin(actor, 'reconcileEntityGrantShapes', node, null, { shapes, toppedUp });
+        const { toppedUp, retired } = await this.topUpEntityGrantShapesLocal(node.tenantId, node.scopeId, shapes, opts?.batch);
+        if (toppedUp > 0 || retired > 0) {
+          await this.recordAdmin(actor, 'reconcileEntityGrantShapes', node, null, { shapes, toppedUp, retired });
         }
-        return { toppedUp };
+        return { toppedUp, retired };
       },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);
@@ -10316,24 +10316,27 @@ export class CloudflareScopeHost implements ScopeHost {
    * Top every holder of each declared shape up to the shape as it is now (#2071), in bounded
    * passes — at most `batch` rows of work per scope transaction (default 500, at most 5000;
    * anything else is `validation_failed`), repeated until a pass finishes. Never re-grants a revoked
-   * key, never removes one. Returns how many (person, entity) it topped up.
+   * key; takes back only a key the shape declares `retired` (#2082). Returns how many
+   * (person, entity) it topped up, and how many it took retired keys from.
    */
   async topUpEntityGrantShapesLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
     shapes: readonly EntityGrantShape[],
     batch?: number,
-  ): Promise<number> {
+  ): Promise<{ toppedUp: number; retired: number }> {
     const limit = shapeTopUpBatch(batch);
-    if (shapes.length === 0) return 0;
-    const stub = this.scopeStub(scopeId);
     let toppedUp = 0;
+    let retired = 0;
+    if (shapes.length === 0) return { toppedUp, retired };
+    const stub = this.scopeStub(scopeId);
     for (let done = false; !done; ) {
       const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, limit);
       toppedUp += pass.toppedUp;
+      retired += pass.retired;
       done = pass.done;
     }
-    return toppedUp;
+    return { toppedUp, retired };
   }
 
   // -- the connector write-back's far end (#574) -----------------------------
