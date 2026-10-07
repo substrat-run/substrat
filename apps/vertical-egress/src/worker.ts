@@ -70,6 +70,7 @@ import {
   matchesOutboundHost,
   parsePlatformBaseDomains,
   peerCallRequest,
+  RELAY_CALLER_HEADER,
 } from '@substrat-run/contracts';
 
 /** What the router passes per dispatch (its `OutboundPolicy` — one shape, two ends). */
@@ -124,6 +125,12 @@ export interface Env {
   // `unknown` on both arguments deliberately: the router PARSES them (`peerCaller`,
   // `peerCallRequest`), so this worker cannot be the place that decides a caller is valid.
   PEER_CALLS?: { invoke(caller: unknown, request: unknown): Promise<PeerCallOutcome> };
+  /**
+   * The control plane's `RelayGateway` entrypoint — the relay, reached with the caller this
+   * dispatch was made for (see `relay`). Absent (an environment deployed before it) ⇒ relay
+   * calls go out over the public origin with no identity, as they did before.
+   */
+  RELAY?: Fetcher;
   /**
    * The environment-wide router, as a service binding (→ `substrat-router`). Platform-bound
    * egress is handed here as a direct in-process call; the router resolves the destination
@@ -210,6 +217,34 @@ async function passThrough(
   const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null;
   if (location !== null) meter(env, hostname, 'redirect', locationHost(location, request.url));
   return response;
+}
+
+/**
+ * Hand a call to the platform relay, saying who made it.
+ *
+ * The relay's own authentication says a platform script is calling, not which vertical, so
+ * on its own it cannot tell one vertical from another. The caller travels instead as
+ * the dispatch parameters the router set (`OUTBOUND_POLICY`), into the control plane's
+ * `RelayGateway` entrypoint, which only a binding like `RELAY` can reach.
+ *
+ * Any caller header the script put on its own request is dropped first, on both paths: the
+ * gateway must only ever see the one written here. Without the binding, or without a scope in
+ * the policy (a router that predates #1706), the call goes out over the public origin as it
+ * always has, carrying no identity, and the relay treats it as unproven.
+ */
+async function relay(request: Request, hostname: string, env: Env): Promise<Response> {
+  const forwarded = new Request(request, { redirect: 'manual' });
+  forwarded.headers.delete(RELAY_CALLER_HEADER);
+  const policy = env.OUTBOUND_POLICY;
+  if (!env.RELAY || !policy?.slug || !policy.scope) {
+    return passThrough((r) => fetch(r), forwarded, hostname, env);
+  }
+  forwarded.headers.set(
+    RELAY_CALLER_HEADER,
+    JSON.stringify({ vertical: policy.slug, tenantId: policy.tenant, scopeId: policy.scope }),
+  );
+  const gateway = env.RELAY;
+  return passThrough((r) => gateway.fetch(r), forwarded, hostname, env);
 }
 
 /** The host a `Location` points at, resolved against the request it answers; `''` when unparseable. */
@@ -363,7 +398,7 @@ export default {
       // declares, and the policy below never gets to see it. The relay authenticates
       // its own callers; being allowed here is reachability, not authorization.
       meter(env, hostname, 'relay');
-      return passThrough((r) => fetch(r), request, hostname, env);
+      return relay(request, hostname, env);
     }
     const policy = env.OUTBOUND_POLICY;
     if (policy?.primary === false && !isOwnHost(hostname, policy)) {
