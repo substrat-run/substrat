@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "pnpm test:contract && pnpm test:rest",
+    "test": "vitest run && vitest run -c vitest.supplied-sweeper.config.ts",
     "test:contract": "vitest run test/contract.test.ts",
     "test:rest": "vitest run --exclude test/contract.test.ts && vitest run -c vitest.supplied-sweeper.config.ts",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
