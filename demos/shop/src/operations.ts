@@ -247,8 +247,8 @@ export const shopOperations = defineOperations(shopEntities, SHOP_PERMISSIONS)({
       checks: ['order:read'],
     },
     output: orderRow,
-    // Newest first by `number`; `id` is the indexed filter for a complete grant set.
-    paged: { over: { entity: 'order', sortable: ['number'], filterable: ['id'] }, order: 'desc' },
+    // `customer_id` is already in this entity's shared list-index vocabulary.
+    paged: { over: { entity: 'order', sortable: ['number'], filterable: ['customer_id'] }, order: 'desc' },
   },
   'shop/my-customer': {
     summary: 'The customer record the caller may act for',

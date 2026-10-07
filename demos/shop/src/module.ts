@@ -1020,24 +1020,37 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
 /**
  * Portal listing: per-entity proof walks (order → customer), no node-level grant.
  *
- * A complete grant read narrows the order table by id, including direct order grants
- * outside the caller's customer. `pageVisible` remains the authority for each order
+ * Complete grant reads narrow the order table by customer id, including customers
+ * of directly granted orders. `pageVisible` remains the authority for each order
  * and handles the fallback walk when grants cannot be enumerated (#2073, #2080).
  */
 const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) => {
-  // A complete order-id set includes grants directly on orders as well as grants
-  // inherited from customers. A customer-id filter alone can omit direct grants.
-  const ids = await completeGrantIds(ctx, 'order');
+  const customers = await completeGrantIds(ctx, 'customer');
+  const orders = await completeGrantIds(ctx, 'order');
+  let customerIds: string[] | null = null;
+  if (Array.isArray(customers) && Array.isArray(orders)) {
+    // A direct order grant can name an order outside the caller's granted customers.
+    // Include that order's customer in the candidate set, then check every row.
+    const ids = new Set(customers);
+    if (orders.length > 0) {
+      const rows = ctx.sql.query<{ customer_id: string }>(
+        'SELECT DISTINCT customer_id FROM shop_orders WHERE id IN (SELECT value FROM json_each(?))',
+        [JSON.stringify(orders)],
+      );
+      for (const row of rows) ids.add(row.customer_id);
+    }
+    customerIds = [...ids];
+  }
   return pageVisible(
     (p) => ctx.page<OrderRow>('order', {
-      ...input, ...p, ...(Array.isArray(ids) ? { filters: { id: ids } } : {}),
+      ...input, ...p, ...(customerIds !== null ? { filters: { customer_id: customerIds } } : {}),
     }),
     input,
     async (order) => (await ctx.check(SHOP_PERM.orderRead, orderRef(order.id))).allowed,
   );
 };
 
-/** Finish a small grant walk before using its ids as a complete SQL narrowing set. */
+/** Finish a small grant walk before using its union of ids as a SQL narrowing set. */
 async function completeGrantIds(ctx: OperationContext, entityType: string): Promise<'all' | 'incomplete' | string[]> {
   const ids = new Set<string>();
   let cursor: string | undefined;

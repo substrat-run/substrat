@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { permissionKey } from '@substrat-run/contracts';
+import { node, permissionKey, principalId } from '@substrat-run/contracts';
 import { walkGrantedEntities, type GrantWalkRow, type GrantWalkStore } from '../src/grant-scoped-read.js';
+import { createTupleEvaluator, type PermissionTupleRow, type ScopeTupleReader } from '../src/permission-eval.js';
 
 const permission = permissionKey.parse('item:read');
 const row = (subject: string, object: string, revoked_at: string | null = null): GrantWalkRow => ({
@@ -44,6 +45,56 @@ describe('grant-scoped depth-first walk', () => {
       ],
     );
     expect(new Set(await collect(source, 1))).toEqual(new Set(['shared']));
+  });
+
+  it('across a page boundary, a cyclic multi-parent walk has the same union as ctx.check', async () => {
+    const who = principalId.parse('01JZ00000000000000000000A1');
+    const subject = { kind: 'principal' as const, id: who };
+    const where = node.parse({ tenantId: '01JZ0000000000000000000001', scopeId: '01JZ0000000000000000000002' });
+    const grants = [row(`principal:${who}`, 'box:root')];
+    const edges = [
+      row('box:a', 'box:root'), row('box:b', 'box:root'),
+      row('item:first', 'box:a'), row('item:shared', 'box:a'),
+      row('item:shared', 'box:b'), row('item:last', 'box:b'),
+      row('box:root', 'box:a'),
+    ];
+    const rows: PermissionTupleRow[] = [
+      ...grants.map((g) => ({ ...g, relation: `granted:${permission}` })),
+      ...edges.map((e) => ({ ...e, relation: 'parent' })),
+    ];
+    const scope: ScopeTupleReader = {
+      tuples: (s, prefix) => rows.filter((r) => r.subject === s && r.relation.startsWith(prefix)),
+      grant: (s, relation, object) => rows.find((r) => r.subject === s && r.relation === relation && r.object === object),
+      parents: (ref) => rows.filter((r) => r.subject === ref && r.relation === 'parent'),
+      switchedOff: () => false,
+    };
+    const checker = createTupleEvaluator({
+      now: () => '2026-01-01T00:00:00Z', tenantTuples: () => [], getRole: () => undefined,
+      scopeFor: () => scope,
+    });
+    const check = async (entity: { entityType: string; entityId: string }) =>
+      (await checker.check(subject, permission, where, entity)).allowed;
+    const expected = new Set<string>();
+    for (const id of ['first', 'shared', 'last', 'refused']) {
+      if (await check({ entityType: 'item', entityId: id })) expected.add(id);
+    }
+    const got: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    for (; pages < 30; pages++) {
+      const page = await walkGrantedEntities(
+        store(grants, edges), [`principal:${who}`], permission, 'item', '2026-01-01T00:00:00Z',
+        check, { limit: 1, cursor, workBudget: 8 },
+      );
+      for (const id of page.ids) {
+        expect(await check({ entityType: 'item', entityId: id })).toBe(true);
+        got.push(id);
+      }
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(new Set(got)).toEqual(expected);
   });
 
   it('returns a continuation at its work budget, then finishes a wide graph', async () => {

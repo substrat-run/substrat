@@ -190,15 +190,17 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
   });
 
   it('includes an order granted directly even when its customer is not granted', async () => {
+    const shared = await checkout(otto, w.ottoCustomerId!);
     await host.admin.grant(platformActorId.parse(ulid()), {
       principalId: w.elin,
       permission: SHOP_PERM.orderRead,
       node: { tenantId: w.t1, scopeId: w.s1 },
-      entity: { entityType: 'order', entityId: his[0]! },
+      entity: { entityType: 'order', entityId: shared },
       grantedBy: w.astrid,
     });
-    const { ids } = await walk(elin, 2);
-    expect(ids).toEqual([his[0], ...hers]);
+    const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
+    expect(page.entries.map((o) => o.id)).toEqual([shared]);
+    expect(idIn(page.nextCursor!)).toBe(shared);
     expect(orderChecks).toBeLessThan(100);
   });
 });

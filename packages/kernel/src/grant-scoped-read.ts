@@ -5,10 +5,13 @@ import { fromBase64url, toBase64url } from './base64url.js';
 export const GRANT_CHILDREN_INDEX_DDL =
   'CREATE INDEX IF NOT EXISTS _substrat_tuples_object_relation_subject ON _substrat_tuples (object, relation, subject)';
 
+/** Ids can repeat across pages on multi-parent paths: only their union is complete. */
+export type GrantedEntityIdsMayRepeatPage = { kind: 'ids'; ids: string[]; nextCursor: string | null };
+
 export type GrantedEntitiesPage =
   | { kind: 'all' }
   | { kind: 'incomplete'; reason: 'capability' | 'checker' }
-  | { kind: 'ids'; ids: string[]; nextCursor: string | null };
+  | GrantedEntityIdsMayRepeatPage;
 
 export interface GrantWalkRow {
   subject: string;
@@ -70,7 +73,7 @@ export async function walkGrantedEntities(
   now: string,
   check: (entity: EntityRef) => Promise<boolean>,
   options: { limit?: number; cursor?: string; workBudget?: number } = {},
-): Promise<Extract<GrantedEntitiesPage, { kind: 'ids' }>> {
+): Promise<GrantedEntityIdsMayRepeatPage> {
   const limit = options.limit ?? 50;
   const workBudget = options.workBudget ?? GRANT_READ_WORK_BUDGET;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > GRANT_READ_MAX_LIMIT) {

@@ -408,8 +408,9 @@ export interface OperationContext {
    * Page entity ids reachable through this caller's live grants and declared parent edges.
    * `all` means a node grant makes every entity of this type visible; `incomplete` means
    * this checker cannot enumerate the path, so callers must use a checked full walk.
-   * An `ids` page is complete only after its cursor becomes null. A graph with multiple
-   * parent paths may repeat an id across pages. Every returned id passes `ctx.check`.
+   * An `ids` page is complete only after its cursor becomes null. Ids may repeat across
+   * pages on multiple parent paths: accumulate a Set, and do not treat page lengths as
+   * a count or total. The union of all pages is complete. Every id passes `ctx.check`.
    */
   grantedEntities(
     permission: PermissionKey,
