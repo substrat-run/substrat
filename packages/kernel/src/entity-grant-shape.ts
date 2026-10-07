@@ -49,7 +49,8 @@ import type { SwitchSql } from './system-switch.js';
  *   again. One tuple is one authority: a direct grant of the key on the same entity to the same
  *   person is that row, and goes with it.
  * - The backfill, inside the same budget, until it is done once per (scope, entity type): how
- *   people granted before markers existed become holders. It reads PROVENANCE, never key sets.
+ *   people granted before markers existed become holders. For own-record holders it reads
+ *   provenance, never key sets alone.
  *   The shape's declared `holder` says whose record each entity is (`'self'`: the entity id is
  *   the principal; a table column naming the principal), and a person is marked only on their
  *   own record, and only when they hold a row there (live or tombstoned) for some key of the
@@ -59,11 +60,11 @@ import type { SwitchSql } from './system-switch.js';
  *   no longer a candidate, and a record tuple (`shape:<type>`, `shape-backfilled`, `scope:<id>`)
  *   ends it once a batch comes back short.
  * - `holder: 'grantee'` (#2083), for a record that names no principal (a portal customer, a
- *   contact): whoever holds a live key of the shape on such an entity was given it. Sound by
- *   enforcement, not by promise: each pass records the shape's keys (`shape-grantee-key`), and
- *   the explicit tuple writer makes non-shape grants refuse them on that entity type, so
- *   only the shape grant can mint them. A tuple from before the first such pass cannot be told
- *   apart, which the declaration's documentation says plainly.
+ *   contact): whoever holds a live CURRENT key of the shape on such an entity was given it.
+ *   Each pass records current and retired keys (`shape-grantee-key`), and the explicit tuple
+ *   writer makes non-shape grants refuse them on that entity type. A tuple from before the
+ *   first such pass cannot be told apart. A marker already written by a shape grant persists
+ *   through retirement, so its holder receives the new keys even if their old key was K alone.
  *
  * Only a shape declared `bootstrap: true` is reconciled: one a person is GIVEN on their own
  * record. A sharing shape, which people reach through `ctx.grant` (todo's `list`), is skipped
@@ -163,7 +164,8 @@ export function topUpEntityGrantShapes(
     const json = JSON.stringify(keys);
     // A grantee is evidenced by a CURRENT live key. Retired keys still evidence the own-record
     // holders, whose identity comes from their entity or table row rather than from the key.
-    budget -= backfill(db, pass, shape, prefix, JSON.stringify(shape.holder === 'grantee' ? keys : [...keys, ...gone]), budget);
+    const evidence = shape.holder === 'grantee' ? keys : [...keys, ...gone];
+    budget -= backfill(db, pass, shape, prefix, JSON.stringify(evidence), budget);
     if (budget === 0) return { toppedUp, retired, done: false };
     reopenRetirements(db, pass, shape.entityType, keys);
     const took = retire(db, pass, shape.entityType, prefix, gone, budget);
@@ -412,7 +414,8 @@ function backfill(db: SwitchSql, pass: ShapePass, shape: EntityGrantShape, prefi
 
 /**
  * The current and retired keys of every `holder: 'grantee'` bootstrap shape, recorded so the
- * explicit tuple writer can refuse them to every non-shape grant. A reconcile carries the reached version's whole reviewed registry,
+ * explicit tuple writer can refuse them to every non-shape grant. A reconcile carries the
+ * reached version's whole reviewed registry,
  * so the records are made to match it exactly: a declaration a later version drops stops
  * refusing. Bounded by the declared keys, so it runs in every pass without a budget.
  */

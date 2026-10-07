@@ -172,8 +172,9 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
   mount. Declare its `holder` too, so people granted before that are found: `'self'` (the entity
   id is the principal), `{ table, idColumn, principalColumn }` (your row names the principal),
   or `'grantee'` for a portal record that names nobody and may have several people (a customer,
-  a contact). With `'grantee'`, `ctx.grant` can no longer give the shape's keys on that type
-  (#2083).
+  a contact). With `'grantee'`, direct grants can no longer give the shape's current or retired
+  keys on that type; use the shape grant (#2083). Backfill marks live holders of current keys,
+  while a holder's existing marker remains when a key retires.
   A key merely dropped from a bootstrap shape stays with everyone who held it; to take it
   back, list it in the shape's `retired` (#2082), which tombstones it for every holder once per
   scope, a direct `ctx.grant` of it on the same entity included, and which the promote diff shows

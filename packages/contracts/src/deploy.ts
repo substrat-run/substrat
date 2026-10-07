@@ -559,13 +559,15 @@ export const entityGrantShape = z.object({
    * For those two, a person counts only when they also hold a row, live or tombstoned, for some
    * key of the shape on that entity: evidence they were given it.
    *
-   * - `'grantee'` (#2083): whoever holds a LIVE key of the shape on an entity of this type was
+   * - `'grantee'` (#2083): whoever holds a LIVE CURRENT key of the shape on an entity of this type was
    *   given the shape there. For a portal-style record that names no principal and may have
    *   several people (ticket0's `contact`, a shop's `customer`). True by enforcement from the
-   *   first reconcile that carries the declaration: from then on `ctx.grant` refuses every key of
-   *   the shape on this entity type, so only `grantEntityShape` can mint one. A tuple written
-   *   BEFORE that reconcile cannot be told apart, so declaring it marks every current holder of
-   *   any key of the shape on that type, however they got it.
+   *   first reconcile that carries the declaration: from then on direct grants, including
+   *   `ctx.grant`, `HostAdmin.grant` and `grantEntityLocal`, refuse current and retired keys on
+   *   this entity type, so only `grantEntityShape` can mint one. A tuple written BEFORE that
+   *   reconcile cannot be told apart, so declaring it marks every current holder of a live
+   *   current key on that type, however they got it. A retired key alone does not make a new
+   *   holder. A marker from an earlier shape grant remains until explicitly revoked.
    *
    * Absent: no backfill, so only people given the shape with `grantEntityShape` from then on are
    * holders.

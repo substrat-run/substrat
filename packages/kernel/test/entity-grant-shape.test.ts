@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import { errorCodeOf } from '@substrat-run/contracts';
-import { assertDelegable, grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, type SwitchSql } from '../src/index.js';
+import { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, writeExplicitTupleIn, type SwitchSql } from '../src/index.js';
 
 /**
  * The declared shape's reconcile (#2071), over a bare `_substrat_tuples`. The edges the
@@ -410,7 +410,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
     const refusal = (t: ReturnType<typeof fresh>, key: string, entity: { entityType: string; entityId: string } = contact) => {
       const sql: SwitchSql = { all: (q, ...p) => t.db.prepare(q).all(...p) as Record<string, unknown>[], run: () => undefined };
       try {
-        assertDelegable(sql, key, entity);
+        writeExplicitTupleIn(sql, 'principal:test', `granted:${key}`, `${entity.entityType}:${entity.entityId}`, { kind: 'delegated' });
         return 'grantable';
       } catch (e) {
         return errorCodeOf(e);

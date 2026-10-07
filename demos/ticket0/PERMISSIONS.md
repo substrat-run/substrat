@@ -92,7 +92,7 @@ no role in §3 but listed here is deliberate, not a gap.
 
 | Entity type | Permissions granted per entity | Given on arrival, topped up when it grows |
 | --- | --- | --- |
-| `contact` | `conversation:read-own` | yes — whoever holds a key of it here; `ctx.grant` cannot give these keys |
+| `contact` | `conversation:read-own` | yes — live holders of current keys here; direct grants cannot give current or retired keys |
 | `conversation` | `conversation:read` | no — shared |
 
 ## 5. Scheduled work — the system principal's grants

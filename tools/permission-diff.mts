@@ -105,7 +105,7 @@ interface VerticalModule {
 const bootstrapCell = (g: EntityGrantLike): string => {
   if (!g.bootstrap) return 'no — shared';
   if (!g.holder) return 'yes — holders given it from now on';
-  if (g.holder === 'grantee') return 'yes — whoever holds a key of it here; `ctx.grant` cannot give these keys';
+  if (g.holder === 'grantee') return 'yes — live holders of current keys here; direct grants cannot give current or retired keys';
   const whose = g.holder === 'self' ? 'the entity id is the principal' : `\`${g.holder.table}.${g.holder.principalColumn}\` names the principal`;
   return `yes — ${whose}`;
 };

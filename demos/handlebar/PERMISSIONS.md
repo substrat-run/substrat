@@ -73,7 +73,7 @@ no role in §3 but listed here is deliberate, not a gap.
 
 | Entity type | Permissions granted per entity | Given on arrival, topped up when it grows |
 | --- | --- | --- |
-| `customer` | `protocol:countersign`, `protocol:read`, `workorder:read` | yes — whoever holds a key of it here; `ctx.grant` cannot give these keys |
+| `customer` | `protocol:countersign`, `protocol:read`, `workorder:read` | yes — live holders of current keys here; direct grants cannot give current or retired keys |
 
 ## 5. Not covered by this artifact
 

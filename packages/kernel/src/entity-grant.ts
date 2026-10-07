@@ -13,7 +13,6 @@
  * expiry included, because `ctx.grant` has never shortened or lengthened a grant it found.
  */
 
-import type { EntityRef } from '@substrat-run/contracts';
 import { PermissionDenied } from './permission-checker.js';
 import type { SwitchSql } from './system-switch.js';
 
@@ -34,11 +33,6 @@ function assertDelegableTuple(db: SwitchSql, relation: string, object: string): 
         `it is a key of the declared '${entityType}' shape, given only by the shape grant`,
     );
   }
-}
-
-/** The same refusal, exposed for a caller that must check before its own permission evaluation. */
-export function assertDelegable(db: SwitchSql, permission: string, entity: EntityRef): void {
-  assertDelegableTuple(db, `granted:${permission}`, `${entity.entityType}:${entity.entityId}`);
 }
 
 /** The explicit scope-tuple write for admin/local grants and ctx.grant, behind one shape guard. */
