@@ -1757,7 +1757,7 @@ export const api = {
   appSchedules: (scopeId: string) => call<AppSchedulesView>(`/apps/${encodeURIComponent(scopeId)}/schedules`),
   appPeers: (scopeId: string) => call<AppPeersView>(`/apps/${encodeURIComponent(scopeId)}/peers`),
   switchAppPeer: (scopeId: string, vertical: string, to: 'on' | 'off', reason: string) =>
-    call<{ changed: boolean }>(`/apps/${encodeURIComponent(scopeId)}/peers/switch`, {
+    call<{ changed: boolean; auditWarning?: string }>(`/apps/${encodeURIComponent(scopeId)}/peers/switch`, {
       method: 'POST',
       body: JSON.stringify({ vertical, to, reason }),
     }),

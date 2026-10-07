@@ -8,6 +8,7 @@ import {
   schedulesCardState,
   scheduleBadgeStatus,
   submitSwitch,
+  auditWarningToast,
   unknownSwitchToast,
   validReason,
 } from '../lib/schedules';
@@ -107,6 +108,9 @@ export function SchedulesCard({
         setReason('');
         return;
       }
+      // #2089: a switch that moved but whose admin-log row was lost says so in the one toast the
+      // card shows — the warning still reports the switch as made.
+      const { auditWarning } = attempt.result;
       if (attempt.kind === 'unconfirmed') {
         // The switch applied, but the read that would prove it — and show the fresh
         // position — failed. Clear the stale entries rather than leave the old (now
@@ -116,7 +120,7 @@ export function SchedulesCard({
         setError(attempt.error);
         onToast(
           `${to === 'off' ? 'Switched off' : 'Switched back on'}, but the status could not be re-read`,
-          `${moduleId} on ${scope.slug} · ${errorMessage(attempt.error)}`,
+          `${moduleId} on ${scope.slug} · ${errorMessage(attempt.error)}${auditWarning ? ` · ${auditWarning}` : ''}`,
           'danger',
         );
         setDialog(null);
@@ -127,6 +131,11 @@ export function SchedulesCard({
       setError(null);
       setDialog(null);
       setReason('');
+      const warning = auditWarningToast(moduleId, scope.slug, attempt.result);
+      if (warning) {
+        onToast(...warning, 'danger');
+        return;
+      }
       onToast(
         to === 'off' ? 'Schedules switched off' : 'Schedules switched back on',
         `${moduleId} on ${scope.slug}${attempt.result.changed ? '' : ' · already in that position'}`,
