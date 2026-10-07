@@ -544,9 +544,9 @@ describe('runAttachmentExtractor: an extractor answers for nothing the scope dep
    * Timers on a clock only the test moves (#2085). A synchronous extractor "runs for" `ms` by
    * calling `elapse(ms)`: the clock moves and nothing fires, as on a thread that never yields.
    * A timer fires once the clock has reached it, earliest due first, one per real turn of the
-   * loop (and the turn after `elapse`, never inside it) — so what the budget decides is a function of the clock, never of how loaded the
-   * machine is. Nothing fires that the clock has not reached, so a timer nobody elapses past
-   * simply never runs.
+   * loop (the turn after `elapse`, never inside it) — so what the budget decides is a function
+   * of the clock, never of how loaded the machine is. A timer the clock never reaches never
+   * runs.
    */
   const virtualTimers = () => {
     let now = 0;

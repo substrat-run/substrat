@@ -13,7 +13,7 @@ import {
 import { DEFAULT_EXTRACTOR_BOUNDS, PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, docxExtractor, htmlExtractor, pdfExtractor, pdfTables, textExtractor } from '../src/index.js';
 import { PDF_RETAINED_BASE, PDF_RETAINED_FACTOR, pdfCMap, pdfCodeMap, pdfDecoders, pdfExtract, pdfFontCosts, pdfLexer } from '../src/pdf.js';
 import { CALL_COST, Pace, Retained } from '../src/shared.js';
-import { afterAbort, cpuMs, expectStoppedPromptly } from './timing.js';
+import { afterAbort, cpuMs, expectAbortedPromptly, expectStoppedPromptly } from './timing.js';
 import { zip } from './zip.js';
 
 /** A `Pace` that counts the work charged to it: what a decoder did, not only what it returned. */
@@ -943,9 +943,7 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
   it('aborted mid-parse on a large valid file, it answers within a stride', async () => {
     const content = `BT /F1 9 Tf ${'(a long valid line of prose) Tj T* '.repeat(200_000)}ET`;
     const file = onePage(await deflate(bin(content)), { contentDict: '/Filter /FlateDecode' }).bytes;
-    const after = await abortedMidway(file, 20);
-    expect(after.answer).toEqual({ failed: 'the extraction was aborted' });
-    expectStoppedPromptly(after);
+    expectAbortedPromptly(await abortedMidway(file, 20));
   });
 });
 
@@ -959,7 +957,7 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
 // the whole of it. A new shape is one line in the table.
 
 // The rows that bound the thread being HELD are CPU time, and what an extraction does once
-// ABORTED is counted, not timed (#2085) — `./timing.ts` says why.
+// ABORTED is counted, not timed — `./timing.ts` says why.
 
 /** The most CPU spent between two turns of the loop, start to finish: a stride's work, with room. */
 const HOLD_MS = 150;
@@ -1087,14 +1085,13 @@ const SHAPES: readonly Shape[] = [
 describe('the abort-latency harness: no shape holds the thread, aborted or not', () => {
   it.each(SHAPES.map((shape) => [shape.name, shape] as const))('%s', async (_name, shape) => {
     const body = await shape.body();
-    const extract = (signal: { aborted: boolean }) =>
-      shape.extractor.extract({ body, contentType: shape.contentType, filename: 'f', maxTextBytes: 512 * 1024, signal: signal as ExtractionSignal });
+    const extract = (signal: ExtractionSignal) =>
+      shape.extractor.extract({ body, contentType: shape.contentType, filename: 'f', maxTextBytes: 512 * 1024, signal });
 
     // Aborted by a timer a few ms in: the timer must get its turn, and the answer come promptly.
-    let firedAtCpu = 0;
     const startedCpu = cpuMs();
-    const aborted = await afterAbort(extract, () => new Promise<void>((resolve) => setTimeout(() => ((firedAtCpu = cpuMs()), resolve()), 5)));
-    expect(firedAtCpu - startedCpu, 'the abort timer was held').toBeLessThan(TIMER_SLACK_MS);
+    const aborted = await afterAbort(extract, 5);
+    expect(aborted.firedAtCpu - startedCpu, 'the abort timer was held').toBeLessThan(TIMER_SLACK_MS);
     expectStoppedPromptly(aborted);
 
     // Left alone, it settles within budget with an answer, never a throw, and never holds the
@@ -1112,11 +1109,7 @@ describe('the abort-latency harness: no shape holds the thread, aborted or not',
 
 /** A PDF extraction aborted mid-way — `afterMs` in, on a timer's turn — and what it did after. */
 const abortedMidway = (body: Uint8Array, afterMs = 0) =>
-  afterAbort(
-    (signal) => pdf.extract({ body, contentType: 'application/pdf', filename: 'f.pdf', maxTextBytes: 1 << 30, signal: signal as ExtractionSignal }),
-    () => new Promise((resolve) => setTimeout(resolve, afterMs)),
-  );
-
+  afterAbort((signal) => pdf.extract({ body, contentType: 'application/pdf', filename: 'f.pdf', maxTextBytes: 1 << 30, signal }), afterMs);
 
 /**
  * The longest the thread was held while `body` was extracted: the widest gap between ticks of a
@@ -1137,8 +1130,6 @@ async function longestHold(body: Uint8Array, extractor: AttachmentExtractor = pd
   }
   return Math.max(worst, cpuMs() - last);
 }
-
-
 
 // A collector to call, so a peak is measured from a settled heap rather than from garbage.
 setFlagsFromString('--expose-gc');
