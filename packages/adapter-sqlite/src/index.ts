@@ -9800,11 +9800,12 @@ export class SqliteScopeHost implements ScopeHost {
         // as identifiers, and its `ddl`, never executed here since #1912, is still held to one
         // CREATE TABLE. Judged as a whole before the first DROP, so a refused dump leaves the
         // directory untouched.
-        if (dump.tables.some((table) =>
-          ['private_continuation_keys', 'private_continuation_positions'].includes(table.name.toLowerCase()))) {
-          throw substratError('validation_failed', 'directory dump contains private host state');
-        }
-        assertReplayableDump(dump.tables);
+        // Older backup producers and local migration fixtures may include these
+        // tables. Ignore them entirely: neither their DDL nor their rows may set
+        // a restored key epoch or make an old hidden locator valid again.
+        const publicTables = dump.tables.filter((table) =>
+          !['private_continuation_keys', 'private_continuation_positions'].includes(table.name.toLowerCase()));
+        assertReplayableDump(publicTables);
         // One transaction, foreign keys deferred to commit: the dump is ordered by table NAME
         // (which says nothing about references — a `tenants` row can name another as
         // `provisioned_by_tenant`), and the DROPs themselves delete rows a populated child would
@@ -9826,7 +9827,7 @@ export class SqliteScopeHost implements ScopeHost {
           this.buildDirectorySchema();
           // Refuses a table this code does not build, adds unknown columns bare, loads the rows
           // by name, then the legacy scope and #1674 backfills, all inside this transaction.
-          loadDirectoryDump(dump.tables, {
+          loadDirectoryDump(publicTables, {
             columnsOf: (name) => builtColumnsOf(this.directory, name),
             exec: (sql) => this.directory.exec(sql),
             now: () => this.clock(),
