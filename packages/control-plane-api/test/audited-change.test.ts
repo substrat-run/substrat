@@ -481,4 +481,37 @@ describe('the audited call deadline (#2064)', () => {
       vi.useRealTimers();
     }
   });
+
+  it("the kill switches' delegated calls are held to it too (#2089): a switch is settled by the same sweep", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: AbortSignal[] = [];
+      const hanging = new VerticalClient({
+        platformSecret: 'secret',
+        fetch: ((_url: string, init?: RequestInit) => {
+          if (init?.signal) signals.push(init.signal);
+          return new Promise<Response>(() => undefined);
+        }) as typeof fetch,
+      });
+      const calls = [
+        hanging.systemSwitch({ scopeId: s, moduleId: moduleId.parse('@test/sched'), to: 'off' }),
+        hanging.peerSwitch({ scopeId: s, vertical: 'acme/crm', to: 'off' }),
+        hanging.switchFence({ scopeId: s }),
+      ].map((call) => expect(call).rejects.toMatchObject({ status: 504 }));
+      await vi.advanceTimersByTimeAsync(AUDITED_CALL_DEADLINE_MS - 1);
+      expect(signals.map((x) => x.aborted)).toEqual([false, false, false]);
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.all(calls);
+      expect(signals.map((x) => x.aborted)).toEqual([true, true, true]);
+
+      // Twin: a switch answered in time is its answer.
+      const prompt = new VerticalClient({
+        platformSecret: 'secret',
+        fetch: (async () => Response.json({ held: true, changed: true, permissions: [], fenced: true })) as unknown as typeof fetch,
+      });
+      expect(await prompt.peerSwitch({ scopeId: s, vertical: 'acme/crm', to: 'off' })).toMatchObject({ held: true, changed: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
