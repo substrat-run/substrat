@@ -23,6 +23,7 @@ import {
   type EntityRef,
   type ListPage,
   type PermissionKey,
+  type PrincipalId,
   KERNEL_AUTHORED_EVENT_TYPES,
   substratError,
 } from '@substrat-run/contracts';
@@ -936,6 +937,11 @@ const grantedEntitiesOp: OperationHandler<
   unknown
 > = (ctx, input) => ctx.grantedEntities(input.permission, input.entityType, input);
 
+const revokeGrantOp: OperationHandler<
+  { principal: PrincipalId; permission: PermissionKey; entity: EntityRef },
+  void
+> = (ctx, input) => ctx.revoke(input.principal, input.permission, input.entity);
+
 // Assert a permission, then emit — the shape a real mutating operation has. Exercises
 // K-34 (the emitted event carries the passed check as `authorization`) and, when the
 // check is refused, K-35 (assertAllowed throws → the host records a denial and rolls back).
@@ -1719,6 +1725,7 @@ export const permMod: ModuleRegistration = {
     'perm/relink': relinkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
     'perm/granted-entities': grantedEntitiesOp as OperationHandler<never, unknown>,
+    'perm/revoke-grant': revokeGrantOp as OperationHandler<never, unknown>,
     'perm/authorized-emit': authorizedEmitOp as OperationHandler<never, unknown>,
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,

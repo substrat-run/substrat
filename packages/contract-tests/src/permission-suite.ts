@@ -228,6 +228,31 @@ export function permissionContractSuite(
       expect(await grantedIds(member, 'item')).toEqual([]);
     });
 
+    it('a revoked entity grant leaves no id on the next read', async () => {
+      const who = principalId.parse(ulid());
+      const entity: EntityRef = { entityType: 'item', entityId: `revoked-${ulid()}` };
+      await host.admin.grant(staff, {
+        principalId: who, permission: PERM_READ, node: { tenantId: t1, scopeId: s1 },
+        entity, grantedBy: alice,
+      });
+      expect(await grantedIds(who, 'item')).toContain(entity.entityId);
+      const owner = await host.getScope(alice, t1, s1);
+      await owner.invoke('perm/revoke-grant', { principal: who, permission: PERM_READ, entity });
+      expect(await grantedIds(who, 'item')).toEqual([]);
+    });
+
+    it('an expired entity grant does not enter a grant page', async () => {
+      const who = principalId.parse(ulid());
+      const entity: EntityRef = { entityType: 'item', entityId: `expired-${ulid()}` };
+      await host.admin.grant(staff, {
+        principalId: who, permission: PERM_READ, node: { tenantId: t1, scopeId: s1 },
+        entity, grantedBy: alice,
+        expiresAt: (await import('@substrat-run/contracts')).instant.parse('2000-01-01T00:00:00Z'),
+      });
+      expect((await probe(who, s1, PERM_READ, entity)).allowed).toBe(false);
+      expect(await grantedIds(who, 'item')).toEqual([]);
+    });
+
     /**
      * §5.1's assignment bound (K-21): a principal may assign role `R` at node `N` only
      * if they already hold every permission `R` carries at `N`.
