@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
   EXTRACTION_STRIDE,
@@ -124,11 +124,11 @@ const HELVETICA = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding
 const onePage = (content: Uint8Array | string, opts: { contentDict?: string; font?: string; extra?: (string | Uint8Array)[]; page?: string; trailer?: string } = {}) =>
   build([CATALOG, PAGES, opts.page ?? PAGE, opts.font ?? HELVETICA, stream(opts.contentDict ?? '', content), ...(opts.extra ?? [])], { trailer: opts.trailer });
 
-/** Whatever the file, the answer is an outcome, and it comes promptly. */
+/** Whatever the file, the answer is an outcome, and it comes promptly: within `withinMs` of CPU. */
 async function settles(body: Uint8Array, withinMs = 5_000): Promise<ExtractionOutcome> {
-  const t0 = performance.now();
+  const t0 = cpuMs();
   const outcome = await run(body);
-  expect(performance.now() - t0).toBeLessThan(withinMs);
+  expect(cpuMs() - t0).toBeLessThan(withinMs);
   return outcome;
 }
 
@@ -877,10 +877,10 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
   it('a long digit run that ends in a letter — the token shape that made a regular expression quadratic — stays linear, and abortable', async () => {
     // 60 000 digits then `x` held the thread 3.3 s through the old number pattern, past any abort.
     const shape = onePage(`BT /F1 9 Tf ${'1'.repeat(60_000)}x (after) Tj ET`).bytes;
-    const t0 = performance.now();
+    const t0 = cpuMs();
     expect(textOf(await run(shape))).toBe('after');
-    expect(performance.now() - t0).toBeLessThan(500);
-    expect(await abortLatency(shape)).toBeLessThan(100);
+    expect(cpuMs() - t0).toBeLessThan(500);
+    expectStoppedPromptly(await abortedMidway(shape));
   });
 
   it('a run near the token bound, of every token class, settles promptly and aborts within a stride', async () => {
@@ -898,11 +898,11 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
     ];
     for (const [label, token] of runs) {
       const file = onePage(`BT /F1 9 Tf ${token} (after) Tj ET`).bytes;
-      const t0 = performance.now();
+      const t0 = cpuMs();
       const outcome = await run(file);
       expect(['indexed', 'empty'], label).toContain(outcome.status);
-      expect(performance.now() - t0, label).toBeLessThan(1_000);
-      expect(await abortLatency(file), label).toBeLessThan(100);
+      expect(cpuMs() - t0, label).toBeLessThan(1_000);
+      expectStoppedPromptly(await abortedMidway(file), label);
     }
   });
 
@@ -932,23 +932,19 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
         const at = rand(body.length);
         body[at] = rand(4) === 0 ? '()<>[]/%'.charCodeAt(rand(8)) : rand(256);
       }
-      const t0 = performance.now();
+      const t0 = cpuMs();
       const outcome = await run(rand(5) === 0 ? body.subarray(0, rand(body.length)) : body);
       expect(['indexed', 'empty', 'failed'], `mutation ${i}`).toContain(outcome.status);
-      expect(performance.now() - t0, `mutation ${i}`).toBeLessThan(2_000);
+      expect(cpuMs() - t0, `mutation ${i}`).toBeLessThan(2_000);
     }
   }, 120_000);
 
   it('aborted mid-parse on a large valid file, it answers within a stride', async () => {
     const content = `BT /F1 9 Tf ${'(a long valid line of prose) Tj T* '.repeat(200_000)}ET`;
     const file = onePage(await deflate(bin(content)), { contentDict: '/Filter /FlateDecode' }).bytes;
-    const signal: { aborted: boolean } = { aborted: false };
-    const extracting = pdf.extract({ body: file, contentType: 'application/pdf', filename: 'f.pdf', maxTextBytes: 1 << 30, signal: signal as ExtractionSignal });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    signal.aborted = true;
-    const t0 = performance.now();
-    expect(await extracting).toEqual({ failed: 'the extraction was aborted' });
-    expect(performance.now() - t0).toBeLessThan(250);
+    const after = await abortedMidway(file, 20);
+    expect(after.answer).toEqual({ failed: 'the extraction was aborted' });
+    expectStoppedPromptly(after);
   });
 });
 
@@ -961,13 +957,23 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
 // within a budget when left alone — never holding the thread longer than a stride's work for
 // the whole of it. A new shape is one line in the table.
 
-/** The longest the thread may be held at once, start to finish: a stride's work, with room for load. */
+// The rows that bound the thread being HELD are CPU time (`cpuMs`), because holding the thread
+// is spending CPU on it without a turn — and CPU time, unlike the wall clock, is not stretched
+// by other processes starving this one. What an extraction does once ABORTED is counted
+// (`afterAbort`), not timed at all: the work it charges and the turns it takes (#2085).
+
+/** The most CPU spent between two turns of the loop, start to finish: a stride's work, with room. */
 const HOLD_MS = 150;
-/** How late a 5 ms abort timer may fire. */
+/** The most CPU spent before a 5 ms abort timer gets its turn. */
 const TIMER_SLACK_MS = 150;
-/** How long an aborted extraction may take to answer. */
-const ABORTED_ANSWER_MS = 150;
-/** How long a shape may take to settle, unaborted. */
+/** The work an aborted extraction may still charge: at most the rest of the stride it was in. */
+const ABORTED_UNITS = EXTRACTION_STRIDE;
+/**
+ * The loop turns an aborted extraction may take to answer: it answers at its next checkpoint,
+ * and a timer's abort lands only at one, so none today — two allow a checkpoint's own yield.
+ */
+const ABORTED_TURNS = 2;
+/** The most CPU a shape may spend settling, unaborted. */
 const SETTLE_MS = 3_000;
 /**
  * The most memory a shape may hold at its peak, over a collected baseline: the extraction's
@@ -1093,25 +1099,17 @@ describe('the abort-latency harness: no shape holds the thread, aborted or not',
       shape.extractor.extract({ body, contentType: shape.contentType, filename: 'f', maxTextBytes: 512 * 1024, signal: signal as ExtractionSignal });
 
     // Aborted by a timer a few ms in: the timer must get its turn, and the answer come promptly.
-    const signal = { aborted: false };
-    const started = performance.now();
-    const extracting = extract(signal);
-    const firedAt = await new Promise<number>((resolve) =>
-      setTimeout(() => {
-        signal.aborted = true;
-        resolve(performance.now());
-      }, 5),
-    );
-    await extracting;
-    const answeredAt = performance.now();
-    expect(firedAt - started - 5, 'the abort timer was held').toBeLessThan(TIMER_SLACK_MS);
-    expect(answeredAt - firedAt, 'the aborted extraction answered late').toBeLessThan(ABORTED_ANSWER_MS);
+    let firedAtCpu = 0;
+    const startedCpu = cpuMs();
+    const aborted = await afterAbort(extract, () => new Promise<void>((resolve) => setTimeout(() => ((firedAtCpu = cpuMs()), resolve()), 5)));
+    expect(firedAtCpu - startedCpu, 'the abort timer was held').toBeLessThan(TIMER_SLACK_MS);
+    expectStoppedPromptly(aborted);
 
     // Left alone, it settles within budget with an answer, never a throw, and never holds the
     // thread longer than a stride's work at any point along the way.
-    const t0 = performance.now();
+    const t0 = cpuMs();
     const outcome = await extract({ aborted: false });
-    expect(performance.now() - t0, 'the shape did not settle in time').toBeLessThan(SETTLE_MS);
+    expect(cpuMs() - t0, 'the shape did not settle in time').toBeLessThan(SETTLE_MS);
     expect('text' in outcome || 'failed' in outcome).toBe(true);
     expect(await longestHold(body, shape.extractor, shape.contentType), 'the thread was held').toBeLessThan(HOLD_MS);
     // And never holds more memory than the bound allows, at its peak.
@@ -1119,18 +1117,17 @@ describe('the abort-latency harness: no shape holds the thread, aborted or not',
   }, 30_000);
 });
 
-/**
- * How long an extraction takes to answer once its signal is aborted mid-way: started, aborted
- * on the next timer turn, timed from the abort.
- */
-async function abortLatency(body: Uint8Array): Promise<number> {
-  const signal: { aborted: boolean } = { aborted: false };
-  const extracting = pdf.extract({ body, contentType: 'application/pdf', filename: 'f.pdf', maxTextBytes: 1 << 30, signal: signal as ExtractionSignal });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  signal.aborted = true;
-  const t0 = performance.now();
-  await extracting;
-  return performance.now() - t0;
+/** A PDF extraction aborted mid-way — `afterMs` in, on a timer's turn — and what it did after. */
+const abortedMidway = (body: Uint8Array, afterMs = 0) =>
+  afterAbort(
+    (signal) => pdf.extract({ body, contentType: 'application/pdf', filename: 'f.pdf', maxTextBytes: 1 << 30, signal: signal as ExtractionSignal }),
+    () => new Promise((resolve) => setTimeout(resolve, afterMs)),
+  );
+
+/** It stopped within the stride it was in, and answered at its next checkpoint. */
+function expectStoppedPromptly(after: { units: number; turns: number }, label?: string): void {
+  expect(after.units, label ?? 'work done after the abort').toBeLessThanOrEqual(ABORTED_UNITS);
+  expect(after.turns, label ?? 'turns taken to answer after the abort').toBeLessThanOrEqual(ABORTED_TURNS);
 }
 
 /**
@@ -1138,10 +1135,10 @@ async function abortLatency(body: Uint8Array): Promise<number> {
  * 1 ms interval running beside it, start to finish — not only the first few milliseconds.
  */
 async function longestHold(body: Uint8Array, extractor: AttachmentExtractor = pdf, contentType = 'application/pdf'): Promise<number> {
-  let last = performance.now();
+  let last = cpuMs();
   let worst = 0;
   const tick = setInterval(() => {
-    const now = performance.now();
+    const now = cpuMs();
     worst = Math.max(worst, now - last);
     last = now;
   }, 1);
@@ -1150,7 +1147,46 @@ async function longestHold(body: Uint8Array, extractor: AttachmentExtractor = pd
   } finally {
     clearInterval(tick);
   }
-  return Math.max(worst, performance.now() - last);
+  return Math.max(worst, cpuMs() - last);
+}
+
+/**
+ * Milliseconds of CPU this thread has spent. Starvation by other processes stretches the wall
+ * clock but not this, so a bound on it is a bound on the work done, at any load (#2085).
+ */
+function cpuMs(): number {
+  const { user, system } = process.threadCpuUsage();
+  return (user + system) / 1000;
+}
+
+/**
+ * What an extraction does once its signal is aborted, counted rather than timed (#2085): the
+ * units of work it charges to its `Pace` after the abort, and the turns of the event loop it
+ * takes to answer. Work bounds what a parser does after it should have stopped; turns bound
+ * how long it may sit idle — awaiting a timer, say — before it notices. Neither moves with the
+ * machine's load, where an elapsed time measures both and the scheduler besides.
+ */
+async function afterAbort(
+  extract: (signal: { aborted: boolean }) => Promise<unknown>,
+  abortWhen: () => Promise<void>,
+): Promise<{ answer: unknown; units: number; turns: number }> {
+  const charge = vi.spyOn(Pace.prototype, 'charge');
+  try {
+    const signal = { aborted: false };
+    const extracting = extract(signal);
+    await abortWhen();
+    signal.aborted = true;
+    const from = charge.mock.calls.length;
+    let turns = 0;
+    let answered = false;
+    const spin = () => setImmediate(() => answered || ((turns += 1), spin()));
+    spin();
+    const answer = await extracting;
+    answered = true;
+    return { answer, units: charge.mock.calls.slice(from).reduce((n, [units]) => n + units, 0), turns };
+  } finally {
+    charge.mockRestore();
+  }
 }
 
 // A collector to call, so a peak is measured from a settled heap rather than from garbage.
