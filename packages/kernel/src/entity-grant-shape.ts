@@ -60,7 +60,7 @@ import type { SwitchSql } from './system-switch.js';
  *   no longer a candidate, and a record tuple (`shape:<type>`, `shape-backfilled`, `scope:<id>`)
  *   ends it once a batch comes back short.
  * - `holder: 'grantee'` (#2083), for a record that names no principal (a portal customer, a
- *   contact): whoever holds a live CURRENT key of the shape on such an entity was given it.
+ *   contact): whoever holds a live current or retired key of the shape on such an entity was given it.
  *   Each pass records current and retired keys (`shape-grantee-key`), and the explicit tuple
  *   writer makes non-shape grants refuse them on that entity type. A tuple from before the
  *   first such pass cannot be told apart. A marker already written by a shape grant persists
@@ -162,10 +162,9 @@ export function topUpEntityGrantShapes(
     if (keys.length === 0 && gone.length === 0) continue;
     const prefix = `${shape.entityType}:`;
     const json = JSON.stringify(keys);
-    // A grantee is evidenced by a CURRENT live key. Retired keys still evidence the own-record
-    // holders, whose identity comes from their entity or table row rather than from the key.
-    const evidence = shape.holder === 'grantee' ? keys : [...keys, ...gone];
-    budget -= backfill(db, pass, shape, prefix, JSON.stringify(evidence), budget);
+    // A live retired key still identifies a legacy holder so this pass can retire it.
+    // The grantee query excludes tombstoned tuples.
+    budget -= backfill(db, pass, shape, prefix, JSON.stringify([...keys, ...gone]), budget);
     if (budget === 0) return { toppedUp, retired, done: false };
     reopenRetirements(db, pass, shape.entityType, keys);
     const took = retire(db, pass, shape.entityType, prefix, gone, budget);

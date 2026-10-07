@@ -355,20 +355,29 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
         expect(markers(t)).toEqual([]);
       });
 
-      it('a retired key alone, live or tombstoned, does not create a grantee marker or top-up', () => {
+      it('a live retired key marks a legacy grantee for retirement and top-up; a tombstoned key does not', () => {
         const t = fresh();
         const [anna, bo] = [who(), who()];
         contactTuple(t, anna, 'conv:read-own', 'c1');
         contactTuple(t, bo, 'conv:read-own', 'c2', NOW);
         expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
+          retired: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, removed: ['conv:read-own'] }],
+          toppedUp: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, added: ['conv:reply-own'] }],
+          done: true,
+        });
+        expect(markers(t)).toEqual([`principal:${anna} contact:c1`]);
+        expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%'").all(`principal:${anna}`, 'contact:c1')).toEqual([
+          { relation: 'granted:conv:read-own', revoked_at: NOW },
+          { relation: 'granted:conv:reply-own', revoked_at: null },
+        ]);
+        expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%'").all(`principal:${bo}`, 'contact:c2')).toEqual([
+          { relation: 'granted:conv:read-own', revoked_at: NOW },
+        ]);
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
           retired: [],
           toppedUp: [],
           done: true,
         });
-        expect(markers(t)).toEqual([]);
-        expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%'").all(`principal:${anna}`, 'contact:c1')).toEqual([
-          { relation: 'granted:conv:read-own', revoked_at: null },
-        ]);
       });
 
       it('a current live key still finds a legacy grantee, including one with a tombstoned retired key', () => {
