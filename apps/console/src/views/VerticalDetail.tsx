@@ -9,6 +9,7 @@ import type {
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
+import { grantShapeHolderNotes } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
@@ -1253,10 +1254,10 @@ export function PermissionDiffView({ review }: { review: PermissionReview }) {
       (r) =>
         `role ${r.key}: ${r.isNew ? 'new' : r.isGone ? 'removed' : ''} ${r.added.map((k) => `+${k}`).concat(r.removed.map((k) => `−${k}`)).join(' ')}`.trim(),
     ),
-    ...diff.grantChanges.map(
-      (g) =>
-        `entity grant ${g.entityType}: ${g.isNew ? 'new' : g.isGone ? 'removed' : ''} ${g.added.map((k) => `+${k}`).concat(g.removed.map((k) => `−${k}`)).join(' ')}`.trim(),
-    ),
+    ...diff.grantChanges.flatMap((g) => [
+      `entity grant ${g.entityType}: ${g.isNew ? 'new' : g.isGone ? 'removed' : ''} ${g.added.map((k) => `+${k}`).concat(g.removed.map((k) => `−${k}`)).join(' ')}`.trim(),
+      ...grantShapeHolderNotes(g).map((n) => `  ${n}`),
+    ]),
     ...unitemised.map((f) => `~ ${f} (not itemised)`),
   ];
   return (

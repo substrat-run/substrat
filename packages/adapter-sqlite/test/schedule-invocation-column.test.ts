@@ -64,6 +64,10 @@ describe('#1525: a pre-existing schedule-state table gets invocation_id ALTERed 
         (c) => c.name,
       );
       expect(columns).toContain('invocation_id');
+      // #2096's column, missing from the same table, arrives the same way: NULL — the start of a
+      // purge lap — for the row already there.
+      expect(columns).toContain('purge_cursor');
+      expect(after.prepare('SELECT purge_cursor FROM _substrat_schedule_state').all()).toEqual([{ purge_cursor: null }]);
       // The row survives every wake verbatim, `invocation_id` included: null is the
       // honest fact that no call was carried for a row this old, on every wake, not
       // just the first.

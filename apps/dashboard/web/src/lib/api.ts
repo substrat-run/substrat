@@ -1109,6 +1109,8 @@ export interface ProviderField {
   /** Write-only: never echoed back after saving. */
   secret: boolean;
   placeholder?: string;
+  /** #2100: may be left empty — an alternative, not part of the credential's set. */
+  optional?: boolean;
 }
 
 /** One provider connection, metadata only — the row cannot carry its secret. */
@@ -1296,6 +1298,11 @@ export interface ConnectionActivityView {
   live: boolean;
   grants: string[];
   credential: ConnectionCredentialFieldView[];
+  /**
+   * #2100: the public certificate the connection signs in with, for the tenant to upload on
+   * the provider's side. Absent or null when the provider or this connection uses none.
+   */
+  certificate?: { pem: string; thumbprint: string; notAfter: string } | null;
   /**
    * The platform's dispatch record for this provider (#618) — newest first, empty on a plane
    * too old to serve it (the read is best-effort so a missing journal never costs the activity).

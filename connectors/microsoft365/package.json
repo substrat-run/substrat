@@ -1,0 +1,41 @@
+{
+  "name": "@substrat-run/connector-microsoft365",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Substrat connector: a tenant's own Microsoft 365, over Microsoft Graph with app-only client credentials in the tenant's Entra directory. Sends mail as the tenant's own addresses (a MailSender behind the platform's email relay). Signs in with a per-connection certificate the platform generates, or a client secret. Host code, never module code.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "connectors/microsoft365"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
+  }
+}

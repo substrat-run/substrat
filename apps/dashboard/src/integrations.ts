@@ -28,6 +28,12 @@ export interface ProviderField {
   /** Write-only in the UI; never echoed back. All connection fields are stored sealed regardless. */
   secret: boolean;
   placeholder?: string;
+  /**
+   * #2100: the field may be left empty — an alternative, not part of the set. Microsoft 365's
+   * client secret is one: left empty, the platform generates a certificate instead. Rare on
+   * purpose; a provider credential is normally a set, every field of it required.
+   */
+  optional?: true;
 }
 
 export interface ProviderSpec {
@@ -67,6 +73,12 @@ export interface ProviderSpec {
    * `pnpm lint:connector-grants` checks in both directions.
    */
   sendsMail?: true;
+  /**
+   * #2100 — the connection may sign in with a certificate the PLATFORM generated, which the
+   * tenant downloads from the connection and uploads on the provider's side. The detail view
+   * shows it; nothing about it is secret.
+   */
+  certificate?: true;
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {
@@ -161,6 +173,26 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // correct, and a re-paste rotates it in place — which is what a re-paste should do
     // when there is only ever one.
   },
+  microsoft365: {
+    provider: 'microsoft365',
+    name: 'Microsoft 365',
+    description:
+      "Send mail as your organisation's own addresses through an app registration in your Entra directory. " +
+      'Leave the client secret empty and a certificate is generated for this connection: download it here ' +
+      'and upload it under Certificates & secrets.',
+    monogram: 'M3',
+    fields: [
+      { key: 'tenantId', label: 'Directory (tenant) ID', secret: false, placeholder: '00000000-0000-0000-0000-000000000000' },
+      { key: 'clientId', label: 'Application (client) ID', secret: false, placeholder: '00000000-0000-0000-0000-000000000000' },
+      { key: 'senders', label: 'Sender addresses (comma-separated)', secret: false, placeholder: 'noreply@example.com' },
+      { key: 'siteUrl', label: 'SharePoint site URL', secret: false, placeholder: 'https://example.sharepoint.com/sites/Team' },
+      { key: 'clientSecret', label: 'Client secret', secret: true, optional: true, placeholder: 'leave empty to use a certificate' },
+    ],
+    // Mail lands nothing in a scope, so no standing grant (`MICROSOFT365_CONNECTION_GRANTS`).
+    grants: [],
+    sendsMail: true,
+    certificate: true,
+  },
 };
 
 /** Parse + validate a credential body against the provider's declared fields. */
@@ -171,7 +203,7 @@ export function parseProviderSecret(spec: ProviderSpec, raw: unknown): Record<st
   for (const f of spec.fields) {
     const v = body[f.key];
     if (typeof v === 'string' && v.trim() !== '') secret[f.key] = v.trim();
-    else missing.push(f.key);
+    else if (!f.optional) missing.push(f.key);
   }
   if (missing.length > 0) {
     throw new Error(`missing credential field${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);

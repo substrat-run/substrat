@@ -381,6 +381,22 @@ export const connectionCredential = z.object({ fields: z.array(connectionCredent
 export type ConnectionCredential = z.infer<typeof connectionCredential>;
 
 /**
+ * The PUBLIC certificate a connection authenticates with, for a provider where the platform
+ * generates the keypair and the tenant registers the certificate on its side (#2100,
+ * Microsoft 365). Nothing here is secret: the private key stays sealed with the credential,
+ * and this is what the tenant downloads and uploads to the provider.
+ */
+export const connectionCertificate = z.object({
+  /** The certificate, PEM. */
+  pem: z.string().min(1).max(8192),
+  /** The thumbprint as the provider's own console shows it, so the two can be compared. */
+  thumbprint: z.string().min(1).max(128),
+  /** When the certificate stops working — the connection's `expiresAt`. */
+  notAfter: instant,
+});
+export type ConnectionCertificate = z.infer<typeof connectionCertificate>;
+
+/**
  * A cell sealed to a recipient's public key (#687) — the shape a
  * `SealedSecret` takes when it travels as DATA rather than as a kernel type.
  *

@@ -566,8 +566,49 @@ export const entityGrantShape = z.object({
       z.object({ table: sqlIdentifier, idColumn: sqlIdentifier, principalColumn: sqlIdentifier }),
     ])
     .optional(),
+  /**
+   * #2082: keys this bootstrap shape USED TO carry, taken back from every existing holder. A key
+   * dropped from `permissions` alone stays with everyone who already held it (the reconcile never
+   * removes a key on its own, and the promote diff says "existing holders keep it"). Listing it here is the
+   * reviewed removal: at the next reconcile each person holding the shape's marker on an entity
+   * of this type has that key's row there TOMBSTONED (K-21, never deleted), once per scope, with
+   * one `entity.grants-retired` event per (person, entity).
+   *
+   * - **One tuple is one authority.** A direct `ctx.grant` of the same key to the same person on
+   *   the same entity is the same row, so it is taken back too. The key held any other way stays:
+   *   through a role, a grant on a parent, a grant on another entity, or by someone who is not a
+   *   holder of the shape.
+   * - **Once.** After a scope finishes the retirement, a key granted to a holder again is left
+   *   alone. Putting the key back in `permissions` ends the retirement, so a later release may
+   *   retire it again.
+   * - **Re-adding does not undo it.** A key put back in `permissions` after a retirement reaches
+   *   only people given the shape from then on: the top-up never re-grants a tombstoned key, and
+   *   a retirement's tombstone is one.
+   *
+   * Only on a `bootstrap` shape, never a key still in `permissions`, no duplicates. Omitted when
+   * empty, so a registry that retires nothing keeps the permission digest it had.
+   */
+  retired: z.array(permissionKey).optional(),
 });
 export type EntityGrantShape = z.infer<typeof entityGrantShape>;
+
+/**
+ * #2082: what is wrong with a shape's `retired`, as messages — empty when nothing is. Checked
+ * where a registry is BUILT ({@link buildPermissionRegistry}) and where a push carries one
+ * ({@link pushedPermissionRegistry}); stored history is read without it.
+ */
+export function retiredShapeProblems(shape: Pick<EntityGrantShape, 'entityType' | 'permissions' | 'bootstrap' | 'retired'>): string[] {
+  const retired = shape.retired ?? [];
+  if (retired.length === 0) return [];
+  const problems: string[] = [];
+  const where = `entityGrants '${shape.entityType}'`;
+  if (!shape.bootstrap) problems.push(`${where}: \`retired\` is only for a bootstrap shape; a sharing shape has no holders to take a key back from`);
+  const kept = retired.filter((k) => shape.permissions.includes(k));
+  if (kept.length > 0) problems.push(`${where}: retires ${kept.join(', ')}, which it still grants`);
+  const twice = retired.filter((k, i) => retired.indexOf(k) !== i);
+  if (twice.length > 0) problems.push(`${where}: retires ${[...new Set(twice)].join(', ')} more than once`);
+  return problems;
+}
 
 /**
  * The vertical's declared permission surface, shipped in the deploy manifest (D-39) — the
@@ -628,7 +669,13 @@ export type PermissionRegistry = z.infer<typeof permissionRegistry>;
  * {@link permissionRegistry}, so a version stored before the refusal stays readable.
  */
 export const pushedPermissionRegistry = permissionRegistry.extend({
-  entityGrants: z.array(entityGrantShape.extend({ entityType: declaredEntityType })).default([]),
+  entityGrants: z
+    .array(
+      entityGrantShape.extend({ entityType: declaredEntityType }).superRefine((shape, ctx) => {
+        for (const message of retiredShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['retired'], message });
+      }),
+    )
+    .default([]),
 });
 
 /**
@@ -779,7 +826,10 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
       permissions: sortKeys(g.permissions),
       ...(g.bootstrap ? { bootstrap: true as const } : {}),
       ...(g.holder ? { holder: g.holder } : {}),
+      ...(g.retired?.length ? { retired: sortKeys(g.retired) } : {}),
     }));
+  const problems = entityGrants.flatMap(retiredShapeProblems);
+  if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
 
   // #1705: the edges. Keyed so two modules declaring the same flow collapse into one row
   // with both named. A flow is one fact however many modules state it. The version and

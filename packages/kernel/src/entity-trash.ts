@@ -161,25 +161,108 @@ export function purgeCutoffOf(now: string, days: number): string {
   return new Date(Date.parse(now) - days * 86_400_000).toISOString();
 }
 
-/**
- * The ids due for purge: trashed at or before `cutoff`, oldest trash first, at most `limit`.
- * The predicate leads with the purge index's own `WHERE`, so the walk reads only the bin.
- */
-export function purgeCandidates(sql: ScopedSql, plan: EntityStatePlan, cutoff: string, limit = PURGE_BATCH): string[] {
-  return sql
-    .query<{ id: string }>(
-      `SELECT ${plan.idColumn} AS id FROM ${plan.table} ` +
-        `WHERE ${TRASHED_AT_COLUMN} IS NOT NULL AND ${TRASHED_AT_COLUMN} <= ? ` +
-        `ORDER BY ${TRASHED_AT_COLUMN}, ${plan.idColumn} LIMIT ?`,
-      [cutoff, limit],
-    )
-    .map((r) => String(r.id));
+/** A position in the purge walk's order: the trash instant and the id of the last entity tried. */
+export interface PurgeKey {
+  readonly at: string;
+  readonly id: string;
 }
 
 /**
- * One purge horizon's due work on a scope: the cutoff, the input field carrying the id, and the
- * oldest due ids. Registration has tied the schedule to a declared horizon and the entity's
- * purge operation, so a miss here is a wiring fault.
+ * The ids due for purge: trashed at or before `cutoff`, oldest trash first, at most `limit` —
+ * and, given `after`, only those strictly after it in that order (#2096). The predicate leads with
+ * the purge index's own `WHERE`, so the walk reads only the bin; `after` is compared as a VALUE,
+ * so a key whose entity has since been purged or restored still places the walk correctly.
+ */
+export function purgeCandidates(
+  sql: ScopedSql,
+  plan: EntityStatePlan,
+  cutoff: string,
+  limit = PURGE_BATCH,
+  after: PurgeKey | null = null,
+): PurgeKey[] {
+  return sql
+    .query<{ id: string; at: string }>(
+      `SELECT ${plan.idColumn} AS id, ${TRASHED_AT_COLUMN} AS at FROM ${plan.table} ` +
+        `WHERE ${TRASHED_AT_COLUMN} IS NOT NULL AND ${TRASHED_AT_COLUMN} <= ? ` +
+        (after ? `AND (${TRASHED_AT_COLUMN}, ${plan.idColumn}) > (?, ?) ` : '') +
+        `ORDER BY ${TRASHED_AT_COLUMN}, ${plan.idColumn} LIMIT ?`,
+      after ? [cutoff, after.at, after.id, limit] : [cutoff, limit],
+    )
+    .map((r) => ({ id: String(r.id), at: String(r.at) }));
+}
+
+/**
+ * A purge LAP in progress (#2096) — what a schedule's cadence row holds in `purge_cursor` between
+ * passes. A lap walks the whole due bin, oldest first, `PURGE_BATCH` at a time; each pass resumes
+ * after the last entity the one before it tried, whatever became of that entity. So entities that
+ * keep failing cannot hold the head of the walk: the walk moves past them, reaches everything due
+ * behind them in the same lap, and tries them again in the next.
+ *
+ * `failed` counts the purges that failed in the lap's earlier passes, so the pass that closes the
+ * lap — the one that writes the cadence row — records the lap `failed` even when its own batch
+ * succeeded.
+ */
+export interface PurgeLap {
+  /** Where the next pass resumes, or null at the start of a lap. */
+  readonly after: PurgeKey | null;
+  readonly failed: number;
+}
+
+const LAP_START: PurgeLap = { after: null, failed: 0 };
+
+/**
+ * The lap a stored `purge_cursor` holds. NULL — no lap in progress, a row written before the
+ * column, or no row at all — is the start of a lap, and so is a value this code cannot read: the
+ * worst a lost cursor costs is walking from the oldest again.
+ */
+export function purgeLapOf(stored: string | null | undefined): PurgeLap {
+  if (stored === null || stored === undefined) return LAP_START;
+  try {
+    const v = JSON.parse(stored) as { at?: unknown; id?: unknown; failed?: unknown };
+    if (typeof v.at !== 'string' || typeof v.id !== 'string') return LAP_START;
+    const failed = typeof v.failed === 'number' && Number.isSafeInteger(v.failed) && v.failed > 0 ? v.failed : 0;
+    return { after: { at: v.at, id: v.id }, failed };
+  } catch {
+    return LAP_START;
+  }
+}
+
+/** Read the purge schedule's lap from its cadence row (`kind = 'schedule'`, keyed by the operation). */
+export function readPurgeLap(sql: ScopedSql, operation: string): PurgeLap {
+  const [row] = sql.query<{ purge_cursor: string | null }>(
+    `SELECT purge_cursor FROM _substrat_schedule_state WHERE kind = 'schedule' AND schedule_op = ?`,
+    [operation],
+  );
+  return purgeLapOf(row?.purge_cursor);
+}
+
+/** Store a lap's next start (NULL when none), touching `purge_cursor` alone — see `runPurgePass`. */
+function writePurgeLap(sql: ScopedSql, operation: string, lap: PurgeLap | null): void {
+  sql.exec(
+    `INSERT INTO _substrat_schedule_state (kind, schedule_op, purge_cursor) VALUES ('schedule', ?, ?)
+     ON CONFLICT(kind, schedule_op) DO UPDATE SET purge_cursor = excluded.purge_cursor`,
+    [operation, lap?.after ? JSON.stringify({ at: lap.after.at, id: lap.after.id, failed: lap.failed }) : null],
+  );
+}
+
+/** One purge horizon's due work on a scope, for one pass of its lap. */
+export interface PurgeDue {
+  readonly cutoff: string;
+  /** The purge operation's input field carrying the id. */
+  readonly idFrom: string;
+  /** The ids this pass tries, in the walk's order. */
+  readonly ids: string[];
+  /** The lap as this pass found it. */
+  readonly lap: PurgeLap;
+  /** Where the next pass resumes when more is due after these ids — or null: this pass closes the lap. */
+  readonly next: PurgeKey | null;
+}
+
+/**
+ * One purge horizon's due work on a scope (#119, #2096): the cutoff, the input field carrying the
+ * id, and the next `limit` due ids of the lap the cadence row records — read one past the batch, so
+ * `more` is known rather than guessed from a full batch. Registration has tied the schedule to a
+ * declared horizon and the entity's purge operation, so a miss here is a wiring fault.
  */
 export function purgeDueOf(
   sql: ScopedSql,
@@ -189,14 +272,23 @@ export function purgeDueOf(
   entityType: string,
   now: string,
   limit = PURGE_BATCH,
-): { cutoff: string; idFrom: string; ids: string[] } {
+): PurgeDue {
   const plan = plans.get(entityType);
   const target = targets.get(operation);
   if (plan?.purgeAfterDays === undefined || !target) {
     throw new Error(`purge: '${operation}' is not the purge operation of a horizon on '${entityType}'`);
   }
   const cutoff = purgeCutoffOf(now, plan.purgeAfterDays);
-  return { cutoff, idFrom: target.idFrom, ids: purgeCandidates(sql, plan, cutoff, limit) };
+  const lap = readPurgeLap(sql, operation);
+  const keys = purgeCandidates(sql, plan, cutoff, limit + 1, lap.after);
+  const batch = keys.slice(0, limit);
+  return {
+    cutoff,
+    idFrom: target.idFrom,
+    ids: batch.map((k) => k.id),
+    lap,
+    next: keys.length > limit ? batch.at(-1)! : null,
+  };
 }
 
 /**
@@ -242,25 +334,44 @@ export interface PurgePass {
   skipped: number;
   /** One entry per entity whose purge threw for any other reason; it stays in the bin and is retried. */
   errors: { entityId: string; error: string }[];
-  /** The batch was full — with progress, the schedule stays due (`purgeStillDue`). */
-  full: boolean;
+  /** More is due after this batch: the lap continues, and the schedule stays due (`purgeStillDue`). */
+  more: boolean;
+  /**
+   * Purges that failed in the EARLIER passes of the lap this pass closed (#2096) — so the cadence
+   * row this pass writes says the lap failed, even when this batch did not. 0 while the lap goes on.
+   * Absent, like `more`, from a scope running code older than the lap, which ran no lap.
+   */
+  lapFailed?: number;
   /** Why the scope ran no purge at all this pass (`purgeHeldBy`), when its gate held it. */
   held?: string;
 }
 
+/** A pass the scope's gate held: nothing selected, nothing tried, the lap where it was. */
+export function heldPurgePass(held: string): PurgePass {
+  return { purged: 0, skipped: 0, errors: [], more: false, lapFailed: 0, held };
+}
+
 /**
- * Run one purge schedule over the ids the adapter selected (`purgeCandidates`): one invoke per
- * entity, each its own transaction, so a crash or a failure loses nothing already committed and
- * the next pass simply selects what is left. An entity that was restored (`purge_not_due`) or is
- * already gone (`not_found`) is skipped, never a failure — the purge is idempotent by state.
+ * Run one pass of a purge schedule over the ids the adapter selected (`purgeDueOf`), then record
+ * what it did to its lap (#2096). One invoke per entity, each its own transaction, so a crash or a
+ * failure loses nothing already committed and the next pass simply selects what is left. An entity
+ * that was restored (`purge_not_due`) or is already gone (`not_found`) is skipped, never a failure —
+ * the purge is idempotent by state.
+ *
+ * Then the lap moves on WHATEVER its purges did — that is the whole of #2096: resume after this
+ * batch with its failures added while more is due, or close the lap. After the pass, so a pass cut
+ * short repeats its batch rather than skipping it. `inScope` runs the write against the scope's
+ * spine, in the turn the adapter's storage needs.
  */
 export async function runPurgePass(
-  ids: readonly string[],
-  limit: number,
+  operation: string,
+  due: PurgeDue,
   purgeOne: (entityId: string) => Promise<void>,
+  inScope: (write: (sql: ScopedSql) => void) => unknown,
 ): Promise<PurgePass> {
-  const pass: PurgePass = { purged: 0, skipped: 0, errors: [], full: ids.length >= limit };
-  for (const entityId of ids) {
+  const more = due.next !== null;
+  const pass: PurgePass = { purged: 0, skipped: 0, errors: [], more, lapFailed: more ? 0 : due.lap.failed };
+  for (const entityId of due.ids) {
     try {
       await purgeOne(entityId);
       pass.purged += 1;
@@ -274,17 +385,24 @@ export async function runPurgePass(
       pass.errors.push({ entityId, error: err instanceof Error ? err.message : String(err) });
     }
   }
+  // A lap that began at the oldest and closes in this pass leaves the cursor NULL, as it found it.
+  if (more || due.lap.after !== null) {
+    const next = due.next ? { after: due.next, failed: due.lap.failed + pass.errors.length } : null;
+    await inScope((sql) => writePurgeLap(sql, operation, next));
+  }
   return pass;
 }
 
 /**
- * Whether a purge pass leaves its schedule due, so the next sweep pass runs it again rather than
- * waiting the cadence: the batch was full AND it moved something. A full batch in which every
- * entity failed would otherwise select the same failures on every sweep tick, never record a run,
- * and spin on them — so a pass with no progress waits its cadence like any other.
+ * Whether a purge pass leaves its schedule due, so the next sweep pass continues its lap rather
+ * than waiting the cadence: more is due after its batch (#2096). It cannot spin (#2087): every pass
+ * moves the lap strictly forward, whatever its purges did, and the pass that runs out of due
+ * entities closes the lap and records the run — so a cadence window holds one lap, and an entity
+ * that keeps failing is tried once per window, not once per sweep tick. A scope running code older
+ * than the lap answers no `more`, and its pass waits its cadence.
  */
 export function purgeStillDue(pass: PurgePass): boolean {
-  return pass.full && pass.purged + pass.skipped > 0;
+  return pass.more === true;
 }
 
 /**
@@ -301,7 +419,8 @@ export function purgeOnlyKeysOf(schedules: readonly ScheduleSpec[]): ReadonlySet
 
 /**
  * A purge pass, as the schedule run reports it: one error row per entity that failed (labelled
- * with its id), and the error that marks the schedule's run `failed` when any did.
+ * with its id), and the error that marks the schedule's run `failed` when any did — in this pass,
+ * or in an earlier pass of the lap this one closed (#2096), so the cadence row keeps the failure.
  */
 export function purgeReportOf(
   operation: string,
@@ -309,9 +428,10 @@ export function purgeReportOf(
   pass: PurgePass,
 ): { errors: { operation: string; error: string }[]; failure?: Error } {
   const errors = pass.errors.map((e) => ({ operation: `${operation} (${entityType}:${e.entityId})`, error: e.error }));
-  return errors.length === 0
-    ? { errors }
-    : { errors, failure: new Error(`${errors.length} purge(s) of ${entityType} failed; they stay in the bin and are retried`) };
+  const earlier = pass.lapFailed ?? 0;
+  if (errors.length === 0 && earlier === 0) return { errors };
+  const counts = [errors.length > 0 && `${errors.length} purge(s) of ${entityType} failed`, earlier > 0 && `${earlier} failed earlier in this lap`];
+  return { errors, failure: new Error(`${counts.filter(Boolean).join('; ')}; they stay in the bin and are retried`) };
 }
 
 /**

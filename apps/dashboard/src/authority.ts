@@ -5,6 +5,7 @@ import type {
   Connection,
   ConnectionActivity,
   ConnectionActivitySource,
+  ConnectionCertificate,
   ConnectionCredential,
   ConnectionGrantRecord,
   ConnectionProbe,
@@ -617,6 +618,20 @@ export class TenantNarrowedControlPlane {
     return this.call<ConnectionCredential>(
       `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/credential`,
     );
+  }
+
+  /**
+   * The public certificate the connection signs in with (#2100), or `null` when it has none
+   * (the plane answers 404 for a connection that uses a client secret, or a provider without).
+   */
+  async connectionCertificate(connectionId: string): Promise<ConnectionCertificate | null> {
+    try {
+      return await this.call<ConnectionCertificate>(
+        `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/certificate`,
+      );
+    } catch {
+      return null;
+    }
   }
 
   /** The tenant's live connection grants — what each connection is allowed to invoke (#592). */
