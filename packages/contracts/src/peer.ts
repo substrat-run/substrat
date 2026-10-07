@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { instant, permissionKey, platformActorId, scopeId, tenantId, verticalSlug } from './ids.js';
+import { auditOperationId, instant, permissionKey, platformActorId, scopeId, tenantId, verticalSlug } from './ids.js';
 
 /**
  * Peers (#1706): another vertical of the SAME tenant, calling this one's operations through the
@@ -129,12 +129,14 @@ export type PeerSwitchOutcome = z.infer<typeof peerSwitchOutcome>;
 
 /** What `revokeFromPeer` / `restoreToPeer` answer: the position the switch is now in. */
 export const peerSwitchResult = z.object({
-  operationId: z.string().min(1),
+  operationId: auditOperationId,
   vertical: verticalSlug,
   calls: z.enum(['on', 'off']),
   changed: z.boolean(),
   /** The grants this call tombstoned (off) or restored (on), by permission key. */
   permissions: z.array(permissionKey),
+  /** #2089: as `SystemSwitchResult.auditWarning`. */
+  auditWarning: z.string().optional(),
 });
 export type PeerSwitchResult = z.infer<typeof peerSwitchResult>;
 

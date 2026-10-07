@@ -137,6 +137,10 @@ const RECORDS = {
   },
 } as const;
 
+/** Every admin-log action a switch CALL writes its intent and outcome under (#2089: the settle closes them). */
+export const SWITCH_ACTIONS = [...RECORDS.system.actions, ...RECORDS.peer.actions] as const;
+export type SwitchAction = (typeof SWITCH_ACTIONS)[number];
+
 /** Every kind, for the passes that walk them all (a scope's reap, a directory restore). */
 export const SWITCH_KINDS: readonly SwitchKind[] = ['system', 'peer'];
 

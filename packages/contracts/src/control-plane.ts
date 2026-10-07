@@ -9,6 +9,7 @@ import {
   scopeId,
   slug,
   tenantId,
+  auditOperationId,
 } from './ids.js';
 // #36's tenant export speaks the platform's own vocabulary rather than restating it, so
 // it composes the schemas that already define these shapes. One-way imports only —
@@ -588,6 +589,12 @@ export const ownerTransferResult = z.object({
 });
 export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
 
+/** How much error text a `refused`/`failed`/`unknown` audit row keeps (#2064: one cap for every
+ *  intent-then-outcome audit): the append-only log is no place for a vertical's whole response,
+ *  and the caller got that in full already. */
+export const AUDIT_ERROR_MAX = 300;
+/** @deprecated Since #2064 one cap serves every audited change: use `AUDIT_ERROR_MAX`. */
+export const OWNER_TRANSFER_AUDIT_ERROR_MAX = AUDIT_ERROR_MAX;
 /**
  * One row of an owner hand-over's audit (#1665), for `HostAdmin.recordOwnerTransfer`: an
  * `intent`, then `applied`, `refused` (the vertical's 409) or `failed`, paired by `operationId`.
@@ -596,42 +603,6 @@ export type OwnerTransferResult = z.infer<typeof ownerTransferResult>;
  * it is the later row, and the one to read.
  * No `id`, `at` or actor: the adapter stamps the first two and the request supplies the third.
  */
-/**
- * Whether `s` is well-formed UTF-16: every high surrogate followed by a low one, and no low one
- * on its own. A lone surrogate is a string JavaScript holds and nothing else does: SQLite's JSON
- * functions, a JSON encoder and a UTF-8 store each write it differently, so an id holding one is
- * not the same id once it has crossed a store.
- */
-export function isWellFormedText(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 0xd800 && c <= 0xdbff) {
-      const next = s.charCodeAt(i + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      i++;
-    } else if (c >= 0xdc00 && c <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/**
- * The id pairing an audited change's admin-log rows (#2064): its intent and its outcome. The
- * routes mint a ULID. The contract holds any id to being non-empty and well-formed text, because
- * the id is matched in SQL and in memory, and only well-formed text reads the same in both.
- */
-export const auditOperationId = z
-  .string()
-  .min(1)
-  .refine(isWellFormedText, { message: 'an audit operation id must be well-formed text (no lone surrogate)' });
-
-/** How much error text a `refused`/`failed`/`unknown` audit row keeps (#2064: one cap for every
- *  intent-then-outcome audit): the append-only log is no place for a vertical's whole response,
- *  and the caller got that in full already. */
-export const AUDIT_ERROR_MAX = 300;
-/** @deprecated Since #2064 one cap serves every audited change: use `AUDIT_ERROR_MAX`. */
-export const OWNER_TRANSFER_AUDIT_ERROR_MAX = AUDIT_ERROR_MAX;
 const ownerTransferAuditRow = <T extends z.ZodRawShape>(phase: T) =>
   z
     .object({

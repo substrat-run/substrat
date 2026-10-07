@@ -18,13 +18,15 @@
  * Neither failure is silent any more, and neither is left for a reader to explain: an intent
  * with no outcome is closed by `settleUnrecordedOutcomes` below, which the scheduled pass runs.
  * Every control-plane flow of this shape goes through `auditedChange`, so the next one cannot
- * leave the outcome write in a bare `.catch(() => undefined)` again. (The schedule and peer kill
- * switches audit the same way inside the adapters, which cannot import this package; they are
- * not covered here.)
+ * leave the outcome write in a bare `.catch(() => undefined)` again. Its outcome write is the
+ * kernel's `recordAuditOutcome`, which the schedule and peer kill switches use inside the adapters
+ * too (#2089), and the settle below closes their intents by the same rule.
  */
 import { AUDIT_ERROR_MAX, auditOperationId, type AdminLogEntry, type OpsFailureEntry, type PlatformActorId } from '@substrat-run/contracts';
 import {
   AUDITED_CHANGE_ACTIONS,
+  UNRECORDED_OUTCOME_LOG,
+  recordAuditOutcome,
   operationKeyOf,
   effectiveOutcomes,
   isSupersededOutcome,
@@ -66,8 +68,8 @@ export type AuditedChange<T> =
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const consoleError = (message: string, fields: Record<string, unknown>) => console.error(message, fields);
 
-/** The structured line both unwritten outcomes leave, keyed so a log search finds every one. */
-export const UNRECORDED_OUTCOME_LOG = 'audit-outcome-unrecorded';
+/** The structured line both unwritten outcomes leave: the kernel's, re-exported where it was first. */
+export { UNRECORDED_OUTCOME_LOG };
 
 /**
  * Run one audited change: the `intent` row (its failure propagates, and `run` is not called),
@@ -82,21 +84,11 @@ export async function auditedChange<T>(spec: AuditedChangeSpec<T>): Promise<Audi
     result = await spec.run();
   } catch (error) {
     const phase = spec.refused(error) ? 'refused' : 'failed';
-    try {
-      await record({ phase, error: messageOf(error).slice(0, AUDIT_ERROR_MAX) });
-    } catch (auditError) {
-      logError(UNRECORDED_OUTCOME_LOG, { flow, operationId, phase, auditError: messageOf(auditError) });
-    }
+    await recordAuditOutcome(() => record({ phase, error: messageOf(error).slice(0, AUDIT_ERROR_MAX) }), { flow, operationId, phase }, logError);
     return { operationId, error };
   }
-  try {
-    await record({ phase: 'applied', result });
-  } catch (auditError) {
-    const unrecorded = messageOf(auditError);
-    logError(UNRECORDED_OUTCOME_LOG, { flow, operationId, phase: 'applied', auditError: unrecorded });
-    return { operationId, result, unrecorded };
-  }
-  return { operationId, result };
+  const unrecorded = await recordAuditOutcome(() => record({ phase: 'applied', result }), { flow, operationId, phase: 'applied' }, logError);
+  return unrecorded === null ? { operationId, result } : { operationId, result, unrecorded };
 }
 
 export type SettleAdmin = Pick<HostAdmin, 'auditLog' | 'settleUnrecordedOutcome'>;

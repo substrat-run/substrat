@@ -147,6 +147,7 @@ import {
   isPrimaryScope,
   migrationProgress,
   ulid,
+  auditWarningOf,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -4248,7 +4249,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if ('unrecorded' in done) {
       return ok(done.result, {
         operationId,
-        auditWarning: `${what} completed, but its outcome could not be written to the admin log: ${done.unrecorded}`,
+        auditWarning: auditWarningOf(what, done.unrecorded),
       });
     }
     return ok(done.result, { operationId });
