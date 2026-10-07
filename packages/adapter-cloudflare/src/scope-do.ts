@@ -1178,26 +1178,26 @@ export function defineScopeDO(
     private continuationStore(): ContinuationStore {
       const positionKey = (id: string, expiresAt: number) =>
         `continuation:position:${String(expiresAt).padStart(13, '0')}:${id}`;
-      const prunePositions = async () => {
-        const positions = await this.ctx.storage.list<ContinuationPosition>({ prefix: 'continuation:position:' });
-        const live = [...positions].filter(([, record]) => record.expiresAt > Date.now());
-        const evict = new Set<string>(live.slice(0, Math.max(0, live.length - CONTINUATION_POSITION_CAP)).map(([name]) => name));
-        for (const [name, record] of positions) {
-          if (record.expiresAt <= Date.now() || evict.has(name)) await this.ctx.storage.delete(name);
-        }
-      };
       return {
         keys: async () => (await this.ctx.storage.get<ContinuationKeys>('continuation:keys')) ?? null,
         setKeys: async (keys) => { await this.ctx.storage.put('continuation:keys', keys); },
         position: async (id, expiresAt) => {
-          await prunePositions();
+          await this.pruneContinuationPositions();
           return (await this.ctx.storage.get<ContinuationPosition>(positionKey(id, expiresAt))) ?? null;
         },
         setPosition: async (id, position) => {
           await this.ctx.storage.put(positionKey(id, position.expiresAt), position);
-          await prunePositions();
+          await this.pruneContinuationPositions();
         },
       };
+    }
+    private async pruneContinuationPositions(): Promise<void> {
+      const positions = await this.ctx.storage.list<ContinuationPosition>({ prefix: 'continuation:position:' });
+      const live = [...positions].filter(([, record]) => record.expiresAt > Date.now());
+      const evict = new Set<string>(live.slice(0, Math.max(0, live.length - CONTINUATION_POSITION_CAP)).map(([name]) => name));
+      for (const [name, record] of positions) {
+        if (record.expiresAt <= Date.now() || evict.has(name)) await this.ctx.storage.delete(name);
+      }
     }
     private readonly queue = new OperationQueue();
     private readonly operations = new Map<string, OperationHandler<never, unknown>>();
@@ -4881,6 +4881,7 @@ export function defineScopeDO(
         if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
         throw toRpcError(err);
       }
+      await this.pruneContinuationPositions();
       // #119: the gate the coordinator applies before any schedule fires, applied here from what
       // this scope records of it (`purgeGateFacts`). A foreign tenant throws.
       const held = purgeHeldBy(this.purgeGateFacts(schedule.moduleId, tenantId));

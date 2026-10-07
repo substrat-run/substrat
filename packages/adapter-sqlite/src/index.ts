@@ -5020,6 +5020,8 @@ export class SqliteScopeHost implements ScopeHost {
       | { tenant_id: string }
       | undefined;
     if (!owner || owner.tenant_id !== tenantId) throw substratError('not_found', `unknown scope: ${scopeId}`);
+    this.directory.prepare('DELETE FROM private_continuation_positions WHERE expires_at <= ?')
+      .run(Date.parse(this.clock()));
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     const now = this.clock();
