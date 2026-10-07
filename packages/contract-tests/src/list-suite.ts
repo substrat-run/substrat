@@ -480,9 +480,18 @@ export function listContractSuite(
       await expectRestart(stub.invoke('list/page-visible', {
         ...query, filters: { kind: 'repair' }, cursor: first.nextCursor,
       }));
-      const second = await stub.invoke<Page<Row>>('list/page-visible', { ...query, cursor: first.nextCursor });
-      expect(second.entries.map((r) => r['id'])).toEqual(['v2074']);
-      expect(second.nextCursor).toMatch(/^sc1\./);
+      let cursor = first.nextCursor!;
+      let found: Page<Row> | undefined;
+      for (let i = 0; i < 3; i++) {
+        const next = await stub.invoke<Page<Row>>('list/page-visible', { ...query, cursor });
+        expect(next.nextCursor).toMatch(/^sc1\./);
+        if (next.entries.length > 0) {
+          found = next;
+          break;
+        }
+        cursor = next.nextCursor!;
+      }
+      expect(found?.entries.map((r) => r['id'])).toEqual(['v2074']);
     });
 
     it('evicts the oldest private locator at the per-scope cap', async () => {

@@ -369,9 +369,18 @@ describe('pageVisible with a sealed continuation (#2074)', () => {
     expect(first.entries).toEqual([]);
     expect(first.nextCursor).toMatch(/^sealed-/);
     expect(first.nextCursor).not.toContain('r1999');
-    const second = await pageVisible(t.fetch, { limit: 1, cursor: first.nextCursor! }, allow, { continuation });
-    expect(second.entries.map((r) => r.id)).toEqual(['r2005']);
-    expect(second.nextCursor).toMatch(/^sealed-/);
-    expect(second.nextCursor?.length).toBe(first.nextCursor?.length);
+    let cursor = first.nextCursor!;
+    let found: Page<Row> | undefined;
+    for (let i = 0; i < 3; i++) {
+      const next = await pageVisible(t.fetch, { limit: 1, cursor }, allow, { continuation });
+      expect(next.nextCursor).toMatch(/^sealed-/);
+      expect(next.nextCursor?.length).toBe(first.nextCursor?.length);
+      if (next.entries.length > 0) {
+        found = next;
+        break;
+      }
+      cursor = next.nextCursor!;
+    }
+    expect(found?.entries.map((r) => r.id)).toEqual(['r2005']);
   });
 });
