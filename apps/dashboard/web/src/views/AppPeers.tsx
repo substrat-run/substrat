@@ -75,20 +75,29 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
     setBusy(true);
     setNotice(null);
     try {
-      const outcome = await api.setAppPeerBinding(scopeId, vertical, targetScopeId);
-      const fresh = await api.appPeers(scopeId);
-      setView(fresh);
-      setSelection((prior) => ({ ...prior, [vertical]: targetScopeId ?? '' }));
-      setNotice(outcome.auditWarning ?? 'Target choice updated.');
-    } catch (e) {
-      // A failed transport may have applied the write. Re-read instead of offering a blind retry.
+      let outcome: Awaited<ReturnType<typeof api.setAppPeerBinding>>;
+      try {
+        outcome = await api.setAppPeerBinding(scopeId, vertical, targetScopeId);
+      } catch (writeError) {
+        // A failed transport may have applied the write. Read before anyone retries it.
+        try {
+          setView(await api.appPeers(scopeId));
+          setNotice(`Could not confirm the target choice (${String(writeError)}). Check the choice shown below before trying again.`);
+        } catch (readError) {
+          setView(null);
+          setFailed(true);
+          setNotice(`Could not confirm the target choice (${String(writeError)}), and its current state could not be read (${String(readError)}). Reload before trying again.`);
+        }
+        return;
+      }
       try {
         setView(await api.appPeers(scopeId));
-        setNotice(`Could not confirm the target choice (${String(e)}). Check the choice shown below before trying again.`);
+        setSelection((prior) => ({ ...prior, [vertical]: targetScopeId ?? '' }));
+        setNotice(outcome.auditWarning ?? 'Target choice updated.');
       } catch (readError) {
         setView(null);
         setFailed(true);
-        setNotice(`Could not confirm the target choice (${String(e)}), and its current state could not be read (${String(readError)}). Reload before trying again.`);
+        setNotice(`Target choice changed, but its status could not be refreshed (${String(readError)}). Reload before trying again.`);
       }
     } finally {
       switching.current = false;
