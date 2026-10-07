@@ -1193,5 +1193,6 @@ function downloadCertificate(pem: string, provider: string): void {
   a.href = url;
   a.download = `substrat-${provider}.cer`;
   a.click();
-  URL.revokeObjectURL(url);
+  // Some browsers start the download after `click()` returns; revoking now can cancel it.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

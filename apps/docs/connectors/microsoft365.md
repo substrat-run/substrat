@@ -82,12 +82,16 @@ notifications and documents, not for bulk mail.
 ### 3. Grant the SharePoint site
 
 Use a **standard** channel (private and shared channels have sites of their own). Find the site
-URL from the channel's **Files → Open in SharePoint**, then grant the app `Write` on that site:
+URL from the channel's **Files → Open in SharePoint**, then grant the app `Read` on that site:
 
 ```powershell
 Grant-PnPEntraIDAppSitePermission -AppId <client-id> -DisplayName "Substrat" `
-  -Site https://your-tenant.sharepoint.com/sites/TeamName -Permissions Write
+  -Site https://your-tenant.sharepoint.com/sites/TeamName -Permissions Read
 ```
+
+`Read` is all the connector uses today: it reads the site to confirm the connection reaches it.
+Saving documents to the channel is planned, and that will ask you to raise this grant to `Write`
+on the same site.
 
 ### 4. Connect it in the dashboard
 

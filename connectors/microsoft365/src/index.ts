@@ -127,7 +127,7 @@ async function probeWith(
       return probeOf({
         ok: false,
         refused: false,
-        error: `signed in, but this app has no access to ${secret.siteUrl} yet — grant it Write on the site (Sites.Selected)`,
+        error: `signed in, but this app has no access to ${secret.siteUrl} yet — grant it Read on the site (Sites.Selected)`,
         facts,
       });
     }
