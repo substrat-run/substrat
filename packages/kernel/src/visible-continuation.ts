@@ -1,0 +1,142 @@
+/** Private, short-lived positions for a per-row-filtered walk (#2074). */
+import { PAGE_CURSOR_RESTART, substratError } from '@substrat-run/contracts';
+import { fromBase64, toBase64, webCryptoSecretBox, type SealedSecret } from './secret-box.js';
+
+declare const crypto: {
+  getRandomValues<T extends Uint8Array>(bytes: T): T;
+  subtle: { digest(name: 'SHA-256', bytes: Uint8Array): Promise<ArrayBuffer> };
+};
+
+const TOKEN_PREFIX = 'sc1';
+const TOKEN_PLAINTEXT_LENGTH = 192;
+const LIFETIME_MS = 15 * 60_000;
+const ROTATION_MS = 24 * 60 * 60_000;
+
+export interface ContinuationKey {
+  id: string;
+  /** Raw AES-256 key, base64 encoded only inside adapter-private storage. */
+  material: string;
+  createdAt: number;
+}
+
+export interface ContinuationKeys {
+  active: ContinuationKey;
+  previous?: ContinuationKey;
+}
+
+export interface ContinuationPosition {
+  sealed: SealedSecret;
+  expiresAt: number;
+}
+
+/** Neither keys nor positions may be stored in module-readable scope SQL or a dump. */
+export interface ContinuationStore {
+  keys(): Promise<ContinuationKeys | null>;
+  setKeys(keys: ContinuationKeys): Promise<void>;
+  position(id: string): Promise<ContinuationPosition | null>;
+  setPosition(id: string, position: ContinuationPosition): Promise<void>;
+}
+
+/** Everything that makes the position mean the same walk, with no raw input kept. */
+export interface ContinuationBinding {
+  scopeId: string;
+  principal: string;
+  operation: string;
+  list: string;
+  query: unknown;
+}
+
+const restart = () => substratError(
+  'validation_failed',
+  'list: this cursor cannot continue this walk — restart paging from the first page, without a cursor',
+  { reason: PAGE_CURSOR_RESTART },
+);
+
+const random = (size: number): Uint8Array => crypto.getRandomValues(new Uint8Array(size));
+const base64url = (bytes: Uint8Array): string => toBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+const unbase64url = (text: string): Uint8Array => fromBase64(text.replace(/-/g, '+').replace(/_/g, '/'));
+const key = (now: number): ContinuationKey => ({ id: base64url(random(9)), material: toBase64(random(32)), createdAt: now });
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
+}
+
+async function bindingHash(binding: ContinuationBinding): Promise<string> {
+  const bytes = new TextEncoder().encode(canonical(binding));
+  return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+}
+
+function box(material: ContinuationKey) {
+  const bytes = fromBase64(material.material);
+  if (bytes.length !== 32) throw restart();
+  return webCryptoSecretBox(material.id, bytes);
+}
+
+/** Fixed wire length, even when a sort value is arbitrarily long. */
+export function visibleContinuation(
+  store: ContinuationStore,
+  binding: ContinuationBinding,
+  now: () => number = Date.now,
+  legacy?: (cursor: string) => Promise<boolean>,
+  legacyUsed?: () => void,
+) {
+  const fingerprint = bindingHash(binding);
+  const readKeys = async (): Promise<ContinuationKeys | null> => {
+    try { return await store.keys(); } catch { throw restart(); }
+  };
+  return {
+    async seal(position: string): Promise<string> {
+      try {
+        const at = now();
+        let keys = await readKeys();
+        if (!keys || at - keys.active.createdAt >= ROTATION_MS) {
+          keys = { active: key(at), ...(keys ? { previous: keys.active } : {}) };
+          await store.setKeys(keys);
+        }
+        const id = base64url(random(16));
+        const expiresAt = at + LIFETIME_MS;
+        const sealed = await box(keys.active).seal(JSON.stringify({ id, position }));
+        await store.setPosition(id, { sealed, expiresAt });
+        const payload = JSON.stringify({ i: id, e: expiresAt, b: await fingerprint });
+        if (payload.length > TOKEN_PLAINTEXT_LENGTH) throw restart();
+        const token = await box(keys.active).seal(payload.padEnd(TOKEN_PLAINTEXT_LENGTH, ' '));
+        return `${TOKEN_PREFIX}.${keys.active.id}.${base64url(fromBase64(token.ciphertext))}`;
+      } catch {
+        throw restart();
+      }
+    },
+    async open(cursor: string): Promise<string> {
+      if (!cursor.startsWith(`${TOKEN_PREFIX}.`)) {
+        if (legacy && await legacy(cursor)) {
+          legacyUsed?.();
+          return cursor;
+        }
+        throw restart();
+      }
+      try {
+        const parts = cursor.split('.');
+        if (parts.length !== 3 || !/^[A-Za-z0-9_-]{12}$/.test(parts[1]!) ||
+            !/^[A-Za-z0-9_-]+$/.test(parts[2]!)) throw restart();
+        const keys = await readKeys();
+        const selected = [keys?.active, keys?.previous].find((candidate) => candidate?.id === parts[1]);
+        if (!selected) throw restart();
+        const decoded = await box(selected).open({ keyId: selected.id, ciphertext: toBase64(unbase64url(parts[2]!)) });
+        if (decoded.length !== TOKEN_PLAINTEXT_LENGTH) throw restart();
+        const payload = JSON.parse(decoded.trimEnd()) as { i?: unknown; e?: unknown; b?: unknown };
+        if (typeof payload.i !== 'string' || !/^[A-Za-z0-9_-]{22}$/.test(payload.i) ||
+            typeof payload.e !== 'number' || payload.e <= now() || payload.b !== await fingerprint) throw restart();
+        const record = await store.position(payload.i);
+        if (!record || record.expiresAt !== payload.e || record.expiresAt <= now()) throw restart();
+        const opened = JSON.parse(await box(selected).open(record.sealed)) as { id?: unknown; position?: unknown };
+        if (opened.id !== payload.i || typeof opened.position !== 'string') throw restart();
+        return opened.position;
+      } catch {
+        // No parsing, key, authentication, expiry or binding detail reaches a caller.
+        throw restart();
+      }
+    },
+  };
+}

@@ -160,6 +160,8 @@ export {
   webCryptoSecretBox,
 } from './secret-box.js';
 export type { SealedSecret, SecretBox } from './secret-box.js';
+export { visibleContinuation } from './visible-continuation.js';
+export type { ContinuationBinding, ContinuationKey, ContinuationKeys, ContinuationPosition, ContinuationStore } from './visible-continuation.js';
 export {
   ConnectionSealingKeyUnavailableError,
   generateSealingKeyPair,
