@@ -28,6 +28,7 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
   const agent = dataSubjectId.parse(ulid());
   const otherAgent = dataSubjectId.parse(ulid());
   const signup = dataSubjectId.parse(ulid());
+  const otherSignup = dataSubjectId.parse(ulid());
   const customerConversation = ulid();
   const otherConversation = ulid();
   const customerWord = 'Customer text';
@@ -84,10 +85,12 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
       (id, title, body, created_by, created_at, owner)
       VALUES (?, ?, 'Body', ?, ?, ?)`, [id!, title!, agent, at, owner!]);
   }
-  await sql(`INSERT INTO ticket0_signups
-    (id, kind, email, note, state, origin, unsubscribe_token, requested_at, created_at)
-    VALUES (?, 'newsletter', 'signup@example.test', 'Please add me', 'pending',
-      'https://example.test', ?, ?, ?)`, [signup, `unsubscribe-${signup}`, at, at]);
+  for (const [id, email] of [[signup, 'signup@example.test'], [otherSignup, 'other-signup@example.test']]) {
+    await sql(`INSERT INTO ticket0_signups
+      (id, kind, email, note, state, origin, unsubscribe_token, requested_at, created_at)
+      VALUES (?, 'newsletter', ?, 'Please add me', 'pending',
+        'https://example.test', ?, ?, ?)`, [id!, email!, `unsubscribe-${id}`, at, at]);
+  }
 
   const customerReceipt = await host.admin.shredSubject(actor, tenant, scope, customer);
   expect(await one('SELECT email, display_name FROM ticket0_contacts WHERE id = ?', [customer]))
@@ -112,8 +115,8 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
     .toEqual({ error: 'second error' });
   expect(rowsFor(customerReceipt, 'contact')).toBe(1);
   expect(rowsFor(customerReceipt, 'message')).toBe(1);
-  expect(customerReceipt.unreachedEntities.filter((row) => row.module === ticket0Manifest.id))
-    .toEqual([{ module: ticket0Manifest.id, entityType: 'signup' }]);
+  expect(rowsFor(customerReceipt, 'signup')).toBe(0);
+  expect(customerReceipt.unreachedEntities.filter((row) => row.module === ticket0Manifest.id)).toEqual([]);
   expect(await one('SELECT email, note FROM ticket0_signups WHERE id = ?', [signup]))
     .toEqual({ email: 'signup@example.test', note: 'Please add me' });
   expect(customerReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 3 });
@@ -134,7 +137,14 @@ export async function checkTicket0SubjectErasure(host: ScopeHost, raw: ErasureSq
   expect(rowsFor(agentReceipt, 'message')).toBe(1);
   expect(rowsFor(agentReceipt, 'savedReply')).toBe(1);
   expect(agentReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 0 });
-  expect(agentReceipt.unreachedEntities).toContainEqual({ module: ticket0Manifest.id, entityType: 'signup' });
+  expect(rowsFor(agentReceipt, 'signup')).toBe(0);
   expect(await one('SELECT email FROM ticket0_signups WHERE id = ?', [signup]))
     .toEqual({ email: 'signup@example.test' });
+
+  // A public signup proves no link to a contact or principal. Its own id is the
+  // subject for this row; a separate shred deletes exactly that signup.
+  const signupReceipt = await host.admin.shredSubject(actor, tenant, scope, signup);
+  expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [signup])).toEqual([]);
+  expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [otherSignup])).toHaveLength(1);
+  expect(rowsFor(signupReceipt, 'signup')).toBe(1);
 }
