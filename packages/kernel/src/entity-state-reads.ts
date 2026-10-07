@@ -99,12 +99,9 @@ async function keepVisible<T>(
 export function createTrashedReads(deps: TrashedReadDeps): TrashedReads {
   return {
     /**
-     * The bin, walked so that **no position of a row the caller may not see ever leaves the
-     * kernel.** The walk is `pageVisible`'s (#2073), with the declared trash key as its per-row
-     * check: the cursor only from the last visible row of a full page, at most
-     * `TRASH_SCAN_BUDGET` rows read, and a short page — at the end of the bin or at the budget —
-     * answered the same way, with no cursor. A budget stop on a sparse page therefore ends the
-     * walk silently; K-45 says so, and #2074 is the sealed continuation that would not.
+     * The bin uses `pageVisible` with the declared trash key as its per-row check.
+     * A budget stop carries a sealed continuation of the last examined row, including
+     * when no row passed the check. No plain position leaves the kernel (#2074, K-45).
      */
     async pageTrashed(entityType, params) {
       const { key } = stateKeyOf(deps.statePlans, 'ctx.pageTrashed', entityType, 'trash');

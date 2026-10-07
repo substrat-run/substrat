@@ -1,10 +1,9 @@
 /**
- * `todo/my-lists` never hands Björn the position of a list he cannot see (#2073).
+ * `todo/my-lists` never hands Björn the position of a list he cannot see (#2074).
  *
  * Ada's and Björn's lists are created interleaved, so every page boundary of Björn's walk sits
- * next to one of Ada's. The cursor is the kernel's own envelope — base64url JSON carrying the
- * row's id (K-44) — so it is decoded here and judged against the lists he owns. Read from the
- * producer rather than a fake: the walk is `ctx.page`'s, the check is the vertical's.
+ * next to one of Ada's. The filtered cursor is sealed and fixed-length. Read from the
+ * producer: the walk is `ctx.page`'s, the check is the vertical's.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -23,12 +22,6 @@ const his: string[] = [];
 const hers: string[] = [];
 
 type List = { id: string; name: string };
-
-/** The row id inside a `ctx.page` cursor: the tie-break, or the value when the walk sorts by id. */
-function idIn(cursor: string): string {
-  const json = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { value: string; id?: string };
-  return json.id ?? json.value;
-}
 
 async function walk(who: ScopeStub, limit: number, view?: 'archived') {
   const ids: string[] = [];
@@ -59,13 +52,17 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-describe("my-lists hands out no position of a list the caller cannot see (#2073)", () => {
+describe('my-lists seals its position (#2074)', () => {
   for (const limit of [1, 2, 3]) {
-    it(`limit ${limit}: Björn reaches each of his lists, and every cursor is one of his`, async () => {
+    it(`limit ${limit}: Björn reaches each of his lists with fixed-length sealed cursors`, async () => {
       const { ids, cursors } = await walk(bjorn, limit);
       expect(ids).toEqual(his);
       expect(cursors.length).toBeGreaterThan(0);
-      for (const c of cursors) expect(his, `cursor at ${idIn(c)}`).toContain(idIn(c));
+      for (const c of cursors) {
+        expect(c).toMatch(/^sc1\./);
+        for (const id of [...his, ...hers]) expect(c).not.toContain(id);
+      }
+      expect(new Set(cursors.map((c) => c.length)).size).toBe(1);
     });
   }
 
@@ -74,7 +71,7 @@ describe("my-lists hands out no position of a list the caller cannot see (#2073)
     for (const id of hers.slice(0, 5)) await ada.invoke('todo/archive-list', { listId: id });
     const { ids, cursors } = await walk(bjorn, 1, 'archived');
     expect(ids).toEqual(his.slice(0, 2));
-    for (const c of cursors) expect(his.slice(0, 2)).toContain(idIn(c));
+    for (const c of cursors) expect(c).toMatch(/^sc1\./);
     expect((await walk(bjorn, 1)).ids).toEqual(his.slice(2));
   });
 });

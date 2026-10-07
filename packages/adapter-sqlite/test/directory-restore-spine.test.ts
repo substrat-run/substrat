@@ -60,6 +60,24 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
     return [entry('intent', { reason: 'why' }), entry('applied', {})];
   };
 
+  it('omits private continuation keys and positions from directory exports and resets them on restore', async () => {
+    const h = await open();
+    const db = new Database(join(dir!, '_directory.sqlite'));
+    try {
+      db.prepare('INSERT INTO private_continuation_keys (scope_id, keyring) VALUES (?, ?)')
+        .run('scope-a', 'test-private-key');
+      db.prepare('INSERT INTO private_continuation_positions (scope_id, expires_at, locator, ciphertext) VALUES (?, ?, ?, ?)')
+        .run('scope-a', 123, 'locator', 'test-private-position');
+    } finally { db.close(); }
+    const dump = await h.admin.exportDirectory(staff);
+    expect(dump.tables.map((t) => t.name)).not.toContain('private_continuation_keys');
+    expect(dump.tables.map((t) => t.name)).not.toContain('private_continuation_positions');
+    expect(JSON.stringify(dump)).not.toContain('test-private');
+    await h.admin.restoreDirectory(staff, dump);
+    expect(snapshot().find((t) => t.name === 'private_continuation_keys')?.rows).toEqual([]);
+    expect(snapshot().find((t) => t.name === 'private_continuation_positions')?.rows).toEqual([]);
+  });
+
   it('a NOCASE _substrat_tenant_tuples and _substrat_roles restore into BINARY tables, and the tenant-level check compares exactly', async () => {
     const h = await open();
     const built = { tuples: ddlOf('_substrat_tenant_tuples'), roles: ddlOf('_substrat_roles') };

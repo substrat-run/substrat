@@ -116,10 +116,12 @@ export function visibleContinuation(
     },
     async open(cursor: string): Promise<string> {
       if (!cursor.startsWith(`${TOKEN_PREFIX}.`)) {
-        if (legacy && await legacy(cursor)) {
-          legacyUsed?.();
-          return cursor;
-        }
+        try {
+          if (legacy && await legacy(cursor)) {
+            legacyUsed?.();
+            return cursor;
+          }
+        } catch { /* All invalid legacy cursors have the same restart response. */ }
         throw restart();
       }
       try {

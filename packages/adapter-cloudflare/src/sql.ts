@@ -1,4 +1,12 @@
 import { guardSpine, type RedactionSql, type ScopedSql, type SqlValue } from '@substrat-run/kernel';
+import { substratError } from '@substrat-run/contracts';
+
+/** Workerd's `_cf_*` tables back runtime-owned KV and alarms, not module data. */
+function assertNoWorkerdStorage(sql: string): void {
+  if (/_cf_/i.test(sql)) {
+    throw substratError('forbidden', 'ctx.sql cannot read workerd internal storage');
+  }
+}
 
 /**
  * Adapts a Durable Object's `SqlStorage` to the kernel's `ScopedSql` contract
@@ -27,9 +35,12 @@ export function doScopedSql(
   afterDdl?: () => void,
 ): ScopedSql {
   return guardSpine({
-    query: <T = Record<string, SqlValue>>(q: string, params: readonly SqlValue[] = []): T[] =>
-      sql.exec(q, ...(params as SqlValue[])).toArray() as T[],
+    query: <T = Record<string, SqlValue>>(q: string, params: readonly SqlValue[] = []): T[] => {
+      assertNoWorkerdStorage(q);
+      return sql.exec(q, ...(params as SqlValue[])).toArray() as T[];
+    },
     exec: (q: string, params: readonly SqlValue[] = []) => {
+      assertNoWorkerdStorage(q);
       const cursor = sql.exec(q, ...(params as SqlValue[]));
       return { changes: cursor.rowsWritten };
     },

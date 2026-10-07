@@ -9788,6 +9788,10 @@ export class SqliteScopeHost implements ScopeHost {
         // as identifiers, and its `ddl`, never executed here since #1912, is still held to one
         // CREATE TABLE. Judged as a whole before the first DROP, so a refused dump leaves the
         // directory untouched.
+        if (dump.tables.some((table) =>
+          ['private_continuation_keys', 'private_continuation_positions'].includes(table.name.toLowerCase()))) {
+          throw substratError('validation_failed', 'directory dump contains private host state');
+        }
         assertReplayableDump(dump.tables);
         // One transaction, foreign keys deferred to commit: the dump is ordered by table NAME
         // (which says nothing about references — a `tenants` row can name another as

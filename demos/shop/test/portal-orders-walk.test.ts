@@ -36,11 +36,6 @@ let orphans = 0;
 /** `order:read` checks on an order, since the last reset. */
 let orderChecks = 0;
 
-/** The row id inside a `ctx.page` cursor (K-44) — on this `number` walk, its tie-break. */
-function idIn(cursor: string): string {
-  return (JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { id: string }).id;
-}
-
 async function walk(who: ScopeStub, limit: number) {
   const ids: string[] = [];
   const cursors: string[] = [];
@@ -122,7 +117,7 @@ afterAll(async () => {
 
 describe('shop/portal-orders walks with pageVisible (#2080)', () => {
   for (const limit of [1, 2, 3]) {
-    it(`limit ${limit}: each customer reaches every own order, newest first, and every cursor is theirs`, async () => {
+    it(`limit ${limit}: each customer reaches every own order with sealed cursors`, async () => {
       for (const [who, own] of [
         [elin, hers],
         [otto, his],
@@ -130,7 +125,11 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
         const { ids, cursors } = await walk(who, limit);
         expect(ids).toEqual(own);
         expect(cursors.length).toBeGreaterThan(0);
-        for (const c of cursors) expect(own, `cursor at ${idIn(c)}`).toContain(idIn(c));
+        for (const c of cursors) {
+          expect(c).toMatch(/^sc1\./);
+          for (const id of [...hers, ...his]) expect(c).not.toContain(id);
+        }
+        expect(new Set(cursors.map((c) => c.length)).size).toBe(1);
       }
     });
   }
@@ -150,7 +149,7 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
       expect(page.entries.map((o) => o.id)).toEqual(hers.slice(0, 2));
       // The orphans, then Otto's two, Elin's first, Otto's next two, Elin's second — and stop.
       expect(orderChecks).toBe(orphans + 6);
-      expect(idIn(page.nextCursor!)).toBe(hers[1]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
     });
 
     it('the next page starts after her own order, not after a refused one', async () => {
@@ -170,18 +169,23 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
       orphanOrders(VISIBLE_SCAN_BUDGET - 3 - orphans);
       const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
       expect(page.entries.map((o) => o.id)).toEqual([hers[0]]);
-      expect(idIn(page.nextCursor!)).toBe(hers[0]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
       expect(orderChecks).toBe(VISIBLE_SCAN_BUDGET);
       atHerNewest = page.nextCursor!;
     });
 
-    it('one row further and the walk ends there, as pageVisible documents: no rows, no cursor', async () => {
+    it('one row further returns an empty page with a continuation, then reaches her order', async () => {
       orphanOrders(1);
       const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
-      // The cost #2074 names: she has orders, and this call cannot say so without saying how
-      // many rows she may not see. A cursor here would be an orphan's position.
-      expect(page).toEqual({ entries: [], nextCursor: null });
+      expect(page.entries).toEqual([]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
       expect(orderChecks).toBe(VISIBLE_SCAN_BUDGET);
+      orderChecks = 0;
+      const resumed = await elin.invoke<Page<OrderRow>>('shop/portal-orders', {
+        limit: 1, cursor: page.nextCursor!,
+      });
+      expect(resumed.entries.map((o) => o.id)).toEqual([hers[0]]);
+      expect(orderChecks).toBe(1);
     });
 
     it('her cursor carries the walk on past the budget, from her own order', async () => {

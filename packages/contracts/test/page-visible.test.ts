@@ -301,3 +301,32 @@ describe('rowCursors never leave the process (#2073)', () => {
     expect(withoutRowCursors(undefined)).toBeUndefined();
   });
 });
+
+describe('pageVisible with a sealed continuation (#2074)', () => {
+  it('resumes after a budget of hidden rows, including an empty page', async () => {
+    const t = table(VISIBLE_SCAN_BUDGET + 10);
+    const positions = new Map<string, string>();
+    let issued = 0;
+    const continuation = {
+      seal: async (position: string) => {
+        const token = `sealed-${String(++issued).padStart(8, '0')}`;
+        positions.set(token, position);
+        return token;
+      },
+      open: async (token: string) => {
+        const position = positions.get(token);
+        if (!position) throw new Error('cursor_restart');
+        return position;
+      },
+    };
+    const allow = (row: Row) => row.id === 'r2005';
+    const first = await pageVisible(t.fetch, { limit: 1 }, allow, { continuation });
+    expect(first.entries).toEqual([]);
+    expect(first.nextCursor).toMatch(/^sealed-/);
+    expect(first.nextCursor).not.toContain('r1999');
+    const second = await pageVisible(t.fetch, { limit: 1, cursor: first.nextCursor! }, allow, { continuation });
+    expect(second.entries.map((r) => r.id)).toEqual(['r2005']);
+    expect(second.nextCursor).toMatch(/^sealed-/);
+    expect(second.nextCursor?.length).toBe(first.nextCursor?.length);
+  });
+});
