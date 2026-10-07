@@ -74,7 +74,6 @@ export const PEER_BINDINGS_DDL = `
   CREATE INDEX IF NOT EXISTS peer_bindings_target ON peer_bindings (target_scope_id);
 `;
 
-
 /** One peer vertical as every registered module declares it, together. */
 export interface PeerDeclaration {
   readonly vertical: string;

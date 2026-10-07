@@ -228,7 +228,8 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
                         <option value={choice.boundScopeId}>Unavailable bound instance</option>}
                       {choice.candidates.map((c) => <option key={c.scopeId} value={c.scopeId}>{c.name}</option>)}
                     </select>
-                    <Button size="sm" disabled={busy || (selected === (choice.boundScopeId ?? '') && !choice.invalidated)}
+                    <Button size="sm" disabled={busy || (selected !== '' && !choice.candidates.some((c) => c.scopeId === selected)) ||
+                      (selected === (choice.boundScopeId ?? '') && !choice.invalidated)}
                       onClick={() => void saveBinding(row.vertical, selected || null)}>{choice.invalidated ? 'Rebind target' : 'Save target'}</Button>
                     {choice.boundScopeId && <Button size="sm" variant="secondary" disabled={busy}
                       onClick={() => void saveBinding(row.vertical, null)}>Clear choice</Button>}
