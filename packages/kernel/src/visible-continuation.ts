@@ -7,6 +7,7 @@ declare const crypto: {
   getRandomValues<T extends Uint8Array>(bytes: T): T;
   subtle: { digest(name: 'SHA-256', bytes: Uint8Array): Promise<ArrayBuffer> };
 };
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 
 const TOKEN_PREFIX = 'sc1';
 const TOKEN_PLAINTEXT_LENGTH = 192;
