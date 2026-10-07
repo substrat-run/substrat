@@ -1,5 +1,5 @@
-import type { PeerGrantsStatusEntry, Scope, TenantId } from '@substrat-run/contracts';
-import { resolveVerticalInstanceFrom, type VerticalInstanceCandidate } from '@substrat-run/kernel';
+import type { PeerGrantsStatusEntry, Scope, ScopeId, TenantId } from '@substrat-run/contracts';
+import { resolvePeerInstanceFrom, type VerticalInstanceCandidate } from '@substrat-run/kernel';
 
 /**
  * The install disclosure (#1706) — what a tenant is told about one app's reach into its
@@ -22,6 +22,7 @@ export type DeclaredCallState =
   /** The tenant runs no instance of that vertical. Nothing is wrong; nothing can be called. */
   | { state: 'not-installed'; vertical: string }
   | { state: 'ambiguous'; vertical: string; count: number }
+  | { state: 'bound-unavailable'; vertical: string }
   /** Installed, and this app is admitted at its door right now. */
   | { state: 'allowed'; vertical: string; scopeId: string }
   /** Installed, and this app is switched off there — by someone, for a reason, at a time. */
@@ -50,10 +51,12 @@ export function targetScopeOf(
   scopes: readonly Scope[],
   tenantId: TenantId,
   vertical: string,
-): { scopeId: string } | { ambiguous: true; count: number } | null {
-  const resolution = resolveVerticalInstanceFrom(scopes as unknown as VerticalInstanceCandidate[], tenantId, vertical);
+  boundScopeId: ScopeId | null = null,
+): { scopeId: string } | { ambiguous: true; count: number } | { boundUnavailable: true } | null {
+  const resolution = resolvePeerInstanceFrom(scopes as unknown as VerticalInstanceCandidate[], tenantId, vertical, boundScopeId);
   if (resolution.outcome === 'resolved') return { scopeId: resolution.instance.scopeId };
   if (resolution.outcome === 'ambiguous') return { ambiguous: true, count: resolution.count };
+  if (resolution.outcome === 'bound-unavailable') return { boundUnavailable: true };
   return null;
 }
 
@@ -67,13 +70,14 @@ export function targetScopeOf(
 export function declaredCallState(input: {
   vertical: string;
   caller: string;
-  target: { scopeId: string } | { ambiguous: true; count: number } | null;
+  target: { scopeId: string } | { ambiguous: true; count: number } | { boundUnavailable: true } | null;
   entries: PeerGrantsStatusEntry[] | null;
   readError?: string | null;
 }): DeclaredCallState {
   const { vertical, caller, target } = input;
   if (target === null) return { state: 'not-installed', vertical };
   if ('ambiguous' in target) return { state: 'ambiguous', vertical, count: target.count };
+  if ('boundUnavailable' in target) return { state: 'bound-unavailable', vertical };
   const { scopeId } = target;
   if (input.readError) return { state: 'unreadable', vertical, scopeId, message: input.readError };
   if (input.entries === null) return { state: 'unreadable', vertical, scopeId, message: 'not read' };
@@ -93,6 +97,8 @@ export function declaredCallLine(entry: DeclaredCallState): string {
       return `Not installed here — this app declares it calls ${entry.vertical}, and you do not run one.`;
     case 'ambiguous':
       return `${entry.count} active instances of ${entry.vertical} — calls are refused until one target can be resolved.`;
+    case 'bound-unavailable':
+      return `The bound instance of ${entry.vertical} is unavailable — rebind or clear the choice.`;
     case 'allowed':
       return `Grants are active at ${entry.vertical}. Its manifest separately decides which operations this app may invoke.`;
     case 'switched-off':
@@ -109,5 +115,5 @@ export function declaredCallLine(entry: DeclaredCallState): string {
  * target is an ordinary install state and does not — see the module comment.
  */
 export function declaredCallNeedsAttention(entry: DeclaredCallState): boolean {
-  return entry.state === 'ambiguous' || entry.state === 'no-grant' || entry.state === 'unreadable';
+  return entry.state === 'ambiguous' || entry.state === 'bound-unavailable' || entry.state === 'no-grant' || entry.state === 'unreadable';
 }
