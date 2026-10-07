@@ -54,7 +54,7 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
     [otherCustomer, null, 'second@example.test', 'Second'],
   ]) {
     await sql('INSERT INTO ticket0_contacts (id, principal, email, display_name, created_at) VALUES (?, ?, ?, ?, ?)',
-      [id!, principal, email!, name!, at]);
+      [id!, principal ?? null, email!, name!, at]);
   }
   for (const [id, name] of [[agent, 'Agent One'], [otherAgent, 'Agent Two']]) {
     await sql('INSERT INTO ticket0_agent_profiles (principal, display_name, avatar_url, signature, created_at) VALUES (?, ?, ?, ?, ?)',
