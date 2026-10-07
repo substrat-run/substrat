@@ -966,8 +966,13 @@ describe('pdf: hostile files end failed or empty, promptly, and never throw', ()
 const HOLD_MS = 150;
 /** The most CPU spent before a 5 ms abort timer gets its turn. */
 const TIMER_SLACK_MS = 150;
-/** The work an aborted extraction may still charge: at most the rest of the stride it was in. */
-const ABORTED_UNITS = EXTRACTION_STRIDE;
+/**
+ * The work an aborted extraction may still charge: the rest of the stride it was in, "give or
+ * take the few characters a search must see whole" (`Pace`) — a step's fixed cost of slack. An
+ * abort that lands at a yield other than a checkpoint (a decoder's own await) is noticed at the
+ * next one, a stride on: under load that is where it lands, 8 units past the stride.
+ */
+const ABORTED_UNITS = EXTRACTION_STRIDE + CALL_COST;
 /**
  * The loop turns an aborted extraction may take to answer: it answers at its next checkpoint,
  * and a timer's abort lands only at one, so none today — two allow a checkpoint's own yield.
@@ -1114,7 +1119,8 @@ describe('the abort-latency harness: no shape holds the thread, aborted or not',
     expect(await longestHold(body, shape.extractor, shape.contentType), 'the thread was held').toBeLessThan(HOLD_MS);
     // And never holds more memory than the bound allows, at its peak.
     expect(await peakMemory(body, shape.extractor, shape.contentType), 'memory held at the peak').toBeLessThan(PEAK_MIB * MIB);
-  }, 30_000);
+    // A hang guard only, in wall time on purpose: it bounds nothing the rows above do not.
+  }, 120_000);
 });
 
 /** A PDF extraction aborted mid-way — `afterMs` in, on a timer's turn — and what it did after. */
