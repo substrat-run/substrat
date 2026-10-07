@@ -54,7 +54,8 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
     await sql('INSERT INTO ticket0_contacts (id, email, display_name, created_at) VALUES (?, ?, ?, ?)', [id!, email!, name!, at]);
   }
   for (const [id, name] of [[agent, 'Agent One'], [otherAgent, 'Agent Two']]) {
-    await sql('INSERT INTO ticket0_agent_profiles (principal, display_name, signature, created_at) VALUES (?, ?, ?, ?)', [id!, name!, `${name} signature`, at]);
+    await sql('INSERT INTO ticket0_agent_profiles (principal, display_name, avatar_url, signature, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id!, name!, `https://example.test/${id}`, `${name} signature`, at]);
   }
   for (const [id, contact] of [[customerConversation, customer], [otherConversation, otherCustomer]]) {
     await sql(`INSERT INTO ticket0_conversations
@@ -72,8 +73,8 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
   ] as const;
   for (const [id, conversation, kind, contact, principal, body] of messages) {
     await sql(`INSERT INTO ticket0_messages
-      (id, conversation_id, author_kind, author_contact_id, author_principal, visibility, body_text, created_at)
-      VALUES (?, ?, ?, ?, ?, 'public', ?, ?)`, [id, conversation, kind, contact, principal, body, at]);
+      (id, conversation_id, author_kind, author_contact_id, author_principal, visibility, body_text, body_html, created_at)
+      VALUES (?, ?, ?, ?, ?, 'public', ?, ?, ?)`, [id, conversation, kind, contact, principal, body, `<p>${body}</p>`, at]);
   }
   for (const [conversation, comment] of [[customerConversation, 'first rating'], [otherConversation, 'second rating']]) {
     await sql('INSERT INTO ticket0_csat (conversation_id, score, comment, submitted_at) VALUES (?, 5, ?, ?)', [conversation!, comment!, at]);
@@ -100,12 +101,12 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
     .toEqual({ email: null, display_name: null });
   expect(await one('SELECT email FROM ticket0_contacts WHERE id = ?', [otherCustomer]))
     .toEqual({ email: 'second@example.test' });
-  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['customer']))
-    .toEqual({ body_text: '' });
-  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['legacy']))
-    .toEqual({ body_text: '' });
-  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['other-contact']))
-    .toEqual({ body_text: otherWord });
+  expect(await one('SELECT body_text, body_html FROM ticket0_messages WHERE id = ?', ['customer']))
+    .toEqual({ body_text: '', body_html: null });
+  expect(await one('SELECT body_text, body_html FROM ticket0_messages WHERE id = ?', ['legacy']))
+    .toEqual({ body_text: '', body_html: null });
+  expect(await one('SELECT body_text, body_html FROM ticket0_messages WHERE id = ?', ['other-contact']))
+    .toEqual({ body_text: otherWord, body_html: `<p>${otherWord}</p>` });
   expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['agent']))
     .toEqual({ body_text: agentWord });
   expect(await one('SELECT comment FROM ticket0_csat WHERE conversation_id = ?', [customerConversation]))
@@ -125,12 +126,12 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
   expect(customerReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 3 });
 
   const agentReceipt = await adapter.erase(tenant, scope, actor, agent);
-  expect(await one('SELECT display_name, signature FROM ticket0_agent_profiles WHERE principal = ?', [agent]))
-    .toEqual({ display_name: '', signature: null });
-  expect(await one('SELECT display_name FROM ticket0_agent_profiles WHERE principal = ?', [otherAgent]))
-    .toEqual({ display_name: 'Agent Two' });
-  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['agent']))
-    .toEqual({ body_text: '' });
+  expect(await one('SELECT display_name, avatar_url, signature FROM ticket0_agent_profiles WHERE principal = ?', [agent]))
+    .toEqual({ display_name: '', avatar_url: null, signature: null });
+  expect(await one('SELECT display_name, avatar_url FROM ticket0_agent_profiles WHERE principal = ?', [otherAgent]))
+    .toEqual({ display_name: 'Agent Two', avatar_url: `https://example.test/${otherAgent}` });
+  expect(await one('SELECT body_text, body_html FROM ticket0_messages WHERE id = ?', ['agent']))
+    .toEqual({ body_text: '', body_html: null });
   expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['other-agent']))
     .toEqual({ body_text: otherWord });
   expect(await sql('SELECT id FROM ticket0_saved_replies WHERE id = ?', ['first-reply'])).toEqual([]);
@@ -150,4 +151,5 @@ export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promi
   expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [signup])).toEqual([]);
   expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [otherSignup])).toHaveLength(1);
   expect(rowsFor(signupReceipt, 'signup')).toBe(1);
+  expect(signupReceipt.unreachedEntities.filter((row) => row.module === ticket0Manifest.id)).toEqual([]);
 }
