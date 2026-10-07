@@ -462,12 +462,6 @@ interface StockRow {
 }
 
 /**
- * The warehouse view: on-hand vs reserved, which `shop/catalog` deliberately
- * never exposes — it is browse-gated, and a shopper has no business reading the
- * reservation ledger. Same numbers `add-to-cart` enforces against, so the gap
- * between on-hand and available *is* the live cart holds.
- */
-/**
  * Page a list this vertical already has in memory, on one of its own fields.
  *
  * Used for the read the kernel cannot walk: the stock overview joins products,
@@ -475,28 +469,28 @@ interface StockRow {
  * it. A per-row filter is not this — it walks `ctx.page` with `pageVisible`, which
  * bounds the scan, as `shop/portal-orders` does (#2073, #2080).
  *
- * `order` matters: a descending walk's cursor is exclusive the other way round.
- * The cursor field must be UNIQUE among the rows, which each call site's
+ * The cursor field must be UNIQUE among the rows, which the call site's
  * declaration in `operations.ts` states and this cannot check.
  */
-function pageBy<T>(
-  rows: T[],
-  page: ListPage,
-  key: (row: T) => string,
-  order: 'asc' | 'desc' = 'asc',
-): Page<T> {
+function pageBy<T>(rows: T[], page: ListPage, key: (row: T) => string): Page<T> {
   const limit = Math.min(page.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
   const cursor = page.cursor;
   const after =
     cursor === undefined
       ? 0
       : (() => {
-          const i = rows.findIndex((r) => (order === 'asc' ? key(r) > cursor : key(r) < cursor));
+          const i = rows.findIndex((r) => key(r) > cursor);
           return i < 0 ? rows.length : i;
         })();
   return pageOf(rows.slice(after, after + limit), limit, key);
 }
 
+/**
+ * The warehouse view: on-hand vs reserved, which `shop/catalog` deliberately
+ * never exposes — it is browse-gated, and a shopper has no business reading the
+ * reservation ledger. Same numbers `add-to-cart` enforces against, so the gap
+ * between on-hand and available *is* the live cart holds.
+ */
 const stockOverviewOp: OperationHandler<ListPage | undefined, Page<StockRow>> = async (
   ctx,
   page,

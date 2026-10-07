@@ -29,15 +29,16 @@ let astrid: ScopeStub;
 let elin: ScopeStub;
 let otto: ScopeStub;
 /** Newest first, as the walk returns them. */
-let hers: string[] = [];
-let his: string[] = [];
+const hers: string[] = [];
+const his: string[] = [];
+/** Harness-written orders so far — every one of them in front of every real order. */
+let orphans = 0;
 /** `order:read` checks on an order, since the last reset. */
 let orderChecks = 0;
 
-/** The row id inside a `ctx.page` cursor (K-44): the tie-break, or the value on an id walk. */
+/** The row id inside a `ctx.page` cursor (K-44) — on this `number` walk, its tie-break. */
 function idIn(cursor: string): string {
-  const json = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { value: unknown; id?: string };
-  return json.id ?? String(json.value);
+  return (JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { id: string }).id;
 }
 
 async function walk(who: ScopeStub, limit: number) {
@@ -61,7 +62,11 @@ async function checkout(who: ScopeStub, customerId: string): Promise<string> {
   return placed.order.id;
 }
 
-/** Orders no customer is linked to, numbered above every order so far — newer than all of them. */
+/**
+ * Orders no checkout linked to a customer, numbered above every order so far — newer than all
+ * of them. `customer_id` is a required column, so it names Otto's; visibility rides the link
+ * edge a checkout writes, not the column, so Otto is refused these as well.
+ */
 function orphanOrders(count: number): void {
   const db = new Database(join(dir, `${w.t1}__${w.s1}.sqlite`));
   try {
@@ -74,6 +79,7 @@ function orphanOrders(count: number): void {
     db.transaction(() => {
       for (let i = 1; i <= count; i++) insert.run(ulid(), top + i, w.ottoCustomerId);
     })();
+    orphans += count;
   } finally {
     db.close();
   }
@@ -137,14 +143,13 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
 
   describe('with the rest of the shop’s history in front of her', () => {
     // Runs after the walks above, which these orders would otherwise sit in front of.
-    const extra = 300;
-    beforeAll(() => orphanOrders(extra));
+    beforeAll(() => orphanOrders(300));
 
     it('a page costs the checks it takes to fill it, not one per order in the shop', async () => {
       const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 2 });
       expect(page.entries.map((o) => o.id)).toEqual(hers.slice(0, 2));
       // The orphans, then Otto's two, Elin's first, Otto's next two, Elin's second — and stop.
-      expect(orderChecks).toBe(extra + 6);
+      expect(orderChecks).toBe(orphans + 6);
       expect(idIn(page.nextCursor!)).toBe(hers[1]);
     });
 
@@ -162,7 +167,7 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
     let atHerNewest: string;
 
     it('her newest order as the budget’s LAST row is still found', async () => {
-      orphanOrders(VISIBLE_SCAN_BUDGET - 3 - 300);
+      orphanOrders(VISIBLE_SCAN_BUDGET - 3 - orphans);
       const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
       expect(page.entries.map((o) => o.id)).toEqual([hers[0]]);
       expect(idIn(page.nextCursor!)).toBe(hers[0]);
