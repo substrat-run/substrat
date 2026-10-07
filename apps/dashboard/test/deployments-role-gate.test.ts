@@ -127,6 +127,10 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
             effects.push(`${method} ${path}`);
             return Response.json({ changed: true });
           }
+          if (method === 'PUT' && path.endsWith('/peer-bindings')) {
+            effects.push(`${method} ${path}`);
+            return Response.json({ changed: true, previous: null, operationId: ulid() });
+          }
           if (method === 'POST' && path.endsWith('/import-cursor')) {
             effects.push(`${method} ${path}`);
             return Response.json({ replayId: 'r', mode: 'replay', archived: { journal: 0, deliveries: 0 } });
@@ -210,6 +214,15 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
   });
   it('peer switch: a manager cannot address an app outside the team', async () => {
     expect((await asRole('owner', 'POST', `/api/apps/${ulid()}/peers/switch`, { vertical: 'acme/board-room', to: 'off', reason: 'review' })).status).toBe(404);
+    expect(planeCalls).toEqual([]);
+  });
+
+  it('peer binding: only app managers can choose or clear a target in their team', async () => {
+    const route = `/api/apps/${peerScope}/peers/binding`;
+    const body = { vertical: 'acme/crm', targetScopeId: null };
+    await refused(['PUT', route, body]);
+    await allowed(['PUT', route, body], [200]);
+    expect((await asRole('owner', 'PUT', `/api/apps/${ulid()}/peers/binding`, body)).status).toBe(404);
     expect(planeCalls).toEqual([]);
   });
 
