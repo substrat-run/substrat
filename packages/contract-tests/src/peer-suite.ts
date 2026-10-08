@@ -37,7 +37,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { expectAnswered, expectSettledUnknown, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
+import { expectAnswered, expectSettledUnknown, withEmptyOutcomeError, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
 import { PEER_CALLER, PEER_LISTENER, peerMod } from './modules.js';
 
 const READ = permissionKey.parse('peer:read');
@@ -436,6 +436,14 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
         } finally {
           await liftRecord();
         }
+      });
+
+      it('an empty outcome-write error still warns after the switch moves', async () => {
+        const result = await withEmptyOutcomeError(() => off(PEER_LISTENER));
+        expect(result.auditWarning).toBe('the switch completed, but its outcome could not be written to the admin log: ');
+        expect(await held(PEER_LISTENER)).toEqual([]);
+        await expectSettledUnknown(host, staff, where('revokeFromPeer', result.operationId), { vertical: PEER_LISTENER, calls: 'off' });
+        await on(PEER_LISTENER);
       });
 
       it('a switch that moved but whose applied row is refused answers success with auditWarning, and the settle closes it unknown', async () => {

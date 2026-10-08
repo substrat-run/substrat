@@ -14,7 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type JobPassContext, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { expectAnswered, expectSettledUnknown, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
+import { expectAnswered, expectSettledUnknown, withEmptyOutcomeError, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
 import { jobsMod, scheduleMod } from './modules.js';
 
 const SCHED = moduleId.parse('@test/sched');
@@ -306,6 +306,16 @@ export function systemSwitchContractSuite(
         } finally {
           await liftRecord();
         }
+      });
+
+      it('an empty outcome-write error still warns after the switch moves', async () => {
+        const s = await newScope();
+        const result = await withEmptyOutcomeError(() => off(s));
+        expect(result.auditWarning).toBe('the switch completed, but its outcome could not be written to the admin log: ');
+        expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+        await expectSettledUnknown(host, staff, { tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId: result.operationId }, {
+          moduleId: SCHED, schedules: 'off',
+        });
       });
 
       it('a switch that moved but whose applied row is refused answers success with auditWarning, and the settle closes it unknown', async () => {

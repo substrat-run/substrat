@@ -67,7 +67,11 @@ export async function recordAuditOutcome(
     return null;
   } catch (auditError) {
     const message = auditError instanceof Error ? auditError.message : String(auditError);
-    logError(UNRECORDED_OUTCOME_LOG, { ...line, auditError: message });
+    try {
+      logError(UNRECORDED_OUTCOME_LOG, { ...line, auditError: message });
+    } catch {
+      // Reporting an unwritten row must not replace the operation’s own error or warning.
+    }
     return message;
   }
 }

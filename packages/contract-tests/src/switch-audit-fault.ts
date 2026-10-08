@@ -1,4 +1,5 @@
 import { expect, vi } from 'vitest';
+import * as kernel from '@substrat-run/kernel';
 import type { AdminAction, PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { UNRECORDED_OUTCOME_LOG, type ScopeHost } from '@substrat-run/kernel';
 
@@ -99,4 +100,14 @@ export async function expectAnswered(
     .filter((r) => (r.after as { operationId?: string }).operationId === where.operationId);
   expect(rows.map((r) => (r.after as { phase: string }).phase)).toEqual(['intent', phase]);
   expect(await host.admin.settleUnrecordedOutcome(staff, { intentId: rows[0]!.id, error: 'x' })).toBe(false);
+}
+
+/** Pin adapter warning propagation independently of the store's error-message formatting. */
+export async function withEmptyOutcomeError<T>(call: () => Promise<T>): Promise<T> {
+  const outcome = vi.spyOn(kernel, 'recordAuditOutcome').mockResolvedValue('');
+  try {
+    return await call();
+  } finally {
+    outcome.mockRestore();
+  }
 }

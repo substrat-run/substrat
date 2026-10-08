@@ -163,6 +163,23 @@ describe('the operation-id reads', () => {
  * adapters' kill switches — through one helper that never swallows a failure.
  */
 describe('recordAuditOutcome', () => {
+  it('an empty audit error remains a failure rather than the null success sentinel', async () => {
+    const logged: unknown[] = [];
+    const line = { flow: 'system-switch', operationId: 'empty-error', phase: 'applied' };
+    const result = await recordAuditOutcome(() => { throw new Error(''); }, line, (...args) => logged.push(args));
+    expect(result).toBe('');
+    expect(logged).toEqual([[UNRECORDED_OUTCOME_LOG, { ...line, auditError: '' }]]);
+  });
+
+  it('a throwing logger cannot replace the audit-write failure', async () => {
+    for (const phase of ['refused', 'failed', 'applied']) {
+      const line = { flow: 'system-switch', operationId: 'logger-error', phase };
+      const write = () => { throw new Error('audit write failed'); };
+      const log = () => { throw new Error('logger failed'); };
+      expect(await recordAuditOutcome(write, line, log)).toBe('audit write failed');
+    }
+  });
+
   const line = { flow: 'system-switch', operationId: 'op-1', phase: 'refused' };
 
   it('a row that lands answers null and logs nothing', async () => {

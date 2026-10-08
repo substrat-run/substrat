@@ -7323,7 +7323,7 @@ export class SqliteScopeHost implements ScopeHost {
             (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
         );
       }
-      return { operationId, outcome, ...(unrecorded ? { auditWarning: auditWarningOf('the switch', unrecorded) } : {}) };
+      return { operationId, outcome, ...(unrecorded !== null ? { auditWarning: auditWarningOf('the switch', unrecorded) } : {}) };
     };
 
     /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
