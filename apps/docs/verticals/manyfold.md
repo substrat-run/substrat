@@ -65,7 +65,7 @@ under exactly the discipline an engine would enforce:
 - **immutable-after-publish**: the published revision is frozen with a content hash;
 - **every mutation emits a fat event** on the spine.
 
-That the same four properties keep reappearing — here, in Callout's work orders, in
+That the same four properties keep reappearing — here, in Handlebar's work orders, in
 Meridian's ledgers — is the extraction signal itself. The line Manyfold draws for a future
 `content` / editorial engine is visible in `module.ts`: the lifecycle helpers
 (`transition`, the `ALLOWED` graph, `contentHash`, the delivery projection) are the piece

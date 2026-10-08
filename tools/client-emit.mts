@@ -159,8 +159,8 @@ for (const { rel, dir, config } of opted) {
    * One configured export, found across the model modules.
    *
    * Deliberately NOT a merged namespace. Five modules share plenty of incidental
-   * names — callout and engine-protocol both export an `instantiateProtocolInput`,
-   * and they are genuinely different objects (callout pins `entityType` to the
+   * names — a vertical and engine-protocol can both export an `instantiateProtocolInput`,
+   * and they are genuinely different objects (the vertical's pins `entityType` to the
    * literal `'workorder'`; the engine takes an `EntityRef`). A merge would have to
    * pick a winner for a name nobody asked about. So only the names the config
    * actually NAMES are resolved, and only those are refused when ambiguous — which

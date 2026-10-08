@@ -23,8 +23,8 @@ a zod-openapi library, and the manifest field built for it
 and read by nothing.
 
 Meanwhile every vertical already *has* a complete, typed HTTP surface, in one of two
-shapes. Callout (the legacy shape) hand-writes a REST route table
-([demos/callout/src/routes.ts](../../demos/callout/src/routes.ts)) mapping paths onto
+shapes. Callout (the legacy shape; the demo has since been removed) hand-wrote a REST route
+table (its `src/routes.ts`) mapping paths onto
 `stub.invoke('module/operation', input)`. The sandbox-clean verticals expose the
 operations directly: Manyfold serves `POST /api/op/<name>` against an exported allowlist
 ([demos/manyfold/src/routes.ts](../../demos/manyfold/src/routes.ts) `OPERATIONS`),
@@ -66,7 +66,7 @@ derives from the catalog's keys).
 The OpenAPI 3.1 document is generated from the catalog with `zod-openapi`
 (Zod 4-compatible, matching the repo's `zod ^4.4`; K-9's named tool) — one path item per
 operation on the `/api/op/{name}` convention (§2.2), programmatically, no per-route
-ceremony. A vertical with bespoke REST routes (Callout's table, portal walks) hangs the
+ceremony. A vertical with bespoke REST routes (a hand-written table, portal walks) hangs the
 same catalog schemas on those route definitions when it converts.
 
 **Rejected: kernel-generated spec from `ModuleRegistration`.** Making operations declare
@@ -164,7 +164,8 @@ introspection reads.
 5. **The rest of the fleet** (shop, rally, callout, …) — adopt as touched. Callout is
    last, not first: it is the legacy shape awaiting its sandbox-clean migration, and its
    hand-written REST table means real per-route conversion work that buys the platform
-   nothing the reference PR hasn't already proven.
+   nothing the reference PR hasn't already proven. (Rally and Callout have since been removed
+   from the repo.)
 
 ## 4. What this deliberately does not do
 
@@ -204,7 +205,7 @@ it needs.
 2. **Spec metadata** — where do title/version/description come from? The manifest already
    carries module id + schemaVersion; the vertical's package.json carries the deployed
    version. Probably manifest for identity, package version for `info.version`.
-3. **Portal surfaces** — Callout's portal routes are permission-narrowed per entity; does
+3. **Portal surfaces** — a portal route is permission-narrowed per entity; does
    the spec document them in the same document with the `cookie` scheme, or does a portal
    audience deserve a filtered document? (Leaning: one document; the permission system
    already answers who can call what.)

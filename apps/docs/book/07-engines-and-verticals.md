@@ -28,7 +28,7 @@ Vocabulary, roles, pricing, screens, workflow, the shape of the API its own app 
 vertical composes engines the way an application composes libraries, except the library's
 invariants are enforced from below rather than trusted.
 
-The repo carries eight demo verticals. Two of them are the reference implementations. They
+The repo carries seven demo verticals. Two of them are the reference implementations. They
 answer different questions, and they are references *because they are used*. A demo nobody
 runs rots, however complete it looks.
 

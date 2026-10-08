@@ -350,7 +350,7 @@ over verticals, but reads/writes domain data across the boundary only through §
    re-identify — so none of §6's gates relax. Free text and national identifiers keep
    `[masked]` (a hash cannot invent a sentence, and a generated personnummer may belong
    to a real person). The claim that a pseudonymized dump is still a *working scope* is
-   held by `demos/callout/test/masked-round-trip.test.ts`: a real seed is exported,
+   held by `demos/meridian/test/masked-round-trip.test.ts`: a real seed is exported,
    pseudonymized, imported into a fresh scope and read back through the vertical's own
    operations, so a fake that breaks `importScope`, throws at an engine seam, or leaves a
    derived search index pointing at the real name is a red build rather than a discovery

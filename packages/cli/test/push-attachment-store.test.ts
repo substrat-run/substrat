@@ -108,7 +108,7 @@ process.stdout.write('ATTACHES ' + (await deriveDeclaredSurface(dir)).declaresAt
   // A real vertical is bundled to be read, which takes longer than a fixture under a full run.
   const BUNDLE_TIMEOUT = 30_000;
 
-  it.each(['demos/meridian', 'demos/callout'])('%s', (dir) => {
+  it.each(['demos/meridian'])('%s', (dir) => {
     expect(attaches(dir)).toBe('true');
   }, BUNDLE_TIMEOUT);
 

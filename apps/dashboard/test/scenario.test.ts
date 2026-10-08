@@ -35,9 +35,6 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
  */
 import { protocolModule, PROTOCOL_PERM } from '@substrat-run/engine-protocol';
 import { absenceModule } from '@substrat-run/engine-absence';
-import { workorderModule } from '@substrat-run/engine-workorder';
-import { invoicingModule } from '@substrat-run/engine-invoicing';
-import { calloutModule } from '@substrat-run/demo-callout/module';
 import { meridianModule } from '@substrat-run/demo-meridian/module';
 import { HR_PERM } from '@substrat-run/demo-meridian/manifest';
 import {
@@ -84,7 +81,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     for (const m of MODULES) host.registerModule(m); // the dashboard vertical
     // The verticals an app can run, registered in-process so this host can stand in
     // for their separate deployments. Test-only: see the harness note above.
-    for (const m of [protocolModule, absenceModule, workorderModule, invoicingModule, calloutModule, meridianModule]) {
+    for (const m of [protocolModule, absenceModule, meridianModule]) {
       host.registerModule(m);
     }
     staff = platformActorId.parse(ulid());
@@ -687,7 +684,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(offered.map((v) => v.slug)).not.toContain('retired-builtin');
     // Entries still in CATALOG are untouched, and the audited retirement fired once —
     // a second pass (every /api/catalog read runs this) records nothing new.
-    expect(offered.map((v) => v.slug)).toContain('callout');
+    expect(offered.map((v) => v.slug)).toContain('protocol');
     await ensureCatalog(host, staff);
     const blocks = (await host.admin.auditLog(staff)).filter(
       (e) => e.action === 'setVerticalInstallsBlocked',
@@ -1078,26 +1075,25 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).toHaveLength(0);
   });
 
-  it('an owner provisions a real Callout app — a live multi-engine scope with a default hostname', async () => {
-    const acme = await bootstrap('acme-callout');
+  it('an owner provisions a real Documents app — a live engine scope with a default hostname', async () => {
+    const acme = await bootstrap('acme-docs');
     const appScopeId = scopeId.parse(ulid());
 
     const app = await createApp(host, {
       node: acme,
       appScopeId,
-      verticalSlug: 'callout',
-      name: 'Callout',
-      // Callout composes three engines, so its SKU is three entitlement flags.
-      appEntitlements: ['workorder', 'invoicing', 'protocol', 'callout'],
+      verticalSlug: 'protocol',
+      name: 'Documents',
+      appEntitlements: ['protocol'],
       appOwnerGrants: [PROTOCOL_PERM.create, PROTOCOL_PERM.read] as PermissionKey[],
     });
     expect(app.status).toBe('active');
-    expect(app.vertical_slug).toBe('callout');
-    expect(app.hostname).toBe('callout.global.substrat.run');
+    expect(app.vertical_slug).toBe('protocol');
+    expect(app.hostname).toBe('documents.global.substrat.run');
     expect(await scopeIds(acme.tenantId)).toContain(appScopeId);
 
-    // It's a LIVE scope running the Callout bundle — a real engine op resolves
-    // (protocol is one of the engines Callout composes, and the owner holds its keys).
+    // It's a LIVE scope running the protocol engine — a real engine op resolves, and the
+    // owner holds its keys.
     const appScope = await host.getScope(acme.principal, acme.tenantId, appScopeId);
     await appScope.invoke('protocol/define-template', {
       key: 'welcome',

@@ -3,7 +3,7 @@
 //
 // The page argues one claim — Substrat builds almost any business app, and the
 // foundation arrives with it — and every section is evidence for it, in order:
-// what people built (eight demos), what arrives free (the inventory), how little
+// what people built (seven demos), what arrives free (the inventory), how little
 // you write (one operation), how it is layered, the engines you may skip, and
 // only then the guarantees. The older cut led with the five things Substrat
 // fixes, which sold a patch for a gap rather than a way to build the app.
@@ -71,15 +71,15 @@ onMounted(() => {
   }
 });
 
-// The eight demo verticals, in the order they make the argument. `kernel` marks the
+// The seven demo verticals, in the order they make the argument. `kernel` marks the
 // four whose CORE domain no engine matched: Manyfold, Todo and Tock compose nothing at
 // all, and Meridian composes `protocol` only for onboarding, at the edge of a domain —
-// leave, time and expenses — that is vertical code on the kernel. Four of eight, which is
+// leave, time and expenses — that is vertical code on the kernel. Four of seven, which is
 // the strongest evidence that an engine is an option rather than a tax.
 const demos = [
   {
-    name: 'Callout', domain: 'field service', layer: 'engine', href: '/verticals/callout',
-    body: 'Two engines cooperating through events with zero imports between them — and the pricing moment where vertical logic meets an engine transition.',
+    name: 'Handlebar', domain: 'bike workshop', layer: 'engine', href: '/verticals/handlebar',
+    body: 'Engines cooperating through events with zero imports between them, the pricing moment where vertical logic meets an engine transition — and the second shape that forced the protocol engine out of vertical code.',
     uses: 'workorder · invoicing · protocol',
   },
   {
@@ -101,11 +101,6 @@ const demos = [
     name: 'ticket0', domain: 'support desk', layer: 'engine', href: '/verticals/ticket0',
     body: 'A public, unauthenticated surface — an embeddable widget held by a session token and an origin allowlist rather than a login. An AI assistant with a principal and a role.',
     uses: 'metering',
-  },
-  {
-    name: 'Handlebar', domain: 'bike workshop', layer: 'engine', href: '/verticals/handlebar',
-    body: 'Engine reuse — the same engines under new vocabulary, and the second shape that forced the protocol engine to be extracted from Callout in the first place.',
-    uses: 'workorder · invoicing · protocol',
   },
   {
     name: 'Todo', domain: 'shared lists', layer: 'kernel', href: '/verticals/todo',
@@ -193,23 +188,23 @@ const cannots: [string, string, string][] = [
   ],
 ];
 
-// A real operation, lightly trimmed, from demos/callout/src/module.ts — the
+// A real operation, lightly trimmed, from demos/handlebar/src/module.ts — the
 // vertical wrapping the work-order engine in its own domain rule. Kept verbatim
 // on purpose: an excerpt with the messy parts cropped is not evidence.
 const sample = `// The vertical's own operation, composing the work-order engine.
-const createWorkOrderOp = async (ctx, input) => {
+const createRepairOp = async (ctx, input) => {
   assertAllowed(await ctx.check(WO.create));
 
-  const facility = ctx.sql.query(
-    'SELECT * FROM callout_facilities WHERE id = ?',
-    [input.facilityId],
+  const bike = ctx.sql.query(
+    'SELECT * FROM bike_shop_bikes WHERE id = ?',
+    [input.bikeId],
   )[0];
-  if (!facility) throw new Error(\`facility not found\`);
+  if (!bike) throw substratError('not_found', \`bike not found: \${input.bikeId}\`);
 
   return createWorkOrder(ctx, {         // the engine's in-scope
-    facility: ref('facility', facility.id),  // function, inside
-    customer: ref('customer', facility.customer_id),
-    kind: input.kind,                        // YOUR transaction
+    facility: { entityType: 'bike', entityId: bike.id },  // function,
+    customer: { entityType: 'customer', entityId: bike.customer_id },
+    kind: input.kind,                   // inside YOUR transaction
     title: input.title,
   });
 };`;
@@ -246,7 +241,7 @@ const stack = [
     key: 'vertical', name: 'Verticals', owner: 'yours',
     role: 'Vocabulary, workflows, screens, pricing.',
     chips: [
-      ['Callout', 'field service'], ['Meridian', 'HR'], ['Kallkälla', 'coffee shop'],
+      ['Handlebar', 'bike workshop'], ['Meridian', 'HR'], ['Kallkälla', 'coffee shop'],
       ['Manyfold', 'CMS'], ['ticket0', 'support desk'],
     ],
   },
@@ -330,10 +325,10 @@ const bookTakeaways = [
     <!-- The evidence for the claim, first rather than last. -->
     <section class="wrap section">
       <div class="kicker kicker-vertical">What people build</div>
-      <h2>Eight demos. Eight businesses. One foundation.</h2>
+      <h2>Seven demos. Seven businesses. One foundation.</h2>
       <p class="muted lede-narrow">
         Chosen, not accumulated — each one proves a different way of using the
-        platform. The foundation is identical in all eight; the vocabulary, the
+        platform. The foundation is identical in all seven; the vocabulary, the
         screens and the shape are not.
       </p>
       <div class="grid-4">
@@ -393,7 +388,7 @@ const bookTakeaways = [
       </p>
       <div class="split">
         <div class="codewrap">
-          <div class="codetab">demos/callout/src/module.ts</div>
+          <div class="codetab">demos/handlebar/src/module.ts</div>
           <pre class="code"><code>{{ sample }}</code></pre>
         </div>
         <ul class="annos">
@@ -484,7 +479,7 @@ const bookTakeaways = [
         <p class="muted lede-narrow">
           They own the invariants that are the same in every business: a state
           machine that can’t skip, an invoice immutable once exported, a booking
-          that can’t double-allocate. <strong>Four of the eight demos above need none
+          that can’t double-allocate. <strong>Four of the seven demos above need none
           for their core domain</strong>, and three compose none at all — engines are
           there when your domain matches one, not a tax when it doesn’t. And no engine talks to a sibling: with <em>N</em>
           engines talking to the kernel there are <em>N</em> contracts to keep
@@ -522,7 +517,7 @@ const bookTakeaways = [
 
     <!-- The guarantees, late, as proof rather than as the pitch. -->
     <section class="wrap section">
-      <div class="kicker">And underneath all eight</div>
+      <div class="kicker">And underneath all seven</div>
       <h2>Code built on Substrat cannot:</h2>
       <p class="muted lede-narrow">
         None of this depends on the discipline of the code above it — which is the
@@ -938,7 +933,7 @@ h2 {
   background: var(--layer-vertical);
 }
 
-/* Eight demos */
+/* Seven demos */
 .grid-4 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

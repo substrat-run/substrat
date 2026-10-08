@@ -3,7 +3,7 @@
  * Run the dev issuer as its own process — the entrypoint a vertical's `dev` script starts
  * alongside its API and web servers.
  *
- *   tsx src/cli.ts --personas ../../demos/callout/src/personas.ts --port 8879
+ *   tsx src/cli.ts --personas ../../demos/todo/src/personas.ts --port 8879
  *
  * `--personas` names a module exporting `PERSONAS: DevPersona[]`. Pointing it at the
  * vertical's own file is deliberate: the issuer's cast and the identity links the vertical

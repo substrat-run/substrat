@@ -119,9 +119,9 @@ describe('the privileged worker bundles no vertical module code', () => {
         // That is the import this issue was about, and it belongs in the vertical's own
         // deployment, never here.
         expect(`${file} → ${spec}`).not.toMatch(/\/module$/);
-        // What a demo may still be read for is DATA: `catalog.ts` takes Callout's
-        // permission KEYS off its manifest so the seeded owner-grants are the vertical's
-        // own spelling rather than a copy that drifts. No other subpath of a demo.
+        // What a demo may still be read for is DATA: a vertical's permission KEYS off
+        // its manifest, so seeded owner-grants are the vertical's own spelling rather than
+        // a copy that drifts. No other subpath of a demo.
         if (spec.startsWith('@substrat-run/demo-')) {
           expect(`${file} → ${spec}`).toBe(`${file} → ${spec.split('/').slice(0, 2).join('/')}/manifest`);
         }
@@ -131,7 +131,7 @@ describe('the privileged worker bundles no vertical module code', () => {
 
   it('an engine it does not compose is imported for permission KEYS and nothing else', () => {
     // The residue #978 asks about, and the reason it is allowed to stay: `catalog.ts`
-    // takes `PROTOCOL_PERM`, `PERM` and `INVOICING_PERM` off three engines so a seeded
+    // takes `PROTOCOL_PERM` off the protocol engine so a seeded
     // owner-grant is the engine's OWN spelling of a key rather than a literal that drifts
     // silently (CLAUDE.md: permission keys are never renamed, so the constant is stable).
     // Nothing executes: an engine's exports are only *values* here, never a registration.

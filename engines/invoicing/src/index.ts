@@ -17,7 +17,7 @@
  * vertical wraps the engine inside its own transaction. Here the operations ARE the
  * surface, and their logic living in them is correct rather than an omission.
  *
- * `demos/callout`'s scenario asserts this shape: "star topology observed: the
+ * `demos/handlebar`'s scenario asserts this shape: "star topology observed: the
  * invoicing engine consumed the event", then reads the basis via `invoicing/list`.
  */
 import { z } from 'zod';
@@ -100,7 +100,7 @@ import {
 } from '@substrat-run/kernel';
 
 // ============================================================================
-// The invoicing engine (demos/callout/spec/testrun.md §4.3/§5.3). Consumes
+// The invoicing engine (docs/rfc/callout-testrun.md §4.3/§5.3). Consumes
 // `workorder.completed` — snapshot, not join: prices and quantities are frozen
 // from the event payload, provenance kept as EntityRef columns. Zero imports
 // from the workorder engine (star topology, D-19).

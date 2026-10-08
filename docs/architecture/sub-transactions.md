@@ -118,7 +118,7 @@ Three supporting reasons:
 1. **Implicit taxes reads for nothing.** Two of `engine-workorder`'s five in-scope exports
    are pure reads (`getReportedLines`, `listOrders`); `engine-protocol` has more.
 2. **The per-call boundary is the wrong boundary.** A vertical composes *several* engine
-   calls into one logical step — `demos/callout` does — and what it wants atomic is the
+   calls into one logical step — `demos/handlebar` does — and what it wants atomic is the
    composed step. Implicit cannot express that; explicit does, for free, by putting more
    than one call in the callback.
 3. **Implicit would not remove the convention.** A per-call savepoint only helps someone who

@@ -208,7 +208,6 @@ export function guideSidebar() {
       text: 'Verticals',
       items: [
         { text: 'What is a vertical?', link: '/verticals/' },
-        { text: 'Callout (field service)', link: '/verticals/callout' },
         { text: 'Handlebar (bike workshop)', link: '/verticals/handlebar' },
         { text: 'Kallkälla (coffee shop)', link: '/verticals/shop' },
         { text: 'Meridian (HR)', link: '/verticals/meridian' },

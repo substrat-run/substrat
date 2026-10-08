@@ -23,9 +23,6 @@ secrets/*.env
 .dev.vars
 **/.dev.vars
 
-# Callout's local wrangler config, hand-copied from wrangler.example.jsonc.
-demos/callout/wrangler.jsonc
-
 # Deliberately NOT included:
 #   .data/  — each worktree seeds its own SQLite on first boot. Inheriting another
 #             session's world would carry its tenants, logins and half-run scenarios

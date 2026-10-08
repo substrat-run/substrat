@@ -52,7 +52,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-13](decisions/K-013-attachment-items-carry-mandatory-visibility.md) | 2026-07-13 | kernel | Attachment items carry mandatory visibility |  |
 | [K-14](decisions/K-014-shared-money-schema-in-substrat-run-contracts.md) | 2026-07-13 | kernel | Shared money schema in @substrat-run/contracts |  |
 | [K-15](decisions/K-015-ui-composition-7-4.md) | 2026-07-13 | kernel | UI composition (§7.4) |  |
-| [K-16](decisions/K-016-in-scope-composition-demos-callout-spec-testrun-md-9-2.md) | 2026-07-13 | kernel | In-scope composition (demos/callout/spec/testrun.md §9.2) |  |
+| [K-16](decisions/K-016-in-scope-composition-demos-callout-spec-testrun-md-9-2.md) | 2026-07-13 | kernel | In-scope composition (docs/rfc/callout-testrun.md §9.2) |  |
 | [D-26](decisions/D-026-engine-extension-model-pinned-kernel-design-7-5-k-17-k-18.md) | 2026-07-14 | plan | Engine extension model pinned (kernel-design §7.5, K-17/K-18) |  |
 | [D-27](decisions/D-027-placement-spectrum-pinned-6.md) | 2026-07-14 | plan | Placement spectrum pinned (§6) |  |
 | [D-28](decisions/D-028-engine-compatibility-surface-pinned.md) | 2026-07-14 | plan | Engine compatibility surface pinned <br>*amended by K-39* |  |

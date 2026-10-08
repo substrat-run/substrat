@@ -7,8 +7,8 @@ description: The untrusted trust model and the sandbox contract.
 # Self-serve vertical deploy — the untrusted trust model
 
 **Status:** foundation **built** (§7.1 / §8) — `substrat push` + the deploy endpoint land a
-pending version that admission gates; the `substrat` CLI (`packages/cli`) ships it and Callout
-deploys through it. The untrusted-builder models B/A (§3) remain design. Extends
+pending version that admission gates; the `substrat` CLI (`packages/cli`) ships it and every pushed
+vertical deploys through it. The untrusted-builder models B/A (§3) remain design. Extends
 [orchestration](orchestration.md), whose
 Phases 1–3 are the **platform-owned** (trusted-author) deploy: *we* build and upload *our*
 verticals. This doc is the piece orchestration.md §9 and
