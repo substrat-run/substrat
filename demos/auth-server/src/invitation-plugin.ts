@@ -70,7 +70,14 @@ export const invitationPlugin = (opts: { transport: EmailTransport; sender: Emai
       if (!await adapter.reserveVerificationValue({ identifier: `invite-password:${user.id}`, value: 'set', expiresAt: new Date(Date.now() + 24 * 60 * 60_000) })) {
         throw new APIError('CONFLICT', { message: 'Password setup is already in progress' });
       }
-      await adapter.linkAccount({ userId: user.id, providerId: 'credential', accountId: user.id, password: await ctx.context.password.hash(ctx.body.password) });
+      try {
+        await adapter.linkAccount({ userId: user.id, providerId: 'credential', accountId: user.id, password: await ctx.context.password.hash(ctx.body.password) });
+      } catch (error) {
+        await adapter.deleteVerificationByIdentifier(`invite-password:${user.id}`).catch(() => {
+          console.error('Could not release failed invite-password reservation');
+        });
+        throw error;
+      }
       const next = await adapter.createSession(user.id);
       if (!next) throw new APIError('INTERNAL_SERVER_ERROR', { message: 'Could not create a session' });
       await adapter.deleteSession(session.token);

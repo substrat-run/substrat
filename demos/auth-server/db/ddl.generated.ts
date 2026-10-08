@@ -179,6 +179,7 @@ export const SCHEMA_STATEMENTS: string[] = [
     expires_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS session_user_id_idx ON session (user_id)`,
   `CREATE INDEX IF NOT EXISTS account_user_id_idx ON account (user_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS account_provider_id_account_id_unique ON account (provider_id, account_id)`,
   `CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification (identifier)`,
   `CREATE INDEX IF NOT EXISTS oauth_client_user_id_idx ON oauth_client (user_id)`,
   `CREATE INDEX IF NOT EXISTS oauth_client_resource_client_id_idx ON oauth_client_resource (client_id)`,

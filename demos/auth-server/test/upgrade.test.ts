@@ -151,6 +151,18 @@ describe('upgrading a 1.6 store', () => {
     expect(db.prepare("SELECT phone_number FROM user WHERE id = 'u1'").get()).toEqual({ phone_number: null });
     expect(upgradeLegacySchema(sql).added).not.toContain('user.phone_number');
   });
+  it('adds identity uniqueness without replacing the existing credential', () => {
+    upgradeLegacySchema(sql);
+    expect(() => db.prepare("INSERT INTO account (id, account_id, provider_id, user_id) VALUES ('a2', 'ada@acme.test', 'credential', 'u1')").run()).toThrow(/UNIQUE/);
+    expect(() => upgradeLegacySchema(sql)).not.toThrow();
+    expect(db.prepare('SELECT id FROM account').all()).toEqual([{ id: 'a1' }]);
+  });
+  it('refuses ambiguous historical identities without deleting accounts or logging identity values', () => {
+    db.prepare("INSERT INTO account (id, account_id, provider_id, user_id) VALUES ('a2', 'ada@acme.test', 'credential', 'u1')").run();
+    expect(() => upgradeLegacySchema(sql)).toThrow(/duplicate .* pairs: credential/);
+    try { upgradeLegacySchema(sql); } catch (e) { expect(String(e)).not.toContain('ada@acme.test'); }
+    expect(db.prepare('SELECT id FROM account ORDER BY id').all()).toEqual([{ id: 'a1' }, { id: 'a2' }]);
+  });
   it('does not add account.issuer — 1.7.3 stopped writing it, so a column nothing fills would be a trap', () => {
     const upgrade = upgradeLegacySchema(sql);
 

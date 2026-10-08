@@ -11,7 +11,10 @@ export function twilioFrom(
   const account = cfg.TWILIO_ACCOUNT_SID?.trim();
   const token = cfg.TWILIO_AUTH_TOKEN?.trim();
   const service = cfg.TWILIO_VERIFY_SERVICE_SID?.trim();
-  if (!account || !token || !service) return undefined;
+  if (!account || !token || !service) {
+    if (account || token || service) console.warn('SMS verification disabled: incomplete Twilio configuration; configure all three settings');
+    return undefined;
+  }
   if (!/^AC[0-9a-f]{32}$/i.test(account) || !/^VA[0-9a-f]{32}$/i.test(service)) {
     throw new Error('Invalid Twilio account or Verify service SID');
   }
@@ -42,4 +45,14 @@ export function twilioFrom(
       return (await request('VerificationCheck', { To: phone, Code: code })).status === 'approved';
     },
   };
+}
+
+/** A broken optional SMS configuration must not disable other sign-in methods. */
+export function optionalTwilioFrom(cfg: Record<string, string | undefined>): PhoneVerifier | undefined {
+  try {
+    return twilioFrom(cfg);
+  } catch {
+    console.error('SMS verification disabled: invalid Twilio account or Verify service SID');
+    return undefined;
+  }
 }

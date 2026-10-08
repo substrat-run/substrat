@@ -77,7 +77,12 @@ export const phonePlugin = (verifier: PhoneVerifier | undefined) => ({
       if (!enrolled && !await adapter.reserveVerificationValue({ identifier: `phone-enrollment:${user.id}`, value: 'enrolled', expiresAt: new Date(Date.now() + 24 * 60 * 60_000) })) {
         throw new APIError('CONFLICT', { message: 'Phone enrollment is already in progress. Sign in again.' });
       }
-      const updatedUser = enrolled ? user : await adapter.updateUser(user.id, { phoneNumber: phone });
+      const updatedUser = enrolled ? user : await adapter.updateUser(user.id, { phoneNumber: phone }).catch(async (error: unknown) => {
+        await adapter.deleteVerificationByIdentifier(`phone-enrollment:${user.id}`).catch(() => {
+          console.error('Could not release failed phone-enrollment reservation');
+        });
+        throw error;
+      });
       // Rotate, rather than upgrade the old password token: possession of that old token
       // must not become possession of a completed second factor.
       const updatedSession = await adapter.createSession(user.id);

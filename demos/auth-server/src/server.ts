@@ -33,7 +33,7 @@ import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
 import { signInLoggerFor } from './sign-in-log.js';
 import { placesOf } from './places.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
-import { twilioFrom } from './twilio.js';
+import { optionalTwilioFrom } from './twilio.js';
 
 /**
  * Dev API server for the auth-server demo — Better Auth over a local better-sqlite3 file,
@@ -156,7 +156,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // quietly ignoring the operator's policy.
     supabase: supabaseBridgeFrom(cfg, accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link'),
     bankid: bankidFor(readBankIdConfig(sql)),
-    phoneVerifier: twilioFrom(cfg),
+    phoneVerifier: optionalTwilioFrom(cfg),
     // Read per request like everything else here, so narrowing a client in the dashboard
     // decides the very next authorize request rather than the next restart.
     signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),

@@ -472,7 +472,7 @@ export function ClientEditor({
       metadata.signIn = {
         providers: offered.filter((p) => methods.has(p.id)).map((p) => p.id),
         password: methods.has(PASSWORD_METHOD),
-        ...(requireSms ? { passwordSecondFactor: 'sms' } : {}),
+        ...(requireSms && !builtin && methods.has(PASSWORD_METHOD) ? { passwordSecondFactor: 'sms' } : {}),
       };
     }
     const draft: ClientDraft = {

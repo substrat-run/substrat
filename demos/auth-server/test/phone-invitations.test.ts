@@ -7,7 +7,7 @@ import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
 import { assertSignInPolicy, policyAdmits, sanitizeSignInPolicy, type SignInPolicy } from '../src/sign-in-policy.js';
-import { twilioFrom } from '../src/twilio.js';
+import { optionalTwilioFrom, twilioFrom } from '../src/twilio.js';
 import type { BankIdTransport } from '../src/bankid.js';
 
 const ORIGIN = 'http://localhost:8877';
@@ -102,6 +102,15 @@ describe('email invitations', () => {
     expect((await post('/invitation/create', { email: EMAIL, name: 'User' }, adminCookie)).status).toBe(503);
     expect(db.prepare("SELECT COUNT(*) AS n FROM verification WHERE identifier LIKE 'account-invite:%'").get()).toEqual({ n: 0 });
   });
+  it.each(['hash', 'linkAccount'] as const)('allows password setup to retry after %s fails', async (operation) => {
+    const cookie = await accepted();
+    const context = await auth.$context;
+    if (operation === 'hash') vi.spyOn(context.password, 'hash').mockRejectedValueOnce(new Error('Hash failed'));
+    else vi.spyOn(context.internalAdapter, 'linkAccount').mockRejectedValueOnce(new Error('Link failed'));
+    expect((await post('/invitation/password', { password: PASSWORD }, cookie)).status).toBe(500);
+    expect(db.prepare("SELECT * FROM verification WHERE identifier LIKE 'invite-password:%'").all()).toHaveLength(0);
+    expect((await post('/invitation/password', { password: PASSWORD }, cookie)).status).toBe(200);
+  });
   it('does not allow invitation sessions to bypass password setup', async () => {
     const cookie = await accepted();
     expect((await post('/phone/send', { phoneNumber: PHONE }, cookie)).status).toBe(403);
@@ -128,6 +137,19 @@ describe('password plus SMS', () => {
     // Every new password login starts without the second-factor stamp, even with an enrolled phone.
     const login = await post('/sign-in/email', { email: EMAIL, password: PASSWORD });
     expect((await authorize(cookieOf(login), { prompt: 'none' })).headers.get('location')).toContain('login_required');
+  });
+  it('releases failed phone enrollment so a fresh challenge can retry', async () => {
+    const cookie = await passwordSession();
+    expect((await post('/phone/send', { phoneNumber: PHONE }, cookie)).status).toBe(200);
+    const adapter = (await auth.$context).internalAdapter;
+    vi.spyOn(adapter, 'updateUser').mockRejectedValueOnce(new Error('Update failed'));
+    expect((await post('/phone/verify', { code: '123456' }, cookie)).status).toBe(500);
+    expect(userRow().phone_number).toBeNull();
+    expect(db.prepare("SELECT * FROM verification WHERE identifier LIKE 'phone-enrollment:%'").all()).toHaveLength(0);
+    db.prepare("DELETE FROM verification WHERE identifier LIKE 'phone-send:%'").run();
+    expect((await post('/phone/send', { phoneNumber: PHONE }, cookie)).status).toBe(200);
+    expect((await post('/phone/verify', { code: '123456' }, cookie)).status).toBe(200);
+    expect(userRow().phone_number).toBe(PHONE);
   });
   it('resumes the signed OIDC query after SMS verification', async () => {
     const cookie = await passwordSession();
@@ -193,6 +215,17 @@ describe('password plus SMS', () => {
 });
 
 describe('BankID invitation linking', () => {
+  it('allows only one account to claim a BankID identity in concurrent links', async () => {
+    await accepted();
+    const adapter = (await auth.$context).internalAdapter;
+    const other = await adapter.createUser({ name: 'Other', email: 'other@example.test', emailVerified: true }, { method: 'invitation' });
+    await Promise.allSettled([
+      adapter.linkAccount({ userId: userRow().id, providerId: 'bankid', accountId: PNR }),
+      adapter.linkAccount({ userId: other.id, providerId: 'bankid', accountId: PNR }),
+    ]);
+    expect(db.prepare("SELECT user_id FROM account WHERE provider_id = 'bankid' AND account_id = ?").all(PNR)).toHaveLength(1);
+  });
+
   it('links the verified personnummer to the invited email and admits BankID without SMS', async () => {
     const cookie = await accepted();
     const started = await post('/bankid/start', { link: true }, cookie);
@@ -236,6 +269,24 @@ describe('the SMS policy vocabulary', () => {
 
 describe('Twilio Verify wire contract', () => {
   const cfg = { TWILIO_ACCOUNT_SID: `AC${'a'.repeat(32)}`, TWILIO_AUTH_TOKEN: 'secret', TWILIO_VERIFY_SERVICE_SID: `VA${'b'.repeat(32)}` };
+  it('warns about partial configuration but keeps absent SMS configuration quiet', () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(optionalTwilioFrom({})).toBeUndefined();
+      expect(log).not.toHaveBeenCalled();
+      expect(optionalTwilioFrom({ TWILIO_AUTH_TOKEN: 'secret' })).toBeUndefined();
+      expect(log).toHaveBeenCalledOnce();
+      expect(log.mock.calls.flat().join(' ')).not.toContain('secret');
+    } finally { log.mockRestore(); }
+  });
+  it('disables only SMS for malformed configuration without logging credentials', () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(optionalTwilioFrom({ ...cfg, TWILIO_ACCOUNT_SID: 'invalid-secret-sid' })).toBeUndefined();
+      expect(log).toHaveBeenCalledWith('SMS verification disabled: invalid Twilio account or Verify service SID');
+      expect(log.mock.calls.flat().join(' ')).not.toContain('invalid-secret-sid');
+    } finally { log.mockRestore(); }
+  });
   it('sends SMS and accepts only an approved verification result', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ status: 'pending' })).mockResolvedValueOnce(Response.json({ status: 'pending' })).mockResolvedValueOnce(Response.json({ status: 'approved' }));
     const verifier = twilioFrom(cfg, fetcher)!;

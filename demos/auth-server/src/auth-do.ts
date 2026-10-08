@@ -21,7 +21,7 @@ import { clientBranding } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
-import { twilioFrom } from './twilio.js';
+import { optionalTwilioFrom } from './twilio.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
@@ -206,7 +206,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // quietly ignoring the operator's policy.
       supabase: supabaseBridgeFrom(cfg, accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link'),
       bankid: this.bankid(readBankIdConfig(this.ctx.storage.sql)),
-      phoneVerifier: twilioFrom(cfg),
+      phoneVerifier: optionalTwilioFrom(cfg),
       // Read per request like everything else here, so narrowing a client in the dashboard
       // decides the very next authorize request rather than the next deploy.
       signInPolicyFor: (clientId) => readSignInPolicy(this.ctx.storage.sql, clientId),
