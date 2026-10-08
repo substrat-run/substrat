@@ -451,5 +451,52 @@ export function listContractSuite(
       }
       expect(seen).toEqual(['v1', 'v3', 'v2']);
     });
+
+    it('resumes a sealed empty page past more than the scan budget, on this adapter (#2074)', async () => {
+      for (const first of [0, 500, 1000, 1500, 2000]) {
+        await stub.invoke('list/add-hidden-batch', { first, count: first === 2000 ? 5 : 500 });
+      }
+      await stub.invoke('list/add', { id: 'v2074', number: '002005', status: 'open', kind: 'k2074' });
+      await stub.invoke('list/add', { id: 'v2074full', number: '003000', status: 'open', kind: 'k2074full' });
+      const query = { limit: 1, sort: 'number', filters: { kind: 'k2074' } };
+      const fullQuery = { limit: 1, sort: 'number', filters: { kind: 'k2074full' } };
+      const session = await host.admin.beginImpersonation(staff, {
+        tenantId: t1, scopeId: stub.scopeId, principal: alice,
+        reason: 'verify sparse read-only paging', mode: 'read-only',
+      });
+      const readOnly = await host.getImpersonatedScope(session.id, t1, stub.scopeId);
+      const plain = await readOnly.invoke<Page<Row>>('list/page-visible', fullQuery);
+      expect(plain.entries.map((r) => r['id'])).toEqual(['v2074full']);
+      expect(plain.nextCursor).not.toMatch(/^sc1\./);
+      expect(await readOnly.invoke<Page<Row>>('list/page-visible', query))
+        .toEqual({ entries: [], nextCursor: null });
+      const first = await stub.invoke<Page<Row>>('list/page-visible', query);
+      expect(first.entries).toEqual([]);
+      expect(first.nextCursor).toMatch(/^sc1\./);
+      expect(first.nextCursor).not.toContain('h001999');
+      expect((await readOnly.invoke<Page<Row>>('list/page-visible', fullQuery)).nextCursor).toMatch(/^sc1\./);
+      const other = await host.getScope(principalId.parse(ulid()), t1, stub.scopeId);
+      await expectRestart(other.invoke('list/page-visible', { ...query, cursor: first.nextCursor }));
+      await expectRestart(stub.invoke('list/page-visible', {
+        ...query, filters: { kind: 'repair' }, cursor: first.nextCursor,
+      }));
+      let cursor = first.nextCursor!;
+      let found: Page<Row> | undefined;
+      for (let i = 0; i < 3; i++) {
+        const next = await stub.invoke<Page<Row>>('list/page-visible', { ...query, cursor });
+        expect(next.nextCursor).toMatch(/^sc1\./);
+        if (next.entries.length > 0) {
+          found = next;
+          break;
+        }
+        cursor = next.nextCursor!;
+      }
+      expect(found?.entries.map((r) => r['id'])).toEqual(['v2074']);
+    });
+
+    it('evicts the oldest private locator at the per-scope cap', async () => {
+      const result = await stub.invoke<{ oldestRejected: boolean; lastPosition: string }>('list/continuation-cap', {});
+      expect(result).toEqual({ oldestRejected: true, lastPosition: 'hidden 256' });
+    });
   });
 }

@@ -13,6 +13,7 @@ import {
   serializeWithoutRowCursors,
   VISIBLE_BATCH,
   VISIBLE_SCAN_BUDGET,
+  VISIBLE_SCAN_BUDGET_MIN,
   type Page,
   type VisibleTest,
   withoutRowCursors,
@@ -299,5 +300,87 @@ describe('rowCursors never leave the process (#2073)', () => {
   it('leaves undefined as JSON leaves it', () => {
     expect(serializeWithoutRowCursors(undefined)).toBeUndefined();
     expect(withoutRowCursors(undefined)).toBeUndefined();
+  });
+});
+
+describe('pageVisible with a sealed continuation (#2074)', () => {
+  it('varies private budget stops while preserving bounds and every visible row', async () => {
+    const t = table(4_500);
+    const visible = new Set(ids(t.rows.filter((_, i) => i % 337 === 0)));
+    const positions = new Map<string, string>();
+    let issued = 0;
+    const continuation = {
+      seal: async (position: string) => {
+        const token = `sealed-${String(++issued).padStart(8, '0')}`;
+        positions.set(token, position);
+        return token;
+      },
+      open: async (token: string) => {
+        const position = positions.get(token);
+        if (!position) throw new Error('cursor_restart');
+        return position;
+      },
+    };
+    const allow = (row: Row) => visible.has(row.id);
+    const firstStops = new Set<number>();
+    let first: Page<Row> | undefined;
+    for (let i = 0; i < 8; i++) {
+      const page = await pageVisible(t.fetch, { limit: 20 }, allow, { continuation });
+      first ??= page;
+      const stop = Number(decode(positions.get(page.nextCursor!)!).slice(1)) + 1;
+      firstStops.add(stop);
+      expect(stop).toBeGreaterThanOrEqual(VISIBLE_SCAN_BUDGET_MIN);
+      expect(stop).toBeLessThanOrEqual(VISIBLE_SCAN_BUDGET);
+      const hidden = stop - page.entries.length;
+      expect(hidden).toBeGreaterThanOrEqual(VISIBLE_SCAN_BUDGET_MIN - page.entries.length);
+      expect(hidden).toBeLessThanOrEqual(VISIBLE_SCAN_BUDGET - page.entries.length);
+    }
+    expect(firstStops.size).toBeGreaterThan(1);
+
+    const seen = ids(first!.entries);
+    let cursor = first!.nextCursor;
+    for (let i = 0; cursor !== null && i < 10; i++) {
+      const page = await pageVisible(t.fetch, { limit: 20, cursor }, allow, { continuation });
+      seen.push(...ids(page.entries));
+      cursor = page.nextCursor;
+    }
+    expect(cursor).toBeNull();
+    expect(seen).toEqual(ids(t.rows.filter((row) => visible.has(row.id))));
+  });
+
+  it('resumes after a budget of hidden rows, including an empty page', async () => {
+    const t = table(VISIBLE_SCAN_BUDGET + 10);
+    const positions = new Map<string, string>();
+    let issued = 0;
+    const continuation = {
+      seal: async (position: string) => {
+        const token = `sealed-${String(++issued).padStart(8, '0')}`;
+        positions.set(token, position);
+        return token;
+      },
+      open: async (token: string) => {
+        const position = positions.get(token);
+        if (!position) throw new Error('cursor_restart');
+        return position;
+      },
+    };
+    const allow = (row: Row) => row.id === 'r2005';
+    const first = await pageVisible(t.fetch, { limit: 1 }, allow, { continuation });
+    expect(first.entries).toEqual([]);
+    expect(first.nextCursor).toMatch(/^sealed-/);
+    expect(first.nextCursor).not.toContain('r1999');
+    let cursor = first.nextCursor!;
+    let found: Page<Row> | undefined;
+    for (let i = 0; i < 3; i++) {
+      const next = await pageVisible(t.fetch, { limit: 1, cursor }, allow, { continuation });
+      expect(next.nextCursor).toMatch(/^sealed-/);
+      expect(next.nextCursor?.length).toBe(first.nextCursor?.length);
+      if (next.entries.length > 0) {
+        found = next;
+        break;
+      }
+      cursor = next.nextCursor!;
+    }
+    expect(found?.entries.map((r) => r.id)).toEqual(['r2005']);
   });
 });

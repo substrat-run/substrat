@@ -241,6 +241,11 @@ import {
   createEntityEdgeVerbs,
   createEntityStateVerbs,
   createTrashedReads,
+  CONTINUATION_POSITION_CAP,
+  visibleContinuation,
+  type ContinuationStore,
+  type ContinuationKeys,
+  type ContinuationPosition,
   searchStateWhere,
   uncheckedView,
   addStatePlans,
@@ -1767,6 +1772,47 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly owner: { release(): void };
   private readonly checker: PermissionChecker;
   private readonly directory: Database.Database;
+
+  /** A private directory seam: module SQL and scope/directory exports never reach it. */
+  private continuationStore(scopeId: ScopeId, writable: boolean): ContinuationStore {
+    const pruneExpired = () => this.directory.prepare(
+      'DELETE FROM private_continuation_positions WHERE expires_at <= ?',
+    ).run(Date.parse(this.clock()));
+    return {
+      keys: async () => {
+        const row = this.directory.prepare(
+          'SELECT keyring FROM private_continuation_keys WHERE scope_id = ?',
+        ).get(scopeId) as { keyring: string } | undefined;
+        return row ? JSON.parse(row.keyring) as ContinuationKeys : null;
+      },
+      setKeys: async (keys) => {
+        this.directory.prepare(
+          `INSERT INTO private_continuation_keys (scope_id, keyring) VALUES (?, ?)
+           ON CONFLICT(scope_id) DO UPDATE SET keyring = excluded.keyring`,
+        ).run(scopeId, JSON.stringify(keys));
+      },
+      position: async (id, expiresAt) => {
+        if (writable) pruneExpired();
+        const row = this.directory.prepare(
+          `SELECT ciphertext FROM private_continuation_positions
+           WHERE scope_id = ? AND expires_at = ? AND locator = ?`,
+        ).get(scopeId, expiresAt, id) as { ciphertext: string } | undefined;
+        return row ? { sealed: JSON.parse(row.ciphertext) as ContinuationPosition['sealed'], expiresAt } : null;
+      },
+      setPosition: async (id, position) => {
+        pruneExpired();
+        this.directory.prepare(
+          `INSERT INTO private_continuation_positions (scope_id, expires_at, locator, ciphertext)
+           VALUES (?, ?, ?, ?)`,
+        ).run(scopeId, position.expiresAt, id, JSON.stringify(position.sealed));
+        this.directory.prepare(
+          `DELETE FROM private_continuation_positions WHERE rowid IN (
+             SELECT rowid FROM private_continuation_positions WHERE scope_id = ?
+             ORDER BY rowid DESC LIMIT -1 OFFSET ?)`,
+        ).run(scopeId, CONTINUATION_POSITION_CAP);
+      },
+    };
+  }
   private readonly scopes = new Map<string, ScopeRuntime>();
   private readonly scopesById = new Map<string, ScopeRuntime>();
   /** The runtimes holding an open `reader` (#1624), least recently read first — `READER_CAP`'s LRU. */
@@ -2000,6 +2046,21 @@ export class SqliteScopeHost implements ScopeHost {
         archived_at TEXT,
         created_at TEXT NOT NULL
       );
+      -- Private host state. Module SQL opens only the scope file, never this directory;
+      -- neither table is included in directory exports or scope dumps (#2074).
+      CREATE TABLE IF NOT EXISTS private_continuation_keys (
+        scope_id TEXT PRIMARY KEY,
+        keyring TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS private_continuation_positions (
+        scope_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        locator TEXT NOT NULL,
+        ciphertext TEXT NOT NULL,
+        PRIMARY KEY (scope_id, expires_at, locator)
+      );
+      CREATE INDEX IF NOT EXISTS private_continuation_positions_expiry
+        ON private_continuation_positions (expires_at);
       ${PEER_BINDINGS_DDL}
       -- The hostname map (K-26). A single environment-wide router resolves against
       -- this before dispatching to the vertical's worker.
@@ -3827,6 +3888,10 @@ export class SqliteScopeHost implements ScopeHost {
       // The frontier came in with the dump — refresh the cached applied-migration set so
       // a later bind/migrate builds on the loaded state, not the previous one.
       rt.appliedMigrations = readAppliedMigrations(db);
+      // The directory is a separate database, but the actor serializes the load
+      // and the next invocation. Old locators must be gone before that next turn.
+      this.directory.prepare('DELETE FROM private_continuation_positions WHERE scope_id = ?').run(scopeId);
+      this.directory.prepare('DELETE FROM private_continuation_keys WHERE scope_id = ?').run(scopeId);
     });
   }
 
@@ -3915,6 +3980,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.directory.transaction(() => {
       this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE target_scope_id = ?').run(scopeId);
       forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
+      this.directory.prepare('DELETE FROM private_continuation_positions WHERE scope_id = ?').run(scopeId);
+      this.directory.prepare('DELETE FROM private_continuation_keys WHERE scope_id = ?').run(scopeId);
       this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     })();
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
@@ -4967,6 +5034,8 @@ export class SqliteScopeHost implements ScopeHost {
       | { tenant_id: string }
       | undefined;
     if (!owner || owner.tenant_id !== tenantId) throw substratError('not_found', `unknown scope: ${scopeId}`);
+    this.directory.prepare('DELETE FROM private_continuation_positions WHERE expires_at <= ?')
+      .run(Date.parse(this.clock()));
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     const now = this.clock();
@@ -9779,7 +9848,8 @@ export class SqliteScopeHost implements ScopeHost {
               ORDER BY name`,
           )
           .all() as { name: string; sql: string }[];
-        const tables: ScopeDumpTable[] = defs.map(({ name, sql }) => {
+        const privateTables = new Set(['private_continuation_keys', 'private_continuation_positions']);
+        const tables: ScopeDumpTable[] = defs.filter(({ name }) => !privateTables.has(name)).map(({ name, sql }) => {
           const stmt = this.directory.prepare(`SELECT * FROM "${name}"`).raw(true);
           const rows = stmt.all() as unknown[][];
           const columns = stmt.columns().map((c) => c.name);
@@ -9799,7 +9869,12 @@ export class SqliteScopeHost implements ScopeHost {
         // as identifiers, and its `ddl`, never executed here since #1912, is still held to one
         // CREATE TABLE. Judged as a whole before the first DROP, so a refused dump leaves the
         // directory untouched.
-        assertReplayableDump(dump.tables);
+        // Older backup producers and local migration fixtures may include these
+        // tables. Ignore them entirely: neither their DDL nor their rows may set
+        // a restored key epoch or make an old hidden locator valid again.
+        const publicTables = dump.tables.filter((table) =>
+          !['private_continuation_keys', 'private_continuation_positions'].includes(table.name.toLowerCase()));
+        assertReplayableDump(publicTables);
         // One transaction, foreign keys deferred to commit: the dump is ordered by table NAME
         // (which says nothing about references — a `tenants` row can name another as
         // `provisioned_by_tenant`), and the DROPs themselves delete rows a populated child would
@@ -9821,7 +9896,7 @@ export class SqliteScopeHost implements ScopeHost {
           this.buildDirectorySchema();
           // Refuses a table this code does not build, adds unknown columns bare, loads the rows
           // by name, then the legacy scope and #1674 backfills, all inside this transaction.
-          loadDirectoryDump(dump.tables, {
+          loadDirectoryDump(publicTables, {
             columnsOf: (name) => builtColumnsOf(this.directory, name),
             exec: (sql) => this.directory.exec(sql),
             now: () => this.clock(),
@@ -12028,6 +12103,13 @@ export class SqliteScopeHost implements ScopeHost {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       principal,
+      pageContinuation: (list, query) => visibleContinuation(
+        this.continuationStore(rt.scopeId, impersonation?.mode !== 'read-only' && this.isPrimaryInDirectory(rt.scopeId)),
+        { scopeId: rt.scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },
+        () => Date.parse(this.clock()),
+        () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),
+        impersonation?.mode !== 'read-only' && this.isPrimaryInDirectory(rt.scopeId),
+      ),
       sql: guardSecrets(
         guardSqlLimits(
           scopedSql(
@@ -12274,6 +12356,9 @@ export class SqliteScopeHost implements ScopeHost {
         searchPlans,
         statePlans,
         check: runCheck,
+        continuation: (entityType, params) => ctxRef.pageContinuation(
+          `trash:${entityType}`, { ...params, view: 'trashed' },
+        ),
       }),
       // #304: the request-time entitlement read. The pure adapter is single-process, so the
       // directory is local — no projection needed; it reads `_substrat_entitlements` straight,

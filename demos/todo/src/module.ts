@@ -160,14 +160,15 @@ const operations = {
    */
   // #811. The walk is the kernel's; the per-row proof check is this vertical's,
   // and `pageVisible` is what keeps the two honest — it walks on past rows the
-  // caller cannot see until the page is full, and mints the cursor from the last
-  // row it RETURNS, so no position of a list they cannot see reaches them (#2073).
+  // caller cannot see until the page is full or the budget is spent, then seals
+  // the continuation so no list position reaches the caller (#2074).
   'todo/my-lists': async (ctx, input) =>
     pageVisible(
       // #119: the kernel leaves archived and binned lists out unless the archive is asked for.
       (p) => ctx.page<ListRow>('list', { ...p, view: input?.view }),
       input,
       async (list) => (await ctx.check(TODO_PERM.listContribute, listRef(list.id))).allowed,
+      { continuation: ctx.pageContinuation('list:my-lists', input) },
     ),
 
   /**

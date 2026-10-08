@@ -305,10 +305,6 @@ export function entityStateContractSuite(
       await as.alice.invoke('state/restore', { id: carolsDoc });
     });
 
-    /** A cursor's envelope (K-44): base64url JSON naming the row it continues from. */
-    const decode = (cursor: string): { value: string; id?: string } =>
-      JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(cursor.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))));
-
     it('hands a caller denied every binned row an empty bin and NO cursor — no position of a hidden row leaks', async () => {
       const hidden = await doc('hidden from bob');
       await as.alice.invoke('state/trash', { id: hidden });
@@ -318,15 +314,42 @@ export function entityStateContractSuite(
       await as.alice.invoke('state/restore', { id: hidden });
     });
 
-    it('mints every cursor from a row the caller can see, in a bin mostly of rows they cannot', async () => {
+    it('seals a bin cursor and binds it to the caller, including across both adapters', async () => {
       const others = [await doc('aaa other'), await doc('zzz other')];
       for (const id of [...others, carolsDoc]) await as.alice.invoke('state/trash', { id });
       const first = await as.carol.invoke<Page<Row>>('state/page-trashed', { limit: 1 });
       expect(ids(first)).toEqual([carolsDoc]);
       expect(first.nextCursor).not.toBeNull();
-      const position = decode(first.nextCursor!);
-      expect(position.id).toBe(carolsDoc);
-      expect(position.value).toBe('carol owns this');
+      expect(first.nextCursor).toMatch(/^sc1\./);
+      expect(first.nextCursor).not.toContain(carolsDoc);
+      expect(first.nextCursor).not.toContain('carol owns this');
+      // Both adapters keep the key outside the scope SQL module code can read.
+      expect(await as.carol.invoke('state/sql', {
+        sql: "SELECT name FROM sqlite_master WHERE name LIKE 'private_continuation_%'",
+      })).toEqual([]);
+      expect(await errOf(as.carol.invoke('state/sql', {
+        sql: 'SELECT keyring FROM private_continuation_keys',
+      }))).toBeTruthy();
+      if (adapterName === 'adapter-cloudflare') {
+        // DO KV shares workerd's SQLite internals. The module SQL wrapper must
+        // refuse their names before workerd can hand the keyring back.
+        const internal = await errOf(as.carol.invoke('state/sql', { sql: 'SELECT * FROM _cf_KV' }));
+        expect(errorCodeOf(internal)).toBe('forbidden');
+        expect(await as.carol.invoke('state/sql', { sql: 'SELECT 1 AS ok /* _cf_KV */' })).toEqual([{ ok: 1 }]);
+        const consoleRead = await errOf(host.admin.queryScope(staff, t1, scope, { sql: 'SELECT * FROM _cf_KV' }));
+        expect(errorCodeOf(consoleRead)).toBe('forbidden');
+        await expect(host.admin.readScopeTable(staff, t1, scope, { table: '_cf_KV', limit: 1, offset: 0 }))
+          .rejects.toBeTruthy();
+        expect((await host.admin.listScopeTables(staff, t1, scope)).some((table) => table.name.startsWith('_cf_'))).toBe(false);
+      } else {
+        // The private directory database is a distinct file, unreachable through the
+        // scope console as well as the module SQL seam.
+        await expect(host.admin.queryScope(staff, t1, scope, {
+          sql: 'SELECT keyring FROM private_continuation_keys',
+        })).rejects.toBeTruthy();
+      }
+      const replay = await errOf(as.bob.invoke('state/page-trashed', { limit: 1, cursor: first.nextCursor }));
+      expect(replay).toMatchObject({ extensions: { reason: PAGE_CURSOR_RESTART } });
       expect(await as.carol.invoke<Page<Row>>('state/page-trashed', { limit: 1, cursor: first.nextCursor })).toEqual({
         entries: [],
         nextCursor: null,

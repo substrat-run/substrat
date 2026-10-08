@@ -329,14 +329,17 @@ const rows = input.cursor
 return pageOf(rows, limit, (row) => row.article);
 ```
 
-For the permission-walk case, `pageVisible` reads on past the rows the check refuses until
-the page is full, and mints the cursor from the last row it **returns** — a cursor carries
-its row's id and sort value, so one taken from a refused row would hand the caller what the
-check withholds. One call reads at most `VISIBLE_SCAN_BUDGET` (2 000) rows, and a page that
-stops short of `limit` — at the end, or at the budget — answers the same way: the visible
-rows it found and no `Link`. So a caller who may see very little of a large table can have
-its walk end early, silently; a sealed continuation that would carry it on without
-revealing a position is #2074.
+For a writable permission walk, `pageVisible` reads past rows the check refuses until
+the page is full or its private, randomly drawn scan budget (1 000–2 000 rows) is spent.
+Read-only and copy walks use a fixed 2 000-row budget because they return no cursor at a
+budget stop. For a writable walk, a filtered read returns a sealed continuation at the
+budget stop, even with no visible entries, so a caller can follow the next `Link` to
+reach later visible rows. This budget-stop token is fixed-length and does not expose
+the last examined row's id or sort value. A full writable page gets a stateless sealed
+continuation from its last visible row. The caller can still observe
+that an empty page with a next link passed 1 000–2 000 hidden rows. A short page
+with a next link reveals the same range minus its visible entry count;
+end-of-walk and variable request timing are also observable (#2074, K-45).
 
 For the third case — a list the handler has **already folded in memory**, because the read
 is a projection, a correlated subquery or a join the kernel cannot compose —

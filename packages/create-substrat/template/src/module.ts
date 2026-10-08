@@ -257,10 +257,9 @@ const closeRepairOp: Op<'shop/close-repair'> = async (ctx, input) => {
  * Paged with `pageVisible`, which is what a permission-filtered walk needs: a page
  * of 20 rows read from the table can leave 3 standing after the proof walk, so the
  * fetch size and the page size are not the same number. `pageVisible` reads on past
- * refused rows until the page is full and mints the cursor from the last row it
- * RETURNS: a cursor carries its row's id and sort value, so one taken from a refused
- * row would hand the caller exactly what the proof walk withholds (#2073). A short
- * page is the end of the walk.
+ * refused rows until the page is full or the budget is spent. It seals the
+ * continuation, including on a short page at a budget stop, so a refused row's
+ * position never reaches the caller (#2074).
  */
 const portalRepairsOp: Op<'shop/portal-repairs'> = async (ctx, input) =>
   pageVisible(
@@ -268,6 +267,7 @@ const portalRepairsOp: Op<'shop/portal-repairs'> = async (ctx, input) =>
     input,
     async (order) =>
       (await ctx.check(WO.read, { entityType: 'workorder', entityId: order.id })).allowed,
+    { continuation: ctx.pageContinuation('workorder:portal-repairs', input) },
   );
 
 /**

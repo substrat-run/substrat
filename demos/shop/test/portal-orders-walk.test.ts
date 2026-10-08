@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { VISIBLE_SCAN_BUDGET, platformActorId, type Page } from '@substrat-run/contracts';
+import { VISIBLE_SCAN_BUDGET, VISIBLE_SCAN_BUDGET_MIN, platformActorId, type Page } from '@substrat-run/contracts';
 import { ulid, type PermissionChecker, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildShopHost, seedShop, SHOP_PERM, type OrderRow, type ShopWorld } from '../src/index.js';
@@ -38,11 +38,6 @@ let orphans = 0;
 let orderChecks = 0;
 let customerChecks = 0;
 let forceIncomplete = false;
-
-/** The row id inside a `ctx.page` cursor (K-44) — on this `number` walk, its tie-break. */
-function idIn(cursor: string): string {
-  return (JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { id: string }).id;
-}
 
 async function walk(who: ScopeStub, limit: number) {
   const ids: string[] = [];
@@ -131,7 +126,7 @@ afterAll(async () => {
 
 describe('shop/portal-orders walks with pageVisible (#2080)', () => {
   for (const limit of [1, 2, 3]) {
-    it(`limit ${limit}: each customer reaches every own order, newest first, and every cursor is theirs`, async () => {
+    it(`limit ${limit}: each customer reaches every own order, newest first, with sealed cursors`, async () => {
       for (const [who, own] of [
         [elin, hers],
         [otto, his],
@@ -139,7 +134,7 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
         const { ids, cursors } = await walk(who, limit);
         expect(ids).toEqual(own);
         expect(cursors.length).toBeGreaterThan(0);
-        for (const c of cursors) expect(own, `cursor at ${idIn(c)}`).toContain(idIn(c));
+        for (const c of cursors) expect(c).toMatch(/^sc1\./);
       }
     });
   }
@@ -158,7 +153,7 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
       const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 2 });
       expect(page.entries.map((o) => o.id)).toEqual(hers.slice(0, 2));
       expect(orderChecks).toBeLessThan(20);
-      expect(idIn(page.nextCursor!)).toBe(hers[1]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
     });
 
     it('the next page starts after her own order, not after a refused one', async () => {
@@ -189,14 +184,69 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
     expect(customerChecks).toBeGreaterThan(0);
   });
 
+  // Elin's newest order is row `orphans + 3` of her walk: the orphans, then Otto's two newest.
+  describe(`the scan budget (${VISIBLE_SCAN_BUDGET_MIN}–${VISIBLE_SCAN_BUDGET} rows a call)`, () => {
+    let atHerNewest: string;
+    beforeEach(() => { forceIncomplete = true; });
+
+    it('her newest order at the maximum budget boundary is eventually found', async () => {
+      orphanOrders(Math.max(0, VISIBLE_SCAN_BUDGET - 3 - orphans));
+      let cursor: string | undefined;
+      for (let i = 0; i < 2; i++) {
+        orderChecks = 0;
+        const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1, cursor });
+        expect(page.nextCursor).toMatch(/^sc1\./);
+        expect(orderChecks).toBeLessThanOrEqual(VISIBLE_SCAN_BUDGET);
+        if (page.entries.length > 0) {
+          expect(page.entries.map((o) => o.id)).toEqual([hers[0]]);
+          atHerNewest = page.nextCursor!;
+          break;
+        }
+        expect(orderChecks).toBeGreaterThanOrEqual(VISIBLE_SCAN_BUDGET_MIN);
+        cursor = page.nextCursor!;
+      }
+      expect(atHerNewest).toBeDefined();
+    });
+
+    it('one row further returns an empty page with a continuation, then reaches her order', async () => {
+      orphanOrders(1);
+      const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
+      expect(page.entries).toEqual([]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
+      expect(orderChecks).toBeGreaterThanOrEqual(VISIBLE_SCAN_BUDGET_MIN);
+      expect(orderChecks).toBeLessThanOrEqual(VISIBLE_SCAN_BUDGET);
+      let cursor = page.nextCursor!;
+      let found = false;
+      for (let i = 0; i < 2; i++) {
+        orderChecks = 0;
+        const resumed = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1, cursor });
+        expect(resumed.nextCursor).toMatch(/^sc1\./);
+        expect(orderChecks).toBeLessThanOrEqual(VISIBLE_SCAN_BUDGET);
+        if (resumed.entries.length > 0) {
+          expect(resumed.entries.map((o) => o.id)).toEqual([hers[0]]);
+          found = true;
+          break;
+        }
+        cursor = resumed.nextCursor!;
+      }
+      expect(found).toBe(true);
+    });
+
+    it('her cursor carries the walk on past the budget, from her own order', async () => {
+      const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 2, cursor: atHerNewest });
+      expect(page.entries.map((o) => o.id)).toEqual(hers.slice(1, 3));
+      expect(orderChecks).toBe(6);
+    });
+  });
+
   describe(`more than the old ${VISIBLE_SCAN_BUDGET}-row foreign scan budget`, () => {
     let atHerNewest: string;
 
     it('her newest order remains reachable with 2,000 foreign rows ahead', async () => {
-      orphanOrders(VISIBLE_SCAN_BUDGET - 3 - orphans);
+      orphanOrders(Math.max(0, VISIBLE_SCAN_BUDGET - 3 - orphans));
       const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
       expect(page.entries.map((o) => o.id)).toEqual([hers[0]]);
-      expect(idIn(page.nextCursor!)).toBe(hers[0]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
       expect(orderChecks).toBeLessThan(20);
       atHerNewest = page.nextCursor!;
     });
@@ -205,7 +255,7 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
       orphanOrders(1);
       const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
       expect(page.entries.map((o) => o.id)).toEqual([hers[0]]);
-      expect(idIn(page.nextCursor!)).toBe(hers[0]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
       expect(orderChecks).toBeLessThan(20);
     });
 
@@ -227,7 +277,8 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
     });
     const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
     expect(page.entries.map((o) => o.id)).toEqual([shared]);
-    expect(idIn(page.nextCursor!)).toBe(shared);
+    expect(page.nextCursor).toMatch(/^sc1\./);
     expect(orderChecks).toBeLessThan(100);
   });
+
 });

@@ -436,8 +436,8 @@ const closeRepairOp: OperationHandler<{ orderId: string }, WorkOrder> = async (c
  *
  * Paged with `pageVisible` (#811), which is what a permission-filtered walk needs.
  * A page of 20 read from the table can leave 3 after the walk, so it reads on past
- * refused rows until the page is full, and mints the cursor from the last row it
- * RETURNS — a refused repair's position never reaches the caller (#2073).
+ * refused rows until the page is full or the budget is spent, then seals the
+ * continuation so a refused repair's position never reaches the caller (#2074).
  */
 const portalRepairsOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ctx, input) =>
   pageVisible(
@@ -445,6 +445,7 @@ const portalRepairsOp: OperationHandler<PageParams, Page<WorkOrder>> = async (ct
     input,
     async (order) =>
       (await ctx.check(WO.read, { entityType: 'workorder', entityId: order.id })).allowed,
+    { continuation: ctx.pageContinuation('workorder:portal-repairs', input) },
   );
 
 /**

@@ -1,4 +1,21 @@
 import { guardSpine, type RedactionSql, type ScopedSql, type SqlValue } from '@substrat-run/kernel';
+import { substratError, tokenizeSql } from '@substrat-run/contracts';
+
+/** Workerd's `_cf_*` tables back runtime-owned KV and alarms, not module data. */
+export function assertNoWorkerdStorage(sql: string): void {
+  const tokens = tokenizeSql(sql);
+  if (tokens.some((token, index) => {
+    if (!token.text.split('.').some((part) => part.toLowerCase().startsWith('_cf_'))) return false;
+    // Quoted tokens can also be string literals in an expression. A table name
+    // there still follows a source/target keyword, including when quoted.
+    if (!token.quoted) return true;
+    const before = tokens[index - 1];
+    return before && !before.quoted &&
+      ['FROM', 'JOIN', 'INTO', 'UPDATE', 'TABLE', 'REFERENCES', 'ON'].includes(before.text.toUpperCase());
+  })) {
+    throw substratError('forbidden', 'ctx.sql cannot read workerd internal storage');
+  }
+}
 
 /**
  * Adapts a Durable Object's `SqlStorage` to the kernel's `ScopedSql` contract
@@ -27,9 +44,12 @@ export function doScopedSql(
   afterDdl?: () => void,
 ): ScopedSql {
   return guardSpine({
-    query: <T = Record<string, SqlValue>>(q: string, params: readonly SqlValue[] = []): T[] =>
-      sql.exec(q, ...(params as SqlValue[])).toArray() as T[],
+    query: <T = Record<string, SqlValue>>(q: string, params: readonly SqlValue[] = []): T[] => {
+      assertNoWorkerdStorage(q);
+      return sql.exec(q, ...(params as SqlValue[])).toArray() as T[];
+    },
     exec: (q: string, params: readonly SqlValue[] = []) => {
+      assertNoWorkerdStorage(q);
       const cursor = sql.exec(q, ...(params as SqlValue[]));
       return { changes: cursor.rowsWritten };
     },

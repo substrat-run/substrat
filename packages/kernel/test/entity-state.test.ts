@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { piecesReproduce } from '../src/spine-guard.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, permissionKey } from '@substrat-run/contracts';
 import {
   assertNoReservedColumnWrite,
@@ -22,6 +22,7 @@ import {
   guardSpine,
   cursorOf,
   listQuery,
+  type OperationContext,
 } from '../src/index.js';
 
 /**
@@ -240,7 +241,11 @@ describe('ctx.pageTrashed walks past refused rows without handing out their posi
     addStatePlans(statePlans, '@m', [both], [{ key: 'doc:archive' }, { key: 'doc:trash' }]);
     const [plan] = listIndexPlans('@m', [{ entityType: 'doc', sortable: ['title'], table: 'docs', idColumn: 'id' }], [both]);
     return {
-      reads: (visible: ReadonlySet<string>, scanBudget?: number) =>
+      reads: (
+        visible: ReadonlySet<string>,
+        scanBudget?: number,
+        continuation?: ReturnType<OperationContext['pageContinuation']>,
+      ) =>
         createTrashedReads({
           query: (sql, params) => db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[],
           listPlans: new Map([['doc', plan!]]),
@@ -249,6 +254,7 @@ describe('ctx.pageTrashed walks past refused rows without handing out their posi
           check: async (_key, entity) =>
             (visible.has(entity!.entityId) ? { allowed: true } : { allowed: false }) as never,
           ...(scanBudget !== undefined ? { scanBudget } : {}),
+          ...(continuation ? { continuation: () => continuation } : {}),
         }),
     };
   };
@@ -282,6 +288,30 @@ describe('ctx.pageTrashed walks past refused rows without handing out their posi
     expect(below).toEqual({ entries: [], nextCursor: null });
     expect(at).toEqual(below);
     expect(past).toEqual(below);
+  });
+
+  it('keeps the full budget on a read-only trashed page after 1,500 refused rows', async () => {
+    const randomness = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((bytes) => {
+      new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).fill(0);
+      return bytes;
+    });
+    try {
+      const rows = Array.from({ length: 1_502 }, (_, i) => ({
+        id: `d${String(i).padStart(4, '0')}`,
+        title: `t${String(i).padStart(4, '0')}`,
+      }));
+      const readonly = {
+        writable: false,
+        open: async (cursor: string) => cursor,
+        seal: async (position: string, hidden: boolean) => hidden ? null : position,
+      };
+      const page = await setup(rows).reads(new Set(['d1500']), undefined, readonly).pageTrashed('doc', { limit: 1 });
+      expect(page.entries.map((row) => (row as { id: string }).id)).toEqual(['d1500']);
+      expect(page.nextCursor).not.toBeNull();
+      expect(randomness).not.toHaveBeenCalled();
+    } finally {
+      randomness.mockRestore();
+    }
   });
 });
 
@@ -594,4 +624,3 @@ describe('guardSpine: a schema change runs one executable statement at a time (#
     expect(calls).toEqual([]);
   });
 });
-

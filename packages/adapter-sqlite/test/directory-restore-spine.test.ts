@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { platformActorId, tenantId, type DirectoryDump, type PrincipalId, type ScopeDumpTable } from '@substrat-run/contracts';
+import { platformActorId, scopeId, tenantId, type DirectoryDump, type PrincipalId, type ScopeDumpTable } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 import { createTupleChecker } from '../src/checker.js';
@@ -59,6 +59,44 @@ describe('directory restore builds the spine from its own schema (#1898)', () =>
       });
     return [entry('intent', { reason: 'why' }), entry('applied', {})];
   };
+
+  it('deleting a preview clears continuation state and invalidates legacy bindings to it', async () => {
+    const h = await open();
+    const preview = scopeId.parse(ulid());
+    await h.provisionScope(staff, { tenantId: tenant, scopeId: preview, kind: 'preview' });
+    const db = new Database(join(dir!, '_directory.sqlite'));
+    try {
+      db.prepare('INSERT INTO private_continuation_keys (scope_id, keyring) VALUES (?, ?)').run(preview, 'private-key');
+      db.prepare('INSERT INTO private_continuation_positions (scope_id, expires_at, locator, ciphertext) VALUES (?, ?, ?, ?)')
+        .run(preview, 123, 'locator', 'private-position');
+      // An invalid legacy binding still needs cleanup when its target is removed.
+      db.prepare('INSERT INTO peer_bindings (tenant_id, caller_scope_id, vertical, target_scope_id) VALUES (?, ?, ?, ?)')
+        .run(tenant, ulid(), 'acme/target', preview);
+      await h.deleteSnapshot(staff, tenant, preview);
+      expect(db.prepare('SELECT * FROM private_continuation_keys WHERE scope_id = ?').all(preview)).toEqual([]);
+      expect(db.prepare('SELECT * FROM private_continuation_positions WHERE scope_id = ?').all(preview)).toEqual([]);
+      expect(db.prepare('SELECT invalidated FROM peer_bindings WHERE target_scope_id = ?').get(preview)).toEqual({ invalidated: 1 });
+      expect(await h.admin.getScopeRecord(staff, tenant, preview)).toBeUndefined();
+    } finally { db.close(); }
+  });
+
+  it('omits private continuation keys and positions from directory exports and resets them on restore', async () => {
+    const h = await open();
+    const db = new Database(join(dir!, '_directory.sqlite'));
+    try {
+      db.prepare('INSERT INTO private_continuation_keys (scope_id, keyring) VALUES (?, ?)')
+        .run('scope-a', 'test-private-key');
+      db.prepare('INSERT INTO private_continuation_positions (scope_id, expires_at, locator, ciphertext) VALUES (?, ?, ?, ?)')
+        .run('scope-a', 123, 'locator', 'test-private-position');
+    } finally { db.close(); }
+    const dump = await h.admin.exportDirectory(staff);
+    expect(dump.tables.map((t) => t.name)).not.toContain('private_continuation_keys');
+    expect(dump.tables.map((t) => t.name)).not.toContain('private_continuation_positions');
+    expect(JSON.stringify(dump)).not.toContain('test-private');
+    await h.admin.restoreDirectory(staff, dump);
+    expect(snapshot().find((t) => t.name === 'private_continuation_keys')?.rows).toEqual([]);
+    expect(snapshot().find((t) => t.name === 'private_continuation_positions')?.rows).toEqual([]);
+  });
 
   it('a NOCASE _substrat_tenant_tuples and _substrat_roles restore into BINARY tables, and the tenant-level check compares exactly', async () => {
     const h = await open();

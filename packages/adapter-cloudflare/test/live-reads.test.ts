@@ -1447,6 +1447,21 @@ describe('live reads: the ping keep-alive (#1860)', () => {
 });
 
 describe("live reads: the reaper's alarm and a scope's dump (#938)", () => {
+  it('workerd refuses raw SQL access to KV backing rows (#2074)', async () => {
+    const id = scopeIdOf.parse(ulid());
+    const stub = env.LIVE_SCOPE.get(env.LIVE_SCOPE.idFromName(id));
+    const refusal = await runInDurableObject(stub, async (_i, state) => {
+      await state.storage.put('continuation:probe', 'private');
+      try {
+        state.storage.sql.exec('SELECT * FROM _cf_KV').toArray();
+        return null;
+      } catch (error) {
+        return String(error);
+      }
+    });
+    expect(refusal).toMatch(/SQLITE_AUTH/);
+  });
+
   it('leaves workerd’s own _cf_* tables out of an export, and a wipe-and-load past them', async () => {
     const host = new CloudflareScopeHost({
       scope: env.LIVE_SCOPE,

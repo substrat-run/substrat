@@ -1021,8 +1021,9 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
  * Portal listing: per-entity proof walks (order → customer), no node-level grant.
  *
  * Complete grant reads narrow the order table by customer id, including customers
- * of directly granted orders. `pageVisible` remains the authority for each order
- * and handles the fallback walk when grants cannot be enumerated (#2073, #2080).
+ * of directly granted orders. `pageVisible` checks each order and handles the fallback
+ * walk when grants cannot be enumerated (#2080, #2108). Writable walks seal their
+ * continuation so they can resume without exposing hidden positions (#2074).
  */
 const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) => {
   const customers = await completeGrantIds(ctx, 'customer');
@@ -1047,6 +1048,7 @@ const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> =
     }),
     input,
     async (order) => (await ctx.check(SHOP_PERM.orderRead, orderRef(order.id))).allowed,
+    { continuation: ctx.pageContinuation('order:portal-orders', input) },
   );
 };
 
