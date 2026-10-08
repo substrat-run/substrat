@@ -75,6 +75,8 @@ export type {
   TenantStoreProvisionInput,
   TenantStoreRecord,
 } from './scope-host.js';
+export { GRANT_CHILDREN_INDEX_DDL, GRANT_READ_MAX_LIMIT, GRANT_READ_WORK_BUDGET } from './grant-scoped-read.js';
+export type { GrantedEntitiesPage, GrantedEntityIdsMayRepeatPage } from './grant-scoped-read.js';
 export type {
   /** @deprecated Import from `@substrat-run/adapter-cloudflare` (#1978); this kernel export goes in a later release. */
   AnalyticsEngineDatasetLike,
@@ -187,6 +189,7 @@ export type { PermissionChecker } from './permission-checker.js';
 export {
   ancestorsWithin,
   createTupleEvaluator,
+  grantedEntitiesForContext,
   joinedMembershipExpiry,
   liveOrgMembership,
   memberAddedAudit,

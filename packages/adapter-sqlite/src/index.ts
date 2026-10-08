@@ -696,6 +696,7 @@ import {
   type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
+import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker, directoryTenantReader } from './checker.js';
@@ -1133,6 +1134,7 @@ const KERNEL_DDL = `
     revoked_at TEXT,
     PRIMARY KEY (subject, relation, object)
   );
+  ${GRANT_CHILDREN_INDEX_DDL};
   CREATE TABLE IF NOT EXISTS _substrat_deliveries (
     event_id TEXT NOT NULL,
     consumer_module TEXT NOT NULL,
@@ -12034,6 +12036,13 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       check: runCheck,
+      grantedEntities: async (unparsed, entityType, options) => {
+        const permission = assertPermissionKey(unparsed);
+        return grantedEntitiesForContext(
+          checker, subject, permission, { tenantId: rt.tenantId, scopeId: rt.scopeId },
+          entityType, options, runCheck, withheld, Boolean(overrideActor),
+        );
+      },
       canAssign: runCanAssign,
       /**
        * #827. The plan is registration state, the index is scope state: an entity
@@ -12556,6 +12565,7 @@ export class SqliteScopeHost implements ScopeHost {
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
+    db.exec(GRANT_CHILDREN_INDEX_DDL);
     // Executor retry state (#100), same reasoning: scopes provisioned before it
     // already have the table. Defaults read as "terminal", which is exactly right
     // for the rows already there — every one of them is a completed delivery or a

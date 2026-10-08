@@ -59,7 +59,19 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
   let parentsStmt: Database.Statement | undefined;
   let capabilityStmt: Database.Statement | undefined;
   let switchedOffStmt: Database.Statement | undefined;
+  let nextGrantStmt: Database.Statement | undefined;
+  let nextChildStmt: Database.Statement | undefined;
   return {
+    nextGrant: (subject, relation, after) =>
+      (nextGrantStmt ??= db.prepare(
+        `SELECT subject, object, expires_at, revoked_at FROM _substrat_tuples
+         WHERE subject = ? AND relation = ? AND object > ? ORDER BY object LIMIT 1`,
+      )).get(subject, relation, after) as PermissionTupleRow | undefined,
+    nextChild: (parent, after) =>
+      (nextChildStmt ??= db.prepare(
+        `SELECT subject, object, expires_at, revoked_at FROM _substrat_tuples
+         WHERE object = ? AND relation = 'parent' AND subject > ? ORDER BY subject LIMIT 1`,
+      )).get(parent, after) as PermissionTupleRow | undefined,
     tuples: (subject, relationPrefix) =>
       (tuplesStmt ??= db.prepare(
         `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
