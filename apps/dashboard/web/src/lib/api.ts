@@ -1772,7 +1772,7 @@ export const api = {
         method: 'PUT', body: JSON.stringify({ vertical, targetScopeId }),
       }),
   switchAppPeer: (scopeId: string, vertical: string, to: 'on' | 'off', reason: string) =>
-    call<{ changed: boolean }>(`/apps/${encodeURIComponent(scopeId)}/peers/switch`, {
+    call<{ changed: boolean; auditWarning?: string }>(`/apps/${encodeURIComponent(scopeId)}/peers/switch`, {
       method: 'POST',
       body: JSON.stringify({ vertical, to, reason }),
     }),

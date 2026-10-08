@@ -110,7 +110,7 @@ What is emitted and consumed, with payloads, is at
 The version argument below is what belongs here, and the published page does not carry it.
 
 `invoicing.underlag-exported` is at **v2** because v1 stated `total` as a bare amount string with no
-currency — on a financial artifact. `demos/callout/spec/testrun.md` had always specified
+currency — on a financial artifact. [`callout-testrun.md`](../rfc/callout-testrun.md) had always specified
 `total: Money`, so the bump is the code meeting its own spec rather than a change of intent.
 
 **The bump shipped as a replace, deliberately violating D-28's dual-emit rule**, and the

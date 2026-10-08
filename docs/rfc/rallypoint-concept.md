@@ -11,7 +11,7 @@ description: The RallyPoint concept — the racket-club demo that drove engine-b
 Status: draft v0.1 · Last updated: 2026-07-18
 
 > Companion to [booking-social.md](booking-social.md) (the tier split,
-> locking model, and outbox seam) and [concept.md](../../demos/callout/spec/concept.md) (the reference
+> locking model, and outbox seam) and [concept.md](callout-concept.md) (the reference
 > demo). Anonymization per the master plan: the feature set is derived from **the racket-club
 > vendor's** public product surface (Playtomic Manager) — deliberately, so demo work seeds a
 > real `engine-booking` rather than a throwaway.

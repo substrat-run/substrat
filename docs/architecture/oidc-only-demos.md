@@ -8,7 +8,8 @@ description: Remove the credential store from the verticals.
 
 **Status:** **built** — every demo vertical is OIDC-only
 **Scope:** `demos/meridian`, `demos/manyfold`, `demos/callout`; later `demos/todo`,
-`demos/ticket0`, `demos/shop`, `demos/handlebar`, `demos/rally`
+`demos/ticket0`, `demos/shop`, `demos/handlebar`, `demos/rally` (callout and rally have since
+been removed from the repo)
 **Author:** design pass, 2026-08-04 · shop, handlebar and rally added 2026-09-01
 
 ## Motivation
@@ -116,7 +117,7 @@ never called `listsDeclaredBy()`, so nothing carried that declaration to the ker
 declaration was decorative. Every other vertical and engine in the workspace already had the
 line. Fixed here, because a migration that leaves a main screen broken has not been verified.
 
-**Callout has the same gap** and is not fixed here.
+**Callout had the same gap** and was not fixed here (the demo has since been removed).
 
 ## Rally, added last — the deferral was real, and cost one column
 
@@ -171,7 +172,7 @@ vertical carrying an impersonation header, a persona table, and an SPA that bran
 which backend answered, so the login a developer exercised all day was the one no deployment
 ran.
 
-**Callout is now issuer-only** (`packages/dev-issuer`). The dev issuer is a genuine OP —
+**Callout went issuer-only first** (`packages/dev-issuer`; the demo has since been removed). The dev issuer is a genuine OP —
 discovery, JWKS, Authorization Code + PKCE, signed ID token — whose single shortcut is that
 `/authorize` renders a list of names rather than a password field. It is stateless (the
 authorization code is a short-lived JWT; there is no session store and therefore no SSO

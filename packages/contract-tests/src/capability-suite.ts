@@ -197,6 +197,12 @@ export function capabilityContractSuite(
         }
       });
 
+      it('reports a capability grant read as incomplete on each adapter', async () => {
+        await expect(stub.invoke('cap/granted-entities')).resolves.toEqual({
+          kind: 'incomplete', reason: 'capability',
+        });
+      });
+
       it('the proof ends at the capability’s grant on its root, after the minter’s own chain', async () => {
         const out = await stub.invoke<{ proof: { subject: string; relation: string; object: string }[] }>(
           'cap/read',

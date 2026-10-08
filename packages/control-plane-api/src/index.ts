@@ -81,6 +81,16 @@ export {
 export { reconcilePayloadFor, reconcileThenReassert, reviewedEntityGrants, switchCarryFor, type SwitchCarry } from './reconcile.js';
 export type { ReconcilePayload, ReconcileGatherAdmin } from './reconcile.js';
 export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
+export {
+  sendEmailHandler,
+  sendFailureStatus,
+  retryAfterSecondsOf,
+  MAX_EMAIL_SEND_ATTEMPTS,
+  EMAIL_RETRY_BASE_MS,
+  EMAIL_RETRY_MAX_MS,
+  type EmailSent,
+  type SendEmailDeps,
+} from './email-intent.js';
 // #1978: moving here from the kernel — the drain is its only reader.
 export {
   isTerminalDispatchFailure,
@@ -238,7 +248,7 @@ export type { DirectoryBackupOptions, DirectoryBackupResult } from './directory-
 // about it is one this package cannot assert on its own: that a pseudonymized dump still
 // re-imports and still parses when a VERTICAL reads it back. That round trip needs the
 // generator, an adapter and a vertical in one process, and the only place all three meet
-// is a vertical's own suite — `demos/callout/test/masked-round-trip.test.ts`.
+// is a vertical's own suite — `demos/meridian/test/masked-round-trip.test.ts`.
 export { maskDump, maskRecords, MASKED } from './mask.js';
 export { createPseudonymizer, kindOf, kindUnder } from './pseudonymize.js';
 export type { PiiKind, Pseudonymizer } from './pseudonymize.js';

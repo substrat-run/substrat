@@ -437,7 +437,7 @@ the result it returned.
 ## The fixture modules
 
 The suites need modules to run, and they bring their own rather than borrowing a demo's —
-so a change to Callout can never quietly change what an adapter is held to:
+so a change to a demo can never quietly change what an adapter is held to:
 
 | export | what it is for |
 |---|---|

@@ -196,7 +196,7 @@ const grantShapeTable = (grants: EntityGrantLike[]): string[] => {
 };
 
 /**
- * `rel` is how this vertical is NAMED in a diagnostic — `demos/callout`, or the
+ * `rel` is how this vertical is NAMED in a diagnostic — `demos/todo`, or the
  * `--root` path. `regenerate` is the command its header tells a reader to run.
  */
 function render(rel: string, pkg: string, src: Surface, regenerate: string, entry: string): string {
@@ -530,7 +530,7 @@ function declaredEntry(dir: string, rel: string): Vertical | undefined {
     cannot(
       `${rel} declares \`substrat.permissions\` as ${JSON.stringify(entry)}, not a path.\n` +
         `  Remedy: point it at the module that exports \`definePermissions(...)\`, e.g.\n` +
-        `  \`"substrat": { "permissions": "src/provision.ts" }\`. See demos/callout.`,
+        `  \`"substrat": { "permissions": "src/provision.ts" }\`. See demos/todo.`,
     );
   }
   return { rel, dir, entry, pkg: pkgJson.name ?? rel };
@@ -552,7 +552,7 @@ if (projectDir !== undefined) {
         `  Rendering nothing and exiting 0 would be a green light over a permission surface\n` +
         `  nobody reviewed.\n` +
         `  Remedy: add \`"substrat": { "permissions": "src/provision.ts" }\` pointing at the\n` +
-        `  module that exports \`definePermissions(...)\`. See demos/callout.`,
+        `  module that exports \`definePermissions(...)\`. See demos/todo.`,
     );
   }
   verticals.push(one);
@@ -583,7 +583,7 @@ if (projectDir !== undefined) {
               `  \`substrat.permissions\` in package.json — it would be skipped and CI would go\n` +
               `  green over a permission surface nobody reviewed.\n` +
               `  Remedy: add \`"substrat": { "permissions": "src/provision.ts" }\` pointing at the\n` +
-              `  module that exports \`definePermissions(...)\`. See demos/callout.`,
+              `  module that exports \`definePermissions(...)\`. See demos/todo.`,
           );
         }
         continue;
@@ -608,7 +608,7 @@ for (const { rel, dir, entry, pkg } of verticals) {
         `  Without it this vertical is skipped and CI goes green over a permission surface\n` +
         `  nobody reviewed — worse than having no checkpoint at all.\n` +
         `  Remedy: export \`const permissions = definePermissions({ modules, roles, entityGrants })\`.\n` +
-        `  See demos/callout/src/provision.ts.`,
+        `  See demos/todo/src/provision.ts.`,
     );
   }
   // Normalise to the shape render()/collectRegistry() already consume, so their output — and

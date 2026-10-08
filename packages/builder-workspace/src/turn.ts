@@ -49,7 +49,7 @@ export interface EnsureRepoResult {
 /**
  * Makes the vertical directory a self-contained git repository, initialising one
  * on first use. Refuses to nest a repo inside files the PARENT repo tracks —
- * a tracked directory (demos/callout) is monorepo territory and gets scoped
+ * a tracked directory (demos/todo) is monorepo territory and gets scoped
  * mode, never a nested repo that would shadow tracked files.
  */
 export async function ensureVerticalRepo(

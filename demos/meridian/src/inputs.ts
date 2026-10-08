@@ -52,7 +52,7 @@ export const instanceIdInput = z.object({ instanceId: z.string().min(1) });
  * the literal is what was always true, and the conformance kit reads it off this
  * schema rather than being handed it by the fixture.
  *
- * Callout's and Handlebar's timelines went the other way in the same change: they
+ * Handlebar's timeline (and the former Callout demo's) went the other way in the same change: they
  * genuinely serve two types, so they declare `entityFrom` and enumerate the pair.
  * One type is a literal; several are an enum; an open string is neither, and is
  * the shape #890 refused to keep.

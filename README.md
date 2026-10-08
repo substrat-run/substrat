@@ -84,13 +84,10 @@ their surfaces evolve additively only; the rules a module must follow are in
 
 ## Demos
 
-Nine reference verticals, each the same kernel under a different shape of app, plus a
+Seven reference verticals, each the same kernel under a different shape of app, plus a
 standalone OIDC issuer. They run locally on SQLite and deploy unchanged to Cloudflare;
 several are installable from the hosted marketplace.
 
-- **[Callout](demos/callout/)** — field service: work orders, time and material,
-  self-inspection protocols, invoice basis. The engine-composing reference, and the first
-  vertical that went through `substrat push`.
 - **[Todo](demos/todo/)** — the smallest vertical that is still a real one: shared lists,
   per-list sharing by email, revoke. The reference for user-initiated sharing
   (`ctx.grant` / `ctx.revoke`) and for a screen that tells a 403 from an empty list.
@@ -105,8 +102,8 @@ several are installable from the hosted marketplace.
   metered per tenant.
 - **[Kallkälla Kaffe](demos/shop/)** — e-commerce: catalog, cart, stock, discounts,
   orders; a customer storefront and a staff back-office over one API.
-- **[Handlebar](demos/handlebar/)** — Callout's engines re-vocabularied to a bike
-  workshop; what `npm create substrat` scaffolds is a smaller cousin.
+- **[Handlebar](demos/handlebar/)** — a bike workshop: work orders, self-inspection
+  protocols and an invoice basis, composed from three engines; what `npm create substrat` scaffolds is a smaller cousin.
 - **[Tock](demos/tock/)** — measured file loads: a schema the user edits at runtime and data
   that is allowed to disagree with it, so declared-but-absent and observed-but-undeclared are
   both findings. Corrections supersede without destroying. Runs locally, not deployed.
@@ -160,9 +157,8 @@ for every merge in its range, is one of those. Two
 things are never self-approved: a migration diff and a permission diff — CI going red is
 what makes a human read them.
 
-To run a demo: `pnpm callout-demo dev` (issuer, API and web on a private port block), or
-`pnpm todo-demo dev`. To run the whole platform locally on one SQLite directory:
-`pnpm dev`.
+To run a demo: `pnpm todo-demo dev` (issuer, API and web on a private port block). To run
+the control plane and the console locally: `pnpm dev`.
 
 ## Documentation
 

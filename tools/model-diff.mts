@@ -8,7 +8,7 @@
  * `tools/permission-diff.mts`, and for the same reason.
  *
  * It reads the SAME object the manifest reads — each vertical exports
- * `calloutEntities`-shaped registries consumed by `manifestEntities` — so the
+ * `handlebarEntities`-shaped registries consumed by `manifestEntities` — so the
  * artifact cannot drift from what the vertical actually declares.
  *
  * **`model.json` is the artifact of record.** Everything downstream should read

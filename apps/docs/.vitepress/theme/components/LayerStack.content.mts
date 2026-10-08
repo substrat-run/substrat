@@ -28,7 +28,6 @@ export const verticals: Layer = {
   role: 'Everything a user touches — the businesses themselves.',
   owner: 'own vocabulary · screens · pricing · roles',
   chips: [
-    ['Callout', 'field service'],
     ['Handlebar', 'bike workshop'],
     ['Kallkälla', 'coffee shop'],
     ['Meridian', 'HR'],

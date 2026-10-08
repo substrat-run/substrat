@@ -13,6 +13,54 @@ import {
 import type { PermissionChecker } from './permission-checker.js';
 import { capabilityGrantOf, capabilityLive, type CapabilityRow } from './capability.js';
 import { isSwitchableSubjectKind } from './system-switch.js';
+import { walkGrantedEntities, type GrantedEntitiesPage, type GrantWalkRow } from './grant-scoped-read.js';
+
+// Only createTupleEvaluator can register a checker. A provider cannot claim the
+// built-in tuple algebra's node-wide semantics for its own implementation.
+const nodeWideTupleCheckers = new WeakSet<PermissionChecker>();
+function trustTupleChecker<T extends PermissionChecker>(checker: T): T {
+  const check = Object.getOwnPropertyDescriptor(checker, 'check');
+  if (!check || !('value' in check) || typeof check.value !== 'function') {
+    throw new TypeError('tuple evaluator check must be an own method');
+  }
+  Object.freeze(checker);
+  nodeWideTupleCheckers.add(checker);
+  return checker;
+}
+
+/** The one result selector both adapter contexts call, using their own `ctx.check` path. */
+export async function grantedEntitiesForContext(
+  checker: PermissionChecker,
+  subject: CheckSubject,
+  permission: PermissionKey,
+  node: Node,
+  entityType: string,
+  options: { limit?: number; cursor?: string } | undefined,
+  runCheck: (permission: PermissionKey, entity?: EntityRef) => Promise<Decision>,
+  withheld?: ReadonlySet<string>,
+  nodeOverride = false,
+): Promise<GrantedEntitiesPage> {
+  if (withheld?.has(permission)) return { kind: 'ids', ids: [], nextCursor: null };
+  if ((await runCheck(permission)).allowed) {
+    return nodeOverride || nodeWideTupleCheckers.has(checker)
+      ? { kind: 'all' }
+      : { kind: 'incomplete', reason: 'checker' };
+  }
+  if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
+  if (!checker.grantedEntities) return { kind: 'incomplete', reason: 'checker' };
+  const page = await checker.grantedEntities(
+    subject, permission, node, entityType,
+    async (entity) => (await runCheck(permission, entity)).allowed,
+    options,
+  );
+  if (page.kind === 'all') return { kind: 'incomplete', reason: 'checker' };
+  if (page.kind === 'incomplete') return page;
+  const ids: string[] = [];
+  for (const id of page.ids) {
+    if ((await runCheck(permission, { entityType, entityId: id })).allowed) ids.push(id);
+  }
+  return { ...page, ids };
+}
 
 /**
  * The built-in constrained relationship-tuple evaluator (design doc §4.2, plan D-23),
@@ -58,6 +106,9 @@ export interface PermissionTupleRow {
  * construction, so all three live together.
  */
 export interface ScopeTupleReader {
+  /** Keyset grant root and reverse parent edge reads for grant-scoped enumeration. */
+  nextGrant?(subject: string, relation: string, after: string): GrantWalkRow | undefined;
+  nextChild?(parent: string, after: string): GrantWalkRow | undefined;
   /**
    * Scope-level tuples for `subject` whose relation starts with `relationPrefix`. A
    * pre-filter only: the adapters answer it with SQL `LIKE`, which ignores ASCII case and
@@ -462,7 +513,19 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     return deny;
   }
 
-  return {
+  return trustTupleChecker({
+    grantedEntities: async (subject, permission, node, entityType, checkEntity, options) => {
+      if (subject.kind === 'capability') return { kind: 'incomplete', reason: 'capability' };
+      const scope = reader.scopeFor(node);
+      if (!scope?.nextGrant || !scope.nextChild) return { kind: 'incomplete', reason: 'checker' };
+      // The same subject expansion and liveness predicate `check` uses, including orgs.
+      const now = reader.now();
+      const subjects = (await subjectsOf(subject, node, now)).map((s) => s.ref);
+      return walkGrantedEntities(
+        { nextGrant: scope.nextGrant, nextChild: scope.nextChild },
+        subjects, permission, entityType, now, checkEntity, options,
+      );
+    },
     /**
      * The subject's effective permission set at the node, compared against `required`
      * (K-21, membership.md §5.1).
@@ -516,7 +579,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     },
 
     check,
-  };
+  });
 
 }
 

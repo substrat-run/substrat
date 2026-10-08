@@ -46,6 +46,8 @@ interface CloudflareSendBody {
   delivered?: string[];
   permanent_bounces?: string[];
   queued?: string[];
+  /** The service's id for the message (`EmailSendResult.messageId`). */
+  messageId?: string;
 }
 type CloudflareSendResponse = CloudflareSendBody | { result: CloudflareSendBody };
 
@@ -93,6 +95,7 @@ export class CloudflareEmailTransport implements EmailTransport {
       delivered: body.delivered ?? [],
       queued: body.queued ?? [],
       bounced: body.permanent_bounces ?? [],
+      ...(body.messageId ? { messageId: body.messageId } : {}),
     };
   }
 }

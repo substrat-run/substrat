@@ -27,7 +27,7 @@ import { DEV_PROVIDER } from './personas.js';
 /**
  * Dev API server for the Handlebar demo. Deliberately thin: authenticate → getScope →
  * invoke. Every route is a wrapper over an operation; there is no business logic here.
- * Runs on :8872 so it can sit next to the Callout demo (:8871).
+ * Runs on :8872, in the demos' private 887x port block.
  *
  * Authentication is an ordinary OIDC round-trip against whatever `OIDC_ISSUER` names —
  * locally `@substrat-run/dev-issuer`, a real provider you sign into by picking a name.

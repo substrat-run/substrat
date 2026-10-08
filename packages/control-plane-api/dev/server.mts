@@ -65,9 +65,9 @@ const world = [
     scopes: [{ slug: 'main', kind: 'brand', name: 'Kiosk Main', vertical: 'shop', status: 'active' }] },
 ] as const;
 
-// CP_SKIP_SEED starts the control plane EMPTY — used by the connected topology
-// (`pnpm dev:connected`), where a real vertical registers its own tenants/scopes
-// over HTTP and the fake fleet below would only be noise.
+// CP_SKIP_SEED starts the control plane EMPTY — for a connected topology, where a
+// real vertical registers its own tenants/scopes over HTTP and the fake fleet below
+// would only be noise.
 if (!process.env.CP_SKIP_SEED)
 for (const t of world) {
   const tid = tenantId.parse(ulid());

@@ -54,7 +54,7 @@ kinds**, which makes Meridian the demo that shows the difference.
 **`employee`** `EntityRef`, and the vertical declares the `protocol → employee` relation so
 the permission walk reaches the employee's own-record grant. A nice twist: onboarding is
 signed by the **employee** themselves (their own acknowledgement), not a supervisor — the
-same engine as Callout, where the arbetsledare signs; the vertical's grant decides who holds
+same engine as Handlebar, where the workshop signs; the vertical's grant decides who holds
 `protocol:sign`.
 
 ### A document: the anställningsavtal
@@ -144,7 +144,7 @@ domain semantics — accrual, the approval state machine, the no-negative-beyond
 — stay in the engine. Until then it is honest vertical code with the invariants written
 cleanly, so the extraction is later mechanical.
 
-The variable-pay **payroll export** is the Callout *invoice basis* pattern re-cast:
+The variable-pay **payroll export** is the field-service *invoice basis* pattern re-cast:
 approved absence + expenses leave as a file for a payroll provider. Payroll itself is a
 deep-domain moat — integrated, never rebuilt.
 

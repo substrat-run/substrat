@@ -1,7 +1,7 @@
 /**
  * The platform's `/internal/*` surface, authored ONCE.
  *
- * Every sandbox-clean vertical (Meridian, Manyfold, Callout, and every pushed install) has to
+ * Every sandbox-clean vertical (Meridian, Manyfold, ticket0, and every pushed install) has to
  * answer the same control-plane contract: provision a scope, reconcile a locked-out one,
  * introspect its tables, run the read-only SQL console, drain platform-requests, snapshot
  * / delete / export / restore / bookmark / rewind its storage, upsert its per-instance
@@ -84,6 +84,7 @@ import {
   platformRequestId,
   platformRequestStatus,
   platformRequestFailure,
+  platformOutcomeEvent,
   readScopeTableInput,
   entityHistoryInput,
   eventFacetInput,
@@ -135,6 +136,7 @@ import {
   type PlatformRequestId,
   type PlatformRequestStatus,
   type PlatformRequestFailure,
+  type PlatformOutcomeEvent,
   type ModuleId,
   type SystemSwitchOutcome,
   scopeLifecycle,
@@ -350,6 +352,8 @@ export interface VerticalScopeHost {
       result?: unknown;
       lastError?: string | null;
       failure?: PlatformRequestFailure | null;
+      /** #2102: the outcome event written with the settle. */
+      event?: PlatformOutcomeEvent | null;
     },
   ): Promise<void>;
   // The connector write-back's far end (#574): the shared control plane runs the
@@ -748,6 +752,8 @@ const settleBody = z.object({
   // #841. Optional so a control plane too old to attribute still settles — the column
   // then stays NULL, which reads as "nobody classified this" rather than a guess.
   failure: platformRequestFailure.nullable().optional(),
+  // #2102: the outcome event the settle writes into the scope. Optional for the same reason.
+  event: platformOutcomeEvent.nullable().optional(),
 });
 
 /** `/internal/mark-drained` body (#1334) — the stamp half of the Tier-2 drain. */
@@ -1716,6 +1722,7 @@ export function mountPlatformSurface<Env extends object>(
       result: body.result,
       lastError: body.lastError ?? null,
       failure: body.failure ?? null,
+      event: body.event ?? null,
     });
     return c.json({ ok: true });
   });

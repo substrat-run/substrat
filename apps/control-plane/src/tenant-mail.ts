@@ -28,8 +28,10 @@ export class TenantMailRefusal extends Error {
   constructor(
     readonly status: 400 | 403 | 409 | 413 | 502 | 503,
     message: string,
+    /** The provider's own failure behind a 502 — its status decides a retry (#2102). */
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = 'TenantMailRefusal';
   }
 }
@@ -170,7 +172,13 @@ export async function sendAsTenant(deps: TenantMailDeps, input: TenantMailInput)
   } catch (e) {
     // The provider's refusal, said as the connector worded it (#2100: "outside the scope the
     // tenant granted"), rather than a bare 500 that tells the vertical nothing.
-    throw new TenantMailRefusal(502, `the tenant's mail connection could not send: ${e instanceof Error ? e.message : String(e)}`);
+    // The provider's error rides as `cause`: the relay answers 502 either way, but whether a
+    // queued send tries again depends on what the provider said (#2102).
+    throw new TenantMailRefusal(
+      502,
+      `the tenant's mail connection could not send: ${e instanceof Error ? e.message : String(e)}`,
+      { cause: e },
+    );
   }
 }
 

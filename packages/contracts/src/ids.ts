@@ -141,3 +141,33 @@ export const verticalSlug = z
   .string()
   .regex(/^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
 export type VerticalSlug = z.infer<typeof verticalSlug>;
+
+/**
+ * Whether `s` is well-formed UTF-16: every high surrogate followed by a low one, and no low one
+ * on its own. A lone surrogate is a string JavaScript holds and nothing else does: SQLite's JSON
+ * functions, a JSON encoder and a UTF-8 store each write it differently, so an id holding one is
+ * not the same id once it has crossed a store.
+ */
+export function isWellFormedText(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      i++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * The id pairing an audited change's admin-log rows (#2064): its intent and its outcome. The
+ * routes mint a ULID. The contract holds any id to being non-empty and well-formed text, because
+ * the id is matched in SQL and in memory, and only well-formed text reads the same in both.
+ */
+export const auditOperationId = z
+  .string()
+  .min(1)
+  .refine(isWellFormedText, { message: 'an audit operation id must be well-formed text (no lone surrogate)' });

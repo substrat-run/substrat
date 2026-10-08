@@ -67,7 +67,7 @@ Then the dashboard reads the registry, not the map:
   caller's tenant (it already resolves the account).
 - `createApp` reads `entitlements`/`ownerGrants` **from the registry row**, and installs by the
   vertical's declared `provides`/`requires` (§4).
-- **First-party verticals** (Callout, Documents, Meridian, Manyfold) become seeded rows —
+- **First-party verticals** (Documents, Meridian, Manyfold) become seeded rows —
   `ownerTenant: null, listed: true` — written by `ensureCatalog` from their manifests. The
   `CATALOG` map shrinks to a *first-party seed list*, never a visibility/install **gate**.
 

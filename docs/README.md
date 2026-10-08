@@ -193,6 +193,8 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 |---|---|---|
 | [agent-surface.md](rfc/agent-surface.md) | `building` | How any agent discovers and works with Substrat. #749 open. |
 | [booking-social.md](rfc/booking-social.md) | `building` | Booking engine shipped; the cross-tenant social tier is not. |
+| [callout-concept.md](rfc/callout-concept.md) | `historical` | The Callout field-service concept — the first demo vertical, which the workorder, invoicing and protocol engines were cut against; the demo is gone, the argument stays. |
+| [callout-testrun.md](rfc/callout-testrun.md) | `historical` | The original test-run spec the first engines (workorder, invoicing) were cut from — kept after the Callout demo was removed. |
 | [disclosure-register.md](rfc/disclosure-register.md) | `proposed` | Can the platform say which processors hold data about one subject? Argues #860 against the two positions it must survive; lands on not-yet-in-this-shape, and on one live erasure hole found while arguing. |
 | [docs-restructure.md](rfc/docs-restructure.md) | `building` | Audit of docs/ and the restructure. All four phases executed; the prose rewrite is what remains. |
 | [error-model.md](rfc/error-model.md) | `superseded` | Moved — the error-model RFC shipped in @substrat-run/contracts and now lives in architecture/. |

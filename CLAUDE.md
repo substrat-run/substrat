@@ -24,7 +24,7 @@ public repo without them.
 "the SDL adopter — a whole vertical modelled as SDL and re-emitted, 55 tables, arriving
 mid-life" carries every fact that makes the evidence worth citing. Link the issue number
 if the thread has more. For fixtures and test slugs, use a demo name that already exists
-(`callout`, `todo`, `meridian`) or an obvious placeholder (`acme`, `tenant-a`).
+(`todo`, `meridian`, `ticket0`) or an obvious placeholder (`acme`, `tenant-a`).
 
 `docs/briefs/model-package-adoption.md` is the reference for how an adopter-derived
 document reads once the name is out of it.
@@ -69,7 +69,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
 | `engines/*` | The seven domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence` | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. `scrive`, `fortnox` and `planima` are published; `microsoft365` is private until its first release is set up | AGPL + commercial |
-| `demos/*` | Nine directories: the eight demo verticals — `callout`, `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
+| `demos/*` | Eight directories: the seven demo verticals — `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
 | `apps/control-plane` | The control plane, and the worker that serves the console | private |
 | `apps/console` | Control-plane admin console (tenants, fleet, admin log, permissions) | private |
@@ -201,10 +201,10 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   was merged, released, and reached `npm create substrat` failing all three of the
   gates a scaffold ships with. Registry-vs-workspace is the whole distinction: being
   ahead of npm is a pass here and a legitimate red there.
-- `pnpm callout-demo dev` — run the Callout demo (issuer :8879 + API :8871 + web :5271).
+- `pnpm todo-demo dev` — run the Todo demo (issuer :8879 + API + web).
   Demo dev ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. That block
-  is full — `8871`–`8878` are taken and `8879` is the issuer — so `tock`, the newest demo,
+  is full — `8872`–`8878` are taken (`8871` was the removed Callout demo's) and `8879` is the issuer — so `tock`, the newest demo,
   sits just above it at `8880`/`5280`. The Vite
   proxy must set **`changeOrigin: false`, written out**: the API derives its OIDC
   `redirect_uri` from the forwarded Host header, and rewriting it sends the login callback
@@ -251,8 +251,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   dashboard, builder, vertical-egress, docs — chosen over `deploy` so `pnpm cf:deploy` never
   collides with pnpm's built-in `deploy` command. A **vertical** does not: it reaches
   production through `substrat push`, which is the whole point of the dispatch namespace.
-  `demos/callout` is the one demo that also carries a `cf:deploy`, because it predates that
-  path; meridian, manyfold and ticket0 are pushed.
+  Meridian, manyfold and ticket0 are pushed.
 
 ## The three-layer rule (never violated)
 

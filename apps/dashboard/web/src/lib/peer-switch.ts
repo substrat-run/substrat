@@ -5,16 +5,20 @@ import { provesNothingChanged } from '@substrat-run/control-plane-api/browser';
  * proving nothing moved (`provesNothingChanged`) is `unknown`, and the position is read again:
  * that read is the confirmation the failure asks for (#2010), so it is never shown as a
  * refusal to retry.
+ *
+ * A write that went through carries the answer's `auditWarning` (#2089) when the platform could
+ * not record it in its admin log: still a change made, shown as a warning, never offered again.
  */
-export async function changePeerAccess<T>(write: () => Promise<unknown>, read: () => Promise<T>): Promise<
-  | { kind: 'applied'; view: T }
+export async function changePeerAccess<T>(write: () => Promise<{ changed: boolean; auditWarning?: string }>, read: () => Promise<T>): Promise<
+  | { kind: 'applied'; view: T; auditWarning?: string }
   | { kind: 'write-failed'; error: unknown }
   | { kind: 'unknown'; error: unknown; view: T; readError?: never }
   | { kind: 'unknown'; error: unknown; view: null; readError: unknown }
-  | { kind: 'unconfirmed'; error: unknown }
+  | { kind: 'unconfirmed'; error: unknown; auditWarning?: string }
 > {
+  let auditWarning: string | undefined;
   try {
-    await write();
+    ({ auditWarning } = await write());
   } catch (error) {
     if (provesNothingChanged(error)) return { kind: 'write-failed', error };
     try {
@@ -23,10 +27,11 @@ export async function changePeerAccess<T>(write: () => Promise<unknown>, read: (
       return { kind: 'unknown', error, view: null, readError };
     }
   }
+  const warned = auditWarning ? { auditWarning } : {};
   try {
-    return { kind: 'applied', view: await read() };
+    return { kind: 'applied', view: await read(), ...warned };
   } catch (error) {
-    return { kind: 'unconfirmed', error };
+    return { kind: 'unconfirmed', error, ...warned };
   }
 }
 

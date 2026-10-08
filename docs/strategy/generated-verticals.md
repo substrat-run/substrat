@@ -45,14 +45,14 @@ unentitled module's operations do not resolve (D-20).
 
 But an engines-only scope cannot do anything. `workorderModule.operations` exposes `get`,
 `list`, `assign`, `start`, `report-time`, `report-material`, `complete`, `close` — and **no
-`workorder/create`**. `createWorkOrder` is an in-scope function only; `demos/callout` reaches it
-through `callout/create-workorder`, which prices the order first.
+`workorder/create`**. `createWorkOrder` is an in-scope function only; `demos/handlebar` reaches it
+through `bike-shop/create-repair`, which labels the order first.
 
 This is not a gap. It is the three-layer rule in load-bearing form: the engine owns the
 state machine, the vertical owns vocabulary and pricing, and the engine leaves a hole
-exactly where the vertical belongs. `demos/callout/src/routes.ts` maps the seam precisely —
-`assign`/`start`/`close` go straight to the engine; `create-workorder` and
-`complete-workorder` (which needs billable lines priced) must route through `callout/*`.
+exactly where the vertical belongs. `demos/handlebar` draws the seam precisely —
+`assign`/`start` go straight to the engine; `create-repair` and `complete-repair` (which
+needs billable lines priced) must route through `bike-shop/*`.
 
 **Configuration is dynamic; composition is code.** That sentence is the whole design.
 
@@ -63,8 +63,8 @@ exactly where the vertical belongs. `demos/callout/src/routes.ts` maps the seam 
    of this SDK, and the integration surface a Lovable-class tool needs is the same manifest +
    specs + MCP loop already built for Claude Code.
 2. **Debug.** A hosted, ephemeral scope loads kernel + engines + the generated module,
-   seeded with a fake world. Dev-header auth (`devHeaderAdapter`, still present in
-   `demos/callout/src/auth-adapters.ts`). Throwaway, no real bindings, no directory reach.
+   seeded with a fake world. Dev-header auth (a `devHeaderAdapter`, as the since-removed
+   Callout demo carried). Throwaway, no real bindings, no directory reach.
 3. **Iterate.** The tool regenerates against the debug scope until the user is satisfied.
 4. **Ship.** The candidate enters CI (§5). Lint, typecheck, contract tests, the scenario
    test, the migration replay check — then the two human checkpoints.
@@ -119,16 +119,16 @@ production, the answer is unchanged: trust the code, and earn the trust at the C
 
 ### 3.3 Fallback
 
-The Sandbox SDK (GA) running the `demos/callout` topology — `tsx src/server.ts` on
+The Sandbox SDK (GA) running a demo's local topology — `tsx src/server.ts` on
 `adapter-sqlite` — is the documented fallback. It needs no bundler (`tsx` runs generated TS
 directly) and no beta feature, at the cost of container cold-starts and parity-by-D-14
 instead of parity-by-identity. `adapter-sqlite` is already scoped for exactly this ("local
-dev, CI, self-host") and `demos/callout` already proves the shape.
+dev, CI, self-host") and every demo's `src/server.ts` already proves the shape.
 
 ## 4. The API is the manifest
 
-**Do not generate routes.** `demos/callout/src/routes.ts` is ~160 hand-written lines of thin
-wrappers; a generated vertical needs none of it. `ScopeStub.invoke(operation, input)` is
+**Do not generate routes.** The Callout demo's `src/routes.ts` was ~160 hand-written lines of
+thin wrappers; a generated vertical needs none of it. `ScopeStub.invoke(operation, input)` is
 already a uniform RPC surface, so one endpoint — `POST /api/op/:name` → `stub.invoke(name,
 body)` — exposes every registered operation with no per-vertical route code.
 
@@ -185,7 +185,7 @@ default that arrives if nobody decides, and it is the one that voids the thesis.
 ### 6.2 Regeneration versus append-only migrations
 
 **The hard technical one.** Prompt-to-app tools regenerate from the prompt; Substrat appends
-migrations and never edits a shipped version. `demos/callout` ships `0001-init`,
+migrations and never edits a shipped version. The Callout demo shipped `0001-init`,
 `0002-protocols`, `0003-protocols-to-engine` — an evolution history.
 
 First ship is free: squash all debug churn into `0001-init`. The debug versions were never

@@ -23,6 +23,7 @@ import {
   type EntityRef,
   type ListPage,
   type PermissionKey,
+  type PrincipalId,
   KERNEL_AUTHORED_EVENT_TYPES,
   substratError,
 } from '@substrat-run/contracts';
@@ -689,6 +690,11 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
     ctx.requestPlatform({ kind: input.kind, payload: { rolled: 'back' } });
     throw new Error('boom after requestPlatform');
   }) as OperationHandler<never, unknown>,
+  // #2102: the outcome events a settle wrote, as the spine holds them.
+  'platform/outcome-events': ((ctx) =>
+    ctx.sql.query<{ type: string; actor: string; entity_type: string; entity_id: string; payload: string }>(
+      "SELECT type, actor, entity_type, entity_id, payload FROM _substrat_outbox WHERE type LIKE 'email.%' ORDER BY id",
+    )) as OperationHandler<never, unknown>,
   'platform/read-requests': ((ctx) =>
     ctx.sql.query<PlatformRequestRow>(
       'SELECT * FROM _substrat_platform_requests ORDER BY id',
@@ -931,6 +937,16 @@ const probeOp: OperationHandler<{ permission: PermissionKey; entity?: EntityRef 
   input,
 ) => ctx.check(input.permission, input.entity);
 
+const grantedEntitiesOp: OperationHandler<
+  { permission: PermissionKey; entityType: string; limit?: number; cursor?: string },
+  unknown
+> = (ctx, input) => ctx.grantedEntities(input.permission, input.entityType, input);
+
+const revokeGrantOp: OperationHandler<
+  { principal: PrincipalId; permission: PermissionKey; entity: EntityRef },
+  void
+> = (ctx, input) => ctx.revoke(input.principal, input.permission, input.entity);
+
 // Assert a permission, then emit — the shape a real mutating operation has. Exercises
 // K-34 (the emitted event carries the passed check as `authorization`) and, when the
 // check is refused, K-35 (assertAllowed throws → the host records a denial and rolls back).
@@ -1005,7 +1021,7 @@ const requestCheckOp: OperationHandler<
 
 const CHECK_LOG_DDL = `CREATE TABLE IF NOT EXISTS perm_check_log (
   event_id TEXT PRIMARY KEY, permission TEXT NOT NULL, allowed INTEGER NOT NULL,
-  threw TEXT, grant_threw TEXT)`;
+  threw TEXT, grant_threw TEXT, grant_read_kind TEXT)`;
 
 /**
  * Runs as the system actor, whose `ctx.check` is allowed by construction. With
@@ -1018,10 +1034,12 @@ const checkRequestedConsumer: ConsumerHandler = async (ctx, event) => {
   const permission = p.permission as PermissionKey; // the cast under test
   if (!p.swallow) {
     assertAllowed(await ctx.check(permission));
+    const grantRead = await ctx.grantedEntities(permission, 'item');
     ctx.sql.exec(CHECK_LOG_DDL);
-    ctx.sql.exec('INSERT INTO perm_check_log (event_id, permission, allowed) VALUES (?, ?, 1)', [
+    ctx.sql.exec('INSERT INTO perm_check_log (event_id, permission, allowed, grant_read_kind) VALUES (?, ?, 1, ?)', [
       event.id,
       p.permission,
+      grantRead.kind,
     ]);
     return;
   }
@@ -1052,7 +1070,7 @@ const readCheckLogOp: OperationHandler<undefined, unknown> = (ctx) => {
   ctx.sql.exec(CHECK_LOG_DDL);
   return {
     log: ctx.sql.query(
-      'SELECT event_id, permission, allowed, threw, grant_threw FROM perm_check_log ORDER BY event_id',
+      'SELECT event_id, permission, allowed, threw, grant_threw, grant_read_kind FROM perm_check_log ORDER BY event_id',
     ),
     deliveries: ctx.sql.query(
       `SELECT d.event_id, d.error, json_extract(o.payload, '$.permission') AS permission
@@ -1713,6 +1731,8 @@ export const permMod: ModuleRegistration = {
     'perm/link': linkOp as OperationHandler<never, unknown>,
     'perm/relink': relinkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
+    'perm/granted-entities': grantedEntitiesOp as OperationHandler<never, unknown>,
+    'perm/revoke-grant': revokeGrantOp as OperationHandler<never, unknown>,
     'perm/authorized-emit': authorizedEmitOp as OperationHandler<never, unknown>,
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
@@ -2550,6 +2570,7 @@ export const capMod: ModuleRegistration = {
       assertAllowed(decision);
       return { read: entity, proof: decision.proof };
     }) as OperationHandler<never, unknown>,
+    'cap/granted-entities': ((ctx) => ctx.grantedEntities(CAP_READ, 'doc')) as OperationHandler<never, unknown>,
     // A node-level read: a capability holds no node-level authority, so this refuses it.
     'cap/read-all': (async (ctx) => {
       assertAllowed(await ctx.check(CAP_READ));

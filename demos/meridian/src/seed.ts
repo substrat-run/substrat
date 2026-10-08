@@ -67,7 +67,7 @@ const DEV_SECRET_KEY = new Uint8Array(32).fill(7);
  * (Nordljus AB, SE + ES scopes) and a second company (Solmark AB) that owns the
  * cross-tenant attack victim. Employees are entity-narrowed principals, not a
  * role — their access is a grant on their OWN employee record, exactly like the
- * Callout portal customer.
+ * Handlebar portal customer.
  */
 /** The demo world: an instance, plus the cast and fixtures the story needs. */
 export interface DemoWorld extends MeridianInstance {

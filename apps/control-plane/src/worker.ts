@@ -33,6 +33,7 @@ import {
   SET_ENTITLEMENTS_KIND,
   MODEL_USAGE_KIND,
   SWEEP_RUNS_KIND,
+  SEND_EMAIL_KIND,
   connectorDispatchKind,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
@@ -111,6 +112,7 @@ import {
   modelUsageHandler,
   sweepRunsHandler,
   connectorDispatchHandler,
+  sendEmailHandler,
   type ManagedTenantDeps,
   type PlatformDrainContext,
   type PlatformDrainReport,
@@ -134,6 +136,7 @@ import {
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
+import { sendEmailDepsOf } from './email-intent.js';
 import { failureDigestWatermark, sendFailureDigest } from './failure-alerts.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, staffRefusalOf, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
@@ -1550,6 +1553,17 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
       [MODEL_USAGE_KIND]: modelUsageHandler({ host }),
       // #1232: a CP-less pass's schedule outcomes, landed in _substrat_sweep_runs.
       [SWEEP_RUNS_KIND]: sweepRunsHandler({ host }),
+      // #2102: a vertical's mail, requested inside an operation and sent once it committed —
+      // through the platform's sender, or the tenant connection that covers the `from`.
+      [SEND_EMAIL_KIND]: sendEmailHandler(
+        sendEmailDepsOf({
+          host,
+          actor: SWEEP_ACTOR,
+          transport: transportFor(env),
+          platformFrom: (name) => senderFor(env, name),
+          senders: mailSendersFor(env),
+        }),
+      ),
       // #574 phase 3: the outbound half of the platform-run connector pass. A CP-less
       // vertical routed a connector delivery here as an intent; this host holds the
       // directory, the sealed credential, and (via its connectorDelegation) the scope

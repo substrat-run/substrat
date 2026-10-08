@@ -14,7 +14,7 @@ import { z } from 'zod';
  * neither's. Both live in the manifest, in fields that say which halves are
  * checked. See `manifest`'s `foreignChildOf` / `foreignChildren`.
  *
- * As in Callout: not every table is an entity. `bike_shop_price_list` is keyed
+ * Not every table is an entity. `bike_shop_price_list` is keyed
  * by article, is never the subject of an `EntityRef`, and is never a
  * permission-walk node.
  *

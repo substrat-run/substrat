@@ -58,7 +58,7 @@ Concretely:
 
 - **A customer is a tenant.** Sign-up bootstraps that tenant, one **dashboard scope** (the
   customer's home), and the signer as its **owner** (a tenant-admin role).
-- **A customer's apps are scopes** in that same tenant — a Meridian scope, a Callout scope — each
+- **A customer's apps are scopes** in that same tenant — a Meridian scope, a ticket0 scope — each
   running a vertical. Vercel's Team→Projects is Substrat's Tenant→Scopes.
 - **The dashboard scope holds the account's own data**: the app list (a projection of the tenant's
   scopes), the member roster (a projection of role assignments), connected providers, bound
@@ -103,8 +103,8 @@ What remains of the old dependency list is deliberate, and is of three kinds (pa
 
 | kind | where | why it may stay |
 |---|---|---|
-| **Permission keys** — `PROTOCOL_PERM`, `PERM`, `INVOICING_PERM`, Callout's `SC_PERM` | `src/catalog.ts` | Frozen maps of key strings, read to seed a fresh app's owner-grants. The guarantee is narrower than "the compiler keeps them in step", so state it exactly: each key the grant list names is read off the engine's own map, so a key the engine removes or re-spells is a **build error** here, where a literal would compile and seed a grant matching no permission the engine checks. It does **not** notice a key the engine *adds* — `ownerGrants` enumerates an owner's grants by hand and a wider engine surface leaves this file unchanged, which is right (what an owner holds is a product decision) but is not drift detection. Callout comes through its `/manifest` subpath, which carries no registration. |
-| **Harness mounts** — `calloutModule`, `meridianModule`, four engine modules | `test/scenario.test.ts` | A single-process scenario has nowhere else to put the app's vertical; `provisionEmbedded` stands in for the separate deployment. `demo-meridian` and `engine-absence` are **devDependencies**, which never reach the worker bundle. |
+| **Permission keys** — `PROTOCOL_PERM` | `src/catalog.ts` | Frozen maps of key strings, read to seed a fresh app's owner-grants. The guarantee is narrower than "the compiler keeps them in step", so state it exactly: each key the grant list names is read off the engine's own map, so a key the engine removes or re-spells is a **build error** here, where a literal would compile and seed a grant matching no permission the engine checks. It does **not** notice a key the engine *adds* — `ownerGrants` enumerates an owner's grants by hand and a wider engine surface leaves this file unchanged, which is right (what an owner holds is a product decision) but is not drift detection. |
+| **Harness mounts** — `meridianModule`, `protocolModule`, `absenceModule` | `test/scenario.test.ts` | A single-process scenario has nowhere else to put the app's vertical; `provisionEmbedded` stands in for the separate deployment. `demo-meridian` and `engine-absence` are **devDependencies**, which never reach the worker bundle. |
 | **`engine-invites`** | `src/module.ts`, `src/provision.ts` | Not residue — the Dashboard *composes* it as a vertical composes an engine (layer 3), which is the architecture working. |
 
 `test/no-embedded-verticals.test.ts` is what holds this rather than the prose: it reads **every**
@@ -257,7 +257,7 @@ a tenant, a dashboard scope running the Dashboard vertical, links the login to a
 principal, and assigns the tenant-admin role. The customer lands in an empty Dashboard.
 
 **Create an app.** Pick from the **catalog** (the registered, admitted verticals — Meridian,
-Callout, …; entitlements decide which the tenant may instantiate) → name it → the Dashboard's
+ticket0, …; entitlements decide which the tenant may instantiate) → name it → the Dashboard's
 `provision-app` operation checks the permission, then provisions a **new scope in the customer's
 tenant** running that vertical (control-plane `provisionInstance`, tenant pinned), activates it,
 and binds a default hostname. The app appears in **My apps** with its URL.

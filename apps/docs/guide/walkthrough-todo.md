@@ -127,7 +127,7 @@ engine argument, and that is a fact about the app rather than an omission: nothi
 an invariant beyond "you cannot touch a list nobody shared with you", and that one is the
 platform's own. So this page shows the model → code pipeline and not engine composition,
 which is a large part of what a real vertical does. For that, read
-[Callout](/verticals/callout) — a work order that composes the [workorder](/engines/workorder/)
+[Handlebar](/verticals/handlebar) — a repair that composes the [workorder](/engines/workorder/)
 and [protocol](/engines/protocol/) engines inside its own transaction.
 
 **What it does show.** Here is the smallest app anyone could write, and it is already

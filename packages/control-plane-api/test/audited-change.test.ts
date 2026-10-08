@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, principalId, scopeId, tenantId, type OpsFailureEntry } from '@substrat-run/contracts';
+import { moduleId, platformActorId, principalId, scopeId, tenantId, type OpsFailureEntry } from '@substrat-run/contracts';
 import {
   AUDITED_CALL_DEADLINE_MS,
   ControlPlaneError,
@@ -231,6 +231,40 @@ describe('settleUnrecordedOutcomes (#2064)', () => {
     expect((await host.admin.listOpsFailures(staff, { tenantId: t })).filter((f) => f.message.includes(op))).toHaveLength(1);
   });
 
+  it('closes a kill switch whose refusal row could not be written (#2089) — the twin, whose row landed, is left alone', async () => {
+    const directory = (host as unknown as { directory: { exec(q: string): void } }).directory;
+    const refuse = (phase: string) =>
+      `CREATE TRIGGER refuse_${phase} BEFORE INSERT ON _substrat_admin_log WHEN json_extract(NEW.after, '$.phase') = '${phase}'
+        BEGIN SELECT RAISE(ABORT, 'log down'); END`;
+    const off = () =>
+      host.admin.revokeFromSystem(staff, { moduleId: moduleId.parse('@test/not-held'), node: { tenantId: t, scopeId: s }, reason: 'incident' });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    directory.exec(refuse('refused'));
+    let orphan: string;
+    try {
+      await expect(off()).rejects.toThrow(/holds no system grant/);
+      const [, fields] = log.mock.calls.find(([message]) => message === UNRECORDED_OUTCOME_LOG)!;
+      orphan = (fields as { operationId: string }).operationId;
+    } finally {
+      directory.exec('DROP TRIGGER refuse_refused');
+      log.mockRestore();
+    }
+    await expect(off()).rejects.toThrow(/holds no system grant/);
+    const switches = async () =>
+      (await host.admin.auditLog(staff, { tenantId: t, action: 'revokeFromSystem' })).map((r) => r.after as { operationId: string; phase: string });
+    const answered = (await switches()).find((r) => r.operationId !== orphan)!.operationId;
+
+    const pass = await settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, now: later(2 * HOUR) });
+    expect(pass.settled.filter((x) => x.action === 'revokeFromSystem')).toEqual([
+      { action: 'revokeFromSystem', operationId: orphan, tenantId: t, scopeId: s },
+    ]);
+    const phases = async (operationId: string) => (await switches()).filter((r) => r.operationId === operationId).map((r) => r.phase);
+    expect(await phases(orphan)).toEqual(['intent', 'unknown']);
+    expect(await phases(answered)).toEqual(['intent', 'refused']);
+    const failures = (await host.admin.listOpsFailures(staff, { tenantId: t, operation: 'audit.revokeFromSystem' })).map((f) => f.reference);
+    expect(failures).toEqual([orphan]);
+  });
+
   it('refuses a grace window that does not exceed the audited call deadline', async () => {
     await expect(settleUnrecordedOutcomes({ admin: host.admin, actor: sweep, graceMs: AUDITED_CALL_DEADLINE_MS })).rejects.toThrow(/does not exceed/);
     expect(SETTLE_GRACE_MS).toBeGreaterThan(AUDITED_CALL_DEADLINE_MS);
@@ -443,6 +477,39 @@ describe('the audited call deadline (#2064)', () => {
         fetch: (async () => Response.json({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false })) as unknown as typeof fetch,
       });
       expect(await prompt.removeMember({ tenantId: t, scopeId: s, caller: A, principal: B })).toEqual({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the kill switches' delegated calls are held to it too (#2089): a switch is settled by the same sweep", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: AbortSignal[] = [];
+      const hanging = new VerticalClient({
+        platformSecret: 'secret',
+        fetch: ((_url: string, init?: RequestInit) => {
+          if (init?.signal) signals.push(init.signal);
+          return new Promise<Response>(() => undefined);
+        }) as typeof fetch,
+      });
+      const calls = [
+        hanging.systemSwitch({ scopeId: s, moduleId: moduleId.parse('@test/sched'), to: 'off' }),
+        hanging.peerSwitch({ scopeId: s, vertical: 'acme/crm', to: 'off' }),
+        hanging.switchFence({ scopeId: s }),
+      ].map((call) => expect(call).rejects.toMatchObject({ status: 504 }));
+      await vi.advanceTimersByTimeAsync(AUDITED_CALL_DEADLINE_MS - 1);
+      expect(signals.map((x) => x.aborted)).toEqual([false, false, false]);
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.all(calls);
+      expect(signals.map((x) => x.aborted)).toEqual([true, true, true]);
+
+      // Twin: a switch answered in time is its answer.
+      const prompt = new VerticalClient({
+        platformSecret: 'secret',
+        fetch: (async () => Response.json({ held: true, changed: true, permissions: [], fenced: true })) as unknown as typeof fetch,
+      });
+      expect(await prompt.peerSwitch({ scopeId: s, vertical: 'acme/crm', to: 'off' })).toMatchObject({ held: true, changed: true });
     } finally {
       vi.useRealTimers();
     }

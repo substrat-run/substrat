@@ -85,10 +85,10 @@ function writeNav(view: ViewKey, detail?: string): void {
   }
 }
 
-// Co-located quick path: a build-time dev actor (set by `pnpm dev`) means the
-// UNSAFE header stub is in play and no login is needed. Absent it (the standalone
-// control plane, `pnpm dev:connected`, and deploys), the console runs in session
-// mode and requires real staff sign-in.
+// Quick path: a build-time dev actor (VITE_DEV_ACTOR, against a control plane run
+// with CP_UNSAFE_AUTH=1) means the UNSAFE header stub is in play and no login is
+// needed. Absent it (`pnpm dev`, and deploys), the console runs in session mode and
+// requires real staff sign-in.
 const DEV_ACTOR = import.meta.env.VITE_DEV_ACTOR as string | undefined;
 const devMode = !!DEV_ACTOR;
 

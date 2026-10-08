@@ -62,6 +62,7 @@ import type {
   PlatformRequestFilter,
   PlatformRequestStatus,
   PlatformRequestFailure,
+  PlatformOutcomeEvent,
   EntitlementGrant,
   EntitlementGrantInput,
   EntitlementView,
@@ -190,6 +191,7 @@ import type {
   SystemSwitchRecordFilter,
 } from './system-switch-record.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
+import type { GrantedEntitiesPage } from './grant-scoped-read.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
 // Type-only, and the cycle it completes is therefore not one at runtime: `job-run.ts`
@@ -406,6 +408,19 @@ export interface OperationContext {
    * than returning a denial, and records none (#1642, `assertPermissionKey`).
    */
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
+  /**
+   * Page entity ids reachable through this caller's live grants and declared parent edges.
+   * `all` means a node grant makes every entity of this type visible; `incomplete` means
+   * this checker cannot enumerate the path, so callers must use a checked full walk.
+   * An `ids` page is complete only after its cursor becomes null. Ids may repeat across
+   * pages on multiple parent paths: accumulate a Set, and do not treat page lengths as
+   * a count or total. The union of all pages is complete. Every id passes `ctx.check`.
+   */
+  grantedEntities(
+    permission: PermissionKey,
+    entityType: string,
+    options?: { limit?: number; cursor?: string },
+  ): Promise<GrantedEntitiesPage>;
   /**
    * Find entities of one type by what a person typed (#827) — the read a picker
    * over 40 000 customers needs and `ctx.sql` cannot express without every
@@ -5795,6 +5810,11 @@ export interface ScopeHost {
       lastError?: string | null;
       /** WHO refused (#841). Omitted by a caller too old to attribute — stored as NULL. */
       failure?: PlatformRequestFailure | null;
+      /**
+       * #2102: an outcome event written into the scope with the settle, in its transaction,
+       * and only when this settle moves the row out of `pending` (`settlePlatformRequestIn`).
+       */
+      event?: PlatformOutcomeEvent | null;
     },
   ): Promise<void>;
 

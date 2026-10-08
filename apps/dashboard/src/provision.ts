@@ -236,7 +236,7 @@ export async function createApp(
     name: string;
     /**
      * The SKU flags the app's modules load under (default-deny, §4.3). A single-engine
-     * app has one; a composed vertical like Callout needs one per engine it runs.
+     * app has one; a composed vertical needs one per engine it runs.
      * Defaults to `[verticalSlug]`.
      */
     appEntitlements?: string[];

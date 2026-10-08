@@ -3,8 +3,10 @@
  *
  * The owner hand-over (#1665) and dashboard member management (#1150) audit a change made in the
  * vertical's own deployment in two rows paired by `operationId`: an `intent`, then `applied`,
- * `refused` or `failed`. The two stores are separate, so an intent can be left with no outcome:
- * its outcome write failed, or the request died between the two. The control plane's scheduled
+ * `refused` or `failed`. The schedule and peer kill switches (#1666, #1706; #2089) audit the
+ * scope's move the same way, from inside each adapter. The two stores are separate, so an intent
+ * can be left with no outcome: its outcome write failed (`recordAuditOutcome` logs it), or the
+ * request died between the two. The control plane's scheduled
  * pass finds such an intent and asks the host to settle it through
  * `HostAdmin.settleUnrecordedOutcome`.
  *
@@ -24,12 +26,60 @@
  * settle's grace window, so a live request cannot normally be overtaken this way. The rule is
  * stated for the case where one is.
  */
-import { memberChangeAudit, ownerTransferAudit, peerBindingAudit, substratError, type AdminAction } from '@substrat-run/contracts';
+import { AUDIT_ERROR_MAX, auditOperationId, memberChangeAudit, ownerTransferAudit, peerBindingAudit, substratError, type AdminAction } from '@substrat-run/contracts';
 import type { OpsFailureInput } from './scope-host.js';
+import { SWITCH_ACTIONS, type SwitchAction } from './system-switch-record.js';
 
-/** The admin actions written intent-then-outcome around a vertical call, which a settle closes. */
-export const AUDITED_CHANGE_ACTIONS = ['transferOwner', 'manageScopeMember', 'setPeerBinding'] as const satisfies readonly AdminAction[];
+/**
+ * The admin actions written intent-then-outcome, which a settle closes: the two the control plane
+ * writes around a vertical call, and (#2089) the schedule and peer kill switches, which each
+ * adapter writes around the scope's move.
+ */
+export const AUDITED_CHANGE_ACTIONS = [
+  'transferOwner',
+  'manageScopeMember',
+  'setPeerBinding',
+  ...SWITCH_ACTIONS,
+] as const satisfies readonly AdminAction[];
 export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
+
+/** The structured line an outcome row that could not be written leaves, keyed so a log search finds every one. */
+export const UNRECORDED_OUTCOME_LOG = 'audit-outcome-unrecorded';
+
+/** Where an unwritten outcome is reported: the host's error log (the kernel has none of its own). */
+export type AuditLogError = (message: string, fields: Record<string, unknown>) => void;
+
+/**
+ * Write one outcome row of an audited change (#2064, #2089 for the kill switches), never
+ * swallowing its failure. Answers null when the row landed. When it did not, the failure is
+ * logged as `UNRECORDED_OUTCOME_LOG` with the flow, the operation id and the phase, and its
+ * message is the answer, for the caller to surface: a `refused`/`failed` caller still answers
+ * with its own error (so a refusal never reads as retryable), and an `applied` caller answers
+ * success with `auditWarningOf`. The intent left without an outcome is closed as `unknown` by
+ * the control plane's scheduled settle either way.
+ */
+export async function recordAuditOutcome(
+  write: () => unknown,
+  line: { flow: string; operationId: string; phase: string },
+  logError: AuditLogError,
+): Promise<string | null> {
+  try {
+    await write();
+    return null;
+  } catch (auditError) {
+    const message = auditError instanceof Error ? auditError.message : String(auditError);
+    try {
+      logError(UNRECORDED_OUTCOME_LOG, { ...line, auditError: message });
+    } catch {
+      // Reporting an unwritten row must not replace the operation’s own error or warning.
+    }
+    return message;
+  }
+}
+
+/** The `auditWarning` a change that went through answers when its `applied` row could not be written. */
+export const auditWarningOf = (what: string, unrecorded: string): string =>
+  `${what} completed, but its outcome could not be written to the admin log: ${unrecorded}`;
 
 /** The intent a settle reads by id, inside its transaction. */
 export const SETTLE_INTENT_SQL =
@@ -167,6 +217,19 @@ export interface UnknownOutcome {
 
 const isAudited = (action: string): action is AuditedChangeAction =>
   (AUDITED_CHANGE_ACTIONS as readonly string[]).includes(action);
+const isSwitch = (action: string): action is SwitchAction => (SWITCH_ACTIONS as readonly string[]).includes(action);
+
+/**
+ * The `unknown` row of a kill switch's operation (#2089): the intent's own fields (its subject,
+ * position and reason) with `phase: 'unknown'` and the error. The switch's rows have no schema of
+ * their own: each adapter writes them from `switchAuditSubject`, and the history readers count
+ * only `applied` rows, so an `unknown` row moves no position.
+ */
+const switchUnknownOf = (after: Record<string, unknown>, error: string): Record<string, unknown> => ({
+  ...after,
+  phase: 'unknown',
+  error: error.slice(0, AUDIT_ERROR_MAX),
+});
 
 /**
  * The `unknown` outcome for one intent row: the intent's own fields with `phase: 'unknown'` and
@@ -175,15 +238,11 @@ const isAudited = (action: string): action is AuditedChangeAction =>
  */
 export function unknownOutcomeOf(row: SettleIntentRow | undefined, intentId: string, error: string): UnknownOutcome {
   const after = row?.after ? (JSON.parse(row.after) as Record<string, unknown>) : null;
-  if (!row || !isAudited(row.action) || after?.phase !== 'intent' || typeof after.operationId !== 'string') {
+  if (!row || !isAudited(row.action) || after?.phase !== 'intent' || !auditOperationId.safeParse(after.operationId).success) {
     throw substratError('not_found', `no audited-change intent ${intentId} to settle`);
   }
-  const entry = { ...after, tenantId: row.tenant_id, scopeId: row.scope_id, phase: 'unknown', error };
-  const { tenantId: _t, scopeId: _s, ...parsed } =
-    row.action === 'transferOwner' ? ownerTransferAudit.parse(entry)
-      : row.action === 'manageScopeMember' ? memberChangeAudit.parse(entry)
-        : peerBindingAudit.parse(entry);
-  const operationId = after.operationId;
+  const parsed = isSwitch(row.action) ? switchUnknownOf(after, error) : auditedUnknownOf(row, after, error);
+  const operationId = after.operationId as string;
   return {
     action: row.action,
     operationId,
@@ -202,6 +261,16 @@ export function unknownOutcomeOf(row: SettleIntentRow | undefined, intentId: str
       message: `operation ${operationId}: ${error}`,
     },
   };
+}
+
+/** A control-plane flow's `unknown` row, parsed by the same schema the flow writes its rows with. */
+function auditedUnknownOf(row: SettleIntentRow, after: Record<string, unknown>, error: string): Record<string, unknown> {
+  const entry = { ...after, tenantId: row.tenant_id, scopeId: row.scope_id, phase: 'unknown', error };
+  const { tenantId: _t, scopeId: _s, ...parsed } =
+    row.action === 'transferOwner' ? ownerTransferAudit.parse(entry)
+      : row.action === 'manageScopeMember' ? memberChangeAudit.parse(entry)
+        : peerBindingAudit.parse(entry);
+  return parsed;
 }
 
 /** The phases an audited change's rows carry. */

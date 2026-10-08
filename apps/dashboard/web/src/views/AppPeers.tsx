@@ -68,6 +68,8 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
   const [dialog, setDialog] = useState<{ vertical: string; to: 'on' | 'off' } | null>(null);
   const [reason, setReason] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
+  // #2089: a switch that went through but whose admin-log row could not be written. A success.
+  const [auditWarning, setAuditWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selection, setSelection] = useState<Record<string, string>>({});
   const switching = useRef(false);
@@ -113,6 +115,7 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
     switching.current = true;
     setBusy(true);
     setNotice(null);
+    setAuditWarning(null);
     try {
       const outcome = await changePeerAccess(
         () => api.switchAppPeer(scopeId, dialog.vertical, dialog.to, reason.trim()),
@@ -145,6 +148,7 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
         );
         return;
       }
+      if (outcome.auditWarning) setAuditWarning(outcome.auditWarning);
       if (outcome.kind === 'unconfirmed') {
         // The write succeeded. Invalidate the old position instead of offering it again.
         setView(null);
@@ -177,15 +181,30 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
     };
   }, [scopeId]);
 
-  if (failed) return <section style={card} role="status">{notice ?? 'Could not read app-to-app access. Reload to try again.'}</section>;
+  // #2089: the member changes' wording (AppDetail) — the change stands, nothing to redo.
+  const warning = auditWarning && (
+    <div role="status" style={{ padding: '10px 16px', marginBottom: 12, fontSize: 12.5, borderRadius: 8, background: 'var(--status-warning-bg)', color: 'var(--status-warning-fg)', lineHeight: 1.6 }}>
+      The change was made, but the platform could not record it in its audit log. Its staff will be told. There is nothing to redo.
+      <div style={{ marginTop: 4, fontSize: 12, opacity: 0.85 }}>{auditWarning}</div>
+    </div>
+  );
+  if (failed) {
+    return (
+      <section style={card}>
+        {warning}
+        <p role="status">{notice ?? 'Could not read app-to-app access. Reload to try again.'}</p>
+      </section>
+    );
+  }
   if (view === null) return null;
   const callers = view.callers ?? [];
   // The whole panel is hidden only when there is genuinely nothing to say in EITHER
   // direction and no read failed. A failed mirror read is something to say.
-  if (!showPeerDisclosure(view)) return null;
+  if (!showPeerDisclosure(view) && !warning && !notice) return null;
 
   return (
     <section style={card}>
+      {warning}
       {notice && <p role="status">{notice}</p>}
       <h2 style={{ margin: '0 0 4px', fontSize: 15 }}>App-to-app access</h2>
       <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: '19px' }}>
