@@ -689,6 +689,11 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
     ctx.requestPlatform({ kind: input.kind, payload: { rolled: 'back' } });
     throw new Error('boom after requestPlatform');
   }) as OperationHandler<never, unknown>,
+  // #2102: the outcome events a settle wrote, as the spine holds them.
+  'platform/outcome-events': ((ctx) =>
+    ctx.sql.query<{ type: string; actor: string; entity_type: string; entity_id: string; payload: string }>(
+      "SELECT type, actor, entity_type, entity_id, payload FROM _substrat_outbox WHERE type LIKE 'email.%' ORDER BY id",
+    )) as OperationHandler<never, unknown>,
   'platform/read-requests': ((ctx) =>
     ctx.sql.query<PlatformRequestRow>(
       'SELECT * FROM _substrat_platform_requests ORDER BY id',

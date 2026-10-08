@@ -14,6 +14,7 @@ import type {
   PlatformRequestId,
   PlatformRequestStatus,
   PlatformRequestFailure,
+  PlatformOutcomeEvent,
   MintedPreviewClient,
   PreviewClientCheck,
   PreviewClientClaim,
@@ -1108,6 +1109,11 @@ export class VerticalClient {
       result?: unknown;
       lastError?: string | null;
       failure?: PlatformRequestFailure | null;
+      /**
+       * #2102: written into the scope with the settle. A vertical-host too old to know the field
+       * drops it and settles the row anyway — the outcome stays readable on the intent.
+       */
+      event?: PlatformOutcomeEvent | null;
     },
   ): Promise<void> {
     await this.postInternal<unknown>(

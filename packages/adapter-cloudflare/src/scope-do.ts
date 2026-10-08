@@ -392,6 +392,7 @@ import type {
   StoredScopeLifecycle,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
+import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 
 /**
@@ -5793,6 +5794,38 @@ export function defineScopeDO(
         status === 'pending' ? null : new Date().toISOString(),
         id,
       );
+    }
+
+    /**
+     * A settle that writes an outcome event (#2102): the kernel's one settle — the same
+     * compare-and-set as the verb above — and the event in its transaction, written only when
+     * this settle moved the row out of `pending`. Then the event reaches this scope's consumers,
+     * as any committed write's does.
+     *
+     * A verb of its own rather than an argument on the one above, so a settle carrying no event
+     * keeps reaching a DO class older than this change; only the new kind's settle needs it.
+     */
+    async settlePlatformRequestWithEvent(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      id: PlatformRequestId,
+      outcome: PlatformRequestSettle,
+    ): Promise<void> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () => {
+        const liveSince = this.liveHighWaterMark();
+        this.revision.transactionSync(() =>
+          settlePlatformRequestIn(this.switchSql(), id, outcome, {
+            tenantId,
+            scopeId,
+            now: new Date().toISOString(),
+            mintEventId: (ms) => this.mintEventId(ms),
+            version: this.env.SUBSTRAT_VERSION_ID ?? null,
+          }),
+        );
+        // #1525: null — a settle is the platform's call, not one a vertical's caller made.
+        await this.settleCommitted(tenantId, scopeId, liveSince, null);
+      });
     }
 
     /**

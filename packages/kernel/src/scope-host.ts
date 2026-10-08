@@ -61,6 +61,7 @@ import type {
   PlatformRequestFilter,
   PlatformRequestStatus,
   PlatformRequestFailure,
+  PlatformOutcomeEvent,
   EntitlementGrant,
   EntitlementGrantInput,
   EntitlementView,
@@ -5772,6 +5773,11 @@ export interface ScopeHost {
       lastError?: string | null;
       /** WHO refused (#841). Omitted by a caller too old to attribute — stored as NULL. */
       failure?: PlatformRequestFailure | null;
+      /**
+       * #2102: an outcome event written into the scope with the settle, in its transaction,
+       * and only when this settle moves the row out of `pending` (`settlePlatformRequestIn`).
+       */
+      event?: PlatformOutcomeEvent | null;
     },
   ): Promise<void>;
 
