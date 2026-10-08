@@ -6,7 +6,7 @@ import { z } from 'zod';
  *
  * ## Why this engine needs it MORE than the others
  *
- * Every demo vertical composes invoicing — callout, handlebar, meridian's
+ * Every demo vertical composes invoicing — handlebar, meridian's
  * siblings, rally, shop — and none could declare an operation returning an
  * invoice basis without transcribing this engine's shape into the vertical. That
  * is the cost the model's notation decision (#680) exists to avoid, and it was

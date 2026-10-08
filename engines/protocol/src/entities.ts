@@ -8,8 +8,8 @@ import { z } from 'zod';
  *
  * A vertical composing this engine needs two things it cannot get today:
  *
- * 1. **The entity-type constant.** Callout declares
- *    `{ entityType: 'protocol', parentType: 'workorder' }` and Handlebar
+ * 1. **The entity-type constant.** Handlebar declares
+ *    `{ entityType: 'protocol', parentType: 'workorder' }` and
  *    `{ entityType: 'workorder', parentType: 'bike' }` — permission-walk edges
  *    naming entities the vertical does not own. Both sides are unchecked strings
  *    today, and a typo is a silently dead edge.

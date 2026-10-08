@@ -63,7 +63,7 @@ import {
 
 // ============================================================================
 // The Handlebar vertical (spec/concept.md) — the v2 bike-shop skin. Same
-// engines as Callout, different vocabulary: a repair IS a work order, a
+// engines as the former Callout demo, different vocabulary: a repair IS a work order, a
 // mechanic IS a technician, and the order's "facility" ref is a BIKE the
 // customer brings in. Everything here is vocabulary, price list, and
 // orchestration — the state machine stays in the engine.
@@ -129,9 +129,9 @@ export const bikeShopManifest = moduleManifest.parse({
   // so it belongs here rather than in glue: the kernel runs it inside
   // `bike-shop/close-repair`'s own transaction, before the handler, and
   // DROPPING it is now a manifest diff a human reviews — not a deleted line
-  // inside a 60-line operation. Contrast: Callout's montage→self-inspection gate
-  // is conditional on order.kind — vertical vocabulary the kernel must never
-  // learn — so it stays vertical-composed glue (demos/callout/src/module.ts).
+  // inside a 60-line operation. Contrast: the former Callout demo's
+  // montage→self-inspection gate was conditional on order.kind — vertical
+  // vocabulary the kernel must never learn — so it stayed vertical-composed glue.
   //
   // Star topology: the workorder engine knows nothing of protocols; the protocol
   // engine contributes the named predicate; the VERTICAL — the layer that owns
@@ -141,8 +141,8 @@ export const bikeShopManifest = moduleManifest.parse({
   // this host. The only door out of a repair is `bike-shop/close-repair`, which
   // the guard above stands in front of. Withdrawal removes the BINDING, not the
   // capability — the engine's in-scope `closeWorkOrder` is exactly what the
-  // vertical's guarded operation composes. Opt-in: Callout withdraws nothing
-  // and keeps `workorder/close` (demos/callout).
+  // vertical's guarded operation composes. Opt-in: a host that withdraws
+  // nothing keeps `workorder/close`.
   withdraws: ['workorder/close'],
   guards: [
     {

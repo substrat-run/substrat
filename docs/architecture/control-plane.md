@@ -731,8 +731,8 @@ records exist is the retrofit `OrgId` and the identity key already paid for.
 Vertical workers get **no public route** — only a service binding from the router.
 
 Otherwise the router's assertion of `(tenant, scope)` is a header, and anyone who can
-reach the worker directly can forge it. There is precedent: the Callout worker
-already reaches the control plane by service binding rather than public URL.
+reach the worker directly can forge it. There was precedent: the Callout demo's worker (since removed)
+reached the control plane by service binding rather than public URL.
 
 Built, with one addition the design did not originally call for: the router also
 presents a **shared secret** (`x-substrat-router`), which the vertical verifies through
@@ -846,9 +846,9 @@ The contract currently allows `jurisdiction: 'eu' | null`. Cloudflare offers `us
 accepting it as an independent input, so the two cannot disagree; the router refuses a
 region that contradicts the jurisdiction (#958 — see above; it needs the jurisdiction
 carried on the resolved route target first); `verticalFor` keys on
-`(slug, region)`; and `demos/callout`'s single `AUTH_DB` becomes per-jurisdiction —
-today one database holds Better Auth identities for every tenant regardless of their
-scope's jurisdiction.
+`(slug, region)`; and a vertical's single identity database becomes per-jurisdiction —
+the Callout demo (since removed) held Better Auth identities for every tenant in one
+`AUTH_DB` regardless of their scope's jurisdiction.
 
 #### Two things this defers
 
@@ -1227,8 +1227,8 @@ D-16 already commits to identity being a swappable adapter; this is that being c
 Two consequences:
 
 1. **Real auth gates *exposing* the console, not *building* it.** Nothing with cross-tenant
-   reach goes anywhere non-local on a stub. The demo's `x-principal` header
-   (`demos/callout/src/server.ts`) is a dev affordance; a super-admin on top of it is a
+   reach goes anywhere non-local on a stub. The demos' former `x-principal`
+   header was a dev affordance; a super-admin on top of it is a
    liability, not a milestone.
 2. **Platform-staff auth is a different regime from tenant-user auth.** Staff: SSO, MFA, no
    self-service signup, short sessions, a small closed population, plausibly its own IdP

@@ -11,7 +11,7 @@
  *   - ./notes                   your own module
  *
  * This vertical is SELF-CONTAINED: it embeds its own control plane and seeds its
- * own tenant/scope, exactly like the Callout demo. Registering into a
+ * own tenant/scope, exactly like the local demo servers. Registering into a
  * separately-deployed shared control plane is what `substrat push` does, and this
  * example deliberately does not.
  *

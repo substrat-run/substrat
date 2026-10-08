@@ -25,7 +25,7 @@ Substrat had no error model. It had seven copies of one, none of them typed.
 Every vertical hand-rolled the same `onError` handler, matching on **error message text** to
 choose a status code:
 
-- [`callout/routes.ts:23-31`](../../demos/callout/src/routes.ts#L23-L31)
+- `callout/routes.ts:23-31` (that demo has since been removed)
 - [`meridian/server.ts:176-180`](../../demos/meridian/src/server.ts#L176-L180)
 - [`manyfold/routes.ts:27-42`](../../demos/manyfold/src/routes.ts#L27-L42)
 - plus shop, rally, todo, handlebar — **and the scaffold template**

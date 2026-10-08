@@ -30,7 +30,6 @@ interface Source {
 const TEMPLATE_BLURBS: Record<string, string> = {
   protocol: 'Documents, protocols & e-signing',
   documents: 'Documents, protocols & e-signing',
-  callout: 'Work orders, time & material, self-inspection',
   workorder: 'Work orders, time & material, self-inspection',
 };
 

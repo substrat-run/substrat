@@ -34,7 +34,7 @@
  *                                     channel, so `OIDC_ISSUER` absent means broken; and
  *                                     the harness secrets that actually bite (PLATFORM_SECRET,
  *                                     ROUTER_SECRET) are deliberately undeclared in envSpec
- *                                     at all (demos/callout/src/manifest.ts). Those two are
+ *                                     at all. Those two are
  *                                     not this tool's to guard: the node dev server never
  *                                     reads them, and the WORKERS fail closed without them
  *                                     (#966) — the router answers 500 until ROUTER_SECRET

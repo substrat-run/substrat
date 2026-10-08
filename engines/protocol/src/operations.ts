@@ -9,8 +9,8 @@
  *
  * What is deliberately NOT here:
  *
- * - **`http`.** This engine is entity-agnostic and owns no URL shape: Callout
- *   hangs protocols off work orders and Handlebar off bikes, and both are right.
+ * - **`http`.** This engine is entity-agnostic and owns no URL shape: Handlebar
+ *   hangs protocols off work orders and Meridian off employees, and both are right.
  *   The path is the composing vertical's decision, declared with
  *   `defineEngineRoutes` against these names.
  * - **`emits`.** The manifest still declares the nine event types by hand, as
@@ -188,7 +188,7 @@ export const protocolOperations = defineOperations(protocolEntities, PROTOCOL_PE
 
   /**
    * The check is `protocol:read` against the entity the protocols hang on — a
-   * work order in Callout, a bike in Handlebar — so the entity's TYPE arrives as
+   * work order in Handlebar, an employee in Meridian — so the entity's TYPE arrives as
    * data, and `entity` must name a type known at declaration time.
    *
    * This declared `narrows` until #896, for want of anywhere else to put it, and

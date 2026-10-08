@@ -359,7 +359,7 @@ company lookup (bolagssök) · person lookup (privatsök) · supplier-invoice in
 
 ## 8. Implications for Substrat (deltas against current design docs)
 
-Findings that should feed back into [the demo concept](../../demos/callout/spec/concept.md) and
+Findings that should feed back into [the demo concept](../rfc/callout-concept.md) and
 future engine designs:
 
 1. **The asset hierarchy is deeper than the demo models**: Customer → Facility →

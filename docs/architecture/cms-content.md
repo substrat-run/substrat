@@ -52,7 +52,7 @@ along it — but the seam is not a package until B.
 
 ## 3. The seam (engine owns lifecycle; vertical owns the typed tables)
 
-The three-layer rule draws the line exactly as in Callout:
+The three-layer rule draws the line exactly as in Handlebar:
 
 - **Engine (eventual) owns the spine and the invariant.** One `content_entry` per logical
   document: its `status`, which revision is the working draft, which is published, and the

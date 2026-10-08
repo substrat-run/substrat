@@ -221,9 +221,9 @@ question): it's glue an edit can silently drop — invisible to review, weak for
 compliance.
 
 **It is still the right pole when the policy is CONDITIONAL on vertical data.**
-Callout owes an egenkontroll only on `montage` orders (`demos/callout/src/module.ts`):
-`order.kind` is Callout vocabulary, and the kernel must never learn it. That guard
-stays glue, on purpose.
+Callout (the field-service demo, since removed) owed an egenkontroll only on `montage`
+orders: `order.kind` was Callout vocabulary, and the kernel must never learn it. That guard
+stayed glue, on purpose.
 
 ### Pole 2 — manifest-declared (milestone C, shipped)
 
@@ -306,7 +306,7 @@ withdraws: ['workorder/close'],   // the name stops resolving in THIS host
   manifest that withdraws an already-registered operation removes it from the map.
 - **Fails closed and looks like nothing special.** A withdrawn operation is
   indistinguishable from one that was never registered: `unknown operation`.
-- **Opt-in, never self-inflicted.** Callout withdraws nothing and keeps
+- **Opt-in, never self-inflicted.** Callout withdrew nothing and kept
   `workorder/close`. A module withdrawing its *own* operation throws — it is meaningless
   and would hide bugs.
 

@@ -3,7 +3,7 @@
 Status: draft v0.1 · Last updated: 2026-07-15
 
 > A third vertical whose job is different from the first two. Callout
-> ([demos/callout](../../callout/spec/concept.md)) and Handlebar ([demos/handlebar](../../handlebar/spec/concept.md))
+> ([docs/rfc/callout-concept.md](../../../docs/rfc/callout-concept.md) — the demo itself was removed) and Handlebar ([demos/handlebar](../../handlebar/spec/concept.md))
 > are both **work-order-shaped** — they prove *same engine, new vocabulary*. This one is
 > a **different domain** (retail) that (a) reuses `engine-invoicing` across that domain
 > boundary and (b) introduces a **new class of invariant** the current engines don't have:
@@ -166,7 +166,7 @@ timestamps ISO-8601 TEXT. Append-only migrations, prefix `shop_`.
    `on_hand = 1` for the oversell beat.
 5. Scenario test (§9) — denials and the oversell throw are the acceptance bar.
 6. App skin: storefront (browse → cart → checkout) + admin (catalog, stock, orders,
-   underlag review), copy-and-own from `demos/callout/app`.
+   underlag review), copy-and-own from the Callout demo's `app/` (since removed).
 
 **Deferred, deliberately (all "provider/connector" per the landscape survey):** payment
 capture (Swish/card), tax calculation, shipping rates/carriers, multi-warehouse, returns/

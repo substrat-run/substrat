@@ -132,8 +132,8 @@ app.onError((err, c) => problemResponse(c, err));
 ```
 
 An `HTTPException` that already carries its own response is handed back untouched, so a
-redirect or a `WWW-Authenticate` a route chose survives. `demos/callout`, `demos/handlebar`
-and `demos/manyfold` are the worked references.
+redirect or a `WWW-Authenticate` a route chose survives. `demos/handlebar` and `demos/manyfold`
+are the worked references.
 
 ## `mountOperations(app, operations, resolveStub, options?)`
 
