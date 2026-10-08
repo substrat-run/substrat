@@ -75,11 +75,9 @@ describe('a pseudonymized export of a real scope (#1034)', () => {
    * `it.fails` case at the bottom, which says why and turns red the day it stops.
    */
   const LEAVE_NOTE = 'Tandläkare på Odenplan kl 9, sedan hämtar jag Signe på förskolan';
+  const SEEDED_NAMES = ['Elin Ek', 'Karin Berg', 'Mats Lund', 'Hedda Ohlsson'];
   const SEEDED_PII = [
-    'Elin Ek',
-    'Karin Berg',
-    'Mats Lund',
-    'Hedda Ohlsson',
+    ...SEEDED_NAMES,
     'elin@nordljus.se',
     'karin@nordljus.se',
     'mats@nordljus.se',
@@ -173,10 +171,30 @@ describe('a pseudonymized export of a real scope (#1034)', () => {
     return seen;
   }
 
+  // Generated names may contain a source name as a prefix (Elin Ekstrand versus Elin Ek).
+  // Check complete names within each cell, including JSON and decoded blobs; other PII
+  // remains a literal substring check.
+  const containsSourceLiteral = (value: string, secret: string): boolean =>
+    SEEDED_NAMES.includes(secret)
+      ? new RegExp(`(?<!\\p{L})${secret}(?!\\p{L})`, 'u').test(value)
+      : value.includes(secret);
+
+  it('distinguishes generated name prefixes from complete leaked names', () => {
+    expect(containsSourceLiteral('Elin Ekstrand', 'Elin Ek')).toBe(false);
+    for (const name of SEEDED_NAMES) {
+      expect(containsSourceLiteral(name, name)).toBe(true);
+      expect(containsSourceLiteral(JSON.stringify({ label: name }), name)).toBe(true);
+      expect(containsSourceLiteral(`signed by ${name}, today`, name)).toBe(true);
+    }
+    expect(containsSourceLiteral('contact: elin@nordljus.se', 'elin@nordljus.se')).toBe(true);
+    expect(containsSourceLiteral(`note: ${LEAVE_NOTE}`, LEAVE_NOTE)).toBe(true);
+  });
+
   it('hands back nothing anyone typed into the source', () => {
     const seen = maskedStrings();
-    const bytes = seen.join(' ');
-    for (const secret of SEEDED_PII) expect(bytes).not.toContain(secret);
+    for (const secret of SEEDED_PII) {
+      expect(seen.some((cell) => containsSourceLiteral(cell, secret)), `source literal: ${secret}`).toBe(false);
+    }
     // …and the scan is not vacuous: the dump really does carry the tables it swept,
     // and the source really did hold every literal it is checked for.
     expect(seen.length).toBeGreaterThan(50);
