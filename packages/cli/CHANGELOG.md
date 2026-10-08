@@ -1,5 +1,44 @@
 # @substrat-run/cli
 
+## 0.41.0
+
+### Minor Changes
+
+- 13a2067: A key dropped from a declared entity-grant shape can now be taken back from the people who already hold it (#2082). Until now the reconcile only added keys: a key removed from a bootstrap shape stayed with every existing holder, while `PERMISSIONS.md` showed the shape without it.
+
+  - To take a key back, list it in the shape's `retired` in `ENTITY_GRANTS`, for example `{ entityType: 'employee', permissions: [...], bootstrap: true, retired: ['expense:submit'] }`. At the next reconcile, every person holding the shape on an entity of that type has that key's row there tombstoned (K-21, never deleted). It runs once per scope, in the reconcile's existing bounded passes and transactions, and each person it touches gets one kernel-authored `entity.grants-retired` event on the entity: `{ entity, principal, removed }`. `HostAdmin.reconcileEntityGrantShapes` now returns `{ toppedUp, retired }`.
+  - **One tuple is one authority.** A direct `ctx.grant` of the same key to the same person on the same entity is the same row, so it is taken back too. The key held any other way stays: through a role, a grant on a parent, a grant on another entity, or by someone who is not a holder of the shape.
+  - **Putting a key back reaches only new holders.** After a retirement, a key returned to `permissions` reaches only people given the shape from then on. The top-up never grants a tombstoned key again, and a retirement leaves a tombstone. Returning the key does end that retirement, so a later release can retire it again.
+  - `retired` is allowed only on a bootstrap shape, never for a key the shape still grants, and never twice. Both `definePermissions`' registry and the push refuse anything else. It appears in the pushed permission registry, so declaring it moves that vertical's permission digest and needs a promote acknowledgement. A vertical that retires nothing keeps its digest.
+  - The promote diff (dashboard, console and `substrat promote`) shows each retired key as "existing holders lose K, including any direct grant of K on the same entity". It shows a key dropped without retiring it as "existing holders keep K". `PERMISSIONS.md` §4 gains a column for retired keys, only in a vertical that declares one.
+
+- 100b47c: A vertical can declare where its scope lifecycle is held: `"lifecycle": "router"` in package.json's `substrat` block. A vertical built on `@substrat-run/vertical-host` leaves it out and keeps receiving each scope's lifecycle at `/internal/lifecycle`. A deployment that serves its own `/internal/*` surface and does no work a request did not start declares `router`: the router's refusal of a held scope's requests is then the whole hold, and the platform delivers that vertical's scopes no lifecycle and does not ask them for a tenant record.
+
+  `substrat push` carries the field in the deploy manifest (`lifecycleHold` in contracts), the control plane stores it on the vertical's registry row beside `sendsEmail` and refreshes it on every push, and the lifecycle delivery's targets leave those scopes out. The auth-server declares it. Before this, every lifecycle delivery to it answered 501, and since the heal began asking every served scope for its tenant record, each pass wrote an ops failure for each of its scopes.
+
+### Patch Changes
+
+- Updated dependencies [32df62b]
+- Updated dependencies [6154fd9]
+- Updated dependencies [6d49012]
+- Updated dependencies [55e6241]
+- Updated dependencies [13a2067]
+- Updated dependencies [72f8e92]
+- Updated dependencies [100b47c]
+- Updated dependencies [d42bb2b]
+- Updated dependencies [e5bd928]
+- Updated dependencies [ae80b0d]
+- Updated dependencies [a1f40e5]
+- Updated dependencies [0e3d406]
+- Updated dependencies [fed1f3c]
+- Updated dependencies [5405401]
+- Updated dependencies [655141a]
+- Updated dependencies [f1290ea]
+- Updated dependencies [ced5130]
+  - @substrat-run/contracts@0.140.0
+  - @substrat-run/control-plane-client@0.1.5
+  - @substrat-run/model-view@0.2.44
+
 ## 0.40.3
 
 ### Patch Changes

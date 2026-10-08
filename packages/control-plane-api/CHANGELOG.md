@@ -1,5 +1,91 @@
 # @substrat-run/control-plane-api
 
+## 0.140.0
+
+### Minor Changes
+
+- 32df62b: An owner hand-over or a dashboard member change no longer loses its outcome row without a trace (#2064). Both routes now run through one helper, `auditedChange`, which writes the intent, calls the vertical, then writes the outcome.
+
+  - **A refusal or failure whose row cannot be written:** the caller still gets the vertical's own status, and the missing row is logged as `audit-outcome-unrecorded` with the operation id.
+  - **A change that went through but whose `applied` row cannot be written:** the answer is a success that carries `auditWarning`, with the result. An invite keeps its accept link. Before, the hand-over answered `500` and a member change threw. Every answer, refusals included, now carries `operationId`, the `AuditedAnswer` shape in contracts.
+  - **The vertical call** has a 60 s deadline (`AUDITED_CALL_DEADLINE_MS`). Past it the answer is `504`, audited `failed`.
+
+  `HostAdmin.settleUnrecordedOutcome` closes an intent left without an outcome. In one transaction, and only if no outcome exists by then, it writes an `unknown` row and an ops-failure row for the staff digest. The control plane's scheduled pass calls it through `settleUnrecordedOutcomes` for intents over an hour old. The pass refuses a grace window that does not exceed the call deadline. A real outcome recorded later supersedes `unknown`. `ownerTransferAudit` and `memberChangeAudit` accept the new `unknown` phase. `AUDIT_ERROR_MAX` replaces `OWNER_TRANSFER_AUDIT_ERROR_MAX`, which stays as a deprecated alias. The deadline covers the whole exchange, so a body the vertical stalls ends at it too. Every reader resolves an operation by priority, not by row order: a real outcome beats `unknown`, and two real outcomes read `conflicting`, which is logged. An operation is its action, operation id, tenant and scope, so the same id in two scopes is two operations. Readers find an operation's rows through `HostAdmin.auditedOperations`: one bounded, batched read through a new index on the admin log's operation id, in both adapters. Every admin-log index now comes from one kernel script (`ADMIN_LOG_INDEXES_SQL`), which the legacy `tenant_id` rebuild runs again after its rename. That rebuild used to drop every index on the table. `GET /admin-log` gives each audited row an `audited` field (`operationId`, the effective `outcome`, and `superseded` on an `unknown` a real outcome beat) beside the raw row. The staff digest leaves out an `unknown` that a real outcome has superseded, found through the ops-failure row's `reference`, which now holds the operation id. An audit operation id must be well-formed text (`auditOperationId`, `isWellFormedText`): `ownerTransferAudit` and `memberChangeAudit` refuse an id holding a lone UTF-16 surrogate.
+
+- 6154fd9: An operation can now send email as part of its own transaction (#2102). `requestEmail(ctx, mail)` writes the send as a platform intent. If the operation fails, nothing is sent. Once it commits, the platform sends the mail, as the platform's address or through the tenant mailbox that covers `from`, exactly as the relay routes it. A throttled or failing provider is retried, waiting as long as the provider's `Retry-After` asks, and the result comes back as an event the vertical can consume: `email.sent` (with the provider's message id when it gives one), `email.refused`, or `email.dead-lettered` after 10 transient failures. Each event names the request id `requestEmail` returned. It is written on the `about` entity when the mail names one. Passing the recipient's `subjectId` classifies the queued send, so a subject erasure cancels it and removes the address and message. The synchronous relay is unchanged and stays for code with no operation around it.
+
+  `@substrat-run/contracts`: `SEND_EMAIL_KIND`, `sendEmailRequest`, the three outcome event types (kernel-authored, so `ctx.emit` refuses them), `emailOutcomePayload`, and `platformOutcomeEvent`, the one shape a settle may write.
+
+  `@substrat-run/kernel`: `requestEmail`, and `settlePlatformRequestIn`, the settle both adapters now share. A settle may carry one outcome event. It is written in the settle's transaction, and only when that settle moves the row out of `pending`. `MailSendResult` gains an optional `messageId`, and `MailSender.send` documents the error contract the retry reads: a numeric `status`, and `retryAfter` in seconds.
+
+  `@substrat-run/adapter-sqlite`, `@substrat-run/adapter-cloudflare`: `settlePlatformRequest` accepts `event` and dispatches it to the scope's consumers. The Durable Object takes it through a new `settlePlatformRequestWithEvent` verb, so a settle without an event still reaches an older DO class.
+
+  `@substrat-run/control-plane-api`: `sendEmailHandler` for the drain. A handler may return `deferred` (not tried, no attempt counted), and an outcome's `event` is passed to the settle.
+
+  `@substrat-run/vertical-host`: the settle route accepts the event.
+
+  `@substrat-run/contract-tests`: the evented settle is in the scope-host contract.
+
+  `@substrat-run/adapter-email`: `SendResult.messageId`, read from Cloudflare Email Service's response.
+
+- 100b47c: A vertical can declare where its scope lifecycle is held: `"lifecycle": "router"` in package.json's `substrat` block. A vertical built on `@substrat-run/vertical-host` leaves it out and keeps receiving each scope's lifecycle at `/internal/lifecycle`. A deployment that serves its own `/internal/*` surface and does no work a request did not start declares `router`: the router's refusal of a held scope's requests is then the whole hold, and the platform delivers that vertical's scopes no lifecycle and does not ask them for a tenant record.
+
+  `substrat push` carries the field in the deploy manifest (`lifecycleHold` in contracts), the control plane stores it on the vertical's registry row beside `sendsEmail` and refreshes it on every push, and the lifecycle delivery's targets leave those scopes out. The auth-server declares it. Before this, every lifecycle delivery to it answered 501, and since the heal began asking every served scope for its tenant record, each pass wrote an ops failure for each of its scopes.
+
+- e5bd928: Connectors can now finish their own credential on the platform side, and serve a public certificate (#2100).
+
+  `@substrat-run/control-plane-api`: a `ConnectionInspector` may declare `prepareCandidate(candidate, previous)`. The connection upsert runs it before the connect-time probe, so the probe checks exactly what gets stored, and on a rotation it receives the live connection's secret. A provider can therefore generate part of a credential where it is sealed (the Microsoft 365 connector generates a per-connection keypair there) and keep it when someone edits the other fields. An expiry it returns lands on the connection unless the caller named one, and `null` clears the one the connection held (the Microsoft 365 connector returns it when a certificate is replaced by a client secret). The relay looks the preparation up per provider before it opens the live credential, so a provider without one rotates even when the old secret no longer opens. The upsert now looks up the live connection before probing rather than after, with no change in behaviour for providers that declare no preparation. A new `GET /tenants/:t/connections/:id/certificate` route serves the public certificate a connection signs in with, through the inspector's new `certificate`, and answers 404 when the connection has none.
+
+  `@substrat-run/contracts`: `connectionCertificate` gives that route's shape: `pem`, the `thumbprint` as the provider's own console shows it, and `notAfter`.
+
+  `@substrat-run/kernel`: `HostAdmin.updateConnectionSecret` takes `null` for `expiresAt`, which clears the connection's expiry. Omitting it still keeps the current one. Both adapters implement it, and the contract suite holds them to it.
+
+- a1f40e5: Tenant admins can choose the target scope for a calling app's peer calls when their tenant runs multiple instances of one vertical. The directory keeps the choice per caller scope and target vertical; both synchronous and queued calls resolve through it at execution. A suspended target resumes when restored; an archived or deleted target requires a new choice. A foreign scope cannot become a target. The dashboard offers the picker and the console shows existing choices.
+- 655141a: The schedule and peer kill switches (`revokeFromSystem`, `restoreToSystem`, `revokeFromPeer`, `restoreToPeer`) no longer drop a refused or failed outcome row without a trace (#2089). Both adapters used to write that row best-effort and discard the error. The audit now works the way #2064 made the owner hand-over and member changes work:
+
+  - **A refused or failed switch whose outcome row cannot be written** still answers with its own error (`not_found`, `conflict` and so on). The missing row is logged as `audit-outcome-unrecorded`, with the flow (`system-switch` or `peer-switch`) and the operation id.
+  - **A switch that moved but whose `applied` row cannot be written** answers success with `auditWarning`, beside the position it moved to. Before, it threw the log's error even though the switch had moved. `systemSwitchResult` and `peerSwitchResult` carry the optional `auditWarning`.
+  - **The scheduled settle closes these intents too.** The four switch actions are in `AUDITED_CHANGE_ACTIONS`, so `settleUnrecordedOutcomes` writes an `unknown` row (the intent's own fields, plus why) and an ops-failure row for each one left without an outcome. `GET /admin-log` gives their rows the `audited` field. The switch history counts only `applied` rows, so an `unknown` row moves no recorded position.
+  - **A delegated switch call is bounded.** `VerticalClient.systemSwitch`, `peerSwitch` and `switchFence` run under `AUDITED_CALL_DEADLINE_MS` (60 s), the deadline the settle's one-hour grace is built to outlast. Past it the call is aborted and answered `504`, and the switch is audited `failed`. A `504` does not prove the switch stayed still, so its position should be read before retrying.
+  - **The console's Schedules card and the dashboard's Peers panel show the warning.** A switch that moved but went unrecorded shows that it was made, that it could not be recorded, and that there is nothing to redo.
+
+  The outcome write is one kernel helper, `recordAuditOutcome`, used by the control plane's `auditedChange` and by both adapters' switch paths. The kernel also exports `UNRECORDED_OUTCOME_LOG`, `auditWarningOf` and `SWITCH_ACTIONS`. `auditOperationId` and `isWellFormedText` moved to the contracts' id module and are still exported from the package root. The `operationId` of `systemSwitchResult`, `peerSwitchResult` and `systemSwitchRecord` is now an `auditOperationId`: a well-formed string. `peerContractSuite` and `systemSwitchContractSuite` take a fixture with `refuseAdminRows`, built from the exported `adminRowFaultSql`.
+
+- ced5130: A vertical can mint a shareable provider connect link (connections.md §3.5.4). `requestConnectUrl` serves the person in front of the vertical, who clicks within fifteen minutes. A bookkeeping bureau also has to get each client company's own Fortnox administrator to approve, and that person opens a mailed link days later with no account anywhere.
+
+  - `mintConnectLink`, `listConnectLinks` and `revokeConnectLink` (vertical-host) call the new `/internal/connections/connect-links`, `…/list` and `…/revoke` relays, behind the vertical's own `ctx.check` as for `requestConnectUrl`. A link lives 7 days by default and 30 at most. The 15-minute limit on `requestConnectUrl` is unchanged.
+  - The link is a row the platform holds in the directory, `_substrat_connect_links`, beside the connections. The consent callback spends it before storing the credential, so it connects once. Revoking it stops the URL working. If the store fails, the link is put back so it can be opened again. List and revoke name links by id: `listConnectLinks` takes the `linkIds` your mints returned (1 to 100) and answers only those that belong to the calling scope, so keep each link's id on your own row.
+  - `HostAdmin` gains `mintConnectLink`, `getConnectLink`, `listConnectLinks`, `revokeConnectLink`, `consumeConnectLink` and `restoreConnectLink`. Both adapters run the kernel's shared statements over the kernel's `CONNECT_LINKS_DDL`, and `connectLinkContractSuite` (contract-tests) holds each adapter to them. Every change to a link is written to the admin log, in the same transaction as the change. `listConnectLinks` accepts an `ids` filter.
+  - `ConnectStateClaim` (kernel) has an optional `linkId`. A claim with a malformed one fails verification.
+  - The control-plane API adds tenant routes under `/tenants/:t/connect-links` (list, read, consume, restore, revoke). A tenant credential can reach them.
+
+### Patch Changes
+
+- Updated dependencies [35dc72e]
+- Updated dependencies [32df62b]
+- Updated dependencies [6154fd9]
+- Updated dependencies [6d49012]
+- Updated dependencies [55e6241]
+- Updated dependencies [13a2067]
+- Updated dependencies [7b15101]
+- Updated dependencies [72f8e92]
+- Updated dependencies [100b47c]
+- Updated dependencies [d42bb2b]
+- Updated dependencies [e5bd928]
+- Updated dependencies [b180d3e]
+- Updated dependencies [07388df]
+- Updated dependencies [ae80b0d]
+- Updated dependencies [a1f40e5]
+- Updated dependencies [0e3d406]
+- Updated dependencies [fed1f3c]
+- Updated dependencies [5405401]
+- Updated dependencies [655141a]
+- Updated dependencies [f1290ea]
+- Updated dependencies [ced5130]
+  - @substrat-run/kernel@0.140.0
+  - @substrat-run/contracts@0.140.0
+  - @substrat-run/control-plane-client@0.1.5
+
 ## 0.139.0
 
 ### Minor Changes

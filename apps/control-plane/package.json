@@ -1,8 +1,8 @@
 {
   "name": "@substrat-run/control-plane",
-  "version": "0.15.2",
+  "version": "0.15.3",
   "private": true,
-  "description": "The shared control-plane deployment \u2014 ControlPlaneDO + the audited HTTP surface (first-flow.md \u00a74, slice 1)",
+  "description": "The shared control-plane deployment — ControlPlaneDO + the audited HTTP surface (first-flow.md §4, slice 1)",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",

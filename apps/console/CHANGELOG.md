@@ -1,5 +1,40 @@
 # @substrat-run/console
 
+## 0.14.54
+
+### Patch Changes
+
+- f46de4a: The Callout demo vertical is removed. The dashboard catalog no longer offers Callout:
+  its builtin row is retired the way Meridian's and Manyfold's were — installs are blocked
+  and it is unlisted, while any existing app keeps serving. Locally, `pnpm dev` now runs
+  the standalone control plane and the console; `pnpm dev:connected` and
+  `pnpm callout-demo` are gone. The docs no longer describe Callout as a demo; its original
+  concept and test-run spec are kept as historical RFCs.
+- Updated dependencies [35dc72e]
+- Updated dependencies [32df62b]
+- Updated dependencies [6154fd9]
+- Updated dependencies [6d49012]
+- Updated dependencies [55e6241]
+- Updated dependencies [13a2067]
+- Updated dependencies [7b15101]
+- Updated dependencies [72f8e92]
+- Updated dependencies [100b47c]
+- Updated dependencies [d42bb2b]
+- Updated dependencies [e5bd928]
+- Updated dependencies [b180d3e]
+- Updated dependencies [07388df]
+- Updated dependencies [ae80b0d]
+- Updated dependencies [a1f40e5]
+- Updated dependencies [0e3d406]
+- Updated dependencies [fed1f3c]
+- Updated dependencies [5405401]
+- Updated dependencies [655141a]
+- Updated dependencies [f1290ea]
+- Updated dependencies [ced5130]
+  - @substrat-run/kernel@0.140.0
+  - @substrat-run/contracts@0.140.0
+  - @substrat-run/control-plane-api@0.140.0
+
 ## 0.14.53
 
 ### Patch Changes

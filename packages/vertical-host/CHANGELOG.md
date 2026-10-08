@@ -1,5 +1,99 @@
 # @substrat-run/vertical-host
 
+## 0.140.0
+
+### Minor Changes
+
+- 6154fd9: An operation can now send email as part of its own transaction (#2102). `requestEmail(ctx, mail)` writes the send as a platform intent. If the operation fails, nothing is sent. Once it commits, the platform sends the mail, as the platform's address or through the tenant mailbox that covers `from`, exactly as the relay routes it. A throttled or failing provider is retried, waiting as long as the provider's `Retry-After` asks, and the result comes back as an event the vertical can consume: `email.sent` (with the provider's message id when it gives one), `email.refused`, or `email.dead-lettered` after 10 transient failures. Each event names the request id `requestEmail` returned. It is written on the `about` entity when the mail names one. Passing the recipient's `subjectId` classifies the queued send, so a subject erasure cancels it and removes the address and message. The synchronous relay is unchanged and stays for code with no operation around it.
+
+  `@substrat-run/contracts`: `SEND_EMAIL_KIND`, `sendEmailRequest`, the three outcome event types (kernel-authored, so `ctx.emit` refuses them), `emailOutcomePayload`, and `platformOutcomeEvent`, the one shape a settle may write.
+
+  `@substrat-run/kernel`: `requestEmail`, and `settlePlatformRequestIn`, the settle both adapters now share. A settle may carry one outcome event. It is written in the settle's transaction, and only when that settle moves the row out of `pending`. `MailSendResult` gains an optional `messageId`, and `MailSender.send` documents the error contract the retry reads: a numeric `status`, and `retryAfter` in seconds.
+
+  `@substrat-run/adapter-sqlite`, `@substrat-run/adapter-cloudflare`: `settlePlatformRequest` accepts `event` and dispatches it to the scope's consumers. The Durable Object takes it through a new `settlePlatformRequestWithEvent` verb, so a settle without an event still reaches an older DO class.
+
+  `@substrat-run/control-plane-api`: `sendEmailHandler` for the drain. A handler may return `deferred` (not tried, no attempt counted), and an outcome's `event` is passed to the settle.
+
+  `@substrat-run/vertical-host`: the settle route accepts the event.
+
+  `@substrat-run/contract-tests`: the evented settle is in the scope-host contract.
+
+  `@substrat-run/adapter-email`: `SendResult.messageId`, read from Cloudflare Email Service's response.
+
+- 55e6241: A key added to a declared entity-grant shape now reaches the people who already held the shape (#2071). Before this, a release that added a key to a shape such as a person's grants on their own record only reached people linked after the deploy, while `PERMISSIONS.md` listed the key as held.
+
+  - Declare the shape `bootstrap: true` in `ENTITY_GRANTS` (`definePermissions({ entityGrants })`). Only a bootstrap shape is reconciled. A shape without the flag is a sharing shape, reached through `ctx.grant`, and is never reconciled or backfilled. The flag appears in the pushed permission registry, so it moves that vertical's permission digest once, and `PERMISSIONS.md` §4 gains a column saying which shapes are topped up.
+  - Give the shape with `grantEntityShapeLocal(scopeId, principal, entity, permissions)` on a CP-less host, or `HostAdmin.grantEntityShape` on any host. You no longer grant its keys one at a time. It writes every key plus a marker that records the person as a holder of the shape on that entity.
+  - There is nothing to wire. The platform's reconcile (`/internal/reconcile`: the sweep after a listed promote, and the repair route) reads the shapes from the reviewed registry of the version it reaches, the same object the permission digest covers, and sends them in the body. `mountPlatformSurface` forwards only those. A vertical's code cannot name shapes of its own, so what is topped up is exactly what a promote acknowledged. Each holder gets the keys the shape gained. A first-install provision carries none: nobody holds a shape yet. `HostAdmin.reconcileEntityGrantShapes` runs the same reconcile on demand. It works in passes of 500 holders per scope transaction, so a large scope is never held in one long transaction.
+  - A key revoked from that person on that entity is never granted back, and a key dropped from the shape is never removed. Someone who was `ctx.grant`ed one key of the shape is not a holder and is not topped up.
+  - People granted before markers existed are found by provenance, never by which keys they hold. Declare `holder` on the shape: `'self'` when the entity id is the principal id, or `{ table, idColumn, principalColumn }` when your own table names the record's principal. The reconcile then marks each person on their own record when they hold a key of the shape there. A grant delegated on someone else's record is never marked. A bootstrap shape without `holder` gets no backfill: only people given it with the shape grant from then on are holders. The backfill runs in the same bounded passes as the top-up.
+  - `batch` must be an integer from 1 to 5000. Anything else is refused with `validation_failed`.
+  - Each person topped up is an `entity.grants-topped-up` event on the entity: `{ entity, principal, added }`, written by `@substrat-run/kernel`, with no operation and no authorization. The admin log records `grantEntityShape`, and `reconcileEntityGrantShapes` when a reconcile changed anything.
+  - **`ctx.revoke` now tombstones instead of deleting** (K-21). The row stays with `revoked_at` set, the checker skips it, and it stays readable as evidence. `ctx.grant` over a tombstone grants again. A module that counted `_substrat_tuples` rows to answer "is this shared" must add `revoked_at IS NULL`. A scope's dump keeps revoked grants, so it grows by one row per revoke.
+
+- ae80b0d: `pageVisible` no longer hands a caller the position of a row it may not see (#2073). It used to return the cursor of the last row it EXAMINED, and a cursor carries its row's id and sort value, so a per-row-filtered read with `limit: 1` told a caller the id and sort value of every row the check refused. Every portal walk and the scaffold template used it.
+
+  It now walks on past refused rows until it has `limit` visible ones or reaches the end, and mints the cursor from the last visible row of a full page. One call reads at most `VISIBLE_SCAN_BUDGET` (2 000) rows. A page that stops short of `limit`, at the end or at the budget, answers the same way: the visible rows it found and a null cursor. So a short page now ends the walk, which is `pageOf`'s rule again. The cost: a caller whose next visible row lies more than the budget past their previous one never reaches it, and is told the walk ended. A sealed continuation that carries the walk on without revealing a position is #2074.
+
+  `pageVisible` reads in batches of `max(limit, VISIBLE_BATCH)` (64), so a sparse walk costs about `budget / 64` reads rather than one per refused row. A page may now carry each row's own cursor as `rowCursors`, aligned with `entries`, when the read is asked for it with `rowCursors: true`: `pageOf`, `countedPageOf`, `mapPage` (by index, so rows that map to equal values keep their own) and `ctx.page` on both adapters. `pageVisible` asks for them. When its page fills partway through a batch, it reads that visible row's cursor off the same response, so it survives an RPC and no concurrent write can change it. A fetch that returns no `rowCursors` ends the walk at that row with a null cursor, as a short page does. It is never read a second time. Pass the walk's params on (`{ ...input, ...p }`) and that never happens. An ordinary page is unchanged.
+
+  `pageVisible` never returns `rowCursors`, and no external caller ever sees or sets them. `@substrat-run/vertical-host` adds one door, `wire.ts`, and every external transport goes through it: the HTTP mount (paged and whole), MCP, a peer vertical's call, the connector write-back and the exported-events read.
+
+  - `externalInput` drops a caller's `rowCursors` flag.
+  - `externalJson` is `c.json` with a `JSON.stringify` replacer that scrubs every PAGE in the result (an `entries` array and a `nextCursor` key) of its `rowCursors`, at any depth. It is one serialisation, so what is scrubbed is exactly what reaches the wire: repeated references, class instances and `toJSON` included. A `rowCursors` property on anything that is not a page, such as a domain field or an opaque record, is left as it is.
+  - `externalResult` is the same scrub as a round trip, for MCP's structured content.
+
+  Contracts exports the replacer pieces: `ROW_CURSORS_KEY`, `rowCursorsReplacer`, `serializeWithoutRowCursors` and `withoutRowCursors`. The scaffold template's hand-written `/api/invoke` route goes through the same door, so a scaffolded vertical starts with it. A vertical's own `respond` envelope is handed the result untouched, as before. `rowCursors` travel only inside a scope and over the host↔scope `invoke`.
+
+  `pageVisible` grows two optional parts. The test may be `{ batch }`, one verdict per row for a whole batch, for a proof cheaper asked of a set. A fourth `options` argument takes `scanBudget`. `fetch` may now be async.
+
+  `@substrat-run/contract-tests`: the `ctx.page` suite now asserts three things on every adapter. Each row's `rowCursors` entry resumes the walk right after that row, on a tied sort and on a counted page. An ordinary page carries none. A host-side `pageVisible` walk across invokes, with rows written between calls, neither leaks a refused row's position nor skips a visible row.
+
+  `ctx.pageTrashed` is now this same walk with the declared trash key as its check, so the two cannot drift apart. `TRASH_SCAN_BUDGET` is `VISIBLE_SCAN_BUDGET`. The scaffold template's comment on its portal walk says what the walk now does.
+
+- ced5130: A vertical can mint a shareable provider connect link (connections.md §3.5.4). `requestConnectUrl` serves the person in front of the vertical, who clicks within fifteen minutes. A bookkeeping bureau also has to get each client company's own Fortnox administrator to approve, and that person opens a mailed link days later with no account anywhere.
+
+  - `mintConnectLink`, `listConnectLinks` and `revokeConnectLink` (vertical-host) call the new `/internal/connections/connect-links`, `…/list` and `…/revoke` relays, behind the vertical's own `ctx.check` as for `requestConnectUrl`. A link lives 7 days by default and 30 at most. The 15-minute limit on `requestConnectUrl` is unchanged.
+  - The link is a row the platform holds in the directory, `_substrat_connect_links`, beside the connections. The consent callback spends it before storing the credential, so it connects once. Revoking it stops the URL working. If the store fails, the link is put back so it can be opened again. List and revoke name links by id: `listConnectLinks` takes the `linkIds` your mints returned (1 to 100) and answers only those that belong to the calling scope, so keep each link's id on your own row.
+  - `HostAdmin` gains `mintConnectLink`, `getConnectLink`, `listConnectLinks`, `revokeConnectLink`, `consumeConnectLink` and `restoreConnectLink`. Both adapters run the kernel's shared statements over the kernel's `CONNECT_LINKS_DDL`, and `connectLinkContractSuite` (contract-tests) holds each adapter to them. Every change to a link is written to the admin log, in the same transaction as the change. `listConnectLinks` accepts an `ids` filter.
+  - `ConnectStateClaim` (kernel) has an optional `linkId`. A claim with a malformed one fails verification.
+  - The control-plane API adds tenant routes under `/tenants/:t/connect-links` (list, read, consume, restore, revoke). A tenant credential can reach them.
+
+### Patch Changes
+
+- 13a2067: A key dropped from a declared entity-grant shape can now be taken back from the people who already hold it (#2082). Until now the reconcile only added keys: a key removed from a bootstrap shape stayed with every existing holder, while `PERMISSIONS.md` showed the shape without it.
+
+  - To take a key back, list it in the shape's `retired` in `ENTITY_GRANTS`, for example `{ entityType: 'employee', permissions: [...], bootstrap: true, retired: ['expense:submit'] }`. At the next reconcile, every person holding the shape on an entity of that type has that key's row there tombstoned (K-21, never deleted). It runs once per scope, in the reconcile's existing bounded passes and transactions, and each person it touches gets one kernel-authored `entity.grants-retired` event on the entity: `{ entity, principal, removed }`. `HostAdmin.reconcileEntityGrantShapes` now returns `{ toppedUp, retired }`.
+  - **One tuple is one authority.** A direct `ctx.grant` of the same key to the same person on the same entity is the same row, so it is taken back too. The key held any other way stays: through a role, a grant on a parent, a grant on another entity, or by someone who is not a holder of the shape.
+  - **Putting a key back reaches only new holders.** After a retirement, a key returned to `permissions` reaches only people given the shape from then on. The top-up never grants a tombstoned key again, and a retirement leaves a tombstone. Returning the key does end that retirement, so a later release can retire it again.
+  - `retired` is allowed only on a bootstrap shape, never for a key the shape still grants, and never twice. Both `definePermissions`' registry and the push refuse anything else. It appears in the pushed permission registry, so declaring it moves that vertical's permission digest and needs a promote acknowledgement. A vertical that retires nothing keeps its digest.
+  - The promote diff (dashboard, console and `substrat promote`) shows each retired key as "existing holders lose K, including any direct grant of K on the same entity". It shows a key dropped without retiring it as "existing holders keep K". `PERMISSIONS.md` §4 gains a column for retired keys, only in a vertical that declares one.
+
+- Updated dependencies [35dc72e]
+- Updated dependencies [32df62b]
+- Updated dependencies [6154fd9]
+- Updated dependencies [6d49012]
+- Updated dependencies [55e6241]
+- Updated dependencies [13a2067]
+- Updated dependencies [7b15101]
+- Updated dependencies [72f8e92]
+- Updated dependencies [100b47c]
+- Updated dependencies [d42bb2b]
+- Updated dependencies [e5bd928]
+- Updated dependencies [b180d3e]
+- Updated dependencies [07388df]
+- Updated dependencies [ae80b0d]
+- Updated dependencies [a1f40e5]
+- Updated dependencies [0e3d406]
+- Updated dependencies [fed1f3c]
+- Updated dependencies [5405401]
+- Updated dependencies [655141a]
+- Updated dependencies [f1290ea]
+- Updated dependencies [ced5130]
+  - @substrat-run/kernel@0.140.0
+  - @substrat-run/contracts@0.140.0
+  - @substrat-run/model-providers@0.5.30
+
 ## 0.139.0
 
 ### Minor Changes

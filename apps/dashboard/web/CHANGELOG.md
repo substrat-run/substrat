@@ -1,5 +1,44 @@
 # @substrat-run/dashboard-web
 
+## 0.17.0
+
+### Minor Changes
+
+- e1094b7: An app can hold many Fortnox companies, and the dashboard now shows all of them (#1267 follow-up). A bookkeeping bureau connects one company per client to the same app, and each consent adds a connection instead of rotating the last one.
+
+  - **Settings → Integrations** lists every connected company for a provider that keys connections on the account, each with its own status, health line, Details and Disconnect. **Connect another company** opens the consent dialog again. Its copy says that each link connects one company, so the bureau mints a link per client.
+  - **Disconnect** names the company and revokes only that company's connection. The un-addressed route still refuses when several companies are connected.
+  - **The account Integrations page** has **Connect another** for such a provider, and its app picker no longer says a new company rotates the existing connection.
+  - **Routes:** `GET /api/apps/:scopeId/integrations` returns `connections` (every live row, newest first) and `multiAccount` beside the unchanged `connection`. `DELETE …/integrations/:provider/connections/:connectionId`, `POST …/connections/:connectionId/verify` and `GET …/connections/:connectionId/activity` address one connection. The id must be one of this app's live connections for that provider, or the route answers 404.
+
+### Patch Changes
+
+- f46de4a: The Callout demo vertical is removed. The dashboard catalog no longer offers Callout:
+  its builtin row is retired the way Meridian's and Manyfold's were — installs are blocked
+  and it is unlisted, while any existing app keeps serving. Locally, `pnpm dev` now runs
+  the standalone control plane and the console; `pnpm dev:connected` and
+  `pnpm callout-demo` are gone. The docs no longer describe Callout as a demo; its original
+  concept and test-run spec are kept as historical RFCs.
+- Updated dependencies [32df62b]
+- Updated dependencies [6154fd9]
+- Updated dependencies [6d49012]
+- Updated dependencies [55e6241]
+- Updated dependencies [13a2067]
+- Updated dependencies [72f8e92]
+- Updated dependencies [100b47c]
+- Updated dependencies [d42bb2b]
+- Updated dependencies [e5bd928]
+- Updated dependencies [ae80b0d]
+- Updated dependencies [a1f40e5]
+- Updated dependencies [0e3d406]
+- Updated dependencies [fed1f3c]
+- Updated dependencies [5405401]
+- Updated dependencies [655141a]
+- Updated dependencies [f1290ea]
+- Updated dependencies [ced5130]
+  - @substrat-run/contracts@0.140.0
+  - @substrat-run/model-view@0.2.44
+
 ## 0.16.16
 
 ### Patch Changes

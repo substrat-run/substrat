@@ -1,5 +1,44 @@
 # @substrat-run/vertical-auth
 
+## 0.21.0
+
+### Minor Changes
+
+- 0e3d406: - kernel: `checkedWithin(entity, permission)` narrows a live read to one root, gated by the subscriber's own check on that root rather than on each row. The check runs at the handshake (`403`, `x-substrat-live: forbidden`) and again on every pass that has something beneath the root to announce. A withdrawn grant, or a root moved out of the grant's reach, closes the socket before anything is sent. Frames are bare nudges, as for `vouchedWithin`. Use it whenever there is a grant to check; `vouchedWithin` stays for a subscriber with none.
+  - adapter-cloudflare: the scope's fan-out honours `checkedWithin`, asking each socket's gate at most once per pass and only when a row beneath its root is about to be announced.
+  - kernel: `subscribe` takes `expiresAt`, the instant the caller's credential ends. The scope refuses a handshake past it and closes the socket (`1008`) on its first pass past it, before sending anything, or at its own alarm on a scope nobody writes to. An expired socket never counts against a principal's socket limit. One principal may hold `LIVE_SOCKETS_PER_PRINCIPAL` (8) sockets on a scope; the next is closed `LIVE_CLOSE.tooMany` (`4429`), which a client should read as "poll". A `checkedWithin` gate is asked once per principal and root per pass, however many sockets share it.
+  - oidc-rp: `verifySessionEnvelope` returns a session's user and its expiry.
+  - vertical-auth: `AuthSubject.expiresAt` carries a session cookie's or a bearer's `exp`.
+  - contracts: `LiveRefusal` gains `'forbidden'`.
+  - ticket0: the portal's conversation view keeps itself current. A staff reply now shows up without a reload, pushed over `GET /api/conversations/:id/live` where the desk can push, and polled every 10s where it cannot. A live socket now closes when the session that opened it ends, and signing out ends every feed the page holds.
+
+### Patch Changes
+
+- Updated dependencies [35dc72e]
+- Updated dependencies [32df62b]
+- Updated dependencies [6154fd9]
+- Updated dependencies [6d49012]
+- Updated dependencies [55e6241]
+- Updated dependencies [13a2067]
+- Updated dependencies [7b15101]
+- Updated dependencies [72f8e92]
+- Updated dependencies [100b47c]
+- Updated dependencies [d42bb2b]
+- Updated dependencies [e5bd928]
+- Updated dependencies [b180d3e]
+- Updated dependencies [07388df]
+- Updated dependencies [ae80b0d]
+- Updated dependencies [a1f40e5]
+- Updated dependencies [0e3d406]
+- Updated dependencies [fed1f3c]
+- Updated dependencies [5405401]
+- Updated dependencies [655141a]
+- Updated dependencies [f1290ea]
+- Updated dependencies [ced5130]
+  - @substrat-run/kernel@0.140.0
+  - @substrat-run/contracts@0.140.0
+  - @substrat-run/oidc-rp@0.11.0
+
 ## 0.20.0
 
 ### Minor Changes
