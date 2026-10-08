@@ -62,7 +62,13 @@
         "avatar_url",
         "display_name",
         "signature"
-      ]
+      ],
+      "erasure": {
+        "mode": "blank",
+        "subjects": [
+          "principal"
+        ]
+      }
     },
     "aiTurn": {
       "table": "ticket0_ai_turns",
@@ -161,7 +167,10 @@
       ],
       "erasable": [
         "error"
-      ]
+      ],
+      "erasure": {
+        "mode": "custom"
+      }
     },
     "behaviourRun": {
       "table": "ticket0_behaviour_runs",
@@ -327,7 +336,14 @@
       ],
       "outsideText": [
         "external_id"
-      ]
+      ],
+      "erasure": {
+        "mode": "blank",
+        "subjects": [
+          "id",
+          "principal"
+        ]
+      }
     },
     "conversation": {
       "table": "ticket0_conversations",
@@ -773,7 +789,10 @@
       ],
       "erasable": [
         "comment"
-      ]
+      ],
+      "erasure": {
+        "mode": "custom"
+      }
     },
     "deskSettings": {
       "table": "ticket0_desk_settings",
@@ -1245,7 +1264,14 @@
       "outsideText": [
         "email_in_reply_to",
         "email_message_id"
-      ]
+      ],
+      "erasure": {
+        "mode": "blank",
+        "subjects": [
+          "author_contact_id",
+          "author_principal"
+        ]
+      }
     },
     "notification": {
       "table": "ticket0_notifications",
@@ -1400,7 +1426,13 @@
       "erasable": [
         "body",
         "title"
-      ]
+      ],
+      "erasure": {
+        "mode": "delete",
+        "subjects": [
+          "owner"
+        ]
+      }
     },
     "savedReplyFolder": {
       "table": "ticket0_saved_reply_folders",
@@ -1534,7 +1566,13 @@
       "erasable": [
         "email",
         "note"
-      ]
+      ],
+      "erasure": {
+        "mode": "delete",
+        "subjects": [
+          "id"
+        ]
+      }
     },
     "usageRate": {
       "table": "ticket0_usage_rates",

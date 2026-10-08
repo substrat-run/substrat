@@ -1051,7 +1051,8 @@ describe('migration 0021 on an existing desk', () => {
         m.manifest.id === ticket0Manifest.id
           ? {
               ...m,
-              manifest: { ...m.manifest, lists: listsBefore0021(listsBefore0027(m.manifest.lists ?? [])) },
+              manifest: { ...m.manifest, erasure: undefined, lists: listsBefore0021(listsBefore0027(m.manifest.lists ?? [])) },
+              onSubjectErased: undefined,
               migrations: (m.migrations ?? []).filter((x) => x.version <= '0020'),
             }
           : m,

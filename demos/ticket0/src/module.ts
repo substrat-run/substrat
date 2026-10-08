@@ -44,6 +44,7 @@ import {
   MAX_SEARCH_LIMIT,
   ulid,
   type ModuleRegistration,
+  type OnSubjectErased,
   type OperationContext,
   type OperationHandler,
   type SqlValue,
@@ -1372,9 +1373,8 @@ function attachmentLine(a: { filename: string; contentType: string; sizeBytes: n
  *
  * The filenames are the customer's words, and this note holds them exactly as every
  * other message holds a body: `message.erasable` names `body_text`, which is what keeps
- * it off every event (`shredSubject` redacts the outbox, never a vertical's own table),
- * and it is also why this note emits no event of its own. Whatever erases a customer's
- * messages from this desk reaches the note on the same terms — no better, no worse.
+ * it off every event, and it is also why this note emits no event of its own. A
+ * subject erasure blanks it with the customer's other authored messages.
  */
 function droppedAttachmentsNote(
   attachments: readonly { filename: string; contentType: string; sizeBytes: number }[],
@@ -7858,6 +7858,49 @@ const HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** And names this many of the newest failures. Enough to see a pattern; not a log. */
 const HEALTH_RECENT = 10;
 
+/**
+ * A contact can be erased by its row id or its principal. Resolve both to contact ids
+ * before following authored messages and conversation-linked rows. An explicit message
+ * author owns that message even inside another contact's conversation.
+ */
+const ticket0SubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
+  const contactIds = 'SELECT id FROM ticket0_contacts WHERE id = ? OR principal = ?';
+  const conversationIds = `SELECT id FROM ticket0_conversations
+    WHERE contact_id IN (${contactIds})`;
+  const args = [subjectId, subjectId];
+
+  const authoredMessages = `FROM ticket0_messages
+    WHERE author_kind = 'contact' AND author_contact_id IN (${contactIds})
+      AND (body_text != '' OR body_html IS NOT NULL)`;
+  if (ctx.sql.query(`SELECT 1 ${authoredMessages} LIMIT 1`, args).length > 0) {
+    ctx.sql.exec(`UPDATE ticket0_messages SET body_text = '', body_html = NULL
+      WHERE id IN (SELECT id ${authoredMessages})`, args);
+  }
+
+  const oldMessages = `FROM ticket0_messages
+    WHERE author_kind = 'contact' AND author_contact_id IS NULL
+      AND conversation_id IN (${conversationIds})
+      AND (body_text != '' OR body_html IS NOT NULL)`;
+  if (ctx.sql.query(`SELECT 1 ${oldMessages} LIMIT 1`, args).length > 0) {
+    ctx.sql.exec(`UPDATE ticket0_messages SET body_text = '', body_html = NULL
+      WHERE id IN (SELECT id ${oldMessages})`, args);
+  }
+
+  const csat = `FROM ticket0_csat WHERE comment IS NOT NULL
+    AND conversation_id IN (${conversationIds})`;
+  if (ctx.sql.query(`SELECT 1 ${csat} LIMIT 1`, args).length > 0) {
+    ctx.sql.exec(`UPDATE ticket0_csat SET comment = NULL
+      WHERE conversation_id IN (SELECT conversation_id ${csat})`, args);
+  }
+
+  const turns = `FROM ticket0_ai_turns WHERE error IS NOT NULL
+    AND conversation_id IN (${conversationIds})`;
+  if (ctx.sql.query(`SELECT 1 ${turns} LIMIT 1`, args).length > 0) {
+    ctx.sql.exec(`UPDATE ticket0_ai_turns SET error = NULL
+      WHERE id IN (SELECT id ${turns})`, args);
+  }
+};
+
 export const ticket0Module: ModuleRegistration = {
   manifest: ticket0Manifest,
   migrations: ticket0Migrations,
@@ -7870,5 +7913,6 @@ export const ticket0Module: ModuleRegistration = {
   // Without this the `concurrency` on the saved-reply operations is a promise
   // nothing keeps — the header arrives, nothing compares it, and every write lands.
   operationConcurrency: operationConcurrencyOf(ticket0Operations),
+  onSubjectErased: ticket0SubjectErased,
   operations: operations as ModuleRegistration['operations'],
 };
