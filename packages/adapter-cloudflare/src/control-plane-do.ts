@@ -49,6 +49,7 @@ import {
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
   PEER_SWITCHES_DDL,
+  PEER_BINDINGS_DDL,
   SWITCH_OWED_DDL,
   clearSwitchOwed,
   markSwitchOwed,
@@ -86,6 +87,7 @@ import {
   ulid,
   isPrimaryScopeRow,
   resolveVerticalInstanceFrom,
+  resolvePeerInstanceFrom,
   LEGACY_SCOPE_ROWS_BACKFILL,
   loadDirectoryDump,
   type ImpersonationRow,
@@ -124,6 +126,7 @@ import type {
   Tenant,
   TenantId,
   TenantStatus,
+  PeerInstanceResolution,
   VerticalResolution,
   ErrorCode,
 } from '@substrat-run/contracts';
@@ -340,7 +343,7 @@ export type PeerCallerState = 'ok' | 'unknown' | 'not-primary' | 'inactive';
 /** What `peerCallTarget` answers: the caller's standing, and the resolved target (or why not). */
 export interface PeerCallTargetRow {
   caller: { state: PeerCallerState; status: string | null };
-  outcome: 'resolved' | 'not-installed' | 'ambiguous';
+  outcome: 'resolved' | 'not-installed' | 'ambiguous' | 'bound-unavailable';
   /** How many live instances, when `ambiguous`. Zero otherwise. */
   count: number;
   target: PeerCandidateRow | null;
@@ -776,6 +779,7 @@ const DIRECTORY_DDL = `
     serving_ref TEXT,
     created_at TEXT NOT NULL
   );
+  ${PEER_BINDINGS_DDL}
   CREATE TABLE IF NOT EXISTS hostnames (
     hostname      TEXT PRIMARY KEY,
     tenant_id     TEXT NOT NULL,
@@ -1962,6 +1966,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_system_switches', // #1674: the schedule switch's record, per scope
       '_substrat_membership_fences', // #1184: the latest removal, per principal
       '_substrat_peer_switches', // #2029: the peer switch's record, per scope
+      'peer_bindings', // #1720: a tenant's explicit caller-to-target choices
       '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
       '_substrat_findings', // #1748: the tenant's findings
       '_substrat_finding_rules', // #1748: the tenant's suppress rules
@@ -2524,6 +2529,9 @@ export class ControlPlaneDO extends DurableObject {
       } else {
         this.sql.exec('UPDATE scopes SET status = ? WHERE scope_id = ?', to, scopeId);
       }
+      if (to === 'archived' || to === 'reaped') {
+        this.sql.exec('UPDATE peer_bindings SET invalidated = 1 WHERE tenant_id = ? AND target_scope_id = ?', tenantId, scopeId);
+      }
       if (to === 'reaped') {
         forgetSwitchesOf(this.kernelSql, scopeId);
         this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
@@ -2685,15 +2693,88 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
+  /** Binding is read at call execution, so a queued invoke follows the current explicit choice. */
+  resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string): PeerInstanceResolution {
+    const rows = this.sql.exec(
+      `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
+       WHERE tenant_id = ? AND vertical = ?`, tenantId, vertical,
+    ).toArray() as unknown as {
+      scope_id: string; tenant_id: string; vertical: string | null; status: string;
+      kind: string | null; forked_from: string | null;
+    }[];
+    const binding = this.sql.exec(
+      'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+      tenantId, callerScopeId, vertical,
+    ).toArray()[0] as { target_scope_id: string; invalidated: number } | undefined;
+    return resolvePeerInstanceFrom(rows.map((r) => ({
+      id: r.scope_id as ScopeId,
+      tenantId: r.tenant_id as TenantId,
+      vertical: r.vertical,
+      status: r.status as ScopeStatus,
+      kind: r.kind ?? '',
+      forkedFrom: r.forked_from as ScopeId | null,
+    })), tenantId as TenantId, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
+  }
+
+  peerBinding(tenantId: string, callerScopeId: string, vertical: string) {
+    return this.sql.exec(
+      'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+      tenantId, callerScopeId, vertical,
+    ).toArray()[0] as { target_scope_id: string; invalidated: number } | undefined;
+  }
+
+  peerBindings(tenantId: string, callerScopeId: string) {
+    return this.sql.exec(
+      'SELECT vertical, target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? ORDER BY vertical',
+      tenantId, callerScopeId,
+    ).toArray() as { vertical: string; target_scope_id: string; invalidated: number }[];
+  }
+
+  /** Directory write and endpoint checks share this DO's serialized unit. */
+  setPeerBinding(tenantId: string, callerScopeId: string, vertical: string, targetScopeId: string | null) {
+    const caller = this.sql.exec(
+      'SELECT tenant_id, status, kind, forked_from FROM scopes WHERE scope_id = ?', callerScopeId,
+    ).toArray()[0] as { tenant_id: string; status: string; kind: string | null; forked_from: string | null } | undefined;
+    if (!caller || caller.tenant_id !== tenantId || caller.status !== 'active' || !isPrimaryScopeRow(caller)) {
+      return { ok: false as const, code: 'not_found' as const, message: 'calling app is not a live primary scope in this tenant' };
+    }
+    if (targetScopeId !== null) {
+      const target = this.sql.exec(
+        'SELECT tenant_id, vertical, status, kind, forked_from FROM scopes WHERE scope_id = ?', targetScopeId,
+      ).toArray()[0] as { tenant_id: string; vertical: string | null; status: string; kind: string | null; forked_from: string | null } | undefined;
+      if (!target || target.tenant_id !== tenantId || target.vertical !== vertical || target.status !== 'active' || !isPrimaryScopeRow(target)) {
+        return { ok: false as const, code: 'not_found' as const, message: 'target is not a live primary instance of this vertical in this tenant' };
+      }
+    }
+    const before = this.peerBinding(tenantId, callerScopeId, vertical);
+    const previous = before?.target_scope_id ?? null;
+    if (previous === targetScopeId && before?.invalidated !== 1) return { ok: true as const, changed: false, previous };
+    if (targetScopeId === null) {
+      this.sql.exec(
+        'DELETE FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+        tenantId, callerScopeId, vertical,
+      );
+    } else {
+      this.sql.exec(
+        `INSERT INTO peer_bindings (tenant_id, caller_scope_id, vertical, target_scope_id)
+         VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, caller_scope_id, vertical)
+         DO UPDATE SET target_scope_id = excluded.target_scope_id, invalidated = 0`,
+        tenantId, callerScopeId, vertical, targetScopeId,
+      );
+    }
+    return { ok: true as const, changed: true, previous };
+  }
+
   /**
    * Everything the router needs to place ONE peer call (#1706), in one round trip: the
    * CALLER's own scope record, and the target instance of `vertical` in that tenant with the
    * script and dispatch parameters that instance runs under.
    *
-   * One read rather than three, because this sits on a request path. The caller's record is
+   * One directory RPC and two SQL reads, because this sits on a request path. The binding
+   * joins the caller read, so even an unbound singleton adds no round trip. The caller's record is
    * what decides whether it may call at all — live, primary, and the vertical it claims — and
    * it is read HERE rather than inferred from routing, so this path does not inherit #1713.
-   * The target side applies the kernel's one rule (`resolveVerticalInstanceFrom`), the same
+   * The target side applies the kernel's one rule (`resolvePeerInstanceFrom`), the same
    * rule the pure host and the local broker apply.
    */
   peerCallTarget(
@@ -2704,12 +2785,19 @@ export class ControlPlaneDO extends DurableObject {
   ): PeerCallTargetRow {
     const caller = this.sql
       .exec(
-        `SELECT s.tenant_id, s.vertical, s.status, s.kind, s.forked_from, t.status AS tenant_status
-           FROM scopes s LEFT JOIN tenants t ON t.tenant_id = s.tenant_id WHERE s.scope_id = ?`,
+        `SELECT s.tenant_id, s.vertical, s.status, s.kind, s.forked_from,
+                t.status AS tenant_status, pb.target_scope_id AS bound_target_scope_id,
+                pb.invalidated AS binding_invalidated
+           FROM scopes s
+           LEFT JOIN tenants t ON t.tenant_id = s.tenant_id
+           LEFT JOIN peer_bindings pb ON pb.tenant_id = s.tenant_id
+             AND pb.caller_scope_id = s.scope_id AND pb.vertical = ?
+          WHERE s.scope_id = ?`,
+        vertical,
         callerScopeId,
       )
       .toArray()[0] as
-      | { tenant_id: string; vertical: string | null; status: string; tenant_status: string | null; kind: string | null; forked_from: string | null }
+      | { tenant_id: string; vertical: string | null; status: string; tenant_status: string | null; kind: string | null; forked_from: string | null; bound_target_scope_id: string | null; binding_invalidated: number | null }
       | undefined;
     const candidates = this.sql
       .exec(
@@ -2730,7 +2818,7 @@ export class ControlPlaneDO extends DurableObject {
         vertical,
       )
       .toArray() as unknown as PeerCandidateRow[];
-    const resolution = resolveVerticalInstanceFrom(
+    const resolution = resolvePeerInstanceFrom(
       candidates.map((r) => ({
         id: r.scope_id as ScopeId,
         tenantId: r.tenant_id as TenantId,
@@ -2741,6 +2829,8 @@ export class ControlPlaneDO extends DurableObject {
       })),
       tenantId as TenantId,
       vertical,
+      (caller?.bound_target_scope_id as ScopeId | undefined) ?? null,
+      caller?.binding_invalidated === 1,
     );
     const target =
       resolution.outcome === 'resolved'
@@ -3107,6 +3197,7 @@ export class ControlPlaneDO extends DurableObject {
    */
   deleteScopeDirectory(scopeId: string): void {
     this.ctx.storage.transactionSync(() => {
+      this.sql.exec('UPDATE peer_bindings SET invalidated = 1 WHERE target_scope_id = ?', scopeId);
       this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
       forgetSwitchesOf(this.kernelSql, scopeId);
       this.forgetLifecycleDeliveries('scope_id = ?', scopeId);

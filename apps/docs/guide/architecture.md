@@ -196,6 +196,16 @@ idempotency key; inspect the platform request for delivery status.
 Both hosted legs are gated by the same `calls` declaration, and the caller on both is the scope the
 platform found the work in — never anything the request or the payload said.
 
+If a team runs multiple live instances of a target vertical, a team admin chooses the target on
+the **calling app's** page. The choice belongs to that caller instance: another instance of the
+same caller has its own choice. Clearing it restores the ambiguous refusal. A suspended bound
+target refuses while suspended and works again after it is restored. An archived or deleted
+bound target remains an unavailable choice until the admin clears or changes it; the platform
+never substitutes another instance. A queued `peer-invoke` names the vertical, and resolves its
+target **when the drain executes it**. A binding changed after enqueue therefore changes where
+that queued call goes. Archiving invalidates a choice durably; unarchiving the same target does
+not reactivate that choice until the admin binds it again.
+
 ### The refusals, and what each means
 
 | What you see | What happened |
@@ -204,7 +214,8 @@ platform found the work in — never anything the request or the payload said.
 | `403` naming `substrat.calls` | The caller did not declare this target. Add it and push. |
 | `403` naming the peer's slug | The target's `peers` does not name this caller, or names it without the operation. |
 | `403` "switched off" | A tenant pulled the kill switch on this peer. Only restoring it gives access back. |
-| `409` "runs N instances … bind the instance first" | The tenant runs two live instances of the target, so "the instance of X" has no single answer. Instance binding is not available yet ([#1720](https://github.com/substrat-run/substrat/issues/1720)); keep one active primary target. |
+| `409` "runs N instances … bind the instance first" | The tenant runs two live instances of the target. Choose one on the calling app's page. |
+| `409` "bound instance … unavailable" | The explicit choice no longer names a live target. Restore a suspended target, or clear or change the choice. |
 | `403` from a preview | A preview never makes peer calls. Run the two locally against the pure host instead. |
 
 ### A complete local example

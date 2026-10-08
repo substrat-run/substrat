@@ -1339,6 +1339,8 @@ export interface AppScheduleRow {
 export type DeclaredCallRow =
   | { state: 'not-installed'; vertical: string }
   | { state: 'ambiguous'; vertical: string; count: number }
+  | { state: 'bound-unavailable'; vertical: string }
+  | { state: 'not-declared'; vertical: string }
   | { state: 'allowed'; vertical: string; scopeId: string }
   | {
       state: 'switched-off';
@@ -1361,6 +1363,7 @@ export interface AppPeersView {
   /** What the running version declares it calls. `null` = a version that predates the field. */
   declares: string[] | null;
   calls: DeclaredCallRow[];
+  bindingChoices: { vertical: string; boundScopeId: string | null; invalidated: boolean; candidates: { scopeId: string; name: string }[] }[];
   /** The mirror: who may call in here. `null` when the read itself failed. */
   callers: PeerCallerRow[] | null;
   callersError: string | null;
@@ -1763,6 +1766,11 @@ export const api = {
   /** Schedule health for the app's running version (#1232) — null schedules hides the panel. */
   appSchedules: (scopeId: string) => call<AppSchedulesView>(`/apps/${encodeURIComponent(scopeId)}/schedules`),
   appPeers: (scopeId: string) => call<AppPeersView>(`/apps/${encodeURIComponent(scopeId)}/peers`),
+  setAppPeerBinding: (scopeId: string, vertical: string, targetScopeId: string | null) =>
+    call<{ changed: boolean; previous: string | null; operationId: string; auditWarning?: string }>(
+      `/apps/${encodeURIComponent(scopeId)}/peers/binding`, {
+        method: 'PUT', body: JSON.stringify({ vertical, targetScopeId }),
+      }),
   switchAppPeer: (scopeId: string, vertical: string, to: 'on' | 'off', reason: string) =>
     call<{ changed: boolean; auditWarning?: string }>(`/apps/${encodeURIComponent(scopeId)}/peers/switch`, {
       method: 'POST',

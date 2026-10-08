@@ -61,6 +61,11 @@ describe('targetScopeOf', () => {
 });
 
 describe('declaredCallState', () => {
+  it('keeps an old explicit choice visible after the caller stops declaring its target', () => {
+    const row = { state: 'not-declared' as const, vertical: 'acme/crm' };
+    expect(declaredCallLine(row)).toMatch(/old binding can be cleared/);
+    expect(declaredCallNeedsAttention(row)).toBe(false);
+  });
   const s = scope();
   const target = { scopeId: s.id };
 

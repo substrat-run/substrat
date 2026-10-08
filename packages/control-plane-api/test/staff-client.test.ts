@@ -67,6 +67,8 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
   switchScheduleOff: [(c) => c.switchScheduleOff(T as never, S as never, 'm' as never, 'why'), 'DELETE', `/tenants/${T}/scopes/${S}/system-grants`, { moduleId: 'm', reason: 'why' }],
   switchScheduleOn: [(c) => c.switchScheduleOn(T as never, S as never, 'm' as never, 'why'), 'POST', `/tenants/${T}/scopes/${S}/system-grants`, { moduleId: 'm', reason: 'why' }],
   peerGrantsStatus: [(c) => c.peerGrantsStatus(T as never, S as never), 'GET', `/tenants/${T}/scopes/${S}/peer-grants`],
+  peerBinding: [(c) => c.peerBinding(T as never, S as never, 'acme/crm'), 'GET', `/tenants/${T}/scopes/${S}/peer-bindings?vertical=acme%2Fcrm`],
+  peerBindings: [(c) => c.peerBindings(T as never, S as never), 'GET', `/tenants/${T}/scopes/${S}/peer-bindings`],
   switchPeerOff: [(c) => c.switchPeerOff(T as never, S as never, 'v', 'why'), 'DELETE', `/tenants/${T}/scopes/${S}/peer-grants`, { vertical: 'v', reason: 'why' }],
   switchPeerOn: [(c) => c.switchPeerOn(T as never, S as never, 'v', 'why'), 'POST', `/tenants/${T}/scopes/${S}/peer-grants`, { vertical: 'v', reason: 'why' }],
   crossVerticalEdges: [(c) => c.crossVerticalEdges(T as never), 'GET', `/tenants/${T}/cross-vertical/edges`],

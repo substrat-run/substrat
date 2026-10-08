@@ -39,6 +39,7 @@ import type {
   DelegatedReadRecord,
   OwnerTransferAudit,
   MemberChangeAudit,
+  PeerBindingAudit,
   CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
@@ -84,6 +85,8 @@ import type {
   PeerSwitchResult,
   VerticalCaller,
   VerticalResolution,
+  PeerBinding,
+  PeerInstanceResolution,
   CreateOrgInput,
   Node,
   Org,
@@ -2825,6 +2828,23 @@ export interface HostAdmin {
    */
   resolveVerticalInstance(tenantId: TenantId, vertical: string): Promise<VerticalResolution>;
 
+  /** Resolve for one caller at execution time. An explicit stale binding refuses without fallback. */
+  resolvePeerInstance(tenantId: TenantId, callerScopeId: ScopeId, vertical: string): Promise<PeerInstanceResolution>;
+
+  /** Read the caller's explicit choice, if any. Tenant-scoped and recorded as an admin read. */
+  peerBinding(actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string): Promise<PeerBinding | undefined>;
+  /** Every explicit target choice this calling scope currently holds. */
+  peerBindings(actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId): Promise<PeerBinding[]>;
+
+  /** Bind or clear this caller's target. Both endpoints are checked in the directory at write. */
+  setPeerBinding(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    callerScopeId: ScopeId,
+    vertical: string,
+    targetScopeId: ScopeId | null,
+  ): Promise<{ changed: boolean; previous: ScopeId | null }>;
+
   // -- tenant registry (control-plane.md §4.1) -------------------------------
 
   /**
@@ -4149,6 +4169,9 @@ export interface HostAdmin {
    * cannot be written.
    */
   recordMemberChange(actor: PlatformActorId, entry: MemberChangeAudit): Promise<void>;
+
+  /** One intent or outcome of a tenant's peer-instance binding change (#1720). */
+  recordPeerBindingChange(actor: PlatformActorId, entry: PeerBindingAudit): Promise<void>;
 
   /**
    * Close one audited change whose intent has no outcome (#2064): in ONE transaction, read the

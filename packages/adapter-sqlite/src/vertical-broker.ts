@@ -17,7 +17,7 @@
  * process the harness IS the whole trust domain — the same stance as `@substrat-run/dev-issuer`'s
  * `/dev/token`. What the broker keeps identical to production is everything else: the caller must
  * be a live, primary instance of its vertical in the tenant, the target is resolved by the
- * kernel's one rule (`resolveVerticalInstance`: same tenant, primary, active, exactly one), and the
+ * kernel's one rule (`resolvePeerInstanceFrom`: same tenant, primary, active, bound or exactly one), and the
  * call goes through the target's peer door (`getVerticalScope`), whose admission and checks are
  * the ones a hosted call meets. On the hosted path the router plays this part, from facts the
  * calling deployment cannot influence.
@@ -36,7 +36,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { isPrimaryScope, type InvokeOptions } from '@substrat-run/kernel';
+import { isPrimaryScope, resolvePeerInstanceFrom, type InvokeOptions } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from './index.js';
 
 /** The platform actor the broker reads the directory as — the platform, on the pure host. */
@@ -56,7 +56,7 @@ export interface LocalVerticalClient {
    * Invoke `operation` on the instance of vertical `target` in the caller's tenant, as the
    * caller. Throws `forbidden` when the caller is not a live primary instance or the target's
    * door refuses it, `not_found` when the target is not installed in the tenant, `conflict`
-   * when the tenant runs more than one instance of it.
+   * when the tenant runs more than one instance without a choice, or a choice is unavailable.
    */
   invoke<O = unknown>(target: string, operation: string, input?: unknown, options?: InvokeOptions): Promise<O>;
 }
@@ -64,6 +64,11 @@ export interface LocalVerticalClient {
 export interface LocalVerticalBroker {
   /** A client that speaks as `from` — the harness's own scope, and only that. */
   clientFor(from: LocalVerticalCallerRef): LocalVerticalClient;
+  /**
+   * Harness-owned choice across the caller and target hosts' separate directories.
+   * Choices are in memory and disappear when this broker is recreated or the process restarts.
+   */
+  setBinding(from: LocalVerticalCallerRef, target: string, targetScopeId: ScopeId | null): Promise<void>;
 }
 
 /**
@@ -75,8 +80,43 @@ export interface LocalVerticalBroker {
 export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteScopeHost>>): LocalVerticalBroker {
   const hostOf = (vertical: string): SqliteScopeHost | undefined =>
     Object.prototype.hasOwnProperty.call(hosts, vertical) ? hosts[vertical] : undefined;
+  // The broker is one in-process harness spanning hosts; no individual host directory has
+  // both endpoints. Production's directory keeps this row durably instead.
+  const bindings = new Map<string, { targetScopeId: ScopeId; invalidated: boolean; archiveRevision: string | null }>();
+  const bindingKey = (from: LocalVerticalCallerRef, target: string) =>
+    JSON.stringify([from.tenantId, from.scopeId, target]);
+  const archiveRevision = async (host: SqliteScopeHost, tenantId: TenantId, scopeId: ScopeId) =>
+    (await host.admin.auditLog(LOCAL_BROKER_ACTOR, {
+      tenantId, scopeId, action: ['archiveScope', 'reapScope', 'deleteSnapshot'], order: 'desc', limit: 1,
+    }))[0]?.id ?? null;
 
   return {
+    async setBinding(from, target, targetScopeId) {
+      const caller = {
+        vertical: verticalSlug.parse(from.vertical),
+        tenantId: tenantIdOf.parse(from.tenantId),
+        scopeId: scopeIdOf.parse(from.scopeId),
+      };
+      const target_ = verticalSlug.parse(target);
+      const selected = targetScopeId === null ? null : scopeIdOf.parse(targetScopeId);
+      const record = await hostOf(caller.vertical)?.admin.getScopeRecord(LOCAL_BROKER_ACTOR, caller.tenantId, caller.scopeId);
+      if (!record || record.vertical !== caller.vertical || record.status !== 'active' || !isPrimaryScope(record)) {
+        throw substratError('not_found', 'calling app is not a live primary scope in this tenant');
+      }
+      if (selected !== null) {
+        const candidate = await hostOf(target_)?.admin.getScopeRecord(LOCAL_BROKER_ACTOR, caller.tenantId, selected);
+        if (!candidate || candidate.vertical !== target_ || candidate.status !== 'active' || !isPrimaryScope(candidate)) {
+          throw substratError('not_found', 'target is not a live primary instance of this vertical in this tenant');
+        }
+      }
+      const key = bindingKey(caller, target_);
+      if (selected === null) bindings.delete(key);
+      else bindings.set(key, {
+        targetScopeId: selected,
+        invalidated: false,
+        archiveRevision: await archiveRevision(hostOf(target_)!, caller.tenantId, selected),
+      });
+    },
     clientFor(from) {
       const caller = {
         vertical: verticalSlug.parse(from.vertical),
@@ -110,11 +150,27 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
           // 2. The target, by slug, in the CALLER's tenant only — the kernel's one rule.
           const target_ = verticalSlug.parse(target);
           const targetHost = hostOf(target_);
-          const resolution = targetHost
-            ? await targetHost.admin.resolveVerticalInstance(caller.tenantId, target_)
-            : ({ outcome: 'not-installed', tenantId: caller.tenantId, vertical: target_ } as const);
+          const scopes = targetHost
+            ? await targetHost.admin.listScopes(LOCAL_BROKER_ACTOR, { tenantId: caller.tenantId, vertical: target_ })
+            : [];
+          const binding = bindings.get(bindingKey(caller, target_));
+          // The immutable audit ID catches even an archive and unarchive between calls.
+          // Suspension changes no archive revision, so it refuses only while suspended.
+          if (binding && !binding.invalidated) {
+            const chosen = scopes.find((scope) => scope.id === binding.targetScopeId);
+            if (!chosen || chosen.status === 'archived' || !targetHost ||
+              await archiveRevision(targetHost, caller.tenantId, binding.targetScopeId) !== binding.archiveRevision) {
+              binding.invalidated = true;
+            }
+          }
+          const resolution = resolvePeerInstanceFrom(
+            scopes, caller.tenantId, target_, binding?.targetScopeId ?? null, binding?.invalidated ?? false,
+          );
           if (resolution.outcome === 'not-installed') {
             throw substratError('not_found', `vertical '${target_}' is not installed in this tenant`);
+          }
+          if (resolution.outcome === 'bound-unavailable') {
+            throw substratError('conflict', `the bound instance of '${target_}' is unavailable; rebind or clear this app's peer binding`);
           }
           if (resolution.outcome === 'ambiguous') {
             throw substratError(

@@ -38,6 +38,7 @@ import type {
   PreviewAuth,
   PrincipalId,
   PeerGrantsStatusEntry,
+  PeerBinding,
   EdgeHealthReport,
   FindingEntry,
   FindingKind,
@@ -2103,6 +2104,18 @@ export class TenantNarrowedControlPlane {
    */
   peerGrants(scopeId: ScopeId): Promise<PeerGrantsStatusEntry[]> {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-grants`);
+  }
+
+  /** All retained choices, including targets no longer declared by the current version. */
+  peerBindings(scopeId: ScopeId): Promise<PeerBinding[]> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-bindings`);
+  }
+
+  /** Set or clear the choice. A null target explicitly returns to slug resolution. */
+  setPeerBinding(scopeId: ScopeId, vertical: string, targetScopeId: ScopeId | null): Promise<AuditedAnswer & { changed: boolean; previous: ScopeId | null }> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/peer-bindings`, {
+      method: 'PUT', body: JSON.stringify({ vertical, targetScopeId }),
+    });
   }
 
   /** Move one peer's switch on a scope of this tenant (#1706). `reason` is required. */

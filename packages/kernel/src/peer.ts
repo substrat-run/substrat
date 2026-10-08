@@ -42,6 +42,8 @@ import {
   type PeerSpec,
   type Scope,
   type TenantId,
+  type ScopeId,
+  type PeerInstanceResolution,
   type VerticalCaller,
   type VerticalResolution,
 } from '@substrat-run/contracts';
@@ -59,6 +61,18 @@ import {
 
 export { PEER_SUBJECT_PREFIX, peerSubjectRef };
 
+/** Directory-owned, on both adapters. The row survives a target's lifecycle changes. */
+export const PEER_BINDINGS_DDL = `
+  CREATE TABLE IF NOT EXISTS peer_bindings (
+    tenant_id TEXT NOT NULL,
+    caller_scope_id TEXT NOT NULL,
+    vertical TEXT NOT NULL,
+    target_scope_id TEXT NOT NULL,
+    invalidated INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, caller_scope_id, vertical)
+  );
+  CREATE INDEX IF NOT EXISTS peer_bindings_target ON peer_bindings (target_scope_id);
+`;
 
 /** One peer vertical as every registered module declares it, together. */
 export interface PeerDeclaration {
@@ -242,4 +256,28 @@ export function resolveVerticalInstanceFrom(
   }
   if (matches.length === 0) return { outcome: 'not-installed', tenantId, vertical };
   return { outcome: 'ambiguous', tenantId, vertical, count: matches.length };
+}
+
+/**
+ * Resolve a peer call using the tenant's explicit choice, if any. Every caller of this rule
+ * supplies only scopes read from its own tenant; the predicate checks tenant and vertical again
+ * so a corrupt or forged binding cannot turn a foreign scope into a destination.
+ */
+export function resolvePeerInstanceFrom(
+  scopes: Iterable<VerticalInstanceCandidate>,
+  tenantId: TenantId,
+  vertical: string,
+  boundScopeId: ScopeId | null,
+  invalidated = false,
+): PeerInstanceResolution {
+  const candidates = [...scopes];
+  if (boundScopeId === null) return resolveVerticalInstanceFrom(candidates, tenantId, vertical);
+  if (invalidated) return { outcome: 'bound-unavailable', tenantId, vertical, targetScopeId: boundScopeId };
+  const target = candidates.find((scope) =>
+    scope.id === boundScopeId && scope.tenantId === tenantId && scope.vertical === vertical &&
+    scope.status === 'active' && isPrimaryScope(scope),
+  );
+  return target
+    ? { outcome: 'resolved', instance: { tenantId, scopeId: target.id, vertical } }
+    : { outcome: 'bound-unavailable', tenantId, vertical, targetScopeId: boundScopeId };
 }

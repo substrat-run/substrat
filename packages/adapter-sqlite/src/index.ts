@@ -219,6 +219,7 @@ import {
   delegatedReadRecord,
   ownerTransferAudit,
   memberChangeAudit,
+  peerBindingAudit,
   copyMarkAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
@@ -399,6 +400,7 @@ import {
   collectPeers,
   peerSeats,
   resolveVerticalInstanceFrom,
+  resolvePeerInstanceFrom,
   type PeerDeclarations,
   peerGrantsStatus,
   systemGrantsStatus,
@@ -407,6 +409,7 @@ import {
   systemSwitchedOffMessage,
   tenantSystemSwitchedOffMessage,
   PEER_SWITCHES_DDL,
+  PEER_BINDINGS_DDL,
   SWITCH_OWED_DDL,
   SWITCH_FENCES_DDL,
   TABLE_OWNERS_DDL,
@@ -1997,6 +2000,7 @@ export class SqliteScopeHost implements ScopeHost {
         archived_at TEXT,
         created_at TEXT NOT NULL
       );
+      ${PEER_BINDINGS_DDL}
       -- The hostname map (K-26). A single environment-wide router resolves against
       -- this before dispatching to the vertical's worker.
       --
@@ -3908,8 +3912,11 @@ export class SqliteScopeHost implements ScopeHost {
     // orphaned bytes with no record (the §9 hazard).
     this.directory.prepare('DELETE FROM hostnames WHERE scope_id = ?').run(scopeId);
     rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
-    forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
-    this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
+    this.directory.transaction(() => {
+      this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE target_scope_id = ?').run(scopeId);
+      forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
+      this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
+    })();
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
       forkedFrom: rec.forkedFrom,
       forkedAt: rec.forkedAt,
@@ -7060,6 +7067,9 @@ export class SqliteScopeHost implements ScopeHost {
         } else {
           this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
         }
+        if (to === 'archived' || to === 'reaped') {
+          this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE tenant_id = ? AND target_scope_id = ?').run(tenantId, scopeId);
+        }
         if (to === 'reaped') forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
         // The audit target carries the scope's vertical (control-plane.md §4.4:
         // "vertical stays null until §4.2 lifecycle actions that name one"). It is
@@ -8118,6 +8128,78 @@ export class SqliteScopeHost implements ScopeHost {
           vertical,
         );
       },
+      resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
+        const binding = this.directory.prepare(
+          'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+        ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string; invalidated: number } | undefined;
+        const rows = this.directory.prepare(
+          `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
+           WHERE tenant_id = ? AND vertical = ?`,
+        ).all(tenantId, vertical) as {
+          scope_id: string; tenant_id: string; vertical: string | null; status: string;
+          kind: string | null; forked_from: string | null;
+        }[];
+        return resolvePeerInstanceFrom(rows.map((r) => ({
+          id: r.scope_id as ScopeId,
+          tenantId: r.tenant_id as TenantId,
+          vertical: r.vertical,
+          status: r.status as ScopeStatus,
+          kind: r.kind ?? '',
+          forkedFrom: r.forked_from as ScopeId | null,
+        })), tenantId, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
+      },
+      peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
+        const row = this.directory.prepare(
+          'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+        ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string; invalidated: number } | undefined;
+        this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
+        return row ? { tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id as ScopeId, invalidated: row.invalidated === 1 } : undefined;
+      },
+      peerBindings: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId) => {
+        const rows = this.directory.prepare(
+          'SELECT vertical, target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? ORDER BY vertical',
+        ).all(tenantId, callerScopeId) as { vertical: string; target_scope_id: string; invalidated: number }[];
+        this.recordAccess(actor, 'peerBindings', { tenantId, scopeId: callerScopeId }, null, rows.length);
+        return rows.map((r) => ({ tenantId, callerScopeId, vertical: r.vertical, targetScopeId: r.target_scope_id as ScopeId, invalidated: r.invalidated === 1 }));
+      },
+      setPeerBinding: async (_actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string, targetScopeId: ScopeId | null) =>
+        this.directory.transaction(() => {
+          const caller = this.directory.prepare(
+            'SELECT tenant_id, status, kind, forked_from FROM scopes WHERE scope_id = ?',
+          ).get(callerScopeId) as { tenant_id: string; status: string; kind: string | null; forked_from: string | null } | undefined;
+          if (!caller || caller.tenant_id !== tenantId || caller.status !== 'active' || !isPrimaryScopeRow(caller)) {
+            throw substratError('not_found', 'calling app is not a live primary scope in this tenant');
+          }
+          if (targetScopeId !== null) {
+            const target = this.directory.prepare(
+              'SELECT tenant_id, vertical, status, kind, forked_from FROM scopes WHERE scope_id = ?',
+            ).get(targetScopeId) as {
+              tenant_id: string; vertical: string | null; status: string;
+              kind: string | null; forked_from: string | null;
+            } | undefined;
+            if (!target || target.tenant_id !== tenantId || target.vertical !== vertical || target.status !== 'active' || !isPrimaryScopeRow(target)) {
+              throw substratError('not_found', 'target is not a live primary instance of this vertical in this tenant');
+            }
+          }
+          const key = [tenantId, callerScopeId, vertical] as const;
+          const before = this.directory.prepare(
+            'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+          ).get(...key) as { target_scope_id: string; invalidated: number } | undefined;
+          const previous = before?.target_scope_id as ScopeId | undefined;
+          if ((previous ?? null) === targetScopeId && before?.invalidated !== 1) return { changed: false, previous: previous ?? null };
+          if (targetScopeId === null) {
+            this.directory.prepare(
+              'DELETE FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
+            ).run(...key);
+          } else {
+            this.directory.prepare(
+              `INSERT INTO peer_bindings (tenant_id, caller_scope_id, vertical, target_scope_id)
+               VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, caller_scope_id, vertical)
+               DO UPDATE SET target_scope_id = excluded.target_scope_id, invalidated = 0`,
+            ).run(...key, targetScopeId);
+          }
+          return { changed: true, previous: previous ?? null };
+        })(),
       resolveHostname: async (raw: string) => {
         // The router's per-request read. No actor, not logged — same carve-out as
         // resolveIdentity (K-24): this is a machine path, not a staff read.
@@ -10064,6 +10146,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_system_switches', // #1674: the schedule switch's record, per scope
           '_substrat_membership_fences', // #1184: the latest removal, per principal
           '_substrat_peer_switches', // #2029: the peer switch's record, per scope
+          'peer_bindings', // #1720: a tenant's explicit caller-to-target choices
           '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
           '_substrat_findings', // #1748: the tenant's findings
           '_substrat_finding_rules', // #1748: the tenant's suppress rules
@@ -10851,6 +10934,10 @@ export class SqliteScopeHost implements ScopeHost {
       recordMemberChange: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
         this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
+      },
+      recordPeerBindingChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = peerBindingAudit.parse(entry);
+        this.recordAdmin(actor, 'setPeerBinding', { tenantId, scopeId }, null, after);
       },
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {
