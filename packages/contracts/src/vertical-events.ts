@@ -298,6 +298,12 @@ export const importCursorMoved = z.object({
     journal: z.number().int().nonnegative(),
     deliveries: z.number().int().nonnegative(),
   }),
+  /**
+   * #2114: present only when the move went through but its `applied` row could not be written
+   * to the admin log, as `SystemSwitchResult.auditWarning`. Still a success: the watermark moved,
+   * and the scheduled settle closes the intent as `unknown`.
+   */
+  auditWarning: z.string().optional(),
 });
 export type ImportCursorMoved = z.infer<typeof importCursorMoved>;
 

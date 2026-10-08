@@ -4,7 +4,7 @@ import type { AdminAction, PlatformActorId, ScopeId, TenantId } from '@substrat-
 import { UNRECORDED_OUTCOME_LOG, type ScopeHost } from '@substrat-run/kernel';
 
 /**
- * #2089: the fault a kill-switch suite injects to make a switch's OUTCOME row fail — the
+ * #2089: the fault a kill-switch suite (and, #2114, the replay lever's) injects to make an OUTCOME row fail — the
  * directory refusing admin-log rows of one phase on one scope, until the returned function
  * lifts it. Each adapter's fixture runs `adminRowFaultSql` against its own directory, so the
  * write fails where production's would: in the store, not in a mocked method.
@@ -41,7 +41,7 @@ export function switchRecordFaultSql(scopeId: string, kind: 'system' | 'peer'): 
 
 /** Run `call` with `phase` refused on `scopeId`, capturing the error log; the fault is lifted after. */
 export async function withRefusedOutcome<T>(
-  fault: AdminRowFault,
+  fault: Pick<AdminRowFault, 'refuseAdminRows'>,
   scopeId: ScopeId,
   phase: 'applied' | 'refused' | 'failed',
   call: () => Promise<T>,

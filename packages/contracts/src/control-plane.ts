@@ -1293,8 +1293,9 @@ export const adminLogEntry = z.object({
   onBehalfOf: onBehalfOf.nullable().optional(),
   at: instant,
   /**
-   * #2064: on a row of an audited change (`transferOwner`, `manageScopeMember`, and since #2089
-   * the four kill-switch actions — kernel `AUDITED_CHANGE_ACTIONS`), the outcome its
+   * #2064: on a row of an audited change (`transferOwner`, `manageScopeMember`, since #2089
+   * the four kill-switch actions, and since #2114 `moveImportCursor` — kernel
+   * `AUDITED_CHANGE_ACTIONS`), the outcome its
    * operation stands at, resolved by the admin-log read surface and never stored. The raw rows
    * stay as written. This says how to read them: a real outcome (`applied`, `refused`, `failed`)
    * beats a settle's `unknown` whichever was written first, and two real outcomes for one

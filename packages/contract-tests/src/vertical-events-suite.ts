@@ -31,6 +31,7 @@ import {
   type ScopeHost,
   type SweepRunInput,
 } from '@substrat-run/kernel';
+import { expectAnswered, expectSettledUnknown, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
 
 // -- the two fixture verticals ------------------------------------------------
 //
@@ -355,6 +356,12 @@ export interface VerticalEventsFixture {
     tenantId: TenantId,
     scopeId: ScopeId,
   ) => Promise<readonly { vertical: string; calls: string; switchedOff?: { reason: string } | null }[]>;
+  /**
+   * #2114: refuse the lever's admin-log rows of one phase on one scope, in the directory the
+   * lever audits to (the kill-switch suites' `AdminRowFault`). Absent, the outcome-write fault
+   * cases are skipped.
+   */
+  refuseAdminRows?: AdminRowFault['refuseAdminRows'];
 }
 
 const noFetch: FetchLike = async () => new Response('unused', { status: 200 });
@@ -1052,6 +1059,83 @@ export function verticalEventsContractSuite(
       expect((await board(t, c)).replays).toEqual([]);
       // The twin: acknowledged, it moves.
       await expect(lever(t, c, replay(null))).resolves.toMatchObject({ archived: { journal: 1 } });
+    });
+
+    // #2114: the lever's outcome rows go through `recordAuditOutcome`. A row that cannot be written
+    // is logged and left to the scheduled settle, and never changes what the caller is answered.
+    const leverRows = async (t: TenantId, c: ScopeId) =>
+      (await fx.consumer.admin.auditLog(staff, { tenantId: t, scopeId: c, action: ['moveImportCursor'] }))
+        .map((r) => r.after as { operationId?: string; replayId?: string; phase: string });
+    const leverSubject = (move: ImportCursorMove, replayId: string, source: ScopeId) =>
+      ({ replayId, mode: move.mode, from: move.from, source });
+
+    it('a failed move whose failed row cannot be written answers with the move\'s own error, and the settle closes it (#2114)', async (ctx) => {
+      if (!fx.refuseAdminRows) return ctx.skip();
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const move = replay(null);
+      const { settled, unrecorded } = await withRefusedOutcome(
+        { refuseAdminRows: fx.refuseAdminRows },
+        c,
+        'failed',
+        () => lever(t, c, move),
+      );
+      // The move's refusal, not the admin log's: "nothing to replay" is what the operator acts on.
+      expect(settled.status).toBe('rejected');
+      expect(String((settled as PromiseRejectedResult).reason)).toMatch(/nothing to replay/);
+      const [intent] = await leverRows(t, c);
+      const operationId = intent!.operationId!;
+      expect(intent).toMatchObject({ phase: 'intent', replayId: operationId });
+      expect(unrecorded).toEqual([
+        { flow: 'import-cursor', operationId, phase: 'failed', auditError: expect.stringMatching(/refused the failed row/) },
+      ]);
+      await expectSettledUnknown(
+        fx.consumer,
+        staff,
+        { tenantId: t, scopeId: c, action: 'moveImportCursor', operationId },
+        leverSubject(move, operationId, p),
+      );
+      // The twin: the same refusal with the log taking rows is answered `failed`, nothing to settle.
+      await expect(lever(t, c, move)).rejects.toThrow(/nothing to replay/);
+      const twin = (await leverRows(t, c)).filter((r) => r.operationId !== operationId);
+      await expectAnswered(fx.consumer, staff, { tenantId: t, scopeId: c, action: 'moveImportCursor', operationId: twin[0]!.operationId! }, 'failed');
+    });
+
+    it('an applied move whose applied row cannot be written still answers the move, with auditWarning, and the settle closes it (#2114)', async (ctx) => {
+      if (!fx.refuseAdminRows) return ctx.skip();
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'Moved, unrecorded');
+      await sweep();
+      const move = replay(null);
+      const { settled, unrecorded } = await withRefusedOutcome(
+        { refuseAdminRows: fx.refuseAdminRows },
+        c,
+        'applied',
+        () => lever(t, c, move),
+      );
+      // The watermark moved, so the call is a success: an error here would read as "nothing moved".
+      expect(settled.status).toBe('fulfilled');
+      const moved = (settled as PromiseFulfilledResult<ImportCursorMoved>).value;
+      expect(moved).toMatchObject({ mode: 'replay', cursor: null, archived: { journal: 1, deliveries: 1 } });
+      expect(moved.auditWarning).toMatch(/^the move completed, but its outcome could not be written to the admin log: .*refused the applied row/);
+      expect((await board(t, c)).replays.map((r) => r.replay_id)).toContain(moved.replayId);
+      expect(unrecorded).toEqual([
+        { flow: 'import-cursor', operationId: moved.replayId, phase: 'applied', auditError: expect.stringMatching(/refused the applied row/) },
+      ]);
+      await expectSettledUnknown(
+        fx.consumer,
+        staff,
+        { tenantId: t, scopeId: c, action: 'moveImportCursor', operationId: moved.replayId },
+        leverSubject(move, moved.replayId, p),
+      );
+      // The twin: the next move is recorded, carries no warning, and leaves nothing to settle.
+      await sweep();
+      const recorded = await lever(t, c, move);
+      expect(recorded.auditWarning).toBeUndefined();
+      await expectAnswered(fx.consumer, staff, { tenantId: t, scopeId: c, action: 'moveImportCursor', operationId: recorded.replayId }, 'applied');
     });
 
     it('the lever never crosses a tenant: another tenant\'s scope is not found, and the producer is the consumer\'s own tenant\'s', async () => {

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { BOARD_VERTICAL, CRM_VERTICAL, boardImportMod, crmExportMod, verticalEventsContractSuite } from '@substrat-run/contract-tests';
+import { BOARD_VERTICAL, CRM_VERTICAL, adminRowFaultSql, boardImportMod, crmExportMod, verticalEventsContractSuite } from '@substrat-run/contract-tests';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
@@ -18,9 +18,16 @@ verticalEventsContractSuite('adapter-sqlite', async () => {
   producer.registerModule(crmExportMod);
   const consumer = new SqliteScopeHost({ dir });
   consumer.registerModule(boardImportMod);
+  // #2114: the lever's outcome-row fault, a trigger on the directory the consumer audits to.
+  const directory = (consumer as unknown as { directory: { exec(q: string): void } }).directory;
   return {
     producer,
     consumer,
+    refuseAdminRows: async (scope, phase) => {
+      const { create, drop } = adminRowFaultSql(scope, phase);
+      directory.exec(create);
+      return async () => directory.exec(drop);
+    },
     cleanup: async () => {
       await producer.close();
       await consumer.close();

@@ -326,7 +326,11 @@ So a **replay** (`after: <event id> | null`) moves the replayed range's rows in 
 `_substrat_import_replays` under the act's `replayId`, clears them from the live tables, and sets
 the watermark back, all in one transaction on the consumer's queue. The rows are moved, not
 deleted, because they are the record that a handler ran on an event, when, and what it reported.
-The admin log's intent and outcome rows carry the same `replayId`. A **skip** (`through: <event id>
+The admin log's intent and outcome rows carry the same `replayId`, which since #2114 is also their
+`operationId`: the lever is an audited change like the kill switches. An outcome row that cannot be
+written is logged as `audit-outcome-unrecorded` and closed `unknown` by the scheduled settle; a
+failed move still answers with its own error, and an applied one answers the move with
+`auditWarning`. A **skip** (`through: <event id>
 | 'now'`) only moves the watermark forward, and never past now. `'now'` passes over every
 earlier millisecond: an event minted in the skip's own millisecond is delivered, never dropped.
 Each mode is held to its direction, so the acknowledgement names what actually moves.

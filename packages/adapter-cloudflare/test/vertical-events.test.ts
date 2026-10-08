@@ -18,6 +18,7 @@ import {
 import {
   BOARD_VERTICAL,
   CRM_VERTICAL,
+  adminRowFaultSql,
   boardImportMod,
   crmExportMod,
   testMod,
@@ -30,6 +31,20 @@ import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
 import { kickCoalescerName, type KickCoalescerDo, type KickOutcome } from '../src/kick-coalescer-do.js';
 import { warmControlPlane } from './do-warmup.js';
 import { armRewind, landRewind } from './pitr-emulation.js';
+
+/**
+ * #2114: the lever's outcome-row fault — a trigger on the suite's directory singleton, which both
+ * the consumer host and the hosted fixture's lever host write their admin log to.
+ */
+const refuseAdminRows = async (scope: string, phase: string) => {
+  const exec = (sql: string) =>
+    runInDurableObject(env.VE_CONTROL_PLANE.get(env.VE_CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      state.storage.sql.exec(sql);
+    });
+  const { create, drop } = adminRowFaultSql(scope, phase);
+  await exec(create);
+  return () => exec(drop);
+};
 
 // #1705 on workerd: the export read (the (type, id) seek and the recursive hop walk), the
 // import journal and the watermark's compare-and-set are DO SQL here, run by real Durable
@@ -44,7 +59,7 @@ verticalEventsContractSuite('adapter-cloudflare (workerd)', async () => {
   // Edge health's door read. This directory host serves the scopes itself and has no peer-switch
   // delegation, so its `peerGrantsStatus` refuses a scope bound to a vertical. The far end is the
   // same read the shared control plane's delegation makes.
-  return { producer, consumer, door: async (_t, s) => consumer.peerGrantsStatusLocal(s), cleanup: async () => {} };
+  return { producer, consumer, refuseAdminRows, door: async (_t, s) => consumer.peerGrantsStatusLocal(s), cleanup: async () => {} };
 });
 
 /**
@@ -302,6 +317,7 @@ verticalEventsContractSuite('adapter-cloudflare (workerd, hosted transport)', as
     consumer,
     transport,
     lever: (t, s, move) => leverHost.admin.moveImportCursor(leverActor, t, s, move),
+    refuseAdminRows,
     door: (t, s) => leverHost.admin.peerGrantsStatus(leverActor, { tenantId: t, scopeId: s }),
     afterInstall: async (t, s, vertical) => {
       await (vertical === CRM_VERTICAL ? crm : board).provision(t, s);
