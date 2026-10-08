@@ -329,13 +329,14 @@ const rows = input.cursor
 return pageOf(rows, limit, (row) => row.article);
 ```
 
-For the permission-walk case, `pageVisible` reads on past rows the check refuses until
+For a writable permission walk, `pageVisible` reads past rows the check refuses until
 the page is full or its private, randomly drawn scan budget (1 000–2 000 rows) is spent.
-Read-only and copy walks use a fixed 2 000-row budget because they return no cursor at a budget stop. A filtered read returns
-a sealed continuation when it stops at the budget, even with no visible entries, so a
-caller can follow the next `Link` to reach later visible rows. This budget-stop token
-is fixed-length and does not expose the last examined row's id or sort value. A full
-page gets a stateless sealed continuation from its last visible row. The caller can still observe
+Read-only and copy walks use a fixed 2 000-row budget because they return no cursor at a
+budget stop. For a writable walk, a filtered read returns a sealed continuation at the
+budget stop, even with no visible entries, so a caller can follow the next `Link` to
+reach later visible rows. This budget-stop token is fixed-length and does not expose
+the last examined row's id or sort value. A full writable page gets a stateless sealed
+continuation from its last visible row. The caller can still observe
 that an empty page with a next link passed 1 000–2 000 hidden rows. A short page
 with a next link reveals the same range minus its visible entry count;
 end-of-walk and variable request timing are also observable (#2074, K-45).
