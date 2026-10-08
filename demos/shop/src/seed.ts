@@ -6,6 +6,7 @@ import {
   principalId,
   scopeId,
   tenantId,
+  type EntityGrantShape,
   type PermissionKey,
   type PrincipalId,
   type RoleDefinition,
@@ -89,15 +90,20 @@ export const ROLES: RoleDefinition[] = [
 ];
 
 /** What a portal customer receives, narrowed to their own customer record. */
-const portalPerms = [SHOP_PERM.orderRead];
+export const portalPerms: PermissionKey[] = [SHOP_PERM.orderRead];
 
 /**
  * Entity-narrowed grant SHAPES. The grants themselves are per-principal and
  * minted at runtime, so they can never be a build artifact; their shape can, and
  * it is what tells a reviewer which keys are reachable outside the role table.
+ *
+ * `customer` is a bootstrap shape (#2083): given whole with `grantEntityShape` to each person
+ * linked to a customer record, and topped up for all of them when it grows. A customer record
+ * names no principal and may have several people, so its holder is `'grantee'`: whoever holds a
+ * key of it there. That stays true because `ctx.grant` cannot give these keys on a customer.
  */
-export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
-  { entityType: 'customer', permissions: portalPerms },
+export const ENTITY_GRANTS: EntityGrantShape[] = [
+  { entityType: 'customer', permissions: portalPerms, bootstrap: true, holder: 'grantee' },
 ];
 
 /**
@@ -303,21 +309,25 @@ export async function seedShop(host: SqliteScopeHost, dir: string): Promise<Shop
     writeFileSync(castPath, JSON.stringify(world, null, 2));
   }
 
-  // Portal grants (idempotent): entity-narrowed per customer — see ENTITY_GRANTS.
+  // Portal grants (idempotent): the declared `customer` shape on each person's own customer
+  // record, with its holder marker (#2083). Re-granted on every boot, which is also what marks a
+  // cast seeded before markers existed.
   for (const [principal, customerId] of [
     [world.elin, world.elinCustomerId],
     [world.otto, world.ottoCustomerId],
   ] as const) {
     if (!customerId) continue;
-    for (const permission of portalPerms) {
-      await host.admin.grant(staff, {
-        principalId: principal, permission,
-        node: { tenantId: world.t1, scopeId: world.s1 },
-        entity: { entityType: 'customer', entityId: customerId },
-        grantedBy: world.astrid,
-      });
-    }
+    await host.admin.grantEntityShape(staff, {
+      principalId: principal,
+      node: { tenantId: world.t1, scopeId: world.s1 },
+      entity: { entityType: 'customer', entityId: customerId },
+      permissions: portalPerms,
+      grantedBy: world.astrid,
+    });
   }
+  // ...and every shopper who signed up through the dev server since, topped up to the shape as
+  // it is now: what a deployed install's reconcile does (#2083).
+  await host.admin.reconcileEntityGrantShapes(staff, { tenantId: world.t1, scopeId: world.s1 }, ENTITY_GRANTS);
 
   return world;
 }

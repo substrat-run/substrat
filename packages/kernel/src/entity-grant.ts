@@ -13,7 +13,50 @@
  * expiry included, because `ctx.grant` has never shortened or lengthened a grant it found.
  */
 
+import { PermissionDenied } from './permission-checker.js';
+import type { SwitchSql } from './system-switch.js';
+
 type Params = [string, string, string];
+
+/** A reconciled grantee shape's protected key, stored on the scope's tuple spine. */
+export const GRANTEE_KEY_RELATION = 'shape-grantee-key';
+
+/** Every explicit non-shape scope tuple write uses this guard, including administrative writes. */
+function assertDelegableTuple(db: SwitchSql, relation: string, object: string): void {
+  if (!relation.startsWith('granted:')) return;
+  const colon = object.indexOf(':');
+  if (colon < 0) return;
+  const entityType = object.slice(0, colon);
+  if (db.all('SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?', `shape:${entityType}`, GRANTEE_KEY_RELATION, relation).length > 0) {
+    throw new PermissionDenied(
+      `cannot grant '${relation.slice('granted:'.length)}' on ${object} — ` +
+        `it is a key of the declared '${entityType}' shape, given only by the shape grant`,
+    );
+  }
+}
+
+/** The explicit scope-tuple write for admin/local grants and ctx.grant, behind one shape guard. */
+export function writeExplicitTupleIn(
+  db: SwitchSql,
+  subject: string,
+  relation: string,
+  object: string,
+  mode: { kind: 'replace'; expiresAt: string | null } | { kind: 'delegated' },
+): void {
+  assertDelegableTuple(db, relation, object);
+  if (mode.kind === 'replace') {
+    db.run(
+      'INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at) VALUES (?, ?, ?, ?)',
+      subject,
+      relation,
+      object,
+      mode.expiresAt,
+    );
+  } else {
+    const grant = explicitTupleSql(subject, relation, object);
+    db.run(grant.sql, ...grant.params);
+  }
+}
 
 const refs = (principal: string, permission: string, object: string): Params => [
   `principal:${principal}`,

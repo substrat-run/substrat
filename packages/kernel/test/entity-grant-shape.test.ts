@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import { errorCodeOf } from '@substrat-run/contracts';
-import { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, type SwitchSql } from '../src/index.js';
+import { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, writeExplicitTupleIn, type SwitchSql } from '../src/index.js';
 
 /**
  * The declared shape's reconcile (#2071), over a bare `_substrat_tuples`. The edges the
@@ -315,6 +315,155 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       ownTuple(t, late, 'list:manage', late);
       own(['list:manage'])(t);
       expect(markers(t)).toHaveLength(5);
+    });
+
+    describe("holder: 'grantee' — whoever holds a key of it on that type (#2083)", () => {
+      const PORTAL = ['conv:read-own'];
+      const portal = (permissions = PORTAL) => (t: ReturnType<typeof fresh>) =>
+        t.pass([{ entityType: 'contact', permissions, bootstrap: true, holder: 'grantee' }]);
+      const contactTuple = (t: ReturnType<typeof fresh>, p: PrincipalId, key: string, id: string, revokedAt: string | null = null) =>
+        t.db
+          .prepare('INSERT INTO _substrat_tuples (subject, relation, object, revoked_at) VALUES (?, ?, ?, ?)')
+          .run(`principal:${p}`, `granted:${key}`, `contact:${id}`, revokedAt);
+
+      it('every person holding a live key of it on a record of that type is marked — several on one record too', () => {
+        const t = fresh();
+        const [anna, bo] = [who(), who()];
+        contactTuple(t, anna, 'conv:read-own', 'c1');
+        contactTuple(t, bo, 'conv:read-own', 'c1');
+        portal()(t);
+        expect(markers(t)).toEqual([`principal:${anna} contact:c1`, `principal:${bo} contact:c1`].sort());
+        // ...so a pre-existing holder receives the key the shape gains.
+        expect(portal(['conv:read-own', 'conv:reply-own'])(t).map((u) => u.added)).toEqual([['conv:reply-own'], ['conv:reply-own']]);
+      });
+
+      it('a key taken back is no evidence: a person whose only key is tombstoned is not marked, and gains nothing', () => {
+        const t = fresh();
+        const anna = who();
+        contactTuple(t, anna, 'conv:read-own', 'c1', NOW);
+        portal()(t);
+        expect(markers(t)).toEqual([]);
+        expect(portal(['conv:read-own', 'conv:reply-own'])(t)).toEqual([]);
+      });
+
+      it('a key of another type, or another key on this type, marks nobody', () => {
+        const t = fresh();
+        const anna = who();
+        contactTuple(t, anna, 'contact:read', 'c1');
+        t.tuple(anna, 'granted:conv:read-own', 'e1'); // the shape's key, on an employee
+        portal()(t);
+        expect(markers(t)).toEqual([]);
+      });
+
+      it('a live retired key marks a legacy grantee for retirement and top-up; a tombstoned key does not', () => {
+        const t = fresh();
+        const [anna, bo] = [who(), who()];
+        contactTuple(t, anna, 'conv:read-own', 'c1');
+        contactTuple(t, bo, 'conv:read-own', 'c2', NOW);
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
+          retired: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, removed: ['conv:read-own'] }],
+          toppedUp: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, added: ['conv:reply-own'] }],
+          done: true,
+        });
+        expect(markers(t)).toEqual([`principal:${anna} contact:c1`]);
+        expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%'").all(`principal:${anna}`, 'contact:c1')).toEqual([
+          { relation: 'granted:conv:read-own', revoked_at: NOW },
+          { relation: 'granted:conv:reply-own', revoked_at: null },
+        ]);
+        expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%'").all(`principal:${bo}`, 'contact:c2')).toEqual([
+          { relation: 'granted:conv:read-own', revoked_at: NOW },
+        ]);
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
+          retired: [],
+          toppedUp: [],
+          done: true,
+        });
+      });
+
+      it('a current live key still finds a legacy grantee, including one with a tombstoned retired key', () => {
+        const t = fresh();
+        const anna = who();
+        contactTuple(t, anna, 'conv:read-own', 'c1', NOW);
+        contactTuple(t, anna, 'conv:reply-own', 'c1');
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own', 'conv:write-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
+          retired: [],
+          toppedUp: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, added: ['conv:write-own'] }],
+          done: true,
+        });
+        expect(markers(t)).toEqual([`principal:${anna} contact:c1`]);
+      });
+
+      it('a marked K-only holder keeps the marker, retires K and receives the current key', () => {
+        const t = fresh();
+        const anna = who();
+        grantEntityShapeIn(t.sql, anna, { entityType: 'contact', entityId: 'c1' }, ['conv:read-own']);
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }])).toEqual({
+          retired: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, removed: ['conv:read-own'] }],
+          toppedUp: [{ principal: anna, entity: { entityType: 'contact', entityId: 'c1' }, added: ['conv:reply-own'] }],
+          done: true,
+        });
+        expect(markers(t)).toEqual([`principal:${anna} contact:c1`]);
+        expect(t.db.prepare("SELECT relation, revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation LIKE 'granted:%' ORDER BY relation").all(`principal:${anna}`, 'contact:c1')).toEqual([
+          { relation: 'granted:conv:read-own', revoked_at: NOW },
+          { relation: 'granted:conv:reply-own', revoked_at: null },
+        ]);
+        expect(t.run([{ entityType: 'contact', permissions: ['conv:reply-own', 'conv:write-own'], retired: ['conv:read-own'], bootstrap: true, holder: 'grantee' }]).toppedUp.map((e) => e.added)).toEqual([['conv:write-own']]);
+        expect(t.db.prepare("SELECT revoked_at FROM _substrat_tuples WHERE subject = ? AND object = ? AND relation = 'granted:conv:read-own'").get(`principal:${anna}`, 'contact:c1')).toEqual({ revoked_at: NOW });
+      });
+    });
+  });
+
+  describe("a 'grantee' shape's keys are the shape grant's alone (#2083)", () => {
+    const grantee = { entityType: 'contact', permissions: ['conv:read-own'], bootstrap: true, holder: 'grantee' };
+    const contact = { entityType: 'contact', entityId: 'c1' };
+    const refusal = (t: ReturnType<typeof fresh>, key: string, entity: { entityType: string; entityId: string } = contact) => {
+      const sql: SwitchSql = { all: (q, ...p) => t.db.prepare(q).all(...p) as Record<string, unknown>[], run: () => undefined };
+      try {
+        writeExplicitTupleIn(sql, 'principal:test', `granted:${key}`, `${entity.entityType}:${entity.entityId}`, { kind: 'delegated' });
+        return 'grantable';
+      } catch (e) {
+        return errorCodeOf(e);
+      }
+    };
+
+    it('ctx.grant is refused a key of it on that entity type once a pass has carried the declaration', () => {
+      const t = fresh();
+      expect(refusal(t, 'conv:read-own')).toBe('grantable'); // before any reconcile: nothing declared here yet
+      t.pass([grantee]);
+      expect(refusal(t, 'conv:read-own')).toBe('permission_denied');
+    });
+
+    it('...while another key on the same type, and the same key on another type, stay grantable', () => {
+      const t = fresh();
+      t.pass([grantee]);
+      expect(refusal(t, 'contact:read')).toBe('grantable');
+      expect(refusal(t, 'conv:read-own', { entityType: 'conversation', entityId: 'v1' })).toBe('grantable');
+    });
+
+    it('a shape with any other holder, or a sharing shape, refuses nothing', () => {
+      const t = fresh();
+      t.pass([
+        { ...grantee, holder: 'self' },
+        { entityType: 'contact', permissions: ['conv:read-own'] },
+      ]);
+      expect(refusal(t, 'conv:read-own')).toBe('grantable');
+    });
+
+    it('the records follow the registry each pass carries: a declaration dropped, or a key dropped, stops refusing', () => {
+      const t = fresh();
+      t.pass([{ ...grantee, permissions: ['conv:read-own', 'conv:reply-own'] }]);
+      expect(refusal(t, 'conv:reply-own')).toBe('permission_denied');
+      t.pass([grantee]);
+      expect([refusal(t, 'conv:read-own'), refusal(t, 'conv:reply-own')]).toEqual(['permission_denied', 'grantable']);
+      t.pass([{ ...grantee, holder: undefined }]);
+      expect(refusal(t, 'conv:read-own')).toBe('grantable');
+    });
+
+    it('a retired key remains protected when it leaves current permissions', () => {
+      const t = fresh();
+      t.pass([{ ...grantee, permissions: ['conv:reply-own'], retired: ['conv:read-own'] }]);
+      expect([refusal(t, 'conv:read-own'), refusal(t, 'conv:reply-own')]).toEqual(['permission_denied', 'permission_denied']);
+      expect(refusal(t, 'conv:write-own')).toBe('grantable');
     });
   });
 

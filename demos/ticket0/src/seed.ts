@@ -18,11 +18,11 @@
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { principalId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, type Clock, type ModuleLogSink, type ScopeHost } from '@substrat-run/kernel';
-import { T0_PERM, ticket0Manifest } from './manifest.js';
+import { ticket0Manifest } from './manifest.js';
 import { ASSISTANT_NAME } from './module.js';
 // The module set and the role table live in `provision.ts` — the ONE place both this
 // node host and the deployed worker read them from. See the note at its head.
-import { MODULES, ROLES } from './provision.js';
+import { CONTACT_PORTAL, ENTITY_GRANTS, MODULES, ROLES } from './provision.js';
 import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 export { MODULES, ROLES };
@@ -427,11 +427,11 @@ async function seedDesk(
    * the widget path: a stranger in a chat bubble never needs one.
    */
   {
-    await host.admin.grant(staff, {
+    await host.admin.grantEntityShape(staff, {
       principalId: spec.customer.principal,
-      permission: T0_PERM.conversationReadOwn,
       node,
       entity: { entityType: 'contact', entityId: contact.id },
+      permissions: CONTACT_PORTAL,
       grantedBy: spec.customer.principal,
     });
   }
@@ -712,6 +712,18 @@ export async function seed(host: ScopeHost): Promise<World> {
   });
 
   return { staff, substrat, kestrel };
+}
+
+/**
+ * Top every customer up to the portal shape as it is now (#2083), on both desks: a world
+ * seeded before a key was added to `CONTACT_PORTAL` receives it, and a desk's dev reconcile
+ * also records the declaration `ctx.grant` then refuses. What a deployed desk's reconcile
+ * does. Idempotent, so the dev server runs it on every boot.
+ */
+export async function reconcilePortalGrants(host: ScopeHost, world: World): Promise<void> {
+  for (const desk of [world.substrat, world.kestrel]) {
+    await host.admin.reconcileEntityGrantShapes(world.staff, { tenantId: desk.tenant, scopeId: desk.scope }, ENTITY_GRANTS);
+  }
 }
 
 /**

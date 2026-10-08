@@ -169,11 +169,18 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
   granted with `host.admin.grantEntityShape` (`grantEntityShapeLocal` in a worker), never key by
   key. The platform's reconcile reads it from the version's reviewed registry, so a key added to
   it later reaches the people who already hold it (#2071); there is nothing to pass at the
-  mount. A key merely dropped from a bootstrap shape stays with everyone who held it; to take it
+  mount. Declare its `holder` too, so people granted before that are found: `'self'` (the entity
+  id is the principal), `{ table, idColumn, principalColumn }` (your row names the principal),
+  or `'grantee'` for a portal record that names nobody and may have several people (a customer,
+  a contact). With `'grantee'`, direct grants can no longer give the shape's current or retired
+  keys on that type; use the shape grant (#2083). Backfill marks live holders of current or
+  retired keys, then retires those keys; tombstoned keys do not count as evidence.
+  A key merely dropped from a bootstrap shape stays with everyone who held it; to take it
   back, list it in the shape's `retired` (#2082), which tombstones it for every holder once per
   scope, a direct `ctx.grant` of it on the same entity included, and which the promote diff shows
   as "existing holders lose …". A key put back after that reaches only people given the shape
-  from then on. A sharing shape, reached through `ctx.grant`, carries no flag and is never reconciled. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
+  from then on. A sharing shape, reached through `ctx.grant`, carries no flag and is never
+  reconciled. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
   `--check`ed in CI.
 - `src/personas.ts`: the dev cast, one per role the scenario needs, including one who
   lives in the *other* tenant.

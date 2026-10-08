@@ -23,7 +23,7 @@ type CallerState = 'ok' | 'unknown' | 'not-primary' | 'inactive';
 interface DirectoryShape {
   callerState?: CallerState;
   callerStatus?: string | null;
-  outcome?: 'resolved' | 'not-installed' | 'ambiguous';
+  outcome?: 'resolved' | 'not-installed' | 'ambiguous' | 'bound-unavailable';
   count?: number;
   deploymentRef?: string | null;
   targetCalls?: string[] | null;
@@ -130,6 +130,14 @@ const entrypoint = (env: Partial<Env>) => ({
 });
 
 describe('the router’s peer entrypoint (#1706)', () => {
+  it('keeps the unbound singleton on one directory round trip', async () => {
+    const cp = directory(); // The default directory has one eligible target and no binding.
+    const outcome = await entrypoint({ CONTROL_PLANE: cp, DISPATCH: dispatch() as never }).invoke(caller(), request());
+
+    expect(outcome).toMatchObject({ ok: true });
+    expect(cp.asked()).toHaveLength(1);
+  });
+
   it('dispatches the resolved instance, with the platform secret and the caller the platform named', async () => {
     const cp = directory();
     const d = dispatch();
@@ -252,6 +260,16 @@ describe('the router’s peer entrypoint (#1706)', () => {
     }).invoke(caller(), request());
     expect(outcome).toMatchObject({ ok: false, status: 409 });
     expect((outcome as { message: string }).message).toMatch(/runs 2 instances/);
+  });
+
+  it('refuses a stale explicit binding rather than dispatching to a remaining singleton', async () => {
+    const target = dispatch();
+    const outcome = await entrypoint({
+      CONTROL_PLANE: directory({ outcome: 'bound-unavailable' }), DISPATCH: target as never,
+    }).invoke(caller(), request());
+    expect(outcome).toMatchObject({ ok: false, status: 409 });
+    expect((outcome as { message: string }).message).toMatch(/bound instance.*unavailable/);
+    expect(target.seen()).toEqual([]);
   });
 
   it('refuses a target with no deployed version', async () => {

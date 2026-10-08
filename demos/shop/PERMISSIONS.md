@@ -53,9 +53,9 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 Reachable WITHOUT a role, narrowed to one entity per principal. A key held by
 no role in §3 but listed here is deliberate, not a gap.
 
-| Entity type | Permissions granted per entity |
-| --- | --- |
-| `customer` | `order:read` |
+| Entity type | Permissions granted per entity | Given on arrival, topped up when it grows |
+| --- | --- | --- |
+| `customer` | `order:read` | yes — live holders of current or retired keys here; direct grants cannot give these keys |
 
 ## 5. Not covered by this artifact
 

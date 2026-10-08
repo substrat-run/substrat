@@ -24,7 +24,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Page } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { T0_PERM } from '../src/manifest.js';
-import { CONTACT_BOUND_ROLE, HUMAN_ROLES, ROLES, STAFF_ROLES } from '../src/provision.js';
+import { CONTACT_BOUND_ROLE, CONTACT_PORTAL, HUMAN_ROLES, ROLES, STAFF_ROLES } from '../src/provision.js';
 import { buildHost, linkDevPersonas, seed, type World } from '../src/seed.js';
 import { mountApi } from '../src/routes.js';
 import { mountInvites } from '../harness/invites.js';
@@ -108,7 +108,7 @@ beforeAll(async () => {
         host,
         actor: world.staff,
         provider: DEV_PROVIDER,
-        portalPermission: T0_PERM.conversationReadOwn,
+        portalPermissions: CONTACT_PORTAL,
         caller: caller
           ? { tenantId: world.substrat.tenant, scopeId: world.substrat.scope }
           : null,

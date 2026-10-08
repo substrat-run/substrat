@@ -1,5 +1,6 @@
 import {
   definePermissions,
+  type EntityGrantShape,
   type PermissionKey,
   type RoleDefinition,
 } from '@substrat-run/contracts';
@@ -65,9 +66,18 @@ export const portalPerms: PermissionKey[] = [WO.read];
  * Entity-narrowed grant SHAPES. The grants themselves are per-principal and
  * minted at runtime, so they can never be a build artifact; their shape is what
  * tells a reviewer which keys are reachable outside the role table.
+ *
+ * `customer` is a BOOTSTRAP shape: a person linked to a customer record is
+ * given all of it at once (`grantEntityShape`, never key by key), and when you
+ * add a key here, the platform's next reconcile gives it to everyone who
+ * already holds the shape. A customer record names no principal and can have
+ * several people, so its holder is `'grantee'`: whoever holds a key of it
+ * there. That stays true because `ctx.grant` cannot give these keys on a
+ * customer. A shape people reach by sharing (`ctx.grant`) is declared without
+ * `bootstrap`, and is never topped up.
  */
-export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
-  { entityType: 'customer', permissions: portalPerms },
+export const ENTITY_GRANTS: EntityGrantShape[] = [
+  { entityType: 'customer', permissions: portalPerms, bootstrap: true, holder: 'grantee' },
 ];
 
 /**

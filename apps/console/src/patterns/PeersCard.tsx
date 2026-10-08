@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PeerGrantsStatusEntry, Scope } from '@substrat-run/contracts';
+import type { PeerBinding, PeerGrantsStatusEntry, Scope } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, Table } from '../components';
 import type { Api } from '../lib/api';
 import { peerBadgeStatus, peerStateLabel, peersCardState, switchedOffLine } from '../lib/peers';
@@ -31,6 +31,8 @@ export function PeersCard({
   onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
 }) {
   const [entries, setEntries] = useState<PeerGrantsStatusEntry[] | null>(null);
+  const [bindings, setBindings] = useState<PeerBinding[] | null>(null);
+  const [bindingsError, setBindingsError] = useState<unknown>(null);
   const [error, setError] = useState<unknown>(null);
   const [dialog, setDialog] = useState<{ vertical: string; to: 'on' | 'off' } | null>(null);
   const [reason, setReason] = useState('');
@@ -47,6 +49,8 @@ export function PeersCard({
     let cancelled = false;
     setEntries(null);
     setError(null);
+    setBindings(null);
+    setBindingsError(null);
     load()
       .then((e) => {
         if (!cancelled) setEntries(e);
@@ -54,6 +58,9 @@ export function PeersCard({
       .catch((e) => {
         if (!cancelled) setError(e);
       });
+    api.peerBindings(scope.tenantId, scope.id)
+      .then((rows) => { if (!cancelled) setBindings(rows); })
+      .catch((e) => { if (!cancelled) setBindingsError(e); });
     return () => {
       cancelled = true;
     };
@@ -205,6 +212,15 @@ export function PeersCard({
             ]}
           />
         ))}
+
+      <h3 style={{ margin: '16px 0 6px', fontSize: 13 }}>This scope calls</h3>
+      {bindingsError ? <p role="status">Could not read target choices: {errorMessage(bindingsError)}</p>
+        : bindings === null ? <p>Loading target choices…</p>
+          : bindings.length === 0 ? <p>No explicit target choices.</p>
+            : <Table<PeerBinding> rows={bindings} columns={[
+              { header: 'Target vertical', key: 'vertical', mono: true },
+              { header: 'Bound instance', render: (row) => <span><code>{row.targetScopeId}</code>{row.invalidated && ' · invalidated'}</span> },
+            ]} />}
 
       <Dialog
         open={dialog !== null}

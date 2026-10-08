@@ -550,7 +550,7 @@ export {
   type FindingObservation,
 } from './findings.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
-export { delegatedGrantSql, delegatedRevokeSql } from './entity-grant.js';
+export { delegatedGrantSql, delegatedRevokeSql, writeExplicitTupleIn } from './entity-grant.js';
 export { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes } from './entity-grant-shape.js';
 export type { ShapePass } from './entity-grant-shape.js';
 export { applyScopeRoleChange, changeScopeRole, combineCoverage, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
@@ -688,6 +688,7 @@ export {
   resolveVerticalInstanceFrom,
   switchPeer,
 } from './peer.js';
+export { PEER_BINDINGS_DDL, resolvePeerInstanceFrom } from './peer.js';
 export type { PeerDeclaration, PeerDeclarations, PeerGrantsRow, PeerSeat, VerticalInstanceCandidate } from './peer.js';
 export {
   DENIAL_COLUMNS,

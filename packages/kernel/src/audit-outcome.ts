@@ -26,7 +26,7 @@
  * settle's grace window, so a live request cannot normally be overtaken this way. The rule is
  * stated for the case where one is.
  */
-import { AUDIT_ERROR_MAX, auditOperationId, memberChangeAudit, ownerTransferAudit, substratError, type AdminAction } from '@substrat-run/contracts';
+import { AUDIT_ERROR_MAX, auditOperationId, memberChangeAudit, ownerTransferAudit, peerBindingAudit, substratError, type AdminAction } from '@substrat-run/contracts';
 import type { OpsFailureInput } from './scope-host.js';
 import { SWITCH_ACTIONS, type SwitchAction } from './system-switch-record.js';
 
@@ -38,6 +38,7 @@ import { SWITCH_ACTIONS, type SwitchAction } from './system-switch-record.js';
 export const AUDITED_CHANGE_ACTIONS = [
   'transferOwner',
   'manageScopeMember',
+  'setPeerBinding',
   ...SWITCH_ACTIONS,
 ] as const satisfies readonly AdminAction[];
 export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
@@ -266,7 +267,9 @@ export function unknownOutcomeOf(row: SettleIntentRow | undefined, intentId: str
 function auditedUnknownOf(row: SettleIntentRow, after: Record<string, unknown>, error: string): Record<string, unknown> {
   const entry = { ...after, tenantId: row.tenant_id, scopeId: row.scope_id, phase: 'unknown', error };
   const { tenantId: _t, scopeId: _s, ...parsed } =
-    row.action === 'transferOwner' ? ownerTransferAudit.parse(entry) : memberChangeAudit.parse(entry);
+    row.action === 'transferOwner' ? ownerTransferAudit.parse(entry)
+      : row.action === 'manageScopeMember' ? memberChangeAudit.parse(entry)
+        : peerBindingAudit.parse(entry);
   return parsed;
 }
 

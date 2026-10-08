@@ -87,9 +87,9 @@ describe('the peer switch routes (#1706)', () => {
   const off = { vertical: CALLER, reason: 'the board-room app is leaking' };
   const on = { vertical: CALLER, reason: 'resolved' };
 
-  const newScope = async (tenant = t) => {
+  const newScope = async (tenant = t, vertical = 'desk-vertical') => {
     const s = scopeId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical: 'desk-vertical' });
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical });
     await host.admin.activateScope(staff, tenant, s);
     return s;
   };
@@ -231,6 +231,28 @@ describe('the peer switch routes (#1706)', () => {
     expect(
       ((await (await get(route(s), asStaff)).json()) as { vertical: string }[]).map((p) => p.vertical),
     ).toEqual([CALLER, LISTENER]);
+  });
+
+  it('binds a caller only inside its tenant and records intent then outcome', async () => {
+    const caller = await newScope(t, CALLER);
+    const target = await newScope(t, 'acme/crm');
+    const foreign = await newScope(other, 'acme/crm');
+    const path = `/tenants/${t}/scopes/${caller}/peer-bindings`;
+    const body = (targetScopeId: string | null) => ({ vertical: 'acme/crm', targetScopeId });
+    expect((await app.request(path, { method: 'PUT', headers: asOtherTenant, body: JSON.stringify(body(target)) })).status).toBe(403);
+    expect((await app.request(path, { method: 'PUT', headers: asStaff, body: JSON.stringify(body(target)) })).status).toBe(403);
+    expect((await app.request(path, { method: 'PUT', headers: asTenant, body: JSON.stringify(body(foreign)) })).status).toBe(404);
+    expect(await (await get(`${path}?vertical=acme%2Fcrm`, asTenant)).json()).toBeNull();
+    const bound = await app.request(path, { method: 'PUT', headers: asTenant, body: JSON.stringify(body(target)) });
+    expect(bound.status).toBe(200);
+    expect(await bound.json()).toMatchObject({ changed: true, previous: null, operationId: expect.any(String) });
+    expect(await (await get(`${path}?vertical=acme%2Fcrm`, asTenant)).json()).toMatchObject({ targetScopeId: target, invalidated: false });
+    const log = await get(`/admin-log?tenantId=${t}&scopeId=${caller}&action=setPeerBinding`, asStaff);
+    const phases = ((await log.json()) as { entries: { after: { phase: string } }[] }).entries.map((r) => r.after.phase);
+    expect(phases).toEqual(['intent', 'refused', 'intent', 'applied']);
+    const cleared = await app.request(path, { method: 'PUT', headers: asTenant, body: JSON.stringify(body(null)) });
+    expect(cleared.status).toBe(200);
+    expect(await (await get(`${path}?vertical=acme%2Fcrm`, asTenant)).json()).toBeNull();
   });
 
   it('a reason is required, and an unknown field is refused — the body is strict', async () => {

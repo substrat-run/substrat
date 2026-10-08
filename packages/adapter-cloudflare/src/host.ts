@@ -136,6 +136,7 @@ import {
   delegatedReadRecord,
   ownerTransferAudit,
   memberChangeAudit,
+  peerBindingAudit,
   copyMarkAudit,
   type EventEffectsInput,
   type EffectsTree,
@@ -238,6 +239,8 @@ import {
   peerSwitchOutcome,
   verticalCaller,
   verticalResolution,
+  peerInstanceResolution,
+  peerBinding as peerBindingSchema,
   verticalSlug,
   entityObjectRef,
   type Coverage,
@@ -723,6 +726,13 @@ interface ControlPlaneStub {
   readRoute(hostname: string): Promise<RouteRow | undefined>;
   /** #1706: "vertical Y in tenant T", by the kernel's one rule — see `HostAdmin.resolveVerticalInstance`. */
   resolveVerticalInstance(tenantId: string, vertical: string): Promise<VerticalResolution>;
+  resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string): Promise<unknown>;
+  peerBinding(tenantId: string, callerScopeId: string, vertical: string): Promise<{ target_scope_id: string; invalidated: number } | undefined>;
+  peerBindings(tenantId: string, callerScopeId: string): Promise<{ vertical: string; target_scope_id: string; invalidated: number }[]>;
+  setPeerBinding(tenantId: string, callerScopeId: string, vertical: string, targetScopeId: string | null): Promise<
+    { ok: true; changed: boolean; previous: string | null } |
+    { ok: false; code: 'not_found'; message: string }
+  >;
   demoteCanonical(scopeId: string, surface: string): Promise<void>;
   upsertHostname(h: {
     hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null;
@@ -1473,7 +1483,7 @@ interface ScopeStubRpc {
     relation: string,
     object: string,
     expiresAt: string | null,
-  ): Promise<void>;
+  ): Promise<DoReply<null>>;
   /** Provisioning's write (#1659): creates a missing tuple, never un-revokes one. */
   seatTuple(
     subject: string,
@@ -6757,6 +6767,23 @@ export class CloudflareScopeHost implements ScopeHost {
       // the kernel's one rule. No actor, not logged — `resolveHostname`'s machine-path reason.
       resolveVerticalInstance: async (tenantId: TenantId, vertical: string): Promise<VerticalResolution> =>
         verticalResolution.parse(await this.cp.resolveVerticalInstance(tenantId, verticalSlug.parse(vertical))),
+      resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) =>
+        peerInstanceResolution.parse(await this.cp.resolvePeerInstance(tenantId, callerScopeId, verticalSlug.parse(vertical))),
+      peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
+        const row = await this.cp.peerBinding(tenantId, callerScopeId, verticalSlug.parse(vertical));
+        await this.recordAccess(actor, 'peerBinding', { tenantId, scopeId: callerScopeId }, { vertical }, row ? 1 : 0);
+        return row ? peerBindingSchema.parse({ tenantId, callerScopeId, vertical, targetScopeId: row.target_scope_id, invalidated: row.invalidated === 1 }) : undefined;
+      },
+      peerBindings: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId) => {
+        const rows = await this.cp.peerBindings(tenantId, callerScopeId);
+        await this.recordAccess(actor, 'peerBindings', { tenantId, scopeId: callerScopeId }, null, rows.length);
+        return rows.map((r) => peerBindingSchema.parse({ tenantId, callerScopeId, vertical: r.vertical, targetScopeId: r.target_scope_id, invalidated: r.invalidated === 1 }));
+      },
+      setPeerBinding: async (_actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string, targetScopeId: ScopeId | null) => {
+        const answer = await this.cp.setPeerBinding(tenantId, callerScopeId, verticalSlug.parse(vertical), targetScopeId);
+        if (!answer.ok) throw substratError(answer.code, answer.message);
+        return { changed: answer.changed, previous: answer.previous as ScopeId | null };
+      },
       resolveHostname: async (raw: string) =>
         // The router's per-request read. No actor, not logged — the same machine-path
         // carve-out resolveIdentity has (K-24). Shares its mapping with the router's
@@ -8664,6 +8691,10 @@ export class CloudflareScopeHost implements ScopeHost {
         const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
         await this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
+      recordPeerBindingChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = peerBindingAudit.parse(entry);
+        await this.recordAdmin(actor, 'setPeerBinding', { tenantId, scopeId }, null, after);
+      },
       /** #2064: an audited operation's rows, by the operation-id index, in bounded batches. */
       auditedOperations: async (actor, refs) => {
         const rows = await this.cp.auditedOperations([...refs]);
@@ -9369,7 +9400,7 @@ export class CloudflareScopeHost implements ScopeHost {
     object: string,
     expiresAt: string | null,
   ): Promise<void> {
-    await this.scopeStub(scopeId).writeTuple(subject, relation, object, expiresAt);
+    unwrapReply(await this.scopeStub(scopeId).writeTuple(subject, relation, object, expiresAt));
   }
 
   /**
@@ -10234,7 +10265,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * already projected (via `provisionScopeLocal`), or the local checker expands it to nothing.
    */
   async assignScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void> {
-    await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null);
+    unwrapReply(await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null));
   }
 
   /**
@@ -10306,12 +10337,12 @@ export class CloudflareScopeHost implements ScopeHost {
     permission: PermissionKey,
     entity: EntityRef,
   ): Promise<void> {
-    await this.scopeStub(scopeId).writeTuple(
+    unwrapReply(await this.scopeStub(scopeId).writeTuple(
       `principal:${principal}`,
       `granted:${permission}`,
       entityObjectRef(entity, 'grantEntityLocal'), // #1856
       null,
-    );
+    ));
   }
 
   /**

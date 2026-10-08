@@ -79,7 +79,7 @@ interface EntityGrantLike {
   entityType: string;
   permissions: string[];
   bootstrap?: true;
-  holder?: 'self' | { table: string; idColumn: string; principalColumn: string };
+  holder?: 'self' | 'grantee' | { table: string; idColumn: string; principalColumn: string };
   retired?: string[];
 }
 /** The normalised surface render()/collectRegistry() consume — unchanged by the discovery move. */
@@ -105,6 +105,7 @@ interface VerticalModule {
 const bootstrapCell = (g: EntityGrantLike): string => {
   if (!g.bootstrap) return 'no — shared';
   if (!g.holder) return 'yes — holders given it from now on';
+  if (g.holder === 'grantee') return 'yes — live holders of current or retired keys here; direct grants cannot give these keys';
   const whose = g.holder === 'self' ? 'the entity id is the principal' : `\`${g.holder.table}.${g.holder.principalColumn}\` names the principal`;
   return `yes — ${whose}`;
 };

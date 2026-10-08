@@ -1796,6 +1796,14 @@ export const permMod: ModuleRegistration = {
       never,
       unknown
     >,
+    // #2083: read the bootstrap marker itself, not just whether a later top-up inferred it.
+    'perm/shape-marker': (async (ctx, input) => {
+      const { principal, entity } = input as { principal: string; entity: EntityRef };
+      return ctx.sql.query<{ revoked_at: string | null }>(
+        `SELECT revoked_at FROM _substrat_tuples WHERE subject = ? AND relation = 'bootstrap' AND object = ?`,
+        [`principal:${principal}`, `${entity.entityType}:${entity.entityId}`],
+      );
+    }) as OperationHandler<never, unknown>,
     // #2071: the kernel's `entity.grants-topped-up` events on one entity, oldest first — or,
     // given `type`, its `entity.grants-retired` ones (#2082).
     'perm/topped-up': (async (ctx, input) =>

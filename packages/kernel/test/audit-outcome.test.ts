@@ -234,3 +234,20 @@ describe('unknownOutcomeOf, for a kill switch (#2089)', () => {
     expect(unknownOutcomeOf(intent('revokeFromSystem', { ...base, operationId: 'op', phase: 'intent' }), 'row-1', 'x').operationId).toBe('op');
   });
 });
+
+
+describe('peer binding and switch audit settlement after merging their flows', () => {
+  it('settles peer bindings with their own schema and retains all switch actions', () => {
+    const tenantId = '01J00000000000000000000001';
+    const scopeId = '01J00000000000000000000002';
+    const after = { operationId: 'binding-op', phase: 'intent', vertical: 'acme/crm', targetScopeId: null };
+    const outcome = unknownOutcomeOf({
+      id: 'binding-intent', action: 'setPeerBinding', tenant_id: tenantId, scope_id: scopeId,
+      vertical: 'acme/desk', after: JSON.stringify(after),
+    }, 'binding-intent', 'no outcome was recorded');
+    expect(outcome.after).toEqual({ ...after, phase: 'unknown', error: 'no outcome was recorded' });
+    expect(outcome.failure.operation).toBe('audit.setPeerBinding');
+    expect(AUDITED_CHANGE_ACTIONS).toContain('setPeerBinding');
+    for (const action of SWITCH_ACTIONS) expect(AUDITED_CHANGE_ACTIONS).toContain(action);
+  });
+});

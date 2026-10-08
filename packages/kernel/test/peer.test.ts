@@ -14,6 +14,7 @@ import {
   collectPeers,
   idempotencySubject,
   peerSeats,
+  resolvePeerInstanceFrom,
   resolveVerticalInstanceFrom,
   seatScopeTuple,
   switchPeer,
@@ -229,5 +230,27 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
       vertical: 'acme/crm',
       count: 2,
     });
+  });
+
+  it('an explicit binding chooses exactly its live, same-tenant primary scope', () => {
+    const chosen = row();
+    const other = row();
+    expect(resolvePeerInstanceFrom([other, chosen], T, 'acme/crm', chosen.id)).toEqual({
+      outcome: 'resolved', instance: { tenantId: T, scopeId: chosen.id, vertical: 'acme/crm' },
+    });
+    expect(resolvePeerInstanceFrom([other, chosen], T, 'acme/crm', null).outcome).toBe('ambiguous');
+  });
+
+  it('a stale binding never falls back to a remaining live instance', () => {
+    const chosen = row({ status: 'suspended' });
+    const other = row();
+    const expected = { outcome: 'bound-unavailable', tenantId: T, vertical: 'acme/crm', targetScopeId: chosen.id };
+    expect(resolvePeerInstanceFrom([chosen, other], T, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([other], T, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, tenantId: U, status: 'active' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', vertical: 'acme/other' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', kind: 'preview' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id).outcome).toBe('resolved');
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id, true)).toEqual(expected);
   });
 });
