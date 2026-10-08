@@ -17,5 +17,5 @@ export const PERSONAS: DevPersona[] = [
   { sub: 'dev|sofia', name: 'Sofia Ruiz', email: 'sofia@nordlys.test', note: 'author · café' },
 ];
 
-/** The identity pool these logins belong to (K-23) — see the note in callout's personas.ts. */
+/** The identity pool these logins belong to (K-23) — see the note in meridian's personas.ts. */
 export const DEV_PROVIDER = 'oidc:dev-issuer';

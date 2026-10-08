@@ -1108,7 +1108,7 @@ export class TenantNarrowedControlPlane {
 
   /**
    * The vertical's release channels. Empty when it has no registered/promoted
-   * versions — a static-binding vertical (like platform-owned Callout today), in
+   * versions — a static-binding vertical (a platform-owned builtin), in
    * which case there is nothing to pin. `[]` on any non-200 so callers can treat
    * "no version" and "not registered" the same.
    */

@@ -1,14 +1,16 @@
 # Running the whole stack locally
 
 [Getting started](/guide/getting-started) builds one host in one script. This page is the
-other end: the **entire** flow — a vertical, the shared control plane, and the admin
-console — running together on your machine with `pnpm dev` and nothing but local SQLite.
-No cloud account, no Docker, no second datastore.
+other end: the platform side — the shared control plane and the admin console — running on
+your machine with `pnpm dev`, and a demo vertical beside it, all on nothing but local
+SQLite. No cloud account, no Docker, no second datastore.
 
 ::: tip This is a monorepo command
 `pnpm dev` at the root of the [substrat monorepo](https://github.com/substrat-run/substrat)
-runs the Callout demo vertical (`demos/callout`) wired to the console (`apps/console`). It is
-the reference for what a local stack looks like, not a published tool.
+runs the standalone control-plane dev server (`pnpm --filter @substrat-run/control-plane-api dev`)
+with a seeded fleet, and the console (`apps/console`) pointed at it. It is the reference for
+what a local platform looks like, not a published tool. A vertical runs separately, from its
+own directory.
 :::
 
 ## One command
@@ -17,101 +19,67 @@ the reference for what a local stack looks like, not a published tool.
 pnpm dev
 ```
 
-It ends on a banner telling you where to go:
+The control plane logs where it is and how to sign in:
 
 ```
-  substrat · local stack — one process, one SQLite dir
-  ────────────────────────────────────────────────────
-    ▶ Console (open this)   http://localhost:5272
-    ▶ Portal — Callout    http://localhost:5271
-
-      vertical API          http://localhost:8871
-      control plane API     http://localhost:8788
-  ────────────────────────────────────────────────────
-    data   …/demos/callout/.data
+control-plane API  http://127.0.0.1:8788
+directory          /tmp/substrat-cp-…
+staff auth         Better Auth — sign in as markus@substrat.run / substrat123
 ```
 
-Open the **console** to act as the platform operator (tenants, scopes, entitlements,
-suspend). Open the **portal** to act as a tenant's user (log in as a persona, do work).
+Open the **console** on `http://localhost:5272` to act as the platform operator (tenants,
+scopes, entitlements, suspend). It runs **real staff auth**, so it opens on a sign-in
+screen; use the seeded operator above.
 
 ## What is actually running
 
-The surprising part — and the thing that makes the flow real rather than mocked — is that
-there is **one backend process**. The vertical API and the control plane are two HTTP
-listeners over the **same `SqliteScopeHost`**, which owns both the directory and every
-scope's data. Two browser apps (Vite dev servers) sit in front, each proxying `/api` to
-its own listener.
-
 ```mermaid
-flowchart TB
-  subgraph browser["Your browser"]
-    C["Console UI<br/>localhost:5272"]
-    A["Callout app (portal)<br/>localhost:5271"]
-  end
-
-  subgraph proc["One Node process — pnpm dev"]
-    direction TB
-    CP["control-plane router<br/>:8788"]
-    V["vertical API (Hono)<br/>:8871"]
-    H["SqliteScopeHost<br/><i>the shared host</i>"]
-    CP --> H
-    V --> H
-  end
-
-  I["dev-issuer (OIDC)<br/>:8879 — picks a persona"]
-
-  subgraph data["demos/callout/.data — one SQLite directory"]
-    D[("_directory.sqlite<br/>tenants · scopes · roles · entitlements · audit · identity links")]
-    S[("&lt;tenant&gt;__&lt;scope&gt;.sqlite<br/>one file per scope — its data + outbox")]
-  end
-
-  C -->|"/api → :8788"| CP
-  A -->|"/api → :8871"| V
-  A -.->|"login redirect"| I
-  V -.->|"verify ID token"| I
-  H --> D
-  H --> S
+flowchart LR
+  C["Console UI<br/>localhost:5272"] -->|"/api → :8788"| CP["control plane (Hono)<br/>:8788"]
+  CP --> H["SqliteScopeHost"]
+  H --> D[("_directory.sqlite<br/>tenants · scopes · roles · entitlements · audit")]
 ```
-
-Because the control plane and the vertical share **one host**, they share **one
-directory**. That is why a suspend in the console immediately fails the portal's next
-action closed: `getScope` reads the scope's status from `_directory.sqlite` on every call,
-and the console just wrote to that same row. There is no sync, no second copy — it is one
-`UPDATE` and one `SELECT` against the same file.
 
 ### The processes
 
 | Port | Process | What it is |
 |---|---|---|
 | `5272` | Vite dev server | The **console** — the platform operator's admin UI |
-| `5271` | Vite dev server | The **portal** — Callout's tenant-facing app |
-| `8871` | Node (Hono) | The **vertical API** — resolves a user, `getScope`, invokes operations |
 | `8788` | Node (Hono) | The **control plane** — the audited directory surface the console drives |
-| `8879` | Node (dev-issuer) | The **local login** — a real OIDC provider whose `/authorize` lists Callout's personas |
 
-The two Hono listeners are the *same process* sharing one host; the dev issuer is its own
-Node process, and the two Vite servers are separate again. All five are launched and torn
-down together by `pnpm dev`.
+Both are launched and torn down together by `pnpm dev`. The control plane seeds a small
+fleet on boot — several tenants, a suspended one whose scopes fail closed by cascade, and a
+scope in every status the console renders — so the console has something with real shape to
+show. `CP_SKIP_SEED=1` starts it empty instead.
+
+Auth is Better Auth behind a provider-agnostic seam (`sessionPlatformAuth` + a staff
+allowlist), so who authenticates staff can change without touching the console or the
+router. `CP_UNSAFE_AUTH=1` on the control plane, with `VITE_DEV_ACTOR` set for the console,
+swaps it for the UNSAFE dev-actor header stub — which is only ever acceptable bound to
+`127.0.0.1`, as this server is.
 
 ### The databases
 
-Everything lives under `demos/callout/.data` as plain SQLite files (WAL mode — the `-wal` /
-`-shm` siblings are SQLite's, not yours to touch):
+The control plane keeps its directory in `SUBSTRAT_DIR`, or a fresh temporary directory when
+that is unset — so by default every boot starts from the seed. A demo vertical keeps its own
+under `demos/<name>/.data`. Both are plain SQLite files (WAL mode — the `-wal` / `-shm`
+siblings are SQLite's, not yours to touch):
 
-| File | Owned by | Holds |
-|---|---|---|
-| `_directory.sqlite` | the shared host | The directory: tenant registry, scope records + lifecycle status, roles, entitlements, tenant-level permission tuples, and the admin audit log |
-| `<tenantId>__<scopeId>.sqlite` | the shared host | One per scope — that scope's own tables, permission tuples, and event outbox. Isolated: a scope is its own database and consistency domain |
+| File | Holds |
+|---|---|
+| `_directory.sqlite` | The directory: tenant registry, scope records + lifecycle status, roles, entitlements, tenant-level permission tuples, and the admin audit log |
+| `<tenantId>__<scopeId>.sqlite` | One per scope — that scope's own tables, permission tuples, and event outbox. Isolated: a scope is its own database and consistency domain |
 
-There is no credentials database. Callout is OIDC-only: accounts live at the issuer, and the
-directory holds only the *link* from each issuer subject to a principal — the seed writes it
-from `src/personas.ts`, the same array the dev issuer's picker lists. Locally that issuer is
-[`@substrat-run/dev-issuer`](/reference/dev-issuer) on `:8879`, started by the same `pnpm dev`.
+There is no credentials database in a vertical. Every demo is OIDC-only: accounts live at the
+issuer, and the directory holds only the *link* from each issuer subject to a principal — the
+seed writes it from `src/personas.ts`, the same array the dev issuer's picker lists. Locally
+that issuer is [`@substrat-run/dev-issuer`](/reference/dev-issuer) on `:8879`, started by the
+demo's own `dev` script.
 
 Debugging is opening a file:
 
 ```sh
-sqlite3 demos/callout/.data/_directory.sqlite 'SELECT slug, status FROM scopes;'
+sqlite3 demos/todo/.data/_directory.sqlite 'SELECT slug, status FROM scopes;'
 ```
 
 **Use a `sqlite3` of 3.42 or later on a scope file a subject erasure has run on.** An
@@ -124,7 +92,7 @@ your package manager's backports, Homebrew (`brew install sqlite`), or the prebu
 as well. Exports and backups are not affected: they never carry a search index, and the index
 is rebuilt when one is loaded.
 
-Delete the `.data` directory to reset the world; it re-seeds on the next boot.
+Delete a demo's `.data` directory to reset its world; it re-seeds on the next boot.
 
 ## Letting an agent run it
 
@@ -137,9 +105,9 @@ This is worth more here than in most projects. A demo's scenario test composes t
 directly and **never boots `src/server.ts`**, so a green suite says nothing at all about the
 HTTP layer. The Browser pane is the reliable way to drive the part the tests skip.
 
-Each process gets its **own** entry rather than the single `concurrently` pair `pnpm dev`
-runs, which is the point: Claude can attach the Browser to the web port while reading the
-API's log independently. Callout's:
+Each process gets its **own** entry rather than the single `concurrently` line a demo's
+`dev` script runs, which is the point: Claude can attach the Browser to the web port while
+reading the API's log independently. Todo's, less its test-UI entry:
 
 ```jsonc
 {
@@ -148,9 +116,9 @@ API's log independently. Callout's:
     { "name": "issuer", "runtimeExecutable": "pnpm", "runtimeArgs": ["run", "issuer"],
       "port": 8879, "autoPort": false },
     { "name": "api", "runtimeExecutable": "pnpm", "runtimeArgs": ["run", "server"],
-      "port": 8871, "autoPort": false },
+      "port": 8878, "autoPort": false },
     { "name": "web", "runtimeExecutable": "pnpm", "runtimeArgs": ["--dir", "app", "dev"],
-      "port": 5271, "autoPort": false }
+      "port": 5278, "autoPort": false }
   ]
 }
 ```
@@ -166,7 +134,7 @@ someone mints a token at the issuer, never in the vertical — a JSON body namin
 subject, and the returned `access_token` is the bearer:
 
 ```sh
-curl -XPOST localhost:8879/dev/token -d '{"sub":"dev|anna"}'   # → { access_token, id_token, … }
+curl -XPOST localhost:8879/dev/token -d '{"sub":"dev|ada"}'   # → { access_token, id_token, … }
 ```
 
 ### These files are emitted — don't hand-edit them
@@ -197,12 +165,6 @@ still be mandatory on your machine, where no such delivery exists.
   time without `PORT=… WEB_PORT=… ISSUER_PORT=…` — all three, because every demo's dev
   issuer sits on `:8879` by default, so moving only the API and the web port still leaves
   the second issuer dying on `EADDRINUSE`.
-- **A process can bind more than the port it declares.** Callout's `api` entry starts the
-  vertical API on `:8871` *and* the co-located control plane on `:8788`; only the first is
-  declared, because only the first is the one to attach a browser to. If `:8788` is taken —
-  by another project, or a stray `pnpm dev:connected` — the entry dies on `EADDRINUSE` for a
-  port Claude is not watching, which reads as a server that simply never came up. `CP_PORT=…`
-  moves it.
 - **An entry declares a port, not a URL.** The Browser pane opens that server's bare
   origin, and nothing in the file can deep-link a path or a query under it — so a page
   that is not the app's root is somewhere Claude navigates *after* the preview comes up.
@@ -226,7 +188,7 @@ still be mandatory on your machine, where no such delivery exists.
   client, an empty `PLATFORM_SECRET`, a demo asking for a model key. The monorepo's root
   `.worktreeinclude` names the gitignored files a worktree needs in order to run, and Claude
   Code copies them from the main checkout when it creates one: `secrets/*.env`, every
-  `.env` and `.dev.vars`, and Callout's local `wrangler.jsonc`. What it deliberately does
+  `.env` and `.dev.vars`. What it deliberately does
   **not** copy is `.data/` — each worktree seeds its own SQLite on first boot, so a session
   starts from the seed world rather than inheriting another session's tenants, logins and
   half-run scenarios. `node_modules/` and `dist/` are not copied either: run `pnpm install`
@@ -237,19 +199,22 @@ still be mandatory on your machine, where no such delivery exists.
   The Browser-pane path is separate and works; wiring up Bash-side `curl` is a deliberate
   `excludedCommands` entry, not something to discover mid-session.
 
-## Two audiences, one directory
+## Two audiences
 
-The console and the portal are not two views of the same app — they are two **audiences**:
+The console and a vertical's app are not two views of the same app — they are two
+**audiences**:
 
 - The **console** is the platform operator. It reaches every tenant, and its actions
   (suspend a tenant, grant an entitlement) are cross-tenant. This is the surface [the
   platform layer](/concepts/platform) describes.
-- The **portal** is one tenant's user, confined to their scope by the identity they logged
-  in with. Anna sees ElMontage; Mallory sees a different tenant entirely.
+- A **vertical's app** is one tenant's user, confined to their scope by the identity they
+  logged in with. In `demos/todo`, Ada and Björn share a tenant; Cleo sees a different one
+  entirely.
 
-From a scope's row in the console you can click **Portal ↗** to jump to that scope's app —
-the local stand-in for the production hostname router that maps a domain to
-`(tenant, scope, vertical)`.
+Locally the two do not share a directory: `pnpm dev`'s control plane holds its seeded fleet,
+and each demo seeds its own tenants into its own host. Setting `VITE_PORTAL_BASE` on the
+console to a vertical's dev URL turns a scope's **Portal ↗** link on — the local stand-in for
+the production hostname router that maps a domain to `(tenant, scope, vertical)`.
 
 ## Adding tenants and scopes
 
@@ -259,75 +224,30 @@ way to change the local world:
 - **New tenant:** the console's Tenants view has a *Create tenant* dialog. It mints a ULID
   and calls the same audited `createTenant` the platform uses.
 - **Grant/revoke entitlements, suspend, archive:** all live in the console and take effect
-  immediately, because they write the shared directory the portal reads.
+  immediately.
 - **New scope:** provisioning a scope is on the control-plane API (`POST /scopes`) but does
-  not yet have a console button — the demo seeds its scopes in `demos/callout/src/seed.ts`. Add
-  one there, or `curl` the API with a platform-actor header.
+  not yet have a console button — the dev server seeds its fleet in
+  `packages/control-plane-api/dev/server.mts`. Add one there, or `curl` the API with a
+  platform-actor header.
 
 ## Adding another application
 
-A "new application" is a new **vertical**. Today each of the eight demo verticals
-(`demos/{callout,handlebar,manyfold,meridian,shop,ticket0,tock,todo}`) ships its own dev server —
-Callout's is `demos/callout/src/server.ts` — and each composes its engines + module into a host.
-(A ninth directory, `demos/auth-server`, is a shared OIDC provider, not a business vertical.) To
-scaffold one, follow [Getting started](/guide/getting-started) with the engines you need, and
+A "new application" is a new **vertical**. Today each of the seven demo verticals
+(`demos/{handlebar,manyfold,meridian,shop,ticket0,tock,todo}`) ships its own dev server —
+Todo's is `demos/todo/src/server.ts` — and each composes its engines + module into a host.
+(An eighth directory, `demos/auth-server`, is a shared OIDC provider, not a business vertical.)
+Run one with `pnpm --filter @substrat-run/demo-<name> dev`. To scaffold one, follow
+[Getting started](/guide/getting-started) with the engines you need, and
 [Deploying a vertical](/guide/deploying) when it's ready to ship.
 
-What is **not** wired yet is running several verticals against **one** shared console
-locally — that needs each vertical to register into a *separate* control-plane process over
-HTTP, rather than co-locating the directory in its own host as the demo does for
-convenience. Until that seam exists, the local stack is one vertical + the console; the
-console's fleet view is designed for the many-vertical world it will grow into.
-
-## The faithful topology: `pnpm dev:connected`
-
-`pnpm dev` co-locates the control plane and the vertical in one process for speed. To run
-the shape production actually uses — a **separate** control plane that the vertical
-*registers into* and is *gated by* — use:
-
-```sh
-pnpm dev:connected
-```
-
-This starts three things: a standalone control plane (its own process, on `:8788`), the
-Callout vertical in **connected mode**, and the console pointed at that control plane. On
-boot the vertical registers its tenants and scopes into the control plane over HTTP; before
-every request it asks the control plane "is this scope still active?" So when you suspend a
-scope in the console, the vertical's next action fails closed — the same outcome as the
-co-located stack, but now crossing a real process boundary, exactly as it would cross a
-deployment boundary in production.
-
-```mermaid
-flowchart LR
-  CO["Console<br/>:5272"] -->|writes| CP["Control plane<br/>:8788 — own process"]
-  V["Callout vertical<br/>:8871 — own process"] -->|"register + gate (HTTP)"| CP
-  V -->|local execution| DB[("scope SQLite")]
-```
-
-The seam is `ControlPlaneClient` from `@substrat-run/control-plane-api`: `createTenant` /
-`provisionScope` / `grantEntitlement` to register, and `assertScopeActive` to gate. One
-deliberate limit — the control-plane HTTP surface exposes lifecycle and entitlements but
-**not role or grant writes** (those are the permission-diff human checkpoint), so a
-connected vertical keeps its permission model local while the shared plane is authoritative
-for tenant/scope lifecycle and entitlements.
-
-Unlike the quick `pnpm dev` (which trusts a dev-actor header), the connected control plane
-runs **real staff auth** — the console shows a sign-in screen. Sign in with the seeded
-operator:
-
-```
-markus@substrat.run / substrat123
-```
-
-Auth is Better Auth behind a provider-agnostic seam (`sessionPlatformAuth` + a staff
-allowlist), so who authenticates staff can change without touching the console or the
-router. The vertical registering its scopes is a *service*, not staff — locally it uses the
-dev-actor header as a stand-in for a real service credential.
+What is **not** wired locally is a demo vertical registering into the control plane `pnpm dev`
+runs: each demo keeps its directory in its own host, for convenience, so the console's fleet
+view is the seeded one rather than the demos you have running.
 
 ## How production differs
 
-Co-location is a local convenience, not the topology; `pnpm dev:connected` above is the
-faithful shape on one machine. In production the control plane is its **own deployment** and
+A demo holding its own directory is a local convenience, not the topology. In production the
+control plane is its **own deployment** and
 each vertical is a **separate deployment**, all reaching one durable directory — the same
 surfaces you see here, split across processes and hosts. The SQLite adapter you run locally
 and the Cloudflare adapter you deploy on are the same kernel above

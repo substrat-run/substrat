@@ -89,7 +89,7 @@ export function RepairDetailView({ repairId }: { repairId: string }) {
             <>
               {/*
                 A free-text field, not a picker, and deliberately — the same treatment
-                `callout/OrderDetail` gives the identical problem. The dropdown used to be
+                the former Callout demo gave the identical problem. The dropdown used to be
                 filled from the dev server's persona cast, which made it work locally and
                 nowhere else: a hosted install has no cast, so it rendered empty and
                 assignment was impossible. Listing the real mechanics means "which

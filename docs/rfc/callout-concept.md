@@ -1,8 +1,16 @@
+---
+status: historical
+layer: plan
+description: The Callout field-service concept — the first demo vertical, which the workorder, invoicing and protocol engines were cut against; the demo is gone, the argument stays.
+---
+
+<!-- Retained from demos/callout/spec/concept.md when the demo was removed (2026-10-07). Later concept documents cite it as the reference demo; nothing below was revised. -->
+
 # Demo Vertical — "Callout" (milestone 1)
 
 Status: draft v0.2 · Last updated: 2026-07-14
 
-> Companion to [kernel-design.md](../../../docs/architecture/kernel-design.md) §12 (milestone-1 cut) and the master
+> Companion to [kernel-design.md](../architecture/kernel-design.md) §12 (milestone-1 cut) and the master
 > plan §13.4 (the 15-minute demo). Anonymization per the master plan: the feature set is
 > derived from **the FSM vendor's** public product surface — deliberately, so demo work
 > seeds the real engines cases 1 and 4 need.
@@ -42,7 +50,7 @@ plays in the real sequence, at demo scale.
 | Capability | Layer | Demo scope |
 |---|---|---|
 | Work orders + time + material | **Engine `engine-workorder`** | v1, core |
-| Protocols/checklists (sign → immutable) | **Vertical code now, engine at milestone B** ([engine-protocol.md](../../../docs/engines/protocol.md), decision 27) | v1: self-inspection-electrical fill/sign + completion guard as `callout/*` ops; extraction when Handlebar's checklist forces it |
+| Protocols/checklists (sign → immutable) | **Vertical code now, engine at milestone B** ([engine-protocol.md](../engines/protocol.md), decision 27) | v1: self-inspection-electrical fill/sign + completion guard as `callout/*` ops; extraction when Handlebar's checklist forces it |
 | Invoice basis | **Engine `engine-invoicing`** | v1, core — the star-topology showpiece |
 | Scheduling/dispatch | Engine, **deferred** | demo shows assignment field + list |
 | Automatic pricing per customer contract | **Vertical** | price list table + pricing hook |

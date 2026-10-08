@@ -95,8 +95,7 @@ Substrat is pre-release (0.x). What exists today:
 | Planima connector (planned facility maintenance, read-only) | [`@substrat-run/connector-planima`](/connectors/planima) | Published |
 | The `substrat` CLI — authenticated deploy (`login`, `push`) | [`@substrat-run/cli`](/guide/deploying) | Working |
 | Platform surfaces — [control plane](/platform/control-plane), [console](/platform/console), [router](/platform/router), [dashboard](/platform/dashboard) | private deployments | Working (self-serve deploy foundation) |
-| Callout (field service) — the canonical composition; first CP-less pushable vertical | [`demos/callout`](/verticals/callout) | Working |
-| Handlebar (bike workshop) — engine reuse under new vocabulary | [`demos/handlebar`](/verticals/handlebar) | Working |
+| Handlebar (bike workshop) — the canonical composition; engine reuse under new vocabulary | [`demos/handlebar`](/verticals/handlebar) | Working |
 | Kallkälla (coffee shop) — two audiences, one API; commerce | [`demos/shop`](/verticals/shop) | Working |
 | Meridian (HR) — leave/absence, time, expenses, onboarding; one role-adaptive app | [`demos/meridian`](/verticals/meridian) | Working |
 | Manyfold (headless CMS) — multi-scope, *site = scope*; the editorial lifecycle as the invariant | [`demos/manyfold`](/verticals/manyfold) | Working |
@@ -112,7 +111,7 @@ guarantees (nested tenancy, permissions, audit, GDPR) hold with zero engine supp
 that its value isn't borrowed from the work-order state machine. It reuses only the
 protocol engine (onboarding) and is the vertical that surfaces the
 [absence / entry-ledger engine](/engines/#engines-today) candidate. It also exercises what
-Callout doesn't: two country scopes (Sweden 25 days + saved days, Spain 22 + *registro de
+Handlebar doesn't: two country scopes (Sweden 25 days + saved days, Spain 22 + *registro de
 jornada*) diverging from one codebase, and a single app that adapts to the person — an
 employee sees only their own record; a team lead who is *also* an employee gets a **Manage**
 section beside their own **My work**, all behind the same permission checks.

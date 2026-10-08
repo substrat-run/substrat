@@ -214,7 +214,7 @@ interface DeclaredCheck {
  * is precisely what distinguishes it from an oversight. So it gets its own row.
  *
  * Read off the flag rather than off an empty `checks`, because empty is ALSO what a
- * walk over a composed engine's key looks like (Callout's portal walk checks
+ * walk over a composed engine's key looks like (a portal walk that checks
  * `workorder:read`, which the engine declares and a vertical must not restate).
  * Those really are walks, and counting them as unchecked would trade this bug for
  * a worse one.

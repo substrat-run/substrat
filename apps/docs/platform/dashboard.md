@@ -265,8 +265,8 @@ with an **app filter** rather than tabs on each app. The app page links into bot
 
 ## Status
 
-Built and connected — self-service sign-up bootstraps a tenant, the catalog offers a real
-[Callout](/verticals/callout) entry, and provisioning runs through the tenant-narrowed control-plane
+Built and connected — self-service sign-up bootstraps a tenant, the catalog offers real
+entries, and provisioning runs through the tenant-narrowed control-plane
 seam (an app becomes a live scope; deleting one deprovisions it for real). Most of the designed
 surface is now shipped: the app lifecycle, builder **Deployments**, a read-only **Data** browser with
 export/import, **Previews**, per-app **Environment**, custom **Domains**, team **members** (invite /

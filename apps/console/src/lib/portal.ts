@@ -35,7 +35,7 @@ export function portalUrl(
 
   // Local dev has no router and no bindings: the console and the vertical are two
   // Vite servers on localhost, which is not something the map can express (a port
-  // is not a hostname). `pnpm dev` sets this; a deployment does not, and if it did
+  // is not a hostname). Set it to the vertical's dev URL; a deployment does not, and if it did
   // the branch above would have won anyway.
   const devBase = import.meta.env.VITE_PORTAL_BASE as string | undefined;
   if (!devBase) return null;

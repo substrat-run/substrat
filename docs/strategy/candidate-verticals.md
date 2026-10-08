@@ -232,7 +232,7 @@ far too small for core banking, yet handling money. **Boundary discipline:** we 
 member register, governance and obligation ledger; the money rail is a connector (§7.5).
 *Engines: membership (new), invoicing, deliberative (new).*
 
-**16. Field service and work orders.** Proven (`demos/callout`) but crowded (§7.5). What we
+**16. Field service and work orders.** Proven (`demos/handlebar`, and the Callout demo before it) but crowded (§7.5). What we
 solve is not FSM generally — it is vertical depth at niche scale: OVK, F-gas,
 borrprotokoll→SGU, EDI grossist. The reference vertical, not the flagship market.
 *Engines: workorder, invoicing, protocol.*
@@ -378,7 +378,7 @@ almost entirely, in this order of evidence:
    Tier 3 insurance and HR slices. The widest unmet shape in the catalog, and the one
    carrying the most legally consequential invariants (eligibility, recusal, appeal
    without history rewrite).
-2. **Registry with validity** — categories 1, 2, 12, plus behörigheter in `demos/callout`,
+2. **Registry with validity** — categories 1, 2, 12, plus behörigheter in the former Callout demo,
    kompetens in HR, besiktningsintervall in fastighet, ledarlicenser in clubs. Small,
    sharply defined, and already appearing in four places — **closest to qualifying for
    extraction under §3's rule.**

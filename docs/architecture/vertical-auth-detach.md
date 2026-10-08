@@ -177,7 +177,7 @@ live instance orphans every mapping — members would re-claim via fresh invites
 
 - **D1 — default for a new app: `builtin`, explicit opt-in to an issuer.** The registry
   does not yet declare which verticals SUPPORT `substrat:auth`, so defaulting to an
-  issuer would break installs of verticals that ignore it (Callout). Upgrading the
+  issuer would break installs of verticals that ignore it (Callout did, at the time). Upgrading the
   default to "the team's auth server when exactly one exists" waits on a capability
   flag on the registry row.
 - **D2 — session mechanism: server-side RP with cookie sessions** (oidc-rp reused;

@@ -5,20 +5,20 @@ Stockholm): customers bring bikes in, mechanics repair them, the shop prices and
 
 ## Overview
 
-Handlebar is the **engine-reuse proof**. It is deliberately the *v2 skin* — the **same engines as
-[Callout](/verticals/callout), under different vocabulary** — so "two verticals on shared engines"
-is demonstrated rather than claimed. The vertical owns only vocabulary, extra fields, its price
+Handlebar is the **engine-reuse proof**. It began as the *v2 skin* — the **same engines as the
+first field-service demo (Callout, since removed), under different vocabulary** — so "two verticals
+on shared engines" was demonstrated rather than claimed. The vertical owns only vocabulary, extra fields, its price
 list, roles, and screens; nothing in any engine's state machine is touched.
 
 A repair *is* a [work order](/engines/workorder/): `reparation`, on a `cykel`
 (`facility`), worked by a `mekaniker` (`assigned_to`), priced and invoiced through the same
-[invoicing](/engines/invoicing/) path Callout uses. The interesting part is the third engine.
+[invoicing](/engines/invoicing/) path the field-service demo used. The interesting part is the third engine.
 
 ### It forced the protocol engine out
 
 Handlebar is the vertical that made [`protocol`](/engines/protocol/) an engine. Its
 `tillståndsrapport` — a per-bike condition report — needed the same **sign → immutable** invariant
-Callout's checklists have, but in a *different shape*:
+the field-service demo's checklists had, but in a *different shape*:
 
 - the **workshop signs** it (freezing the content forever), and the **customer counter-signs the
   same frozen content at pickup** — a second signature on already-frozen content;
@@ -30,11 +30,11 @@ not in one vertical's code. So it was extracted — and Handlebar keeps only the
 vocabulary; every invariant (sign-freeze, counter-sign on frozen content, append-only responses,
 verifiable hash) lives in `@substrat-run/engine-protocol`.
 
-That extraction also lets Handlebar lean on **manifest-declared** mechanisms where Callout uses
-code: a declared guard `protocol/all-signed` (`countersigned: true`) sits `before`
+That extraction also lets Handlebar lean on **manifest-declared** mechanisms where the
+field-service demo used code: a declared guard `protocol/all-signed` (`countersigned: true`) sits `before`
 `bike-shop/close-repair`, and the vertical `withdraws` the engine's own `workorder/close` so the
-*only* door to `closed` is the guarded operation. Callout composes the equivalent guard as
-conditional vertical glue; Handlebar declares it. Two poles of the same seam.
+*only* door to `closed` is the guarded operation. The field-service demo composed the equivalent
+guard as conditional vertical glue; Handlebar declares it. Two poles of the same seam.
 
 ## At a glance
 
@@ -45,7 +45,7 @@ conditional vertical glue; Handlebar declares it. Two poles of the same seam.
 | **Own tables** | `bike_shop_customers` · `bike_shop_bikes` · `bike_shop_price_list` |
 | **Roles** | `workshop-admin` (15 keys) · `mechanic` (4: `protocol:fill`/`read`, `workorder:read`/`report`) — portal customers hold no role, only entity-narrowed `protocol:countersign`/`read` + `workorder:read` per customer |
 | **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/handlebar/PERMISSIONS.md) — 19 keys, 4 modules, 2 roles |
-| **Apps** | node API (`:8872`) + React SPA (`:5272`) — runs side by side with Callout |
+| **Apps** | node API (`:8872`) + React SPA (`:5272`) |
 | **Status** | Working — demo seed |
 
 ## The cast & what's denied

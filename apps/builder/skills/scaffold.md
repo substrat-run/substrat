@@ -135,7 +135,7 @@ surface is a build-time fact tooling can read, not something buried in seed
 calls.
 
 **src/routes.ts + src/server.ts** — the HTTP surface, split so tests can drive
-it (the Callout reference uses exactly this shape):
+it:
 
 - `routes.ts` exports `mountApi(app: Hono, resolveStub: (c) => Promise<ScopeStub>)`
   — one explicit route per operation (`POST /api/<noun>`, never a generic

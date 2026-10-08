@@ -52,7 +52,7 @@ The npm half of "build outside the repo" is real today:
   `defineScopeDO`, `ControlPlaneDO`, `CloudflareScopeHost`
   ([adapter-cloudflare/src/index.ts](../../packages/adapter-cloudflare/src/index.ts)).
 - A working reference wiring exists in
-  [demos/callout/src/worker.ts](../../demos/callout/src/worker.ts): Hono API →
+  `demos/callout/src/worker.ts` (the demo has since been removed): Hono API →
   `defineScopeDO(MODULES)` + `ControlPlaneDO` + `CloudflareScopeHost` + Better Auth (D1).
 - The control-plane API router is web-standard and already documented as mountable in a
   Worker ([control-plane-api/src/api.ts](../../packages/control-plane-api/src/api.ts),
@@ -66,7 +66,7 @@ Today the vertical and the console each own a *separate* directory, and neither 
 the other:
 
 - In the demo, `ControlPlaneDO` lives **inside the vertical's own worker**
-  ([worker.ts](../../demos/callout/src/worker.ts)), and the vertical seeds its tenant/scope
+  (`worker.ts`), and the vertical seeds its tenant/scope
   into that embedded directory via its own `/api/seed`.
 - The console talks to the control-plane-api **dev server**, which stands up its **own**
   `SqliteScopeHost` in a temp dir with a hand-seeded fake fleet, behind
@@ -131,7 +131,7 @@ is the artifact the whole flow is demonstrated *from*.
   with a real scaffold, or — cheaper first step — commit a standalone example repo
   (`examples/external-vertical`, its own `package.json`, **no `workspace:*`**, real semver
   ranges on the published packages).
-- The scaffold is [demos/callout/src/worker.ts](../../demos/callout/src/worker.ts) stripped to a
+- The scaffold is `demos/callout/src/worker.ts` (the demo has since been removed) stripped to a
   minimal vertical: one trivial module, the three published engines optional, Better Auth
   wired, `wrangler.jsonc` with the two DO bindings.
 - **Prove it builds against the registry, not the workspace** — CI installs it with the

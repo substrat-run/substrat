@@ -96,7 +96,7 @@ lets a vertical gate the same behaviour on its own permission.
 whole seam.** Pricing is vertical vocabulary — a workshop's hourly rate, a property
 manager's ROT split, a shop's article prices — so the engine sums what it is given
 (`addMoney` over `Money`, never floats — K-14) and emits the total. `getReportedLines` is
-the read the vertical prices *from*. Callout's completion operation is the reference: read
+the read the vertical prices *from*. Handlebar's `bike-shop/complete-repair` is the reference: read
 the lines, price them in vertical code, pass them back, all in one transaction.
 
 The one total the lines cannot label is an **empty** completion's, and the engine used to

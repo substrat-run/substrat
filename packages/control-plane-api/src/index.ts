@@ -238,7 +238,7 @@ export type { DirectoryBackupOptions, DirectoryBackupResult } from './directory-
 // about it is one this package cannot assert on its own: that a pseudonymized dump still
 // re-imports and still parses when a VERTICAL reads it back. That round trip needs the
 // generator, an adapter and a vertical in one process, and the only place all three meet
-// is a vertical's own suite — `demos/callout/test/masked-round-trip.test.ts`.
+// is a vertical's own suite — `demos/meridian/test/masked-round-trip.test.ts`.
 export { maskDump, maskRecords, MASKED } from './mask.js';
 export { createPseudonymizer, kindOf, kindUnder } from './pseudonymize.js';
 export type { PiiKind, Pseudonymizer } from './pseudonymize.js';

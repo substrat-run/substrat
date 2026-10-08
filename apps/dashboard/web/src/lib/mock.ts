@@ -28,7 +28,6 @@ export const MOCK_ME: Me = {
 // templates a tenant can instantiate, which the live Create App marketplace lists.
 export const MOCK_CATALOG: CatalogEntry[] = [
   { slug: 'protocol', name: 'Documents', owned: false, listed: true, source: 'builtin', installable: true },
-  { slug: 'callout', name: 'Callout', owned: false, listed: true, source: 'builtin', installable: true },
   // The dev-preview's own pushed verticals (mirrors MOCK_DEPLOYMENTS): one with a prod
   // version (installable), one still pending — so the New-app groups render both states.
   { slug: 'acme/helpdesk', name: 'Helpdesk', owned: true, listed: false, source: 'cli', installable: true },

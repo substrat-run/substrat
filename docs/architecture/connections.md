@@ -897,7 +897,7 @@ critical path.
 `surfaceName` is an open string ([contracts/routing.ts:24](../../packages/contracts/src/routing.ts)),
 so a callback surface needs no contract change. The auth pattern to copy is
 `/internal/provision`'s platform-secret gate
-([demos/callout/src/worker.ts:224](../../demos/callout/src/worker.ts)) — deliberately *not*
+([demos/ticket0/src/worker.ts](../../demos/ticket0/src/worker.ts)) — deliberately *not*
 under `/api/*`, which is the tenant-facing surface.
 
 > **Landed (#96).** Push exists beside poll, exactly as scheduler.md §2 shaped it. The

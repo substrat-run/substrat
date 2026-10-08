@@ -40,7 +40,7 @@ export const steps: readonly Step[] = [
     n: 1, kind: 'edge',
     title: 'Browser hits a hostname',
     body: 'A tenant, a vertical, and a surface — all encoded in the name.',
-    mono: 'acme.callout.substrat.run',
+    mono: 'acme.ticket0.substrat.run',
   },
   {
     n: 2, kind: 'router',
@@ -155,7 +155,7 @@ export const diagram = {
     'The worker reads the tenant’s Identity Durable Object and opens the Scope Durable ' +
     'Object, where the operation runs. The response returns along a dashed path back ' +
     'through the router.',
-  browser: { title: 'Browser', mono: 'acme.callout.substrat.run' },
+  browser: { title: 'Browser', mono: 'acme.ticket0.substrat.run' },
   toRouter: 'the request',
   router: {
     tag: 'cloudflare edge',
