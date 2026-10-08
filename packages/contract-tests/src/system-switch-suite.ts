@@ -14,6 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type JobPassContext, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
+import { expectAnswered, expectSettledUnknown, withEmptyOutcomeError, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
 import { jobsMod, scheduleMod } from './modules.js';
 
 const SCHED = moduleId.parse('@test/sched');
@@ -36,10 +37,10 @@ const SCHEDULES = 2;
  */
 export function systemSwitchContractSuite(
   adapterName: string,
-  makeFixture: () => Promise<ScopeHostFixture>,
+  makeFixture: () => Promise<ScopeHostFixture & AdminRowFault>,
 ): void {
   describe(`schedule kill switch (#1666): ${adapterName}`, () => {
-    let fixture: ScopeHostFixture;
+    let fixture: ScopeHostFixture & AdminRowFault;
     let host: ScopeHost;
     const t = tenantId.parse(ulid());
     const reader: PrincipalId = principalId.parse(ulid());
@@ -243,6 +244,105 @@ export function systemSwitchContractSuite(
       expect(errorCodeOf(await refusal(on(s, stranger)))).toBe('not_found');
       // …and the module this scope does run is untouched by the attempt.
       expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: SCHEDULES });
+    });
+
+    describe('an outcome row the log cannot take (#2089)', () => {
+      const stranger = moduleId.parse('@test/not-held');
+      const latestOperation = async (s: ScopeId, action: 'revokeFromSystem' | 'restoreToSystem') =>
+        ((await host.admin.auditLog(staff, { tenantId: t, scopeId: s, action, order: 'desc', limit: 1 }))[0]!.after as {
+          operationId: string;
+        }).operationId;
+
+      it("a refusal whose row is refused still answers its own not_found, logs the operation, and the settle closes it unknown", async () => {
+        const s = await newScope();
+        const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'refused', () => off(s, stranger));
+        // The switch's own error, never the log's: a refusal must not read as retryable.
+        expect(settled.status).toBe('rejected');
+        expect(errorCodeOf((settled as PromiseRejectedResult).reason)).toBe('not_found');
+        expect(unrecorded).toEqual([
+          { flow: 'system-switch', operationId: expect.any(String), phase: 'refused', auditError: expect.stringMatching(/test fault/) },
+        ]);
+        const operationId = unrecorded[0]!.operationId as string;
+        expect(await latestOperation(s, 'revokeFromSystem')).toBe(operationId);
+        await expectSettledUnknown(host, staff, { tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId }, {
+          moduleId: stranger,
+          schedules: 'off',
+        });
+      });
+
+      it('twin: the refusal row lands, nothing is logged, and the settle finds nothing to close', async () => {
+        const s = await newScope();
+        const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'applied', () => off(s, stranger));
+        expect(errorCodeOf((settled as PromiseRejectedResult).reason)).toBe('not_found');
+        expect(unrecorded).toEqual([]);
+        const operationId = await latestOperation(s, 'revokeFromSystem');
+        await expectAnswered(host, staff, { tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId }, 'refused');
+      });
+
+      it('a failed directory write keeps its own error when its failed row is refused, and settles unknown', async () => {
+        const s = await newScope();
+        const liftRecord = await fixture.refuseSwitchRecord(s, 'system');
+        try {
+          const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'failed', () => off(s));
+          expect(settled.status).toBe('rejected');
+          expect(String((settled as PromiseRejectedResult).reason)).toMatch(/system switch record was refused/);
+          expect(unrecorded).toEqual([
+            { flow: 'system-switch', operationId: expect.any(String), phase: 'failed', auditError: expect.stringMatching(/test fault/) },
+          ]);
+          const operationId = unrecorded[0]!.operationId as string;
+          expect(await latestOperation(s, 'revokeFromSystem')).toBe(operationId);
+          await expectSettledUnknown(host, staff, { tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId }, {
+            moduleId: SCHED,
+            schedules: 'off',
+          });
+
+          // Twin: the same directory error with a writable failed row has an answered intent.
+          const twin = await withRefusedOutcome(fixture, s, 'applied', () => off(s));
+          expect(String((twin.settled as PromiseRejectedResult).reason)).toMatch(/system switch record was refused/);
+          expect(twin.unrecorded).toEqual([]);
+          await expectAnswered(host, staff, {
+            tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId: await latestOperation(s, 'revokeFromSystem'),
+          }, 'failed');
+        } finally {
+          await liftRecord();
+        }
+      });
+
+      it('an empty outcome-write error still warns after the switch moves', async () => {
+        const s = await newScope();
+        const result = await withEmptyOutcomeError(() => off(s));
+        expect(result.auditWarning).toBe('the switch completed, but its outcome could not be written to the admin log: ');
+        expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+        await expectSettledUnknown(host, staff, { tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId: result.operationId }, {
+          moduleId: SCHED, schedules: 'off',
+        });
+      });
+
+      it('a switch that moved but whose applied row is refused answers success with auditWarning, and the settle closes it unknown', async () => {
+        const s = await newScope();
+        const { settled, unrecorded } = await withRefusedOutcome(fixture, s, 'applied', () => off(s));
+        expect(settled.status).toBe('fulfilled');
+        const result = (settled as PromiseFulfilledResult<Awaited<ReturnType<typeof off>>>).value;
+        // The switch is where the answer says: off, and the scope runs nothing.
+        expect(result).toEqual({
+          ...moved('off', true),
+          permissions: ['sched:tick'],
+          auditWarning: expect.stringMatching(/^the switch completed, but its outcome could not be written to the admin log: .*test fault/),
+        });
+        expect(await host.runDueSchedules(SCHED, t, s)).toEqual(switchedOff);
+        expect(unrecorded).toEqual([
+          { flow: 'system-switch', operationId: result.operationId, phase: 'applied', auditError: expect.stringMatching(/test fault/) },
+        ]);
+        await expectSettledUnknown(host, staff, { tenantId: t, scopeId: s, action: 'revokeFromSystem', operationId: result.operationId }, {
+          moduleId: SCHED,
+          schedules: 'off',
+        });
+
+        // Twin: the restore's applied row lands — no warning, nothing to settle.
+        const restored = await on(s);
+        expect(restored).not.toHaveProperty('auditWarning');
+        await expectAnswered(host, staff, { tenantId: t, scopeId: s, action: 'restoreToSystem', operationId: restored.operationId }, 'applied');
+      });
     });
 
     it('refuses a scope of another tenant as unknown', async () => {

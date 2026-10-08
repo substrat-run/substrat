@@ -644,8 +644,12 @@ export {
   isSupersededOutcome,
   readAuditedOperations,
   unknownOutcomeOf,
+  UNRECORDED_OUTCOME_LOG,
+  recordAuditOutcome,
+  auditWarningOf,
 } from './audit-outcome.js';
 export type {
+  AuditLogError,
   AuditedChangeAction,
   AuditedOperationRef,
   AuditedOperationRow,

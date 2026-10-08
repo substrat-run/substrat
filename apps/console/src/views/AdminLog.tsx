@@ -17,7 +17,7 @@ export interface AdminLogProps {
 }
 
 /**
- * #2064: an audited change's row (`transferOwner`, `manageScopeMember`), read as the API resolves
+ * #2064: an audited change's row (`transferOwner`, `manageScopeMember`, the kill switches), read as the API resolves
  * it. The latest outcome row of an operation is its result. An intent shows where its operation
  * stands, and an outcome a later row replaced shows what replaced it. The row itself, opened
  * below, is the raw history.

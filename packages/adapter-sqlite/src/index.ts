@@ -432,6 +432,8 @@ import {
   scopesSwitchedOffFor,
   switchActionOf,
   switchAuditSubject,
+  recordAuditOutcome,
+  auditWarningOf,
   switchNotFoundMessage,
   switchRecordsOf,
   switchedOffOf,
@@ -7213,7 +7215,7 @@ export class SqliteScopeHost implements ScopeHost {
       key: string,
       reason: string,
       to: 'on' | 'off',
-    ): Promise<{ operationId: string; outcome: SwitchOutcome }> => {
+    ): Promise<{ operationId: string; outcome: SwitchOutcome; auditWarning?: string }> => {
       const { tenantId, scopeId } = node;
       const scope = this.directory
         .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
@@ -7224,12 +7226,20 @@ export class SqliteScopeHost implements ScopeHost {
       // AUDIT FIRST (#1666 review), exactly as the Cloudflare adapter: the intent row before
       // anything moves, the outcome row after, on every attempt. The directory and the
       // scope's file are separate databases, so a crash between them leaves an intent with
-      // no recorded outcome — never a moved switch with no audit row.
+      // no recorded outcome — never a moved switch with no audit row. #2089: every outcome row
+      // goes through the kernel's `recordAuditOutcome`, exactly as the Cloudflare adapter — one
+      // that cannot be written is logged, never swallowed, and the settle closes its intent.
       const operationId = ulid();
       const action = switchActionOf(kind, to);
       const target = { tenantId, scopeId };
       const base = { operationId, ...switchAuditSubject(kind, key, to) };
       this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason });
+      const recordOutcome = (row: { phase: 'applied' | 'refused' | 'failed' } & Record<string, unknown>) =>
+        recordAuditOutcome(() => this.recordAdmin(actor, action, target, null, { ...base, ...row }), {
+          flow: `${kind}-switch`,
+          operationId,
+          phase: row.phase,
+        }, (message, fields) => console.error(message, fields));
       // The directory's record (#1674; #2029 for a peer), written BEFORE the scope moves, both
       // ways, and undone if the move throws or holds nothing — see `recordSwitchedOn` and
       // (#1823) `recordSwitchedOff` for why that order is the safe one.
@@ -7242,17 +7252,13 @@ export class SqliteScopeHost implements ScopeHost {
         prior = to === 'on' ? recordSwitchedOn(directorySql, record) : recordSwitchedOff(directorySql, record);
       } catch (err) {
         // Nothing has moved: fail the call here, audited — the Cloudflare adapter's posture.
-        try {
-          this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) });
-        } catch {
-          // Best effort: the original error is what the caller must see.
-        }
+        await recordOutcome({ phase: 'failed', error: errorOf(err) });
         throw err;
       }
       // #2045: a newer call on this subject has recorded its position already: this one writes
       // nothing, here or in the scope, and says so.
       if (recordWriteSuperseded(prior, record)) {
-        this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        await recordOutcome({ phase: 'refused', superseded: true });
         throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
       }
       /** The record's undo, after the scope's move threw or held nothing: retried once, never swallowed. */
@@ -7290,22 +7296,13 @@ export class SqliteScopeHost implements ScopeHost {
         });
       } catch (err) {
         const recordError = undoRecord();
-        try {
-          this.recordAdmin(actor, action, target, null, {
-            ...base,
-            phase: 'failed',
-            error: errorOf(err),
-            ...(recordError ? { recordError } : {}),
-          });
-        } catch {
-          // Best effort: the original error is what the caller must see.
-        }
+        await recordOutcome({ phase: 'failed', error: errorOf(err), ...(recordError ? { recordError } : {}) });
         throw err;
       }
       // #2045: the scope has applied a newer call on this subject, so this move wrote nothing. The
       // record is that newer call's too (its write overwrote this one's), so nothing is undone.
       if (outcome.superseded) {
-        this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        await recordOutcome({ phase: 'refused', superseded: true });
         throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
       }
       // A call that held nothing moved nothing (the subject has no authority reaching the
@@ -7313,8 +7310,7 @@ export class SqliteScopeHost implements ScopeHost {
       // switch the subject off the day it is installed; left `on`, the next reconcile of a
       // wiped scope would leave it running.
       const recordError = outcome.held ? null : undoRecord();
-      this.recordAdmin(actor, action, target, null, {
-        ...base,
+      const unrecorded = await recordOutcome({
         phase: outcome.held ? 'applied' : 'refused',
         changed: outcome.changed,
         permissions: outcome.permissions,
@@ -7327,7 +7323,7 @@ export class SqliteScopeHost implements ScopeHost {
             (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
         );
       }
-      return { operationId, outcome };
+      return { operationId, outcome, ...(unrecorded !== null ? { auditWarning: auditWarningOf('the switch', unrecorded) } : {}) };
     };
 
     /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
@@ -7337,13 +7333,14 @@ export class SqliteScopeHost implements ScopeHost {
       to: 'on' | 'off',
     ): Promise<SystemSwitchResult> => {
       const input = systemSwitch.parse(raw);
-      const { operationId, outcome } = await switchSubject(actor, 'system', input.node, input.moduleId, input.reason, to);
+      const { operationId, outcome, auditWarning } = await switchSubject(actor, 'system', input.node, input.moduleId, input.reason, to);
       return {
         operationId,
         moduleId: input.moduleId,
         schedules: to,
         changed: outcome.changed,
         permissions: outcome.permissions as PermissionKey[],
+        ...(auditWarning ? { auditWarning } : {}),
       };
     };
 
@@ -7354,13 +7351,14 @@ export class SqliteScopeHost implements ScopeHost {
       to: 'on' | 'off',
     ): Promise<PeerSwitchResult> => {
       const input = peerSwitch.parse(raw);
-      const { operationId, outcome } = await switchSubject(actor, 'peer', input.node, input.vertical, input.reason, to);
+      const { operationId, outcome, auditWarning } = await switchSubject(actor, 'peer', input.node, input.vertical, input.reason, to);
       return {
         operationId,
         vertical: input.vertical,
         calls: to,
         changed: outcome.changed,
         permissions: outcome.permissions as PermissionKey[],
+        ...(auditWarning ? { auditWarning } : {}),
       };
     };
 

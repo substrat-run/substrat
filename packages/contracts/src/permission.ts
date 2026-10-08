@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  auditOperationId,
   capabilityId,
   instant,
   moduleId,
@@ -273,11 +274,17 @@ export type SwitchedOffInUnit = z.infer<typeof switchedOffInUnit>;
  * so an operator can tie what the route answered to what the log recorded.
  */
 export const systemSwitchResult = z.object({
-  operationId: z.string().min(1),
+  operationId: auditOperationId,
   moduleId,
   schedules: z.enum(['on', 'off']),
   changed: z.boolean(),
   permissions: z.array(permissionKey),
+  /**
+   * #2089: present only when the switch moved but its outcome row could not be written to the
+   * admin log, as an audited change's `AuditedAnswer.auditWarning`. Still a success: the switch
+   * is where this answer says, and the scheduled settle closes the intent as `unknown`.
+   */
+  auditWarning: z.string().optional(),
 });
 export type SystemSwitchResult = z.infer<typeof systemSwitchResult>;
 
@@ -334,7 +341,7 @@ export const systemSwitchRecord = z.object({
   position: z.enum(['on', 'off']),
   actor: platformActorId,
   reason: z.string(),
-  operationId: z.string().min(1),
+  operationId: auditOperationId,
   at: instant,
 });
 export type SystemSwitchRecord = z.infer<typeof systemSwitchRecord>;
