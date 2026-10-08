@@ -114,7 +114,11 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   (`applied`, `refused`, `failed`) beats `unknown`, and two real outcomes for one operation
   read `conflicting` and are logged, never guessed past. An operation is its action, its
   `operationId`, its tenant and its scope.
-  `GET /admin-log` returns the rows as written, and gives each row of these two actions an
+  The schedule and peer kill switches (`revokeFromSystem`, `restoreToSystem`, `revokeFromPeer`,
+  `restoreToPeer`) are audited the same way: a refused switch whose outcome row cannot be
+  written still answers its own error, a switch that moved answers success with
+  `auditWarning`, and the scheduled pass closes the intent as `unknown`.
+  `GET /admin-log` returns the rows as written, and gives each row of these six actions an
   `audited` field: its `operationId`, the `outcome` the operation stands at (`pending` until
   it has one), and `superseded` on an `unknown` a real outcome beat. Each page is resolved
   with one batched read of its own operations through an index on the operation id. The

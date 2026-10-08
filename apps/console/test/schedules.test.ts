@@ -7,6 +7,7 @@ import {
   schedulesCardState,
   scheduleBadgeStatus,
   submitSwitch,
+  auditWarningToast,
   validReason,
 } from '../src/lib/schedules';
 
@@ -216,5 +217,19 @@ describe('performSwitch', () => {
       async () => ['fresh'],
     );
     expect(attempt).toEqual({ kind: 'applied', result: { changed: true }, entries: ['fresh'] });
+  });
+});
+
+describe('auditWarningToast (#2089)', () => {
+  it('a switch that moved but whose admin-log row was lost: a warning that still says it switched', () => {
+    const toast = auditWarningToast('@m/x', 'acme', {
+      auditWarning: 'the switch completed, but its outcome could not be written to the admin log: log down',
+    });
+    expect(toast?.[0]).toMatch(/^Switched/);
+    expect(toast?.[1]).toMatch(/^@m\/x on acme · the switch completed.*log down\. .*nothing to redo/);
+  });
+
+  it('twin: a recorded switch has no warning', () => {
+    expect(auditWarningToast('@m/x', 'acme', {})).toBeNull();
   });
 });

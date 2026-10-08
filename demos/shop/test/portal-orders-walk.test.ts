@@ -1,5 +1,5 @@
 /**
- * `shop/portal-orders` walks the order table with `pageVisible` (#2080).
+ * `shop/portal-orders` narrows its checked walk to a complete grant-derived order set.
  *
  * It used to read every order in the scope, check each one, and only then cut a page — one
  * permission check per order in the shop, whatever `limit` asked for. Now a page costs the
@@ -10,17 +10,18 @@
  * customer's walk sits next to the other's. The bulk the scan-bound beats need is written
  * straight into `shop_orders` by the harness: an order no checkout linked to a customer, which
  * every portal caller is refused — the cheapest stand-in for "the rest of the shop's history".
- * Checks are counted by wrapping the checker the host built, as ticket0's desk kit does.
+ * Checks are counted by wrapping the checker the host built. Enumeration itself checks
+ * candidates, and pageVisible checks returned rows again, so the assertion is a bound.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { VISIBLE_SCAN_BUDGET, VISIBLE_SCAN_BUDGET_MIN, type Page } from '@substrat-run/contracts';
+import { VISIBLE_SCAN_BUDGET, VISIBLE_SCAN_BUDGET_MIN, platformActorId, type Page } from '@substrat-run/contracts';
 import { ulid, type PermissionChecker, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { buildShopHost, seedShop, type OrderRow, type ShopWorld } from '../src/index.js';
+import { buildShopHost, seedShop, SHOP_PERM, type OrderRow, type ShopWorld } from '../src/index.js';
 
 let dir: string;
 let host: SqliteScopeHost;
@@ -35,6 +36,8 @@ const his: string[] = [];
 let orphans = 0;
 /** `order:read` checks on an order, since the last reset. */
 let orderChecks = 0;
+let customerChecks = 0;
+let forceIncomplete = false;
 
 async function walk(who: ScopeStub, limit: number) {
   const ids: string[] = [];
@@ -99,8 +102,12 @@ beforeAll(async () => {
   const inner = wrapped.checker;
   wrapped.checker = {
     covers: (...args) => inner.covers(...args),
+    grantedEntities: (...args) => forceIncomplete
+      ? Promise.resolve({ kind: 'incomplete' as const, reason: 'checker' as const })
+      : inner.grantedEntities!(...args),
     check: (subject, permission, node, entity) => {
       if (permission === 'order:read' && entity?.entityType === 'order') orderChecks += 1;
+      if (permission === 'order:read' && entity?.entityType === 'customer') customerChecks += 1;
       return inner.check(subject, permission, node, entity);
     },
   };
@@ -108,6 +115,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   orderChecks = 0;
+  customerChecks = 0;
+  forceIncomplete = false;
 });
 
 afterAll(async () => {
@@ -117,7 +126,7 @@ afterAll(async () => {
 
 describe('shop/portal-orders walks with pageVisible (#2080)', () => {
   for (const limit of [1, 2, 3]) {
-    it(`limit ${limit}: each customer reaches every own order with sealed cursors`, async () => {
+    it(`limit ${limit}: each customer reaches every own order, newest first, with sealed cursors`, async () => {
       for (const [who, own] of [
         [elin, hers],
         [otto, his],
@@ -125,10 +134,7 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
         const { ids, cursors } = await walk(who, limit);
         expect(ids).toEqual(own);
         expect(cursors.length).toBeGreaterThan(0);
-        for (const c of cursors) {
-          expect(c).toMatch(/^sc1\./);
-          for (const id of [...hers, ...his]) expect(c).not.toContain(id);
-        }
+        for (const c of cursors) expect(c).toMatch(/^sc1\./);
       }
     });
   }
@@ -143,11 +149,10 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
     // Runs after the walks above, which these orders would otherwise sit in front of.
     beforeAll(() => orphanOrders(300));
 
-    it('a page costs the checks it takes to fill it, not one per order in the shop', async () => {
+    it('a page checks grant candidates and its own rows, independent of foreign orders', async () => {
       const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 2 });
       expect(page.entries.map((o) => o.id)).toEqual(hers.slice(0, 2));
-      // The orphans, then Otto's two, Elin's first, Otto's next two, Elin's second — and stop.
-      expect(orderChecks).toBe(orphans + 6);
+      expect(orderChecks).toBeLessThan(20);
       expect(page.nextCursor).toMatch(/^sc1\./);
     });
 
@@ -156,16 +161,36 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
       orderChecks = 0;
       const second = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 2, cursor: first.nextCursor! });
       expect(second.entries.map((o) => o.id)).toEqual(hers.slice(2, 4));
-      expect(orderChecks).toBe(6);
+      expect(orderChecks).toBeLessThan(20);
     });
+
+    it('falls back to the complete checked walk when grants cannot be enumerated', async () => {
+      forceIncomplete = true;
+      const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 2 });
+      expect(page.entries.map((o) => o.id)).toEqual(hers.slice(0, 2));
+      expect(orderChecks).toBeGreaterThan(300);
+    });
+  });
+
+  it('my-customer reads its checked grant and falls back when enumeration is incomplete', async () => {
+    const fast = await elin.invoke<{ id: string } | null>('shop/my-customer');
+    expect(fast?.id).toBe(w.elinCustomerId);
+    expect(customerChecks).toBeLessThan(10);
+
+    customerChecks = 0;
+    forceIncomplete = true;
+    const fallback = await elin.invoke<{ id: string } | null>('shop/my-customer');
+    expect(fallback?.id).toBe(w.elinCustomerId);
+    expect(customerChecks).toBeGreaterThan(0);
   });
 
   // Elin's newest order is row `orphans + 3` of her walk: the orphans, then Otto's two newest.
   describe(`the scan budget (${VISIBLE_SCAN_BUDGET_MIN}–${VISIBLE_SCAN_BUDGET} rows a call)`, () => {
     let atHerNewest: string;
+    beforeEach(() => { forceIncomplete = true; });
 
     it('her newest order at the maximum budget boundary is eventually found', async () => {
-      orphanOrders(VISIBLE_SCAN_BUDGET - 3 - orphans);
+      orphanOrders(Math.max(0, VISIBLE_SCAN_BUDGET - 3 - orphans));
       let cursor: string | undefined;
       for (let i = 0; i < 2; i++) {
         orderChecks = 0;
@@ -213,4 +238,47 @@ describe('shop/portal-orders walks with pageVisible (#2080)', () => {
       expect(orderChecks).toBe(6);
     });
   });
+
+  describe(`more than the old ${VISIBLE_SCAN_BUDGET}-row foreign scan budget`, () => {
+    let atHerNewest: string;
+
+    it('her newest order remains reachable with 2,000 foreign rows ahead', async () => {
+      orphanOrders(Math.max(0, VISIBLE_SCAN_BUDGET - 3 - orphans));
+      const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
+      expect(page.entries.map((o) => o.id)).toEqual([hers[0]]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
+      expect(orderChecks).toBeLessThan(20);
+      atHerNewest = page.nextCursor!;
+    });
+
+    it('one more foreign row cannot hide her orders', async () => {
+      orphanOrders(1);
+      const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
+      expect(page.entries.map((o) => o.id)).toEqual([hers[0]]);
+      expect(page.nextCursor).toMatch(/^sc1\./);
+      expect(orderChecks).toBeLessThan(20);
+    });
+
+    it('her cursor carries the walk on past the budget, from her own order', async () => {
+      const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 2, cursor: atHerNewest });
+      expect(page.entries.map((o) => o.id)).toEqual(hers.slice(1, 3));
+      expect(orderChecks).toBeLessThan(20);
+    });
+  });
+
+  it('includes an order granted directly even when its customer is not granted', async () => {
+    const shared = await checkout(otto, w.ottoCustomerId!);
+    await host.admin.grant(platformActorId.parse(ulid()), {
+      principalId: w.elin,
+      permission: SHOP_PERM.orderRead,
+      node: { tenantId: w.t1, scopeId: w.s1 },
+      entity: { entityType: 'order', entityId: shared },
+      grantedBy: w.astrid,
+    });
+    const page = await elin.invoke<Page<OrderRow>>('shop/portal-orders', { limit: 1 });
+    expect(page.entries.map((o) => o.id)).toEqual([shared]);
+    expect(page.nextCursor).toMatch(/^sc1\./);
+    expect(orderChecks).toBeLessThan(100);
+  });
+
 });

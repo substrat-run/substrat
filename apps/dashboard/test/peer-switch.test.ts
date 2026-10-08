@@ -49,6 +49,15 @@ describe('dashboard peer switch confirmation', () => {
     expect(await changePeerAccess(async () => ({ changed: true }), async () => view)).toEqual({ kind: 'applied', view });
   });
 
+  it('a write that went through but whose admin-log row was lost carries its auditWarning, applied or unconfirmed (#2089)', async () => {
+    const view = { callers: [] };
+    const auditWarning = 'the switch completed, but its outcome could not be written to the admin log: log down';
+    const write = async () => ({ changed: true, auditWarning });
+    expect(await changePeerAccess(write, async () => view)).toEqual({ kind: 'applied', view, auditWarning });
+    const error = new Error('unavailable');
+    expect(await changePeerAccess(write, async () => { throw error; })).toEqual({ kind: 'unconfirmed', error, auditWarning });
+  });
+
   it('requires a nonblank reason within the server limit', () => {
     expect(validPeerReason('   ')).toBe(false);
     expect(validPeerReason('x'.repeat(501))).toBe(false);

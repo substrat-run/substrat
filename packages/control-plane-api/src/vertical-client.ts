@@ -14,6 +14,7 @@ import type {
   PlatformRequestId,
   PlatformRequestStatus,
   PlatformRequestFailure,
+  PlatformOutcomeEvent,
   MintedPreviewClient,
   PreviewClientCheck,
   PreviewClientClaim,
@@ -174,9 +175,11 @@ function denialParams(scopeId: ScopeId, filter?: DenialFilter): URLSearchParams 
  */
 
 /**
- * How long an AUDITED vertical call may run (#2064): the owner hand-over and the member changes.
- * The control plane writes an `intent` row before such a call and its outcome after, and the
- * scheduled settle calls an intent with no outcome `unknown` once its grace window has passed.
+ * How long an AUDITED vertical call may run (#2064): the owner hand-over and the member changes,
+ * and (#2089) the kill switches' delegated calls — a switch makes at most three (the fence
+ * preflight, the move and one retry), well inside the settle's hour. An `intent` row is written
+ * before the call and its outcome after. The scheduled settle calls an intent with no outcome
+ * `unknown` once its grace window has passed.
  * This bound is what keeps a live call from being settled: `settleUnrecordedOutcomes` refuses a
  * grace window that does not exceed it. A call past it is answered 504 and audited `failed`,
  * which means what `failed` always means: it may have stopped part-way.
@@ -889,12 +892,16 @@ export class VerticalClient {
         `redeploy the vertical, then retry. Nothing was switched.`,
       shape: `vertical answered ${verb} with an unexpected shape — ${lost}`,
     };
-    return this.parsedAnswer(verb, rule, systemSwitchOutcome, () =>
-      this.options.fetch(`${base}/internal/system-switch`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
-        body: JSON.stringify(input),
-      }),
+    // #2089: a switch call is audited intent-then-outcome, and the settle waits out this deadline.
+    return withDeadline(verb, AUDITED_CALL_DEADLINE_MS, (signal) =>
+      this.parsedAnswer(verb, rule, systemSwitchOutcome, () =>
+        this.options.fetch(`${base}/internal/system-switch`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+          body: JSON.stringify(input),
+          signal,
+        }),
+      ),
     );
   }
 
@@ -914,11 +921,15 @@ export class VerticalClient {
       legacy501: true,
       lost: `whether the deployment serving scope ${input.scopeId} honours the switch fence could not be read. Nothing was switched; retry.`,
     };
-    const answer = await this.routeAnswer(verb, rule, () =>
-      this.options.fetch(`${base}/internal/switch-fence?scopeId=${encodeURIComponent(input.scopeId)}`, {
-        method: 'GET',
-        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
-      }),
+    // #2089: asked inside a switch call's audited span, so held to the same deadline.
+    const answer = await withDeadline(verb, AUDITED_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer(verb, rule, () =>
+        this.options.fetch(`${base}/internal/switch-fence?scopeId=${encodeURIComponent(input.scopeId)}`, {
+          method: 'GET',
+          headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+          signal,
+        }),
+      ),
     );
     if (answer === PREDATES) return false;
     if ((answer as { fenced?: unknown } | null)?.fenced === true) return true;
@@ -1018,12 +1029,16 @@ export class VerticalClient {
         `redeploy the vertical, then retry. Nothing was switched.`,
       shape: `vertical answered ${verb} with an unexpected shape — ${lost}`,
     };
-    return this.parsedAnswer(verb, rule, peerSwitchOutcome, () =>
-      this.options.fetch(`${base}/internal/peer-switch`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
-        body: JSON.stringify(input),
-      }),
+    // #2089: a switch call is audited intent-then-outcome, and the settle waits out this deadline.
+    return withDeadline(verb, AUDITED_CALL_DEADLINE_MS, (signal) =>
+      this.parsedAnswer(verb, rule, peerSwitchOutcome, () =>
+        this.options.fetch(`${base}/internal/peer-switch`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+          body: JSON.stringify(input),
+          signal,
+        }),
+      ),
     );
   }
 
@@ -1094,6 +1109,11 @@ export class VerticalClient {
       result?: unknown;
       lastError?: string | null;
       failure?: PlatformRequestFailure | null;
+      /**
+       * #2102: written into the scope with the settle. A vertical-host too old to know the field
+       * drops it and settles the row anyway — the outcome stays readable on the intent.
+       */
+      event?: PlatformOutcomeEvent | null;
     },
   ): Promise<void> {
     await this.postInternal<unknown>(

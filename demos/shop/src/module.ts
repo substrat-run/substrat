@@ -1020,23 +1020,91 @@ const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: O
 /**
  * Portal listing: per-entity proof walks (order → customer), no node-level grant.
  *
- * The kernel's walk over the order table, newest first, with the check per row on top
- * (#2080). `pageVisible` reads on past orders the caller cannot see until the page is full,
- * seals a continuation at the `VISIBLE_SCAN_BUDGET` stop, so a customer's page
- * costs a bounded number of checks and can resume without exposing hidden positions (#2074).
+ * Complete grant reads narrow the order table by customer id, including customers
+ * of directly granted orders. `pageVisible` checks each order and handles the fallback
+ * walk when grants cannot be enumerated (#2080, #2108). Writable walks seal their
+ * continuation so they can resume without exposing hidden positions (#2074).
  */
-const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) =>
-  pageVisible(
-    (p) => ctx.page<OrderRow>('order', { ...input, ...p }),
+const portalOrdersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, input) => {
+  const customers = await completeGrantIds(ctx, 'customer');
+  const orders = await completeGrantIds(ctx, 'order');
+  let customerIds: string[] | null = null;
+  if (Array.isArray(customers) && Array.isArray(orders)) {
+    // A direct order grant can name an order outside the caller's granted customers.
+    // Include that order's customer in the candidate set, then check every row.
+    const ids = new Set(customers);
+    if (orders.length > 0) {
+      const rows = ctx.sql.query<{ customer_id: string }>(
+        'SELECT DISTINCT customer_id FROM shop_orders WHERE id IN (SELECT value FROM json_each(?))',
+        [JSON.stringify(orders)],
+      );
+      for (const row of rows) ids.add(row.customer_id);
+    }
+    customerIds = [...ids];
+  }
+  return pageVisible(
+    (p) => ctx.page<OrderRow>('order', {
+      ...input, ...p, ...(customerIds !== null ? { filters: { customer_id: customerIds } } : {}),
+    }),
     input,
     async (order) => (await ctx.check(SHOP_PERM.orderRead, orderRef(order.id))).allowed,
     { continuation: ctx.pageContinuation('order:portal-orders', input) },
   );
+};
+
+const GRANT_PAGE_LIMIT = 100;
+const GRANT_PAGE_BUDGET = 10;
+
+/** Finish a small grant walk before using its union of ids as a SQL narrowing set. */
+async function completeGrantIds(ctx: OperationContext, entityType: string): Promise<'all' | 'incomplete' | string[]> {
+  const ids = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < GRANT_PAGE_BUDGET; page++) {
+    const result = await ctx.grantedEntities(SHOP_PERM.orderRead, entityType, { limit: GRANT_PAGE_LIMIT, cursor });
+    if (result.kind !== 'ids') return result.kind;
+    for (const id of result.ids) ids.add(id);
+    if (result.nextCursor === null) return [...ids];
+    cursor = result.nextCursor;
+  }
+  return 'incomplete';
+}
 
 /** "My account": the customer the caller is authorized to read — their portal identity. */
 const myCustomerOp: OperationHandler<undefined, { id: string; number: string; name: string } | null> = async (
   ctx,
 ) => {
+  let cursor: string | undefined;
+  let fallbackReason = 'grant-read-budget';
+  for (let page = 0; page < GRANT_PAGE_BUDGET; page++) {
+    const grants = await ctx.grantedEntities(SHOP_PERM.orderRead, 'customer', { limit: GRANT_PAGE_LIMIT, cursor });
+    if (grants.kind === 'all') {
+      const first = ctx.sql.query<{ id: string; number: string; name: string }>(
+        'SELECT id, number, name FROM shop_customers ORDER BY number LIMIT 1',
+      )[0];
+      if (!first) return null;
+      if ((await ctx.check(SHOP_PERM.orderRead, customerRef(first.id))).allowed) return first;
+      fallbackReason = 'node-grant-changed';
+      break;
+    }
+    if (grants.kind === 'incomplete') {
+      fallbackReason = grants.reason;
+      break;
+    }
+    if (grants.ids.length > 0) {
+      const candidates = ctx.sql.query<{ id: string; number: string; name: string }>(
+        'SELECT id, number, name FROM shop_customers WHERE id IN (SELECT value FROM json_each(?)) ORDER BY number',
+        [JSON.stringify(grants.ids)],
+      );
+      for (const customer of candidates) {
+        if ((await ctx.check(SHOP_PERM.orderRead, customerRef(customer.id))).allowed) return customer;
+      }
+    }
+    if (grants.nextCursor === null) return null;
+    cursor = grants.nextCursor;
+  }
+  ctx.log.warn('grant read fallback for {operation} in {scope}: {reason}', {
+    operation: 'shop/my-customer', scope: ctx.scopeId, reason: fallbackReason,
+  });
   const all = ctx.sql.query<{ id: string; number: string; name: string }>(
     'SELECT id, number, name FROM shop_customers ORDER BY number',
   );

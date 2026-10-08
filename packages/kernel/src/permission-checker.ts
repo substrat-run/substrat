@@ -12,6 +12,7 @@ import {
   type CheckSubject,
   type PrincipalId,
 } from '@substrat-run/contracts';
+import type { GrantedEntitiesPage } from './grant-scoped-read.js';
 
 /**
  * The evaluation seam (D-16): the MODEL is kernel-owned, the evaluation engine
@@ -35,6 +36,15 @@ export interface PermissionChecker {
     node: Node,
     entity?: EntityRef,
   ): Promise<Decision>;
+  /** Optional for a pluggable checker; an absent implementation is reported as incomplete. */
+  grantedEntities?(
+    subject: CheckSubject,
+    permission: PermissionKey,
+    node: Node,
+    entityType: string,
+    checkEntity: (entity: EntityRef) => Promise<boolean>,
+    options?: { limit?: number; cursor?: string },
+  ): Promise<GrantedEntitiesPage>;
   /**
    * Does `subject` already hold every one of `required` at `node`? (K-21,
    * membership.md §5.1.)

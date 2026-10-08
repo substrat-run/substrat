@@ -24,7 +24,14 @@ export interface MailSender {
    * already holds (its configuration, its secret) rather than a provider round trip.
    */
   senders(host: ScopeHost, connection: Connection): Promise<readonly string[]>;
-  /** Send one message as `mail.from.email`, which `senders` has already admitted. */
+  /**
+   * Send one message as `mail.from.email`, which `senders` has already admitted.
+   *
+   * A failure should throw an error carrying the provider's numeric `status`, and for a
+   * throttle its `Retry-After` in seconds as `retryAfter` (#2102): the platform retries a
+   * send whose status is 429 or 5xx (or absent) and refuses one whose status is any other 4xx,
+   * reading both structurally, so a sender that rewords an error must keep the two fields.
+   */
   send(host: ScopeHost, connection: Connection, mail: OutboundMail): Promise<MailSendResult>;
 }
 
@@ -70,4 +77,6 @@ export interface MailSendResult {
   delivered: string[];
   queued: string[];
   bounced: string[];
+  /** The provider's id for the message, when it returns one (#2102). Graph's `sendMail` does not. */
+  messageId?: string;
 }

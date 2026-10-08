@@ -397,7 +397,9 @@ import type {
   StoredScopeLifecycle,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
+import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -702,6 +704,7 @@ const KERNEL_DDL = `
     revoked_at TEXT,
     PRIMARY KEY (subject, relation, object)
   );
+  ${GRANT_CHILDREN_INDEX_DDL};
   CREATE TABLE IF NOT EXISTS _substrat_deliveries (
     event_id TEXT NOT NULL,
     consumer_module TEXT NOT NULL,
@@ -5834,6 +5837,38 @@ export function defineScopeDO(
     }
 
     /**
+     * A settle that writes an outcome event (#2102): the kernel's one settle — the same
+     * compare-and-set as the verb above — and the event in its transaction, written only when
+     * this settle moved the row out of `pending`. Then the event reaches this scope's consumers,
+     * as any committed write's does.
+     *
+     * A verb of its own rather than an argument on the one above, so a settle carrying no event
+     * keeps reaching a DO class older than this change; only the new kind's settle needs it.
+     */
+    async settlePlatformRequestWithEvent(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      id: PlatformRequestId,
+      outcome: PlatformRequestSettle,
+    ): Promise<void> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(async () => {
+        const liveSince = this.liveHighWaterMark();
+        this.revision.transactionSync(() =>
+          settlePlatformRequestIn(this.switchSql(), id, outcome, {
+            tenantId,
+            scopeId,
+            now: new Date().toISOString(),
+            mintEventId: (ms) => this.mintEventId(ms),
+            version: this.env.SUBSTRAT_VERSION_ID ?? null,
+          }),
+        );
+        // #1525: null — a settle is the platform's call, not one a vertical's caller made.
+        await this.settleCommitted(tenantId, scopeId, liveSince, null);
+      });
+    }
+
+    /**
      * Turn one connector delivery into a `connector:<provider>` platform intent (#574
      * phase 3) — the CP-less host's substitute for running the handler it cannot run.
      * One verb, not two, so the intent insert and the delivery journal commit together:
@@ -6296,6 +6331,7 @@ export function defineScopeDO(
       // boot. `lint:spine-ddl` compares KERNEL_DDL's indexes only, so this one is held to
       // both adapters by the query-plan test rather than by that gate.
       this.sql.exec('CREATE INDEX IF NOT EXISTS _substrat_outbox_invocation ON _substrat_outbox (invocation_id, id)');
+      this.sql.exec(GRANT_CHILDREN_INDEX_DDL);
       // #2066: what they ran was never measured. KERNEL_DDL's fence keeps any other NULL out.
       this.sql.exec(MIGRATION_DIGEST_MARK_LEGACY);
       this.ensureScheduleStateKind();
@@ -7502,6 +7538,13 @@ export function defineScopeDO(
           );
         },
         check: runCheck,
+        grantedEntities: async (unparsed, entityType, options) => {
+          const permission = assertPermissionKey(unparsed);
+          return grantedEntitiesForContext(
+            checker, subject, permission, { tenantId, scopeId }, entityType, options, runCheck, withheld,
+            Boolean(systemActor),
+          );
+        },
         canAssign: runCanAssign,
         // #827. Mirror of the pure adapter: the plan comes from registration, the
         // rows from this DO's own SQLite, and the index is maintained by triggers

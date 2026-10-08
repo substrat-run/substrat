@@ -192,7 +192,10 @@ unattended:
 **Turning a scope's schedules off** is a platform operator's switch, not something the
 vertical does: `revokeFromSystem` switches off every schedule one module has on one scope
 and revokes the module's system grants there. `restoreToSystem` switches them back on. Both
-calls are audited with a reason. While the switch is off, nothing fires. Each schedule is
+calls are audited with a reason: an intent row, then the outcome, paired by the `operationId`
+the call answers with. If the outcome row cannot be written, the call still answers what the
+switch did (a switch that moved says so in `auditWarning`), and the platform's scheduled pass
+closes the intent as `unknown`. While the switch is off, nothing fires. Each schedule is
 reported *skipped*, not *failed*, so a switched-off scope makes no noise, and a due schedule
 fires on the first pass after the restore.
 

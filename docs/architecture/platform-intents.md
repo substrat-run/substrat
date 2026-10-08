@@ -175,6 +175,45 @@ under the same tenant + vertical, and mark the row `done`. Failure increments `a
 `last_error`, and leaves it `pending` for retry. Idempotency key = the request id; the
 pre-recorded sibling id makes a retried provision a no-op (K-31).
 
+### 3b. `send-email` — an intent that reports back as an event (#2102)
+
+Email was the first intent whose outcome a vertical must *act on* without a domain effect to
+watch. Module code calls `requestEmail(ctx, mail)`, which writes a `send-email` row with
+the operation, so a rolled-back operation sends nothing. The control plane's handler
+(`packages/control-plane-api/src/email-intent.ts`) routes it as the synchronous relay does:
+the platform's sender, or the tenant connection whose `MailSender` covers `from`. The caller
+needs no relay proof here, because the drain read the row out of the scope that wrote it.
+
+Three additions to the general mechanism, each usable by later kinds:
+
+- **A settle can write one event.** `settlePlatformRequestIn` (kernel, shared by both
+  adapters) writes a kernel-authored outcome event (`email.sent`, `email.refused`,
+  `email.dead-lettered`) in the settle's transaction. It does so only when that settle moved
+  the row out of `pending`, so a repeated settle writes nothing. The scope then dispatches the
+  event to its consumers. The settle route accepts only the types in `platformOutcomeEvent`,
+  so it cannot be used to write an arbitrary event. The payload carries no address or provider
+  prose; the full refusal stays in `last_error`, which erasure reaches.
+- **A handler can defer.** A `deferred` outcome means the handler did not try on this pass, so
+  nothing is settled and no attempt is counted. The email handler keeps its earliest next try
+  in `result` (`Retry-After`, else a doubling backoff from 30 s, capped at 30 min) and defers
+  until then. Without this, the router's kick after every intent-writing operation would
+  retry a throttled mailbox as fast as the vertical writes. Within one pass, a sender that
+  answered `429` is not tried again.
+- **Its own bound.** `MAX_EMAIL_SEND_ATTEMPTS` (10) is well under the drain's ceiling. When a
+  send reaches it, the handler settles the send itself and writes `email.dead-lettered`, rather
+  than leaving the give-up to the generic ceiling, which writes no event.
+
+**Personal data.** A `send-email` row holds a recipient's address and a message, which is the
+case §13.1 limit 7 warns about: an intent kind carrying a person directly. `requestEmail`
+therefore takes the recipient's `subjectId` and stamps `piiClass: 'direct'` beside it. The
+intent redaction's kind-agnostic walk already matches that pair, so erasing the subject
+tombstones the row and cancels it if it is still pending. A send without a `subjectId` is not
+linked to anybody.
+
+Retry classification follows the drain's rule (`isTerminalDispatchFailure`), read through the
+`cause` a tenant send's 502 carries, so the provider's own status decides. Delivery is at least
+once: if a send succeeds but its settle is lost, the mail is sent again on the next pass.
+
 ### 4. The router kick
 
 The router recognises a generic response header ("this scope has a pending platform request") and

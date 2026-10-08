@@ -190,10 +190,8 @@ export const ticket0Manifest = moduleManifest.parse({
    * an identifier a person never types, and not `heading_path`, which is already a
    * prefix of the title in every source we ingest.
    *
-   * Nothing on `message` is indexed, deliberately. Message bodies are `erasable`, and
-   * an index over an erasable field is a second copy of it that the erasure would have
-   * to know about. Searching conversations is worth doing and worth doing on purpose,
-   * in its own change, with that question answered.
+   * Nothing on `message` is indexed. Message bodies are `erasable`, and
+   * searching conversations uses LIKE rather than creating an FTS copy.
    *
    * The live reads (#938) are what the inbox and the conversation view hear instead of
    * waiting for their next poll. The scope checks each frame's key against the

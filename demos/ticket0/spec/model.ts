@@ -694,6 +694,7 @@ export const ticket0Entities = defineEntities({
     }),
     key: ['external_id'],
     erasable: ['email', 'display_name'],
+    erasure: { subjects: ['id', 'principal'] },
     // The host site's own id for the person — often an address — vouched for, not written
     // here (#1088).
     outsideText: ['external_id'],
@@ -746,6 +747,7 @@ export const ticket0Entities = defineEntities({
     // All three are the person: the name outright, a picture of them by reference,
     // and a signature that in practice is the name again with a title under it.
     erasable: ['display_name', 'avatar_url', 'signature'],
+    erasure: { subjects: ['principal'] },
   },
 
   /**
@@ -986,6 +988,7 @@ export const ticket0Entities = defineEntities({
     // second edge reaches nothing the first does not.
     parents: ['conversation', 'publicThread'],
     erasable: ['body_text', 'body_html'],
+    erasure: { subjects: ['author_contact_id', 'author_principal'] },
     // Mail headers as they arrived: the sender's host writes both, freely (#1088).
     outsideText: ['email_message_id', 'email_in_reply_to'],
   },
@@ -1155,14 +1158,12 @@ export const ticket0Entities = defineEntities({
      * event, which the compiler now refuses. That is also what keeps a PERSONAL reply
      * personal on the desk's trail: its events say which reply, never what it says.
      *
-     * What it does NOT do yet: reach the stored row. `shredSubject` redacts the spine and
-     * never a vertical's own table, so erasing a subject, a customer or the agent who owns
-     * a personal reply, leaves this row as it is, exactly as it leaves a message body or a
-     * signature. The `onSubjectErased` hook that would bring it in is unbuilt (#2068).
-     * Until then a shared reply is desk content tied to no customer: write placeholders
-     * (`SAVED_REPLY_VARIABLES`), never a customer's details, into a canned answer.
+     * A personal reply belongs to its `owner`, so erasing that staff principal removes
+     * the row. A shared reply has no subject: write placeholders
+     * (`SAVED_REPLY_VARIABLES`), never a customer's details, into desk content.
      */
     erasable: ['title', 'body'],
+    erasure: { subjects: ['owner'], mode: 'delete' },
   },
 
   /** One satisfaction score per conversation, once. Keyed by the conversation for
@@ -1177,6 +1178,7 @@ export const ticket0Entities = defineEntities({
     }),
     primaryKey: ['conversation_id'],
     erasable: ['comment'],
+    erasure: { mode: 'custom' },
   },
 
   /**
@@ -1537,6 +1539,7 @@ export const ticket0Entities = defineEntities({
     }),
     parents: ['conversation'],
     erasable: ['error'],
+    erasure: { mode: 'custom' },
   },
 
   /**
@@ -1592,8 +1595,10 @@ export const ticket0Entities = defineEntities({
    *
    * `email` and `note` are `erasable`, and that is most of why this table belongs in a
    * vertical rather than in whatever form service was the alternative: it makes the
-   * address uncarryable by any event, and reachable by the erasure the desk already
-   * has. What the events carry is the id, the kind and the state — never the person.
+   * address uncarryable by any event. The public form has no verified contact or
+   * staff identity, so the row's own id is its erasure subject. A person also known
+   * by a contact id needs a separate signup-id erasure. What the events carry is
+   * the id, the kind and the state — never the person.
    */
   signup: {
     table: 'ticket0_signups',
@@ -1651,6 +1656,7 @@ export const ticket0Entities = defineEntities({
     }),
     key: ['kind', 'email'],
     erasable: ['email', 'note'],
+    erasure: { subjects: ['id'], mode: 'delete' },
   },
 });
 

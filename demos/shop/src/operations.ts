@@ -243,19 +243,17 @@ export const shopOperations = defineOperations(shopEntities, SHOP_PERMISSIONS)({
   'shop/portal-orders': {
     summary: 'The caller’s own orders',
     narrows: {
-      reason: 'walks every order and asks per row, so a portal customer sees only their own',
+      reason: 'narrows to a complete checked grant set when possible, then checks each order',
       checks: ['order:read'],
     },
     output: orderRow,
-    // Newest first by `number`, as this list shipped (#2080). The walk is the
-    // kernel's, over the same `(number, id)` index `shop/orders` already declares;
-    // the per-row check on top is the handler's, through `pageVisible`.
-    paged: { over: { entity: 'order', sortable: ['number'] }, order: 'desc' },
+    // `customer_id` is already in this entity's shared list-index vocabulary.
+    paged: { over: { entity: 'order', sortable: ['number'], filterable: ['customer_id'] }, order: 'desc' },
   },
   'shop/my-customer': {
     summary: 'The customer record the caller may act for',
     narrows: {
-      reason: 'walks the customers and returns the first the caller holds a grant on',
+      reason: 'reads checked customer grant ids and returns the first existing customer',
       checks: ['order:read'],
     },
     output: customerView.nullable(),

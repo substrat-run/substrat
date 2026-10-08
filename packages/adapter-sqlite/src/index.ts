@@ -437,6 +437,8 @@ import {
   scopesSwitchedOffFor,
   switchActionOf,
   switchAuditSubject,
+  recordAuditOutcome,
+  auditWarningOf,
   switchNotFoundMessage,
   switchRecordsOf,
   switchedOffOf,
@@ -685,6 +687,8 @@ import {
   grantEntityShapeIn,
   shapeTopUpBatch,
   topUpEntityGrantShapes,
+  settlePlatformRequestIn,
+  type PlatformRequestSettle,
 } from '@substrat-run/kernel';
 import {
   ADMIN_LOG_INDEXES_SQL,
@@ -697,6 +701,7 @@ import {
   type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
+import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker, directoryTenantReader } from './checker.js';
@@ -1134,6 +1139,7 @@ const KERNEL_DDL = `
     revoked_at TEXT,
     PRIMARY KEY (subject, relation, object)
   );
+  ${GRANT_CHILDREN_INDEX_DDL};
   CREATE TABLE IF NOT EXISTS _substrat_deliveries (
     event_id TEXT NOT NULL,
     consumer_module TEXT NOT NULL,
@@ -6235,39 +6241,28 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     id: PlatformRequestId,
-    outcome: {
-      status: PlatformRequestStatus;
-      result?: unknown;
-      lastError?: string | null;
-      failure?: PlatformRequestFailure | null;
-    },
+    outcome: PlatformRequestSettle,
   ): Promise<void> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    await rt.actor.enqueue(() => {
-      // Compare-and-set on `pending` (#1600 review). The drain reads pending rows, runs a
-      // handler, then settles — and between the read and the settle a subject erasure can
-      // redact the row. Settling by `id` alone let that stale pass overwrite the redaction
-      // and write a provider's reply, which can quote the person, back into `last_error`.
-      // Nothing legitimate is refused by this: `listPlatformRequests` returns only pending
-      // rows, so every settle in the tree targets one that was pending when it was read.
-      // A settle that finds the row already terminal does nothing, deliberately silently —
-      // throwing would make the drain's blanket catch retry a row that is correctly over.
-      rt.db
-        .prepare(
-          `UPDATE _substrat_platform_requests
-             SET status = ?, result = COALESCE(?, result), last_error = ?, last_failure = ?,
-                 attempts = attempts + 1, settled_at = ?
-           WHERE id = ? AND status = 'pending'`,
-        )
-        .run(
-          outcome.status,
-          outcome.result === undefined ? null : JSON.stringify(outcome.result),
-          outcome.lastError ?? null,
-          outcome.failure == null ? null : JSON.stringify(outcome.failure),
-          outcome.status === 'pending' ? null : new Date().toISOString(),
-          id,
-        );
+    await rt.actor.enqueue(async () => {
+      // The kernel's one settle (#2102): compare-and-set on `pending` (#1600 review), and the
+      // outcome event written in the same transaction, only by the settle that moved the row.
+      rt.db.transaction(() =>
+        settlePlatformRequestIn(switchSqlOf(rt.db), id, outcome, {
+          tenantId: rt.tenantId,
+          scopeId: rt.scopeId,
+          now: new Date().toISOString(),
+          mintEventId: (ms) => rt.mintEventId(ms),
+          version: this.versionId,
+        }),
+      )();
+      // What the event announces reaches this scope's consumers and executors in the same
+      // tail, as an import's events do. A settle that wrote none has nothing to deliver.
+      if (outcome.event) {
+        await this.dispatch(rt, null);
+        await this.dispatchExecutors(rt, null);
+      }
     });
   }
 
@@ -7282,7 +7277,7 @@ export class SqliteScopeHost implements ScopeHost {
       key: string,
       reason: string,
       to: 'on' | 'off',
-    ): Promise<{ operationId: string; outcome: SwitchOutcome }> => {
+    ): Promise<{ operationId: string; outcome: SwitchOutcome; auditWarning?: string }> => {
       const { tenantId, scopeId } = node;
       const scope = this.directory
         .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
@@ -7293,12 +7288,20 @@ export class SqliteScopeHost implements ScopeHost {
       // AUDIT FIRST (#1666 review), exactly as the Cloudflare adapter: the intent row before
       // anything moves, the outcome row after, on every attempt. The directory and the
       // scope's file are separate databases, so a crash between them leaves an intent with
-      // no recorded outcome — never a moved switch with no audit row.
+      // no recorded outcome — never a moved switch with no audit row. #2089: every outcome row
+      // goes through the kernel's `recordAuditOutcome`, exactly as the Cloudflare adapter — one
+      // that cannot be written is logged, never swallowed, and the settle closes its intent.
       const operationId = ulid();
       const action = switchActionOf(kind, to);
       const target = { tenantId, scopeId };
       const base = { operationId, ...switchAuditSubject(kind, key, to) };
       this.recordAdmin(actor, action, target, null, { ...base, phase: 'intent', reason });
+      const recordOutcome = (row: { phase: 'applied' | 'refused' | 'failed' } & Record<string, unknown>) =>
+        recordAuditOutcome(() => this.recordAdmin(actor, action, target, null, { ...base, ...row }), {
+          flow: `${kind}-switch`,
+          operationId,
+          phase: row.phase,
+        }, (message, fields) => console.error(message, fields));
       // The directory's record (#1674; #2029 for a peer), written BEFORE the scope moves, both
       // ways, and undone if the move throws or holds nothing — see `recordSwitchedOn` and
       // (#1823) `recordSwitchedOff` for why that order is the safe one.
@@ -7311,17 +7314,13 @@ export class SqliteScopeHost implements ScopeHost {
         prior = to === 'on' ? recordSwitchedOn(directorySql, record) : recordSwitchedOff(directorySql, record);
       } catch (err) {
         // Nothing has moved: fail the call here, audited — the Cloudflare adapter's posture.
-        try {
-          this.recordAdmin(actor, action, target, null, { ...base, phase: 'failed', error: errorOf(err) });
-        } catch {
-          // Best effort: the original error is what the caller must see.
-        }
+        await recordOutcome({ phase: 'failed', error: errorOf(err) });
         throw err;
       }
       // #2045: a newer call on this subject has recorded its position already: this one writes
       // nothing, here or in the scope, and says so.
       if (recordWriteSuperseded(prior, record)) {
-        this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        await recordOutcome({ phase: 'refused', superseded: true });
         throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
       }
       /** The record's undo, after the scope's move threw or held nothing: retried once, never swallowed. */
@@ -7359,22 +7358,13 @@ export class SqliteScopeHost implements ScopeHost {
         });
       } catch (err) {
         const recordError = undoRecord();
-        try {
-          this.recordAdmin(actor, action, target, null, {
-            ...base,
-            phase: 'failed',
-            error: errorOf(err),
-            ...(recordError ? { recordError } : {}),
-          });
-        } catch {
-          // Best effort: the original error is what the caller must see.
-        }
+        await recordOutcome({ phase: 'failed', error: errorOf(err), ...(recordError ? { recordError } : {}) });
         throw err;
       }
       // #2045: the scope has applied a newer call on this subject, so this move wrote nothing. The
       // record is that newer call's too (its write overwrote this one's), so nothing is undone.
       if (outcome.superseded) {
-        this.recordAdmin(actor, action, target, null, { ...base, phase: 'refused', superseded: true });
+        await recordOutcome({ phase: 'refused', superseded: true });
         throw substratError('conflict', switchSupersededMessage(kind, scopeId, key, to));
       }
       // A call that held nothing moved nothing (the subject has no authority reaching the
@@ -7382,8 +7372,7 @@ export class SqliteScopeHost implements ScopeHost {
       // switch the subject off the day it is installed; left `on`, the next reconcile of a
       // wiped scope would leave it running.
       const recordError = outcome.held ? null : undoRecord();
-      this.recordAdmin(actor, action, target, null, {
-        ...base,
+      const unrecorded = await recordOutcome({
         phase: outcome.held ? 'applied' : 'refused',
         changed: outcome.changed,
         permissions: outcome.permissions,
@@ -7396,7 +7385,7 @@ export class SqliteScopeHost implements ScopeHost {
             (recordError ? `; and its directory record could not be put back (${recordError})` : ''),
         );
       }
-      return { operationId, outcome };
+      return { operationId, outcome, ...(unrecorded !== null ? { auditWarning: auditWarningOf('the switch', unrecorded) } : {}) };
     };
 
     /** #1666: move one module's schedule switch on one scope — see `HostAdmin.revokeFromSystem`. */
@@ -7406,13 +7395,14 @@ export class SqliteScopeHost implements ScopeHost {
       to: 'on' | 'off',
     ): Promise<SystemSwitchResult> => {
       const input = systemSwitch.parse(raw);
-      const { operationId, outcome } = await switchSubject(actor, 'system', input.node, input.moduleId, input.reason, to);
+      const { operationId, outcome, auditWarning } = await switchSubject(actor, 'system', input.node, input.moduleId, input.reason, to);
       return {
         operationId,
         moduleId: input.moduleId,
         schedules: to,
         changed: outcome.changed,
         permissions: outcome.permissions as PermissionKey[],
+        ...(auditWarning ? { auditWarning } : {}),
       };
     };
 
@@ -7423,13 +7413,14 @@ export class SqliteScopeHost implements ScopeHost {
       to: 'on' | 'off',
     ): Promise<PeerSwitchResult> => {
       const input = peerSwitch.parse(raw);
-      const { operationId, outcome } = await switchSubject(actor, 'peer', input.node, input.vertical, input.reason, to);
+      const { operationId, outcome, auditWarning } = await switchSubject(actor, 'peer', input.node, input.vertical, input.reason, to);
       return {
         operationId,
         vertical: input.vertical,
         calls: to,
         changed: outcome.changed,
         permissions: outcome.permissions as PermissionKey[],
+        ...(auditWarning ? { auditWarning } : {}),
       };
     };
 
@@ -12127,6 +12118,13 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       check: runCheck,
+      grantedEntities: async (unparsed, entityType, options) => {
+        const permission = assertPermissionKey(unparsed);
+        return grantedEntitiesForContext(
+          checker, subject, permission, { tenantId: rt.tenantId, scopeId: rt.scopeId },
+          entityType, options, runCheck, withheld, Boolean(overrideActor),
+        );
+      },
       canAssign: runCanAssign,
       /**
        * #827. The plan is registration state, the index is scope state: an entity
@@ -12652,6 +12650,7 @@ export class SqliteScopeHost implements ScopeHost {
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
+    db.exec(GRANT_CHILDREN_INDEX_DDL);
     // Executor retry state (#100), same reasoning: scopes provisioned before it
     // already have the table. Defaults read as "terminal", which is exactly right
     // for the rows already there — every one of them is a completed delivery or a
