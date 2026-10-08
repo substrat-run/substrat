@@ -18,7 +18,7 @@ import {
   moduleManifest,
   PERMISSION_KEY_MAX_LENGTH,
 } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type GrantedEntitiesPage, type ScopeHost } from '@substrat-run/kernel';
 import { expectRefusal, type ScopeHostFixture } from './scope-host-suite.js';
 import { permMod, permModManifest } from './modules.js';
 
@@ -144,6 +144,113 @@ export function permissionContractSuite(
 
     afterAll(async () => {
       await fixture.cleanup();
+    });
+
+    /** A complete page walk is compared with the real checker, never another grant query. */
+    const grantedIds = async (who: PrincipalId, entityType: string): Promise<string[] | 'all' | 'incomplete'> => {
+      const stub = await host.getScope(who, t1, s1);
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      for (let pageNo = 0; pageNo < 100; pageNo++) {
+        const page = await stub.invoke<GrantedEntitiesPage>('perm/granted-entities', {
+          permission: PERM_READ, entityType, limit: 2, ...(cursor ? { cursor } : {}),
+        });
+        if (page.kind !== 'ids') return page.kind;
+        ids.push(...page.ids);
+        if (page.nextCursor === null) return ids;
+        cursor = page.nextCursor;
+      }
+      throw new Error('grant walk did not terminate');
+    };
+
+    it('grant-scoped pages equal ctx.check over generated parent graphs', async () => {
+      const owner = await host.getScope(alice, t1, s1);
+      for (let graph = 0; graph < 4; graph++) {
+        const who = principalId.parse(ulid());
+        const folder = (n: number): EntityRef => ({ entityType: 'folder', entityId: `gr-${graph}-f${n}` });
+        const item = (n: number): EntityRef => ({ entityType: 'item', entityId: `gr-${graph}-i${n}` });
+        let seed = graph + 17;
+        const pick = (n: number) => {
+          seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+          return seed % n;
+        };
+        const edges = new Set<string>();
+        for (let i = 1; i < 6; i++) {
+          for (let j = 0; j < 2; j++) {
+            const parent = pick(i);
+            const key = `${i}:${parent}`;
+            if (edges.has(key)) continue;
+            edges.add(key);
+            await owner.invoke('perm/link', { child: folder(i), parent: folder(parent) });
+          }
+        }
+        for (let i = 0; i < 8; i++) {
+          await owner.invoke('perm/link', { child: item(i), parent: folder(pick(6)) });
+        }
+        for (const entity of [folder(pick(6)), folder(pick(6)), item(pick(8))]) {
+          await host.admin.grant(staff, {
+            principalId: who, permission: PERM_READ, node: { tenantId: t1, scopeId: s1 },
+            entity, grantedBy: alice,
+          });
+        }
+        await host.admin.grant(staff, {
+          principalId: who, permission: PERM_READ, node: { tenantId: t1, scopeId: s1 },
+          entity: folder(pick(6)), grantedBy: alice,
+          expiresAt: (await import('@substrat-run/contracts')).instant.parse('2000-01-01T00:00:00Z'),
+        });
+        const expected: string[] = [];
+        for (let i = 0; i < 8; i++) {
+          if ((await probe(who, s1, PERM_READ, item(i))).allowed) expected.push(item(i).entityId);
+        }
+        const got = await grantedIds(who, 'item');
+        expect(got).not.toBe('all');
+        expect(got).not.toBe('incomplete');
+        expect(new Set(got as string[])).toEqual(new Set(expected));
+      }
+    });
+
+    it('node roles return all, while an ungranted caller has an empty completed page', async () => {
+      expect(await grantedIds(alice, 'item')).toBe('all');
+      expect(await grantedIds(principalId.parse(ulid()), 'item')).toEqual([]);
+    });
+
+    it('an org entity grant is enumerated only for its live member', async () => {
+      const member = principalId.parse(ulid());
+      const other = principalId.parse(ulid());
+      const org = orgId.parse(ulid());
+      const entity: EntityRef = { entityType: 'item', entityId: `org-grant-${ulid()}` };
+      await host.admin.createOrg(staff, { id: org, tenantId: t1, slug: `grant-${ulid().toLowerCase()}`, name: 'Grant Org' });
+      await host.admin.addMember(staff, t1, member, org);
+      await host.admin.grantToOrg(staff, org, PERM_READ, { tenantId: t1, scopeId: s1 }, entity);
+      expect(await grantedIds(member, 'item')).toContain(entity.entityId);
+      expect(await grantedIds(other, 'item')).toEqual([]);
+      await host.admin.removeMember(staff, t1, member, org);
+      expect(await grantedIds(member, 'item')).toEqual([]);
+    });
+
+    it('a revoked entity grant leaves no id on the next read', async () => {
+      const who = principalId.parse(ulid());
+      const entity: EntityRef = { entityType: 'item', entityId: `revoked-${ulid()}` };
+      await host.admin.grant(staff, {
+        principalId: who, permission: PERM_READ, node: { tenantId: t1, scopeId: s1 },
+        entity, grantedBy: alice,
+      });
+      expect(await grantedIds(who, 'item')).toContain(entity.entityId);
+      const owner = await host.getScope(alice, t1, s1);
+      await owner.invoke('perm/revoke-grant', { principal: who, permission: PERM_READ, entity });
+      expect(await grantedIds(who, 'item')).toEqual([]);
+    });
+
+    it('an expired entity grant does not enter a grant page', async () => {
+      const who = principalId.parse(ulid());
+      const entity: EntityRef = { entityType: 'item', entityId: `expired-${ulid()}` };
+      await host.admin.grant(staff, {
+        principalId: who, permission: PERM_READ, node: { tenantId: t1, scopeId: s1 },
+        entity, grantedBy: alice,
+        expiresAt: (await import('@substrat-run/contracts')).instant.parse('2000-01-01T00:00:00Z'),
+      });
+      expect((await probe(who, s1, PERM_READ, entity)).allowed).toBe(false);
+      expect(await grantedIds(who, 'item')).toEqual([]);
     });
 
     /**
@@ -1372,7 +1479,7 @@ export function permissionContractSuite(
       // was allowed here, and `ctx.grant` wrote it into `_substrat_tuples`.
       describe('the system-actor path (a consumer), which never reaches the checker', () => {
         type CheckLog = {
-          log: { event_id: string; permission: string; allowed: number; threw: string | null; grant_threw: string | null }[];
+          log: { event_id: string; permission: string; allowed: number; threw: string | null; grant_threw: string | null; grant_read_kind: string | null }[];
           deliveries: { event_id: string; error: string | null; permission: string }[];
           tuples: { subject: string; relation: string; object: string }[];
         };
@@ -1396,7 +1503,8 @@ export function permissionContractSuite(
           const mine = out.deliveries.filter((d) => d.permission === PERM_READ);
           expect(mine).toHaveLength(1);
           expect(mine[0]!.error).toBeNull();
-          expect(out.log.filter((r) => r.permission === PERM_READ).map((r) => r.allowed)).toEqual([1]);
+          expect(out.log.filter((r) => r.permission === PERM_READ).map((r) => [r.allowed, r.grant_read_kind]))
+            .toEqual([[1, 'all']]);
         });
 
         it('caught and ignored: no allow, and ctx.grant writes no tuple under the cast key', async () => {

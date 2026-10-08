@@ -195,14 +195,23 @@ export function microsoft365MailSender(options: Microsoft365Options): MailSender
         return await sendMail(graph(conn.fetch, token.accessToken, options), mail);
       } catch (e) {
         // Exchange's RBAC for Applications scope is the tenant's fence; say that, not "403".
+        // Reworded, never re-typed: the status and `Retry-After` are what the platform's retry
+        // reads (#2102), so the new error keeps both.
         if (e instanceof GraphError && e.status === 403) {
-          throw new Error(
+          throw new GraphError(
+            403,
+            e.code,
             `Exchange refused to send as '${mail.from.email}' — the address is outside the scope the tenant ` +
               `granted this app (RBAC for Applications), or the grant has not taken effect yet`,
           );
         }
         if (e instanceof GraphError && e.status === 429) {
-          throw new Error('Exchange is throttling this mailbox (about 30 messages a minute) — try again shortly');
+          throw new GraphError(
+            429,
+            e.code,
+            'Exchange is throttling this mailbox (about 30 messages a minute) — try again shortly',
+            e.retryAfter,
+          );
         }
         throw e;
       }

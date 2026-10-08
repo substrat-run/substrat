@@ -1,0 +1,172 @@
+/** The same ticket0 erasure story, against a real scope on either adapter. */
+import { expect } from 'vitest';
+import {
+  dataSubjectId,
+  platformActorId,
+  scopeId,
+  tenantId,
+  type DataSubjectId,
+  type PlatformActorId,
+  type ScopeId,
+  type TenantId,
+} from '@substrat-run/contracts';
+import { ulid, type ModuleErasureCounts } from '@substrat-run/kernel';
+import { ticket0Manifest } from '../src/manifest.js';
+
+type Value = string | number | null;
+type Row = Record<string, unknown>;
+export type ErasureSql = (tenant: TenantId, scope: ScopeId, sql: string, params?: readonly Value[]) => Promise<Row[]>;
+export interface ErasureAdapter {
+  sql: ErasureSql;
+  prepare: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId) => Promise<void>;
+  beforeUpgrade?: (tenant: TenantId, scope: ScopeId, subject: DataSubjectId) => Promise<void>;
+  upgrade?: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId) => Promise<void>;
+  erase: (tenant: TenantId, scope: ScopeId, actor: PlatformActorId, subject: DataSubjectId) => Promise<ModuleErasureCounts>;
+}
+
+const at = '2026-01-01T00:00:00.000Z';
+
+/** The setup writes through the adapter's real scope SQLite, not a mocked module context. */
+export async function checkTicket0SubjectErasure(adapter: ErasureAdapter): Promise<void> {
+  const actor = platformActorId.parse(ulid());
+  const tenant = tenantId.parse(ulid());
+  const scope = scopeId.parse(ulid());
+  const customer = dataSubjectId.parse(ulid());
+  const customerPrincipal = dataSubjectId.parse(ulid());
+  const otherCustomer = dataSubjectId.parse(ulid());
+  const agent = dataSubjectId.parse(ulid());
+  const otherAgent = dataSubjectId.parse(ulid());
+  const signup = dataSubjectId.parse(ulid());
+  const otherSignup = dataSubjectId.parse(ulid());
+  const customerConversation = ulid();
+  const otherConversation = ulid();
+  const customerWord = 'Customer text';
+  const agentWord = 'Agent text';
+  const otherWord = 'Other text';
+  const sql = (query: string, params: readonly Value[] = []) => adapter.sql(tenant, scope, query, params);
+  const one = async (query: string, params: readonly Value[] = []) => (await sql(query, params))[0];
+  const rowsFor = (receipt: ModuleErasureCounts, entityType: string) =>
+    receipt.verticalRows.find((r) => r.module === ticket0Manifest.id && r.entityType === entityType)?.rows;
+
+  await adapter.prepare(tenant, scope, actor);
+
+  for (const [id, principal, email, name] of [
+    [customer, customerPrincipal, 'first@example.test', 'First'],
+    [otherCustomer, null, 'second@example.test', 'Second'],
+  ]) {
+    await sql('INSERT INTO ticket0_contacts (id, principal, email, display_name, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id!, principal ?? null, email!, name!, at]);
+  }
+  for (const [id, name] of [[agent, 'Agent One'], [otherAgent, 'Agent Two']]) {
+    await sql('INSERT INTO ticket0_agent_profiles (principal, display_name, avatar_url, signature, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id!, name!, `https://example.test/${id}`, `${name} signature`, at]);
+  }
+  for (const [id, contact] of [[customerConversation, customer], [otherConversation, otherCustomer]]) {
+    await sql(`INSERT INTO ticket0_conversations
+      (id, contact_id, channel, subject, state, priority, created_at, updated_at)
+      VALUES (?, ?, 'widget', 'A question', 'open', 'normal', ?, ?)`, [id!, contact!, at, at]);
+  }
+  const messages = [
+    ['customer', customerConversation, 'contact', customer, null, customerWord],
+    ['legacy', customerConversation, 'contact', null, null, `${customerWord} legacy`],
+    // A second contact wrote into the SAME conversation. Erasing its owner must leave this row.
+    ['other-contact', customerConversation, 'contact', otherCustomer, null, otherWord],
+    ['agent', customerConversation, 'agent', null, agent, agentWord],
+    ['other-agent', customerConversation, 'agent', null, otherAgent, otherWord],
+    ['other-conversation', otherConversation, 'contact', otherCustomer, null, otherWord],
+  ] as const;
+  for (const [id, conversation, kind, contact, principal, body] of messages) {
+    await sql(`INSERT INTO ticket0_messages
+      (id, conversation_id, author_kind, author_contact_id, author_principal, visibility, body_text, body_html, created_at)
+      VALUES (?, ?, ?, ?, ?, 'public', ?, ?, ?)`, [id, conversation, kind, contact, principal, body, `<p>${body}</p>`, at]);
+  }
+  for (const [conversation, comment] of [[customerConversation, 'first rating'], [otherConversation, 'second rating']]) {
+    await sql('INSERT INTO ticket0_csat (conversation_id, score, comment, submitted_at) VALUES (?, 5, ?, ?)', [conversation!, comment!, at]);
+  }
+  for (const [id, conversation, error] of [['first-turn', customerConversation, 'first error'], ['second-turn', otherConversation, 'second error']]) {
+    await sql(`INSERT INTO ticket0_ai_turns
+      (id, conversation_id, model, input_tokens, output_tokens, cited_article_ids, outcome, error, created_at)
+      VALUES (?, ?, 'test', 0, 0, '[]', 'failed', ?, ?)`, [id!, conversation!, error!, at]);
+  }
+  for (const [id, owner, title] of [['first-reply', agent, 'First reply'], ['second-reply', otherAgent, 'Second reply'], ['shared-reply', '', 'Shared reply']]) {
+    await sql(`INSERT INTO ticket0_saved_replies
+      (id, title, body, created_by, created_at, owner)
+      VALUES (?, ?, 'Body', ?, ?, ?)`, [id!, title!, agent, at, owner!]);
+  }
+  for (const [id, email] of [[signup, 'signup@example.test'], [otherSignup, 'other-signup@example.test']]) {
+    await sql(`INSERT INTO ticket0_signups
+      (id, kind, email, note, state, origin, unsubscribe_token, requested_at, created_at)
+      VALUES (?, 'newsletter', ?, 'Please add me', 'pending',
+        'https://example.test', ?, ?, ?)`, [id!, email!, `unsubscribe-${id}`, at, at]);
+  }
+
+  await adapter.beforeUpgrade?.(tenant, scope, customerPrincipal);
+  await adapter.upgrade?.(tenant, scope, actor);
+
+  const customerReceipt = await adapter.erase(tenant, scope, actor, customerPrincipal);
+  expect(await one('SELECT email, display_name FROM ticket0_contacts WHERE id = ?', [customer]))
+    .toEqual({ email: null, display_name: null });
+  expect(await one('SELECT email FROM ticket0_contacts WHERE id = ?', [otherCustomer]))
+    .toEqual({ email: 'second@example.test' });
+  expect(await one('SELECT body_text, body_html FROM ticket0_messages WHERE id = ?', ['customer']))
+    .toEqual({ body_text: '', body_html: null });
+  expect(await one('SELECT body_text, body_html FROM ticket0_messages WHERE id = ?', ['legacy']))
+    .toEqual({ body_text: '', body_html: null });
+  expect(await one('SELECT body_text, body_html FROM ticket0_messages WHERE id = ?', ['other-contact']))
+    .toEqual({ body_text: otherWord, body_html: `<p>${otherWord}</p>` });
+  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['agent']))
+    .toEqual({ body_text: agentWord });
+  expect(await one('SELECT comment FROM ticket0_csat WHERE conversation_id = ?', [customerConversation]))
+    .toEqual({ comment: null });
+  expect(await one('SELECT comment FROM ticket0_csat WHERE conversation_id = ?', [otherConversation]))
+    .toEqual({ comment: 'second rating' });
+  expect(await one('SELECT error FROM ticket0_ai_turns WHERE id = ?', ['first-turn']))
+    .toEqual({ error: null });
+  expect(await one('SELECT error FROM ticket0_ai_turns WHERE id = ?', ['second-turn']))
+    .toEqual({ error: 'second error' });
+  expect(rowsFor(customerReceipt, 'contact')).toBe(1);
+  expect(rowsFor(customerReceipt, 'message')).toBe(0);
+  expect(rowsFor(customerReceipt, 'signup')).toBe(0);
+  expect(customerReceipt.unreachedEntities.filter((row) => row.module === ticket0Manifest.id)).toEqual([]);
+  expect(await one('SELECT email, note FROM ticket0_signups WHERE id = ?', [signup]))
+    .toEqual({ email: 'signup@example.test', note: 'Please add me' });
+  expect(customerReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 4 });
+
+  const agentReceipt = await adapter.erase(tenant, scope, actor, agent);
+  expect(await one('SELECT display_name, avatar_url, signature FROM ticket0_agent_profiles WHERE principal = ?', [agent]))
+    .toEqual({ display_name: '', avatar_url: null, signature: null });
+  expect(await one('SELECT display_name, avatar_url FROM ticket0_agent_profiles WHERE principal = ?', [otherAgent]))
+    .toEqual({ display_name: 'Agent Two', avatar_url: `https://example.test/${otherAgent}` });
+  expect(await one('SELECT body_text, body_html FROM ticket0_messages WHERE id = ?', ['agent']))
+    .toEqual({ body_text: '', body_html: null });
+  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['other-agent']))
+    .toEqual({ body_text: otherWord });
+  expect(await sql('SELECT id FROM ticket0_saved_replies WHERE id = ?', ['first-reply'])).toEqual([]);
+  expect(await sql('SELECT id FROM ticket0_saved_replies WHERE id = ?', ['second-reply'])).toHaveLength(1);
+  expect(await sql('SELECT id FROM ticket0_saved_replies WHERE id = ?', ['shared-reply'])).toHaveLength(1);
+  expect(rowsFor(agentReceipt, 'agentProfile')).toBe(1);
+  expect(rowsFor(agentReceipt, 'message')).toBe(1);
+  expect(rowsFor(agentReceipt, 'savedReply')).toBe(1);
+  expect(agentReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 0 });
+  expect(rowsFor(agentReceipt, 'signup')).toBe(0);
+  expect(await one('SELECT email FROM ticket0_signups WHERE id = ?', [signup]))
+    .toEqual({ email: 'signup@example.test' });
+
+  // A public signup proves no link to a contact or principal. Its own id is the
+  // subject for this row; a separate shred deletes exactly that signup.
+  const signupReceipt = await adapter.erase(tenant, scope, actor, signup);
+  expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [signup])).toEqual([]);
+  expect(await sql('SELECT id FROM ticket0_signups WHERE id = ?', [otherSignup])).toHaveLength(1);
+  expect(rowsFor(signupReceipt, 'signup')).toBe(1);
+  expect(signupReceipt.unreachedEntities.filter((row) => row.module === ticket0Manifest.id)).toEqual([]);
+
+  // The row id is also a valid erasure subject. Its authored messages were left
+  // intact by the principal shred, including the one in another conversation.
+  const otherReceipt = await adapter.erase(tenant, scope, actor, otherCustomer);
+  expect(await one('SELECT email FROM ticket0_contacts WHERE id = ?', [otherCustomer])).toEqual({ email: null });
+  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['other-contact'])).toEqual({ body_text: '' });
+  expect(await one('SELECT body_text FROM ticket0_messages WHERE id = ?', ['other-conversation'])).toEqual({ body_text: '' });
+  expect(rowsFor(otherReceipt, 'contact')).toBe(1);
+  expect(rowsFor(otherReceipt, 'message')).toBe(2);
+  expect(otherReceipt.hookRows).toContainEqual({ module: ticket0Manifest.id, rows: 2 });
+}

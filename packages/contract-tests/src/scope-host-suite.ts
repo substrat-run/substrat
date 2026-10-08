@@ -25,8 +25,12 @@ import {
   type LifecycleFlowResult,
   type OperationSeriesResult,
   KERNEL_AUTHORED_EVENT_TYPES,
+  EMAIL_SENT,
+  PLATFORM_REQUEST_ENTITY_TYPE,
+  SEND_EMAIL_KIND,
   type OrgId,
   type PlatformRequest,
+  type PlatformOutcomeEvent,
   type PlatformRequestId,
   type PrincipalId,
   type ScopeDump,
@@ -448,6 +452,53 @@ export function scopeHostContractSuite(
       const settled = rows.find((r) => r.id === id)!;
       expect(settled.status).toBe('done');
       expect(JSON.parse(settled.result as unknown as string)).toEqual({ scopeId: 'NEWSITE' });
+    });
+
+    it('a settle carrying an outcome event writes it once, as the kernel, with the settle (#2102)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const mail = { to: 'ada@example.com', subject: 'Hej', html: '<p>Hej</p>', text: 'Hej' };
+      const id = await stub.invoke<string>('platform/request', { kind: SEND_EMAIL_KIND, payload: mail });
+      type OutcomeRow = { type: string; actor: string; entity_type: string; entity_id: string; payload: string };
+      const mine = () =>
+        stub
+          .invoke<OutcomeRow[]>('platform/outcome-events')
+          .then((rows) => rows.filter((r) => (JSON.parse(r.payload) as { request: string }).request === id));
+      const event = (request: string): PlatformOutcomeEvent => ({
+        type: EMAIL_SENT,
+        entity: { entityType: PLATFORM_REQUEST_ENTITY_TYPE, entityId: id },
+        payload: {
+          request: platformRequestId.parse(request),
+          about: null,
+          sender: 'platform',
+          messageId: 'msg-1',
+          attempts: 1,
+          code: null,
+          status: null,
+        },
+      });
+
+      // Refused before anything is written: an event on a `pending` settle, or one naming
+      // another request. The row stays exactly as it was.
+      await expect(host.settlePlatformRequest(t1, s1, platformRequestId.parse(id), { status: 'pending', event: event(id) })).rejects.toThrow();
+      await expect(
+        host.settlePlatformRequest(t1, s1, platformRequestId.parse(id), { status: 'done', event: event(ulid()) }),
+      ).rejects.toThrow();
+      expect((await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)?.attempts).toBe(0);
+      expect(await mine()).toEqual([]);
+
+      await host.settlePlatformRequest(t1, s1, platformRequestId.parse(id), { status: 'done', event: event(id) });
+      const written = await mine();
+      expect(written).toHaveLength(1);
+      expect(written[0]!.type).toBe(EMAIL_SENT);
+      expect(JSON.parse(written[0]!.actor)).toEqual({ system: '@substrat-run/kernel' });
+      expect([written[0]!.entity_type, written[0]!.entity_id]).toEqual([PLATFORM_REQUEST_ENTITY_TYPE, id]);
+      expect(JSON.parse(written[0]!.payload)).toMatchObject({ request: id, messageId: 'msg-1', sender: 'platform' });
+
+      // A repeated settle finds the row terminal: it moves nothing, so it writes nothing.
+      await host.settlePlatformRequest(t1, s1, platformRequestId.parse(id), { status: 'failed', event: event(id) });
+      expect(await mine()).toHaveLength(1);
+      const row = (await stub.invoke<PlatformRequestRow[]>('platform/read-requests')).find((r) => r.id === id)!;
+      expect(row.status).toBe('done');
     });
 
     it('a transient failure keeps the intent pending and preserves a two-phase result (retry)', async () => {

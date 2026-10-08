@@ -50,10 +50,11 @@ import {
   type PrincipalId,
   type ScopeId,
 } from '@substrat-run/contracts';
-import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange, type LiveFrame } from '@substrat-run/kernel';
+import { STORE_LOCAL_META_KEYS, listIndexMigrations, ulid, type LiveChange, type LiveFrame, type ModuleErasureCounts } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
   SCOPE_SWEEPER_NAME,
+  defineScopeDO,
   type ScopeSweepReport,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
@@ -65,6 +66,7 @@ import { ticket0Migrations } from '../../src/migrations.generated.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
 import { listsBefore0027 } from '../before-0027.js';
 import { DESK_TABLES, populateDesk } from '../desk-fixture.js';
+import { checkTicket0SubjectErasure, type ErasureSql } from '../subject-erasure-case.js';
 import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex, sorts, type Shape } from '../desk-read-shapes.js';
 
 interface Conversation {
@@ -2369,4 +2371,72 @@ describe('ticket0 on workerd — migration 0027, saved replies keyed per owner (
     expect(result.keyed).toEqual(['unique', 'inserted', 'unique']);
     expect(result.folders).toBe(1);
   });
+});
+
+describe('ticket0 subject erasure on workerd', () => {
+  const raw: ErasureSql = async (_tenant, scope, sql, params = []) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+      [...state.storage.sql.exec(sql, ...params)].map((row) => ({ ...row })),
+    );
+
+  it('erases only the customer and staff rows that belong to each subject', async () => {
+    await checkTicket0SubjectErasure({
+      sql: raw,
+      prepare: async (tenant, scope) => {
+        const response = await platform('/internal/provision', {
+          tenantId: tenant, scopeId: scope, owner, entitlements,
+        });
+        expect(response.status).toBe(201);
+      },
+      erase: async (_tenant, scope, _actor, subject) => {
+        const stub = env.SCOPE.get(env.SCOPE.idFromName(scope)) as DurableObjectStub & {
+          redactSubject(id: string): Promise<{ vertical: ModuleErasureCounts } | { failure: unknown }>;
+        };
+        const result = await stub.redactSubject(subject);
+        if ('failure' in result) throw new Error(JSON.stringify(result.failure));
+        return result.vertical;
+      },
+    });
+  }, 60_000);
+
+  it('shreds rows stored before the module declared erasure', async () => {
+    const oldModules = MODULES.map((module) => module.manifest.id === ticket0Manifest.id
+      ? { ...module, manifest: { ...module.manifest, erasure: undefined }, onSubjectErased: undefined }
+      : module);
+    const OldScopeDO = defineScopeDO(oldModules, {});
+    const CurrentScopeDO = defineScopeDO(MODULES, {});
+    type ErasureDO = DurableObject & {
+      migrate(): Promise<number | null>;
+      redactSubject(id: string): Promise<{ vertical: ModuleErasureCounts } | { failure: unknown }>;
+    };
+    // defineScopeDO's public return type is DurableObject; these are its scope RPCs.
+    const opened = (Type: typeof CurrentScopeDO, state: ConstructorParameters<typeof CurrentScopeDO>[0]): ErasureDO =>
+      new Type(state, env) as unknown as ErasureDO;
+    const stub = (scope: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(scope));
+    await checkTicket0SubjectErasure({
+      sql: raw,
+      prepare: async (_tenant, scope) => {
+        await runInDurableObject(stub(scope), (_instance, state) =>
+          opened(OldScopeDO, state).migrate());
+      },
+      beforeUpgrade: async (tenant, scope, subject) => {
+        const result = await runInDurableObject(stub(scope), (_instance, state) =>
+          opened(OldScopeDO, state).redactSubject(subject));
+        if ('failure' in result) throw new Error(JSON.stringify(result.failure));
+        expect(result.vertical.verticalRows).toEqual([]);
+        expect(await raw(tenant, scope, 'SELECT body_text FROM ticket0_messages WHERE id = ?', ['customer']))
+          .toEqual([{ body_text: 'Customer text' }]);
+      },
+      upgrade: async (_tenant, scope) => {
+        await runInDurableObject(stub(scope), (_instance, state) =>
+          opened(CurrentScopeDO, state).migrate());
+      },
+      erase: async (_tenant, scope, _actor, subject) => {
+        const result = await runInDurableObject(stub(scope), (_instance, state) =>
+          opened(CurrentScopeDO, state).redactSubject(subject));
+        if ('failure' in result) throw new Error(JSON.stringify(result.failure));
+        return result.vertical;
+      },
+    });
+  }, 60_000);
 });

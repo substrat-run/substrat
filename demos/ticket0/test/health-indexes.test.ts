@@ -102,7 +102,8 @@ beforeAll(async () => {
   for (const module of MODULES) previous.registerModule(module.manifest.id === ticket0Manifest.id
     ? {
         ...module,
-        manifest: { ...module.manifest, lists: listsBefore0021(listsBefore0027(module.manifest.lists ?? [])) },
+        manifest: { ...module.manifest, erasure: undefined, lists: listsBefore0021(listsBefore0027(module.manifest.lists ?? [])) },
+        onSubjectErased: undefined,
         migrations: (module.migrations ?? []).filter(m => m.version <= '0014'),
       }
     : module);

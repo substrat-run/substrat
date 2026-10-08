@@ -117,6 +117,18 @@ const TUPLE_COLUMNS = 'subject, relation, object, expires_at, revoked_at';
  * scope-local by construction, so they sit beside the scope-level tuples.
  */
 export const scopeTupleReader = (sql: SqlStorage): ScopeTupleReader => ({
+  nextGrant: (subject, relation, after) =>
+    sql.exec(
+      `SELECT subject, object, expires_at, revoked_at FROM _substrat_tuples
+       WHERE subject = ? AND relation = ? AND object > ? ORDER BY object LIMIT 1`,
+      subject, relation, after,
+    ).toArray()[0] as unknown as TupleRow | undefined,
+  nextChild: (parent, after) =>
+    sql.exec(
+      `SELECT subject, object, expires_at, revoked_at FROM _substrat_tuples
+       WHERE object = ? AND relation = 'parent' AND subject > ? ORDER BY subject LIMIT 1`,
+      parent, after,
+    ).toArray()[0] as unknown as TupleRow | undefined,
   tuples: (subject, relationPrefix) =>
     sql
       .exec(

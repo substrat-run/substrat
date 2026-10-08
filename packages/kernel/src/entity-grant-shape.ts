@@ -7,13 +7,13 @@ import {
   entityGrantsToppedUpPayload,
   entityObjectRef,
   eventId,
-  moduleId,
   type DomainEvent,
   type EntityGrantShape,
   type EntityRef,
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { assertKernelAuthoredType, substratError } from '@substrat-run/contracts';
+import { KERNEL_ACTOR, kernelOutboxInsertSql } from './kernel-outbox.js';
 import { GRANTEE_KEY_RELATION, explicitTupleSql } from './entity-grant.js';
 import { liveTupleSql } from './permission-eval.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
@@ -97,7 +97,7 @@ const RETIRED_RELATION = 'shape-retired:';
 const recordRefs = (entityType: string, scopeId: string) => [`shape:${entityType}`, `scope:${scopeId}`] as const;
 
 /** The writer of the top-up events: the kernel, as no module or person acted. */
-const KERNEL_ACTOR = { system: moduleId.parse('@substrat-run/kernel') };
+
 
 const PRINCIPAL = 'principal:';
 
@@ -210,7 +210,7 @@ export function topUpEntityGrantShapes(
           h.object,
         );
       }
-      const st = outboxInsertSql(
+      const st = kernelOutboxInsertSql(
         shapeEvent(pass, ENTITY_GRANTS_TOPPED_UP, entityGrantsToppedUpPayload, {
           principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
           entity: { entityType: shape.entityType, entityId: h.object.slice(prefix.length) },
@@ -284,7 +284,7 @@ function retire(db: SwitchSql, pass: ShapePass, entityType: string, prefix: stri
         ) as { key: string }[]
       ).map((r) => r.key),
     );
-    const st = outboxInsertSql(
+    const st = kernelOutboxInsertSql(
       shapeEvent(pass, ENTITY_GRANTS_RETIRED, entityGrantsRetiredPayload, {
         principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
         entity: { entityType, entityId: h.object.slice(prefix.length) },
@@ -458,38 +458,4 @@ function shapeEvent<P extends { entity: EntityRef }>(
     piiClass: 'none',
     payload: schema.parse(payload),
   });
-}
-
-/**
- * The outbox write for an event the kernel records OUTSIDE an operation. A reconcile has no
- * operation, no caller and no delivery, so `operation`, `caused_by` and `invocation_id` are null,
- * which is what each says about such an event; the envelope's own fields are written as given.
- * `version` is the deploy that wrote it.
- */
-function outboxInsertSql(e: DomainEvent, version: string | null): { sql: string; params: (string | number | null)[] } {
-  assertKernelAuthoredType(e.type);
-  return {
-    sql: `INSERT INTO _substrat_outbox
-            (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
-             entity_type, entity_id, pii_class, subject_id, authorization,
-             impersonation, operation, version, caused_by, invocation_id, payload)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?)`,
-    params: [
-      e.id,
-      e.type,
-      e.schemaVersion,
-      e.occurredAt,
-      e.tenantId,
-      e.scopeId,
-      JSON.stringify(e.actor),
-      e.entity.entityType,
-      e.entity.entityId,
-      e.piiClass,
-      e.subjectId ?? null,
-      e.authorization ? JSON.stringify(e.authorization) : null,
-      e.impersonation ? JSON.stringify(e.impersonation) : null,
-      version,
-      JSON.stringify(e.payload),
-    ],
-  };
 }

@@ -131,6 +131,24 @@ export async function performSwitch<T, E>(
 }
 
 /**
+ * #2089: the toast for a switch that MOVED but whose outcome row the admin log could not take —
+ * the answer's `auditWarning`. Shown beside the success, never instead of it: the switch is where
+ * the card says, and nothing should be done again. Null when the row landed.
+ */
+export function auditWarningToast(
+  subject: string,
+  slug: string,
+  result: { auditWarning?: string },
+): [title: string, body: string] | null {
+  return result.auditWarning
+    ? [
+        'Switched, but not recorded in the admin log',
+        `${subject} on ${slug} · ${result.auditWarning}. Staff are told; there is nothing to redo.`,
+      ]
+    : null;
+}
+
+/**
  * The toast for an `unknown` switch (#2010), one wording for every switch card: never
  * "Refused", which would send an operator to retry a switch that may have moved.
  */

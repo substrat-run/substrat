@@ -77,6 +77,8 @@ export interface SendResult {
   delivered: string[];
   queued: string[];
   bounced: string[];
+  /** The provider's id for the message, when it returns one (#2102). */
+  messageId?: string;
 }
 
 /** The one method the whole platform sends mail through. */

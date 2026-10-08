@@ -1574,6 +1574,16 @@ twelfth once a module's own tables were, #2068):
    but nothing in it is erased. A module whose manifest is written by hand rather than
    derived by `manifestEntities()` (today, the engines) has no `erasure` block, so its
    erasable fields are not even named on the receipt; `lint:model` still warns on them.
+   Ticket0's public signup has no verified contact or principal id. Its own row id is
+   an erasure subject: a signup-id shred deletes that row, while a contact-id or
+   principal shred leaves it untouched. Matching its email to a contact would risk
+   erasing another person's row. A shared saved reply belongs to the desk, while a
+   personal reply is deleted by its `owner` principal. The receipt reports at entity
+   granularity, so it cannot list shared replies separately from the reached
+   `savedReply` entity.
+   The other in-repo models still warned on by `lint:model` are shop, tock, todo,
+   callout, meridian, handlebar, and engine-invites. Their own subject links need
+   adoption before their table data is inside this guarantee.
 3. **Copies already handed out are beyond reach.** A `?full=true` export a customer holds
    is theirs; so is any backup taken *before* sealing existed, which stays readable until
    backup retention rotates it out. Both are the ordinary limit of erasure against copies
