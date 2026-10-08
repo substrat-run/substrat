@@ -369,7 +369,8 @@ export function ClientEditor({
    * form can only offer providers that actually exist — a policy naming one that does not is
    * a client nobody can sign into, and it should not be possible to write it here.
    */
-  const storedPolicy = (client?.metadata?.signIn ?? null) as { providers?: unknown; password?: unknown } | null;
+  const storedPolicy = (client?.metadata?.signIn ?? null) as { providers?: unknown; password?: unknown; passwordSecondFactor?: unknown } | null;
+  const [requireSms, setRequireSms] = useState(storedPolicy?.passwordSecondFactor === 'sms');
   /**
    * The issuer's live providers — `null` until the read below answers, and that distinction is
    * load-bearing rather than tidy. `save` writes the policy as `offered ∩ methods`, so an
@@ -471,6 +472,7 @@ export function ClientEditor({
       metadata.signIn = {
         providers: offered.filter((p) => methods.has(p.id)).map((p) => p.id),
         password: methods.has(PASSWORD_METHOD),
+        ...(requireSms && !builtin && methods.has(PASSWORD_METHOD) ? { passwordSecondFactor: 'sms' } : {}),
       };
     }
     const draft: ClientDraft = {
@@ -609,6 +611,10 @@ export function ClientEditor({
             />
             <span>Email and password</span>
           </label>
+          {methods.has(PASSWORD_METHOD) && !builtin && <label className="toggle">
+            <input type="checkbox" checked={requireSms} onChange={(e) => setRequireSms(e.target.checked)} />
+            <span>Require SMS verification after password sign-in</span>
+          </label>}
           {(offered ?? []).map((provider) => (
             <label className="toggle" key={provider.id}>
               <input

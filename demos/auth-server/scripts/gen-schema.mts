@@ -161,6 +161,11 @@ function tableOf(model: string, def: (typeof tables)[string]): Table {
 }
 
 const models = Object.entries(tables).map(([model, def]) => tableOf(model, def));
+// Provider identities belong to one account, even when simultaneous BankID orders
+// both pass the application-level ownership check. Better Auth does not declare this.
+models.find((t) => t.table === 'account')!.indexes.push({
+  name: 'account_provider_id_account_id_unique', columns: ['provider_id', 'account_id'], unique: true,
+});
 
 /* ---- db/ddl.generated.ts ---- */
 

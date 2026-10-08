@@ -43,11 +43,11 @@ function columnsOf(sql: SqlExec, table: string): string[] {
 }
 
 /**
- * Refuse to drop `account.issuer` while two rows would share `(provider_id, account_id)`.
+ * Refuse to enforce identity uniqueness or drop `account.issuer` while account keys collide.
  * The message names providers and counts, never an `account_id`: for BankID it is a personal
  * number, and this lands in a log.
  */
-function assertNoAccountKeyCollisions(sql: SqlExec): void {
+function assertNoAccountKeyCollisions(sql: SqlExec, droppingIssuer = false): void {
   const collisions = sql
     .exec(
       `SELECT provider_id, count(*) AS pairs FROM (
@@ -57,6 +57,10 @@ function assertNoAccountKeyCollisions(sql: SqlExec): void {
     .toArray() as { provider_id: string; pairs: number }[];
   if (collisions.length === 0) return;
   const summary = collisions.map((c) => `${c.provider_id} × ${c.pairs}`).join(', ');
+  if (!droppingIssuer) throw new Error(
+    `auth-server: cannot enforce unique account identities — duplicate (provider_id, account_id) pairs: ${summary}. ` +
+    'No account rows were deleted. Resolve duplicate owners before booting again.',
+  );
   throw new Error(
     `auth-server: cannot drop account.issuer — (provider_id, account_id) pairs that differ only by issuer: ${summary}. ` +
       'Better Auth 1.7.3+ keys an account on that pair and refuses to look up one that matches two rows, and issuer is the only ' +
@@ -118,10 +122,17 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
     // BEFORE anything irreversible: the store is exactly as it was, and rolling the deploy back
     // restores service. Never continue — a skipped drop would leave the `NOT NULL` column
     // failing every new sign-up, each one leaving a user with no account behind.
-    assertNoAccountKeyCollisions(sql);
+    assertNoAccountKeyCollisions(sql, true);
     sql.exec('DROP INDEX IF EXISTS account_issuer_account_id_idx');
     sql.exec('ALTER TABLE account DROP COLUMN issuer');
     upgrade.dropped.push('account.issuer');
+  }
+
+  // Add the same identity uniqueness guarantee fresh stores get from generated DDL.
+  // Refuse duplicate historical identities rather than choosing an owner or deleting data.
+  if (account.length > 0) {
+    assertNoAccountKeyCollisions(sql);
+    sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS account_provider_id_account_id_unique ON account (provider_id, account_id)');
   }
 
   // Generic OIDC providers (#1213's follow-up): `identity_provider` grew `issuer`, `label`
@@ -147,6 +158,11 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
   // any policy — so the upgrade costs those sessions one re-login at a restricted client and
   // never guesses a method on their behalf.
   const session = columnsOf(sql, 'session');
+  const user = columnsOf(sql, 'user');
+  if (user.length > 0 && !user.includes('phone_number')) {
+    sql.exec('ALTER TABLE user ADD COLUMN phone_number TEXT');
+    upgrade.added.push('user.phone_number');
+  }
   if (session.length > 0 && !session.includes('sign_in_provider')) {
     sql.exec('ALTER TABLE session ADD COLUMN sign_in_provider TEXT');
     upgrade.added.push('session.sign_in_provider');

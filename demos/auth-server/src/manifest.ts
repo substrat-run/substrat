@@ -14,6 +14,9 @@ import type { EnvVarSpec } from '@substrat-run/contracts';
  * guards the wiring.
  */
 export const AUTH_SERVER_ENV: EnvVarSpec[] = [
+  { key: 'TWILIO_ACCOUNT_SID', label: 'Twilio account SID', description: 'Twilio account used for SMS verification. Configure all three Twilio keys to enable SMS.', placeholder: 'AC…', required: false, secret: false, group: 'SMS verification' },
+  { key: 'TWILIO_AUTH_TOKEN', label: 'Twilio auth token', description: 'Credential for the Twilio Verify API. Delivered as a secret.', required: false, secret: true, group: 'SMS verification' },
+  { key: 'TWILIO_VERIFY_SERVICE_SID', label: 'Twilio Verify service SID', description: 'Verify service that sends and checks SMS codes. Enable Fraud Guard and destination restrictions in Twilio.', placeholder: 'VA…', required: false, secret: false, group: 'SMS verification' },
   {
     key: 'PUBLIC_ORIGIN',
     label: 'Issuer origin',

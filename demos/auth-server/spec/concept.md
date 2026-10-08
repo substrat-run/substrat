@@ -246,6 +246,66 @@ holding it can mint a token for any user of that project. That is Supabase's own
 for retiring it, and the reason this path is documented as the fallback rather than the
 recommendation.
 
+## Invited accounts and SMS second factors
+
+The Users screen's **Invite user** action emails a single-use, 24-hour setup link.
+Accepting the link proves the email address and creates a setup session. That session
+cannot obtain an OIDC authorization code. The invitee chooses BankID (link the
+verified personnummer to this account) or a password followed by phone enrollment.
+The phone is stored only after Twilio Verify approves its SMS code. Existing
+credential accounts cannot be replaced or recovered with an account invitation.
+
+Account invitations set up authentication. The vertical's existing membership
+invitation still grants access and roles; after setup the user returns to that
+publisher's invitation or sign-in page. Auth administrators can also send invitations
+through `POST /api/auth/invitation/create` with `{ email, name }` and their session.
+
+Configure these instance settings together to enable SMS:
+
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN` (secret)
+- `TWILIO_VERIFY_SERVICE_SID`
+
+Create a Verify service in Twilio, enable Fraud Guard, and restrict destination
+countries to those served by the application. The same Fetch-based transport works
+in Node and workerd, with no Twilio SDK dependency. Codes are generated and checked
+by Twilio Verify. Better Auth supplies the endpoint, session, cookie, and database
+machinery through a custom plugin; this does not mount Better Auth's TOTP or phone
+number sign-in plugins.
+
+On the relying party's application settings, restrict sign-in to BankID and
+email/password and select **Require SMS verification after password sign-in**.
+Its stored metadata is:
+
+```json
+{ "signIn": { "providers": ["bankid"], "password": true, "passwordSecondFactor": "sms" } }
+```
+
+The authorize endpoint admits a `bankid` or `password-sms` session. A password
+session alone is refused, including silent authorize and an existing SSO session.
+After SMS succeeds the password session is revoked and a new session is issued;
+the signed OIDC query resumes only then. Each new password login requires SMS,
+and password reset preserves the registered phone. There is no remembered-device
+bypass. Applications without this policy keep their existing behavior.
+
+Sending and guessing codes are bounded per account across sessions: one send per
+minute bucket and five checks per ten-minute bucket. Challenges expire after ten
+minutes and are consumed once. Enrollment requires a verified email and a fresh
+password session. An enrolled phone cannot be replaced through these endpoints.
+Connecting BankID to an account with a phone requires a completed SMS or BankID
+session, so linking cannot bypass the existing factor. A BankID linking order is
+bound to the account and exact session that started it; an already-linked
+personnummer cannot be reassigned.
+
+Users who lose their phone can use an already-linked BankID. Automated phone
+replacement and SMS recovery are not provided; operators must verify identity
+before changing a registered factor. Missing Twilio configuration or a delivery
+failure refuses the SMS path rather than falling back to password-only login.
+
+The schema change adds nullable `user.phone_number`, without backfilling old
+accounts. The idempotent upgrade adds it to existing databases; generated schema
+and DDL include it for new installations.
+
 ## BankID
 
 Swedish e-ID sign-in, beside the OAuth upstreams but not among them: BankID is not a redirect

@@ -11,6 +11,8 @@ import {
   type SignInMethod,
 } from '../api';
 import { placeHref } from '../places';
+import { BankIdSignIn } from '../auth/SignIn';
+import { PhoneFactor } from '../auth/PhoneFactor';
 
 /**
  * `/account` — the one screen everybody who can sign into this issuer reaches, administrator
@@ -118,6 +120,8 @@ function methodLabel(provider: string, providers: PublicProvider[]): string {
  * own half — an upstream that reports the address verified, or one an administrator trusts.
  */
 export function SignInMethods() {
+  const [linkBankid, setLinkBankid] = useState(false);
+  const [verifyPhone, setVerifyPhone] = useState(false);
   const [methods, setMethods] = useState<SignInMethod[] | null>(null);
   const [providers, setProviders] = useState<PublicProvider[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -161,17 +165,17 @@ export function SignInMethods() {
   }, []);
 
   const linked = new Set((methods ?? []).map((m) => m.provider));
-  // BankID is left out on purpose: it is a sign-in method, not an OAuth upstream, and there is
-  // no redirect-link flow to start for it — offering a button that cannot work would be worse
-  // than not offering one.
-  const connectable = providers.filter((p) => p.id !== 'bankid' && !linked.has(p.id));
+  const connectable = providers.filter((p) => !linked.has(p.id));
   // The server refuses to remove the last one; saying so beside a disabled button is kinder
   // than letting someone press it and read an error about it.
   const onlyOne = (methods?.length ?? 0) < 2;
 
+  if (linkBankid) return <BankIdSignIn link oauthQuery={null} theme={{}} onDone={() => { setLinkBankid(false); void reload(); }} onBack={() => setLinkBankid(false)} />;
+  if (verifyPhone) return <PhoneFactor oauthQuery={null} onDone={() => setVerifyPhone(false)} onBack={() => setVerifyPhone(false)} />;
   return (
     <>
       {err && <p className="error">{err}</p>}
+      {linked.has('credential') && <button className="btn" onClick={() => setVerifyPhone(true)}>Verify phone by SMS</button>}
       <p className="muted">
         Every way this account can be signed into. Connecting a provider here attaches it to the
         account you are already signed in as — the account keeps its identity, so nothing you
@@ -224,6 +228,7 @@ export function SignInMethods() {
               className="btn"
               disabled={busy !== null}
               onClick={async () => {
+                if (provider.id === 'bankid') { setLinkBankid(true); return; }
                 setErr(null);
                 setBusy(provider.id);
                 try {

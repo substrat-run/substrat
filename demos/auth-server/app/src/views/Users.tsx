@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { inviteAccount } from '../api';
 import {
   banUser,
   createUser,
@@ -43,12 +44,36 @@ export function UsersView({ me }: { me: string }) {
     <section className="panel">
       <div className="panel-head">
         <h2>Users</h2>
+        <InviteUser onInvited={reload} />
         <NewUser onCreated={reload} />
       </div>
       {err && <p className="error">{err}</p>}
       <UserTable users={users} me={me} onChanged={reload} />
     </section>
   );
+}
+
+function InviteUser({ onInvited }: { onInvited: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
+  if (!open) return <button className="btn" onClick={() => { setOpen(true); setSent(false); }}>Invite user</button>;
+  return <div className="new-user">
+    <Field label="Name" value={name} onChange={setName} />
+    <Field label="Email" type="email" value={email} onChange={setEmail} />
+    {err && <p className="error">{err}</p>}
+    {sent && <p className="notice">Invitation sent. They can choose BankID or password and SMS.</p>}
+    <button className="btn primary" disabled={busy || sent} onClick={async () => {
+      setBusy(true); setErr(null);
+      try { await inviteAccount(email, name); setSent(true); onInvited(); }
+      catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+      finally { setBusy(false); }
+    }}>Send invitation</button>
+    <button className="btn" disabled={busy} onClick={() => setOpen(false)}>Close</button>
+  </div>;
 }
 
 function UserTable({ users, me, onChanged }: { users: AdminUser[] | null; me: string; onChanged: () => void }) {

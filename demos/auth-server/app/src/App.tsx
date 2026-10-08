@@ -17,12 +17,15 @@ import { ResetPassword } from './auth/ResetPassword';
 import { Setup } from './auth/Setup';
 import { SignIn } from './auth/SignIn';
 import { SignUp } from './auth/SignUp';
+import { Invitation } from './auth/Invitation';
+import { recoverInvitation, saveInvitation, type InvitationRecovery } from './auth/invitation-recovery';
 import { Console } from './console/Console';
 import { returnTarget } from './console/routes';
 import { Card, Centered } from './primitives';
 import { IssuerUnreachable } from './wire';
 
 type Phase =
+  | { t: 'invitation'; recovery: InvitationRecovery }
   | { t: 'loading' }
   /**
    * The read that decides every other screen did not answer (`wire.ts`).
@@ -105,6 +108,12 @@ export default function App() {
   const refresh = useCallback(async () => {
     // A password-reset link lands the user here with a token — handle that first.
     const url = new URL(window.location.href);
+    const invitation = recoverInvitation(url);
+    if (invitation) {
+      // Clear the capability from the address bar only after tab-scoped storage succeeds.
+      if (saveInvitation(invitation)) window.history.replaceState({}, '', '/accept-invitation');
+      return setPhase({ t: 'invitation', recovery: invitation });
+    }
     if (url.pathname === '/reset-password') {
       const token = url.searchParams.get('token');
       if (token) return setPhase({ t: 'reset', token });
@@ -220,6 +229,7 @@ export default function App() {
   }, [run]);
 
   switch (phase.t) {
+    case 'invitation': return <Invitation recovery={phase.recovery} />;
     case 'loading':
       return <Centered>Loading…</Centered>;
     case 'failed':

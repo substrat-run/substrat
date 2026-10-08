@@ -1,5 +1,5 @@
 import type { BetterAuthPlugin } from 'better-auth';
-import { APIError, createAuthEndpoint } from 'better-auth/api';
+import { APIError, createAuthEndpoint, getSessionFromCtx } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
 import { z } from 'zod';
 import {
@@ -78,6 +78,8 @@ interface PendingOrder {
   qrStartToken: string;
   qrStartSecret: string;
   startedAt: number;
+  linkUserId?: string;
+  linkSessionId?: string;
 }
 
 const orderBody = z.object({
@@ -112,8 +114,15 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
     endpoints: {
       bankidStart: createAuthEndpoint(
         '/bankid/start',
-        { method: 'POST', body: z.object({}).optional(), requireRequest: true },
+        { method: 'POST', body: z.object({ link: z.boolean().optional() }).optional(), requireRequest: true },
         async (ctx) => {
+          const linking = ctx.body?.link ? await getSessionFromCtx(ctx) : null;
+          if (ctx.body?.link && (!linking || !linking.user.emailVerified || Date.now() - new Date(linking.session.createdAt).getTime() > 10 * 60_000 || linking.session.impersonatedBy)) {
+            throw new APIError('FORBIDDEN', { message: 'Verify your email and sign in again before connecting BankID' });
+          }
+          if (linking && (linking.user as Record<string, unknown>).phoneNumber && (linking.session as Record<string, unknown>).signInProvider !== 'password-sms' && (linking.session as Record<string, unknown>).signInProvider !== 'bankid') {
+            throw new APIError('FORBIDDEN', { message: 'Verify your SMS factor before connecting BankID' });
+          }
           // BankID requires the END USER's address as the RP sees it (their fraud signal,
           // not ours) — read from the single header the runtime vouches for, never from
           // whatever forwarding headers arrived (see `clientIpHeader`).
@@ -127,6 +136,7 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
               qrStartToken: order.qrStartToken,
               qrStartSecret: order.qrStartSecret,
               startedAt,
+              ...(linking ? { linkUserId: linking.user.id, linkSessionId: linking.session.id } : {}),
             } satisfies PendingOrder),
             expiresAt: new Date(startedAt + ORDER_TTL_MS),
           });
@@ -154,13 +164,21 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
         async (ctx) => {
           // Refuse unknown orders before calling out: `collect` on an arbitrary orderRef
           // would otherwise let anyone use this issuer as a proxy onto BankID's API.
-          await readOrder(ctx, ctx.body.orderRef);
+          const pending = await readOrder(ctx, ctx.body.orderRef);
+          if (pending.linkUserId) {
+            const linking = await getSessionFromCtx(ctx);
+            if (!linking || linking.user.id !== pending.linkUserId || linking.session.id !== pending.linkSessionId || !linking.user.emailVerified) {
+              throw new APIError('FORBIDDEN', { message: 'This BankID order belongs to another setup session' });
+            }
+          }
           const result = await collectOrder(opts.transport, opts.apiUrl, ctx.body.orderRef).catch(rpError);
 
           if (result.status === 'pending') {
             return ctx.json({ status: 'pending' as const, hintCode: result.hintCode ?? null });
           }
-          await ctx.context.internalAdapter.deleteVerificationByIdentifier(orderKey(ctx.body.orderRef));
+          if (!await ctx.context.internalAdapter.consumeVerificationValue(orderKey(ctx.body.orderRef))) {
+            throw new APIError('BAD_REQUEST', { message: 'This BankID order has already been used' });
+          }
           if (result.status === 'failed' || !result.completionData) {
             return ctx.json({ status: 'failed' as const, hintCode: result.hintCode ?? null });
           }
@@ -171,6 +189,12 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
             accountId: who.personalNumber,
           });
           let user = account ? await ctx.context.internalAdapter.findUserById(account.userId) : null;
+          if (pending.linkUserId) {
+            if (account && account.userId !== pending.linkUserId) throw new APIError('CONFLICT', { message: 'This BankID is already connected to another account' });
+            user = await ctx.context.internalAdapter.findUserById(pending.linkUserId);
+            if (!user) throw new APIError('FORBIDDEN', { message: 'The invited account no longer exists' });
+            if (!account) await ctx.context.internalAdapter.linkAccount({ userId: user.id, providerId: PROVIDER_ID, accountId: who.personalNumber });
+          }
           if (!user) {
             if (!opts.allowSignup) {
               throw new APIError('FORBIDDEN', {

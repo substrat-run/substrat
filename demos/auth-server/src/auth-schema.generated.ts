@@ -32,6 +32,7 @@ export const user = sqliteTable(
   banned: integer('banned', { mode: 'boolean' }).default(false),
   banReason: text('ban_reason'),
   banExpires: integer('ban_expires', { mode: 'timestamp_ms' }),
+  phoneNumber: text('phone_number'),
   },
 );
 
@@ -69,7 +70,7 @@ export const account = sqliteTable(
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).default(nowMs).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   },
-  (table) => [index('account_user_id_idx').on(table.userId)],
+  (table) => [index('account_user_id_idx').on(table.userId), uniqueIndex('account_provider_id_account_id_unique').on(table.providerId, table.accountId)],
 );
 
 export const verification = sqliteTable(

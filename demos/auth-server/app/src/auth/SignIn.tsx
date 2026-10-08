@@ -14,6 +14,7 @@ import {
 } from '../api';
 import { returnTarget } from '../console/routes';
 import { Centered, Card, Field } from '../primitives';
+import { PhoneFactor } from './PhoneFactor';
 
 export function SignIn({
   onDone, signupEnabled, oauthQuery, onSignUp, signIn, socialError, theme,
@@ -32,6 +33,7 @@ export function SignIn({
   const [err, setErr] = useState<string | null>(socialError);
   const [notice, setNotice] = useState<string | null>(null);
   const [bankidOpen, setBankidOpen] = useState(false);
+  const [phoneOpen, setPhoneOpen] = useState(false);
   const { providers, password: passwordEnabled } = signIn;
   // A signed authorize query ⇒ a relying party sent this person here, not an operator opening
   // the console. Same form either way, but promising the dashboard would be a lie about where
@@ -87,6 +89,7 @@ export function SignIn({
 
   // BankID is in the same providers list but is not a redirect: the browser stays here while
   // the person approves in the app, so its button opens a screen instead of leaving.
+  if (phoneOpen) return <PhoneFactor oauthQuery={oauthQuery} onDone={onDone} onBack={() => setPhoneOpen(false)} />;
   if (bankidOpen) {
     return <BankIdSignIn oauthQuery={oauthQuery} theme={theme} onDone={onDone} onBack={() => setBankidOpen(false)} />;
   }
@@ -170,7 +173,9 @@ export function SignIn({
               try {
                 // `resumed` ⇒ an authorize request took over and the browser is already on its
                 // way back to the relying party; re-rendering here would flash the dashboard.
-                const { resumed } = await signInWithPassword(email, password, oauthQuery);
+                const needsSms = signIn.passwordSecondFactor === 'sms';
+                const { resumed } = await signInWithPassword(email, password, needsSms ? null : oauthQuery);
+                if (needsSms) { setPassword(''); setPhoneOpen(true); return; }
                 if (!resumed) onDone();
               } catch (e) {
                 setErr(e instanceof Error ? e.message : String(e));
@@ -237,9 +242,9 @@ const BANKID_HINTS: Record<string, string> = {
  * Leaving the screen with the order still open cancels it at BankID rather than letting it
  * sit approvable for three more minutes.
  */
-function BankIdSignIn({
-  oauthQuery, theme, onDone, onBack,
-}: { oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onBack: () => void }) {
+export function BankIdSignIn({
+  oauthQuery, theme, onDone, onBack, link = false,
+}: { oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onBack: () => void; link?: boolean }) {
   const [order, setOrder] = useState<BankIdStart | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [hint, setHint] = useState('Open the BankID app and scan the QR code.');
@@ -255,7 +260,7 @@ function BankIdSignIn({
     setFailed(false);
     setHint('Open the BankID app and scan the QR code.');
     try {
-      const started = await bankidStart();
+      const started = await bankidStart(link);
       liveOrder.current = started.orderRef;
       setOrder(started);
       setQrImage(await QRCode.toDataURL(started.qr, { margin: 1, width: 208 }));
@@ -263,7 +268,7 @@ function BankIdSignIn({
       setFailed(true);
       setErr(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [link]);
 
   useEffect(() => {
     void begin();

@@ -68,6 +68,14 @@ export function verifyEmail(input: { to: string; from: EmailAddress; url: string
 }
 
 /** Shared single-button transactional layout — the lead line, one CTA, the raw link. */
+export function invitationEmail(input: { to: string; from: EmailAddress; url: string }): EmailMessage {
+  return {
+    to: input.to, from: input.from, subject: 'Set up your account',
+    text: `You have been invited to set up an account. Choose BankID or a password and phone verification.\n\n${input.url}\n\nThis invitation expires in 24 hours.`,
+    html: actionEmailHtml('You have been invited to set up an account. This invitation expires in 24 hours', 'Set up account', input.url),
+  };
+}
+
 function actionEmailHtml(lead: string, cta: string, url: string): string {
   return `<!-- ${escapeHtml(cta)} -->
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1a1a1a">
