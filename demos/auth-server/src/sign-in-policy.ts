@@ -34,6 +34,7 @@ import type { SqlExec } from './introspect.js';
 
 /** The method id a password sign-in is stamped and matched under. */
 export const PASSWORD_METHOD = 'password';
+export const PASSWORD_SMS_METHOD = 'password-sms';
 
 /** The method id a BankID sign-in is stamped under — minted by `bankid-plugin.ts`, not by any
  *  upstream's callback. */
@@ -59,7 +60,7 @@ export const BANKID_METHOD = 'bankid';
  * `supabase` is deliberately NOT here: `/supabase/session` stamps the id of a real catalogue
  * provider on purpose, because those sessions ARE that upstream's.
  */
-export const RESERVED_METHOD_IDS: readonly string[] = [PASSWORD_METHOD, BANKID_METHOD];
+export const RESERVED_METHOD_IDS: readonly string[] = [PASSWORD_METHOD, PASSWORD_SMS_METHOD, BANKID_METHOD, 'invitation'];
 
 /** Is this id one the stamp vocabulary owns outright (`RESERVED_METHOD_IDS`)? */
 export function isReservedMethodId(id: string): boolean {
@@ -74,6 +75,7 @@ export function isReservedMethodId(id: string): boolean {
 export interface SignInPolicy {
   providers: string[] | null;
   password: boolean;
+  passwordSecondFactor?: 'sms';
 }
 
 /** A provider id, as `providers.ts` constrains one: the callback path segment, so path-safe. */
@@ -87,6 +89,7 @@ const methodId = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/);
 const storedPolicySchema = z.object({
   providers: z.array(methodId).max(32),
   password: z.boolean(),
+  passwordSecondFactor: z.literal('sms'),
 });
 
 /**
@@ -113,12 +116,13 @@ const storedPolicySchema = z.object({
 export function sanitizeSignInPolicy(value: unknown): SignInPolicy | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
-  if (raw.providers === undefined && raw.password === undefined) return undefined;
+  if (raw.providers === undefined && raw.password === undefined && raw.passwordSecondFactor === undefined) return undefined;
   const providers = storedPolicySchema.shape.providers.safeParse(raw.providers);
   const password = storedPolicySchema.shape.password.safeParse(raw.password);
   return {
     providers: raw.providers === undefined ? null : providers.success ? [...new Set(providers.data)] : [],
-    password: raw.password === undefined ? true : password.success && password.data,
+    password: (raw.password === undefined ? true : password.success && password.data) && (raw.passwordSecondFactor === undefined || raw.passwordSecondFactor === 'sms'),
+    ...(raw.passwordSecondFactor === 'sms' ? { passwordSecondFactor: 'sms' as const } : {}),
   };
 }
 
@@ -136,6 +140,7 @@ export function assertSignInPolicy(value: unknown): SignInPolicy {
   const policy: SignInPolicy = {
     providers: parsed.data.providers ? [...new Set(parsed.data.providers)] : null,
     password: parsed.data.password ?? true,
+    ...(parsed.data.passwordSecondFactor ? { passwordSecondFactor: parsed.data.passwordSecondFactor } : {}),
   };
   if (permitsNothing(policy)) {
     throw new Error('signIn: a policy allowing no provider and no password would lock every user out of this application');
@@ -174,7 +179,9 @@ export function readSignInPolicy(sql: SqlExec, clientId: string | null | undefin
 export function policyAdmits(policy: SignInPolicy | undefined, method: string | null): boolean {
   if (!policy) return true;
   if (!method) return false;
-  if (method === PASSWORD_METHOD) return policy.password;
+  if (method === 'invitation') return false;
+  if (method === PASSWORD_METHOD) return policy.password && !policy.passwordSecondFactor;
+  if (method === PASSWORD_SMS_METHOD) return policy.password;
   return policy.providers === null || policy.providers.includes(method);
 }
 
@@ -204,6 +211,7 @@ export function effectiveSignIn(
     providers: issuerProviders.filter((p) => policy.providers === null || policy.providers.includes(p.id)),
     password: policy.password,
     restricted: true,
+    ...(policy.passwordSecondFactor ? { passwordSecondFactor: policy.passwordSecondFactor } : {}),
   };
 }
 
@@ -215,6 +223,7 @@ export interface EffectiveSignIn {
   providers: { id: string; label: string }[];
   password: boolean;
   restricted: boolean;
+  passwordSecondFactor?: 'sms';
 }
 
 /** The whole read for one client: the policy from the registry, intersected with what the
@@ -258,6 +267,9 @@ export function signInMethodOfPath(
   params?: Record<string, string | undefined> | undefined,
 ): string | null {
   if (!path) return null;
+  if (path === '/invitation/accept') return 'invitation';
+  if (path === '/invitation/password') return PASSWORD_METHOD;
+  if (path === '/phone/verify') return PASSWORD_SMS_METHOD;
   if (path === '/sign-in/email' || path === '/sign-up/email') return PASSWORD_METHOD;
   // BankID's session is minted in `/bankid/collect` (`bankid-plugin.ts`), the poll that sees
   // the order complete — not in `/bankid/start`, which has nobody signed in yet.

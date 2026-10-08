@@ -9,6 +9,9 @@ import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins/gener
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
 import { resetPasswordEmail, verifyEmail } from './email.js';
+import { invitationPlugin } from './invitation-plugin.js';
+import { phonePlugin } from './phone-plugin.js';
+import type { PhoneVerifier } from './twilio.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
 import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
 import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
@@ -132,6 +135,7 @@ export interface AuthDeps {
    * the endpoints do not exist, which is the honest version of a flow that could not finish.
    */
   bankid?: BankIdPluginOptions;
+  phoneVerifier?: PhoneVerifier;
   /**
    * One relying party's sign-in policy, by client id (`src/sign-in-policy.ts`) — read from
    * the registry by the caller, on the same per-request basis as everything else here, so an
@@ -424,6 +428,8 @@ function betterAuthFor(deps: AuthDeps) {
       ...(deps.supabase ? [supabasePlugin(deps.supabase)] : []),
       // BankID sign-in — see the `bankid` dep above for when this is (and is not) mounted.
       ...(deps.bankid ? [bankidPlugin(deps.bankid)] : []),
+      invitationPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
+      phonePlugin(deps.phoneVerifier),
       admin(),
     ],
     // The `jwt` plugin's `/token` mints a JWT for the CURRENT SESSION. On an authorization
@@ -475,6 +481,12 @@ function betterAuthFor(deps: AuthDeps) {
      * `input: false` — nothing a caller sends can set it. The stamp is derived from the path
      * the session was created on and from nothing else.
      */
+    user: {
+      additionalFields: {
+        // Only the successful verification endpoint writes this field.
+        phoneNumber: { type: 'string', required: false, input: false },
+      },
+    },
     session: {
       additionalFields: {
         signInProvider: { type: 'string', required: false, input: false },
@@ -535,18 +547,17 @@ function betterAuthFor(deps: AuthDeps) {
        * the moment it tries to become a code, not merely on the way in.
        */
       before: createAuthMiddleware(async (ctx) => {
-        if (ctx.path !== '/oauth2/authorize' || !deps.signInPolicyFor) return;
+        if (ctx.path !== '/oauth2/authorize') return;
         const query = ctx.query as Record<string, string | undefined> | undefined;
         const clientId = query?.client_id;
         if (!clientId) return;
-        const policy = deps.signInPolicyFor(clientId);
-        if (!policy) return;
+        const policy = deps.signInPolicyFor?.(clientId);
         // No session is not this hook's business: the plugin already sends that person to the
         // login screen, which applies the same policy to what it draws.
         const session = await getSessionFromCtx(ctx);
         if (!session) return;
         const method = (session.session as Record<string, unknown>).signInProvider;
-        if (policyAdmits(policy, typeof method === 'string' ? method : null)) return;
+        if (method !== 'invitation' && policyAdmits(policy, typeof method === 'string' ? method : null)) return;
         return { context: { query: { ...query, max_age: '0' } } };
       }),
       /**

@@ -28,7 +28,8 @@ export const SCHEMA_STATEMENTS: string[] = [
     role TEXT,
     banned INTEGER DEFAULT 0,
     ban_reason TEXT,
-    ban_expires INTEGER)`,
+    ban_expires INTEGER,
+    phone_number TEXT)`,
   `CREATE TABLE IF NOT EXISTS session (
     id TEXT PRIMARY KEY NOT NULL,
     expires_at INTEGER NOT NULL,

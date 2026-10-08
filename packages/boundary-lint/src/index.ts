@@ -283,6 +283,12 @@ export const DEFAULT_HARNESS = [
   'bankid.ts',
   'bankid-plugin.ts',
   'bankid-transport-node.ts',
+  // Better Auth's account invitation and SMS factor adapters. Their verification
+  // lifetimes use the issuer's real clock, and their delivery is a server transport,
+  // just like the BankID plugin above; neither is reachable from a domain module.
+  'invitation-plugin.ts',
+  'phone-plugin.ts',
+  'twilio.ts',
   'do-contract.ts',
   // The per-instance CONFIG store hosted in a Durable Object — the durable half of
   // `/internal/configure`. Same class as auth-do.ts: the config a scope runs on is

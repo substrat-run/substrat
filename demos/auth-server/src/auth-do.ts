@@ -21,6 +21,7 @@ import { clientBranding } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
+import { twilioFrom } from './twilio.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
@@ -85,6 +86,9 @@ export interface AuthServerDoEnv {
   ADMIN_EMAIL?: string;
   /** Bootstrap admin password (a secret). Seeds the first admin deterministically, no setup race. */
   ADMIN_PASSWORD?: string;
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_VERIFY_SERVICE_SID?: string;
   /** Injected into every dispatch script by the WfP uploader (#303, hosted mode): the shared
    *  platform secret this instance presents to the email relay, and the control plane's origin
    *  it POSTs to. Absent in a standalone deploy — there the `EMAIL` binding sends directly. */
@@ -202,6 +206,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // quietly ignoring the operator's policy.
       supabase: supabaseBridgeFrom(cfg, accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link'),
       bankid: this.bankid(readBankIdConfig(this.ctx.storage.sql)),
+      phoneVerifier: twilioFrom(cfg),
       // Read per request like everything else here, so narrowing a client in the dashboard
       // decides the very next authorize request rather than the next deploy.
       signInPolicyFor: (clientId) => readSignInPolicy(this.ctx.storage.sql, clientId),

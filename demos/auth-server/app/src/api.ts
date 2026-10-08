@@ -677,6 +677,7 @@ export interface ClientSignIn {
   providers: PublicProvider[];
   password: boolean;
   restricted: boolean;
+  passwordSecondFactor?: 'sms';
 }
 
 /** Theme + sign-in methods for a client id, in one read. */
@@ -745,8 +746,18 @@ export type BankIdCollectResult =
   | { status: 'pending' | 'failed' | 'complete'; hintCode: string | null }
   | { redirect: boolean; url: string };
 
-export async function bankidStart(): Promise<BankIdStart> {
-  return authApi('/bankid/start', { method: 'POST', body: JSON.stringify({}) });
+export async function bankidStart(link = false): Promise<BankIdStart> {
+  return authApi('/bankid/start', { method: 'POST', body: JSON.stringify({ link }) });
+}
+
+export const inviteAccount = (email: string, name: string) => authApi('/invitation/create', { method: 'POST', body: JSON.stringify({ email, name }) });
+export const acceptAccountInvitation = (token: string) => authApi<{ email: string }>('/invitation/accept', { method: 'POST', body: JSON.stringify({ token }) });
+export const invitationPassword = (password: string) => authApi('/invitation/password', { method: 'POST', body: JSON.stringify({ password }) });
+export const phoneStatus = () => authApi<{ available: boolean; enrolled: boolean; emailVerified: boolean; suffix: string | null }>('/phone/status');
+export const sendPhoneCode = (phoneNumber?: string) => authApi('/phone/send', { method: 'POST', body: JSON.stringify({ phoneNumber }) });
+export async function verifyPhoneCode(code: string, oauthQuery?: string | null): Promise<void> {
+  const result = await authApi<{ redirect?: boolean; url?: string }>('/phone/verify', { method: 'POST', body: JSON.stringify({ code, ...(oauthQuery ? { oauth_query: oauthQuery } : {}) }) });
+  if (result.redirect && result.url) window.location.assign(result.url);
 }
 
 export async function bankidQr(orderRef: string): Promise<string> {

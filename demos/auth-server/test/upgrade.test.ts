@@ -146,6 +146,11 @@ beforeEach(() => {
 });
 
 describe('upgrading a 1.6 store', () => {
+  it('adds a nullable phone number without treating old users as enrolled', () => {
+    expect(upgradeLegacySchema(sql).added).toContain('user.phone_number');
+    expect(db.prepare("SELECT phone_number FROM user WHERE id = 'u1'").get()).toEqual({ phone_number: null });
+    expect(upgradeLegacySchema(sql).added).not.toContain('user.phone_number');
+  });
   it('does not add account.issuer — 1.7.3 stopped writing it, so a column nothing fills would be a trap', () => {
     const upgrade = upgradeLegacySchema(sql);
 

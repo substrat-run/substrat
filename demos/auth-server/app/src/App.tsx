@@ -17,12 +17,14 @@ import { ResetPassword } from './auth/ResetPassword';
 import { Setup } from './auth/Setup';
 import { SignIn } from './auth/SignIn';
 import { SignUp } from './auth/SignUp';
+import { Invitation } from './auth/Invitation';
 import { Console } from './console/Console';
 import { returnTarget } from './console/routes';
 import { Card, Centered } from './primitives';
 import { IssuerUnreachable } from './wire';
 
 type Phase =
+  | { t: 'invitation'; token: string }
   | { t: 'loading' }
   /**
    * The read that decides every other screen did not answer (`wire.ts`).
@@ -105,6 +107,10 @@ export default function App() {
   const refresh = useCallback(async () => {
     // A password-reset link lands the user here with a token — handle that first.
     const url = new URL(window.location.href);
+    if (url.pathname === '/accept-invitation') {
+      const token = new URLSearchParams(url.hash.slice(1)).get('token');
+      if (token) return setPhase({ t: 'invitation', token });
+    }
     if (url.pathname === '/reset-password') {
       const token = url.searchParams.get('token');
       if (token) return setPhase({ t: 'reset', token });
@@ -220,6 +226,7 @@ export default function App() {
   }, [run]);
 
   switch (phase.t) {
+    case 'invitation': return <Invitation token={phase.token} />;
     case 'loading':
       return <Centered>Loading…</Centered>;
     case 'failed':

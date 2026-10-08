@@ -147,6 +147,11 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
   // any policy — so the upgrade costs those sessions one re-login at a restricted client and
   // never guesses a method on their behalf.
   const session = columnsOf(sql, 'session');
+  const user = columnsOf(sql, 'user');
+  if (user.length > 0 && !user.includes('phone_number')) {
+    sql.exec('ALTER TABLE user ADD COLUMN phone_number TEXT');
+    upgrade.added.push('user.phone_number');
+  }
   if (session.length > 0 && !session.includes('sign_in_provider')) {
     sql.exec('ALTER TABLE session ADD COLUMN sign_in_provider TEXT');
     upgrade.added.push('session.sign_in_provider');
