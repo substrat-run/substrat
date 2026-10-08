@@ -9089,10 +9089,21 @@ export class SqliteScopeHost implements ScopeHost {
           { tenantId, scopeId, vertical: rec.vertical },
           move.from,
         );
+        // #2114: the replay's id is also its audit `operationId`, so the scheduled settle pairs
+        // and closes the lever's rows exactly as it does the kill switches'.
         const replayId = ulid();
         const target = { tenantId, scopeId };
-        const base = { replayId, mode: move.mode, from: move.from, source: source.scopeId };
+        const base = { operationId: replayId, replayId, mode: move.mode, from: move.from, source: source.scopeId };
         this.recordAdmin(actor, 'moveImportCursor', target, null, { ...base, phase: 'intent', reason: move.reason });
+        // #2114: every outcome row goes through the kernel's `recordAuditOutcome`, exactly as the
+        // Cloudflare adapter and the kill switches (#2089): logged when it cannot be written, never
+        // swallowed, and never in place of the move's own error or result.
+        const recordOutcome = (row: { phase: 'applied' | 'failed' } & Record<string, unknown>) =>
+          recordAuditOutcome(() => this.recordAdmin(actor, 'moveImportCursor', target, null, { ...base, ...row }), {
+            flow: 'import-cursor',
+            operationId: replayId,
+            phase: row.phase,
+          }, (message, fields) => console.error(message, fields));
         let moved: ImportCursorMoved;
         try {
           const rt = this.runtime(tenantId, scopeId);
@@ -9105,25 +9116,16 @@ export class SqliteScopeHost implements ScopeHost {
             )(),
           );
         } catch (err) {
-          try {
-            this.recordAdmin(actor, 'moveImportCursor', target, null, {
-              ...base,
-              phase: 'failed',
-              error: err instanceof Error ? err.message : String(err),
-            });
-          } catch {
-            // Best effort: the original error is what the caller must see.
-          }
+          await recordOutcome({ phase: 'failed', error: err instanceof Error ? err.message : String(err) });
           throw err;
         }
-        this.recordAdmin(actor, 'moveImportCursor', target, null, {
-          ...base,
+        const unrecorded = await recordOutcome({
           phase: 'applied',
           previous: moved.previous,
           cursor: moved.cursor,
           archived: moved.archived,
         });
-        return moved;
+        return unrecorded === null ? moved : { ...moved, auditWarning: auditWarningOf('the move', unrecorded) };
       },
       redrainEvents: async (actor, tenantId, scopeId, input) => {
         // Directory check first, on mark's reasoning: "nothing to reopen" and "you may not

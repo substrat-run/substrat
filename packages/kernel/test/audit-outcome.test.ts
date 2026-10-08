@@ -251,3 +251,23 @@ describe('peer binding and switch audit settlement after merging their flows', (
     for (const action of SWITCH_ACTIONS) expect(AUDITED_CHANGE_ACTIONS).toContain(action);
   });
 });
+
+describe('unknownOutcomeOf, for the replay lever (#2114)', () => {
+  const intent = (after: Record<string, unknown>) => ({
+    id: 'row-1', action: 'moveImportCursor', tenant_id: 't1', scope_id: 's1', vertical: 'acme/board', after: JSON.stringify(after),
+  });
+
+  it("is settled, and its unknown row is the intent's own fields, phase unknown", () => {
+    expect(AUDITED_CHANGE_ACTIONS).toContain('moveImportCursor');
+    const after = { operationId: 'r1', replayId: 'r1', mode: 'replay', from: 'acme/crm', source: 's0', phase: 'intent', reason: 'lost a day' };
+    const outcome = unknownOutcomeOf(intent(after), 'row-1', 'why');
+    expect(outcome.after).toEqual({ ...after, phase: 'unknown', error: 'why' });
+    expect(outcome.operation).toEqual({ action: 'moveImportCursor', operationId: 'r1', tenantId: 't1', scopeId: 's1' });
+    expect(outcome.failure).toMatchObject({ operation: 'audit.moveImportCursor', stage: 'outcome-unknown', reference: 'r1', vertical: 'acme/board' });
+  });
+
+  it('a lever intent written before #2114, with a replayId and no operationId, is not one to settle', () => {
+    const legacy = { replayId: 'r1', mode: 'replay', from: 'acme/crm', source: 's0', phase: 'intent', reason: 'r' };
+    expect(() => unknownOutcomeOf(intent(legacy), 'row-1', 'x')).toThrow(/no audited-change intent/);
+  });
+});

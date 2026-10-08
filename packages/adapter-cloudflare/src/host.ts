@@ -10674,10 +10674,22 @@ export class CloudflareScopeHost implements ScopeHost {
     const delegation = rec.vertical !== null ? this.importCursorDelegation : undefined;
     if (!delegation) this.assertServedHere(rec, scopeId, 'moveImportCursor');
     await this.validateScopeAccess(tenantId, scopeId);
+    // #2114: the replay's id is also its audit `operationId`, so the scheduled settle pairs and
+    // closes the lever's rows exactly as it does the kill switches'.
     const replayId = ulid();
     const target = { tenantId, scopeId, vertical: rec.vertical };
-    const base = { replayId, mode: move.mode, from: move.from, source: source.scopeId };
+    const base = { operationId: replayId, replayId, mode: move.mode, from: move.from, source: source.scopeId };
     await this.recordAdmin(actor, 'moveImportCursor', target, null, { ...base, phase: 'intent', reason: move.reason });
+    // #2114: every outcome row goes through the kernel's `recordAuditOutcome`, as the kill
+    // switches' do (#2089). One that cannot be written is logged with the replay id, never
+    // swallowed; the call still answers with the move's own error (or, applied, with the move and
+    // `auditWarning`), and the scheduled settle closes the intent as `unknown`.
+    const recordOutcome = (row: { phase: 'applied' | 'failed' } & Record<string, unknown>) =>
+      recordAuditOutcome(() => this.recordAdmin(actor, 'moveImportCursor', target, null, { ...base, ...row }), {
+        flow: 'import-cursor',
+        operationId: replayId,
+        phase: row.phase,
+      }, (message, fields) => console.error(message, fields));
     const at: ImportCursorMoveAt = { move, source: source as ImportCursorMoveAt['source'], replayId };
     let moved: ImportCursorMoved;
     try {
@@ -10685,21 +10697,16 @@ export class CloudflareScopeHost implements ScopeHost {
         ? importCursorMoved.parse(await delegation.move({ tenantId, scopeId, at }))
         : await this.moveInScope(scopeId, at);
     } catch (err) {
-      await this.recordAdmin(actor, 'moveImportCursor', target, null, {
-        ...base,
-        phase: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      }).catch(() => undefined);
+      await recordOutcome({ phase: 'failed', error: err instanceof Error ? err.message : String(err) });
       throw err;
     }
-    await this.recordAdmin(actor, 'moveImportCursor', target, null, {
-      ...base,
+    const unrecorded = await recordOutcome({
       phase: 'applied',
       previous: moved.previous,
       cursor: moved.cursor,
       archived: moved.archived,
     });
-    return moved;
+    return unrecorded === null ? moved : { ...moved, auditWarning: auditWarningOf('the move', unrecorded) };
   }
 
   /** #1705 PR 3: the promote gate's question, over two stored manifests (`exportBreaksOf`). */

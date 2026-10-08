@@ -4,8 +4,9 @@
  * The owner hand-over (#1665) and dashboard member management (#1150) audit a change made in the
  * vertical's own deployment in two rows paired by `operationId`: an `intent`, then `applied`,
  * `refused` or `failed`. The schedule and peer kill switches (#1666, #1706; #2089) audit the
- * scope's move the same way, from inside each adapter. The two stores are separate, so an intent
- * can be left with no outcome: its outcome write failed (`recordAuditOutcome` logs it), or the
+ * scope's move the same way, from inside each adapter, and so does the replay lever
+ * (`moveImportCursor`, #2114), whose rows carry its `replayId` as their `operationId`. The two
+ * stores are separate, so an intent can be left with no outcome: its outcome write failed (`recordAuditOutcome` logs it), or the
  * request died between the two. The control plane's scheduled
  * pass finds such an intent and asks the host to settle it through
  * `HostAdmin.settleUnrecordedOutcome`.
@@ -32,14 +33,17 @@ import { SWITCH_ACTIONS, type SwitchAction } from './system-switch-record.js';
 
 /**
  * The admin actions written intent-then-outcome, which a settle closes: the two the control plane
- * writes around a vertical call, and (#2089) the schedule and peer kill switches, which each
- * adapter writes around the scope's move.
+ * writes around a vertical call, (#2089) the schedule and peer kill switches, which each adapter
+ * writes around the scope's move, and (#2114) the replay lever, written the same way around the
+ * watermark's move. A lever row written before #2114 carries only `replayId`, no `operationId`,
+ * so every reader passes it over as it passes over any row without one.
  */
 export const AUDITED_CHANGE_ACTIONS = [
   'transferOwner',
   'manageScopeMember',
   'setPeerBinding',
   ...SWITCH_ACTIONS,
+  'moveImportCursor',
 ] as const satisfies readonly AdminAction[];
 export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
 
@@ -218,14 +222,17 @@ export interface UnknownOutcome {
 const isAudited = (action: string): action is AuditedChangeAction =>
   (AUDITED_CHANGE_ACTIONS as readonly string[]).includes(action);
 const isSwitch = (action: string): action is SwitchAction => (SWITCH_ACTIONS as readonly string[]).includes(action);
+/** The actions whose rows have no schema of their own, so an `unknown` row is the intent's fields. */
+const copiesIntent = (action: string): boolean => isSwitch(action) || action === 'moveImportCursor';
 
 /**
- * The `unknown` row of a kill switch's operation (#2089): the intent's own fields (its subject,
- * position and reason) with `phase: 'unknown'` and the error. The switch's rows have no schema of
- * their own: each adapter writes them from `switchAuditSubject`, and the history readers count
- * only `applied` rows, so an `unknown` row moves no position.
+ * The `unknown` row of a kill switch's operation (#2089), or of the replay lever's (#2114): the
+ * intent's own fields (its subject, position and reason) with `phase: 'unknown'` and the error.
+ * Neither has a row schema of its own: each adapter writes the switch's rows from
+ * `switchAuditSubject` and the lever's from its move, and the history readers count only
+ * `applied` rows, so an `unknown` row moves no position.
  */
-const switchUnknownOf = (after: Record<string, unknown>, error: string): Record<string, unknown> => ({
+const intentUnknownOf = (after: Record<string, unknown>, error: string): Record<string, unknown> => ({
   ...after,
   phase: 'unknown',
   error: error.slice(0, AUDIT_ERROR_MAX),
@@ -241,7 +248,7 @@ export function unknownOutcomeOf(row: SettleIntentRow | undefined, intentId: str
   if (!row || !isAudited(row.action) || after?.phase !== 'intent' || !auditOperationId.safeParse(after.operationId).success) {
     throw substratError('not_found', `no audited-change intent ${intentId} to settle`);
   }
-  const parsed = isSwitch(row.action) ? switchUnknownOf(after, error) : auditedUnknownOf(row, after, error);
+  const parsed = copiesIntent(row.action) ? intentUnknownOf(after, error) : auditedUnknownOf(row, after, error);
   const operationId = after.operationId as string;
   return {
     action: row.action,
