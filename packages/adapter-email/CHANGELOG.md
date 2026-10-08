@@ -1,5 +1,33 @@
 # @substrat-run/adapter-email
 
+## 0.3.0
+
+### Minor Changes
+
+- 6154fd9: An operation can now send email as part of its own transaction (#2102). `requestEmail(ctx, mail)` writes the send as a platform intent. If the operation fails, nothing is sent. Once it commits, the platform sends the mail, as the platform's address or through the tenant mailbox that covers `from`, exactly as the relay routes it. A throttled or failing provider is retried, waiting as long as the provider's `Retry-After` asks, and the result comes back as an event the vertical can consume: `email.sent` (with the provider's message id when it gives one), `email.refused`, or `email.dead-lettered` after 10 transient failures. Each event names the request id `requestEmail` returned. It is written on the `about` entity when the mail names one. Passing the recipient's `subjectId` classifies the queued send, so a subject erasure cancels it and removes the address and message. The synchronous relay is unchanged and stays for code with no operation around it.
+
+  `@substrat-run/contracts`: `SEND_EMAIL_KIND`, `sendEmailRequest`, the three outcome event types (kernel-authored, so `ctx.emit` refuses them), `emailOutcomePayload`, and `platformOutcomeEvent`, the one shape a settle may write.
+
+  `@substrat-run/kernel`: `requestEmail`, and `settlePlatformRequestIn`, the settle both adapters now share. A settle may carry one outcome event. It is written in the settle's transaction, and only when that settle moves the row out of `pending`. `MailSendResult` gains an optional `messageId`, and `MailSender.send` documents the error contract the retry reads: a numeric `status`, and `retryAfter` in seconds.
+
+  `@substrat-run/adapter-sqlite`, `@substrat-run/adapter-cloudflare`: `settlePlatformRequest` accepts `event` and dispatches it to the scope's consumers. The Durable Object takes it through a new `settlePlatformRequestWithEvent` verb, so a settle without an event still reaches an older DO class.
+
+  `@substrat-run/control-plane-api`: `sendEmailHandler` for the drain. A handler may return `deferred` (not tried, no attempt counted), and an outcome's `event` is passed to the settle.
+
+  `@substrat-run/vertical-host`: the settle route accepts the event.
+
+  `@substrat-run/contract-tests`: the evented settle is in the scope-host contract.
+
+  `@substrat-run/adapter-email`: `SendResult.messageId`, read from Cloudflare Email Service's response.
+
+- d42bb2b: A vertical can now send email as a tenant's own address, not only as the platform's (#2098). The email relay accepts an optional `from`. Without one, nothing changes: the message goes out from the platform's sender. With one, the relay sends through the tenant's live connection whose mail sender may send as that address, and only when the platform has proven which vertical is calling. An address no connection covers is refused by name. The relay never falls back to the platform's sender, and two connections claiming one address are refused rather than chosen between.
+
+  `@substrat-run/kernel`: `MailSender` is the interface a connector implements to send as the tenant. `senders(host, connection)` answers which addresses the connection may send as, and `send(host, connection, mail)` sends one `OutboundMail`. No connector implements it yet; Microsoft 365 is the first planned (#2100).
+
+  `@substrat-run/contracts`: `emailRelayRequest` gains `from` and `attachments` (attachment ids, at most `EMAIL_RELAY_MAX_ATTACHMENTS`). Attachments ride only with `from`. They are read from the sending scope as the tenant's connection, so a file can go out only when that connection was granted read on the attachment's target.
+
+  `@substrat-run/adapter-email`: `EmailMessage.attachments` carries files as bytes (`{ filename, contentType, content }`), which `CloudflareEmailTransport` sends, or by id (`{ attachmentId }`), which only `PlatformRelayEmailTransport` carries. The relay transport's new `sender: 'from'` option asks the relay to send as the message's `from.email`. The default, `'platform'`, ignores that address as before, so existing callers that fill `from` with a placeholder keep working.
+
 ## 0.2.1
 
 ### Patch Changes

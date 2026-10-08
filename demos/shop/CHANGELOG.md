@@ -1,5 +1,40 @@
 # @substrat-run/demo-shop
 
+## 0.2.52
+
+### Patch Changes
+
+- 7b15101: Add `ctx.grantedEntities(permission, entityType, page)` (#2108). It pages checked entity ids from direct and org grants, following live parent edges to the checker's depth limit. Node grants return `all`; capability callers return an explicit `incomplete` result. A reverse tuple index supports bounded parent traversal. The shop uses complete grant pages to narrow its account read and portal order walk, retaining checked fallbacks when enumeration cannot finish within its local cap.
+- 5e52775: `shop/portal-orders` now walks the order table with `pageVisible` (#2080). It used to read every order in the scope and check each one before cutting a page, so one portal request cost one permission check per order the shop had ever taken. Now a page costs the checks it takes to fill it, and at most `VISIBLE_SCAN_BUDGET` rows a call. The cursor is still only ever one of the caller's own orders. The order is unchanged: newest first, by order number. A customer whose next order lies more than the budget past their previous one gets a short page and no cursor, which is `pageVisible`'s documented limit (#2074). `GET /api/portal/orders` now passes `limit` and `cursor` on to it, so following its `Link` header reaches the next page; before, it answered page one again.
+- Updated dependencies [35dc72e]
+- Updated dependencies [32df62b]
+- Updated dependencies [6154fd9]
+- Updated dependencies [6d49012]
+- Updated dependencies [55e6241]
+- Updated dependencies [13a2067]
+- Updated dependencies [7b15101]
+- Updated dependencies [72f8e92]
+- Updated dependencies [100b47c]
+- Updated dependencies [d42bb2b]
+- Updated dependencies [e5bd928]
+- Updated dependencies [b180d3e]
+- Updated dependencies [07388df]
+- Updated dependencies [ae80b0d]
+- Updated dependencies [a1f40e5]
+- Updated dependencies [0e3d406]
+- Updated dependencies [fed1f3c]
+- Updated dependencies [5405401]
+- Updated dependencies [655141a]
+- Updated dependencies [f1290ea]
+- Updated dependencies [ced5130]
+  - @substrat-run/kernel@0.140.0
+  - @substrat-run/adapter-sqlite@0.140.0
+  - @substrat-run/contracts@0.140.0
+  - @substrat-run/vertical-host@0.140.0
+  - @substrat-run/engine-invoicing@0.11.24
+  - @substrat-run/attachment-extractors@0.2.1
+  - @substrat-run/dev-issuer@0.2.22
+
 ## 0.2.51
 
 ### Patch Changes
