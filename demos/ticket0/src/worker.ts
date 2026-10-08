@@ -83,9 +83,10 @@ import {
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { API_DOCUMENT } from './api.js';
-import { T0_PERM, TICKET0_ENV, ticket0Manifest } from './manifest.js';
+import { TICKET0_ENV, ticket0Manifest } from './manifest.js';
 import {
   CONTACT_BOUND_ROLE,
+  CONTACT_PORTAL,
   HUMAN_ROLES,
   MODULES,
   OWNER_ROLE_KEY,
@@ -658,11 +659,15 @@ mountInvites(app, {
       },
       assignRole: (principal, roleKey) =>
         host.assignScopeRole(node.scopeId, principalId.parse(principal), roleKey),
+      // The declared shape (#2083): the marker it leaves is what lets a key
+      // CONTACT_PORTAL gains later reach this customer at the platform's next reconcile.
       grantContactPortal: (principal, contactId) =>
-        host.grantEntityLocal(node.scopeId, principalId.parse(principal), T0_PERM.conversationReadOwn, {
-          entityType: 'contact',
-          entityId: contactId,
-        }),
+        host.grantEntityShapeLocal(
+          node.scopeId,
+          principalId.parse(principal),
+          { entityType: 'contact', entityId: contactId },
+          CONTACT_PORTAL,
+        ),
       invokeAs: async (principal, operation, input) =>
         (await host.getScope(principalId.parse(principal), node.tenantId, node.scopeId)).invoke(
           operation,

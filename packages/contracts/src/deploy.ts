@@ -556,13 +556,26 @@ export const entityGrantShape = z.object({
    * - `{ table, idColumn, principalColumn }`: the vertical's own table row for the entity names
    *   its principal. Meridian's `hr_employees.principal_ref`.
    *
-   * A person counts only when they also hold a row, live or tombstoned, for some key of the
-   * shape on that entity: evidence they were given it. Absent: no backfill, so only people given
-   * the shape with `grantEntityShape` from then on are holders.
+   * For those two, a person counts only when they also hold a row, live or tombstoned, for some
+   * key of the shape on that entity: evidence they were given it.
+   *
+   * - `'grantee'` (#2083): whoever holds a LIVE current or retired key of the shape on an entity of this type was
+   *   given the shape there. For a portal-style record that names no principal and may have
+   *   several people (ticket0's `contact`, a shop's `customer`). True by enforcement from the
+   *   first reconcile that carries the declaration: from then on direct grants, including
+   *   `ctx.grant`, `HostAdmin.grant` and `grantEntityLocal`, refuse current and retired keys on
+   *   this entity type, so only `grantEntityShape` can mint one. A tuple written BEFORE that
+   *   reconcile cannot be told apart, so declaring it marks every holder of a live current or
+   *   retired key on that type, however they got it. A live retired key is then taken back in
+   *   that pass; a tombstoned key is no evidence. A marker remains until explicitly revoked.
+   *
+   * Absent: no backfill, so only people given the shape with `grantEntityShape` from then on are
+   * holders.
    */
   holder: z
     .union([
       z.literal('self'),
+      z.literal('grantee'),
       z.object({ table: sqlIdentifier, idColumn: sqlIdentifier, principalColumn: sqlIdentifier }),
     ])
     .optional(),

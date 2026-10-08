@@ -11,7 +11,7 @@
  * Nothing here may import a host, an adapter or `node:*` — the worker compiles this
  * file.
  */
-import { definePermissions, type PermissionKey, type RoleDefinition } from '@substrat-run/contracts';
+import { definePermissions, type EntityGrantShape, type PermissionKey, type RoleDefinition } from '@substrat-run/contracts';
 import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
 import { T0_PERM } from './manifest.js';
 import { TICKET0_PERMISSIONS } from '../spec/model.js';
@@ -166,6 +166,13 @@ export const ROLES: RoleDefinition[] = [
 ];
 
 /**
+ * The PORTAL grant's keys: what a customer is given on their own contact (#2083). Every
+ * place that gives it gives this whole shape, so a key added here reaches the customers
+ * invited before it.
+ */
+export const CONTACT_PORTAL: PermissionKey[] = [T0_PERM.conversationReadOwn];
+
+/**
  * The keys reachable OUTSIDE the role table — the shapes, not the grants themselves,
  * which are per-principal ULIDs minted at runtime.
  *
@@ -174,17 +181,27 @@ export const ROLES: RoleDefinition[] = [
  * conversations are reached from it through the declared parent edge. That is what
  * makes one customer's history unreachable to another.
  *
+ * It is a BOOTSTRAP shape (#2083): given whole (`grantEntityShape`) when a customer is
+ * invited onto their contact, and topped up for every such customer when it grows. A
+ * contact names no principal (`ticket0_contacts.principal` is never written) and one
+ * contact can have several people, so its holder is `'grantee'`: whoever holds a key of
+ * it on a contact. That stays true because `ctx.grant` cannot give these keys on a
+ * contact once the platform has reconciled this declaration.
+ *
  * The second is a FOLLOWER (#1086), and it is the one shape here whose key a role
  * also holds. That is deliberate rather than a duplicate: `conversation:read` is held
  * scope-wide by the staff roles, and narrowed onto one conversation by
  * `ticket0/follow-conversation` for somebody who is to see that thread and no other.
  * The two grants are different units of the same key, and the narrowed one is what an
- * `unfollow` can take back — a role cannot be revoked per conversation.
+ * `unfollow` can take back — a role cannot be revoked per conversation. It is SHARING,
+ * reached through `ctx.grant`, so it is never topped up.
  */
-export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
+export const ENTITY_GRANTS: EntityGrantShape[] = [
   {
     entityType: 'contact',
-    permissions: [T0_PERM.conversationReadOwn],
+    permissions: CONTACT_PORTAL,
+    bootstrap: true,
+    holder: 'grantee',
   },
   {
     entityType: 'conversation',

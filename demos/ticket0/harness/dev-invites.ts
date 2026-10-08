@@ -48,8 +48,8 @@ export interface DevInviteDeskOptions {
   readonly actor: PlatformActorId;
   /** The identity pool the dev issuer's subjects live in. */
   readonly provider: string;
-  /** The portal key a contact-bound invite grants. */
-  readonly portalPermission: PermissionKey;
+  /** The portal SHAPE (`CONTACT_PORTAL`), given whole so it can grow (#2083). */
+  readonly portalPermissions: readonly PermissionKey[];
   /**
    * The desk the SIGNED-IN caller works in, or null when nobody is signed in — which
    * is the ordinary state of somebody following an invite link for the first time.
@@ -160,11 +160,11 @@ export function devInviteDesk(opts: DevInviteDeskOptions): InviteDesk {
 
     grantContactPortal: async (principal, contactId) => {
       const desk = nodeOrThrow();
-      await opts.host.admin.grant(opts.actor, {
+      await opts.host.admin.grantEntityShape(opts.actor, {
         principalId: principal as PrincipalId,
-        permission: opts.portalPermission,
         node: desk,
         entity: { entityType: 'contact', entityId: contactId },
+        permissions: opts.portalPermissions,
         grantedBy: principal as PrincipalId,
       });
     },

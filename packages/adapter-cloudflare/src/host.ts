@@ -1473,7 +1473,7 @@ interface ScopeStubRpc {
     relation: string,
     object: string,
     expiresAt: string | null,
-  ): Promise<void>;
+  ): Promise<DoReply<null>>;
   /** Provisioning's write (#1659): creates a missing tuple, never un-revokes one. */
   seatTuple(
     subject: string,
@@ -9369,7 +9369,7 @@ export class CloudflareScopeHost implements ScopeHost {
     object: string,
     expiresAt: string | null,
   ): Promise<void> {
-    await this.scopeStub(scopeId).writeTuple(subject, relation, object, expiresAt);
+    unwrapReply(await this.scopeStub(scopeId).writeTuple(subject, relation, object, expiresAt));
   }
 
   /**
@@ -10234,7 +10234,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * already projected (via `provisionScopeLocal`), or the local checker expands it to nothing.
    */
   async assignScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void> {
-    await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null);
+    unwrapReply(await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null));
   }
 
   /**
@@ -10306,12 +10306,12 @@ export class CloudflareScopeHost implements ScopeHost {
     permission: PermissionKey,
     entity: EntityRef,
   ): Promise<void> {
-    await this.scopeStub(scopeId).writeTuple(
+    unwrapReply(await this.scopeStub(scopeId).writeTuple(
       `principal:${principal}`,
       `granted:${permission}`,
       entityObjectRef(entity, 'grantEntityLocal'), // #1856
       null,
-    );
+    ));
   }
 
   /**

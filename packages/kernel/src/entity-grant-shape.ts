@@ -12,9 +12,9 @@ import {
   type EntityRef,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { substratError } from '@substrat-run/contracts';
+import { assertKernelAuthoredType, substratError } from '@substrat-run/contracts';
 import { KERNEL_ACTOR, kernelOutboxInsertSql } from './kernel-outbox.js';
-import { explicitTupleSql } from './entity-grant.js';
+import { GRANTEE_KEY_RELATION, explicitTupleSql } from './entity-grant.js';
 import { liveTupleSql } from './permission-eval.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
 import type { SwitchSql } from './system-switch.js';
@@ -49,7 +49,8 @@ import type { SwitchSql } from './system-switch.js';
  *   again. One tuple is one authority: a direct grant of the key on the same entity to the same
  *   person is that row, and goes with it.
  * - The backfill, inside the same budget, until it is done once per (scope, entity type): how
- *   people granted before markers existed become holders. It reads PROVENANCE, never key sets.
+ *   people granted before markers existed become holders. For own-record holders it reads
+ *   provenance, never key sets alone.
  *   The shape's declared `holder` says whose record each entity is (`'self'`: the entity id is
  *   the principal; a table column naming the principal), and a person is marked only on their
  *   own record, and only when they hold a row there (live or tombstoned) for some key of the
@@ -58,6 +59,12 @@ import type { SwitchSql } from './system-switch.js';
  *   at most what the pass's budget allows; the markers are the progress, since a marked pair is
  *   no longer a candidate, and a record tuple (`shape:<type>`, `shape-backfilled`, `scope:<id>`)
  *   ends it once a batch comes back short.
+ * - `holder: 'grantee'` (#2083), for a record that names no principal (a portal customer, a
+ *   contact): whoever holds a live current or retired key of the shape on such an entity was given it.
+ *   Each pass records current and retired keys (`shape-grantee-key`), and the explicit tuple
+ *   writer makes non-shape grants refuse them on that entity type. A tuple from before the
+ *   first such pass cannot be told apart. A marker already written by a shape grant persists
+ *   through retirement, so its holder receives the new keys even if their old key was K alone.
  *
  * Only a shape declared `bootstrap: true` is reconciled: one a person is GIVEN on their own
  * record. A sharing shape, which people reach through `ctx.grant` (todo's `list`), is skipped
@@ -143,6 +150,7 @@ export function topUpEntityGrantShapes(
   // Here as well as at each entry point: a pass with no budget never reports done, so a caller
   // looping until it does would never stop.
   let budget = shapeTopUpBatch(pass.limit);
+  recordGranteeKeys(db, pass.shapes);
   let toppedUp = 0;
   let retired = 0;
   for (const shape of pass.shapes) {
@@ -154,8 +162,9 @@ export function topUpEntityGrantShapes(
     if (keys.length === 0 && gone.length === 0) continue;
     const prefix = `${shape.entityType}:`;
     const json = JSON.stringify(keys);
-    // The backfill's evidence is any key the shape carried, a retired one included.
-    budget -= backfill(db, pass.scopeId, shape, prefix, JSON.stringify([...keys, ...gone]), budget);
+    // A live retired key still identifies a legacy holder so this pass can retire it.
+    // The grantee query excludes tombstoned tuples.
+    budget -= backfill(db, pass, shape, prefix, JSON.stringify([...keys, ...gone]), budget);
     if (budget === 0) return { toppedUp, retired, done: false };
     reopenRetirements(db, pass, shape.entityType, keys);
     const took = retire(db, pass, shape.entityType, prefix, gone, budget);
@@ -319,9 +328,9 @@ function reopenRetirements(db: SwitchSql, pass: ShapePass, entityType: string, k
  * record when the batch comes back short. Returns how many it marked. See the module comment:
  * provenance only, from the shape's declared `holder`.
  */
-function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefix: string, json: string, budget: number): number {
+function backfill(db: SwitchSql, pass: ShapePass, shape: EntityGrantShape, prefix: string, json: string, budget: number): number {
   if (!shape.holder || budget === 0) return 0;
-  const [shapeRef, scopeRef] = recordRefs(shape.entityType, scopeId);
+  const [shapeRef, scopeRef] = recordRefs(shape.entityType, pass.scopeId);
   const record = [shapeRef, BACKFILLED_RELATION, scopeRef] as const;
   if (db.all('SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?', ...record).length > 0) {
     return 0;
@@ -347,6 +356,25 @@ function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefi
       prefix,
       prefix.length + 1,
       json,
+      budget,
+    ) as { subject: string; object: string }[];
+  } else if (shape.holder === 'grantee') {
+    // Whoever holds a LIVE key of the shape on an entity of this type. Live, unlike the other two
+    // holders: with no record naming the person, a key taken back from them is no evidence they
+    // still belong there, and marking them would hand a revoked portal the next key it gains.
+    candidates = db.all(
+      `SELECT DISTINCT t.subject, t.object FROM _substrat_tuples t
+        WHERE substr(t.object, 1, ?) = ?
+          AND substr(t.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}'
+          AND t.relation IN (SELECT 'granted:' || value FROM json_each(?))
+          AND ${liveTupleSql('t')}
+          AND ${unmarked('t.subject', 't.object')}
+        ORDER BY t.subject, t.object
+        LIMIT ?`,
+      prefix.length,
+      prefix,
+      json,
+      pass.now,
       budget,
     ) as { subject: string; object: string }[];
   } else {
@@ -381,6 +409,31 @@ function backfill(db: SwitchSql, scopeId: string, shape: EntityGrantShape, prefi
     db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', ...record);
   }
   return candidates.length;
+}
+
+/**
+ * The current and retired keys of every `holder: 'grantee'` bootstrap shape, recorded so the
+ * explicit tuple writer can refuse them to every non-shape grant. A reconcile carries the
+ * reached version's whole reviewed registry,
+ * so the records are made to match it exactly: a declaration a later version drops stops
+ * refusing. Bounded by the declared keys, so it runs in every pass without a budget.
+ */
+function recordGranteeKeys(db: SwitchSql, shapes: readonly EntityGrantShape[]): void {
+  const rows = shapes
+    .filter((s) => s.bootstrap && s.holder === 'grantee')
+    .flatMap((s) => keysOf([...s.permissions, ...(s.retired ?? [])]).map((k): [string, string] => [`shape:${s.entityType}`, `granted:${k}`]));
+  db.run(
+    // The subject range keeps it on the primary key: `shape:` rows only, never the whole table.
+    `DELETE FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?
+        AND NOT EXISTS (SELECT 1 FROM json_each(?) r
+                         WHERE json_extract(r.value, '$[0]') = _substrat_tuples.subject
+                           AND json_extract(r.value, '$[1]') = _substrat_tuples.object)`,
+    GRANTEE_KEY_RELATION,
+    JSON.stringify(rows),
+  );
+  for (const [subject, object] of rows) {
+    db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', subject, GRANTEE_KEY_RELATION, object);
+  }
 }
 
 /**
