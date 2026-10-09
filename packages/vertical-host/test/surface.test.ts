@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { NO_APPLICATION_DETAIL, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import { mountPlatformSurface, registeredScopeSweepHost, type VerticalScopeHost } from '../src/index.js';
 
@@ -236,6 +237,35 @@ describe('mountPlatformSurface — the error envelope (#510 regression)', () => 
     }).request('/internal/export?scopeId=' + SCOPE, { headers: authed() }, ENV);
     expect(res.status).toBe(418);
     expect(((await res.json()) as { error: string }).error).toBe('short and stout');
+  });
+  // #113: the console's read-only gate is recognised by its code, not its sentence. The route
+  // re-throws it as the caller's 400 before a vertical's `mapError` is consulted; a mapper that
+  // claims every throw the route did NOT classify shows which ones it did.
+  describe('/internal/query — the read-only gate\'s refusal, by its code', () => {
+    const query = (refusal: Error) =>
+      appWith(
+        fakeHost({
+          introspectScopeQuery: async () => {
+            throw refusal;
+          },
+        }),
+        { mapError: (e) => (e instanceof HTTPException ? undefined : { status: 418, message: 'claimed by the vertical' }) },
+      ).request(
+        '/internal/query',
+        { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ scopeId: SCOPE, sql: 'DELETE FROM t' }) },
+        ENV,
+      );
+
+    it('a validation_failed refusal is the caller\'s 400, with its sentence', async () => {
+      const res = await query(substratError('validation_failed', 'read-only console: statement is not read-only'));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { detail: string }).detail).toBe('read-only console: statement is not read-only');
+    });
+
+    it('the twin: the same sentence with no code is not recognised by its words', async () => {
+      const res = await query(new Error('read-only console: statement is not read-only'));
+      expect(res.status).toBe(418);
+    });
   });
 });
 

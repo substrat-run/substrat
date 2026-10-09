@@ -115,6 +115,7 @@ import {
   type HistoryEntry,
   type Page,
   queryScopeInput,
+  errorCodeOf,
   type ScopeId,
   type TenantId,
   type PrincipalId,
@@ -1436,7 +1437,9 @@ export function mountPlatformSurface<Env extends object>(
     try {
       return c.json(await deps.hostFor(c.env).introspectScopeQuery(body.scopeId, { sql: body.sql }));
     } catch (e) {
-      if (e instanceof Error && e.message.includes('read-only console')) {
+      // The read-only gate's refusal is the caller's mistake (`validation_failed`, #113) —
+      // read by its code, so its sentence is free to change.
+      if (e instanceof Error && errorCodeOf(e) === 'validation_failed') {
         throw new HTTPException(400, { message: e.message });
       }
       throw e;
