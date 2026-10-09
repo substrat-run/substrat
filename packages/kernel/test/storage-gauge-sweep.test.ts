@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { platformActorId, scopeId, tenantId, type ScopeId, type ScopeStorageSample } from '@substrat-run/contracts';
+import { platformActorId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, STORAGE_SAMPLE_BATCH, type PlatformSweepOptions } from '../src/platform-sweep.js';
-import { STORAGE_GAUGE_PRUNE_BATCH, type ScopeStorageReadingInput } from '../src/storage-gauge.js';
+import { STORAGE_GAUGE_PRUNE_BATCH, type ScopeStorageAttempt, type ScopeStorageReadingInput } from '../src/storage-gauge.js';
 import type { FetchLike, ScopeHost } from '../src/scope-host.js';
 
 /**
@@ -22,7 +22,8 @@ const DAY = 86_400_000;
 
 function gaugeHost(opts: {
   scopes: ScopeId[];
-  latest?: Record<string, string>;
+  /** When the phase last tried each scope. */
+  tried?: Record<string, string>;
   drainDue?: (s: string) => Promise<void>;
   gauge?: boolean;
 }) {
@@ -33,17 +34,16 @@ function gaugeHost(opts: {
     listConnections: async () => [],
   };
   if (opts.gauge !== false) {
-    admin.listScopeStorage = async (): Promise<ScopeStorageSample[]> =>
-      Object.entries(opts.latest ?? {}).map(([scope, readAt]) => ({
+    admin.listScopeStorageAttempts = async (): Promise<ScopeStorageAttempt[]> =>
+      Object.entries(opts.tried ?? {}).map(([scope, attemptedAt]) => ({
         tenantId: T,
         scopeId: scope as ScopeId,
-        day: readAt.slice(0, 10),
-        bytes: 1,
-        readAt: readAt as ScopeStorageSample['readAt'],
+        attemptedAt,
+        error: null,
       }));
     admin.recordScopeStorage = async (_a: unknown, readings: ScopeStorageReadingInput[]) => {
       recorded.push(...readings);
-      return { recorded: readings.length };
+      return { recorded: readings.filter((r) => r.bytes !== null).length };
     };
     admin.pruneScopeStorage = async (_a: unknown, limit: number) => {
       pruned.push(limit);
@@ -117,18 +117,18 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     expect(report.storage).toMatchObject({ reached: 0, read: 0 });
   });
 
-  it('reads at most the batch per pass, never-read first, then the stalest, and skips a fresh reading', async () => {
+  it('reads at most the batch per pass, never-tried first, then the longest since a try, and skips a recent one', async () => {
     const scopes = Array.from({ length: STORAGE_SAMPLE_BATCH + 150 }, sid);
     const fresh = scopes[0]!;
     const oldest = scopes[1]!;
     const older = scopes[2]!;
-    // Every scope has a reading; most are two days old, two are older still, one is fresh.
-    const latest: Record<string, string> = Object.fromEntries(scopes.map((s) => [s, ago(2 * DAY)]));
-    latest[fresh] = ago(DAY / 2);
-    latest[oldest] = ago(30 * DAY);
-    latest[older] = ago(10 * DAY);
+    // Every scope was tried: most two days ago, two longer ago still, one recently.
+    const tried: Record<string, string> = Object.fromEntries(scopes.map((s) => [s, ago(2 * DAY)]));
+    tried[fresh] = ago(DAY / 2);
+    tried[oldest] = ago(30 * DAY);
+    tried[older] = ago(10 * DAY);
     const neverRead = sid();
-    const { host, recorded } = gaugeHost({ scopes: [...scopes, neverRead], latest });
+    const { host, recorded } = gaugeHost({ scopes: [...scopes, neverRead], tried });
     const r = reader();
     const report = await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: { read: r.read } });
 
@@ -145,9 +145,9 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     });
   });
 
-  it('a reading exactly maxAge old is due again; one a moment younger is not', async () => {
+  it('a scope tried maxAge ago is due again; one tried a moment later is not', async () => {
     const [due, notYet] = [sid(), sid()];
-    const { host } = gaugeHost({ scopes: [due, notYet], latest: { [due]: ago(DAY + 1000), [notYet]: ago(DAY - 60_000) } });
+    const { host } = gaugeHost({ scopes: [due, notYet], tried: { [due]: ago(DAY + 1000), [notYet]: ago(DAY - 60_000) } });
     const r = reader();
     await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: { read: r.read } });
     expect(r.asked).toEqual([due]);
@@ -167,14 +167,33 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     await expect(sweep(host, { storageGauge: { read: r.read, pruneBatch: 0 } })).rejects.toThrow(/pruneBatch/);
   });
 
-  it('a failed read is an error and records nothing for that scope; a declined one is skipped quietly', async () => {
+  it('records a failed read and a declined one as attempts with no size; only the failure is an error', async () => {
     const [ok, broken, none] = [sid(), sid(), sid()];
     const { host, recorded } = gaugeHost({ scopes: [ok, broken, none] });
     const r = reader((s) => (s === broken ? new Error('boom') : s === none ? null : 10));
     const report = await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: { read: r.read } });
-    expect(recorded.map((x) => x.scopeId)).toEqual([ok]);
+    const by = new Map(recorded.map((x) => [x.scopeId, x]));
+    expect(by.get(ok)).toMatchObject({ bytes: 10 });
+    expect(by.get(broken)).toMatchObject({ bytes: null, error: 'boom' });
+    expect(by.get(none)).toMatchObject({ bytes: null });
+    expect(by.get(none)).not.toHaveProperty('error');
     expect(report.storage).toMatchObject({ read: 1, failed: 1, skipped: 1, recorded: 1 });
     expect(report.errors).toEqual([{ kind: 'storage', id: broken, error: 'boom' }]);
+  });
+
+  it('does not retry a scope that failed recently: it waits a day, behind nothing', async () => {
+    // A batch-full of scopes that failed an hour ago, and one never tried. Without the attempt
+    // record the failures would stay due and take every slot on every pass.
+    const failing = Array.from({ length: STORAGE_SAMPLE_BATCH }, sid);
+    const fresh = sid();
+    const { host } = gaugeHost({
+      scopes: [...failing, fresh],
+      tried: Object.fromEntries(failing.map((s) => [s, ago(3_600_000)])),
+    });
+    const r = reader();
+    const report = await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: { read: r.read } });
+    expect(r.asked).toEqual([fresh]);
+    expect(report.storage).toMatchObject({ due: 1, read: 1 });
   });
 
   it('a size that is not a non-negative integer is a failed read, not a stored one', async () => {
@@ -182,8 +201,8 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     const { host, recorded } = gaugeHost({ scopes: [neg, frac] });
     const r = reader((s) => (s === neg ? -1 : 1.5));
     const report = await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: { read: r.read } });
-    expect(recorded).toEqual([]);
-    expect(report.storage).toMatchObject({ failed: 2 });
+    expect(recorded.map((x) => x.bytes)).toEqual([null, null]);
+    expect(report.storage).toMatchObject({ failed: 2, recorded: 0 });
   });
 
   it('is off when the option is unset, or the host keeps no gauge', async () => {

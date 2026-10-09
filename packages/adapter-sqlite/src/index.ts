@@ -311,6 +311,7 @@ import {
   FINDINGS_DDL,
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  listScopeStorageAttemptRows,
   listScopeStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
@@ -10401,6 +10402,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_findings', // #1748: the tenant's findings
           '_substrat_finding_rules', // #1748: the tenant's suppress rules
           '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
+          '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {
@@ -11702,6 +11704,11 @@ export class SqliteScopeHost implements ScopeHost {
           filter ?? null,
           rows.length,
         );
+        return rows;
+      },
+      listScopeStorageAttempts: async (actor) => {
+        const rows = listScopeStorageAttemptRows(redactionSqlOf(this.directory));
+        this.recordAccess(actor, 'listScopeStorageAttempts', { tenantId: null }, null, rows.length);
         return rows;
       },
       pruneScopeStorage: async (_actor, limit: number) => pruneScopeStorageRows(redactionSqlOf(this.directory), Date.now(), limit),

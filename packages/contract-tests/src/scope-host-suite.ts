@@ -9108,6 +9108,38 @@ export function scopeHostContractSuite(
         expect(reads.some((r) => r.scopeId === s)).toBe(true);
       });
 
+      it('records every attempt; a failed one keeps the last sample, and the attempt is what the pass reads next', async () => {
+        const tf = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tf, slug: 'gauge-tries', name: 'Gauge Tries' });
+        const [s, declined] = [await newScope(tf), await newScope(tf)];
+        await record(tf, s, 700, day(-1, '05:00:00'));
+
+        expect(
+          await host.admin.recordScopeStorage!(staff, [
+            { tenantId: tf, scopeId: s, bytes: null, error: 'vertical answered 501', readAt: day(0, '05:00:00') },
+            { tenantId: tf, scopeId: declined, bytes: null, readAt: day(0, '05:00:00') },
+            // Under the wrong tenant: no attempt row either.
+            { tenantId: tenantId.parse(ulid()), scopeId: s, bytes: null, error: 'x', readAt: day(0, '06:00:00') },
+          ]),
+        ).toEqual({ recorded: 0 });
+        // The last good sample stands.
+        expect((await host.admin.listScopeStorage!(staff, { scopeId: s, latest: true })).map((r) => r.bytes)).toEqual([700]);
+        const attempts = (await host.admin.listScopeStorageAttempts!(staff)).filter((a) => a.tenantId === tf);
+        expect(attempts.map((a) => [a.scopeId, a.attemptedAt, a.error]).sort()).toEqual(
+          [
+            [s, day(0, '05:00:00'), 'vertical answered 501'],
+            [declined, day(0, '05:00:00'), null],
+          ].sort(),
+        );
+
+        // A successful read clears the error and moves the attempt on.
+        await record(tf, s, 900, day(0, '07:00:00'));
+        expect((await host.admin.listScopeStorageAttempts!(staff)).find((a) => a.scopeId === s)).toMatchObject({
+          attemptedAt: day(0, '07:00:00'),
+          error: null,
+        });
+      });
+
       it("writes a reading only under the scope's own tenant, and folds each tenant's figure from its own scopes", async () => {
         const [ta, tb] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
         await host.admin.createTenant(staff, { id: ta, slug: 'gauge-a', name: 'Gauge A' });

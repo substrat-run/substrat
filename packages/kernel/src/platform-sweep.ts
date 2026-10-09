@@ -25,7 +25,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
-import { STORAGE_GAUGE_PRUNE_BATCH } from './storage-gauge.js';
+import { STORAGE_GAUGE_PRUNE_BATCH, type ScopeStorageReadingInput } from './storage-gauge.js';
 import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -727,15 +727,16 @@ export interface PlatformSweepReport {
  */
 export interface StorageGaugeSweepOptions {
   /**
-   * One scope's database size, in bytes. A throw counts that scope `failed` and keeps its last
-   * reading. `null` says this scope has no database this reader can measure (on the hosted
-   * plane, a scope bound to no vertical, which the drain counted without waking anything): it
-   * is `skipped`, not an error, so it does not reach the failure digest every day.
+   * One scope's database size, in bytes. A throw counts that scope `failed`: its last sample
+   * stands, the failure is recorded as its attempt, and it is tried again once `maxAgeMs` has
+   * passed rather than on every pass. `null` says this scope has no database this reader can
+   * measure (on the hosted plane, a scope bound to no vertical, which the drain counted without
+   * waking anything): it is `skipped`, never an error, and asked again a day later.
    */
   read: (scope: Scope) => Promise<number | null>;
   /** The most scopes read in one pass, stalest first. Default `STORAGE_SAMPLE_BATCH`. `0` pauses sampling. */
   batch?: number;
-  /** A scope is due once its latest reading is at least this old. Default one day. */
+  /** A scope is due once its latest attempt is at least this old. Default one day. */
   maxAgeMs?: number;
   /** Samples past retention deleted per pass. Default `STORAGE_GAUGE_PRUNE_BATCH`. */
   pruneBatch?: number;
@@ -750,7 +751,7 @@ export const STORAGE_SAMPLE_MAX_AGE_MS = 86_400_000;
 export interface StorageGaugeSweepReport {
   /** Scopes an earlier phase reached this pass: the only ones the phase may read. */
   reached: number;
-  /** Reached scopes whose latest reading was missing or older than `maxAgeMs`. */
+  /** Reached scopes never tried, or last tried at least `maxAgeMs` ago. */
   due: number;
   /** Due scopes left for a later pass because the batch was full. */
   deferred: number;
@@ -758,7 +759,7 @@ export interface StorageGaugeSweepReport {
   read: number;
   failed: number;
   skipped: number;
-  /** Rows the directory wrote (a reading for a scope reaped meanwhile writes none). */
+  /** Sample rows the directory wrote (a reading for a scope reaped meanwhile writes none). */
   recorded: number;
   /** Samples past retention deleted. */
   pruned: number;
@@ -1207,7 +1208,7 @@ export async function runPlatformSweep(
   if (
     options.storageGauge &&
     typeof host.admin.recordScopeStorage === 'function' &&
-    typeof host.admin.listScopeStorage === 'function'
+    typeof host.admin.listScopeStorageAttempts === 'function'
   ) {
     report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, [...reachedThisPass.values()], report);
   }
@@ -2731,9 +2732,9 @@ export function startPlatformSweeper(
 }
 
 /**
- * One pass of the storage-gauge phase (#1524): read the due share of the scopes this pass
- * already reached, record what answered in one directory call, then prune past retention.
- * A failed read is an error entry and leaves that scope's last stored reading standing.
+ * One pass of the storage-gauge phase (#1524): try the due share of the scopes this pass
+ * already reached, record every attempt in one directory call, then prune past retention. A
+ * failed read is an error entry; its scope keeps its last sample and waits a day like any other.
  */
 async function sweepStorageGauge(
   admin: HostAdmin,
@@ -2756,47 +2757,52 @@ async function sweepStorageGauge(
   const maxAgeMs = gauge.maxAgeMs ?? STORAGE_SAMPLE_MAX_AGE_MS;
   try {
     if (reached.length > 0 && batch > 0) {
-      const latest = new Map(
-        (await admin.listScopeStorage!(options.actor, { latest: true })).map((s) => [s.scopeId as string, s.readAt as string]),
+      const tried = new Map(
+        (await admin.listScopeStorageAttempts!(options.actor)).map((a) => [a.scopeId as string, a.attemptedAt]),
       );
       const staleBefore = new Date(Date.now() - maxAgeMs).toISOString();
-      // Never-read scopes first (by id), then the oldest readings.
+      // Never-tried scopes first (by id), then the longest since their last attempt.
       const due = reached
         .filter((s) => {
-          const at = latest.get(s.id);
+          const at = tried.get(s.id);
           return at === undefined || at <= staleBefore;
         })
         .sort((a, b) => {
-          const x = latest.get(a.id) ?? '';
-          const y = latest.get(b.id) ?? '';
+          const x = tried.get(a.id) ?? '';
+          const y = tried.get(b.id) ?? '';
           return x < y ? -1 : x > y ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
       const take = due.slice(0, batch);
       out.due = due.length;
       out.deferred = due.length - take.length;
-      const readings: { tenantId: TenantId; scopeId: ScopeId; bytes: number; readAt: string }[] = [];
+      const attempts: ScopeStorageReadingInput[] = [];
       await mapBounded(take, options.concurrency ?? 8, async (s) => {
+        const attempt = { tenantId: s.tenantId, scopeId: s.id, readAt: new Date().toISOString() };
         try {
           const bytes = await gauge.read(s);
           if (bytes === null) {
+            // Declined, not failed — but still an attempt, so it waits a day like any other
+            // rather than taking a slot ahead of every readable scope on every pass.
             out.skipped += 1;
+            attempts.push({ ...attempt, bytes: null });
             return;
           }
           if (!Number.isInteger(bytes) || bytes < 0) throw new Error(`not a size: ${String(bytes)}`);
-          readings.push({ tenantId: s.tenantId, scopeId: s.id, bytes, readAt: new Date().toISOString() });
+          attempts.push({ ...attempt, bytes });
           out.read += 1;
         } catch (err) {
           out.failed += 1;
+          attempts.push({ ...attempt, bytes: null, error: message(err) });
           report.errors.push({ kind: 'storage', id: s.id, error: message(err) });
         }
       });
-      if (readings.length > 0) out.recorded = (await admin.recordScopeStorage!(options.actor, readings)).recorded;
+      if (attempts.length > 0) out.recorded = (await admin.recordScopeStorage!(options.actor, attempts)).recorded;
     }
     if (typeof admin.pruneScopeStorage === 'function') {
       out.pruned = await admin.pruneScopeStorage(options.actor, gauge.pruneBatch ?? STORAGE_GAUGE_PRUNE_BATCH);
     }
   } catch (err) {
-    // A directory read or write failed: this pass's samples are lost, never half-kept, and
+    // A directory read or write failed: this pass's attempts are lost, never half-kept, and
     // the next pass finds the same scopes due.
     report.errors.push({ kind: 'storage', id: 'directory', error: message(err) });
   }

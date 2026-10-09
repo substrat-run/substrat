@@ -22,6 +22,13 @@ import { assertRowLimit, boundedRetentionDelete } from './scope-host.js';
  * The rows are written by the scheduled pass (`runPlatformSweep`'s storage phase), which
  * samples only scopes an earlier phase of the same pass already woke. Nothing here reads a
  * scope; serving a figure is a directory read.
+ *
+ * Beside the samples, `_substrat_scope_storage_attempts` keeps one row per scope: when the
+ * phase last TRIED, and the error if the read failed. It is what the phase picks due scopes
+ * by. Without it a scope whose read keeps failing would stay due and be retried on every
+ * pass, ahead of every scope that can be read, and its error would reach every pass's
+ * failure digest. With it, a failing scope is tried once a day like any other, while its last
+ * good sample stands.
  */
 export const SCOPE_STORAGE_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_scope_storage (
@@ -34,6 +41,12 @@ export const SCOPE_STORAGE_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_scope_storage_tenant ON _substrat_scope_storage (tenant_id, day);
   CREATE INDEX IF NOT EXISTS _substrat_scope_storage_day ON _substrat_scope_storage (day);
+  CREATE TABLE IF NOT EXISTS _substrat_scope_storage_attempts (
+    scope_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    attempted_at TEXT NOT NULL,
+    error TEXT
+  );
 `;
 
 /** How long a day's sample is kept: thirteen months, so a year can be compared with the one before it. */
@@ -46,13 +59,23 @@ export const STORAGE_GAUGE_PRUNE_BATCH = 500;
 export const STORAGE_HISTORY_LIMIT_MAX = 10_000;
 export const STORAGE_HISTORY_LIMIT_DEFAULT = 1_000;
 
-/** What the storage phase hands `recordScopeStorage`: one successful read. */
+/** What the storage phase hands `recordScopeStorage`: one attempt to read a scope's size. */
 export interface ScopeStorageReadingInput {
   tenantId: TenantId;
   scopeId: ScopeId;
-  bytes: number;
-  /** When the size was read. Its UTC date is the row's day. */
+  /** The size read, or null when there is none: a failed read (`error` says why), or a scope the reader declined. */
+  bytes: number | null;
+  error?: string;
+  /** When the read was made. Its UTC date is the sample's day. */
   readAt: string;
+}
+
+/** When the phase last tried a scope (#1524), and why it failed if it did. */
+export interface ScopeStorageAttempt {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  attemptedAt: string;
+  error: string | null;
 }
 
 /**
@@ -83,16 +106,29 @@ export function storageRetentionHorizon(nowMs: number): string {
 }
 
 /**
- * Upsert readings, one statement each. The row is written only for a scope the directory
- * holds UNDER THAT TENANT and has not reaped, so a reading can never land in another tenant's
- * figure, and a scope reaped while its read was in flight leaves no row behind. Within a day a
- * reading replaces an older one and never a newer one. Returns how many rows were written.
+ * Record attempts, a statement or two each. Every row is written only for a scope the
+ * directory holds UNDER THAT TENANT and has not reaped, so a reading can never land in another
+ * tenant's figure, and a scope reaped while its read was in flight leaves no row behind.
+ *
+ * Every attempt replaces the scope's attempt row. A successful one also upserts the day's
+ * sample, which replaces an older reading of that day and never a newer one; a failed one
+ * leaves the samples alone, so the last good reading stands. Returns how many SAMPLE rows
+ * were written.
  */
 export function recordScopeStorageRows(sql: RedactionSql, readings: readonly ScopeStorageReadingInput[]): number {
   let recorded = 0;
   for (const r of readings) {
-    if (!Number.isInteger(r.bytes) || r.bytes < 0) continue;
     const readAt = new Date(r.readAt).toISOString();
+    const ok = r.bytes !== null && Number.isInteger(r.bytes) && r.bytes >= 0;
+    sql(
+      `INSERT INTO _substrat_scope_storage_attempts (scope_id, tenant_id, attempted_at, error)
+       SELECT scope_id, tenant_id, ?, ? FROM scopes
+        WHERE scope_id = ? AND tenant_id = ? AND status <> 'reaped'
+       ON CONFLICT (scope_id) DO UPDATE SET attempted_at = excluded.attempted_at, error = excluded.error
+        WHERE excluded.attempted_at >= _substrat_scope_storage_attempts.attempted_at`,
+      [readAt, r.error ?? null, r.scopeId, r.tenantId],
+    );
+    if (!ok) continue;
     recorded += sql(
       `INSERT INTO _substrat_scope_storage (scope_id, day, tenant_id, bytes, read_at)
        SELECT scope_id, ?, tenant_id, ?, ? FROM scopes
@@ -163,6 +199,24 @@ export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilt
   );
 }
 
+/** Every non-reaped scope's latest attempt — what the storage phase picks due scopes by. */
+export function listScopeStorageAttemptRows(sql: RedactionSql): ScopeStorageAttempt[] {
+  const rows = sql(
+    `SELECT a.tenant_id, a.scope_id, a.attempted_at, a.error
+       FROM _substrat_scope_storage_attempts a
+       JOIN scopes s ON s.scope_id = a.scope_id AND s.tenant_id = a.tenant_id
+      WHERE s.status <> 'reaped'
+      ORDER BY a.scope_id`,
+    [],
+  ) as { tenant_id: string; scope_id: string; attempted_at: string; error: string | null }[];
+  return rows.map((r) => ({
+    tenantId: r.tenant_id as TenantId,
+    scopeId: r.scope_id as ScopeId,
+    attemptedAt: r.attempted_at,
+    error: r.error,
+  }));
+}
+
 /** Delete at most `limit` samples older than retention, oldest first. Returns how many went. */
 export function pruneScopeStorageRows(sql: RedactionSql, nowMs: number, limit: number): number {
   return sql(boundedRetentionDelete('_substrat_scope_storage', 'day'), [
@@ -171,9 +225,10 @@ export function pruneScopeStorageRows(sql: RedactionSql, nowMs: number, limit: n
   ]).length;
 }
 
-/** Drop a scope's samples: its storage is gone, so its history describes nothing billable. */
+/** Drop a scope's samples and attempt: its storage is gone, so its history describes nothing billable. */
 export function forgetScopeStorage(sql: RedactionSql, scopeId: string): void {
   sql('DELETE FROM _substrat_scope_storage WHERE scope_id = ?', [scopeId]);
+  sql('DELETE FROM _substrat_scope_storage_attempts WHERE scope_id = ?', [scopeId]);
 }
 
 /**

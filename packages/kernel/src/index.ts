@@ -950,11 +950,13 @@ export {
   STORAGE_HISTORY_LIMIT_MAX,
   foldStorageGauge,
   forgetScopeStorage,
+  listScopeStorageAttemptRows,
   listScopeStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
   storageGaugeDay,
   storageRetentionHorizon,
+  type ScopeStorageAttempt,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from './storage-gauge.js';

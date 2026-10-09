@@ -470,6 +470,7 @@ import {
   memberAddedAudit,
   shapeTopUpBatch,
   type ConnectLinkKeyRow,
+  type ScopeStorageAttempt,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
@@ -851,6 +852,7 @@ interface ControlPlaneStub {
   /** #1524: the stored storage gauge — kernel `storage-gauge.ts`, run inside the directory DO. */
   recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
   listScopeStorage(filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
+  listScopeStorageAttempts(): Promise<ScopeStorageAttempt[]>;
   pruneScopeStorage(limit: number): Promise<number>;
   insertConnection(row: {
     id: string;
@@ -9066,6 +9068,11 @@ export class CloudflareScopeHost implements ScopeHost {
           filter ?? null,
           rows.length,
         );
+        return rows;
+      },
+      listScopeStorageAttempts: async (actor) => {
+        const rows = await this.cp.listScopeStorageAttempts();
+        await this.recordAccess(actor, 'listScopeStorageAttempts', { tenantId: null }, null, rows.length);
         return rows;
       },
       pruneScopeStorage: async (_actor, limit: number) => this.cp.pruneScopeStorage(assertRowLimit('limit', limit)),

@@ -1229,15 +1229,19 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
   the read goes through the vertical's `/internal/database-size`, the same route as the live
   reading, with the same rule: no deployment resolves, the read fails; it never falls back to
   the control plane's placeholder namespace.
-- **Bounded.** A scope is due when its latest sample is a day old or it has none. At most 100
-  scopes are read per pass, never-read first, then the stalest; the rest wait for the next
-  pass (`deferred` in the sweep report). `batch: 0` pauses sampling.
+- **Bounded.** A scope is due when the phase last tried it a day ago or never has. At most 100
+  scopes are read per pass, never-tried first, then the longest since a try; the rest wait for
+  the next pass (`deferred` in the sweep report). `batch: 0` pauses sampling. Every try is
+  kept in `_substrat_scope_storage_attempts` (one row per scope, with the error if it failed),
+  which is what the phase picks by: a scope that keeps failing is tried once a day, never on
+  every pass ahead of the readable ones, and reaches the failure digest once a day.
 - **One row per scope per UTC day** in the directory's `_substrat_scope_storage`, the day's
   latest reading (a later same-day reading replaces it, an older one never does). The row is
   written only for a non-reaped scope the directory holds under the named tenant. Kept
   **thirteen months**, pruned by the same phase at most 500 rows per pass. A reaped scope's
   rows are deleted at reap, and reads join on scope status as a second guard.
-- **A failed read keeps the last value.** It is a `storage` error in the pass report.
+- **A failed read keeps the last value.** It is a `storage` error in the pass report and the
+  scope's attempt row. A scope bound to no vertical is skipped, not failed.
 - **Labelled by coverage and age.** The figure carries `sampled` of `total` non-reaped scopes
   and the `oldestReadAt` it is "as of". The console calls it a total only when every scope is
   sampled and the oldest sample is under two days old; otherwise it is `partial` or `stale`.

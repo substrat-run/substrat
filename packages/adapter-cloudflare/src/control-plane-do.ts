@@ -22,9 +22,11 @@ import {
   FINDINGS_DDL,
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  listScopeStorageAttemptRows,
   listScopeStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
+  type ScopeStorageAttempt,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
   CONNECT_LINKS_DDL,
@@ -2011,6 +2013,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_findings', // #1748: the tenant's findings
       '_substrat_finding_rules', // #1748: the tenant's suppress rules
       '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
+      '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -3835,6 +3838,10 @@ export class ControlPlaneDO extends DurableObject {
 
   listScopeStorage(filter?: ScopeStorageFilter): ScopeStorageSample[] {
     return listScopeStorageRows(doRedactionSql(this.sql), filter);
+  }
+
+  listScopeStorageAttempts(): ScopeStorageAttempt[] {
+    return listScopeStorageAttemptRows(doRedactionSql(this.sql));
   }
 
   pruneScopeStorage(limit: number): number {

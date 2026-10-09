@@ -185,7 +185,7 @@ import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.j
 import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
-import type { ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
+import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
 import type {
@@ -4100,14 +4100,16 @@ export interface HostAdmin {
    */
   pruneTelemetry?(actor: PlatformActorId, limit: number): Promise<TelemetryPruneReport>;
   /**
-   * The stored storage gauge (#1524): record scope database sizes the scheduled pass read,
-   * one row per (scope, UTC day), a later same-day reading replacing an earlier one. A
-   * reading is written only for a non-reaped scope the directory holds under the named
-   * tenant. Returns how many rows were written. Not audited, like `recordSweepRun`:
+   * The stored storage gauge (#1524): record the scheduled pass's attempts to read scope
+   * database sizes. Each attempt replaces the scope's attempt row (what the pass picks due
+   * scopes by); a successful one also writes the day's sample, one row per (scope, UTC day),
+   * a later same-day reading replacing an earlier one. A failed one leaves the last sample
+   * standing. Rows are written only for a non-reaped scope the directory holds under the named
+   * tenant. Returns how many SAMPLE rows were written. Not audited, like `recordSweepRun`:
    * retention-bounded telemetry, not evidence.
    *
-   * The three gauge methods are optional, and the sweep's storage phase is skipped on a host
-   * that lacks them, so an adapter built before #1524 still satisfies `HostAdmin`.
+   * The gauge methods are optional, and the sweep's storage phase is skipped on a host that
+   * lacks them, so an adapter built before #1524 still satisfies `HostAdmin`.
    */
   recordScopeStorage?(actor: PlatformActorId, readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
   /**
@@ -4115,6 +4117,8 @@ export interface HostAdmin {
    * `ScopeStorageFilter`. A directory read that wakes no scope. Access-logged (K-24).
    */
   listScopeStorage?(actor: PlatformActorId, filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
+  /** Every non-reaped scope's latest storage-read attempt (#1524): the storage phase's due list. Access-logged. */
+  listScopeStorageAttempts?(actor: PlatformActorId): Promise<ScopeStorageAttempt[]>;
   /**
    * Delete storage samples past `STORAGE_GAUGE_RETENTION_MONTHS`, oldest first and at most
    * `limit` per call, so a backlog drains over passes. Returns how many went. Not audited.
