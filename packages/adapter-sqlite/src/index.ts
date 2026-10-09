@@ -706,7 +706,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -8967,14 +8967,18 @@ export class SqliteScopeHost implements ScopeHost {
         throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker, opts) =>
-        this.directory.prepare(
-          `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
-             last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-           WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
-             AND (state <> 'done' OR ? = 'done')
-             ${opts?.claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
-        ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state,
-          ...(opts?.claimedBy === undefined ? [] : [opts.claimedBy])).changes > 0,
+        this.directory.transaction(() => {
+          const settled = this.directory.prepare(
+            `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
+               last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
+               AND (state <> 'done' OR ? = 'done')
+               ${opts?.claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
+          ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state,
+            ...(opts?.claimedBy === undefined ? [] : [opts.claimedBy])).changes > 0;
+          if (settled && state === 'done') this.directory.prepare(COPY_BACKFILL_SUPERSEDE_SQL).run(tenantId, scopeId);
+          return settled;
+        })(),
       touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
         this.directory.prepare(
           `UPDATE scope_script_copies SET last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -11737,6 +11741,7 @@ export class SqliteScopeHost implements ScopeHost {
       if (moved.changes === 0) return false;
       if (cond?.confirmMove) {
         this.directory.prepare(COPY_MOVE_CONFIRM_SQL).run(...copyMoveConfirmParams(cond.confirmMove, tenantId, scopeId, now));
+        this.directory.prepare(COPY_BACKFILL_SUPERSEDE_SQL).run(tenantId, scopeId);
       }
       return true;
     })();

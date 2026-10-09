@@ -111,7 +111,7 @@ import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
 import { blankSqlComments, executableSqlStatements } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3228,6 +3228,7 @@ export class ControlPlaneDO extends DurableObject {
       if (cond.confirmMove) {
         const { tenant_id } = this.sql.exec('SELECT tenant_id FROM scopes WHERE scope_id = ?', scopeId).one() as { tenant_id: string };
         this.sql.exec(COPY_MOVE_CONFIRM_SQL, ...copyMoveConfirmParams(cond.confirmMove, tenant_id, scopeId, now));
+        this.sql.exec(COPY_BACKFILL_SUPERSEDE_SQL, tenant_id, scopeId);
       }
       return true;
     });
@@ -3320,15 +3321,19 @@ export class ControlPlaneDO extends DurableObject {
     tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string,
     loadStamp: string | null, revision: string | null, claimedBy?: string,
   ): boolean {
-    return this.sql.exec(
-      `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
-         last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-       WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
-         AND (state <> 'done' OR ? = 'done')
-         ${claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
-      state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId, state,
-      ...(claimedBy === undefined ? [] : [claimedBy]),
-    ).rowsWritten > 0;
+    return this.ctx.storage.transactionSync(() => {
+      const settled = this.sql.exec(
+        `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
+           last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
+           AND (state <> 'done' OR ? = 'done')
+           ${claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
+        state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId, state,
+        ...(claimedBy === undefined ? [] : [claimedBy]),
+      ).rowsWritten > 0;
+      if (settled && state === 'done') this.sql.exec(COPY_BACKFILL_SUPERSEDE_SQL, tenantId, scopeId);
+      return settled;
+    });
   }
 
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): void {

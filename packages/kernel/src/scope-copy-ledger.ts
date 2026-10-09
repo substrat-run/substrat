@@ -91,6 +91,23 @@ export const copyBackfillParams = (tenantId: string, scopeId: string, scriptRef:
 /** What a backfill insert did: wrote the entry, found the script already ledgered, or was refused. */
 export type ScopeCopyBackfillResult = 'recorded' | 'ledgered' | 'reaping' | 'missing';
 
+/**
+ * Settle the scope's backfilled entries a tracked entry has taken over (#1722, review r1). The
+ * backfill records a script only while no move names it; once a move's own entry for the same
+ * script is `done`, that store was wiped under the move's fence or is the scope's route, so the
+ * historic data the backfilled entry stood for is gone or reached. Leaving the entry `retained`
+ * would send every later reap and erasure to a store that refuses writes behind its tombstone.
+ * Run in the same transaction as every write that settles an entry `done`: a settle and a
+ * confirming bind, on both adapters. Params: tenantId, scopeId.
+ */
+export const COPY_BACKFILL_SUPERSEDE_SQL = `
+  UPDATE scope_script_copies SET state = 'done', last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+  WHERE tenant_id = ? AND scope_id = ? AND move_id = '${BACKFILL_MOVE_ID}' AND state <> 'done'
+    AND EXISTS (SELECT 1 FROM scope_script_copies AS tracked
+      WHERE tracked.tenant_id = scope_script_copies.tenant_id AND tracked.scope_id = scope_script_copies.scope_id
+        AND tracked.script_ref = scope_script_copies.script_ref AND tracked.move_id <> '${BACKFILL_MOVE_ID}'
+        AND tracked.state = 'done')`;
+
 /** The scope row a backfill insert that wrote nothing is explained by. Params: tenantId, scopeId. */
 export const COPY_BACKFILL_SCOPE_SQL = 'SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?';
 

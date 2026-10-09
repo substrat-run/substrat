@@ -124,6 +124,7 @@ export {
   BACKFILL_MOVE_ID,
   COPY_BACKFILL_SCOPE_SQL,
   COPY_BACKFILL_SQL,
+  COPY_BACKFILL_SUPERSEDE_SQL,
   copyBackfillParams,
   copyBackfillRefusal,
   type ScopeCopyBackfillResult,
