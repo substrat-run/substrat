@@ -203,7 +203,8 @@ including the two OIDC ones where Better Auth stays dormant:
   (an invite never had one), can be revoked, and its mint and its use are on the scope's event
   log (`capability.become-minted`, `capability.exercised`). The inviter may mint it only while
   they hold everything the invited principal holds at the scope, entity-narrowed grants
-  included. The directory records the secret's hash and which capability the invite is;
+  included, and never for a principal holding nothing there (an invite at a role that confers
+  no permission at all is refused `409`). The directory records the secret's hash and which capability the invite is;
   accepting checks the secret is an open invite, exchanges it in the scope, and binds the
   invitee's verified `sub` to that principal. The inviter is not re-checked at accept: the
   role was bounded when it was granted, and withdrawing the invite revokes the link. An invite
