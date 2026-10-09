@@ -360,6 +360,28 @@ export function scheduleContractSuite(
       expect((await host.drainDue(t, retryScope)).attempted).toBe(0);
     });
 
+    it('a suspension inside the first delivery leaves later outbox work due', async () => {
+      const draining = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: draining, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, draining);
+      const stub = await host.getSystemScope(SCHED_MODULE, t, draining);
+      await stub.invoke('sched/tick');
+      await stub.invoke('sched/tick');
+      const ran: string[] = [];
+      host.registerExecutor(`mid-suspend-${draining}`, 'sched.ticked', async (_admin, event) => {
+        ran.push(event.id);
+        if (ran.length === 1) await host.admin.suspendScope(staff, t, draining);
+      });
+
+      const first = await host.drainDue(t, draining);
+      expect(first).toMatchObject({ attempted: 1, delivered: 1, lifecycleHeld: true });
+      expect(ran).toHaveLength(1);
+      await host.admin.unsuspendScope(staff, t, draining);
+      expect(await host.drainDue(t, draining)).toMatchObject({ attempted: 1, delivered: 1 });
+      expect(ran).toHaveLength(2);
+      expect((await host.drainDue(t, draining)).attempted).toBe(0);
+    });
+
     /**
      * #1288's backfill, on a dump captured before the column: a restore builds the table
      * from the kernel's DDL (#1883) and derives each row's `kind` from its key, by the

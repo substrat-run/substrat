@@ -2793,13 +2793,12 @@ export class CloudflareScopeHost implements ScopeHost {
     // have none, and the directory is one global object.
     let inert: Promise<boolean> | undefined;
     const isInert = (): Promise<boolean> => (inert ??= this.isInertScope(tenantId, scopeId));
-    // #1713: a CP-less scope its lifecycle holds attempts nothing and journals nothing, so every
-    // due delivery stays due for the first pass after it is live again. Asked on the first due
-    // event, like `isInert`. Every caller passed `assertLive` already, so this is for the scope
-    // suspended between that gate and the drain: a request in flight, whose write commits while
-    // its effect waits. A host with a directory answers false without a read.
-    let held: Promise<boolean> | undefined;
-    const isHeld = (): Promise<boolean> => (held ??= this.lifecycleHeld(scopeId));
+    // A suspension can land after `assertLive`, or between two deliveries. A live
+    // verdict is never cached across this pass: each pending event meets the current
+    // directory or, on a CP-less host, the scope's delivered lifecycle.
+    const isHeld = async (): Promise<boolean> => this.cpLess
+      ? this.lifecycleHeld(scopeId)
+      : (await this.cp.scopeAccessRefusal(tenantId, scopeId)) !== null;
     drain: for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
       const { events, undecodable } = await stub.pendingExecutorDeliveries(deliveryId, executor.eventType);
@@ -2807,10 +2806,6 @@ export class CloudflareScopeHost implements ScopeHost {
       // and its handler never sees it. Terminal on the FIRST failure, unlike a handler's:
       // the decode is pure, so a retry cannot succeed. The rows behind it are delivered
       // below — the decode used to throw the whole list, on every pass.
-      if ((undecodable.length > 0 || events.length > 0) && (await isHeld())) {
-        report.lifecycleHeld = true;
-        break drain;
-      }
       // #1901: an attempt's line. The attempt number is the one the journal is about to record.
       const unitOf = (eventId: string, attempt: number) => ({
         kind: 'consumer' as const,
@@ -2827,12 +2822,20 @@ export class CloudflareScopeHost implements ScopeHost {
         outcomes?.push(executorOutcomeOf(id, event, outcome, error));
       };
       for (const bad of undecodable) {
+        if (await isHeld()) {
+          report.lifecycleHeld = true;
+          break drain;
+        }
         report.attempted += 1;
         const attempt = await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
         report.deadLettered += 1;
         lines.write({ ...unitOf(bad.eventId, attempt), outcome: 'dead-lettered' });
       }
       for (const event of events) {
+        if (await isHeld()) {
+          report.lifecycleHeld = true;
+          break drain;
+        }
         report.attempted += 1;
         const startedAt = Date.now();
         if (await isInert()) {
