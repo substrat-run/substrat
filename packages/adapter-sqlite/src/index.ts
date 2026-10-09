@@ -4147,8 +4147,8 @@ export class SqliteScopeHost implements ScopeHost {
     // Same lifecycle gates as the principal door, and reached the same way: a
     // suspended tenant refuses a support session exactly as it refuses a user.
     const scope = this.directory
-      .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
-      .get(scopeId) as { tenant_id: string; status: string } | undefined;
+      .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string } | undefined;
     if (!scope || scope.tenant_id !== tenantId) {
       throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
@@ -4186,8 +4186,8 @@ export class SqliteScopeHost implements ScopeHost {
       throw substratError('not_found', `module not registered on this host: ${moduleId}`);
     }
     const scope = this.directory
-      .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
-      .get(scopeId) as { tenant_id: string; status: string } | undefined;
+      .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string } | undefined;
     if (!scope || scope.tenant_id !== tenantId) {
       throw substratError('not_found', `unknown scope: ${scopeId}`);
     }
