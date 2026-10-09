@@ -1,0 +1,38 @@
+diff --git a/dist/worker/lib/cloudflare/test-internal.mjs b/dist/worker/lib/cloudflare/test-internal.mjs
+index f5fde62e0edfc9d8e8c1466846aba46bd5c056d4..3b4bcc96714c94638b999a234ac94750018b0090 100644
+--- a/dist/worker/lib/cloudflare/test-internal.mjs
++++ b/dist/worker/lib/cloudflare/test-internal.mjs
+@@ -337,21 +337,21 @@ function importModule(env2, specifier) {
+ var IGNORED_KEYS = ["self"];
+ function createProxyPrototypeClass(superClass, getUnknownPrototypeKey) {
+   function Class(...args) {
+-    Class.prototype = new Proxy(Class.prototype, {
+-      get(target, key, receiver) {
+-        const value = Reflect.get(target, key, receiver);
+-        if (value !== void 0) {
+-          return value;
+-        }
+-        if (typeof key === "symbol" || IGNORED_KEYS.includes(key)) {
+-          return;
+-        }
+-        return getUnknownPrototypeKey.call(receiver, key);
+-      }
+-    });
+     return Reflect.construct(superClass, args, Class);
+   }
+   Reflect.setPrototypeOf(Class.prototype, superClass.prototype);
++  Class.prototype = new Proxy(Class.prototype, {
++    get(target, key, receiver) {
++      const value = Reflect.get(target, key, receiver);
++      if (value !== void 0) {
++        return value;
++      }
++      if (typeof key === "symbol" || IGNORED_KEYS.includes(key)) {
++        return;
++      }
++      return getUnknownPrototypeKey.call(receiver, key);
++    }
++  });
+   Reflect.setPrototypeOf(Class, superClass);
+   return Class;
+ }

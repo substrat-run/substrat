@@ -146,6 +146,11 @@ overrides:
 # declarations still matter, and matter most, for consumers installing these
 # packages FROM npm, where pnpm's checking does apply.
 
+patchedDependencies:
+  # The pool rewrapped its RPC prototype for every new DO, building an unbounded
+  # proxy chain during large contract runs (#2121). Remove when upstream fixes it.
+  '@cloudflare/vitest-pool-workers@0.12.21': patches/@cloudflare__vitest-pool-workers@0.12.21.patch
+
 peerDependencyRules:
   allowedVersions:
     better-auth>better-sqlite3: '13'

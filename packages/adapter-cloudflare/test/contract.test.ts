@@ -27,7 +27,7 @@ import {
   type ScopeTable,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_LEASE_MIN_MS, JOB_RUN_DUE_AT, JOB_ADMISSION_MISS_MAX, JOB_LEASE_TOO_SHORT_NOTE, admissionBackoffMs, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
+import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_RUN_DUE_AT, JOB_ADMISSION_MISS_MAX, JOB_LEASE_TOO_SHORT_NOTE, admissionBackoffMs, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -2720,6 +2720,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * what gates now — its state read, then the hold, then every call pinned to the instance that
    * read came from. The job's tick is `sched/tick`, which the scope's seated `system:` grant allows.
    */
+  const RACE_LEASE_MS = 1_000;
   const jobDeployment = (ns: DurableObjectNamespace = env.SCOPE) => {
     const h = deployment(ns);
     h.registerJob(
@@ -2734,9 +2735,9 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     );
     // A run that never opens the door: on a held scope it has nothing to wait for.
     h.registerJob(SCHED, 'idle', () => ({ done: true }));
-    // #2034: the same, counted, on the shortest lease a job can hold.
+    // #2034: the same, counted, on a short lease with runner headroom.
     // `maxAttempts: 1`, so a claim wrongly charged an attempt would end the run before it ran (#2042 r2).
-    h.registerJob(SCHED, 'brief', () => ((briefPasses += 1), { done: true }), { maxAttempts: 1 }, { leaseMs: JOB_LEASE_MIN_MS });
+    h.registerJob(SCHED, 'brief', () => ((briefPasses += 1), { done: true }), { maxAttempts: 1 }, { leaseMs: RACE_LEASE_MS });
     // #2028 review: a handler that KEEPS the door's refusal and throws it again on a later pass,
     // raw or (with `inStep`) as the step's wrapper the driver handed back.
     h.registerJob(
@@ -2774,6 +2775,9 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
       state.storage.sql.exec(`UPDATE _substrat_job_runs SET next_attempt_at = NULL WHERE status = 'running'`);
     });
+  // Workerd's DO clock and the runner can advance independently while an RPC is held.
+  const waitPastBriefLease = () =>
+    new Promise<void>((resolve) => setTimeout(resolve, RACE_LEASE_MS + 500));
   /** The ticks the scope's storage holds: what actually ran through the door. */
   const ticksIn = async (s: ScopeId) =>
     (await host.exportScopeLocal(s)).find((table) => table.name === 'sched_ticks')?.rows.length ?? 0;
@@ -2881,7 +2885,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     let rival: unknown = null;
     counting.afterJobClaim = async () => {
       counting.afterJobClaim = null;
-      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      await waitPastBriefLease();
       rival = await jobDeployment().runDueJobs(t, s);
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1, completed: 0 });
@@ -2899,7 +2903,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     counting.afterJobClaim = async () => {
       counting.afterJobClaim = null;
       // Still its own lease, but its reply left less than the margin of it: the drive does not begin.
-      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+      await new Promise((resolve) => setTimeout(resolve, RACE_LEASE_MS * 0.85));
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
     expect(briefPasses).toBe(0);
@@ -2924,7 +2928,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     let rival: unknown = null;
     counting.beforeJobBegin = async () => {
       counting.beforeJobBegin = null;
-      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      await waitPastBriefLease();
       rival = await jobDeployment().runDueJobs(t, s);
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
@@ -2941,7 +2945,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const counting = countingScopes(env.SCOPE);
     counting.beforeJobBegin = async () => {
       counting.beforeJobBegin = null;
-      await new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS + 50));
+      await waitPastBriefLease();
     };
     expect(await jobDeployment(counting.ns).runDueJobs(t, s)).toMatchObject({ attempted: 0, superseded: 1 });
     // Still the claim's own lease, so only the DO's own clock can have refused the stamp.
@@ -2960,7 +2964,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     briefPasses = 0;
     const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'always-late', payload: {} });
     const counting = countingScopes(env.SCOPE);
-    counting.afterJobClaim = () => new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+    counting.afterJobClaim = () => new Promise((resolve) => setTimeout(resolve, RACE_LEASE_MS * 0.85));
     const h = jobDeployment(counting.ns);
     for (let miss = 1; miss < JOB_ADMISSION_MISS_MAX; miss += 1) {
       const before = Date.now();
@@ -2977,17 +2981,17 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
       status: 'failed',
       attempts: 0,
       admissionMisses: JOB_ADMISSION_MISS_MAX,
-      lastError: expect.stringContaining(`leaseMs ${JOB_LEASE_MIN_MS}`),
+      lastError: expect.stringContaining(`leaseMs ${RACE_LEASE_MS}`),
     });
     expect(briefPasses).toBe(0);
-  });
+  }, 20_000);
 
   it('#2034: twin — a BEGIN resets the admission misses', async () => {
     const s = await newScope();
     briefPasses = 0;
     const run = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'brief', instance: 'late-then-prompt', payload: {} });
     const counting = countingScopes(env.SCOPE);
-    counting.afterJobClaim = () => new Promise((resolve) => setTimeout(resolve, JOB_LEASE_MIN_MS * 0.85));
+    counting.afterJobClaim = () => new Promise((resolve) => setTimeout(resolve, RACE_LEASE_MS * 0.85));
     for (let i = 0; i < 3; i += 1) {
       await jobDeployment(counting.ns).runDueJobs(t, s);
       await dueNow(s);

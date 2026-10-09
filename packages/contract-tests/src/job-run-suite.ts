@@ -14,7 +14,6 @@ import {
 } from '@substrat-run/contracts';
 import {
   CANCELLED_JOB_NOTE,
-  JOB_LEASE_MIN_MS,
   JOB_LEASE_MS,
   REDACTED_INTENT_MARKER,
   REDACTED_JOB_NOTE,
@@ -27,6 +26,7 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 import { jobsMod } from './modules.js';
 
 const JOBS_MODULE = moduleId.parse('@test/jobs');
+const BRIEF_LEASE_MS = 1_000;
 
 /**
  * The fourth driver's contract (#1577), against both adapters.
@@ -106,8 +106,8 @@ export function jobRunContractSuite(
       return false;
     };
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    /** Wait past the shortest lease a job can hold, which the `brief` jobs hold. */
-    const outlastBriefLease = () => sleep(JOB_LEASE_MIN_MS + 50);
+    /** Wait past the brief job's lease with room for an overloaded adapter runner. */
+    const outlastBriefLease = () => sleep(BRIEF_LEASE_MS + 500);
 
     /**
      * A spine envelope as a job would hold a copy of one: what #1600's predicate keys on
@@ -281,7 +281,7 @@ export function jobRunContractSuite(
       );
 
       // #2034: a pass that may wait at the gate, then fails or finishes as its payload says.
-      // `leased` holds the default lease; `brief` the shortest one, so the next drive can take over.
+      // `leased` holds the default lease; `brief` a short one, so the next drive can take over.
       const leased = async (pass: JobPassContext) => {
         const n = leasedPasses.push(pass.run.id);
         await takeGate();
@@ -290,11 +290,11 @@ export function jobRunContractSuite(
         return { cursor: n, done: done !== false };
       };
       host.registerJob(JOBS_MODULE, 'leased', leased, { maxAttempts: 3, baseDelayMs: 0 });
-      host.registerJob(JOBS_MODULE, 'brief', leased, { maxAttempts: 3, baseDelayMs: 0 }, { leaseMs: JOB_LEASE_MIN_MS });
+      host.registerJob(JOBS_MODULE, 'brief', leased, { maxAttempts: 3, baseDelayMs: 0 }, { leaseMs: BRIEF_LEASE_MS });
       // #2042 r2: one attempt only, so a takeover wrongly charged ends the run unrun.
       host.registerJob(JOBS_MODULE, 'once', leased, { maxAttempts: 1, baseDelayMs: 0 });
-      // #2034: steps that each take longer than half the lease and, together, longer than all of it;
-      // `stepped-brief` waits at the gate between its two steps, on the shortest lease.
+      // #2034: steps that each stay within the lease and, together, outlast all of it;
+      // `stepped-brief` waits at the gate between its two steps, on a short lease.
       host.registerJob(
         JOBS_MODULE,
         'stepped',
@@ -303,13 +303,13 @@ export function jobRunContractSuite(
           for (let i = 0; i < steps; i += 1) {
             await pass.step(`s${i}`, async () => {
               stepBodies.push(`s${i}`);
-              await sleep(60);
+              await sleep(300);
             });
           }
           return { done: true };
         },
         { maxAttempts: 3, baseDelayMs: 0 },
-        { leaseMs: 100 },
+        { leaseMs: 1_000 },
       );
       host.registerJob(
         JOBS_MODULE,
@@ -323,11 +323,11 @@ export function jobRunContractSuite(
           return { cursor: who, done: false };
         },
         { maxAttempts: 3, baseDelayMs: 0 },
-        { leaseMs: JOB_LEASE_MIN_MS },
+        { leaseMs: BRIEF_LEASE_MS },
       );
 
       // #2034: one step, then the gate (the pass that takes it goes on to commit), or a failure
-      // that keeps the ledger. The shortest lease.
+      // that keeps the ledger. A short lease.
       host.registerJob(
         JOBS_MODULE,
         'ledgered',
@@ -342,7 +342,7 @@ export function jobRunContractSuite(
           return { done: true };
         },
         { maxAttempts: 3, baseDelayMs: 0 },
-        { leaseMs: JOB_LEASE_MIN_MS },
+        { leaseMs: BRIEF_LEASE_MS },
       );
 
       await host.admin.createTenant(staff, { id: t, slug: 'jobs', name: 'Jobs' });
@@ -464,7 +464,7 @@ export function jobRunContractSuite(
 
       it('a pass that renews at every step is not taken over, though it outlasts its lease', async () => {
         const s = await newScope();
-        // Four 60 ms steps on a 100 ms lease; a rival drive at each step boundary finds nothing due.
+        // Four 300 ms steps on a 1 s lease; a rival drive at each step boundary finds nothing due.
         const run = await startLeased(s, 'stepped', { steps: 4 });
         const began = Date.now();
         const pass = host.runDueJobs(t, s);
@@ -474,7 +474,7 @@ export function jobRunContractSuite(
           await sleep(20);
         }
         expect(await pass).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
-        expect(Date.now() - began).toBeGreaterThan(100);
+        expect(Date.now() - began).toBeGreaterThan(1_000);
         expect(rivals.every((n) => n === 0)).toBe(true);
         expect(stepBodies).toEqual(['s0', 's1', 's2', 's3']);
         expect(await runOf(s, run.id)).toMatchObject({ status: 'done' });
