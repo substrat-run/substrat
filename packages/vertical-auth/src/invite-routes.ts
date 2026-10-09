@@ -207,9 +207,14 @@ export async function mintMemberInvite(
   if (!minted.ok) {
     await ungrant();
     // The grant just made is what the principal holds; it holds nothing only when the role
-    // carries no permission at all — nothing to invite anyone into.
+    // carries no permission at all — nothing to invite anyone into. The principal was minted
+    // just now, so no link to it can have been exchanged; that refusal is answered all the same.
     if (!('coverage' in minted)) {
-      throw new HTTPException(409, { message: `'${input.roleKey}' confers nothing here — there is nothing to invite anyone into` });
+      throw new HTTPException(409, {
+        message: minted.refused === 'target-holds-nothing'
+          ? `'${input.roleKey}' confers nothing here — there is nothing to invite anyone into`
+          : 'this invite\'s principal is already claimed — refusing a second link to it',
+      });
     }
     return { ok: false, coverage: minted.coverage };
   }

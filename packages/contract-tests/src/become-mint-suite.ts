@@ -26,7 +26,10 @@
  * 7. **The target's holdings reach as the checker's do.** A key the target holds only at the
  *    TENANT node, and an entity-narrowed grant it holds only through an ORG, both count: a
  *    minter short of them is refused, one holding them passes.
- * 8. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
+ * 8. **A seat already taken.** A target some `become` link has been exchanged into in this
+ *    scope (a principal's or the platform's) is refused another link; never-exchanged links,
+ *    open or revoked, leave it untaken, and a seat taken in another scope is not taken here.
+ * 9. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
  *    mints — the bound is evaluated at mint, and an empty set would cover trivially. Its twin:
  *    the same principal, once it holds a role, is minted for.
  */
@@ -119,6 +122,12 @@ export function becomeMintContractSuite(
     const outbox = async (): Promise<OutboxRow[]> => (await host.getScope(owner, t1, s1)).invoke<OutboxRow[]>('cap/outbox');
     /** What a refusal must not have changed: the capability directory and the spine. */
     const snapshot = async () => ({ caps: (await records()).length, events: (await outbox()).length });
+    /** A fresh reader at s1 — a seat for a case that exchanges its link, since a claimed seat refuses another. */
+    const seat = async (): Promise<PrincipalId> => {
+      const who = p();
+      await host.admin.assignRole(staff, { principalId: who, roleKey: 'reader', node: node() });
+      return who;
+    };
 
     beforeAll(async () => {
       fixture = await makeFixture();
@@ -261,24 +270,25 @@ export function becomeMintContractSuite(
 
     describe('the exchange', () => {
       it('yields the principal once; the second exchange is refused', async () => {
-        const cap = await minted(owner, readerTarget);
+        const target = await seat();
+        const cap = await minted(owner, target);
         expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' })).toEqual({
           kind: 'principal',
           capabilityId: cap.id,
-          principal: readerTarget,
+          principal: target,
         });
         expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' })).toBeNull();
       });
 
       it('a share-link exchange of it is refused without spending the use', async () => {
-        const cap = await minted(owner, readerTarget);
+        const cap = await minted(owner, await seat());
         expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'act' })).toBeNull();
         expect((await records()).find((r) => r.id === cap.id)?.uses).toBe(0);
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
       });
 
       it('another scope of the same tenant never knows the secret', async () => {
-        const cap = await minted(owner, readerTarget);
+        const cap = await minted(owner, await seat());
         expect(await host.exchangeCapability(t1, s2, cap.secret, { mode: 'become' })).toBeNull();
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
       });
@@ -286,7 +296,7 @@ export function becomeMintContractSuite(
 
     describe('the revoke', () => {
       it('refuses the exchange after it, records the revoker, and is idempotent', async () => {
-        const cap = await minted(owner, readerTarget);
+        const cap = await minted(owner, await seat());
         expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, owner)).toEqual({ ok: true, revoked: true });
         expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' })).toBeNull();
         expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ revokedBy: owner, uses: 0 });
@@ -304,18 +314,18 @@ export function becomeMintContractSuite(
       });
 
       it('…while one who holds all of it may revoke a link someone else minted', async () => {
-        const cap = await minted(owner, readerTarget);
+        const cap = await minted(owner, await seat());
         expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, reader)).toEqual({ ok: true, revoked: true });
         expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ revokedBy: reader });
       });
 
       it('…and the minter may always revoke its own link', async () => {
-        const cap = await minted(reader, readerTarget);
+        const cap = await minted(reader, await seat());
         expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, reader)).toEqual({ ok: true, revoked: true });
       });
 
       it('…its live twin still exchanges', async () => {
-        const cap = await minted(owner, readerTarget);
+        const cap = await minted(owner, await seat());
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
       });
 
@@ -330,7 +340,7 @@ export function becomeMintContractSuite(
 
       it('never revokes the platform\'s own become (a claim link), which keeps working', async () => {
         const platform = await host.admin.mintCapability(staff, t1, s1, {
-          principal: readerTarget,
+          principal: await seat(),
           maxUses: 1,
           expiresAt: new Date(Date.now() + 60_000).toISOString() as Instant,
         });
@@ -339,9 +349,54 @@ export function becomeMintContractSuite(
       });
 
       it('another scope cannot revoke it', async () => {
-        const cap = await minted(owner, readerTarget);
+        const cap = await minted(owner, await seat());
         expect(await fixture.verbs.revokeBecomeCapability(t1, s2, cap.id, owner)).toEqual({ ok: true, revoked: false });
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+      });
+    });
+
+    describe('a seat already taken', () => {
+      it('a target some become link has been exchanged into is refused another — nothing recorded, nothing on the spine', async () => {
+        const target = await seat();
+        const first = await minted(owner, target);
+        expect((await host.exchangeCapability(t1, s1, first.secret, { mode: 'become' }))?.kind).toBe('principal');
+        const before = await snapshot();
+        expect(await mint(owner, target)).toEqual({ ok: false, refused: 'target-already-claimed' });
+        expect(await snapshot()).toEqual(before);
+      });
+
+      it('…so is one the platform\'s own become was exchanged into (a claimed owner seat)', async () => {
+        const target = await seat();
+        const platform = await host.admin.mintCapability(staff, t1, s1, {
+          principal: target,
+          maxUses: 1,
+          expiresAt: new Date(Date.now() + 60_000).toISOString() as Instant,
+        });
+        expect((await host.exchangeCapability(t1, s1, platform.secret, { mode: 'become' }))?.kind).toBe('principal');
+        expect(await mint(owner, target)).toEqual({ ok: false, refused: 'target-already-claimed' });
+      });
+
+      it('the twin: links never exchanged — open, or revoked — leave the seat untaken, and another is minted', async () => {
+        const target = await seat();
+        await minted(owner, target);
+        const revoked = await minted(owner, target);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, revoked.id, owner)).toEqual({ ok: true, revoked: true });
+        expect((await mint(owner, target)).ok).toBe(true);
+      });
+
+      it('a seat taken in another scope of the tenant is not taken here', async () => {
+        const target = await seat();
+        await host.admin.assignRole(staff, { principalId: target, roleKey: 'reader', node: node(s2) });
+        const there = (await fixture.verbs.mintBecomeCapabilityBounded(t1, s2, owner, { principal: target, maxUses: 1 }));
+        // owner holds nothing at s2, so the s2 link is the platform's instead.
+        expect(there.ok).toBe(false);
+        const platform = await host.admin.mintCapability(staff, t1, s2, {
+          principal: target,
+          maxUses: 1,
+          expiresAt: new Date(Date.now() + 60_000).toISOString() as Instant,
+        });
+        expect((await host.exchangeCapability(t1, s2, platform.secret, { mode: 'become' }))?.kind).toBe('principal');
+        expect((await mint(owner, target)).ok).toBe(true);
       });
     });
 

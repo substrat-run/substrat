@@ -186,15 +186,18 @@ export const mintedCapability = z.object({
 export type MintedCapability = z.infer<typeof mintedCapability>;
 
 /**
- * Why a host's bounded `become` mint refused (#1686), with nothing written: the coverage naming
- * what the minter lacks, or that the target holds nothing at the node to become. The second
- * is its own answer because a `Coverage` refusal must name a missing key and there is none: a
- * target with an empty node-level set would cover trivially, and a link to it would yield
- * whatever that principal is granted later rather than anything the minter held.
+ * Why a host's bounded `become` mint refused (#1686), with nothing written:
+ * - `coverage` — what the minter lacks of what the target holds;
+ * - `target-holds-nothing` — the target holds nothing at the node. Its own answer because a
+ *   `Coverage` refusal must name a missing key and there is none: an empty set would cover
+ *   trivially, and the link would yield whatever that principal is granted later;
+ * - `target-already-claimed` — some `become` capability for the target has already been
+ *   exchanged in this scope: somebody already is that principal, and a second link would let a
+ *   second person become them too. A principal-minted `become` is for a seat nobody has taken.
  */
 export const becomeMintRefusal = z.union([
   z.object({ ok: z.literal(false), coverage }),
-  z.object({ ok: z.literal(false), refused: z.literal('target-holds-nothing') }),
+  z.object({ ok: z.literal(false), refused: z.enum(['target-holds-nothing', 'target-already-claimed']) }),
 ]);
 export type BecomeMintRefusal = z.infer<typeof becomeMintRefusal>;
 

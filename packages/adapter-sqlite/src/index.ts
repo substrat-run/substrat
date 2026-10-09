@@ -4773,7 +4773,7 @@ export class SqliteScopeHost implements ScopeHost {
     const minter = principalId.parse(caller);
     const parsed = principalBecomeCapabilityInput.parse(input);
     const outcome = await rt.actor.turn(async (): Promise<BoundedBecomeMint> => {
-      const refused = await becomeMintRefusal(this.checker, minter, parsed.principal, { tenantId, scopeId });
+      const refused = await becomeMintRefusal({ sql: spineSql(rt.db), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
       if (refused) return refused;
       const now = this.clock();
       rt.db.exec('BEGIN IMMEDIATE');

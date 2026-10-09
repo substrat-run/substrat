@@ -985,16 +985,25 @@ export const CAPABILITY_BECOME_MINT_OPERATION = 'capabilities.mint-become';
  * cover trivially, and the link would yield whatever that principal is granted later. A member
  * invite never meets this — it grants the role before it mints.
  *
+ * It is also refused for a target some `become` capability has already been exchanged into in
+ * this scope (`target-already-claimed`): a principal-minted `become` is for a seat nobody has
+ * taken, never a second key to someone who already exists. Whether a login is bound to the
+ * target outside the scope (an identity directory) is not visible here; the one caller today,
+ * a member invite, always targets a principal it has just minted.
+ *
  * Null when the mint may go ahead; otherwise the refusal, as the host answers it — a `Coverage`
- * naming what the caller lacks, as `canAssign`'s does, or `target-holds-nothing`. A checker with
+ * naming what the caller lacks, as `canAssign`'s does, `target-holds-nothing`, or
+ * `target-already-claimed`. A checker with
  * no `holdings` cannot say what the target holds, so the bound refuses rather than guess.
  */
 export async function becomeMintRefusal(
-  checker: Pick<PermissionChecker, 'check' | 'covers' | 'holdings'>,
+  deps: { sql: ScopedSql; checker: Pick<PermissionChecker, 'check' | 'covers' | 'holdings'> },
   caller: PrincipalId,
   target: PrincipalId,
   node: Node,
 ): Promise<BecomeMintRefusal | null> {
+  const { checker } = deps;
+  if (becomeClaimed(deps.sql, target)) return { ok: false, refused: 'target-already-claimed' };
   if (!checker.holdings) {
     throw substratError('unavailable', 'this permission checker cannot read what a principal holds — refusing to mint a become capability');
   }
@@ -1002,6 +1011,16 @@ export async function becomeMintRefusal(
   if (held.permissions.length === 0) return { ok: false, refused: 'target-holds-nothing' };
   const coverage = await coversHoldings(checker, caller, held, node);
   return coverage ? { ok: false, coverage } : null;
+}
+
+/** Has any `become` capability for `principal` been exchanged in this scope — platform-minted or not? */
+function becomeClaimed(sql: ScopedSql, principal: PrincipalId): boolean {
+  return (
+    sql.query<{ one: number }>(
+      `SELECT 1 AS one FROM _substrat_capabilities WHERE mode = 'become' AND principal = ? AND uses > 0 LIMIT 1`,
+      [principal],
+    ).length > 0
+  );
 }
 
 /**

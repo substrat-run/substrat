@@ -4828,7 +4828,7 @@ export function defineScopeDO(
       const minter = principalId.parse(caller);
       const parsed = principalBecomeCapabilityInput.parse(input);
       return await this.queue.enqueue(async (): Promise<BoundedBecomeMint> => {
-        const refused = await becomeMintRefusal(this.checker, minter, parsed.principal, { tenantId, scopeId });
+        const refused = await becomeMintRefusal({ sql: doSpineSql(this.sql), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
         if (refused) return refused;
         const liveSince = this.liveHighWaterMark();
         const now = instant.parse(new Date().toISOString());
