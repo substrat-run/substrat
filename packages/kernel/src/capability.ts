@@ -1022,6 +1022,19 @@ export function readBecomeLinkStates(sql: ScopedSql, ids: readonly string[], now
  * re-projected on a push and reviewed at the permission-diff checkpoint — nothing an inviter
  * controls. Expanding it would revoke every open invite at a role whenever a release adds a key to
  * that role.
+ *
+ * What the digest deliberately does not see, so nobody relies on it as a reach check:
+ * - the LEVEL a grant is held at — a key moved between the scope and the tenant node leaves it
+ *   unchanged, as the mint bound compares the same flattened set (`holdingsOf` merges the levels);
+ * - reach that grows under a narrowed grant's entity through `ctx.link` / `ctx.relink` — the
+ *   minter's coverage of that entity was checked through `check`, whose reach grows the same way;
+ * - module authority decided from a principal column (an assignee, an author) rather than a tuple
+ *   — neither the bound nor the digest sees it.
+ * None of these lets the link yield more than its minter held: the identity a link binds is per
+ * (scope, sub), so what it becomes is this principal in this scope only. The first two are judged
+ * by the same checker, over the same flattened set and the same walk, that bounded the minter;
+ * the third is a row the scope itself points at this principal, as it would for any member it
+ * names — and a member invite's principal is minted fresh, so no row names it when its link is.
  */
 export async function holdingsDigest(held: Holdings): Promise<string> {
   const sorted = (xs: Iterable<string>) => [...new Set(xs)].sort();
