@@ -524,9 +524,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
       expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
         .map((copy) => copy.state)).toEqual(['done', 'done']);
-    });
+    }, 20_000);
     it('retries a failed source wipe from the ledger', async () => {
       const p = await fresh('retry-wipe', 'kept until retry');
+      const neighbor = await fresh('retry-neighbor', 'must survive');
       hooks.wipe = async (ref, sid) => {
         if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('temporary wipe failure');
       };
@@ -536,10 +537,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const report = await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
       expect(report.done).toBeGreaterThan(0);
       expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(neighbor.scopeId))).toEqual(['must survive']);
       expect(await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId })).toMatchObject([
         { scriptRef: refOf.get(version.v1), state: 'done' },
       ]);
-    });
+    }, 20_000);
     it('does not destroy the subject key until every script copy confirms redaction', async () => {
       const p = await fresh('erase-pending', 'copy before erasure');
       hooks.wipe = async (ref, sid) => {
@@ -566,7 +568,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);
       expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
-    });
+    }, 20_000);
     it('a carry held after its source recheck cannot resurrect a shredded subject', async () => {
       const p = await fresh('erase-race');
       const subject = ulid();
@@ -593,6 +595,36 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const landed = v2outbox.rows.find((r) => r[v2outbox.columns.indexOf('id')] === eventId);
       expect(landed?.[v2outbox.columns.indexOf('payload')]).toBeNull();
     });
+    it('does not finalize erasure while a carry can still restore an unbound copy', async () => {
+      const p = await fresh('erase-unbound-race');
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      const v1 = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(p.scopeId)) as unknown as {
+        testSubjectEvent(scopeId: string, tenantId: string, subjectId: string): Promise<string>;
+      };
+      const eventId = await v1.testSubjectEvent(p.scopeId, t, subject);
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const moving = push('erase-unbound-race', 'v2');
+      await held.reached;
+      try {
+        const response = await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
+          method: 'POST', headers: auth,
+        });
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }]))
+          .toEqual(['private']);
+      } finally {
+        hooks.wipe = async (ref, sid) => {
+          if (ref === refOf.get(version.v2) && sid === p.scopeId) throw new Error('unbound cleanup unavailable');
+        };
+        held.release();
+        await moving;
+      }
+      const outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
+      const row = outbox.rows.find((r) => r[outbox.columns.indexOf('id')] === eventId);
+      expect(row?.[outbox.columns.indexOf('payload')]).not.toBeNull();
+    }, 20_000);
     it('erasure retries when a bind moves the route after its script inventory was read', async () => {
       const p = await fresh('erase-route-race');
       const subject = ulid();

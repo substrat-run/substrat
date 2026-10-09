@@ -8841,11 +8841,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
           throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
-        if (opts?.expectedErasureEpoch !== undefined &&
-            this.directory.prepare('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
-              .get(tenantId, scopeId) &&
-            (this.directory.prepare('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
-              .get(tenantId, scopeId) as { erasure_epoch: number }).erasure_epoch !== opts.expectedErasureEpoch) {
+        const epoch = this.directory.prepare('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
+          .get(tenantId, scopeId) as { erasure_epoch: number } | undefined;
+        if (opts?.expectedErasureEpoch !== undefined && epoch?.erasure_epoch !== opts.expectedErasureEpoch) {
           throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
         }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
