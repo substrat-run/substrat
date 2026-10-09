@@ -353,6 +353,17 @@ export function jobRunContractSuite(
       await fixture.cleanup();
     });
 
+    it('a due run waits through scope suspension and resumes unchanged', async () => {
+      const s = await newScope();
+      const run = await host.startJobRun(t, s, { moduleId: JOBS_MODULE, job: 'inert', instance: 'suspend' });
+      await host.admin.suspendScope(staff, t, s);
+      await expect(host.runDueJobs(t, s)).rejects.toThrow(/scope not active/);
+      expect(await runOf(s, run.id)).toMatchObject({ status: 'running' });
+      await host.admin.unsuspendScope(staff, t, s);
+      expect(await host.runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1 });
+      expect(await runOf(s, run.id)).toMatchObject({ status: 'done' });
+    });
+
     /**
      * #2028 review: the drive orders runs by when they became due, not by age. A run that failed and
      * backed off became due again AFTER a run started meanwhile, so it queues behind that run rather
