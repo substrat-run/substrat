@@ -109,7 +109,7 @@ import {
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
-import { blankSqlComments, executableSqlStatements, SCOPE_REAP_CLAIM_REF } from '@substrat-run/kernel';
+import { blankSqlComments, executableSqlStatements } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -759,6 +759,9 @@ const DIRECTORY_DDL = `
     schema_version TEXT NOT NULL DEFAULT '0',
     vertical_version_id TEXT,
     erasure_epoch INTEGER,
+    -- #1722: set once a reap has started draining this scope's script copies, and never
+    -- cleared: only deleting the row ends it. While set, no copy move is recorded or bound.
+    reap_claimed_at TEXT,
     -- Last FAILED migration attempt (§5.3). All null / 0 = healthy. Written on the
     -- failure path so a scope that fails closed stops rendering as active, and
     -- cleared on the next success. See ScopeDO.applyPendingMigrations.
@@ -1290,6 +1293,7 @@ const SCOPE_COLUMNS_ADDED = [
   'vertical TEXT',
   'vertical_version_id TEXT',
   'erasure_epoch INTEGER',
+  'reap_claimed_at TEXT',
   'provisioned_version_id TEXT',
   'migration_failed_version TEXT',
   'migration_error TEXT',
@@ -3142,13 +3146,15 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  /** Point a scope's routing at the serving script its data now lives in (#286). */
-  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number): void {
+  /** Point a scope's routing at the serving script its data now lives in (#286). False when a
+   *  conditional move lost its compare-and-set: the host throws, since a refusal thrown here
+   *  would cross the RPC boundary without its code. */
+  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number): boolean {
     const changed = expectedErasureEpoch === undefined
       ? this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?', servingRef, scopeId)
-      : this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ? AND COALESCE(erasure_epoch, 0) = ?',
+      : this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ? AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL',
           servingRef, scopeId, expectedErasureEpoch);
-    if (changed.rowsWritten === 0) throw substratError('precondition_failed', 'scope erasure changed; reload and retry');
+    return changed.rowsWritten > 0;
   }
 
   /** Move a fork's GC deadline forward, or pin it (`null`) — preview-and-snapshots.md §9. */
@@ -3182,20 +3188,19 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number): void {
+  /** False when a conditional bind lost its compare-and-set (the host throws, as above). */
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number): boolean {
     const update = expectedVersionId === undefined
       ? expectedErasureEpoch === undefined
         ? this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?', versionId, verticalSlug, scopeId)
-        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND COALESCE(erasure_epoch, 0) = ?',
+        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL',
             versionId, verticalSlug, scopeId, expectedErasureEpoch)
       : expectedErasureEpoch === undefined
         ? this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ?',
             versionId, verticalSlug, scopeId, expectedVersionId)
-        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ? AND COALESCE(erasure_epoch, 0) = ?',
+        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ? AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL',
             versionId, verticalSlug, scopeId, expectedVersionId, expectedErasureEpoch);
-    if (update.rowsWritten === 0) {
-      throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
-    }
+    return update.rowsWritten > 0;
   }
 
   scopeErasureEpoch(tenantId: string, scopeId: string): number {
@@ -3221,50 +3226,36 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): 'recorded' | 'reaping' | 'missing' | 'invalid' {
-    if (!scriptRef || scriptRef === SCOPE_REAP_CLAIM_REF || !moveId) {
-      return 'invalid';
-    }
+    if (!scriptRef || !moveId) return 'invalid';
     const written = this.sql.exec(
       `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
        SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
-       WHERE tenant_id = ? AND scope_id = ?
-         AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS claim
-           WHERE claim.tenant_id = scopes.tenant_id AND claim.scope_id = scopes.scope_id
-             AND claim.script_ref = ?)
+       WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
        ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
-      scriptRef, moveId, tenantId, scopeId, SCOPE_REAP_CLAIM_REF,
+      scriptRef, moveId, tenantId, scopeId,
     );
     if (written.rowsWritten > 0) return 'recorded';
-    if (!this.sql.exec(
-      'SELECT 1 FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId,
-    ).toArray().length) return 'missing';
-    if (this.sql.exec(
-      'SELECT 1 FROM scope_script_copies WHERE tenant_id = ? AND scope_id = ? AND script_ref = ?',
-      tenantId, scopeId, SCOPE_REAP_CLAIM_REF,
-    ).toArray().length) return 'reaping';
+    const scope = this.sql.exec('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
+      .toArray()[0] as { reap_claimed_at: string | null } | undefined;
+    if (!scope) return 'missing';
+    if (scope.reap_claimed_at !== null) return 'reaping';
     return 'recorded'; // idempotent retry of this move
   }
 
   beginScopeScriptReap(tenantId: string, scopeId: string): 'claimed' | 'pending' | 'missing' {
     const written = this.sql.exec(
-      `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
-       SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
-       WHERE tenant_id = ? AND scope_id = ?
+      `UPDATE scopes SET reap_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+       WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
            WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
-             AND move.script_ref <> ? AND move.state = 'pending')
-       ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
-      SCOPE_REAP_CLAIM_REF, SCOPE_REAP_CLAIM_REF, tenantId, scopeId, SCOPE_REAP_CLAIM_REF,
+             AND move.state = 'pending')`,
+      tenantId, scopeId,
     );
     if (written.rowsWritten > 0) return 'claimed';
-    if (this.sql.exec(
-      'SELECT 1 FROM scope_script_copies WHERE tenant_id = ? AND scope_id = ? AND script_ref = ?',
-      tenantId, scopeId, SCOPE_REAP_CLAIM_REF,
-    ).toArray().length) return 'claimed'; // a reaper resumes its earlier claim
-    if (!this.sql.exec(
-      'SELECT 1 FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId,
-    ).toArray().length) return 'missing';
-    return 'pending';
+    const scope = this.sql.exec('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
+      .toArray()[0] as { reap_claimed_at: string | null } | undefined;
+    if (!scope) return 'missing';
+    return scope.reap_claimed_at !== null ? 'claimed' : 'pending'; // a reaper resumes its earlier claim
   }
 
   settleScopeScriptCopy(
@@ -3293,8 +3284,8 @@ export class ControlPlaneDO extends DurableObject {
     tenant_id: string; scope_id: string; script_ref: string; move_id: string;
     state: string; load_stamp: string | null; revision: string | null;
   }[] {
-    const where: string[] = ['script_ref <> ?'];
-    const args: (string | number)[] = [SCOPE_REAP_CLAIM_REF];
+    const where: string[] = [];
+    const args: (string | number)[] = [];
     if (filter.tenantId) { where.push('tenant_id = ?'); args.push(filter.tenantId); }
     if (filter.scopeId) { where.push('scope_id = ?'); args.push(filter.scopeId); }
     if (filter.state) { where.push('state = ?'); args.push(filter.state); }

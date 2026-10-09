@@ -5773,11 +5773,55 @@ export function scopeHostContractSuite(
       expect((await host.admin.getScopeRecord(staff, t1, s))?.tenantId).toBe(t1);
       await expectRefusal(host.admin.beginScopeScriptReap(staff, t1, s), 'precondition_failed');
       await host.admin.settleScopeScriptCopy(staff, t1, s, ref, next, 'retained');
+      const beforeClaim = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
       await host.admin.beginScopeScriptReap(staff, t1, s);
       await host.admin.beginScopeScriptReap(staff, t1, s); // retry the same claim
       await expectRefusal(host.admin.recordScopeScriptCopy(staff, t1, s, ref, ulid()), 'precondition_failed');
       await host.admin.recordScopeScriptCopy(staff, t1, other, ref, ulid());
-      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).toHaveLength(2);
+      // The reap claim lives on the directory row, never in the ledger: every listing, scoped or
+      // fleet-wide and in every state, holds only the copies recorded above, so counts and pages
+      // are unchanged by the claim.
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).toEqual(beforeClaim);
+      for (const state of [undefined, 'pending', 'eligible', 'retained', 'kept', 'done'] as const) {
+        const listed = await host.admin.listScopeScriptCopies(staff, { ...(state ? { state } : {}), limit: 1000 });
+        expect(listed.filter((copy) => copy.tenantId === t1 && copy.scopeId === s)
+          .every((copy) => copy.scriptRef === ref && [first, next].includes(copy.moveId))).toBe(true);
+      }
+      expect(beforeClaim.map((copy) => copy.moveId).sort()).toEqual([first, next].sort());
+    });
+
+    it('a reap claim refuses a conditional bind until the scope row is deleted (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, `version-${ulid().toLowerCase()}`,
+        { expectedErasureEpoch: 0 }), 'precondition_failed');
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.servingRef ?? null).toBeNull();
+      await expectRefusal(host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, ulid()),
+        'precondition_failed');
+      // The claim survives a reaper that crashed: a second reaper resumes it, and it still refuses.
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      await expectRefusal(host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, ulid()),
+        'precondition_failed');
+    });
+
+    it('an erasure during a reap counts only real copies, so the claim cannot stall it (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      const subject = ulid();
+      const move = ulid();
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [sealed] = await host.admin.sealSubjectPayloads(staff, t1, s, [{ subjectId: subject, plaintext: 'private' }]);
+      const ref = `version-${ulid().toLowerCase()}`;
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, move);
+      await host.admin.settleScopeScriptCopy(staff, t1, s, ref, move, 'retained');
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      const copies = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      expect(copies.map((copy) => copy.moveId)).toEqual([move]);
+      const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+        vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+      expect((await host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted,
+        { versionId: null, servingRef: null, epoch: 0, copyCount: copies.length })).keyDestroyed).toBe(true);
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
     });
 
     it('subject keys survive a pending copy move until every copy can be reached (#1722)', async () => {

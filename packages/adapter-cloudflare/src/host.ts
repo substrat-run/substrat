@@ -777,7 +777,7 @@ interface ControlPlaneStub {
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number): Promise<void>;
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
@@ -794,7 +794,7 @@ interface ControlPlaneStub {
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
   ): Promise<void>;
-  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number): Promise<void>;
+  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
@@ -7196,7 +7196,9 @@ export class CloudflareScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch);
+        if (!await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch)) {
+          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        }
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,
           ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
@@ -7305,7 +7307,9 @@ export class CloudflareScopeHost implements ScopeHost {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
-        await this.cp.setScopeServingRef(scopeId, servingRef, opts?.expectedErasureEpoch);
+        if (!await this.cp.setScopeServingRef(scopeId, servingRef, opts?.expectedErasureEpoch)) {
+          throw substratError('precondition_failed', 'scope erasure or reap changed; reload and retry');
+        }
         await this.recordAdmin(
           actor,
           'setScopeServingRef',

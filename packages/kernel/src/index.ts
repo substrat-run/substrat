@@ -113,7 +113,6 @@ export type {
   OutboundMailAttachment,
 } from './mail-sender.js';
 export {
-  SCOPE_REAP_CLAIM_REF,
   assertRedrainWindow,
   attachmentBlobKey,
   attachmentSha256,

@@ -2694,8 +2694,9 @@ export interface HostAdmin {
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     scriptRef: string, moveId: string,
   ): Promise<void>;
-  /** Reserve a scope for script cleanup only when no copy move is in flight. The
-   * reservation rejects new moves until the directory row has been reaped. */
+  /** Reserve a scope for script cleanup only when no copy move is in flight. The claim is a
+   * column on the directory row, not a ledger entry: it refuses new moves and the conditional
+   * bind until the row itself is deleted, and a crashed reaper resumes it. */
   beginScopeScriptReap(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /** Only a confirmed move makes a source eligible for a nonterminal wipe. */
   settleScopeScriptCopy(
@@ -4905,9 +4906,6 @@ export interface OpsFailureInput {
   /** The upstream provider's trace reference, when the message carried one. */
   reference?: string | null;
 }
-
-/** A reserved ledger row that blocks new copy moves after reap starts. */
-export const SCOPE_REAP_CLAIM_REF = '__substrat_scope_reap__';
 
 /** Directory inventory of one script's copy of a scope (#1722). */
 export interface ScopeScriptCopy {

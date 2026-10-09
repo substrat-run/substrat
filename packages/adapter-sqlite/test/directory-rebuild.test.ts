@@ -237,14 +237,15 @@ describe('#1722 directory additions on an existing SQLite store', () => {
       const before = new Database(file);
       before.exec(`DROP TABLE scope_script_copies;
         ALTER TABLE scopes DROP COLUMN erasure_epoch;
+        ALTER TABLE scopes DROP COLUMN reap_claimed_at;
         INSERT INTO scopes (scope_id, tenant_id, vertical, vertical_version_id, serving_ref, created_at)
         VALUES ('old-scope', 'old-tenant', 'old-vertical', 'old-version', 'old-script', '2026-01-01T00:00:00.000Z')`);
       before.close();
       await new SqliteScopeHost({ dir }).close();
       const after = new Database(file, { readonly: true });
       try {
-        expect(after.prepare('SELECT vertical_version_id, serving_ref, erasure_epoch FROM scopes WHERE scope_id = ?')
-          .get('old-scope')).toEqual({ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: null });
+        expect(after.prepare('SELECT vertical_version_id, serving_ref, erasure_epoch, reap_claimed_at FROM scopes WHERE scope_id = ?')
+          .get('old-scope')).toEqual({ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: null, reap_claimed_at: null });
         expect(after.prepare('SELECT * FROM scope_script_copies').all()).toEqual([]);
       } finally {
         after.close();

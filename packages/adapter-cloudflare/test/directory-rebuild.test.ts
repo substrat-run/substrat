@@ -283,15 +283,16 @@ describe('#1722 directory additions on an existing Durable Object', () => {
     const result = await runInDurableObject(stub, (_instance, state) => {
       state.storage.sql.exec('DROP TABLE scope_script_copies');
       state.storage.sql.exec('ALTER TABLE scopes DROP COLUMN erasure_epoch');
+      state.storage.sql.exec('ALTER TABLE scopes DROP COLUMN reap_claimed_at');
       state.storage.sql.exec(`INSERT INTO scopes (scope_id, tenant_id, vertical, vertical_version_id, serving_ref, created_at)
         VALUES ('old-scope', 'old-tenant', 'old-vertical', 'old-version', 'old-script', '2026-01-01T00:00:00.000Z')`);
       new ControlPlaneDO(state, env);
       return {
-        scope: state.storage.sql.exec('SELECT vertical_version_id, serving_ref, erasure_epoch FROM scopes WHERE scope_id = ?', 'old-scope').toArray(),
+        scope: state.storage.sql.exec('SELECT vertical_version_id, serving_ref, erasure_epoch, reap_claimed_at FROM scopes WHERE scope_id = ?', 'old-scope').toArray(),
         copies: state.storage.sql.exec('SELECT * FROM scope_script_copies').toArray(),
       };
     });
-    expect(result.scope).toEqual([{ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: null }]);
+    expect(result.scope).toEqual([{ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: null, reap_claimed_at: null }]);
     expect(result.copies).toEqual([]);
   });
 });
