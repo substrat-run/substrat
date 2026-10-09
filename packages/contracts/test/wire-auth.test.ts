@@ -64,12 +64,41 @@ describe('secretMatches', () => {
   it('matches only the same string', () => {
     expect(secretMatches('s3cret', 's3cret')).toBe(true);
     expect(secretMatches('s3creT', 's3cret')).toBe(false);
+  });
+
+  it('refuses a shorter or a longer value, including a prefix of the right one', () => {
     expect(secretMatches('s3cre', 's3cret')).toBe(false);
+    expect(secretMatches('s', 's3cret')).toBe(false);
     expect(secretMatches('s3crett', 's3cret')).toBe(false);
+    expect(secretMatches('s3cret\u0000', 's3cret')).toBe(false);
   });
 
   it('refuses an absent or empty presented value', () => {
     expect(secretMatches(null, 's3cret')).toBe(false);
     expect(secretMatches('', 's3cret')).toBe(false);
+  });
+
+  it('answers as the early-return compare did, even against an empty expected value', () => {
+    expect(secretMatches('', '')).toBe(false);
+    expect(secretMatches(null, '')).toBe(false);
+    expect(secretMatches('x', '')).toBe(false);
+  });
+
+  it('walks the whole expected value whatever was presented', () => {
+    // Counted on a stand-in for `expected`: every call reads each of its characters once,
+    // for a presented value that is absent, empty, shorter, a prefix, equal or longer.
+    const secret = 's3cret';
+    for (const presented of [null, '', 's', 's3cr', 's3creT', secret, `${secret}-and-more`]) {
+      let reads = 0;
+      const counted = {
+        length: secret.length,
+        charCodeAt: (i: number) => {
+          reads += 1;
+          return secret.charCodeAt(i);
+        },
+      } as unknown as string;
+      expect(secretMatches(presented, counted)).toBe(presented === secret);
+      expect(reads, String(presented)).toBe(secret.length);
+    }
   });
 });

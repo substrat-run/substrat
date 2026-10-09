@@ -34,16 +34,21 @@ interface HeaderReader {
 export class PlatformCallError extends Error {}
 
 /**
- * Constant-time compare, so a wrong secret leaks nothing through timing.
+ * Constant-time compare: it runs in time independent of the presented value, so a wrong
+ * secret leaks nothing through timing.
+ *
+ * Every call walks the whole of `expected`, whatever was presented. A presented value's
+ * length is folded into the result instead of returned early on, and so is an absent or
+ * empty one, which never matches.
  *
  * The one copy: the platform-call check below and vertical-host's router assertion
  * (`readRoutedNode`) both use it.
  */
 export function secretMatches(presented: string | null, expected: string): boolean {
-  if (!presented || presented.length !== expected.length) return false;
-  let diff = 0;
+  const given = presented ?? '';
+  let diff = (given.length ^ expected.length) | (given.length === 0 ? 1 : 0);
   for (let i = 0; i < expected.length; i++) {
-    diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
+    diff |= (i < given.length ? given.charCodeAt(i) : 0) ^ expected.charCodeAt(i);
   }
   return diff === 0;
 }
