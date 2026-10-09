@@ -5201,7 +5201,10 @@ export class CloudflareScopeHost implements ScopeHost {
       let stillDue = false;
       try {
         // The gate above already answered for this pass; a fire that meets a restarted scope
-        // is gated again by the door (#1834).
+        // is gated again by the door (#1834). The door is opened once, but the lifecycle is
+        // read again before every later fire: the scope does not hold a directory lifecycle,
+        // so a suspension after an earlier fire would otherwise not stop this one (#1713).
+        if (door) await this.assertLive(tenantId, scopeId);
         door ??= await this.openSystemDoor(moduleId, tenantId, scopeId, gate);
         const scope = this.buildStub(tenantId, scopeId, undefined, undefined, door);
         if (schedule.purge) {
