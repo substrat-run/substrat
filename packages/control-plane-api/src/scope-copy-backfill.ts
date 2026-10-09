@@ -14,7 +14,8 @@ import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type S
  * **Where a scope's data lived** is derived from the scope's whole timeline, never from one row:
  * - **A pin.** Each `setScopeServingRef` row names the serving script before and after; while
  *   pinned, the scope's route was that script. The pin at birth is the first such row's `before`,
- *   or the directory's current pin when the scope has none.
+ *   or the directory's current pin when the scope has none. An unpin routes the scope to what it
+ *   falls back on, the version bound then (or its slug, never bound), which is a home too.
  * - **A bind while unpinned.** A `bindScopeVersion` row names a version (and a promote's row the
  *   version before it), whose registry row names its script. It is a home only while the scope was
  *   not pinned: a pinned scope's bind (a private vertical's promote moves the pointer of every
@@ -217,7 +218,11 @@ class Deriver {
   async routeAt(tl: Timeline, id: string, at: string): Promise<Candidate> {
     const pin = pinnedBefore(tl, id);
     if (pin === undefined) return { failure: `scope ${tl.scopeId} is gone and its pin at the time is not in the log` };
-    if (pin) return { scriptRef: pin };
+    return pin ? { scriptRef: pin } : this.unpinnedRouteAt(tl, id, at);
+  }
+
+  /** Where `tl`'s scope routed just before row `id` with no pin: its bound version, else its slug. */
+  async unpinnedRouteAt(tl: Timeline, id: string, at: string): Promise<Candidate> {
     const bind = tl.rows.filter((r) => r.action === 'bindScopeVersion' && r.id < id).at(-1);
     if (bind) {
       const after = objectOf(bind.after);
@@ -236,9 +241,11 @@ class Deriver {
     const before = objectOf(row.before);
     const after = objectOf(row.after);
     if (row.action === 'setScopeServingRef') {
-      return [stringOf(before?.servingRef), stringOf(after?.servingRef)]
+      const pins = [stringOf(before?.servingRef), stringOf(after?.servingRef)]
         .filter((ref): ref is string => ref !== null)
-        .map((scriptRef) => ({ scriptRef }));
+        .map((scriptRef): Candidate => ({ scriptRef }));
+      // An unpin routes the scope to what it falls back on: the version bound then, or its slug.
+      return stringOf(after?.servingRef) ? pins : [...pins, await this.unpinnedRouteAt(tl, row.id, row.at)];
     }
     if (row.action === 'bindScopeVersion') {
       // Pinned, the bind moved a pointer and routed nothing: its script never held the store.

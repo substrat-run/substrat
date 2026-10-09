@@ -114,6 +114,7 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
   let orphan: ScopeId; // bound to a version later dropped from the registry, and to a script-less one
   let reaped: ScopeId; // bound, then its directory row deleted
   let pinned: ScopeId; // born pinned to the serving script, bound across v1 and v2 by promotes
+  let unpinned: ScopeId; // born pinned, bound to v1 while pinned, then unpinned onto v1, then bound v2
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-copy-backfill-'));
@@ -188,6 +189,10 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     pinned = await provision();
     await host.admin.bindScopeVersion(staff, t, pinned, v('v1'));
     await host.admin.bindScopeVersion(staff, t, pinned, v('v2'));
+    unpinned = await provision();
+    await host.admin.bindScopeVersion(staff, t, unpinned, v('v1'));
+    await host.admin.setScopeServingRef(staff, t, unpinned, null);
+    await host.admin.bindScopeVersion(staff, t, unpinned, v('v2'));
 
     const minted = await app.request('/tenant-tokens', { method: 'POST', headers: asStaff, body: JSON.stringify({ tenantId: t }) });
     expect(minted.status).toBe(201);
@@ -239,6 +244,8 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     expect(await ledgerOf(wiped)).toEqual([]); // v1 wiped; v2, where it was born by slug, is the route
     expect(outcomesOf(pages, wiped)).toEqual([`${refOf('v1')} wiped`, `${refOf('v2')} route`]);
     expect(await ledgerOf(pinned)).toEqual([]);
+    // The unpin routed it onto the version bound while it was pinned: that script, and its birth pin.
+    expect(await ledgerOf(unpinned)).toEqual(retained(refOf('v1'), serving));
     // Only derived homes were read, and the pinned scope's version scripts never were.
     expect(reads.filter((r) => r.endsWith(pinned))).toEqual([]);
     expect(writes).toEqual([]);
