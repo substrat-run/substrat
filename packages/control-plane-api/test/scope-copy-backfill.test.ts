@@ -17,6 +17,7 @@ import {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
+  BIRTH_WINDOW_MS,
   type CopyBackfillPage,
   type VerticalClient,
 } from '../src/index.js';
@@ -98,8 +99,12 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
       .sort((a, b) => a.scriptRef.localeCompare(b.scriptRef));
   const retained = (...refs: string[]) =>
     refs.sort().map((scriptRef) => ({ scriptRef, moveId: BACKFILL_MOVE_ID, state: 'retained' }));
-  /** Two writes the backfill orders against each other by time alone must not share a millisecond. */
-  const tick = () => new Promise((r) => setTimeout(r, 3));
+  /**
+   * The backfill orders a birth against slug changes by time alone, and calls a change within
+   * `BIRTH_WINDOW_MS` before it ambiguous: the suite runs on a faked `Date` that `tick` moves an
+   * hour, so the steps it means to order are well apart.
+   */
+  const tick = async () => { vi.setSystemTime(Date.now() + 60 * 60_000); };
   const provision = async () => {
     await tick();
     const sid = scopeId.parse(ulid());
@@ -117,6 +122,7 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
   let unpinned: ScopeId; // born pinned, bound to v1 while pinned, then unpinned onto v1, then bound v2
 
   beforeAll(async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-03-01T00:00:00.000Z') });
     dir = mkdtempSync(join(tmpdir(), 'cp-copy-backfill-'));
     host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(5)) });
     const serviceActor = platformActorId.parse(ulid());
@@ -202,6 +208,7 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
   });
 
   afterAll(async () => {
+    vi.useRealTimers();
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -343,27 +350,35 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     expect(await ledgerOf(sid)).toEqual([]);
   });
 
-  it('a slug that moved in the same millisecond as a birth is a failure, not a guess', async () => {
+  it('a slug that moved within the birth window is a failure, not a guess; one outside it is derived', async () => {
+    // The install path provisions in the vertical, then writes the directory row: a promote in
+    // between may have come first or after, so a slug change shortly before the row is ambiguous.
     const tie = 'tie-vert';
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date('2026-01-02T03:04:05.006Z'));
-    let sid: ScopeId;
-    try {
-      await host.admin.registerVertical(staff, { slug: tie, name: 'Tie Vert', source: 'cli', ownerTenant: t });
-      const id = ulid();
+    await tick();
+    await host.admin.registerVertical(staff, { slug: tie, name: 'Tie Vert', source: 'cli', ownerTenant: t });
+    const [first, second] = [ulid(), ulid()];
+    for (const [id, version] of [[first, '1.0.0'], [second, '1.0.1']] as const) {
       await host.admin.publishVersion(staff, {
-        id, verticalSlug: tie, version: '1.0.0', manifestDigest: 'm-tie', permissionDigest: 'p', migrationDigest: 'g',
+        id, verticalSlug: tie, version, manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g',
         deploymentRef: `${tie}-${id.toLowerCase()}`,
       });
-      await host.admin.promoteVersion(staff, tie, 'prod', id);
-      sid = scopeId.parse(ulid());
-      await host.provisionScope(staff, { tenantId: t, scopeId: sid, vertical: tie });
-    } finally {
-      vi.useRealTimers();
     }
+    await host.admin.promoteVersion(staff, tie, 'prod', first);
+    await tick();
+    const settled = scopeId.parse(ulid()); // an hour after the promote: born on `first`
+    await host.provisionScope(staff, { tenantId: t, scopeId: settled, vertical: tie });
+    await tick();
+    await host.admin.promoteVersion(staff, tie, 'prod', second);
+    vi.setSystemTime(Date.now() + BIRTH_WINDOW_MS - 60_000); // inside the window after the promote
+    const raced = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: raced, vertical: tie });
+    await tick();
     const pages = await backfillAll(true, 50);
-    expect(entriesOf(pages, sid!)).toEqual([expect.objectContaining({
-      outcome: 'failure', reason: expect.stringContaining('same millisecond'),
+    expect(entriesOf(pages, settled)).toEqual([expect.objectContaining({
+      scriptRef: `${tie}-${first.toLowerCase()}`, outcome: 'would-record',
+    })]);
+    expect(entriesOf(pages, raced)).toEqual([expect.objectContaining({
+      outcome: 'failure', reason: expect.stringContaining('within 15 minutes before'),
     })]);
   });
 

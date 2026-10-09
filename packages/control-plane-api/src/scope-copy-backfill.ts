@@ -30,8 +30,9 @@ import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type S
  * What cannot be derived is a **failure**: reported in every response, written as an ops record on
  * a real run (`scope.copy-backfill`), never marked clean, and reported again on a re-run. That is a
  * row naming no version, a version the registry no longer holds or that names no script, a scope
- * or fork source whose directory row is gone, a scope with no `provisionScope` row, a slug with no
- * `prod` version at the time, a script no deployment answers for, and a store that cannot be read.
+ * or fork source whose directory row is gone, a scope with no `provisionScope` row, a slug with no `prod` version at the time or one that changed within
+ * `BIRTH_WINDOW_MS` before the birth row (the install path writes that row after the store is born,
+ * so the order is unknown), a script no deployment answers for, and a store that cannot be read.
  *
  * - **Never a wipe, never a phantom.** `retained` is reached by reap and erasure and is never swept.
  *   A real run reads one thing, the derived home's `_substrat_meta`, for the tombstone that proves
@@ -53,6 +54,13 @@ import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type S
  */
 
 export const BACKFILL_PAGE_MAX = 200;
+
+/**
+ * How long before its `provisionScope` row a store may have been born. The install path provisions
+ * in the vertical first and writes the directory row after, retries included; a slug change inside
+ * this window makes the birth script ambiguous, and so a failure.
+ */
+export const BIRTH_WINDOW_MS = 15 * 60_000;
 
 export type CopyBackfillOutcome =
   /** Dry run: a derived home whose deployment resolves; a real run checks its store, then records it. */
@@ -191,10 +199,17 @@ class Deriver {
   private async slugAt(vertical: string, at: string): Promise<Candidate> {
     const { admin, actor } = this.input;
     this.servingHistory ??= allRows(admin, actor, { action: 'setVerticalServing' });
-    // Ordered against another table by time alone, so a change in the same millisecond is ambiguous.
-    const ambiguous = { failure: `'${vertical}' changed where its slug resolves in the same millisecond as ${at}` };
+    // Ordered against other tables by time alone, and `at` is when the directory row was written,
+    // which on the install path comes after the vertical provisioned the store: a change in the
+    // window before it may have come first or after, so it is ambiguous, never a guess.
+    const from = new Date(Date.parse(at) - BIRTH_WINDOW_MS).toISOString();
+    const inWindow = (when: string) => when >= from && when <= at;
+    const ambiguous = {
+      failure: `'${vertical}' changed where its slug resolves within ${BIRTH_WINDOW_MS / 60_000} minutes before ${at}, ` +
+        'so the script the store was born in is not known',
+    };
     const servingRows = (await this.servingHistory).filter((r) => r.vertical === vertical || objectOf(r.after)?.vertical === vertical);
-    if (servingRows.some((r) => r.at === at)) return ambiguous;
+    if (servingRows.some((r) => inWindow(r.at))) return ambiguous;
     const serving = servingRows.filter((r) => r.at < at).at(-1);
     const servingRef = serving ? stringOf(objectOf(serving.after)?.ref) : null;
     if (servingRef) return { scriptRef: servingRef };
@@ -208,7 +223,7 @@ class Deriver {
       }
     })());
     const history = await this.prodHistory.get(vertical)!;
-    if (history.some((e) => e.at === at)) return ambiguous;
+    if (history.some((e) => inWindow(e.at))) return ambiguous;
     const prod = history.filter((e) => e.at < at).at(-1);
     if (!prod) return { failure: `'${vertical}' had no prod version at ${at}, so the script its slug resolved to is not known` };
     return this.scriptOf(prod.versionId, vertical);
