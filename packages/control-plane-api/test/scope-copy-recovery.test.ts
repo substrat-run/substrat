@@ -699,4 +699,24 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
       noDeleteVerb.delete(old);
     }
   });
+
+  // Review r4: a fork of a bound source routes by its bound version, not by a pin to that
+  // version's script, so binding the fork onward carries its data like any other scope's.
+  it('a snapshot of a bound source routes by its version, and a later bind carries its data', async () => {
+    await servingOnce();
+    const prod = await install();
+    const res = await app.request(`/tenants/${t}/scopes/${prod}/snapshots`, { method: 'POST', headers: asStaff, body: '{}' });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { id: snap } = (await res.json()) as { id: ScopeId };
+    const before = (await host.admin.getScopeRecord(staff, t, snap))!;
+    expect([before.servingRef ?? null, before.verticalVersionId]).toEqual([null, versions.v1]);
+    expect(await ledgerByRef(snap)).toEqual({ [refOf.get(versions.v1)!]: 'done' });
+    const bound = await app.request(`/tenants/${t}/scopes/${snap}/version`, {
+      method: 'POST', headers: asStaff, body: JSON.stringify({ versionId: versions.v2 }),
+    });
+    expect(bound.status, await bound.clone().text()).toBe(200);
+    const after = (await host.admin.getScopeRecord(staff, t, snap))!;
+    expect([after.servingRef ?? null, after.verticalVersionId]).toEqual([null, versions.v2]);
+    expect(storeOf(refOf.get(versions.v2)!, snap).tables).toEqual(notes('kept'));
+  });
 });

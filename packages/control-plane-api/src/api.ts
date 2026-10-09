@@ -4786,11 +4786,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (scope.verticalVersionId) {
         await c.var.admin.bindScopeVersion(actor, tenantId, snapId, scope.verticalVersionId);
       }
-      // The fork's route is the script its bytes were copied into, taken from the same `ref`, not
-      // from the serving pointer `provisionScope` stamped (which may have moved since). Pinning it
-      // there routes the fork onto its copy, so it is the write that confirms the move.
+      // The fork's route is the script its bytes were copied into, never the serving pointer
+      // `provisionScope` stamped (which may have moved since), and the write that sets it confirms
+      // the move. A fork of a bound source routes by its bound version, whose script is `ref`: its
+      // stamped pin is cleared, so a later bind of the fork carries its data like any other scope's.
+      // A fork of a pinned or slug-resolved source is pinned to `ref`, the script it lives in.
       if (moveId && ref) {
-        await c.var.admin.setScopeServingRef(actor, tenantId, snapId, ref, { confirmMove: { moveId, source: 'retained' } });
+        await c.var.admin.setScopeServingRef(actor, tenantId, snapId, deployment.via === 'bound-version' ? null : ref,
+          { confirmMove: { moveId, source: 'retained' } });
       }
     } catch (e) {
       if (moveId && ref) {
