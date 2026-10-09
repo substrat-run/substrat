@@ -93,11 +93,13 @@ transition is validated (an illegal one fails closed) and audited:
   storage stays where it is, and **un-archive** returns it to `active` with its data intact. A
   scope can be archived from `provisioning` too — that is how a failed or stuck provision is
   abandoned — and the archive records the status it left.
-- **Reap** is what releases the storage. Only an archived scope can be reaped, by staff or by
-  the sweep once it has been archived longer than the retention window; the scope's database
-  is wiped, and the directory row stays as a tombstone, with the audit trail and the burned
-  slug. The event history already shipped to the history tier is not touched. Reaped is
-  terminal.
+- **Reap** is what releases the storage. Only an archived scope can be reaped, by staff, or by
+  the sweep when a deployment opts in with a retention window (`reapArchivedAfterDays`; on the
+  hosted control plane, `SCOPE_RETENTION_DAYS`) and the scope has been archived longer than
+  it. Without a window, an archived scope stays, and stays metered, until someone reaps it.
+  The reap wipes the scope's database, and the directory row stays as a tombstone, with the
+  audit trail and the burned slug. The event history already shipped to the history tier is
+  not touched. Reaped is terminal.
 - **Storage is metered until reap.** The [storage gauge](/book/12-metering-and-billing) counts every
   scope that holds data, archived and suspended ones included, because their bytes are still
   there. A scope archived straight from `provisioning` never held data and is not counted.
@@ -162,11 +164,15 @@ full list with what each phase skips is on the [`platform-sweep.ts` row](/refere
 Three of those phases leave a durable per-unit record that the console and `/sweep-runs`
 read — each live connection swept, each schedule run, each freshness verdict — when a
 deployment configures the recorder; the rest report through the pass's own summary. It is
-*the scheduler's unit of work*; it holds no timer of its own. A deployment drives it: a node
-server calls `startPlatformSweeper` at boot, the hosted control plane runs it from a
-15-minute cron, and a vertical deployed into the dispatch namespace (which does not honour
-`wrangler` crons) runs it from a singleton `PlatformSweeperDO` alarm, which the uploader
-supplies when the vertical declares schedules and exports no sweeper of its own.
+*the scheduler's unit of work*; it holds no timer of its own. A deployment with a directory
+drives it: a node server calls `startPlatformSweeper` at boot, the hosted control plane runs
+it from a 15-minute cron, and `definePlatformSweeperDO` is the alarm-driven trigger for a
+Cloudflare deployment that holds its own directory. A vertical deployed into the dispatch
+namespace (which does not honour `wrangler` crons) does not run the platform sweep at all. It
+runs a **scope sweeper** (`defineScopeSweeperDO`, bound as `SWEEPER`; the uploader supplies
+one when the vertical declares schedules and exports none). That sweeper is a singleton
+alarm that walks its own roster of scopes and runs `drainDue` and the due schedules for
+each.
 
 Because module operations run in the vertical's own runtime — where its code and its
 scopes' data live — a vertical's **schedules** run there, in that vertical's sweeper, not in
