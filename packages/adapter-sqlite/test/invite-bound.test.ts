@@ -41,6 +41,9 @@ class MemoryDirectory implements InviteDirectory {
   async claimInvite() {
     return null;
   }
+  async inviteLink(_s: string, principal: string) {
+    return this.rows.get(principal)?.capabilityId ?? null;
+  }
   async inviteMatches() {
     return false;
   }

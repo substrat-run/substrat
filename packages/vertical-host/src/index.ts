@@ -537,8 +537,10 @@ export interface MemberDirectory {
   createInvite(
     scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string | null,
   ): Promise<void>;
-  /** Withdraw an open invite; answers the `become` capability its link is (#1686), or null. */
-  revokeInvite(scopeId: string, principal: string): Promise<string | null>;
+  /** The `become` capability an open invite's link is (#1686), or null. */
+  inviteLink(scopeId: string, principal: string): Promise<string | null>;
+  /** Withdraw an open invite. */
+  revokeInvite(scopeId: string, principal: string): Promise<unknown>;
   unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;
 }
 
@@ -2207,10 +2209,11 @@ export function mountPlatformSurface<Env extends object>(
     const taken = await surface.host.revokeScopeRolesBounded(body.tenantId, body.scopeId, body.caller, body.principal);
     assertCovered(taken.coverage, body.principal, 'remove the member');
     if (invite) {
-      // The row first — that stops an accept — then its link in the scope (#1686), as
-      // vertical-auth's `withdrawMemberInvite` orders it.
-      const link = await surface.directory.revokeInvite(body.scopeId, body.principal);
+      // The link first, named by the row, then the row (#1686) — vertical-auth's
+      // `withdrawMemberInvite` order: a failed revoke leaves the row for the retry to find.
+      const link = await surface.directory.inviteLink(body.scopeId, body.principal);
       if (link) await surface.host.revokeBecomeCapability(body.tenantId, body.scopeId, capabilityId.parse(link), body.caller);
+      await surface.directory.revokeInvite(body.scopeId, body.principal);
     }
     const unbound = await surface.directory.unbindPrincipal(body.scopeId, body.principal);
     const [bindings, open] = await Promise.all([

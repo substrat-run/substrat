@@ -95,8 +95,8 @@ export function inviteExists(sql: RegistrySql, scopeId: string, tokenHash: strin
 
 /**
  * Withdraw an unclaimed invite by its pre-minted principal. Returns the `become` capability its
- * link is (#1686), for the caller to revoke in the scope too — or null for a legacy invite, or
- * none. Deleting the row is what stops an accept here; the revoke makes the scope agree.
+ * link was (#1686), or null for a legacy invite, or none. Deleting the row is what stops an
+ * accept here; a withdrawal revokes the link in the scope BEFORE this (`inviteLink`).
  */
 export function revokeInvite(sql: RegistrySql, scopeId: string, principal: string): string | null {
   const gone = [...sql.exec(
@@ -104,6 +104,19 @@ export function revokeInvite(sql: RegistrySql, scopeId: string, principal: strin
     scopeId, principal,
   )][0];
   return (gone?.capability_id as string | null | undefined) ?? null;
+}
+
+/**
+ * The `become` capability an open invite's link is (#1686), or null — a legacy invite, or none.
+ * What a withdrawal revokes FIRST, while the row is still there to name it: a revoke that fails
+ * leaves the row, and the retry finds the link again.
+ */
+export function inviteLink(sql: RegistrySql, scopeId: string, principal: string): string | null {
+  const open = [...sql.exec(
+    'SELECT capability_id FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0',
+    scopeId, principal,
+  )][0];
+  return (open?.capability_id as string | null | undefined) ?? null;
 }
 
 /**

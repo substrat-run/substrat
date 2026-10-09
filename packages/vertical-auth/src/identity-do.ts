@@ -48,6 +48,7 @@ import {
   claimInvite as claimInviteRow,
   claimInviteByCapability as claimInviteByCapabilityRow,
   inviteMatches as inviteMatchesRow,
+  inviteLink as inviteLinkRow,
   migrateInvites,
   listMemberBindings as listMemberBindingRows,
   type InviteRow,
@@ -378,6 +379,11 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return claimInviteRow(this.registrySql, scopeId, sub, tokenHash);
   }
 
+  /** The `become` capability an open invite's link is (#1686), or null — what a withdrawal revokes first. */
+  async inviteLink(scopeId: string, principal: string): Promise<string | null> {
+    return inviteLinkRow(this.registrySql, scopeId, principal);
+  }
+
   /** Is this hash an open capability-era invite (#1686)? Asked before the scope spends its use. */
   async inviteMatches(scopeId: string, tokenHash: string): Promise<boolean> {
     return inviteMatchesRow(this.registrySql, scopeId, tokenHash);
@@ -519,6 +525,7 @@ export type IdentityStub = {
   revokeInvite(scopeId: string, principal: string): Promise<string | null>;
   claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
   inviteMatches(scopeId: string, tokenHash: string): Promise<boolean>;
+  inviteLink(scopeId: string, principal: string): Promise<string | null>;
   claimInviteByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
   unbind(scopeId: string, sub: string): Promise<boolean>;
   unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;

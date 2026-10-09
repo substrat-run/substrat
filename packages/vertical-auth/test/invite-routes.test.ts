@@ -82,6 +82,9 @@ class MemoryDirectory implements InviteDirectory {
     this.bound.set(sub, row.principal);
     return row.principal;
   }
+  async inviteLink(_scopeId: string, principal: string) {
+    return this.invites.get(principal)?.capabilityId ?? null;
+  }
   async inviteMatches(_scopeId: string, tokenHash: string) {
     this.log.push('inviteMatches');
     return [...this.invites.values()].some((r) => r.tokenHash === tokenHash && r.capabilityId !== null);
@@ -761,6 +764,26 @@ describe('mountInviteRoutes — the link is a become capability', () => {
     expect(log.map((l) => l.split(' ')[0])).toEqual(['assignScopeRoleBounded', 'mintBecomeCapabilityBounded', 'revokeScopeRole']);
     expect(directory.invites.size).toBe(0);
     expect([...scopeRoles.values()].every((r) => r.size === 0)).toBe(true);
+  });
+
+  it('a withdrawal whose link revoke fails keeps the row, so the retry finds the link and finishes', async () => {
+    const { principal, token } = await invite();
+    const link = capOf(principal).id;
+    app = mount({
+      revokeBecomeCapability: async () => {
+        throw new Error('scope unreachable');
+      },
+    });
+    const failed = await app.request(`http://app.example/api/invites/${principal}/revoke`, { method: 'POST', headers: admin }, env());
+    expect(failed.status).toBe(500);
+    // The row is still there to name the link, and the two still agree: link live, invite open.
+    expect(directory.invites.get(principal)?.capabilityId).toBe(link);
+    expect(capOf(principal).revokedBy).toBeNull();
+    app = mount();
+    expect((await app.request(`http://app.example/api/invites/${principal}/revoke`, { method: 'POST', headers: admin }, env())).status).toBe(204);
+    expect(directory.invites.has(principal)).toBe(false);
+    expect(capOf(principal).revokedBy).toBe(OWNER);
+    expect((await accept(token)).status).toBe(400);
   });
 
   it('a role conferring nothing leaves nothing to become — 409, the grant taken back, nothing recorded', async () => {

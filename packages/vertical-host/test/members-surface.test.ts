@@ -84,6 +84,7 @@ describe('/internal/members — an installed vertical’s members, managed from 
     revokeInvite: async (scope: string, p: string) => invites.revokeInvite(sql, scope, p),
     claimInvite: async (scope: string, sub: string, h: string) => invites.claimInvite(sql, scope, sub, h),
     inviteMatches: async (scope: string, h: string) => invites.inviteMatches(sql, scope, h),
+    inviteLink: async (scope: string, p: string) => invites.inviteLink(sql, scope, p),
     claimInviteByCapability: async (scope: string, sub: string, cap: string, p: string) =>
       invites.claimInviteByCapability(sql, scope, sub, cap, p),
     listMemberBindings: async (scope: string) => invites.listMemberBindings(sql, scope),

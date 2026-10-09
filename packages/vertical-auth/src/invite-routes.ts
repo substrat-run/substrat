@@ -69,7 +69,8 @@ import type { AuthProvider } from './provider.js';
 /** The slice of the identity directory the invite routes touch. */
 export type InviteDirectory = Pick<
   IdentityStub,
-  'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'
+  | 'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'
+  | 'inviteLink'
 >;
 
 /** The label every member invite's capability carries — what an operator's capability read shows. */
@@ -253,20 +254,23 @@ export async function acceptMemberInvite(
 }
 
 /**
- * Withdraw an invite's row and then its link (#1686), once the caller's bound has taken the
- * roles. The row goes first — that is what stops an accept — and the capability it named is then
- * revoked in the scope, so the scope's own record agrees and an operator sees it revoked.
+ * Withdraw an invite's link and then its row (#1686), once the caller's bound has taken the
+ * roles. The link goes first, named by the row: a revoke that fails leaves the row in place, so
+ * the withdrawal fails as a whole and its retry finds the link again — the scope's own record
+ * and the directory never part company. Revoking is idempotent, so a retry after a revoke that
+ * landed and a delete that did not is the same call. Then the row goes, which stops an accept.
  */
 export async function withdrawMemberInvite(
   steps: {
-    directory: Pick<InviteDirectory, 'revokeInvite'>;
+    directory: Pick<InviteDirectory, 'inviteLink' | 'revokeInvite'>;
     revokeCapability: (capabilityId: CapabilityId) => Promise<unknown>;
   },
   scopeId: string,
   principal: string,
 ): Promise<void> {
-  const link = await steps.directory.revokeInvite(scopeId, principal);
+  const link = await steps.directory.inviteLink(scopeId, principal);
   if (link) await steps.revokeCapability(capabilityId.parse(link));
+  await steps.directory.revokeInvite(scopeId, principal);
 }
 
 /**
