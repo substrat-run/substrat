@@ -222,6 +222,17 @@ scheduleContractSuite('adapter-sqlite', async () => {
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}, (host, suspend) => {
+  const original = host.getSystemScope.bind(host);
+  let once = false;
+  host.getSystemScope = async (...args) => {
+    if (!once) {
+      once = true;
+      await suspend();
+    }
+    return original(...args);
+  };
+  return () => { host.getSystemScope = original; };
 });
 
 // #1654: a composed engine's own schedule runs without the engine's SKU, and nothing else

@@ -373,6 +373,16 @@ scheduleContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
+}, (host, suspend) => {
+  // Interpose after the coordinator's cadence read and before the system door.
+  const target = host as unknown as { openSystemDoor: (...args: unknown[]) => Promise<unknown> };
+  const original = target.openSystemDoor.bind(host);
+  target.openSystemDoor = async (...args) => {
+    target.openSystemDoor = original;
+    await suspend();
+    return original(...args);
+  };
+  return () => { target.openSystemDoor = original; };
 });
 
 // #1654: a composed engine's own schedule runs without the engine's SKU, and nothing else

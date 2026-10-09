@@ -37,6 +37,7 @@ export function errorsOfScope<E extends { id: string }>(errors: readonly E[], sc
 export function scheduleContractSuite(
   adapterName: string,
   makeFixture: () => Promise<ScopeHostFixture>,
+  suspendAtSystemDoor: (host: ScopeHost, suspend: () => Promise<void>) => () => void,
 ): void {
   describe(`schedule contract (#383): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
@@ -332,6 +333,26 @@ export function scheduleContractSuite(
         expect((await (await host.getScope(reader, t, held)).invoke('sched/count'))).toBe(2);
         expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(0);
       } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a suspension at the system door does not consume an already due cadence', async () => {
+      const racing = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: racing, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, racing);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(2);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const restore = suspendAtSystemDoor(host, () => host.admin.suspendScope(staff, t, racing).then(() => {}));
+      try {
+        vi.setSystemTime(Date.now() + 2 * 3_600_000);
+        expect(await host.runDueSchedules(SCHED_MODULE, t, racing)).toMatchObject({ fired: 0, failed: 0, skipped: 2, lifecycleHeld: true });
+        restore();
+        await host.admin.unsuspendScope(staff, t, racing);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(2);
+        expect((await (await host.getScope(reader, t, racing)).invoke('sched/count'))).toBe(2);
+      } finally {
+        restore();
         vi.useRealTimers();
       }
     });
