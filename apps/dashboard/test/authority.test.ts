@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, substratError, tenantId, toProblem } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { TenantNarrowedControlPlane, ControlPlaneError } from '../src/authority.js';
 
@@ -386,8 +386,12 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls[0]).toMatchObject({ method: 'GET', url: `https://cp/api/tenants/${T}/scopes/${S}/binding-impact?versionId=01JVERSION` });
     // Deploy skew: an older plane has no such route. The bind itself is still the gate there.
     expect(await harness(404, { error: 'not found' }).cp.bindingImpact(S, '01JVERSION')).toEqual([]);
-    // …but a scope or version the plane does not know is its answer, not skew.
-    await expect(harness(404, { error: `unknown scope ${S} in tenant ${T}` }).cp.bindingImpact(S, '01JVERSION')).rejects.toThrow(/unknown scope/);
+    // …but a scope or version the plane does not know is its answer, not skew: the plane's
+    // `not_found` (#113), as its `mapError` renders a typed refusal.
+    const unknownScope = toProblem(substratError('not_found', `unknown scope ${S} in tenant ${T}`));
+    await expect(harness(404, unknownScope).cp.bindingImpact(S, '01JVERSION')).rejects.toThrow(/unknown scope/);
+    // The code decides, not the sentence: the same words with no code are a route miss.
+    expect(await harness(404, { error: `unknown scope ${S} in tenant ${T}` }).cp.bindingImpact(S, '01JVERSION')).toEqual([]);
   });
 
   it('createPreview posts to the vertical previews route with the version + pin/empty flags (#509)', async () => {
