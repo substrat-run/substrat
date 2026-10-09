@@ -77,6 +77,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       throw new ControlPlaneError(status, e instanceof Error ? e.message : String(e));
     }
   };
+  /** Every restore the platform asked for, with the copy-move fence it sent. */
+  const fencesSent: { ref: string; sid: ScopeId; fence?: CopyRestoreFence; wipe: boolean }[] = [];
   const clientFor = (ref: string): VerticalClient => {
     const host = hostOf.get(ref)!;
     return {
@@ -101,6 +103,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         },
       ) =>
         relay(async () => {
+          // What the platform sends, before a script that cannot fence drops it (#1722).
+          fencesSent.push({ ref, sid, fence: opts?.fence, wipe: dumpMetaValue(tables, CARRIED_AWAY_KEY) !== null });
           await hooks.restore?.(ref, sid, tables);
           const out = await host.restoreScopeLocal(
             sid,
@@ -1797,6 +1801,19 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['old data'] });
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
       expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+      // The re-carry is a copy move of its own (review r2). Three loads reached v1, each fenced for
+      // its own move: the preview's creation, R's carry, and the re-carry. Each move is a v1
+      // destination in the ledger, done.
+      const loads = fencesSent.filter((r) => r.ref === refOf.get(version.v1) && r.sid === p.scopeId && !r.wipe && r.fence);
+      expect(loads).toHaveLength(3);
+      const moves = loads.map((r) => r.fence!.moveId);
+      expect(new Set(moves).size).toBe(3);
+      expect(Date.parse(loads[2]!.fence!.notAfter)).toBeGreaterThan(Date.now());
+      const v1Destinations = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .filter((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'destination');
+      for (const moveId of moves) {
+        expect(v1Destinations.find((copy) => copy.moveId === moveId)?.state).toBe('done');
+      }
     });
   });
 
