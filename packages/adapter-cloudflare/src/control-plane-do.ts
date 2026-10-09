@@ -20,6 +20,13 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  SCOPE_STORAGE_DDL,
+  forgetScopeStorage,
+  listScopeStorageRows,
+  pruneScopeStorageRows,
+  recordScopeStorageRows,
+  type ScopeStorageFilter,
+  type ScopeStorageReadingInput,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink as insertConnectLinkRow,
@@ -128,6 +135,7 @@ import type {
   ScopeDumpTable,
   ScopeId,
   ScopeStatus,
+  ScopeStorageSample,
   Tenant,
   TenantId,
   TenantStatus,
@@ -1254,6 +1262,8 @@ const DIRECTORY_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
+  -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
+  ${SCOPE_STORAGE_DDL}
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
   -- #1713: the lifecycle each hosted scope's deployment last acknowledged, as
   -- "<scope status>/<tenant status>" (lifecycleReceipt). A CP-less deployment has no
@@ -2000,6 +2010,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
       '_substrat_findings', // #1748: the tenant's findings
       '_substrat_finding_rules', // #1748: the tenant's suppress rules
+      '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -2565,6 +2576,8 @@ export class ControlPlaneDO extends DurableObject {
       if (to === 'reaped') {
         forgetSwitchesOf(this.kernelSql, scopeId);
         this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
+        // #1524: its storage is gone, so its samples describe nothing.
+        forgetScopeStorage(doRedactionSql(this.sql), scopeId);
       }
       this.bumpLifecycleRevision(`scope:${scopeId}`); // #1713, with the status it counts
     });
@@ -3382,6 +3395,7 @@ export class ControlPlaneDO extends DurableObject {
       this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
       forgetSwitchesOf(this.kernelSql, scopeId);
       this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
+      forgetScopeStorage(doRedactionSql(this.sql), scopeId);
       this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
     });
   }
@@ -3790,6 +3804,7 @@ export class ControlPlaneDO extends DurableObject {
     tenants: { tenant_id: string; slug: string; status: string }[];
     scopes: { tenant_id: string; status: string }[];
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
+    storage: ScopeStorageSample[];
   } {
     const where = tenantId ? ' WHERE tenant_id = ?' : '';
     const args = tenantId ? [tenantId] : [];
@@ -3808,7 +3823,22 @@ export class ControlPlaneDO extends DurableObject {
         plan: string | null;
         expires_at: string | null;
       }[],
+      // #1524: the stored gauge's latest sample per non-reaped scope. A directory read only.
+      storage: listScopeStorageRows(doRedactionSql(this.sql), { tenantId: tenantId as TenantId | undefined, latest: true }),
     };
+  }
+
+  // -- the stored storage gauge (#1524) — kernel `storage-gauge.ts` --------------
+  recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): { recorded: number } {
+    return { recorded: this.ctx.storage.transactionSync(() => recordScopeStorageRows(doRedactionSql(this.sql), readings)) };
+  }
+
+  listScopeStorage(filter?: ScopeStorageFilter): ScopeStorageSample[] {
+    return listScopeStorageRows(doRedactionSql(this.sql), filter);
+  }
+
+  pruneScopeStorage(limit: number): number {
+    return pruneScopeStorageRows(doRedactionSql(this.sql), Date.now(), limit);
   }
 
   // -- identity pools (K-23) --------------------------------------------------
