@@ -78,6 +78,7 @@ import {
   platformRequestFilter,
   denialFilter,
   capabilityFilterQuery,
+  BECOME_LINK_STATES_MAX_IDS,
   capabilityId,
   becomeLinkState,
   type BoundedBecomeMint,
@@ -2140,7 +2141,14 @@ export function mountPlatformSurface<Env extends object>(
     // #1686: where each invite's link stands, read from the scope in one call — never "open" for
     // a link the kernel revoked (its principal's holdings changed) or that expired.
     const ids = invites.flatMap((i) => (i.capabilityId ? [capabilityId.parse(i.capabilityId)] : []));
-    const states = ids.length > 0 ? (await surface.host.becomeLinkStates(ref.tenantId, ref.scopeId, ids)).map((s) => becomeLinkState.parse(s)) : [];
+    // In pages of the read's cap, which refuses rather than truncates.
+    const states: BecomeLinkState[] = [];
+    for (let at = 0; at < ids.length; at += BECOME_LINK_STATES_MAX_IDS) {
+      const page = ids.slice(at, at + BECOME_LINK_STATES_MAX_IDS);
+      const answer = (await surface.host.becomeLinkStates(ref.tenantId, ref.scopeId, page)).map((s) => becomeLinkState.parse(s));
+      if (answer.length !== page.length) break;
+      states.push(...answer);
+    }
     // One answer per id asked, as vertical-auth's `withLinkStates` holds it: a short answer would
     // list some invite with no state, which is not the same as a legacy invite's `null`.
     if (states.length !== ids.length) {

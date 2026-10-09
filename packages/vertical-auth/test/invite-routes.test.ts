@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
+  BECOME_LINK_STATES_MAX_IDS,
   capabilityId,
   principalId,
   substratError,
@@ -31,7 +32,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { mintCapabilitySecret, ulid, unknownRoleError } from '@substrat-run/kernel';
-import { mountInviteRoutes, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
+import { mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
 import { sha256Hex } from '../src/owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from '../src/provider.js';
 
@@ -684,6 +685,30 @@ describe('mountInviteRoutes — the assignment bound', () => {
  * The invite's link as a `become` capability (#1686). Each refusal is paired with the case that
  * goes through, and every refusal before the exchange leaves the capability's one use unspent.
  */
+describe('withLinkStates', () => {
+  const row = (n: number, link: boolean) => ({
+    principal: `p${n}`, roleKey: 'editor', email: null, createdAt: n, capabilityId: link ? capabilityId.parse(ulid()) : null,
+  });
+
+  it(`asks in pages of the read's cap (${BECOME_LINK_STATES_MAX_IDS}), and lists every invite`, async () => {
+    const rows = [...Array.from({ length: BECOME_LINK_STATES_MAX_IDS + 1 }, (_, n) => row(n, true)), row(999, false)];
+    const asked: number[] = [];
+    const listed = await withLinkStates(rows, async (ids) => {
+      asked.push(ids.length);
+      return ids.map(() => ({ state: 'open' as const, reason: null }));
+    });
+    expect(asked).toEqual([BECOME_LINK_STATES_MAX_IDS, 1]);
+    expect(listed).toHaveLength(rows.length);
+    expect(listed.at(-1)!.link).toBeNull(); // the legacy one
+    expect(listed.every((l, n) => (n < rows.length - 1 ? l.link?.state === 'open' : l.link === null))).toBe(true);
+  });
+
+  it('refuses a short page rather than list an invite with no state', async () => {
+    const rows = Array.from({ length: 3 }, (_, n) => row(n, true));
+    await expect(withLinkStates(rows, async (ids) => ids.slice(1).map(() => ({ state: 'open' as const, reason: null })))).rejects.toThrow(/link state per id/);
+  });
+});
+
 describe('mountInviteRoutes — the link is a become capability', () => {
   const newcomer = { authorization: 'Bearer tok-newcomer' };
   const invite = async (roleKey = 'editor', headers: Record<string, string> = admin) => {

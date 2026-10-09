@@ -43,6 +43,7 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
+  BECOME_LINK_STATES_MAX_IDS,
   boundedBecomeMint,
   boundedBecomeRevoke,
   becomeLinkState,
@@ -251,7 +252,14 @@ export async function withLinkStates(
   states: (capabilityIds: CapabilityId[]) => Promise<BecomeLinkState[]>,
 ): Promise<ListedInvite[]> {
   const ids = rows.flatMap((r) => (r.capabilityId ? [capabilityId.parse(r.capabilityId)] : []));
-  const read = ids.length > 0 ? (await states(ids)).map((s) => becomeLinkState.parse(s)) : [];
+  // In pages of the read's cap (`BECOME_LINK_STATES_MAX_IDS`), which refuses rather than truncates.
+  const read: BecomeLinkState[] = [];
+  for (let at = 0; at < ids.length; at += BECOME_LINK_STATES_MAX_IDS) {
+    const page = ids.slice(at, at + BECOME_LINK_STATES_MAX_IDS);
+    const answer = (await states(page)).map((s) => becomeLinkState.parse(s));
+    if (answer.length !== page.length) break;
+    read.push(...answer);
+  }
   if (read.length !== ids.length) throw new HTTPException(500, { message: 'the scope answered a link state per id it was not asked for — refusing' });
   const byId = new Map(ids.map((id, i) => [id as string, read[i]!]));
   return rows.map(({ capabilityId: id, ...row }) => ({ ...row, link: id ? byId.get(id)! : null }));

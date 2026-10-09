@@ -17,7 +17,9 @@ import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  BECOME_LINK_STATES_MAX_IDS,
   PLATFORM_SECRET_HEADER,
+  capabilityId,
   permissionKey,
   platformActorId,
   principalId,
@@ -248,6 +250,26 @@ describe('/internal/members — an installed vertical’s members, managed from 
       link: { state: 'revoked', reason: 'holdings-changed' },
     });
     expect((await post('/internal/members/remove', { tenantId: t1, scopeId: s1, caller: owner, principal: minted.principal })).status).toBe(200);
+  });
+
+  it(`lists a roster with more open invites than one link-state read takes (${BECOME_LINK_STATES_MAX_IDS}), asking in pages`, async () => {
+    const extra = Array.from({ length: BECOME_LINK_STATES_MAX_IDS + 1 }, () => principalId.parse(ulid()));
+    for (const p of extra) invites.createInvite(sql, s1, p, 'agent', null, `hash-${p}`, capabilityId.parse(ulid()));
+    const real = surfaceHost.becomeLinkStates!;
+    const asked: number[] = [];
+    surfaceHost.becomeLinkStates = async (t, s, ids) => {
+      asked.push(ids.length);
+      return real.call(surfaceHost, t, s, ids);
+    };
+    try {
+      const body = await rosterOf();
+      expect(body.invites.filter((i) => extra.includes(i.principal as PrincipalId))).toHaveLength(extra.length);
+      expect(Math.max(...asked)).toBeLessThanOrEqual(BECOME_LINK_STATES_MAX_IDS);
+      expect(asked.length).toBeGreaterThan(1);
+    } finally {
+      surfaceHost.becomeLinkStates = real;
+      for (const p of extra) invites.revokeInvite(sql, s1, p);
+    }
   });
 
   it('refuses a roster whose scope answers fewer link states than it was asked for, rather than listing an invite with none', async () => {

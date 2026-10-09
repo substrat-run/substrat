@@ -286,6 +286,7 @@ import {
   KEPT_COPY_REFUSAL,
   capabilityTokenHash,
   checkBecomeInput,
+  assertBecomeLinkStateIds,
   plausibleSessionToken,
   type AccessLogFilter,
   type AuditLogFilter,
@@ -5005,6 +5006,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * invite, so a link the kernel revoked or that expired is never shown as open.
    */
   async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
+    // Refused here, on the near side, where the typed refusal reaches the caller as one.
+    assertBecomeLinkStateIds(ids);
     await this.scopeRoleGate(tenantId, scopeId, 'becomeLinkStates');
     if (ids.length === 0) return [];
     return (await this.scopeStub(scopeId).becomeLinkStatesFor(tenantId, scopeId, [...ids])).map((state) => becomeLinkState.parse(state));

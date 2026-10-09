@@ -42,7 +42,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  BECOME_LINK_STATES_MAX_IDS,
   CAPABILITY_BECOME_MINTED,
+  capabilityId,
   CAPABILITY_SECRET_PREFIX,
   capabilityBecomeMintedPayload,
   orgId,
@@ -527,6 +529,19 @@ export function becomeMintContractSuite(
       it('the twin: once it holds a role, the same principal is minted for', async () => {
         await host.admin.assignRole(staff, { principalId: emptyTarget, roleKey: 'reader', node: node() });
         expect((await mint(owner, emptyTarget)).ok).toBe(true);
+      });
+    });
+
+    describe('the link-state read is capped', () => {
+      const ids = (n: number) => Array.from({ length: n }, () => capabilityId.parse(ulid()));
+      it(`answers ${BECOME_LINK_STATES_MAX_IDS} ids — the cap — one state each`, async () => {
+        const states = await fixture.verbs.becomeLinkStates(t1, s1, ids(BECOME_LINK_STATES_MAX_IDS));
+        expect(states).toHaveLength(BECOME_LINK_STATES_MAX_IDS);
+        expect(new Set(states.map((s) => s.state))).toEqual(new Set(['revoked']));
+      });
+
+      it('refuses one over the cap rather than truncate', async () => {
+        await expect(fixture.verbs.becomeLinkStates(t1, s1, ids(BECOME_LINK_STATES_MAX_IDS + 1))).rejects.toThrow(/ask in pages/);
       });
     });
 

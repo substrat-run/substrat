@@ -235,6 +235,13 @@ export const becomeLinkState = z.object({
 export type BecomeLinkState = z.infer<typeof becomeLinkState>;
 
 /**
+ * The most links one `becomeLinkStates` call may name — the cap other id-list reads take
+ * (`CONNECT_LINK_LIST_MAX_IDS`, a grant-scoped read's maximum). Over it the read refuses rather
+ * than truncate; a list longer than this asks in pages of it.
+ */
+export const BECOME_LINK_STATES_MAX_IDS = 100;
+
+/**
  * What an exchange yields: a session to act as the capability (`act`), or the principal
  * the holder becomes (`become`). A refused exchange — an unknown, expired, revoked or
  * used-up secret — is `null`, one answer for all four, so a probe learns nothing.

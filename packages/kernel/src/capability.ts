@@ -1,4 +1,5 @@
 import {
+  BECOME_LINK_STATES_MAX_IDS,
   CAPABILITY_BECOME_MINTED,
   CAPABILITY_EXERCISED,
   CAPABILITY_MINTED,
@@ -1007,6 +1008,7 @@ export async function readBecomeLinkStates(
   now: Instant,
   holdings?: (principal: PrincipalId) => Promise<Holdings>,
 ): Promise<BecomeLinkState[]> {
+  assertBecomeLinkStateIds(ids);
   const states: BecomeLinkState[] = [];
   for (const raw of ids) {
     const q = capabilityByIdQuery(capabilityIdSchema.parse(raw));
@@ -1014,6 +1016,20 @@ export async function readBecomeLinkStates(
     states.push(await becomeLinkStateOf(row, now, holdings));
   }
   return states;
+}
+
+/**
+ * `becomeLinkStates`' bound on how many links one call names (`BECOME_LINK_STATES_MAX_IDS`):
+ * refused over it, never truncated — a caller asks in pages. Its own function so a host whose
+ * storage sits across an RPC boundary checks on the near side, where the typed refusal survives.
+ */
+export function assertBecomeLinkStateIds(ids: readonly string[]): void {
+  if (ids.length > BECOME_LINK_STATES_MAX_IDS) {
+    throw substratError(
+      'validation_failed',
+      `becomeLinkStates: ${ids.length} ids is more than ${BECOME_LINK_STATES_MAX_IDS} — ask in pages`,
+    );
+  }
 }
 
 async function becomeLinkStateOf(
