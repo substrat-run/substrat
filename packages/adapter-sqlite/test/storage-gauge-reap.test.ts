@@ -7,7 +7,7 @@ import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
- * #1524: reap DELETES a scope's storage samples and its attempt row. Every read of either
+ * #1524: reap and fork delete DELETE a scope's storage samples and its attempt row. Every read of either
  * also joins on scope status, so the shared contract suite cannot see whether the rows are
  * gone or only hidden; this reads the directory tables themselves.
  */
@@ -17,7 +17,7 @@ describe('storage gauge rows at reap (#1524)', () => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  it("deletes the reaped scope's samples and attempt, and keeps its sibling's", async () => {
+  it("deletes a reaped scope's and a deleted fork's samples and attempt, and keeps its sibling's", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-gauge-reap-'));
     dirs.push(dir);
     const host = new SqliteScopeHost({ dir });
@@ -44,6 +44,14 @@ describe('storage gauge rows at reap (#1524)', () => {
 
     expect([count('_substrat_scope_storage', reaped), count('_substrat_scope_storage_attempts', reaped)]).toEqual([0, 0]);
     expect([count('_substrat_scope_storage', kept), count('_substrat_scope_storage_attempts', kept)]).toEqual([1, 1]);
+
+    // Fork delete (`deleteSnapshot`) removes the directory row itself, so the rows it leaves
+    // behind would be invisible to every joined read, and the attempt row has no retention.
+    const fork = await host.snapshotScope(staff, t, kept);
+    await host.admin.recordScopeStorage!(staff, [{ tenantId: t, scopeId: fork, bytes: 3, readAt: now }]);
+    expect([count('_substrat_scope_storage', fork), count('_substrat_scope_storage_attempts', fork)]).toEqual([1, 1]);
+    await host.deleteSnapshot(staff, t, fork);
+    expect([count('_substrat_scope_storage', fork), count('_substrat_scope_storage_attempts', fork)]).toEqual([0, 0]);
     await host.close();
   });
 });

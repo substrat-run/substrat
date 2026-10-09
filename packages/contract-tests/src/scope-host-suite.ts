@@ -9228,6 +9228,22 @@ export function scopeHostContractSuite(
         });
       });
 
+      it("deletes a fork's samples when the fork is deleted", async () => {
+        const tk = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tk, slug: 'gauge-fork', name: 'Gauge Fork' });
+        const source = await newScope(tk);
+        const fork = await host.snapshotScope(staff, tk, source);
+        // A sample past retention: the prune reads the raw table, with no join to the scope
+        // row, so it sees a leftover that every other read would hide once the row is gone.
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        expect(await record(tk, fork, 9, old.toISOString())).toEqual({ recorded: 1 });
+
+        await host.deleteSnapshot(staff, tk, fork);
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
+      });
+
       it('prunes samples older than thirteen months, at most the limit per call', async () => {
         const tp = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tp, slug: 'gauge-prune', name: 'Gauge Prune' });
