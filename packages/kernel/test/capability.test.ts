@@ -391,7 +391,11 @@ describe('the operator read of the directory (#1686)', () => {
  */
 describe('readBecomeLinkStates', () => {
   const become = (over: Partial<CapabilityRow> = {}): CapabilityRow =>
-    capRow({ mode: 'become', entity_type: null, entity_id: null, permissions: null, principal: ALICE, max_uses: 1, ...over });
+    capRow({
+      mode: 'become', entity_type: null, entity_id: null, permissions: null, principal: ALICE, max_uses: 1,
+      minted_by: JSON.stringify({ platform: '01JZ00000000000000000000P1' }),
+      ...over,
+    });
   const sqlOf = (rows: Record<string, CapabilityRow>): ScopedSql => ({
     query: <T,>(_sql: string, params?: readonly unknown[]) => {
       const row = rows[String(params?.[0])];
@@ -402,7 +406,7 @@ describe('readBecomeLinkStates', () => {
   const ids = ['01JZ00000000000000000000C1', '01JZ00000000000000000000C2', '01JZ00000000000000000000C3',
     '01JZ00000000000000000000C4', '01JZ00000000000000000000C5', '01JZ00000000000000000000C6'];
 
-  it('reads open, used, expired, revoked (with and without the kernel\'s reason), and a missing one as revoked', () => {
+  it('reads open, used, expired, revoked (with and without the kernel\'s reason), and a missing one as revoked', async () => {
     const sql = sqlOf({
       [ids[0]!]: become({ id: ids[0]! }),
       [ids[1]!]: become({ id: ids[1]!, uses: 1 }),
@@ -410,7 +414,8 @@ describe('readBecomeLinkStates', () => {
       [ids[3]!]: become({ id: ids[3]!, revoked_at: NOW, revoked_by: null, revoked_reason: 'holdings-changed' }),
       [ids[4]!]: become({ id: ids[4]!, revoked_at: NOW, revoked_by: JSON.stringify(ALICE) }),
     });
-    expect(readBecomeLinkStates(sql, ids, NOW as never)).toEqual([
+    // Platform-minted rows (an object minter): no digest to judge.
+    expect(await readBecomeLinkStates(sql, ids, NOW as never)).toEqual([
       { state: 'open', reason: null },
       { state: 'used', reason: null },
       { state: 'expired', reason: null },
@@ -420,10 +425,28 @@ describe('readBecomeLinkStates', () => {
     ]);
   });
 
-  it('an act share named by mistake never reads as an open link', () => {
-    expect(readBecomeLinkStates(sqlOf({ [ids[0]!]: capRow({ id: ids[0]! }) }), [ids[0]!], NOW as never)).toEqual([
+  it('an act share named by mistake never reads as an open link', async () => {
+    expect(await readBecomeLinkStates(sqlOf({ [ids[0]!]: capRow({ id: ids[0]! }) }), [ids[0]!], NOW as never)).toEqual([
       { state: 'revoked', reason: null },
     ]);
+  });
+
+  it('a principal-minted link reads open only while its principal holds what it did at mint — judged on read, nothing written', async () => {
+    const then = { permissions: [READ], roles: ['member'], granted: [], narrowed: [] };
+    const digest = await holdingsDigest(then);
+    const writes: string[] = [];
+    const row = become({ id: ids[0]!, minted_by: JSON.stringify(ALICE), target_digest: digest });
+    const sql: ScopedSql = { ...sqlOf({ [ids[0]!]: row }), exec: (t) => (writes.push(t), { changes: 1 }) };
+    expect(await readBecomeLinkStates(sql, [ids[0]!], NOW as never, async () => then)).toEqual([{ state: 'open', reason: null }]);
+    const raised = { ...then, roles: ['member', 'lead'] };
+    expect(await readBecomeLinkStates(sql, [ids[0]!], NOW as never, async () => raised)).toEqual([
+      { state: 'revoked', reason: 'holdings-changed' },
+    ]);
+    expect(writes).toEqual([]);
+    // No digest, or nothing to judge it by: never open, as its exchange refuses it.
+    expect(await readBecomeLinkStates(sqlOf({ [ids[1]!]: { ...row, id: ids[1]!, target_digest: null } }), [ids[1]!], NOW as never, async () => then))
+      .toEqual([{ state: 'revoked', reason: null }]);
+    expect(await readBecomeLinkStates(sql, [ids[0]!], NOW as never)).toEqual([{ state: 'revoked', reason: null }]);
   });
 });
 

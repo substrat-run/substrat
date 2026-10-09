@@ -993,21 +993,46 @@ function markRevoked(
 
 /**
  * Where each named `become` link stands (#1686), in the order asked — what a pending-invite list
- * shows beside each invite. One read per id over the scope's own storage; a capability the scope
- * does not hold reads as `revoked`, never `open`.
+ * shows beside each invite. A capability the scope does not hold reads as `revoked`, never `open`.
+ *
+ * A principal-minted link that would otherwise read `open` is judged as its exchange would judge
+ * it: its principal's holdings are read now (`holdings`) and compared with the digest taken at
+ * mint, and a link whose principal changed since reads `revoked` / `holdings-changed` — before
+ * anybody has tried it. Nothing is written on a read: the exchange is what revokes it. One with no
+ * digest, or with no `holdings` to judge it by, reads `revoked`, as its exchange refuses it.
  */
-export function readBecomeLinkStates(sql: ScopedSql, ids: readonly string[], now: Instant): BecomeLinkState[] {
-  return ids.map((raw) => {
+export async function readBecomeLinkStates(
+  sql: ScopedSql,
+  ids: readonly string[],
+  now: Instant,
+  holdings?: (principal: PrincipalId) => Promise<Holdings>,
+): Promise<BecomeLinkState[]> {
+  const states: BecomeLinkState[] = [];
+  for (const raw of ids) {
     const q = capabilityByIdQuery(capabilityIdSchema.parse(raw));
     const row = sql.query<CapabilityRow>(q.sql, q.params)[0];
-    if (!row || row.mode !== 'become') return { state: 'revoked', reason: null };
-    if (row.revoked_at !== null) {
-      return { state: 'revoked', reason: row.revoked_reason === 'holdings-changed' ? 'holdings-changed' : null };
-    }
-    if (row.expires_at !== null && row.expires_at <= now) return { state: 'expired', reason: null };
-    if (row.max_uses !== null && row.uses >= row.max_uses) return { state: 'used', reason: null };
-    return { state: 'open', reason: null };
-  });
+    states.push(await becomeLinkStateOf(row, now, holdings));
+  }
+  return states;
+}
+
+async function becomeLinkStateOf(
+  row: CapabilityRow | undefined,
+  now: Instant,
+  holdings: ((principal: PrincipalId) => Promise<Holdings>) | undefined,
+): Promise<BecomeLinkState> {
+  if (!row || row.mode !== 'become') return { state: 'revoked', reason: null };
+  if (row.revoked_at !== null) {
+    return { state: 'revoked', reason: row.revoked_reason === 'holdings-changed' ? 'holdings-changed' : null };
+  }
+  if (row.expires_at !== null && row.expires_at <= now) return { state: 'expired', reason: null };
+  if (row.max_uses !== null && row.uses >= row.max_uses) return { state: 'used', reason: null };
+  if (typeof JSON.parse(row.minted_by) === 'string') {
+    if (!holdings || !row.target_digest) return { state: 'revoked', reason: null };
+    const held = await holdings(principalIdSchema.parse(row.principal));
+    if ((await holdingsDigest(held)) !== row.target_digest) return { state: 'revoked', reason: 'holdings-changed' };
+  }
+  return { state: 'open', reason: null };
 }
 
 /**

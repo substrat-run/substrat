@@ -239,6 +239,10 @@ describe('/internal/members — an installed vertical’s members, managed from 
     expect((await rosterOf()).invites.find((i) => i.principal === minted.principal)).toMatchObject({ link: { state: 'open', reason: null } });
     // Raised around the invite row (a path that does not consult it): the link dies at its accept.
     await host.admin.assignRole(staff, { principalId: minted.principal, roleKey: 'lead', node: { tenantId: t1, scopeId: s1 } });
+    // Dead before anyone tries it: the roster judges the link on read.
+    expect((await rosterOf()).invites.find((i) => i.principal === minted.principal)).toMatchObject({
+      link: { state: 'revoked', reason: 'holdings-changed' },
+    });
     expect((await accept(minted.acceptUrl, 'raised')).status).toBe(400);
     expect((await rosterOf()).invites.find((i) => i.principal === minted.principal)).toMatchObject({
       link: { state: 'revoked', reason: 'holdings-changed' },

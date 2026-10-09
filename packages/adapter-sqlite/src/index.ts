@@ -4837,7 +4837,7 @@ export class SqliteScopeHost implements ScopeHost {
    */
   async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
     const rt = await this.openActiveScope(tenantId, scopeId);
-    return rt.actor.enqueue(() => readBecomeLinkStates(spineSql(rt.db), ids, this.clock()));
+    return rt.actor.enqueue(() => readBecomeLinkStates(spineSql(rt.db), ids, this.clock(), this.holdingsAt(tenantId, scopeId)));
   }
 
   /** What a principal holds at this scope, for a `become` exchange (#1686); absent with a checker that cannot say. */

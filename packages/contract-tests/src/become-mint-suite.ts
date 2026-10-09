@@ -381,6 +381,14 @@ export function becomeMintContractSuite(
         expect(await fixture.verbs.becomeLinkStates(t1, s1, [cap.id])).toEqual([{ state: 'revoked', reason: 'holdings-changed' }]);
       };
 
+      it('a changed principal\'s link lists as revoked / holdings-changed before anyone tries it — the read writes nothing', async () => {
+        const target = await seat();
+        const cap = await minted(owner, target);
+        await host.admin.assignRole(staff, { principalId: target, roleKey: 'writer', node: node() });
+        expect(await fixture.verbs.becomeLinkStates(t1, s1, [cap.id])).toEqual([{ state: 'revoked', reason: 'holdings-changed' }]);
+        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ revokedAt: null, uses: 0 });
+      });
+
       it('(i) a scope-level role raised', async () => {
         const target = await seat();
         const cap = await minted(owner, target);

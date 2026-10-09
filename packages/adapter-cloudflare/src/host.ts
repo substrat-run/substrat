@@ -1328,7 +1328,7 @@ interface ScopeStubRpc {
   /** Revoke a `become` a principal minted (#1686); false for any other capability. */
   revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke>;
   /** Where each named `become` link stands (#1686). */
-  becomeLinkStatesFor(ids: string[]): Promise<BecomeLinkState[]>;
+  becomeLinkStatesFor(tenantId: TenantId, scopeId: ScopeId, ids: string[]): Promise<BecomeLinkState[]>;
   /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
   listCapabilities(filter?: CapabilityFilter): Promise<CapabilityPage>;
   /** #1834: the system door's state read — where a module's schedules stand on this scope
@@ -5007,7 +5007,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
     await this.scopeRoleGate(tenantId, scopeId, 'becomeLinkStates');
     if (ids.length === 0) return [];
-    return (await this.scopeStub(scopeId).becomeLinkStatesFor([...ids])).map((state) => becomeLinkState.parse(state));
+    return (await this.scopeStub(scopeId).becomeLinkStatesFor(tenantId, scopeId, [...ids])).map((state) => becomeLinkState.parse(state));
   }
 
   /** The (tenant, scope) gate the scope-role verbs share — `assignScopeRoleBounded`'s two checks. */

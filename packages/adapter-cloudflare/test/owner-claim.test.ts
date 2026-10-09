@@ -412,6 +412,9 @@ describe('member invite link as a become capability (#1686)', () => {
     const { principal, token } = await linkOf(await invite(owner, 'agent'));
     expect((await list()).find((i) => i.principal === principal)?.link).toEqual({ state: 'open', reason: null });
     await host.assignScopeRole(s, principalId.parse(principal), 'owner'); // raised around the invite row
+    // Dead before anyone tries it: the list judges the link on read, and writes nothing.
+    expect((await list()).find((i) => i.principal === principal)?.link).toEqual({ state: 'revoked', reason: 'holdings-changed' });
+    expect((await capabilities())[0]).toMatchObject({ revokedAt: null, uses: 0 });
     expect((await accept(token)).status).toBe(400);
     expect((await list()).find((i) => i.principal === principal)?.link).toEqual({ state: 'revoked', reason: 'holdings-changed' });
     const [cap] = await capabilities();

@@ -4870,9 +4870,18 @@ export function defineScopeDO(
     }
 
     /** Where each named `become` link stands (#1686) — a pending-invite list's read. */
-    async becomeLinkStatesFor(ids: string[]): Promise<BecomeLinkState[]> {
+    async becomeLinkStatesFor(tenantId: TenantId, scopeId: ScopeId, ids: string[]): Promise<BecomeLinkState[]> {
       await this.ensureMigrations();
-      return this.queue.enqueue(() => readBecomeLinkStates(doSpineSql(this.sql), ids, instant.parse(new Date().toISOString())));
+      return this.queue.enqueue(() =>
+        readBecomeLinkStates(
+          doSpineSql(this.sql),
+          ids,
+          instant.parse(new Date().toISOString()),
+          this.checker.holdings
+            ? (principal) => this.checker.holdings!({ kind: 'principal', id: principal }, { tenantId, scopeId })
+            : undefined,
+        ),
+      );
     }
 
     /**
