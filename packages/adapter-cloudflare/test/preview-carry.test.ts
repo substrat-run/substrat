@@ -517,9 +517,15 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(source.state).toBe('eligible');
       expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, source.scriptRef,
         source.moveId, 'retained')).toBe(true);
-      await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, ulid());
+      const pendingMove = ulid();
+      await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, pendingMove);
 
-      const reaped = await api.request('/verticals/carry-vert/previews/failed-wipe-reap', { method: 'DELETE', headers: auth });
+      const path = '/verticals/carry-vert/previews/failed-wipe-reap';
+      expect((await api.request(path, { method: 'DELETE', headers: auth })).status).toBe(412);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeDefined();
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!,
+        pendingMove, 'retained')).toBe(true);
+      const reaped = await api.request(path, { method: 'DELETE', headers: auth });
       expect(reaped.status).toBe(200);
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
