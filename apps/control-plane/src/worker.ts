@@ -72,6 +72,8 @@ import {
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
+  retryScopeScriptCopies,
+  reapScopeScriptCopies,
   createWfpUploader,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
@@ -1662,6 +1664,11 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const host = hostFor(env);
     const resolveVersion = resolveVerticalVersionFor(env);
+    const resolveRef = resolveVerticalRefFor(env);
+    if (resolveRef) {
+      const copies = await retryScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef });
+      if (copies.failed) console.error(`scope-copy cleanup: ${copies.failed} of ${copies.tried} copies need retry`);
+    }
     // #1416 — the failure digest's "since the previous pass", read BEFORE the sweep:
     // a drained batch this pass lands carries its vertical's own pass time, and read
     // afterwards it would pose as the previous pass and hide failures nobody mailed.
@@ -1698,7 +1705,9 @@ export default {
           { admin: host.admin, actor: SWEEP_ACTOR, issuerClient: resolveVerticalForScopeFor(env) },
           rec,
         );
-        if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+        if (resolveRef) {
+          await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
+        } else if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
           const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
           if (vertical) await vertical.deleteScope({ tenantId, scopeId });
         }
@@ -1712,7 +1721,9 @@ export default {
       reapArchivedAfterDays: parseRetentionDays(env.SCOPE_RETENTION_DAYS),
       reapScopeFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
-        if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+        if (resolveRef) {
+          await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
+        } else if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
           const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
           if (vertical) await vertical.deleteScope({ tenantId, scopeId });
         }
