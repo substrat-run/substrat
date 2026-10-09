@@ -99,6 +99,24 @@ describe('VerticalClient.listCapabilities (#1686)', () => {
       platformSecret: 'secret',
     });
 
+  it('lists a pre-opt-in capability whose attachment field is absent', async () => {
+    const page = { entries: [record], nextCursor: null };
+    await expect(clientAnswering(page).listCapabilities(s)).resolves.toEqual(page);
+  });
+
+  it('lists a pre-opt-in capability whose attachment field is null', async () => {
+    const legacy = { ...record, attachments: null };
+    const page = { entries: [legacy], nextCursor: null };
+    await expect(clientAnswering(page).listCapabilities(s)).resolves.toEqual(page);
+  });
+
+  it('keeps an attachment read opt-in, and refuses any other value', async () => {
+    const page = { entries: [{ ...record, operations: ['doc/read'], attachments: 'read' }], nextCursor: null };
+    await expect(clientAnswering(page).listCapabilities(s)).resolves.toEqual(page);
+    const widened = { entries: [{ ...record, attachments: 'write' }], nextCursor: null };
+    await expect(clientAnswering(widened).listCapabilities(s)).rejects.toThrow();
+  });
+
   it('sends the scope and the filter in the one encoding, and returns the records', async () => {
     const urls: string[] = [];
     const rows = await clientAnswering({ entries: [record], nextCursor: record.id }, urls).listCapabilities(s, {

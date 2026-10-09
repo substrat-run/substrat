@@ -134,7 +134,9 @@ export function capabilityExpiryContractSuite(
       };
 
       // The capability's own expiry.
-      const short = await share({ entity: folder('F'), permissions: [CAP_READ], expiresAt: at(HOUR) });
+      const short = await share({
+        entity: folder('F'), permissions: [CAP_READ], operations: ['cap/read'], attachments: 'read', expiresAt: at(HOUR),
+      });
       const shortFiles = await filesOf((await session(short.secret)).token);
       clock.advance(HOUR - MINUTE);
       expect((await shortFiles.open(file.id))?.record.id).toBe(file.id);

@@ -3474,7 +3474,7 @@ export class SqliteScopeHost implements ScopeHost {
       authority.kind === 'capability-session'
         ? {
             kind: 'capability',
-            id: resolveCapabilitySession(spineSql(rt.db), authority.hash, this.clock(), operation),
+            id: resolveCapabilitySession(spineSql(rt.db), authority.hash, this.clock(), operation, true),
           }
         : authority;
     const node = { tenantId: rt.tenantId, scopeId: rt.scopeId };
@@ -12760,6 +12760,8 @@ export class SqliteScopeHost implements ScopeHost {
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
+    // #2126: NULL keeps every existing capability's attachment behavior unchanged.
+    this.ensureColumn(db, '_substrat_capabilities', 'attachments', 'attachments TEXT');
     db.exec(GRANT_CHILDREN_INDEX_DDL);
     // Executor retry state (#100), same reasoning: scopes provisioned before it
     // already have the table. Defaults read as "terminal", which is exactly right
