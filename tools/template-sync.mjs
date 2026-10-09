@@ -60,11 +60,12 @@
  *   node tools/template-sync.mjs      materialize (idempotent; run by the member's
  *                                     own typecheck/test scripts and by boundary-lint)
  */
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { TSCONFIG, VITEST_CONFIG } from '../packages/create-substrat/project-files.js';
+import { TEST_RUNNER, TSCONFIG, VITEST_CONFIG } from '../packages/create-substrat/project-files.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TEMPLATE = join(ROOT, 'packages', 'create-substrat', 'template');
@@ -97,8 +98,30 @@ export function syncTemplate() {
   writeFileSync(join(CHECK_DIR, 'tsconfig.json'), TSCONFIG);
   writeFileSync(join(CHECK_DIR, 'vitest.config.ts'), VITEST_CONFIG);
   writeFileSync(join(CHECK_DIR, 'GENERATED.md'), NOTE);
+  assertSameTestRunner();
 
   return CHECK_DIR;
+}
+
+/**
+ * The template is tested here on the workspace's vitest, so a scaffold must install the same
+ * major, or this check passes a project no `npm create substrat` user gets (#2129: the
+ * scaffold sat on vitest 3, and its tinypool advisory, after the workspace moved to 5).
+ */
+function assertSameTestRunner() {
+  const require = createRequire(join(CHECK_DIR, 'package.json'));
+  const installed = JSON.parse(readFileSync(require.resolve('vitest/package.json'), 'utf8')).version;
+  const major = (version) => /\d+/.exec(version)?.[0];
+  // `@vitest/ui` peers vitest's exact version, so every entry answers to the installed vitest.
+  for (const [name, range] of Object.entries(TEST_RUNNER)) {
+    if (major(range) !== major(installed)) {
+      process.stderr.write(
+        `template-sync: a scaffold installs ${name} ${range}, but the template is tested here on vitest ` +
+          `${installed}. Move TEST_RUNNER in packages/create-substrat/project-files.js with the catalog.\n`,
+      );
+      process.exit(1);
+    }
+  }
 }
 
 if (resolve(process.argv[1] ?? '') === resolve(fileURLToPath(import.meta.url))) {
