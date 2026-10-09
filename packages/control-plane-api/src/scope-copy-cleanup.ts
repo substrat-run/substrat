@@ -172,7 +172,10 @@ export async function sweepScopeScriptCopies(input: ScopeCopyCleanup): Promise<{
  * A destructive reap reaches every named script before the directory forgets the scope.
  * `storageStranded` when a script answered 501 to its delete: it predates the verb, so its bytes
  * are unreachable through every platform verb and die with the script at orphan cleanup (#248).
- * That is a bookkeeping fact, not a failure, as on the reap routes before the ledger.
+ * The reap goes on (a 501 must never pin a directory row forever), but never silently: each
+ * stranded script is recorded as an ops failure first, for every caller (the reap routes, the
+ * preview reap and the GC sweep's reaps), so the bytes left behind stay visible after the row
+ * is gone. A record that cannot be written fails the reap, which is then retried.
  */
 export async function reapScopeScriptCopies(
   input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId,
@@ -198,6 +201,16 @@ export async function reapScopeScriptCopies(
       await client.deleteScope({ tenantId, scopeId });
     } catch (e) {
       if (!(e instanceof ControlPlaneError && e.status === 501)) throw e;
+      await input.admin.recordOpsFailure({
+        actor: input.actor,
+        operation: 'scope.reap',
+        stage: 'storage-stranded',
+        tenantId,
+        scopeId,
+        status: 501,
+        message: `scope ${scopeId}'s storage in '${ref}' was left in place: that script predates /internal/delete-scope, ` +
+          'so its bytes go only when the script itself is removed (#1722)',
+      });
       storageStranded = true;
     }
   }

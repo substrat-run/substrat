@@ -1708,7 +1708,10 @@ export default {
           rec,
         );
         if (resolveRef) {
-          await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
+          // #1722: a script that predates the delete verb strands its bytes; the reap records it
+          // as an ops failure and goes on, so an expired fork is never pinned forever.
+          const { storageStranded } = await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
+          if (storageStranded) console.warn(`snapshot reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
         } else {
           await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
           if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
@@ -1727,7 +1730,9 @@ export default {
       reapScopeFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
         if (resolveRef) {
-          await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
+          // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
+          const { storageStranded } = await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
+          if (storageStranded) console.warn(`retention reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
         } else {
           await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
           if (rec?.vertical && rec.verticalVersionId && resolveVersion) {

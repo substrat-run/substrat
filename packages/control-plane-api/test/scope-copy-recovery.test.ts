@@ -13,6 +13,7 @@ import {
   createControlPlaneApi,
   settleExpiredScopeScriptCopies,
   sweepScopeScriptCopies,
+  reapScopeScriptCopies,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   type VerticalClient,
@@ -668,4 +669,34 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     }
   });
 
+  // Review r3: a 501 strands bytes for every reap caller, so the reap itself records it.
+  it('a reap that strands storage records it for every caller, the preview reap and the GC sweep included', async () => {
+    const old = `${slug}-predates-delete`;
+    noDeleteVerb.add(old);
+    try {
+      // The preview reap answers the flag.
+      const sid = await fresh('stranded-preview');
+      await host.admin.setScopeServingRef(staff, t, sid, old);
+      const res = await app.request(`/verticals/${slug}/previews/stranded-preview`, { method: 'DELETE', headers: asStaff });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(await res.json()).toMatchObject({ deleted: sid, storageStranded: true });
+      // The GC sweep's reaps call reapScopeScriptCopies directly and drop the row after it: the
+      // record is written inside it, before the row goes.
+      const gc = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: gc, vertical: slug });
+      await host.admin.setScopeServingRef(staff, t, gc, old);
+      expect(await reapScopeScriptCopies(cleanup(), t, gc)).toEqual({ storageStranded: true });
+      for (const reaped of [sid, gc]) {
+        const failures = await host.admin.listOpsFailures(staff, { scopeId: reaped });
+        expect(failures.filter((f) => f.stage === 'storage-stranded').map((f) => ({ operation: f.operation, status: f.status })))
+          .toEqual([{ operation: 'scope.reap', status: 501 }]);
+      }
+      // A reap that strands nothing records nothing.
+      const clean = await fresh('clean-preview');
+      expect((await app.request(`/verticals/${slug}/previews/clean-preview`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
+      expect((await host.admin.listOpsFailures(staff, { scopeId: clean })).filter((f) => f.stage === 'storage-stranded')).toEqual([]);
+    } finally {
+      noDeleteVerb.delete(old);
+    }
+  });
 });

@@ -8562,20 +8562,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    *  its hostnames. Storage-before-row, the same ordering the DELETE route uses — a crash
    *  between the two converges on retry. Shared by that route and by the create path, which
    *  reaps a HALF-BUILT leftover before re-forking (see `orchestratedPreview`). */
+  /** Answers whether some of the preview's storage was stranded (and recorded as such). */
   const reapPreview = async (
     c: ReqCtx,
     preview: Scope,
-  ): Promise<void> => {
+  ): Promise<{ storageStranded: boolean }> => {
     // A fork's own sign-in clients go FIRST (#1704): a failure here leaves the preview in
     // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
     // would name those clients again. A clean room never had one.
     await retireClientsOfReapedScope(previewAuthDeps(c), preview);
+    let storageStranded = false;
     if (options.resolveVerticalRef) {
-      await reapScopeScriptCopies({
+      ({ storageStranded } = await reapScopeScriptCopies({
         admin: c.var.admin,
         actor: c.get('actor'),
         resolveRef: options.resolveVerticalRef,
-      }, preview.tenantId, preview.id);
+      }, preview.tenantId, preview.id));
     } else {
       await assertNoUnreachableScopeCopies(c.var.admin, c.get('actor'), preview.tenantId, preview.id);
       const vertical = await verticalForScope(c, preview);
@@ -8583,6 +8585,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // Co-located hosts have no script ref; their storage is wiped by deleteSnapshot.
     await c.var.host.deleteSnapshot(c.get('actor'), preview.tenantId, preview.id);
+    return { storageStranded };
   };
 
   /** The preview-login seam (#1704, `preview-auth.ts`): the directory, and each issuer's deployment. */
@@ -9170,8 +9173,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // Storage-before-row, the same ordering as the fork hard-delete: wipe the DO in the
       // PR version's deployment, then deleteSnapshot (fork-only re-check, hostnames + row,
       // audit). A crash between the two converges on retry.
-      await reapPreview(c, preview);
-      return c.json({ deleted: preview.id });
+      const { storageStranded } = await reapPreview(c, preview);
+      return c.json({ deleted: preview.id, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       throw e;
