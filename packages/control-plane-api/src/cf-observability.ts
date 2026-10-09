@@ -1118,6 +1118,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
         { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
         { key: 'vertical', operation: 'eq', type: 'string', value: input.vertical },
+        { key: FIELD_COVERAGE_ID_FIELD, operation: 'regex', type: 'string', value: '^[0-9A-HJKMNP-TV-Z]{26}$' },
         ...serviceFilter(input.services),
         ...(input.versionId ? [{ key: 'versionId', operation: 'eq', type: 'string', value: input.versionId } satisfies TelemetryFilter] : []),
       ], timeframe);
@@ -1125,6 +1126,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
         { key: 'router', operation: 'eq', type: 'string', value: 'request' },
         { key: 'vertical', operation: 'eq', type: 'string', value: input.vertical },
+        { key: FIELD_COVERAGE_ID_FIELD, operation: 'regex', type: 'string', value: '^[0-9A-HJKMNP-TV-Z]{26}$' },
         { key: '$metadata.service', operation: 'eq', type: 'string', value: service },
       ], timeframe)))).flat();
       return readFieldCoverage(reports, router, input, window);

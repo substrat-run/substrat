@@ -323,8 +323,13 @@ attributes a report by the ROUTER's line, never by the vertical's:
 
 The residual is narrow: a vertical can mislabel the report of a response it actually served for
 that tenant. Every per-event read (tenant logs, service logs, request records) withholds
-`outputFields` and `fieldCoverageId`, so the report is never readable beside one request. No
-read route or store is built on the tally yet.
+`outputFields` and `fieldCoverageId`, so the report is never readable beside one request.
+The field-count view reads the existing Workers Logs lines through the tenant-scoped tally,
+grouped by the sampling rate on the router's own line. It labels every count
+**vertical-asserted** and shows the window and rate (or “rate unknown” for older router
+lines). A zero is “not observed returned in the sample,” never proof of no use. An
+Analytics Engine store for longer retention is follow-up work; it needs a platform-owned
+dataset and a trusted attribution path before the view can read it.
 
 The MCP door is walked with the same function and the same rules (#1923). A tool's walk is
 derived from its operation's declared `output` when the tool list is derived, the switch is read

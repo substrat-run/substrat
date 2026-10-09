@@ -65,7 +65,9 @@ export function readFieldCoverage(
       armedRequests: group.armedRequests,
       operations,
       notObservedReturned: operations.flatMap((op) =>
-        op.fields.filter((f) => f.eligible === 0).map((f) => ({ operation: op.operation, field: f.field }))),
+        op.responses > 0
+          ? op.fields.filter((f) => f.eligible === 0).map((f) => ({ operation: op.operation, field: f.field }))
+          : []),
       refused: group.refused,
     };
   });
