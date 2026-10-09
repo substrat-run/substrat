@@ -51,8 +51,10 @@ if (!Object.hasOwn(chai.Assertion.prototype, GUARDED)) {
   );
 }
 
-/** Each unhandled promise → its reason, wrapped to name the test it was raised in. */
-/** @type {Map<Promise<unknown>, Error>} */
+/**
+ * Each unhandled promise → its reason, wrapped to name the test it was raised in.
+ * @type {Map<Promise<unknown>, Error>}
+ */
 const pending = new Map();
 /** @param {unknown} reason @param {Promise<unknown>} promise */
 const onUnhandled = (reason, promise) => {
