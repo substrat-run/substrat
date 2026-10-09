@@ -89,7 +89,7 @@ describe('kernel-authored event types (#1864)', () => {
         // a frozen array throws in strict mode; either way, nothing may have changed
       }
     }
-    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(16);
+    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(17);
     for (const type of [ENTITY_RELINKED, ENTITY_LINKED, CAPABILITY_MINTED, ATTACHMENT_ADDED]) {
       expect(codeOf(() => assertModuleEmittableType(type))).toBe('validation_failed');
       expect(isKernelAuthoredEventType(type)).toBe(true);
