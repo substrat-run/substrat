@@ -1947,23 +1947,39 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await dir.admin.bindScopeVersion(staff, t, wipedSid, version.v2);
     });
 
-    it('a dry run reports the historic copy and the failure, and writes nothing', async () => {
-      const entries = await backfill(true);
+    /** Every store the walk asked a deployment to read, as `ref scope`. */
+    const readsDuring = async <T>(fn: () => Promise<T>): Promise<{ out: T; reads: string[] }> => {
+      const reads: string[] = [];
+      hooks.read = async (ref, s) => { reads.push(`${ref} ${s}`); };
+      try {
+        return { out: await fn(), reads };
+      } finally {
+        delete hooks.read;
+      }
+    };
+
+    it('a dry run derives the historic copy and the failure, and reads no store at all', async () => {
+      const { out: entries, reads } = await readsDuring(() => backfill(true));
+      expect(reads).toEqual([]);
       const mine = entries.filter((e) => e.scopeId === sid);
+      // Bound to v1 while pinned, then unpinned onto it: the unpin is what made v1 its home.
       expect(mine).toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v1), outcome: 'would-record' }));
       expect(mine).toContainEqual(expect.objectContaining({ outcome: 'failure', reason: expect.stringContaining(`version ${bare}`) }));
       expect(entries.filter((e) => e.scopeId === wipedSid))
-        .toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v3), outcome: 'wiped' }));
+        .toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v3), outcome: 'would-record' }));
       expect(await ledgerOf(sid)).toEqual([]);
     });
 
     it('records the historic copy as retained, leaves its store as it was, and a re-run is a no-op', async () => {
-      const entries = (await backfill(false)).filter((e) => e.scopeId === sid);
+      const all = await backfill(false);
+      const entries = all.filter((e) => e.scopeId === sid);
       expect(entries).toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v1), outcome: 'recorded' }));
+      expect(all.filter((e) => e.scopeId === wipedSid))
+        .toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v3), outcome: 'wiped' }));
       expect(entries.filter((e) => e.outcome === 'failure').length).toBeGreaterThan(0);
       const ledger = await ledgerOf(sid);
-      // Every backfilled entry is retained. v1 holds the data; the scope was also born on the
-      // serving script the adopt block above set, which the log names too, and which holds nothing.
+      // Every backfilled entry is retained: v1, which holds the data, and the serving script the
+      // adopt block above set, which the scope was born pinned to.
       expect(ledger).toContainEqual({ scriptRef: refOf.get(version.v1), moveId: 'backfill:1722', state: 'retained' });
       expect(ledger.every((c) => c.moveId === 'backfill:1722' && c.state === 'retained')).toBe(true);
       expect(ledger.map((c) => c.scriptRef)).not.toContain(refOf.get(version.v2));
@@ -1988,6 +2004,27 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         delete hooks.redact;
       }
       expect(reached).toEqual(expect.arrayContaining([refOf.get(version.v1), refOf.get(version.v2)]));
+    });
+
+    it("a pinned install's promote binds name no home, and the walk never reads their scripts", async () => {
+      // Born pinned (the vertical serves in place since the adopt block); a private vertical's
+      // promote then moves only its version pointer, as every served install's.
+      const pinned = scopeId.parse(ulid());
+      await dir.provisionScope(staff, { tenantId: t, scopeId: pinned, vertical: slug });
+      await dir.admin.activateScope(staff, t, pinned);
+      const promoted = await api.request(`/verticals/${slug}/channels/prod/promote`, {
+        method: 'POST', headers: auth, body: JSON.stringify({ versionId: version.v3 }),
+      });
+      expect(promoted.status, await promoted.clone().text()).toBe(200);
+      expect((await dir.admin.getScopeRecord(staff, t, pinned))?.verticalVersionId).toBe(version.v3);
+      expect((await dir.admin.auditLog(staff, { scopeId: pinned, action: 'bindScopeVersion' })).length).toBeGreaterThan(0);
+      for (const dryRun of [true, false]) {
+        const { out, reads } = await readsDuring(() => backfill(dryRun));
+        expect(out.filter((e) => e.scopeId === pinned).map((e) => e.outcome).every((o) => o === 'route')).toBe(true);
+        expect(reads.filter((r) => r.endsWith(pinned))).toEqual([]);
+        if (dryRun) expect(reads).toEqual([]);
+      }
+      expect(await ledgerOf(pinned)).toEqual([]);
     });
   });
 });
