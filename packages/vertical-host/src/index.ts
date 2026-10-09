@@ -39,7 +39,7 @@ import {
   type ScopeRoleHolder,
   type SubjectRedactionCounts,
 } from '@substrat-run/kernel';
-import { assertPlatformCall, PlatformCallError } from './platform-call.js';
+import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
 import {
   z,
@@ -2260,11 +2260,13 @@ export * from './peer-client.js';
 // #1859: the live-read route — the Origin gate and the pure host's 501, once.
 export * from './live.js';
 // #1978: the request log and the router assertion every deployed vertical mounts, moved
-// here from the kernel, and the platform-call check, which the kernel still defines.
+// here from the kernel. The platform-call check is contracts' (`./wire-auth`, #1998),
+// re-exported here for the verticals that check it, beside the kick flags they raise.
 export * from './invocation-log.js';
 export * from './routed-node.js';
 export * from './rate-limit.js';
-export * from './platform-call.js';
+export { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
+export * from './kick-flags.js';
 export * from './scope-sweep-host.js';
 export {
   classifyError,

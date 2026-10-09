@@ -4,12 +4,14 @@
  * `RouterAssertionError` would be one an `instanceof` from the other import misses.
  *
  * What stays a kernel binding re-exported here is held to being that binding: the upgrade
- * test (the hosted adapter's door asks it too), the invocation line's grammar (the scope host
- * writes the async lines with it), and the platform-call check, which follows when its two
- * remaining non-vertical callers have a home.
+ * test (the hosted adapter's door asks it too) and the invocation line's grammar (the scope
+ * host writes the async lines with it). The platform-call check moved to contracts'
+ * `./wire-auth` (#1998), because the control plane checks it too; it is re-exported here as
+ * that binding, and the kick flags beside it are defined here.
  */
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import * as kernel from '@substrat-run/kernel';
+import * as wireAuth from '@substrat-run/contracts/wire-auth';
 import * as host from '../src/index.js';
 
 const kernelExports = kernel as Record<string, unknown>;
@@ -23,6 +25,7 @@ const MOVED = [
   'INVOCATION_RECORD_KEY',
   'readRoutedNode',
   'RouterAssertionError',
+  'kickFlags',
 ];
 
 // The moved types: each line is a compile error unless the kernel has stopped exporting it.
@@ -62,20 +65,29 @@ describe('exports moved here from the kernel (#1978)', () => {
 });
 
 describe('kernel bindings re-exported here', () => {
-  it.each(['isUpgradeRequest', 'assertPlatformCall', 'PlatformCallError', 'kickFlags'])(
-    "%s is the kernel's binding",
-    (name) => {
-      expect(kernelExports[name], name).toBeDefined();
-      expect(hostExports[name], name).toBe(kernelExports[name]);
-    },
-  );
+  it("isUpgradeRequest is the kernel's binding", () => {
+    expect(kernelExports.isUpgradeRequest).toBeDefined();
+    expect(host.isUpgradeRequest).toBe(kernel.isUpgradeRequest);
+  });
 
   it("the invocation line's types are the kernel's", () => {
     expectTypeOf<host.InvocationLogLine>().toEqualTypeOf<kernel.InvocationLogLine>();
     expectTypeOf<host.OutputFieldsReport>().toEqualTypeOf<kernel.OutputFieldsReport>();
   });
 
+});
+
+describe("contracts' platform-call check, re-exported here (#1998)", () => {
+  it.each(['assertPlatformCall', 'PlatformCallError'])("%s is contracts' binding, and the kernel has none", (name) => {
+    expect(hostExports[name], name).toBe((wireAuth as Record<string, unknown>)[name]);
+    expect(kernelExports[name], name).toBeUndefined();
+  });
+
   it('a platform-call error thrown through one import is an instance of the other', () => {
-    expect(() => host.assertPlatformCall({ get: () => null })).toThrow(kernel.PlatformCallError);
+    expect(() => host.assertPlatformCall({ get: () => null })).toThrow(wireAuth.PlatformCallError);
+  });
+
+  it('the constant-time compare is not re-exported here', () => {
+    expect(hostExports.secretMatches).toBeUndefined();
   });
 });

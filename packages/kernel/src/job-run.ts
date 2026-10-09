@@ -871,7 +871,7 @@ class PassDeferred extends Error {
  */
 export const JOB_DEFER_MS = 60_000;
 
-/** Runtime globals the kernel's lib does not declare, reached as `invocation-log.ts` reaches them. */
+/** Runtime globals the kernel's lib does not declare: declared here, as `secret-box.ts` declares `crypto`. */
 declare const console: { log(message: string): void };
 declare const performance: { now(): number };
 

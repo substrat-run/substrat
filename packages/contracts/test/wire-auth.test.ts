@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import {
-  EXPORTED_EVENTS_HEADER,
-  PLATFORM_REQUEST_HEADER,
-  PLATFORM_SECRET_HEADER,
-} from '@substrat-run/contracts/wire-headers';
-import { assertPlatformCall, kickFlags, PlatformCallError } from '../src/platform-call.js';
+import { PLATFORM_SECRET_HEADER } from '../src/wire-headers.js';
+import { assertPlatformCall, PlatformCallError, secretMatches } from '../src/wire-auth.js';
 
 /**
- * The vertical's side of K-31. An open provisioning endpoint lets a stranger mint
+ * The receiving side of K-31. An open provisioning endpoint lets a stranger mint
  * tenants inside the vertical, so every case here is about refusing.
  */
 
@@ -64,26 +60,16 @@ describe('assertPlatformCall', () => {
   });
 });
 
-/**
- * #1705 PR 2 — the kick's two response flags, as one call a worker spreads into `getScope`'s
- * options. Each callback raises its own header and nothing else; the router reads exactly these
- * names (it hardcodes them, since it does not depend on the kernel).
- */
-describe('kickFlags (#1705 PR 2)', () => {
-  it('raises each flag under its own header, only when its callback fires', () => {
-    const set: [string, string][] = [];
-    const flags = kickFlags((name, value) => set.push([name, value]));
-    expect(set).toEqual([]);
-    flags.onPlatformRequests?.(2);
-    expect(set).toEqual([[PLATFORM_REQUEST_HEADER, '1']]);
-    flags.onExportedEvents?.(1);
-    expect(set).toEqual([
-      [PLATFORM_REQUEST_HEADER, '1'],
-      [EXPORTED_EVENTS_HEADER, '1'],
-    ]);
-    expect([PLATFORM_REQUEST_HEADER, EXPORTED_EVENTS_HEADER]).toEqual([
-      'x-substrat-platform-request',
-      'x-substrat-exported-events',
-    ]);
+describe('secretMatches', () => {
+  it('matches only the same string', () => {
+    expect(secretMatches('s3cret', 's3cret')).toBe(true);
+    expect(secretMatches('s3creT', 's3cret')).toBe(false);
+    expect(secretMatches('s3cre', 's3cret')).toBe(false);
+    expect(secretMatches('s3crett', 's3cret')).toBe(false);
+  });
+
+  it('refuses an absent or empty presented value', () => {
+    expect(secretMatches(null, 's3cret')).toBe(false);
+    expect(secretMatches('', 's3cret')).toBe(false);
   });
 });

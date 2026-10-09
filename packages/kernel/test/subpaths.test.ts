@@ -1,21 +1,27 @@
 /**
- * The kernel's subpath exports (#1998) exist for one reason: the platform's entry bundles
- * them in front of every deployed vertical (#1893), and the package root would bring
- * contracts, and zod, with it. So a subpath module imports nothing at run time. Its type
- * imports are erased, and anything else would land in every vertical's upload.
+ * The zero-import subpaths (#1998): the kernel's, and the contracts ones the platform's entry
+ * reaches. They exist for one reason: the platform's entry bundles them in front of every
+ * deployed vertical (#1893), and either package root would bring contracts' schemas, and
+ * zod, with it. So a subpath module imports nothing at run time but another subpath module
+ * of its own package. Its type imports are erased; anything else would land in every
+ * vertical's upload.
  */
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, normalize } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { secretMatches } from '../src/secret-match.js';
 
-const root = join(import.meta.dirname, '..');
-const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
-  exports: Record<string, { default: string }>;
-};
-const SUBPATHS = Object.entries(pkg.exports)
-  .filter(([path]) => path !== '.')
-  .map(([path, entry]) => [path, entry.default.replace(/^\.\/dist\/(.*)\.js$/, 'src/$1.ts')] as const);
+/** Each subpath of a package as `[package-relative subpath, absolute source file]`. */
+function subpathsOf(pkgDir: string): (readonly [string, string])[] {
+  const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')) as {
+    exports: Record<string, { default: string }>;
+  };
+  return Object.entries(pkg.exports)
+    .filter(([path]) => path !== '.')
+    .map(([path, entry]) => [path, join(pkgDir, entry.default.replace(/^\.\/dist\/(.*)\.js$/, 'src/$1.ts'))] as const);
+}
+
+const KERNEL = subpathsOf(join(import.meta.dirname, '..'));
+const CONTRACTS = subpathsOf(join(import.meta.dirname, '../../contracts'));
 
 /** The specifiers a module imports at run time: every `import`/`export … from` that is not type-only. */
 function runtimeImports(source: string): string[] {
@@ -27,31 +33,32 @@ function runtimeImports(source: string): string[] {
   ];
 }
 
-describe('kernel subpaths import nothing at run time (#1998)', () => {
-  it('there are the three the platform entry reaches', () => {
-    expect(SUBPATHS.map(([path]) => path).sort()).toEqual(['./invocation-line', './secret-match', './ulid']);
+/** A module's runtime imports that are NOT another subpath module of the same package. */
+function strayImports(file: string, siblings: readonly (readonly [string, string])[]): string[] {
+  const allowed = new Set(siblings.map(([, f]) => normalize(f)));
+  return runtimeImports(readFileSync(file, 'utf8')).filter(
+    (spec) => !(spec.startsWith('.') && allowed.has(normalize(join(dirname(file), spec.replace(/\.js$/, '.ts'))))),
+  );
+}
+
+describe('zero-import subpaths (#1998)', () => {
+  it('the kernel has the two the platform entry reaches, contracts the three', () => {
+    expect(KERNEL.map(([path]) => path).sort()).toEqual(['./invocation-line', './ulid']);
+    expect(CONTRACTS.map(([path]) => path).sort()).toEqual(['./invocation-record', './wire-auth', './wire-headers']);
   });
 
-  it.each(SUBPATHS)('%s (%s)', (_, file) => {
-    expect(runtimeImports(readFileSync(join(root, file), 'utf8'))).toEqual([]);
+  it.each(KERNEL)('kernel %s imports nothing at run time', (_, file) => {
+    expect(strayImports(file, KERNEL)).toEqual([]);
   });
 
-  it('its positive twin: the root does import at run time, so the check can see one', () => {
-    expect(runtimeImports(readFileSync(join(root, 'src/index.ts'), 'utf8'))).toContain('./ulid.js');
-    expect(runtimeImports(readFileSync(join(root, 'src/platform-call.ts'), 'utf8'))).toContain('./secret-match.js');
-  });
-});
-
-describe('secretMatches', () => {
-  it('matches only the same string', () => {
-    expect(secretMatches('s3cret', 's3cret')).toBe(true);
-    expect(secretMatches('s3creT', 's3cret')).toBe(false);
-    expect(secretMatches('s3cre', 's3cret')).toBe(false);
-    expect(secretMatches('s3crett', 's3cret')).toBe(false);
+  it.each(CONTRACTS)('contracts %s imports nothing at run time but a sibling subpath', (_, file) => {
+    expect(strayImports(file, CONTRACTS)).toEqual([]);
   });
 
-  it('refuses an absent or empty presented value', () => {
-    expect(secretMatches(null, 's3cret')).toBe(false);
-    expect(secretMatches('', 's3cret')).toBe(false);
+  it('its positive twins: a sibling import is seen and allowed, and a root import is seen and refused', () => {
+    const wireAuth = CONTRACTS.find(([path]) => path === './wire-auth')![1];
+    expect(runtimeImports(readFileSync(wireAuth, 'utf8'))).toEqual(['./wire-headers.js']);
+    const index = join(import.meta.dirname, '../src/index.ts');
+    expect(strayImports(index, KERNEL).length).toBeGreaterThan(0);
   });
 });

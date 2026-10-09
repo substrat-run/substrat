@@ -421,14 +421,6 @@ export {
 export { assertPermissionKey } from './check-key.js';
 export { assertModuleEnqueueableKind } from './platform-kinds.js';
 export {
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  assertPlatformCall,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  PlatformCallError,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  kickFlags,
-} from './platform-call.js';
-export {
   signConnectState,
   verifyConnectState,
   ConnectStateError,

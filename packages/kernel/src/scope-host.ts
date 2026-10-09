@@ -862,7 +862,7 @@ export interface InvokeOptions {
    * call. That is the join a trace view needs and the one nothing could make: the
    * runtime's own request id is stamped by the log platform at ingestion, so no
    * vertical code can read it, and a trace does not cross the dispatch hop
-   * (`invocation-log.ts`, verified in production).
+   * (vertical-host's `invocation-log.ts`, verified in production).
    *
    * So the platform mints one, puts it in the invocation log line, and carries it
    * here — where it is stamped onto every event the call emits. That makes an

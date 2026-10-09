@@ -3,9 +3,9 @@
  * no longer re-exports them — nor `invocationLevelOf`, which contracts already defined. One
  * definition of each string: two agree only until one of them is edited.
  *
- * The other moved names are held by their new homes' tests. What this file also pins is the
- * one deprecation left in the index — the platform-call check, whose move waits on a home
- * for its two remaining non-vertical callers — so a forgotten tag cannot linger unnoticed.
+ * The other moved names are held by their new homes' tests. What this file also pins is that
+ * no deprecation is left in the index, and that the platform-call check — which moved to
+ * contracts' `./wire-auth` (#1998) — is gone from the kernel too.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,13 +31,16 @@ export type MovedLiveRefusal = kernel.LiveRefusal;
 export type MovedInvocationLevel = kernel.InvocationLevel;
 
 describe('wire header names, moved to contracts (#1978)', () => {
-  it('the only names still tagged as moving are the platform-call check', () => {
-    expect(tagged().sort()).toEqual([
-      ['@substrat-run/vertical-host', 'PlatformCallError'],
-      ['@substrat-run/vertical-host', 'assertPlatformCall'],
-      ['@substrat-run/vertical-host', 'kickFlags'],
-    ]);
+  it('no export is still tagged as moving', () => {
+    expect(tagged()).toEqual([]);
   });
+
+  it.each(['assertPlatformCall', 'PlatformCallError', 'kickFlags', 'secretMatches'])(
+    'the kernel no longer exports %s',
+    (name) => {
+      expect(kernelExports[name], name).toBeUndefined();
+    },
+  );
 
   it.each([...WIRE_HEADERS, 'invocationLevelOf'])('contracts exports %s, and the kernel does not', (name) => {
     expect(contractsExports[name], name).toBeDefined();
@@ -56,7 +59,7 @@ describe('wire header names, moved to contracts (#1978)', () => {
 
     const src = join(import.meta.dirname, '../src');
     const files = readdirSync(src).filter((f) => f.endsWith('.ts'));
-    expect(files).toContain('platform-call.ts');
+    expect(files).toContain('scope-host.ts');
     for (const file of files) {
       const text = readFileSync(join(src, file), 'utf8');
       for (const name of WIRE_HEADERS) expect(text, `${file} defines ${name}`).not.toMatch(defines(name));

@@ -21,10 +21,6 @@
       "types": "./dist/invocation-line.d.ts",
       "default": "./dist/invocation-line.js"
     },
-    "./secret-match": {
-      "types": "./dist/secret-match.d.ts",
-      "default": "./dist/secret-match.js"
-    },
     "./ulid": {
       "types": "./dist/ulid.d.ts",
       "default": "./dist/ulid.js"

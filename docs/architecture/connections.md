@@ -196,7 +196,7 @@ Three reasons, in order of force:
 
 **There is no encryption primitive in this codebase.** Every `crypto.subtle` call today is a
 one-way digest. Every secret is a plaintext Worker binding compared in constant time
-([platform-call.ts:24](../../packages/kernel/src/platform-call.ts)). Nothing is per-tenant,
+([wire-auth.ts](../../packages/contracts/src/wire-auth.ts)). Nothing is per-tenant,
 rotatable, or encrypted at rest.
 
 D-18 classifies the KMS as an **adapter**, so:
@@ -211,7 +211,7 @@ export interface SecretBox {
 ```
 
 - **dev / self-host** — AES-GCM via Web Crypto, key from env. Fail closed if unset. The rule is
-  already written down at [platform-call.ts:40](../../packages/kernel/src/platform-call.ts):
+  already written down at [wire-auth.ts](../../packages/contracts/src/wire-auth.ts):
   *"An unset secret is a failure, not a bypass."* Note the router secret currently does the
   opposite ([routed-node.ts](../../packages/vertical-host/src/routed-node.ts), `expectedSecret &&`)
   and Better Auth ships a hardcoded fallback

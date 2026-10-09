@@ -545,8 +545,11 @@ It lived in the kernel until #1978; nothing in it needs a kernel guarantee.
   is never logged twice. `pnpm lint:invocation-log` refuses a missing, late or secretless mount
   (#1418). The line's shape, `InvocationLogLine`, is the kernel's
   ([`invocation-line.ts`](/reference/kernel#trusting-the-edges)), re-exported here.
-- **`assertPlatformCall`**, **`PlatformCallError`**, **`kickFlags`** — is the platform itself
-  calling? Still defined in the kernel and re-exported here; import them from here.
+- **`assertPlatformCall`**, **`PlatformCallError`** — is the platform itself calling? Defined
+  in [`@substrat-run/contracts/wire-auth`](/reference/contracts#subpaths-that-import-nothing),
+  because the control plane checks it too, and re-exported here.
+- **`kickFlags(setHeader)`** — both response flags that ask the router to act on a scope now
+  rather than at the next sweep, as the scope stub options that raise them.
 
 ## License
 

@@ -1,29 +1,29 @@
-import type { ScopeStubOptions } from './scope-host.js';
-import {
-  EXPORTED_EVENTS_HEADER,
-  PLATFORM_REQUEST_HEADER,
-  PLATFORM_SECRET_HEADER,
-} from '@substrat-run/contracts/wire-headers';
-import { secretMatches } from './secret-match.js';
-
 /**
- * Authenticating a call FROM the platform TO a vertical (K-31).
+ * Authenticating a call FROM the platform (K-31, #1998).
  *
  * Provisioning is control-plane-driven: the platform decides an instance should
  * exist and tells the vertical to create it, because only the vertical can create a
- * usable scope DO. This is the vertical's side of that call.
+ * usable scope DO. This is the receiving side of that call — a vertical's, and the
+ * platform's own workers' that take calls carrying the same header.
  *
  * It is shared code for the same reason `readRoutedNode` is — five verticals each
  * re-deriving how to trust a header is five chances to get it wrong, and the one that
- * gets it wrong is not obviously broken. `readRoutedNode` moved to `vertical-host` in
- * #1978 and this one is moving after it; `vertical-host` already re-exports it.
+ * gets it wrong is not obviously broken. Here in the shared vocabulary rather than in the
+ * kernel or `vertical-host` because its callers are not all verticals: the control plane
+ * and the social relay check it too, and neither should depend on a vertical's host for it.
  *
  * Note the direction. `readRoutedNode` answers "which tenant is this request for",
  * and a request with no assertion is legitimate (a standalone deploy). This answers
  * "is the platform itself calling", and there is no legitimate unauthenticated case:
  * an open provisioning endpoint lets a stranger mint tenants inside the vertical.
  * So this one **fails closed with no configuration at all**.
+ *
+ * Imports nothing but its sibling `wire-headers.ts`, which imports nothing either: the
+ * platform's entry (#1893) bundles `secretMatches` in front of every deployed vertical
+ * through `@substrat-run/contracts/wire-auth`, and this package's root would bring every
+ * schema in the vocabulary, and zod, with it.
  */
+import { PLATFORM_SECRET_HEADER } from './wire-headers.js';
 
 /** The one method this needs from a `Headers`. A real `Headers` satisfies it. */
 interface HeaderReader {
@@ -34,18 +34,18 @@ interface HeaderReader {
 export class PlatformCallError extends Error {}
 
 /**
- * Both kick flags as the stub options that raise them (#1705 PR 2): spread into `getScope`'s
- * options with the handler's header setter. One call per worker rather than one line per flag,
- * so a flag added later reaches every vertical that uses this, and not only the ones that
- * remembered the line. A vertical that skips it still works, and waits for the sweep.
+ * Constant-time compare, so a wrong secret leaks nothing through timing.
+ *
+ * The one copy: the platform-call check below and vertical-host's router assertion
+ * (`readRoutedNode`) both use it.
  */
-export function kickFlags(
-  setHeader: (name: string, value: string) => void,
-): Pick<ScopeStubOptions, 'onPlatformRequests' | 'onExportedEvents'> {
-  return {
-    onPlatformRequests: () => setHeader(PLATFORM_REQUEST_HEADER, '1'),
-    onExportedEvents: () => setHeader(EXPORTED_EVENTS_HEADER, '1'),
-  };
+export function secretMatches(presented: string | null, expected: string): boolean {
+  if (!presented || presented.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 /**

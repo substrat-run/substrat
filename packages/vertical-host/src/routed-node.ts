@@ -1,6 +1,6 @@
 import type { ScopeId, TenantId } from '@substrat-run/contracts';
 // The subpath, not the root: this file is bundled into the platform's entry (#1893).
-import { secretMatches } from '@substrat-run/kernel/secret-match';
+import { secretMatches } from '@substrat-run/contracts/wire-auth';
 
 /**
  * A tenant or scope id: a ULID, exactly what `@substrat-run/contracts`' `tenantId` and
