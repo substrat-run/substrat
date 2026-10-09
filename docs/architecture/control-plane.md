@@ -1224,6 +1224,11 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **Every scope that holds a store is measured.** That is every status but `provisioning`
   (no store yet) and `reaped` (its store is gone). An archived or suspended scope still holds
   its storage until reap, so it is in the figure and on the bill.
+  One known gap: `archiveScope` also accepts a scope still in `provisioning`, so a scope
+  archived before it ever held data is counted and read daily too, and that read creates the
+  kernel spine it never had. The directory records no "was ever active" fact to exclude it by
+  (there is no activation timestamp, and some scopes become active without `activateScope`),
+  so it is left as is and named for a decision rather than worked around.
 - **No wake added to the serving fleet.** The pass already reaches every active scope's DO on
   every tick, through the platform-intent drain (`/internal/platform-requests` → the scope DO).
   The storage phase runs straight after it and reads an ACTIVE scope only when that drain
