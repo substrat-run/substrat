@@ -587,6 +587,23 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const landed = v2outbox.rows.find((r) => r[v2outbox.columns.indexOf('id')] === eventId);
       expect(landed?.[v2outbox.columns.indexOf('payload')]).toBeNull();
     });
+    it('erasure retries when a bind moves the route after its script inventory was read', async () => {
+      const p = await fresh('erase-route-race');
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      let moved = false;
+      hooks.redact = async (ref, sid) => {
+        if (moved || ref !== refOf.get(version.v1) || sid !== p.scopeId) return;
+        moved = true;
+        expect((await bindTo(p.scopeId, 'v2')).status).toBe(200);
+      };
+      const path = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(412);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+      delete hooks.redact;
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+    });
     afterEach(() => {
       for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
       unfenced.clear();
