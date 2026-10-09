@@ -1518,9 +1518,9 @@ describe('#1666 — OFF holds against a newer version, and ON gives back only wh
  * Points at BROKEN_SCOPE (worker.ts) — a DO class carrying only the module whose
  * migration cannot apply, since a DO closes over a code-time module set.
  *
- * Lives in THIS file rather than its own: the pool runs `singleWorker` with
- * `isolatedStorage: false`, and a second test file re-evaluates the worker mid-run,
- * which invalidates every live DO ("worker.ts changed").
+ * Lives in THIS file rather than its own: files run one at a time on storage that is never
+ * rolled back, and a second test file re-evaluates the worker mid-run, which invalidates
+ * every live DO ("worker.ts changed").
  */
 describe('migration failure is recorded in the directory', () => {
   let host: CloudflareScopeHost;

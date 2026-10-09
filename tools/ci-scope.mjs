@@ -257,7 +257,7 @@ export function lockfileScope(baseText, headText) {
 //
 // A unit is a package's `test` script, or — for a package listed in PARTS — one of the
 // scripts that together make up its `test`. adapter-cloudflare's suite is one workerd
-// running every file in series (`singleWorker`), and at 13 minutes it was the whole length
+// running every file in series (`fileParallelism: false`), and at 13 minutes it was the whole length
 // of whichever shard it landed in: no amount of balancing the other packages could shorten
 // it. Its files cannot run side by side inside vitest either — every file shares one
 // workerd and its heap, which runs out at two workers — so the split is across jobs. Its
