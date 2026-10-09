@@ -25,6 +25,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
+import { STORAGE_GAUGE_PRUNE_BATCH } from './storage-gauge.js';
 import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -268,6 +269,13 @@ export interface PlatformSweepOptions {
   accessLogBatch?: number;
   /** Rows of each telemetry table pruned per pass (#1632). Default `TELEMETRY_PRUNE_BATCH`. */
   telemetryBatch?: number;
+  /**
+   * Sample scope database sizes into the stored storage gauge (#1524). UNSET (the default)
+   * skips the phase, as does a host without `recordScopeStorage`/`listScopeStorage`.
+   * Injected for the reason `drainPlatformRequestsFn` is: on the hosted plane a scope's DO
+   * lives in its vertical's deployment, and only the control plane can reach it there.
+   */
+  storageGauge?: StorageGaugeSweepOptions;
   /**
    * Also reap tenants past their grace window (control-plane.md §4.8): any tenant in
    * `deleting` whose `deletingAt` is older than this many days has every scope reaped
@@ -674,6 +682,8 @@ export interface PlatformSweepReport {
    * `pruneFindings`.
    */
   findings?: FindingPruneReport | null;
+  /** What the storage-gauge phase sampled and pruned (#1524). Null when the phase is off. */
+  storage?: StorageGaugeSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -698,10 +708,54 @@ export interface PlatformSweepReport {
       // the next pass reads the same events again. A PAUSED or unresolved edge is not an
       // error: it is a standing condition, reported on the edge and in the sweep-run rows,
       // and the failure digest must not re-send it every tick.
-      | 'vertical-events';
+      | 'vertical-events'
+      // #1524: one scope's size read failed. Its last stored reading stands.
+      | 'storage';
     id: string;
     error: string;
   }[];
+}
+
+/**
+ * How the storage-gauge phase samples (#1524). Every number here is a bound on DO requests.
+ *
+ * The phase reads ONLY scopes an earlier phase of the same pass already reached: the
+ * platform-intent drain when `drainPlatformRequestsFn` is set (on the hosted plane it is the
+ * phase that wakes the vertical's DO), the executor drain otherwise. A scope nothing woke this
+ * pass is never read, so the gauge never wakes an idle scope of its own accord. What a read
+ * adds is one request to a DO that is already awake.
+ */
+export interface StorageGaugeSweepOptions {
+  /** One scope's database size, in bytes. A throw counts that scope `failed` and keeps its last reading. */
+  read: (scope: Scope) => Promise<number>;
+  /** The most scopes read in one pass, stalest first. Default `STORAGE_SAMPLE_BATCH`. `0` pauses sampling. */
+  batch?: number;
+  /** A scope is due once its latest reading is at least this old. Default one day. */
+  maxAgeMs?: number;
+  /** Samples past retention deleted per pass. Default `STORAGE_GAUGE_PRUNE_BATCH`. */
+  pruneBatch?: number;
+}
+
+/** The storage-gauge phase's per-pass bound when `batch` is unset. */
+export const STORAGE_SAMPLE_BATCH = 100;
+/** How old a reading may get before the phase reads the scope again, by default. */
+export const STORAGE_SAMPLE_MAX_AGE_MS = 86_400_000;
+
+/** What the storage-gauge phase did in one pass (#1524). */
+export interface StorageGaugeSweepReport {
+  /** Scopes an earlier phase reached this pass: the only ones the phase may read. */
+  reached: number;
+  /** Reached scopes whose latest reading was missing or older than `maxAgeMs`. */
+  due: number;
+  /** Due scopes left for a later pass because the batch was full. */
+  deferred: number;
+  /** Size reads that answered, and that failed. */
+  read: number;
+  failed: number;
+  /** Rows the directory wrote (a reading for a scope reaped meanwhile writes none). */
+  recorded: number;
+  /** Samples past retention deleted. */
+  pruned: number;
 }
 
 /** One pass of the access-log drain (K-24, control-plane.md §4.4). */
@@ -952,6 +1006,12 @@ async function mapBounded<T>(
 function assertSweepBatches(options: PlatformSweepOptions): void {
   if (options.telemetryBatch !== undefined) assertRowLimit('telemetryBatch', options.telemetryBatch);
   if (options.accessLogBatch !== undefined) assertRowLimit('accessLogBatch', options.accessLogBatch);
+  const gauge = options.storageGauge;
+  if (gauge?.pruneBatch !== undefined) assertRowLimit('storageGauge.pruneBatch', gauge.pruneBatch);
+  // `0` is a pause, so the sample batch is a non-negative integer rather than a row limit.
+  if (gauge?.batch !== undefined && !(Number.isInteger(gauge.batch) && gauge.batch >= 0)) {
+    throw substratError('validation_failed', `storageGauge.batch must be a non-negative integer, got ${String(gauge.batch)}`);
+  }
 }
 
 export async function runPlatformSweep(
@@ -977,6 +1037,7 @@ export async function runPlatformSweep(
     crossVertical: null,
     telemetry: null,
     findings: null,
+    storage: null,
     errors: [],
   };
 
@@ -1082,12 +1143,20 @@ export async function runPlatformSweep(
     }
   }
 
+  // #1524: the scopes this pass woke, which are the only ones the storage-gauge phase may
+  // read. On the hosted plane the executor drain runs on the control plane's own host, whose
+  // namespace is a placeholder, so the platform-intent drain is what reaches the vertical's DO
+  // and is the phase that counts whenever it is configured.
+  const reachedThisPass = new Map<string, Scope>();
+  const reachedBy: 'drain' | 'platform-request' = options.drainPlatformRequestsFn ? 'platform-request' : 'drain';
+
   if (options.drainRetries !== false) {
     const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
     await mapBounded(scopes, concurrency, async (s) => {
       if (failedThisPass.has(s.id)) return; // fails closed — draining is only noise
       try {
         const r = await host.drainDue(s.tenantId, s.id);
+        if (reachedBy === 'drain') reachedThisPass.set(s.id, s);
         report.scopesDrained += 1;
         report.drainTotals.attempted += r.attempted;
         report.drainTotals.delivered += r.delivered;
@@ -1113,6 +1182,7 @@ export async function runPlatformSweep(
       }
       try {
         const r = await drain(s.tenantId, s.id);
+        if (!r.unreachable) reachedThisPass.set(s.id, s);
         if (r.unreachable) report.platformRequestTotals.unreachable += 1;
         if (r.drained > 0) report.platformRequestTotals.scopes += 1;
         report.platformRequestTotals.drained += r.drained;
@@ -1123,6 +1193,17 @@ export async function runPlatformSweep(
         report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
       }
     });
+  }
+
+  // -- the stored storage gauge (#1524) ----------------------------------------
+  // Straight after the drains, while the DOs they woke are still awake. Only reached scopes
+  // are read (see `StorageGaugeSweepOptions`), stalest first, at most `batch` of them.
+  if (
+    options.storageGauge &&
+    typeof host.admin.recordScopeStorage === 'function' &&
+    typeof host.admin.listScopeStorage === 'function'
+  ) {
+    report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, [...reachedThisPass.values()], report);
   }
 
   // -- provision reconcile (#1172, #1653) -------------------------------------
@@ -2641,4 +2722,64 @@ export function startPlatformSweeper(
       if (handle !== undefined) clearTimer(handle);
     },
   };
+}
+
+/**
+ * One pass of the storage-gauge phase (#1524): read the due share of the scopes this pass
+ * already reached, record what answered in one directory call, then prune past retention.
+ * A failed read is an error entry and leaves that scope's last stored reading standing.
+ */
+async function sweepStorageGauge(
+  admin: HostAdmin,
+  options: PlatformSweepOptions,
+  gauge: StorageGaugeSweepOptions,
+  reached: readonly Scope[],
+  report: PlatformSweepReport,
+): Promise<StorageGaugeSweepReport> {
+  const out: StorageGaugeSweepReport = { reached: reached.length, due: 0, deferred: 0, read: 0, failed: 0, recorded: 0, pruned: 0 };
+  const batch = gauge.batch ?? STORAGE_SAMPLE_BATCH;
+  const maxAgeMs = gauge.maxAgeMs ?? STORAGE_SAMPLE_MAX_AGE_MS;
+  try {
+    if (reached.length > 0 && batch > 0) {
+      const latest = new Map(
+        (await admin.listScopeStorage!(options.actor, { latest: true })).map((s) => [s.scopeId as string, s.readAt as string]),
+      );
+      const staleBefore = new Date(Date.now() - maxAgeMs).toISOString();
+      // Never-read scopes first (by id), then the oldest readings.
+      const due = reached
+        .filter((s) => {
+          const at = latest.get(s.id);
+          return at === undefined || at <= staleBefore;
+        })
+        .sort((a, b) => {
+          const x = latest.get(a.id) ?? '';
+          const y = latest.get(b.id) ?? '';
+          return x < y ? -1 : x > y ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
+      const take = due.slice(0, batch);
+      out.due = due.length;
+      out.deferred = due.length - take.length;
+      const readings: { tenantId: TenantId; scopeId: ScopeId; bytes: number; readAt: string }[] = [];
+      await mapBounded(take, options.concurrency ?? 8, async (s) => {
+        try {
+          const bytes = await gauge.read(s);
+          if (!Number.isInteger(bytes) || bytes < 0) throw new Error(`not a size: ${String(bytes)}`);
+          readings.push({ tenantId: s.tenantId, scopeId: s.id, bytes, readAt: new Date().toISOString() });
+          out.read += 1;
+        } catch (err) {
+          out.failed += 1;
+          report.errors.push({ kind: 'storage', id: s.id, error: message(err) });
+        }
+      });
+      if (readings.length > 0) out.recorded = (await admin.recordScopeStorage!(options.actor, readings)).recorded;
+    }
+    if (typeof admin.pruneScopeStorage === 'function') {
+      out.pruned = await admin.pruneScopeStorage(options.actor, gauge.pruneBatch ?? STORAGE_GAUGE_PRUNE_BATCH);
+    }
+  } catch (err) {
+    // A directory read or write failed: this pass's samples are lost, never half-kept, and
+    // the next pass finds the same scopes due.
+    report.errors.push({ kind: 'storage', id: 'directory', error: message(err) });
+  }
+  return out;
 }

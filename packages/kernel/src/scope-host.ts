@@ -68,6 +68,7 @@ import type {
   EntitlementGrantInput,
   EntitlementView,
   MeterReading,
+  ScopeStorageSample,
   EntityRef,
   IdentityLink,
   IdentityPool,
@@ -184,6 +185,7 @@ import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.j
 import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
+import type { ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
 import type {
@@ -4097,6 +4099,27 @@ export interface HostAdmin {
    * to `null`.
    */
   pruneTelemetry?(actor: PlatformActorId, limit: number): Promise<TelemetryPruneReport>;
+  /**
+   * The stored storage gauge (#1524): record scope database sizes the scheduled pass read,
+   * one row per (scope, UTC day), a later same-day reading replacing an earlier one. A
+   * reading is written only for a non-reaped scope the directory holds under the named
+   * tenant. Returns how many rows were written. Not audited, like `recordSweepRun`:
+   * retention-bounded telemetry, not evidence.
+   *
+   * The three gauge methods are optional, and the sweep's storage phase is skipped on a host
+   * that lacks them, so an adapter built before #1524 still satisfies `HostAdmin`.
+   */
+  recordScopeStorage?(actor: PlatformActorId, readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
+  /**
+   * Stored storage samples (#1524) — the latest per scope, or a bounded history. See
+   * `ScopeStorageFilter`. A directory read that wakes no scope. Access-logged (K-24).
+   */
+  listScopeStorage?(actor: PlatformActorId, filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
+  /**
+   * Delete storage samples past `STORAGE_GAUGE_RETENTION_MONTHS`, oldest first and at most
+   * `limit` per call, so a backlog drains over passes. Returns how many went. Not audited.
+   */
+  pruneScopeStorage?(actor: PlatformActorId, limit: number): Promise<number>;
   /**
    * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
    * is ingest's word and not accepted here. Returns the updated row, or undefined

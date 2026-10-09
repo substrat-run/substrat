@@ -309,6 +309,13 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  SCOPE_STORAGE_DDL,
+  forgetScopeStorage,
+  listScopeStorageRows,
+  pruneScopeStorageRows,
+  recordScopeStorageRows,
+  type ScopeStorageFilter,
+  type ScopeStorageReadingInput,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink,
@@ -2599,6 +2606,8 @@ export class SqliteScopeHost implements ScopeHost {
       );
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
+      -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
+      ${SCOPE_STORAGE_DDL}
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -4010,6 +4019,7 @@ export class SqliteScopeHost implements ScopeHost {
       forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
       this.directory.prepare('DELETE FROM private_continuation_positions WHERE scope_id = ?').run(scopeId);
       this.directory.prepare('DELETE FROM private_continuation_keys WHERE scope_id = ?').run(scopeId);
+      forgetScopeStorage(redactionSqlOf(this.directory), scopeId);
       this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     })();
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
@@ -7193,7 +7203,11 @@ export class SqliteScopeHost implements ScopeHost {
         if (to === 'archived' || to === 'reaped') {
           this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE tenant_id = ? AND target_scope_id = ?').run(tenantId, scopeId);
         }
-        if (to === 'reaped') forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
+        if (to === 'reaped') {
+          forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
+          // #1524: its storage is gone, so its samples describe nothing.
+          forgetScopeStorage(redactionSqlOf(this.directory), scopeId);
+        }
         // The audit target carries the scope's vertical (control-plane.md §4.4:
         // "vertical stays null until §4.2 lifecycle actions that name one"). It is
         // read from the scope rather than passed in, so the trail cannot disagree
@@ -10386,6 +10400,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
           '_substrat_findings', // #1748: the tenant's findings
           '_substrat_finding_rules', // #1748: the tenant's suppress rules
+          '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {
@@ -10551,6 +10566,8 @@ export class SqliteScopeHost implements ScopeHost {
             plan: r.plan,
             expiresAt: r.expires_at,
           })),
+          // #1524: the stored gauge's latest sample per non-reaped scope. A directory read only.
+          storage: listScopeStorageRows(redactionSqlOf(this.directory), { tenantId: only, latest: true }),
         });
         // The count that matters for K-24 is how many TENANTS this reading covered —
         // "read the meter for one tenant" and "metered the whole fleet" are different
@@ -11673,6 +11690,21 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.prepare('DELETE FROM _substrat_model_usage WHERE at < ?').run(horizon);
         return { recorded: res.changes > 0 };
       },
+      recordScopeStorage: async (_actor, readings: readonly ScopeStorageReadingInput[]) => ({
+        recorded: this.directory.transaction(() => recordScopeStorageRows(redactionSqlOf(this.directory), readings))(),
+      }),
+      listScopeStorage: async (actor, filter?: ScopeStorageFilter) => {
+        const rows = listScopeStorageRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(
+          actor,
+          'listScopeStorage',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows;
+      },
+      pruneScopeStorage: async (_actor, limit: number) => pruneScopeStorageRows(redactionSqlOf(this.directory), Date.now(), limit),
       listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
         const rows = this.selectModelUsage(filter);
         this.recordAccess(
