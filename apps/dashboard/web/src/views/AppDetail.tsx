@@ -1191,7 +1191,7 @@ function rolesHolding(reg: PermissionRegistry, key: string): string[] {
  *
  * The claim is about DECLARATIONS and the copy says so: "no operation declares
  * this field in its output" is exactly true from the two artifacts a push
- * carries, where "nobody reads this" would need traffic nobody counts yet
+ * carries, where observed field use belongs to the sampled field counts view
  * (#1331). Matching is by field name across the whole surface, so the list is
  * CONSERVATIVE — a field on it is named nowhere, while one absent from it may
  * still be unreachable. Under-reporting is the safe direction for a list whose

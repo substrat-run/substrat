@@ -34,6 +34,8 @@ export function FieldReads({ scopeId, hours, nonce }: { scopeId: string; hours: 
         <p style={{ margin: '0 0 10px', fontSize: 12 }}>
           {group.armedRequests} armed requests; {group.refused} malformed reports refused. {rate}; {window}.
         </p>
+        {group.operations.every((op) => op.responses === 0) &&
+          <p>Armed requests, but no walked responses were observed in this sample ({rate}; {window}).</p>}
         {group.operations.map((op) => <div key={op.operation} style={{ marginBottom: 12 }}>
           <strong>{op.operation}</strong> <span style={{ fontSize: 12 }}>({op.responses} sampled responses; {rate}; {window})</span>
           <table><thead><tr><th>Field</th><th>Present</th><th>Null</th><th>Absent</th><th>Eligible</th><th>Sample and window</th></tr></thead>

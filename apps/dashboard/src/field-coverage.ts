@@ -6,7 +6,7 @@ import type { DeclaredOperationOutput, EmittedModel } from '@substrat-run/contra
  * The claim is deliberately about DECLARATIONS, not behaviour: "no operation
  * declares this field in its output" is exactly and verifiably true from the two
  * artifacts a push carries, where "nobody reads this" would be a claim about
- * traffic that only counting could support (#1331).
+ * traffic sampled by the separate field counts view (#1331).
  */
 export interface FieldCoverageRow {
   field: string;

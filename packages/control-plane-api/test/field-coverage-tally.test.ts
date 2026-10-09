@@ -82,6 +82,19 @@ describe('router-owned field coverage rates (#1331)', () => {
     expect(tallyFieldCoverageByRate([own], [routerLine(id)], scope)[0]?.sampleRate).toBeNull();
     expect(tallyFieldCoverageByRate([own], [], scope)).toEqual([]);
   });
+
+  it('counts a duplicate router dispatch under only its first recorded rate', () => {
+    const report = line();
+    const first = routerLine(idOf(report));
+    const second = routerLine(idOf(report));
+    const rated = tallyFieldCoverageByRate([report], [
+      { ...first, source: { ...first.source, fieldCoverageRate: 0.1 } },
+      { ...second, source: { ...second.source, fieldCoverageRate: 0.5 } },
+    ], scope);
+    expect(rated).toHaveLength(1);
+    expect(rated[0]).toMatchObject({ sampleRate: 0.1, armedRequests: 1 });
+    expect(rated[0]?.operations[0]?.responses).toBe(1);
+  });
 });
 
 describe('tallyFieldCoverage (#1923)', () => {
