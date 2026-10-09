@@ -282,6 +282,10 @@ describe('PATCH input declarations', () => {
       .toThrow(/customer\/update.*name.*default/);
     expect(() => update(z.object({ id: z.string(), name: z.string().prefault('new').nullable().optional() })))
       .toThrow(/customer\/update.*name.*default/);
+    let deeplyWrapped: z.ZodType = z.string().default('new');
+    for (let i = 0; i < 20; i++) deeplyWrapped = deeplyWrapped.optional();
+    expect(() => update(z.object({ id: z.string(), name: deeplyWrapped })))
+      .toThrow(/customer\/update.*name.*default/);
   });
 
   it('accepts a reasoned exception, but not an empty reason', () => {

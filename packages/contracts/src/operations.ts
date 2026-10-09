@@ -1054,13 +1054,20 @@ function isOptionalSchema(schema: unknown, depth = 0): boolean {
 }
 
 /** A default fills an absent PATCH field before its handler can preserve the old value. */
-function hasInputDefault(schema: unknown, depth = 0): boolean {
-  if (depth > 16) return false;
-  const def = (schema as { _zod?: { def?: unknown } })?._zod?.def as
-    | { type?: string; innerType?: unknown; in?: unknown; out?: unknown }
-    | undefined;
-  if (def?.type === 'default' || def?.type === 'prefault') return true;
-  return [def?.innerType, def?.in, def?.out].some((inner) => inner !== undefined && hasInputDefault(inner, depth + 1));
+function hasInputDefault(schema: unknown): boolean {
+  const pending = [schema];
+  const seen = new Set<unknown>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined || seen.has(current)) continue;
+    seen.add(current);
+    const def = (current as { _zod?: { def?: unknown } })?._zod?.def as
+      | { type?: string; innerType?: unknown; in?: unknown; out?: unknown }
+      | undefined;
+    if (def?.type === 'default' || def?.type === 'prefault') return true;
+    pending.push(def?.innerType, def?.in, def?.out);
+  }
+  return false;
 }
 
 /** Check the effective HTTP method, both on local operations and bound engine routes. */
