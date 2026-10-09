@@ -36,6 +36,7 @@ import {
   type SwitchedOff,
   type UndrainedEvents,
   type ScopeRoleHolder,
+  type SubjectRedactionCounts,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from './platform-call.js';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
@@ -172,6 +173,8 @@ import {
  * the introspection + platform-request reads).
  */
 export interface VerticalScopeHost {
+  /** Redact the scope-side data in this deployment before the coordinator destroys the key. */
+  redactSubjectLocal?(scopeId: ScopeId, subjectId: string): Promise<SubjectRedactionCounts>;
   provisionScopeLocal(input: {
     tenantId: TenantId;
     scopeId: ScopeId;
@@ -1373,6 +1376,13 @@ export function mountPlatformSurface<Env extends object>(
     await platformSweeperOf(c.env)?.forgetScope(body.scopeId);
     await deps.onDeleteScope?.(c.env, body.scopeId, body.tenantId);
     return c.json({ deleted: body.scopeId });
+  });
+
+  app.post('/internal/redact-subject', async (c) => {
+    const body = z.object({ scopeId: scopeIdOf, subjectId: z.string().min(1) }).strict().parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.redactSubjectLocal) return c.json({ error: 'subject redaction is unavailable in this deployment' }, 501);
+    return c.json(await host.redactSubjectLocal(body.scopeId, body.subjectId));
   });
 
   // Read-only introspection of a scope's OWN database (kernel-design §5.4) — what the

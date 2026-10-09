@@ -1,6 +1,7 @@
 import type { ModuleLog } from './module-log.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
+import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
   ExportReadInput,
@@ -3591,6 +3592,12 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     subjectId: string,
+  ): Promise<SubjectShredReceipt>;
+  /** Finish an orchestrated erasure only after every script holding a copy has redacted it.
+   * The separate call prevents an unreachable old script from being hidden by an early key shred. */
+  finalizeSubjectShred(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
+    subjectId: string, redactions: readonly SubjectRedactionCounts[],
   ): Promise<SubjectShredReceipt>;
 
   // -- impersonation (K-42, #868) --------------------------------------------

@@ -2055,7 +2055,7 @@ export class SqliteScopeHost implements ScopeHost {
         state TEXT NOT NULL,
         load_stamp TEXT,
         revision TEXT,
-        PRIMARY KEY (tenant_id, scope_id, script_ref)
+        PRIMARY KEY (tenant_id, scope_id, script_ref, move_id)
       );
       CREATE INDEX IF NOT EXISTS scope_script_copies_state ON scope_script_copies (state, scope_id);
       -- Private host state. Module SQL opens only the scope file, never this directory;
@@ -8877,8 +8877,7 @@ export class SqliteScopeHost implements ScopeHost {
           `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
            SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
            WHERE tenant_id = ? AND scope_id = ?
-           ON CONFLICT (tenant_id, scope_id, script_ref) DO UPDATE SET
-             move_id = excluded.move_id, state = 'pending', load_stamp = NULL, revision = NULL`,
+           ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
         ).run(scriptRef, moveId, tenantId, scopeId);
         if (result.changes === 0) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
       },
@@ -10166,6 +10165,12 @@ export class SqliteScopeHost implements ScopeHost {
           redacted.changes + intentsRedacted + jobRunsRedacted + idempotencyResults + moduleRowsErased(vertical),
         );
         return receipt;
+      },
+      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions) => {
+        if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
+        // The pure adapter has one co-located scope store. Its existing atomic shred is
+        // the final local redaction and key destruction, after remote copies confirmed.
+        return this.admin.shredSubject(actor, tenantId, scopeId, subjectId);
       },
 
       // -- impersonation (K-42, #868) ----------------------------------------

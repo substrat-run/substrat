@@ -110,7 +110,7 @@ import {
   PLATFORM_SECRET_HEADER,
   WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
-import type { KeptCopy, LoadMarker, OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import type { KeptCopy, LoadMarker, OpenedAttachment, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
@@ -1146,6 +1146,17 @@ export class VerticalClient {
    */
   async deleteScope(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<void> {
     await this.postInternal<unknown>('/internal/delete-scope', input, 'delete-scope');
+  }
+
+  /** Scope-side erasure in this exact script; no key is destroyed by this verb. */
+  async redactSubject(scopeId: ScopeId, subjectId: string): Promise<SubjectRedactionCounts> {
+    const answer = await this.postInternal<SubjectRedactionCounts>('/internal/redact-subject', { scopeId, subjectId }, 'redact-subject');
+    if (!answer || typeof answer.events !== 'number' || typeof answer.intents !== 'number' ||
+        typeof answer.jobRuns !== 'number' || !Array.isArray(answer.intentIds) ||
+        typeof answer.idempotencyResults !== 'number' || !answer.vertical) {
+      throw new ControlPlaneError(502, `script answered redact-subject incompletely for scope ${scopeId}`);
+    }
+    return answer;
   }
 
   /**

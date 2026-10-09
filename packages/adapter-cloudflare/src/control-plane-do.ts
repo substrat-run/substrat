@@ -789,7 +789,7 @@ const DIRECTORY_DDL = `
     state TEXT NOT NULL,
     load_stamp TEXT,
     revision TEXT,
-    PRIMARY KEY (tenant_id, scope_id, script_ref)
+    PRIMARY KEY (tenant_id, scope_id, script_ref, move_id)
   );
   CREATE INDEX IF NOT EXISTS scope_script_copies_state ON scope_script_copies (state, scope_id);
   ${PEER_BINDINGS_DDL}
@@ -3190,8 +3190,7 @@ export class ControlPlaneDO extends DurableObject {
       `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
        SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
        WHERE tenant_id = ? AND scope_id = ?
-       ON CONFLICT (tenant_id, scope_id, script_ref) DO UPDATE SET
-         move_id = excluded.move_id, state = 'pending', load_stamp = NULL, revision = NULL`,
+       ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
       scriptRef, moveId, tenantId, scopeId,
     );
     if (written.rowsWritten === 0) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);

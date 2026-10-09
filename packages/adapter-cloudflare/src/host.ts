@@ -3470,6 +3470,17 @@ export class CloudflareScopeHost implements ScopeHost {
     return { marked: await this.scopeStub(scopeId).markCopy() };
   }
 
+  /** Scope-side half of an erasure, reached through this script's own DO binding. */
+  async redactSubjectLocal(scopeId: ScopeId, subjectId: string): Promise<SubjectRedactionCounts> {
+    const answer = await this.scopeStub(scopeId).redactSubject(subjectId);
+    if (typeof answer === 'object' && 'failure' in answer && answer.failure) throw fromWireFailure(answer.failure);
+    if (typeof answer === 'number' || !('jobRuns' in answer) || !('idempotencyResults' in answer) ||
+        !Array.isArray(answer.intentIds) || !('vertical' in answer) || !isModuleErasureCounts(answer.vertical)) {
+      throw substratError('unavailable', `scope ${scopeId} runs a DO whose subject erasure is incomplete — redeploy and retry`);
+    }
+    return answer as SubjectRedactionCounts;
+  }
+
   /**
    * Clear a mistaken copy classification from one scope in THIS deployment (#2005), behind the
    * vertical's `/internal/clear-copy-mark`: staff's correction for a scope the directory says IS
@@ -8152,6 +8163,28 @@ export class CloudflareScopeHost implements ScopeHost {
           { subjectId },
           eventsRedacted + intentsRedacted + jobRunsRedacted + idempotencyResults + moduleRowsErased(vertical),
         );
+        return receipt;
+      },
+      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions): Promise<SubjectShredReceipt> => {
+        await this.assertScope(tenantId, scopeId);
+        if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
+        const intentIds = [...new Set(redactions.flatMap((r) => r.intentIds))];
+        await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
+        const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, new Date().toISOString());
+        const receipt = subjectShredReceipt.parse({
+          subjectId,
+          eventsRedacted: redactions.reduce((n, r) => n + r.events, 0),
+          intentsRedacted: redactions.reduce((n, r) => n + r.intents, 0),
+          jobRunsRedacted: redactions.reduce((n, r) => n + r.jobRuns, 0),
+          verticalRows: redactions.flatMap((r) => r.vertical.verticalRows),
+          hookRows: redactions.flatMap((r) => r.vertical.hookRows),
+          unreachedEntities: redactions.flatMap((r) => r.vertical.unreachedEntities),
+          keyDestroyed: existed,
+          tombstoned: true,
+        });
+        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId },
+          redactions.reduce((n, r) => n + r.events + r.intents + r.jobRuns + r.idempotencyResults + moduleRowsErased(r.vertical), 0));
         return receipt;
       },
 

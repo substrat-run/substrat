@@ -2800,6 +2800,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!source || !dest) {
       throw new ControlPlaneError(501, 'adopt-serving needs dispatch resolution for both ends');
     }
+    const sourceRef = await routeOf(c, scope);
+    const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
+    if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId);
     const dump = await source.exportScope(scopeId);
     // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
     const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true });
@@ -2807,6 +2810,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await c.var.admin
       .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge })
       .catch(relayHostRefusal);
+    if (moveId && (await routeOf(c, (await c.var.admin.getScopeRecord(actor, tenantId, scopeId))!)) === serving.ref) {
+      await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId, 'retained');
+    }
     await c.var.admin
       .bindScopeVersion(actor, tenantId, scopeId, serving.versionId, { acknowledge: opts.acknowledge })
       .catch(relayHostRefusal);
@@ -2966,6 +2972,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!source || !dest) {
       throw new ControlPlaneError(501, 'rebind-vertical needs dispatch resolution for both ends');
     }
+    const sourceRef = await routeOf(c, scope);
+    const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
+    if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId);
     const dump = await source.exportScope(scopeId);
     const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true }); // #1742, as adopt
     // Data landed on the target script — only now flip routing and cross the pointer.
@@ -2973,6 +2982,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // extra snapshot here (adopt-serving's precedent): the source script's copy is the
     // pre-migration state, and it is never deleted — that copy is the backout.
     await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, move).catch(relayHostRefusal);
+    if (moveId && (await routeOf(c, (await c.var.admin.getScopeRecord(actor, tenantId, scopeId))!)) === serving.ref) {
+      await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId, 'retained');
+    }
     await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
     // #1674: re-assert the recorded OFF positions in the store the scope now routes to.
     await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
@@ -4785,7 +4797,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const subjectId = dataSubjectIdSchema.parse(c.req.param('subjectId'));
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
+    if (!options.resolveVerticalRef || !(await routeOf(c, scope))) {
+      return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
+    }
+    const copies = await c.var.admin.listScopeScriptCopies(c.get('actor'), { tenantId, scopeId, limit: 1001 });
+    if (copies.length === 1001) throw new ControlPlaneError(409, `scope ${scopeId} has more copies than one erasure batch can verify`);
+    const refs = new Set(copies.filter((copy) => copy.state !== 'done').map((copy) => copy.scriptRef));
+    refs.add((await routeOf(c, scope))!);
+    const redactions = [];
+    for (const ref of refs) {
+      const script = await options.resolveVerticalRef(ref);
+      if (!script) throw new ControlPlaneError(502, `scope ${scopeId}'s copy in '${ref}' cannot be reached for erasure`);
+      redactions.push(await script.redactSubject(scopeId, subjectId));
+    }
+    return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions));
   });
 
   // -- directory backups (#40) -----------------------------------------------
