@@ -336,6 +336,11 @@ The page worth opening first on a vertical that serves the Scalar API reference 
 vertical's own origin, so a try-it request carries the session cookie you already have and
 a 403 in the playground is the permission system working rather than a broken page.
 
+The `tests` entry is the one whose bare origin shows nothing: the vitest dashboard serves
+only the URL it prints when it starts (`UI started at …/__vitest__/?token=…`) and answers a
+403 without the token, which guards an API that can write files and run code. Take that URL
+from the server's output; never work around the token.
+
 ## When it breaks — symptom → fix
 
 Six failures that have each cost someone a day. What makes them expensive is that none of

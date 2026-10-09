@@ -114,8 +114,8 @@ function packageJson(name) {
         issuer: 'substrat-dev-issuer --personas src/personas.ts',
         server: 'tsx src/server.ts',
         test: 'vitest run',
-        // The live test dashboard in the Browser pane: the `tests` entry of
-        // .claude/launch.json. `--watch` is explicit, since vitest runs once and exits without a TTY.
+        // The live test dashboard: the `tests` entry of .claude/launch.json, opened at the
+        // tokenised URL vitest prints. `--watch` is explicit, since vitest runs once and exits without a TTY.
         'test:ui': 'vitest --watch --ui --open=false -c vitest.ui.config.ts',
         typecheck: 'tsc --noEmit && tsc -p tsconfig.worker.json --noEmit',
         'lint:boundaries': 'substrat-boundary-lint',
