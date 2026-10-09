@@ -135,6 +135,7 @@ describe('invite routes over the SQLite host — the assignment bound (#1931)', 
       mintBecomeCapabilityBounded: (_env, _node, caller, input) => host.mintBecomeCapabilityBounded(boundTenant, s, caller, input),
       revokeBecomeCapability: (_env, _node, id, by) => host.revokeBecomeCapability(boundTenant, s, id, by),
       exchangeCapability: (_env, _node, secret) => host.exchangeCapability(boundTenant, s, secret, { mode: 'become' }),
+      becomeLinkStates: (_env, _node, ids) => host.becomeLinkStates(boundTenant, s, ids),
       authProvider: async () => {
         throw new Error('accept is not exercised here');
       },

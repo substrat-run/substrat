@@ -260,6 +260,7 @@ export {
   CAPABILITY_BECOME_MINT_OPERATION,
   becomeMintCheck,
   holdingsDigest,
+  readBecomeLinkStates,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
 } from './capability.js';

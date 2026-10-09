@@ -60,12 +60,12 @@ class MemoryDirectory implements InviteDirectory {
     this.invites.set(principal, { principal, roleKey, email, createdAt: 1_700_000_000_000, tokenHash, capabilityId });
   }
   async listInvites() {
-    return [...this.invites.values()].map(({ tokenHash: _hash, capabilityId: _id, ...row }) => row);
+    return [...this.invites.values()].map(({ tokenHash: _hash, ...row }) => row);
   }
   async getInvite(_scopeId: string, principal: string) {
     const row = this.invites.get(principal);
     if (!row) return null;
-    const { tokenHash: _hash, capabilityId: _id, ...rest } = row;
+    const { tokenHash: _hash, ...rest } = row;
     return rest;
   }
   async revokeInvite(scopeId: string, principal: string) {
@@ -222,6 +222,12 @@ function deps(overrides: Partial<InviteRouteDeps<Env, typeof NODE>> = {}): Invit
       cap.revokedBy = by;
       return { ok: true, revoked: true };
     },
+    becomeLinkStates: async (_env, _node, ids) =>
+      ids.map((id) => {
+        const cap = capabilities.get(id);
+        if (!cap || cap.revokedBy) return { state: 'revoked' as const, reason: null };
+        return cap.uses >= 1 ? { state: 'used' as const, reason: null } : { state: 'open' as const, reason: null };
+      }),
     // The scope's exchange: single use, refused once revoked.
     exchangeCapability: async (_env, _node, secret): Promise<CapabilityExchange | null> => {
       log.push('exchangeCapability');
@@ -291,7 +297,9 @@ describe('mountInviteRoutes', () => {
     const list = (await (await app.request('http://app.example/api/invites', { headers: admin }, env())).json()) as {
       invites: Array<{ principal: string; email: string | null }>;
     };
-    expect(list.invites).toEqual([{ principal: body.principal, roleKey: 'editor', email: 'new@acme.example', createdAt: 1_700_000_000_000 }]);
+    expect(list.invites).toEqual([
+      { principal: body.principal, roleKey: 'editor', email: 'new@acme.example', createdAt: 1_700_000_000_000, link: { state: 'open', reason: null } },
+    ]);
   });
 
   it('refuses a role the vertical does not declare, before anything is granted or recorded', async () => {

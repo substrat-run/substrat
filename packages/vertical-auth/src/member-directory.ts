@@ -44,8 +44,12 @@ export function migrateInvites(sql: RegistrySql): void {
   if (!columns.includes('capability_id')) sql.exec('ALTER TABLE invite ADD COLUMN capability_id TEXT');
 }
 
-/** An outstanding invite as the directory returns it — never its token. */
-export type InviteRow = { principal: string; roleKey: string; email: string | null; createdAt: number };
+/**
+ * An outstanding invite as the directory returns it — never its token. `capabilityId` names the
+ * `become` capability its link is (#1686), so a list can ask the scope where that link stands;
+ * null for a legacy hash-only invite.
+ */
+export type InviteRow = { principal: string; roleKey: string; email: string | null; createdAt: number; capabilityId: string | null };
 
 /** One principal as the identity directory knows it at a scope (#1150). */
 export type MemberBinding = { principal: string; logins: number; email: string | null };
@@ -55,6 +59,7 @@ const inviteRowOf = (r: Record<string, unknown>): InviteRow => ({
   roleKey: r.role_key as string,
   email: (r.email as string | null) ?? null,
   createdAt: Number(r.created_at),
+  capabilityId: (r.capability_id as string | null) ?? null,
 });
 
 /**
@@ -75,7 +80,7 @@ export function createInvite(
 /** The scope's outstanding (unclaimed) invites, newest first. No token. */
 export function listInvites(sql: RegistrySql, scopeId: string): InviteRow[] {
   return [...sql.exec(
-    'SELECT principal, role_key, email, created_at FROM invite WHERE scope_id = ? AND claimed = 0 ORDER BY created_at DESC',
+    'SELECT principal, role_key, email, created_at, capability_id FROM invite WHERE scope_id = ? AND claimed = 0 ORDER BY created_at DESC',
     scopeId,
   )].map(inviteRowOf);
 }
@@ -83,7 +88,7 @@ export function listInvites(sql: RegistrySql, scopeId: string): InviteRow[] {
 /** One outstanding invite by its pre-minted principal, or null (#1931). */
 export function getInvite(sql: RegistrySql, scopeId: string, principal: string): InviteRow | null {
   const r = [...sql.exec(
-    'SELECT principal, role_key, email, created_at FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0',
+    'SELECT principal, role_key, email, created_at, capability_id FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0',
     scopeId, principal,
   )][0];
   return r ? inviteRowOf(r) : null;

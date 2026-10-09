@@ -255,6 +255,7 @@ import type {
   BecomeCapabilityInput,
   BoundedBecomeMint,
   BoundedBecomeRevoke,
+  BecomeLinkState,
   PrincipalBecomeCapabilityInput,
   CapabilityExchange,
   CapabilityId,
@@ -325,6 +326,7 @@ import {
   becomeMintCheck,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
+  readBecomeLinkStates,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
   createEntityEdgeVerbs,
@@ -4867,6 +4869,12 @@ export function defineScopeDO(
       });
     }
 
+    /** Where each named `become` link stands (#1686) — a pending-invite list's read. */
+    async becomeLinkStatesFor(ids: string[]): Promise<BecomeLinkState[]> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() => readBecomeLinkStates(doSpineSql(this.sql), ids, instant.parse(new Date().toISOString())));
+    }
+
     /**
      * Revoke a `become` capability a principal minted (#1686) — withdrawing a member invite's
      * link, with `by` recorded as the revoker. False for any other capability.
@@ -6324,6 +6332,8 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_capabilities ADD COLUMN attachments TEXT',
         // #1686: NULL on every row already there — none is a principal-minted become.
         'ALTER TABLE _substrat_capabilities ADD COLUMN target_digest TEXT',
+        // #1686: why the kernel revoked a link itself; NULL for every revoke already there.
+        'ALTER TABLE _substrat_capabilities ADD COLUMN revoked_reason TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
         // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.

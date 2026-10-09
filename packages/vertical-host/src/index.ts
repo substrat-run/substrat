@@ -81,6 +81,7 @@ import {
   capabilityId,
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
+  type BecomeLinkState,
   type CapabilityId,
   type PrincipalBecomeCapabilityInput,
   type CapabilityFilter,
@@ -525,6 +526,8 @@ export interface VerticalScopeHost {
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBecomeCapabilityInput,
   ): Promise<BoundedBecomeMint>;
   revokeBecomeCapability?(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<BoundedBecomeRevoke>;
+  /** Where each named link stands (#1686), so the member roster never lists a dead link as open. */
+  becomeLinkStates?(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]>;
 }
 
 /**
@@ -533,7 +536,7 @@ export interface VerticalScopeHost {
  */
 export interface MemberDirectory {
   listMemberBindings(scopeId: string): Promise<{ principal: string; logins: number; email: string | null }[]>;
-  listInvites(scopeId: string): Promise<{ principal: string; roleKey: string; email: string | null; createdAt: number }[]>;
+  listInvites(scopeId: string): Promise<{ principal: string; roleKey: string; email: string | null; createdAt: number; capabilityId?: string | null }[]>;
   getInvite(scopeId: string, principal: string): Promise<{ roleKey: string } | null>;
   createInvite(
     scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string | null,
@@ -2048,7 +2051,7 @@ export function mountPlatformSurface<Env extends object>(
   type MemberVerbs = Required<Pick<
     VerticalScopeHost,
     | 'assignScopeRoleBounded' | 'listScopeRoleHolders' | 'changeScopeRoleBounded' | 'revokeScopeRolesBounded' | 'revokeScopeRole'
-    | 'mintBecomeCapabilityBounded' | 'revokeBecomeCapability'
+    | 'mintBecomeCapabilityBounded' | 'revokeBecomeCapability' | 'becomeLinkStates'
   >>;
 
   /** The hook, the host's member verbs and the vertical's directory every member route needs, or a 501. */
@@ -2058,7 +2061,7 @@ export function mountPlatformSurface<Env extends object>(
     const host = deps.hostFor(env);
     const verbs: (keyof MemberVerbs)[] = [
       'assignScopeRoleBounded', 'listScopeRoleHolders', 'changeScopeRoleBounded', 'revokeScopeRolesBounded', 'revokeScopeRole',
-      'mintBecomeCapabilityBounded', 'revokeBecomeCapability',
+      'mintBecomeCapabilityBounded', 'revokeBecomeCapability', 'becomeLinkStates',
     ];
     if (verbs.some((v) => typeof host[v] !== 'function')) {
       throw new HTTPException(501, { message: 'this deployment’s scope host predates member management — update @substrat-run/adapter-cloudflare' });
@@ -2133,7 +2136,16 @@ export function mountPlatformSurface<Env extends object>(
       }));
     // An invite's `roleKey` is the role it was minted at; `roles` is what its principal holds now,
     // read from the scope — the one every bound is asked about.
-    const open = invites.map((i) => ({ ...i, roles: roles.get(i.principal) ?? [] }));
+    // #1686: where each invite's link stands, read from the scope in one call — never "open" for
+    // a link the kernel revoked (its principal's holdings changed) or that expired.
+    const ids = invites.flatMap((i) => (i.capabilityId ? [capabilityId.parse(i.capabilityId)] : []));
+    const states = ids.length > 0 ? await surface.host.becomeLinkStates(ref.tenantId, ref.scopeId, ids) : [];
+    const linkOf = new Map(ids.map((id, n) => [id as string, states[n] ?? null]));
+    const open = invites.map(({ capabilityId: link, ...i }) => ({
+      ...i,
+      roles: roles.get(i.principal) ?? [],
+      link: link ? (linkOf.get(link) ?? null) : null,
+    }));
     return c.json(scopeMembers.parse({ roles: [...surface.members.roles], members, invites: open }));
   });
 

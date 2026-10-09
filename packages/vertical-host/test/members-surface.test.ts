@@ -101,6 +101,7 @@ describe('/internal/members — an installed vertical’s members, managed from 
     revokeScopeRolesBounded: host.revokeScopeRolesBounded.bind(host),
     mintBecomeCapabilityBounded: host.mintBecomeCapabilityBounded.bind(host),
     revokeBecomeCapability: host.revokeBecomeCapability.bind(host),
+    becomeLinkStates: host.becomeLinkStates.bind(host),
     revokeScopeRole: async (scope: string, p: PrincipalId, roleKey: string) => {
       await host.admin.unassignRole(staff, { principalId: p, roleKey, node: { tenantId: t1, scopeId: scopeId.parse(scope) } });
       return true;
@@ -131,6 +132,7 @@ describe('/internal/members — an installed vertical’s members, managed from 
     mintBecomeCapabilityBounded: (_env, _node, caller, input) => host.mintBecomeCapabilityBounded(t1, s1, caller, input),
     revokeBecomeCapability: (_env, _node, id, by) => host.revokeBecomeCapability(t1, s1, id, by),
     exchangeCapability: (_env, _node, secret) => host.exchangeCapability(t1, s1, secret, { mode: 'become' }),
+    becomeLinkStates: (_env, _node, ids) => host.becomeLinkStates(t1, s1, ids),
     roles: ['lead', 'agent'],
     directory: () => directory,
     revokeScopeRole: async () => undefined,
@@ -151,7 +153,7 @@ describe('/internal/members — an installed vertical’s members, managed from 
   const rosterOf = async () => (await roster()).json() as Promise<{
     roles: string[];
     members: { principal: string; roles: string[]; logins: number; email: string | null; owner: boolean }[];
-    invites: { principal: string; roleKey: string; roles: string[] }[];
+    invites: { principal: string; roleKey: string; roles: string[]; link?: { state: string; reason: string | null } | null }[];
   }>;
   const invite = (caller: PrincipalId, roleKey: string, email: string | null = null, tenant = t1, scope = s1) =>
     post('/internal/members/invite', { tenantId: tenant, scopeId: scope, caller, origin: 'https://desk.example/', roleKey, email });
@@ -230,6 +232,18 @@ describe('/internal/members — an installed vertical’s members, managed from 
       mode: 'become', principal: minted.principal, mintedBy: owner, label: 'member invite',
       expiresAt: null, maxUses: 1, uses: 1, revokedAt: null,
     });
+  });
+
+  it('lists an invite whose principal was raised since as a dead link, with the reason — never as open', async () => {
+    const minted = (await (await invite(owner, 'agent', 'raised@example.test')).json()) as { principal: PrincipalId; acceptUrl: string };
+    expect((await rosterOf()).invites.find((i) => i.principal === minted.principal)).toMatchObject({ link: { state: 'open', reason: null } });
+    // Raised around the invite row (a path that does not consult it): the link dies at its accept.
+    await host.admin.assignRole(staff, { principalId: minted.principal, roleKey: 'lead', node: { tenantId: t1, scopeId: s1 } });
+    expect((await accept(minted.acceptUrl, 'raised')).status).toBe(400);
+    expect((await rosterOf()).invites.find((i) => i.principal === minted.principal)).toMatchObject({
+      link: { state: 'revoked', reason: 'holdings-changed' },
+    });
+    expect((await post('/internal/members/remove', { tenantId: t1, scopeId: s1, caller: owner, principal: minted.principal })).status).toBe(200);
   });
 
   it('lets an agent invite an agent — the bound is what the caller holds, not a title', async () => {

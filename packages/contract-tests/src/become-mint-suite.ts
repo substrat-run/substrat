@@ -53,6 +53,7 @@ import {
   tenantId,
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
+  type BecomeLinkState,
   type CapabilityId,
   type CapabilityRecord,
   type EntityRef,
@@ -76,6 +77,7 @@ export interface BecomeMintVerbs {
     input: PrincipalBecomeCapabilityInput,
   ): Promise<BoundedBecomeMint>;
   revokeBecomeCapability(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<BoundedBecomeRevoke>;
+  becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]>;
 }
 
 const READ = permissionKey.parse('cap:read');
@@ -306,7 +308,8 @@ export function becomeMintContractSuite(
         const cap = await minted(owner, await seat());
         expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, owner)).toEqual({ ok: true, revoked: true });
         expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' })).toBeNull();
-        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ revokedBy: owner, uses: 0 });
+        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ revokedBy: owner, uses: 0, revokedReason: null });
+        expect(await fixture.verbs.becomeLinkStates(t1, s1, [cap.id])).toEqual([{ state: 'revoked', reason: null }]);
         expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, owner)).toEqual({ ok: true, revoked: false });
       });
 
@@ -331,9 +334,11 @@ export function becomeMintContractSuite(
         expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, reader)).toEqual({ ok: true, revoked: true });
       });
 
-      it('…its live twin still exchanges', async () => {
+      it('…its live twin reads as open, then as used once exchanged', async () => {
         const cap = await minted(owner, await seat());
+        expect(await fixture.verbs.becomeLinkStates(t1, s1, [cap.id])).toEqual([{ state: 'open', reason: null }]);
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+        expect(await fixture.verbs.becomeLinkStates(t1, s1, [cap.id])).toEqual([{ state: 'used', reason: null }]);
       });
 
       it('never revokes an act share, which keeps working', async () => {
@@ -366,7 +371,14 @@ export function becomeMintContractSuite(
       /** The link is refused, revoked by the kernel (no revoker), and its use never taken. */
       const expectDead = async (cap: MintedCapability) => {
         expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' })).toBeNull();
-        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ uses: 0, revokedBy: null, revokedAt: expect.any(String) });
+        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({
+          uses: 0,
+          revokedBy: null,
+          revokedAt: expect.any(String),
+          revokedReason: 'holdings-changed',
+        });
+        // …and a pending-invite list reads it as revoked, with the reason — never as open.
+        expect(await fixture.verbs.becomeLinkStates(t1, s1, [cap.id])).toEqual([{ state: 'revoked', reason: 'holdings-changed' }]);
       };
 
       it('(i) a scope-level role raised', async () => {

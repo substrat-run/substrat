@@ -111,6 +111,7 @@ import {
   type BecomeCapabilityInput,
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
+  type BecomeLinkState,
   type PrincipalBecomeCapabilityInput,
   principalBecomeCapabilityInput,
   type Instant,
@@ -244,6 +245,7 @@ import {
   becomeMintCheck,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
+  readBecomeLinkStates,
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
   createCapabilityVerbs,
@@ -4827,6 +4829,15 @@ export class SqliteScopeHost implements ScopeHost {
         principalId.parse(by),
       ),
     );
+  }
+
+  /**
+   * Where each named `become` link stands (#1686) — what a pending-invite list shows, so a link the
+   * kernel revoked or that expired is never shown as open. A read in the scope's task.
+   */
+  async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.enqueue(() => readBecomeLinkStates(spineSql(rt.db), ids, this.clock()));
   }
 
   /** What a principal holds at this scope, for a `become` exchange (#1686); absent with a checker that cannot say. */
@@ -13013,6 +13024,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_capabilities', 'attachments', 'attachments TEXT');
     // #1686: NULL on every row already there — none is a principal-minted become.
     this.ensureColumn(db, '_substrat_capabilities', 'target_digest', 'target_digest TEXT');
+    this.ensureColumn(db, '_substrat_capabilities', 'revoked_reason', 'revoked_reason TEXT');
     db.exec(GRANT_CHILDREN_INDEX_DDL);
     // Executor retry state (#100), same reasoning: scopes provisioned before it
     // already have the table. Defaults read as "terminal", which is exactly right

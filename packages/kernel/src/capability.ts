@@ -18,6 +18,7 @@ import {
   substratError,
   entityObjectRef,
   type BecomeCapabilityInput,
+  type BecomeLinkState,
   type BecomeMintRefusal,
   type BoundedBecomeRevoke,
   type Coverage,
@@ -117,6 +118,8 @@ export const CAPABILITY_DDL = `
     -- minted (\`holdingsDigest\`). The exchange recomputes it, and a link whose principal's
     -- holdings have changed since is revoked rather than exchanged. NULL on every other row.
     target_digest TEXT,
+    -- #1686: why the kernel itself revoked it ('holdings-changed'); NULL for any other revoke.
+    revoked_reason TEXT,
     -- JSON capabilityAuthor: a principal id (a module minted it, and its authority is
     -- re-checked on every use) or {"platform": …} (HostAdmin minted it).
     minted_by TEXT NOT NULL,
@@ -174,12 +177,14 @@ export interface CapabilityRow {
   revoked_by: string | null;
   /** #1686: a principal-minted `become`'s holdings digest at mint; NULL elsewhere. */
   target_digest?: string | null;
+  /** #1686: why the kernel itself revoked it; NULL otherwise. */
+  revoked_reason?: string | null;
 }
 
 /** Every column a read returns — everything but `token_hash`, which no reader has a use for. */
 export const CAPABILITY_COLUMNS =
   'id, mode, label, entity_type, entity_id, permissions, operations, attachments, principal, minted_by, ' +
-  'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by, target_digest';
+  'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by, target_digest, revoked_reason';
 
 /** The row the permission checker reads for a capability subject (`ScopeTupleReader.capability`). */
 export function capabilityByIdQuery(id: string): { sql: string; params: SqlValue[] } {
@@ -320,6 +325,7 @@ export function capabilityRecordOf(row: CapabilityRow): CapabilityRecord {
     lastUsedAt: row.last_used_at,
     revokedAt: row.revoked_at,
     revokedBy: row.revoked_by === null ? null : JSON.parse(row.revoked_by),
+    revokedReason: row.revoked_reason ?? null,
   };
   return capabilityRecord.parse(
     row.mode === 'become'
@@ -739,7 +745,7 @@ export async function exchangeCapability(
     if (!deps.holdings || !row.target_digest) return null;
     const held = await deps.holdings(principalIdSchema.parse(row.principal));
     if ((await holdingsDigest(held)) !== row.target_digest) {
-      markRevoked(deps.sql, capabilityIdSchema.parse(row.id), null, deps.now);
+      markRevoked(deps.sql, capabilityIdSchema.parse(row.id), null, deps.now, 'holdings-changed');
       return null;
     }
   }
@@ -968,14 +974,40 @@ async function insertBecome(
  * `null` is the kernel's own revoke — a link whose principal's holdings changed (#1686) — which no
  * person or platform actor made, and is recorded with no revoker.
  */
-function markRevoked(sql: ScopedSql, id: CapabilityId, author: CapabilityAuthor | null, now: Instant): boolean {
+function markRevoked(
+  sql: ScopedSql,
+  id: CapabilityId,
+  author: CapabilityAuthor | null,
+  now: Instant,
+  /** The kernel's own revoke says why. */
+  reason: 'holdings-changed' | null = null,
+): boolean {
   return (
     sql.exec(
-      `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
+      `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?, revoked_reason = ?
        WHERE id = ? AND revoked_at IS NULL`,
-      [now, author === null ? null : JSON.stringify(author), id],
+      [now, author === null ? null : JSON.stringify(author), reason, id],
     ).changes === 1
   );
+}
+
+/**
+ * Where each named `become` link stands (#1686), in the order asked — what a pending-invite list
+ * shows beside each invite. One read per id over the scope's own storage; a capability the scope
+ * does not hold reads as `revoked`, never `open`.
+ */
+export function readBecomeLinkStates(sql: ScopedSql, ids: readonly string[], now: Instant): BecomeLinkState[] {
+  return ids.map((raw) => {
+    const q = capabilityByIdQuery(capabilityIdSchema.parse(raw));
+    const row = sql.query<CapabilityRow>(q.sql, q.params)[0];
+    if (!row || row.mode !== 'become') return { state: 'revoked', reason: null };
+    if (row.revoked_at !== null) {
+      return { state: 'revoked', reason: row.revoked_reason === 'holdings-changed' ? 'holdings-changed' : null };
+    }
+    if (row.expires_at !== null && row.expires_at <= now) return { state: 'expired', reason: null };
+    if (row.max_uses !== null && row.uses >= row.max_uses) return { state: 'used', reason: null };
+    return { state: 'open', reason: null };
+  });
 }
 
 /**

@@ -90,7 +90,7 @@ describe('a capability-era invite (#1686)', () => {
 
   it('reads as it always did: listed, fetched and gated by its hash, never its token', () => {
     expect(listInvites(sql, SCOPE)).toEqual([
-      { principal: ANN, roleKey: 'editor', email: 'ann@acme.example', createdAt: expect.any(Number) },
+      { principal: ANN, roleKey: 'editor', email: 'ann@acme.example', createdAt: expect.any(Number), capabilityId: CAP },
     ]);
     expect(getInvite(sql, SCOPE, ANN)).toMatchObject({ principal: ANN, roleKey: 'editor' });
     expect(inviteExists(sql, SCOPE, 'hash-ann')).toBe(true);

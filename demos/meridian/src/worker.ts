@@ -435,6 +435,7 @@ mountInviteRoutes(app, {
     hostFor(env).revokeBecomeCapability(node.tenantId, node.scopeId, capabilityId, by),
   exchangeCapability: (env, node, secret) =>
     hostFor(env).exchangeCapability(node.tenantId, node.scopeId, secret, { mode: 'become' }),
+  becomeLinkStates: (env, node, ids) => hostFor(env).becomeLinkStates(node.tenantId, node.scopeId, ids),
   authProvider: authProviderFor,
 });
 

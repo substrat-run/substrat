@@ -45,6 +45,7 @@ import { HTTPException } from 'hono/http-exception';
 import {
   boundedBecomeMint,
   boundedBecomeRevoke,
+  becomeLinkState,
   capabilityId,
   coverage,
   coverageRefusal,
@@ -52,6 +53,7 @@ import {
   z,
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
+  type BecomeLinkState,
   type CapabilityExchange,
   type CapabilityId,
   type Coverage,
@@ -63,7 +65,7 @@ import {
 } from '@substrat-run/contracts';
 import { capabilityTokenHash, plausibleCapabilitySecret, ulid } from '@substrat-run/kernel';
 import { redeemBecomeLink } from './become-link.js';
-import type { IdentityStub } from './identity-do.js';
+import type { IdentityStub, InviteRow } from './identity-do.js';
 import { invitePath, sha256Hex } from './owner-claim-link.js';
 import { bodyOf } from './request-body.js';
 import type { AuthProvider } from './provider.js';
@@ -144,6 +146,12 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
    * withdrawal does to the capability once the row is gone, and what a failed create undoes.
    */
   revokeBecomeCapability: (env: E, node: N, capabilityId: CapabilityId, by: PrincipalId) => Promise<BoundedBecomeRevoke>;
+  /**
+   * Where each named link stands (#1686) — the host's `becomeLinkStates`, in the order asked. What
+   * `GET /api/invites` shows beside each invite, so a link the scope revoked or that expired is
+   * never listed as open.
+   */
+  becomeLinkStates: (env: E, node: N, capabilityIds: CapabilityId[]) => Promise<BecomeLinkState[]>;
   /** Exchange an invite's secret in the scope (#1686) — the host's `exchangeCapability`, `become` only. */
   exchangeCapability: (env: E, node: N, secret: string) => Promise<CapabilityExchange | null>;
   /** The configured `AuthProvider` — who is accepting. Resolved per request, as the vertical does. */
@@ -228,6 +236,25 @@ export async function mintMemberInvite(
   }
   const origin = input.origin.replace(/\/$/, '');
   return { ok: true, invite: { principal, roleKey: input.roleKey, email: input.email, acceptUrl: `${origin}${invitePath(link.secret)}` } };
+}
+
+/** An open invite as a list shows it (#1686): the row, without its capability id, and where its link stands. */
+export type ListedInvite = Omit<InviteRow, 'capabilityId'> & { link: BecomeLinkState | null };
+
+/**
+ * Join each invite to where its link stands (#1686), in ONE read of the scope — the list every
+ * pending-invite door shows, so a link the scope revoked (its principal's holdings changed) or that
+ * expired is never listed as open. A legacy hash-only invite has no link to read: `link: null`.
+ */
+export async function withLinkStates(
+  rows: readonly InviteRow[],
+  states: (capabilityIds: CapabilityId[]) => Promise<BecomeLinkState[]>,
+): Promise<ListedInvite[]> {
+  const ids = rows.flatMap((r) => (r.capabilityId ? [capabilityId.parse(r.capabilityId)] : []));
+  const read = ids.length > 0 ? (await states(ids)).map((s) => becomeLinkState.parse(s)) : [];
+  if (read.length !== ids.length) throw new HTTPException(500, { message: 'the scope answered a link state per id it was not asked for — refusing' });
+  const byId = new Map(ids.map((id, i) => [id as string, read[i]!]));
+  return rows.map(({ capabilityId: id, ...row }) => ({ ...row, link: id ? byId.get(id)! : null }));
 }
 
 /**
@@ -334,7 +361,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     await deps.requireAdmin(c);
-    return c.json({ roles: [...deps.roles], invites: await deps.directory(c.env, node).listInvites(node.scopeId) });
+    const rows = await deps.directory(c.env, node).listInvites(node.scopeId);
+    const invites = await withLinkStates(rows, (ids) => deps.becomeLinkStates(c.env, node, ids));
+    return c.json({ roles: [...deps.roles], invites });
   });
 
   app.post('/api/invites', async (c) => {

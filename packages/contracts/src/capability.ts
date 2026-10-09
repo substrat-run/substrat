@@ -148,6 +148,12 @@ const capabilityRecordCommon = {
   lastUsedAt: instant.nullable(),
   revokedAt: instant.nullable(),
   revokedBy: capabilityAuthor.nullable(),
+  /**
+   * Why the kernel itself revoked it, when it did (#1686): `holdings-changed` — a principal-minted
+   * `become` whose principal's holdings changed between mint and exchange. Null for a revoke a
+   * person or the platform made, and for a live capability. Absent from a host that predates it.
+   */
+  revokedReason: z.enum(['holdings-changed']).nullable().optional(),
 };
 
 /**
@@ -215,6 +221,18 @@ export const boundedBecomeRevoke = z.union([
   z.object({ ok: z.literal(false), coverage }),
 ]);
 export type BoundedBecomeRevoke = z.infer<typeof boundedBecomeRevoke>;
+
+/**
+ * Where a `become` link stands (#1686) — what a pending-invite list shows beside each invite, so
+ * a link the kernel revoked is never shown as open. `used`: exchanged up to its limit. A
+ * capability the scope does not hold reads as `revoked`.
+ */
+export const becomeLinkState = z.object({
+  state: z.enum(['open', 'used', 'revoked', 'expired']),
+  /** Why the kernel revoked it, when it did; null otherwise. */
+  reason: z.enum(['holdings-changed']).nullable(),
+});
+export type BecomeLinkState = z.infer<typeof becomeLinkState>;
 
 /**
  * What an exchange yields: a session to act as the capability (`act`), or the principal

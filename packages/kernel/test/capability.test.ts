@@ -20,7 +20,9 @@ import {
   capabilityTokenHash,
   carriesSecret,
   guardSecrets,
+  holdingsDigest,
   mintCapabilitySecret,
+  readBecomeLinkStates,
   persistedText,
   redactSecrets,
   type CapabilityRow,
@@ -379,5 +381,62 @@ describe('the operator read of the directory (#1686)', () => {
       expect(status === 'live').toBe(capabilityExchangeable(row, NOW));
       expect(status === 'live' || status === 'used-up').toBe(capabilityLive(row, NOW));
     }
+  });
+});
+
+/**
+ * Where a `become` link stands (#1686) — what a pending-invite list shows, so a link the kernel
+ * revoked or that expired is never listed as open. One row per id, in the order asked.
+ */
+describe('readBecomeLinkStates', () => {
+  const become = (over: Partial<CapabilityRow> = {}): CapabilityRow =>
+    capRow({ mode: 'become', entity_type: null, entity_id: null, permissions: null, principal: ALICE, max_uses: 1, ...over });
+  const sqlOf = (rows: Record<string, CapabilityRow>): ScopedSql => ({
+    query: <T,>(_sql: string, params?: unknown[]) => (rows[String(params?.[0])] ? [rows[String(params[0])]] : []) as unknown as T[],
+    exec: () => ({ changes: 0 }),
+  });
+  const ids = ['01JZ00000000000000000000C1', '01JZ00000000000000000000C2', '01JZ00000000000000000000C3',
+    '01JZ00000000000000000000C4', '01JZ00000000000000000000C5', '01JZ00000000000000000000C6'];
+
+  it('reads open, used, expired, revoked (with and without the kernel\'s reason), and a missing one as revoked', () => {
+    const sql = sqlOf({
+      [ids[0]!]: become({ id: ids[0]! }),
+      [ids[1]!]: become({ id: ids[1]!, uses: 1 }),
+      [ids[2]!]: become({ id: ids[2]!, expires_at: NOW }),
+      [ids[3]!]: become({ id: ids[3]!, revoked_at: NOW, revoked_by: null, revoked_reason: 'holdings-changed' }),
+      [ids[4]!]: become({ id: ids[4]!, revoked_at: NOW, revoked_by: JSON.stringify(ALICE) }),
+    });
+    expect(readBecomeLinkStates(sql, ids, NOW as never)).toEqual([
+      { state: 'open', reason: null },
+      { state: 'used', reason: null },
+      { state: 'expired', reason: null },
+      { state: 'revoked', reason: 'holdings-changed' },
+      { state: 'revoked', reason: null },
+      { state: 'revoked', reason: null },
+    ]);
+  });
+
+  it('an act share named by mistake never reads as an open link', () => {
+    expect(readBecomeLinkStates(sqlOf({ [ids[0]!]: capRow({ id: ids[0]! }) }), [ids[0]!], NOW as never)).toEqual([
+      { state: 'revoked', reason: null },
+    ]);
+  });
+});
+
+describe('holdingsDigest', () => {
+  const d = (folder: string) => ({ entityType: 'folder', entityId: folder });
+  it('is order-independent and deduplicated, and moves with any role, grant or narrowed grant', async () => {
+    const base = await holdingsDigest({ permissions: [READ, WRITE], roles: ['a', 'b'], granted: [READ], narrowed: [{ permission: READ, entity: d('F') }] });
+    expect(
+      await holdingsDigest({ permissions: [WRITE, READ], roles: ['b', 'a', 'a'], granted: [READ, READ], narrowed: [{ permission: READ, entity: d('F') }, { permission: READ, entity: d('F') }] }),
+    ).toBe(base);
+    expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['a'], granted: [READ], narrowed: [{ permission: READ, entity: d('F') }] })).not.toBe(base);
+    expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['a', 'b'], granted: [], narrowed: [{ permission: READ, entity: d('F') }] })).not.toBe(base);
+    expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['a', 'b'], granted: [READ], narrowed: [{ permission: READ, entity: d('G') }] })).not.toBe(base);
+  });
+
+  it('does not move with a role\'s expansion: definitions are the vertical\'s code, not the inviter\'s doing', async () => {
+    const one = await holdingsDigest({ permissions: [READ], roles: ['member'], granted: [], narrowed: [] });
+    expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['member'], granted: [], narrowed: [] })).toBe(one);
   });
 });

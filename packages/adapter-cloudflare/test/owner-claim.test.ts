@@ -296,6 +296,7 @@ describe('member invite link as a become capability (#1686)', () => {
       mintBecomeCapabilityBounded: (_env, n, caller, input) => host.mintBecomeCapabilityBounded(n.tenantId, n.scopeId, caller, input),
       revokeBecomeCapability: (_env, n, id, by) => host.revokeBecomeCapability(n.tenantId, n.scopeId, id, by),
       exchangeCapability: (_env, n, secret) => host.exchangeCapability(n.tenantId, n.scopeId, secret, { mode: 'become' }),
+      becomeLinkStates: (_env, n, ids) => host.becomeLinkStates(n.tenantId, n.scopeId, ids),
       authProvider: async () => ({
         handle: async () => new Response(null, { status: 404 }),
         resolve: async (headers) => {
@@ -401,6 +402,23 @@ describe('member invite link as a become capability (#1686)', () => {
     const [cap] = await capabilities();
     expect(cap!.uses).toBe(0);
     expect((await accept(token)).status).toBe(200); // the live twin, where it belongs
+  });
+
+  it('lists an invite whose principal was raised since as a dead link, with the reason — and a legacy one with none', async () => {
+    const list = async () =>
+      ((await (await app.request('/api/invites', { headers: { 'x-caller': owner } })).json()) as {
+        invites: { principal: string; link: { state: string; reason: string | null } | null }[];
+      }).invites;
+    const { principal, token } = await linkOf(await invite(owner, 'agent'));
+    expect((await list()).find((i) => i.principal === principal)?.link).toEqual({ state: 'open', reason: null });
+    await host.assignScopeRole(s, principalId.parse(principal), 'owner'); // raised around the invite row
+    expect((await accept(token)).status).toBe(400);
+    expect((await list()).find((i) => i.principal === principal)?.link).toEqual({ state: 'revoked', reason: 'holdings-changed' });
+    const [cap] = await capabilities();
+    expect(cap).toMatchObject({ uses: 0, revokedBy: null, revokedReason: 'holdings-changed' });
+    const legacy = principalId.parse(ulid());
+    await identity().createInvite(s, legacy, 'agent', null, await sha256Hex('ef'.repeat(32)));
+    expect((await list()).find((i) => i.principal === legacy)?.link).toBeNull();
   });
 
   it('an invite minted before #1686 — a hash-only row — still accepts by its hash in the real directory', async () => {

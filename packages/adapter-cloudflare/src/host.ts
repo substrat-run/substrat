@@ -70,6 +70,7 @@ import {
   mintedCapability,
   boundedBecomeMint,
   boundedBecomeRevoke,
+  becomeLinkState,
   principalBecomeCapabilityInput,
   capabilityGrant,
   principalId,
@@ -185,6 +186,7 @@ import {
   type BecomeCapabilityInput,
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
+  type BecomeLinkState,
   type PrincipalBecomeCapabilityInput,
   type CapabilityExchange,
   type CapabilityId,
@@ -1325,6 +1327,8 @@ interface ScopeStubRpc {
   ): Promise<BoundedBecomeMint>;
   /** Revoke a `become` a principal minted (#1686); false for any other capability. */
   revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke>;
+  /** Where each named `become` link stands (#1686). */
+  becomeLinkStatesFor(ids: string[]): Promise<BecomeLinkState[]>;
   /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
   listCapabilities(filter?: CapabilityFilter): Promise<CapabilityPage>;
   /** #1834: the system door's state read — where a module's schedules stand on this scope
@@ -4994,6 +4998,16 @@ export class CloudflareScopeHost implements ScopeHost {
     return boundedBecomeRevoke.parse(
       await this.scopeStub(scopeId).revokeBecomeCapabilityFor(tenantId, scopeId, capabilityId, principalId.parse(by)),
     );
+  }
+
+  /**
+   * Where each named `become` link stands (#1686) — what a pending-invite list shows beside each
+   * invite, so a link the kernel revoked or that expired is never shown as open.
+   */
+  async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
+    await this.scopeRoleGate(tenantId, scopeId, 'becomeLinkStates');
+    if (ids.length === 0) return [];
+    return (await this.scopeStub(scopeId).becomeLinkStatesFor([...ids])).map((state) => becomeLinkState.parse(state));
   }
 
   /** The (tenant, scope) gate the scope-role verbs share — `assignScopeRoleBounded`'s two checks. */
