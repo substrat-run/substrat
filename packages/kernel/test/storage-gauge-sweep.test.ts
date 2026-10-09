@@ -22,6 +22,8 @@ const DAY = 86_400_000;
 
 function gaugeHost(opts: {
   scopes: ScopeId[];
+  /** Scopes in another status than active. */
+  statusOf?: Record<string, string>;
   /** When the phase last tried each scope. */
   tried?: Record<string, string>;
   drainDue?: (s: string) => Promise<void>;
@@ -30,7 +32,12 @@ function gaugeHost(opts: {
   const recorded: ScopeStorageReadingInput[] = [];
   const pruned: number[] = [];
   const admin: Record<string, unknown> = {
-    listScopes: async () => opts.scopes.map((id) => ({ id, tenantId: T, status: 'active', vertical: 'todo' })),
+    listScopes: async (_a: unknown, filter?: { status?: string | string[] }) => {
+      const wanted = filter?.status === undefined ? undefined : [filter.status].flat();
+      return opts.scopes
+        .map((id) => ({ id, tenantId: T, status: opts.statusOf?.[id] ?? 'active', vertical: 'todo' }))
+        .filter((s) => wanted === undefined || wanted.includes(s.status));
+    },
     listConnections: async () => [],
   };
   if (opts.gauge !== false) {
@@ -203,6 +210,42 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     const report = await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: { read: r.read } });
     expect(recorded.map((x) => x.bytes)).toEqual([null, null]);
     expect(report.storage).toMatchObject({ failed: 2, recorded: 0 });
+  });
+
+  it('also reads every non-serving scope that holds a store, which no drain reaches, and never a provisioning one', async () => {
+    const [active, suspended, archiving, archived, provisioning, reaped] = [sid(), sid(), sid(), sid(), sid(), sid()];
+    const { host, recorded } = gaugeHost({
+      scopes: [active, suspended, archiving, archived, provisioning, reaped],
+      statusOf: {
+        [suspended]: 'suspended',
+        [archiving]: 'archiving',
+        [archived]: 'archived',
+        [provisioning]: 'provisioning',
+        [reaped]: 'reaped',
+      },
+    });
+    const r = reader();
+    // The drains walk active scopes only; here the platform drain reaches none of them.
+    const report = await sweep(host, {
+      drainRetries: false,
+      drainPlatformRequestsFn: async () => ({ ...drained, unreachable: true }),
+      storageGauge: { read: r.read },
+    });
+    expect([...r.asked].sort()).toEqual([suspended, archiving, archived].sort());
+    expect(recorded.map((x) => x.scopeId).sort()).toEqual([suspended, archiving, archived].sort());
+    expect(report.storage).toMatchObject({ reached: 0, resting: 3, due: 3, read: 3 });
+  });
+
+  it('reads a non-serving scope once a day, like any other, so its sample never goes stale', async () => {
+    const [archived, yesterday] = [sid(), sid()];
+    const { host } = gaugeHost({
+      scopes: [archived, yesterday],
+      statusOf: { [archived]: 'archived', [yesterday]: 'archived' },
+      tried: { [archived]: ago(3 * DAY), [yesterday]: ago(DAY / 2) },
+    });
+    const r = reader();
+    await sweep(host, { drainRetries: false, storageGauge: { read: r.read } });
+    expect(r.asked).toEqual([archived]);
   });
 
   it('is off when the option is unset, or the host keeps no gauge', async () => {

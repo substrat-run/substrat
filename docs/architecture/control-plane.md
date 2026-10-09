@@ -1221,11 +1221,16 @@ what Cloudflare bills a DO for. It is not live row volume.
 The scheduled pass keeps a **stored** figure beside the live one, and `GET /meters` serves it
 as `storage` on each `perTenant` row and summed on the reading. Serving it is a directory read.
 
-- **No wake of its own.** The pass already reaches every active scope's DO on every tick,
-  through the platform-intent drain (`/internal/platform-requests` → the scope DO). The
-  storage phase runs straight after it and reads only scopes that drain reached in the same
-  pass (the executor drain, on a host with no platform drain). A scope nothing woke is never
-  read, so a sample is one extra request to a DO that is already awake. On the hosted plane
+- **Every scope that holds a store is measured.** That is every status but `provisioning`
+  (no store yet) and `reaped` (its store is gone). An archived or suspended scope still holds
+  its storage until reap, so it is in the figure and on the bill.
+- **No wake added to the serving fleet.** The pass already reaches every active scope's DO on
+  every tick, through the platform-intent drain (`/internal/platform-requests` → the scope DO).
+  The storage phase runs straight after it and reads an ACTIVE scope only when that drain
+  reached it in the same pass (the executor drain, on a host with no platform drain), so the
+  read is one extra request to a DO that is already awake. A NON-SERVING scope (suspended,
+  archiving, archived) is reached by no drain, so the phase reads it anyway: that is the one
+  wake the gauge adds, at most once a day per such scope, inside the same batch. On the hosted plane
   the read goes through the vertical's `/internal/database-size`, the same route as the live
   reading, with the same rule: no deployment resolves, the read fails; it never falls back to
   the control plane's placeholder namespace.

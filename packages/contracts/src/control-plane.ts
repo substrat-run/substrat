@@ -1713,11 +1713,11 @@ export const storageGauge = z.object({
   /** What `bytes` is a sum of. Only scope databases, for now. */
   basis: z.literal('scope-databases'),
   excluded: z.array(storageExclusion),
-  /** Sum of the latest reading of every sampled, non-reaped scope. */
+  /** Sum of the latest reading of every sampled scope that holds a store (not provisioning, not reaped). */
   bytes: z.number().int().nonnegative(),
   /** Non-reaped scopes with at least one reading. */
   sampled: z.number().int().nonnegative(),
-  /** Every non-reaped scope: the denominator. */
+  /** Every scope that holds a store, serving or not (not provisioning, not reaped): the denominator. */
   total: z.number().int().nonnegative(),
   /** The stalest reading in the sum, or null when nothing is sampled. */
   oldestReadAt: instant.nullable(),

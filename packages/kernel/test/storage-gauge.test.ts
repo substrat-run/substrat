@@ -65,8 +65,9 @@ describe('storage gauge arithmetic (#1524)', () => {
       scopes: [
         { tenantId: t(1), status: 'active' },
         { tenantId: t(1), status: 'reaped' }, // no storage left: not in the denominator
+        { tenantId: t(1), status: 'provisioning' }, // no store yet: not in it either
         { tenantId: t(2), status: 'active' },
-        { tenantId: t(2), status: 'archived' },
+        { tenantId: t(2), status: 'archived' }, // still holds its storage: counted
       ],
       storage: [
         { tenantId: t(1), bytes: 1000, readAt: '2026-08-06T00:00:00.000Z' },

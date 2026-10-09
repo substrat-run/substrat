@@ -10,9 +10,11 @@
 A tenant's storage is now a stored gauge: `GET /meters` carries a storage figure per tenant and for the fleet, and serving it wakes no scope.
 
 The scheduled pass samples scope database sizes in a new storage phase, configured with
-`storageGauge: { read }` on `runPlatformSweep`. It reads only scopes an earlier phase of the
-same pass already reached (the platform-intent drain, or the executor drain on a host without
-one), so a sample never wakes an idle scope. A scope is due once a day, at most 100 per pass,
+`storageGauge: { read }` on `runPlatformSweep`. It measures every scope that holds a store
+(active, suspended, archiving, archived; never provisioning or reaped). An active scope is read
+only when an earlier phase of the same pass already reached it (the platform-intent drain, or
+the executor drain on a host without one), so the serving fleet gains no wake. A non-serving
+scope, which no drain reaches, is read anyway, once a day. A scope is due once a day, at most 100 per pass,
 never-tried first and then the longest since a try. A failed read keeps the last stored value
 and is retried a day later, not on every pass.
 

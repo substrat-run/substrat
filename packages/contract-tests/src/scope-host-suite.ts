@@ -9228,6 +9228,53 @@ export function scopeHostContractSuite(
         });
       });
 
+      it('keeps an archived scope in the figure and refreshes it, so the tenant is not stuck stale', async () => {
+        const ta = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: ta, slug: 'gauge-archived', name: 'Gauge Archived' });
+        const s = await newScope(ta);
+        const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000).toISOString();
+        await record(ta, s, 4096, threeDaysAgo);
+        await host.admin.archiveScope(staff, ta, s);
+        // Archived storage is still storage until reap: counted, and stale until re-read.
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage).toMatchObject({
+          sampled: 1,
+          total: 1,
+          oldestReadAt: threeDaysAgo,
+        });
+
+        // No drain reaches an archived scope; the storage phase reads it anyway, once a day.
+        const before = new Date().toISOString();
+        const report = await runPlatformSweep(host, {
+          actor: staff,
+          fetch: connectorTestFetch,
+          sweepers: {},
+          drainRetries: false,
+          storageGauge: { read: (scope) => host.admin.scopeDatabaseSize(staff, scope.tenantId, scope.id), batch: 10_000 },
+        });
+        expect(report.errors.filter((e) => e.kind === 'storage' && e.id === s)).toEqual([]);
+        const after = (await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage!;
+        expect(after).toMatchObject({ sampled: 1, total: 1, failing: 0 });
+        expect(after.oldestReadAt! >= before).toBe(true);
+        expect(after.bytes).toBeGreaterThan(0);
+      });
+
+      it('leaves a provisioning scope, which has no store yet, out of the figure entirely', async () => {
+        const tp = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tp, slug: 'gauge-provisioning', name: 'Gauge Provisioning' });
+        const s = await newScope(tp);
+        const pending = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tp, scopeId: pending }); // not activated
+        expect((await host.admin.getScopeRecord(staff, tp, pending))!.status).toBe('provisioning');
+        await record(tp, s, 10, day(0, '08:00:00'));
+        // A reading for it is refused too, so it can never enter the sum.
+        expect(await record(tp, pending, 99, day(0, '08:00:00'))).toEqual({ recorded: 0 });
+        expect((await host.admin.readMeters(staff, { tenantId: tp })).perTenant[0]!.storage).toMatchObject({
+          bytes: 10,
+          sampled: 1,
+          total: 1, // not "1 of 2": the tenant's figure is whole
+        });
+      });
+
       it("deletes a fork's samples when the fork is deleted", async () => {
         const tk = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tk, slug: 'gauge-fork', name: 'Gauge Fork' });

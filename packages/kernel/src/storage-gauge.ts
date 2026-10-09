@@ -49,6 +49,13 @@ export const SCOPE_STORAGE_DDL = `
   );
 `;
 
+/**
+ * The scopes that hold a store, and so have a size: every status but `provisioning` (no store
+ * yet) and `reaped` (its store is gone). A non-serving scope (suspended, archiving, archived)
+ * still holds its storage until reap, so it is measured and belongs on the bill.
+ */
+export const STORED_SCOPE_STATUSES = ['active', 'suspended', 'archiving', 'archived'] as const;
+
 /** How long a day's sample is kept: thirteen months, so a year can be compared with the one before it. */
 export const STORAGE_GAUGE_RETENTION_MONTHS = 13;
 
@@ -79,7 +86,7 @@ export interface ScopeStorageAttempt {
 }
 
 /**
- * Filter for `listScopeStorage`. `latest` returns one row per non-reaped scope, its most
+ * Filter for `listScopeStorage`. `latest` returns one row per stored scope, its most
  * recent day, and ignores `since`/`until`/`limit`: that set is bounded by the scope count,
  * the same as `listScopes`. Otherwise it is history, ordered (scope, day), `since`/`until`
  * inclusive UTC days, at most `limit` rows.
@@ -129,7 +136,7 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
     sql(
       `INSERT INTO _substrat_scope_storage_attempts (scope_id, tenant_id, attempted_at, error)
        SELECT scope_id, tenant_id, ?, ? FROM scopes
-        WHERE scope_id = ? AND tenant_id = ? AND status <> 'reaped'
+        WHERE scope_id = ? AND tenant_id = ? AND status NOT IN ('reaped', 'provisioning')
        ON CONFLICT (scope_id) DO UPDATE SET attempted_at = excluded.attempted_at, error = excluded.error
         WHERE excluded.attempted_at >= _substrat_scope_storage_attempts.attempted_at`,
       [readAt, r.error ?? null, r.scopeId, r.tenantId],
@@ -138,7 +145,7 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
     recorded += sql(
       `INSERT INTO _substrat_scope_storage (scope_id, day, tenant_id, bytes, read_at)
        SELECT scope_id, ?, tenant_id, ?, ? FROM scopes
-        WHERE scope_id = ? AND tenant_id = ? AND status <> 'reaped'
+        WHERE scope_id = ? AND tenant_id = ? AND status NOT IN ('reaped', 'provisioning')
        ON CONFLICT (scope_id, day) DO UPDATE SET bytes = excluded.bytes, read_at = excluded.read_at
         WHERE excluded.read_at >= _substrat_scope_storage.read_at
        RETURNING 1`,
@@ -158,7 +165,7 @@ interface SampleRow {
 
 /** Read samples — see `ScopeStorageFilter`. Every row is parsed on the way out. */
 export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilter = {}): ScopeStorageSample[] {
-  const where: string[] = ["s.status <> 'reaped'"];
+  const where: string[] = ["s.status NOT IN ('reaped', 'provisioning')"];
   const params: (string | number)[] = [];
   if (filter.tenantId) {
     where.push('s.tenant_id = ?');
@@ -210,7 +217,7 @@ export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilt
 }
 
 /**
- * Every non-reaped scope's latest attempt — what the storage phase picks due scopes by, and
+ * Every stored scope's latest attempt — what the storage phase picks due scopes by, and
  * what a meter reading names failing scopes from. `tenantId` narrows to one tenant.
  */
 export function listScopeStorageAttemptRows(sql: RedactionSql, tenantId?: TenantId): ScopeStorageAttempt[] {
@@ -218,7 +225,7 @@ export function listScopeStorageAttemptRows(sql: RedactionSql, tenantId?: Tenant
     `SELECT a.tenant_id, a.scope_id, a.attempted_at, a.error
        FROM _substrat_scope_storage_attempts a
        JOIN scopes s ON s.scope_id = a.scope_id AND s.tenant_id = a.tenant_id
-      WHERE s.status <> 'reaped'${tenantId ? ' AND s.tenant_id = ?' : ''}
+      WHERE s.status NOT IN ('reaped', 'provisioning')${tenantId ? ' AND s.tenant_id = ?' : ''}
       ORDER BY a.scope_id`,
     tenantId ? [tenantId] : [],
   ) as { tenant_id: string; scope_id: string; attempted_at: string; error: string | null }[];
@@ -245,9 +252,10 @@ export function forgetScopeStorage(sql: RedactionSql, scopeId: string): void {
 }
 
 /**
- * Fold latest samples into one gauge. `total` is the caller's count of non-reaped scopes;
- * samples are expected to be the latest per non-reaped scope (`listScopeStorage({ latest })`),
- * and attempts the latest per non-reaped scope (`listScopeStorageAttempts`).
+ * Fold latest samples into one gauge. `total` is the caller's count of stored scopes
+ * (`STORED_SCOPE_STATUSES`); samples are expected to be the latest per stored scope
+ * (`listScopeStorage({ latest })`), and attempts the latest per stored scope
+ * (`listScopeStorageAttempts`).
  */
 export function foldStorageGauge(
   samples: readonly { bytes: number; readAt: string }[],

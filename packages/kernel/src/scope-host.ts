@@ -4104,7 +4104,7 @@ export interface HostAdmin {
    * database sizes. Each attempt replaces the scope's attempt row (what the pass picks due
    * scopes by); a successful one also writes the day's sample, one row per (scope, UTC day),
    * a later same-day reading replacing an earlier one. A failed one leaves the last sample
-   * standing. Rows are written only for a non-reaped scope the directory holds under the named
+   * standing. Rows are written only for a stored (not provisioning, not reaped) scope the directory holds under the named
    * tenant. Returns how many SAMPLE rows were written. Not audited, like `recordSweepRun`:
    * retention-bounded telemetry, not evidence.
    *
@@ -4117,7 +4117,7 @@ export interface HostAdmin {
    * `ScopeStorageFilter`. A directory read that wakes no scope. Access-logged (K-24).
    */
   listScopeStorage?(actor: PlatformActorId, filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
-  /** Every non-reaped scope's latest storage-read attempt (#1524): the storage phase's due list. Access-logged. */
+  /** Every stored scope's latest storage-read attempt (#1524): the storage phase's due list. Access-logged. */
   listScopeStorageAttempts?(actor: PlatformActorId): Promise<ScopeStorageAttempt[]>;
   /**
    * Delete storage samples past `STORAGE_GAUGE_RETENTION_MONTHS`, oldest first and at most

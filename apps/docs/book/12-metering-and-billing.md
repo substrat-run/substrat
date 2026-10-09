@@ -164,12 +164,14 @@ model host, and that call is not metered.
 one's size as the Durable Object SQL API reports it (`page_count × page_size` on SQLite).
 There are two readings of it.
 
-The **stored** figure is in the console's Meters view and on each tenant's page. The scheduled
-pass samples each scope at most once a day, and only a scope another part of the same pass
-already woke, so the gauge never wakes a scope nobody uses. It keeps one sample per scope per
-day for thirteen months. The figure says how many scopes it covers and how old its oldest
-sample is, and it is called a total only when it covers every scope with a sample under two
-days old.
+The **stored** figure is in the console's Meters view and on each tenant's page. It covers
+every scope that holds data, archived and suspended ones included, since their storage is
+kept until they are reaped. The scheduled pass samples each scope at most once a day. A
+serving scope is read only when another part of the same pass already woke it; a scope that
+is not serving is read anyway, since nothing else wakes it. The pass keeps one sample per
+scope per day for thirteen months. The figure says how many scopes it covers, how old its
+oldest sample is and how many scopes' last read failed, and it is called a total only when it
+covers every scope, none is failing and every sample is under two days old.
 
 The **live** reading is a button on the tenant's page. It wakes every scope it reads, so it
 waits to be asked.

@@ -25,7 +25,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
-import { STORAGE_GAUGE_PRUNE_BATCH, type ScopeStorageReadingInput } from './storage-gauge.js';
+import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, type ScopeStorageReadingInput } from './storage-gauge.js';
 import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -719,11 +719,16 @@ export interface PlatformSweepReport {
 /**
  * How the storage-gauge phase samples (#1524). Every number here is a bound on DO requests.
  *
- * The phase reads ONLY scopes an earlier phase of the same pass already reached: the
- * platform-intent drain when `drainPlatformRequestsFn` is set (on the hosted plane it is the
- * phase that wakes the vertical's DO), the executor drain otherwise. A scope nothing woke this
- * pass is never read, so the gauge never wakes an idle scope of its own accord. What a read
- * adds is one request to a DO that is already awake.
+ * It samples every scope that holds a store (`STORED_SCOPE_STATUSES`), from two sources:
+ * - an ACTIVE scope only when an earlier phase of the same pass already reached it: the
+ *   platform-intent drain when `drainPlatformRequestsFn` is set (on the hosted plane it is the
+ *   phase that wakes the vertical's DO), the executor drain otherwise. An active scope nothing
+ *   reached is not read, so the gauge adds no wake to the serving fleet: a read is one more
+ *   request to a DO that is already awake.
+ * - a NON-SERVING scope (suspended, archiving, archived) always. Nothing else wakes it, and it
+ *   still holds its storage until reap, so it belongs on the bill. This is the one wake the
+ *   gauge adds: at most once a day per such scope, inside the same batch.
+ * A provisioning scope has no store yet and is never read.
  */
 export interface StorageGaugeSweepOptions {
   /**
@@ -749,8 +754,10 @@ export const STORAGE_SAMPLE_MAX_AGE_MS = 86_400_000;
 
 /** What the storage-gauge phase did in one pass (#1524). */
 export interface StorageGaugeSweepReport {
-  /** Scopes an earlier phase reached this pass: the only ones the phase may read. */
+  /** Active scopes an earlier phase reached this pass: the only active ones the phase may read. */
   reached: number;
+  /** Non-serving scopes that hold a store (suspended, archiving, archived): read without a drain. */
+  resting: number;
   /** Reached scopes never tried, or last tried at least `maxAgeMs` ago. */
   due: number;
   /** Due scopes left for a later pass because the batch was full. */
@@ -1210,7 +1217,7 @@ export async function runPlatformSweep(
     typeof host.admin.recordScopeStorage === 'function' &&
     typeof host.admin.listScopeStorageAttempts === 'function'
   ) {
-    report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, [...reachedThisPass.values()], report);
+    report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, reachedThisPass, report);
   }
 
   // -- provision reconcile (#1172, #1653) -------------------------------------
@@ -2731,22 +2738,25 @@ export function startPlatformSweeper(
   };
 }
 
-/**
- * One pass of the storage-gauge phase (#1524): try the due share of the scopes this pass
- * already reached, record every attempt in one directory call, then prune past retention. A
- * failed read is an error entry; its scope keeps its last sample and waits a day like any other.
- */
 const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+
+/**
+ * One pass of the storage-gauge phase (#1524): try the due share of the active scopes this
+ * pass already reached and of the non-serving scopes that hold a store, record every attempt
+ * in one directory call, then prune past retention. A failed read is an error entry; its
+ * scope keeps its last sample and waits a day like any other.
+ */
 
 async function sweepStorageGauge(
   admin: HostAdmin,
   options: PlatformSweepOptions,
   gauge: StorageGaugeSweepOptions,
-  reached: readonly Scope[],
+  reachedThisPass: ReadonlyMap<string, Scope>,
   report: PlatformSweepReport,
 ): Promise<StorageGaugeSweepReport> {
   const out: StorageGaugeSweepReport = {
-    reached: reached.length,
+    reached: reachedThisPass.size,
+    resting: 0,
     due: 0,
     deferred: 0,
     read: 0,
@@ -2758,13 +2768,18 @@ async function sweepStorageGauge(
   const batch = gauge.batch ?? STORAGE_SAMPLE_BATCH;
   const maxAgeMs = gauge.maxAgeMs ?? STORAGE_SAMPLE_MAX_AGE_MS;
   try {
-    if (reached.length > 0 && batch > 0) {
+    if (batch > 0) {
+      const resting = await admin.listScopes(options.actor, {
+        status: STORED_SCOPE_STATUSES.filter((s) => s !== 'active'),
+      });
+      out.resting = resting.length;
+      const candidates = [...reachedThisPass.values(), ...resting.filter((s) => !reachedThisPass.has(s.id))];
       const tried = new Map(
         (await admin.listScopeStorageAttempts!(options.actor)).map((a) => [a.scopeId as string, a.attemptedAt]),
       );
       const staleBefore = new Date(Date.now() - maxAgeMs).toISOString();
       // Never-tried scopes first (by id), then the longest since their last attempt.
-      const due = reached
+      const due = candidates
         .filter((s) => {
           const at = tried.get(s.id);
           return at === undefined || at <= staleBefore;
