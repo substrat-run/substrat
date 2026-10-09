@@ -1083,7 +1083,7 @@ function assertPatchInputs(operations: Record<string, unknown>): void {
       throw new Error(`model: '${name}' declares patchException without a reason`);
     }
     if (op.http?.method !== 'PATCH' || reason !== undefined) continue;
-    const pathFields = new Set([...((op.http.path ?? '').matchAll(/\{([^}]+)\}/g))].map((match) => match[1]));
+    const pathFields = new Set(Array.from((op.http.path ?? '').matchAll(/\{([^}]+)\}/g), (match) => match[1]));
     for (const [field, schema] of Object.entries(op.input?.shape ?? {})) {
       if (pathFields.has(field)) continue;
       const offence = hasInputDefault(schema) ? 'has a default' : !isOptionalSchema(schema) ? 'is required' : null;
