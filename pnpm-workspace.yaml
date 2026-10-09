@@ -70,6 +70,12 @@ catalog:
   vitest: ^5.0.3
   '@vitest/ui': ^5.0.3
   '@cloudflare/vitest-plugin': ^1.4.0
+
+  # The apps' bundler (#2121): every app and demo builds on the same vite and React plugin.
+  # `apps/docs` declares vite only for its EPUB figure renderer; vitepress 1.x keeps its own
+  # vite 5 inside, and has no stable release on a newer one.
+  vite: ^8.3.4
+  '@vitejs/plugin-react': ^6.1.2
   '@cloudflare/workers-types': ^4.20250109.0
   wrangler: ^4.146.0
   '@types/node': ^22.20.5
