@@ -1,5 +1,8 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { platformActorId } from '@substrat-run/contracts';
+import { ulid } from '@substrat-run/kernel';
+import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -44,5 +47,28 @@ describe('expect(<RPC promise>).rejects (#2131)', () => {
 
   it('a native promise is untouched', async () => {
     await expect(Promise.reject(new Error('native'))).rejects.toThrow('native');
+  });
+});
+
+/**
+ * …and the host does not hand that trap on: `HostAdmin` says `Promise<…>`, so each method's value
+ * is a real Promise, never the callable RPC promise a bare stub call returns (#2131).
+ */
+describe('CloudflareScopeHost.admin answers real Promises (#2131)', () => {
+  beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+  const host = () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+
+  it('a method that forwards one directory call answers a Promise that `.rejects` can assert on', async () => {
+    const settled = host().admin.settleUnrecordedOutcome(platformActorId.parse(ulid()), { intentId: ulid(), error: 'x' });
+    expect(settled).toBeInstanceOf(Promise);
+    expect(typeof settled).toBe('object');
+    await expect(settled).rejects.toThrow(/no audited-change intent/);
+  });
+
+  it('every method is async, so none can return a stub call bare', () => {
+    // `attributed` is the one synchronous member (it returns another HostAdmin).
+    const methods = Object.entries(host().admin).filter(([name, value]) => typeof value === 'function' && name !== 'attributed');
+    expect(methods.length).toBeGreaterThan(100);
+    expect(methods.filter(([, fn]) => (fn as () => unknown).constructor.name !== 'AsyncFunction').map(([name]) => name)).toEqual([]);
   });
 });
