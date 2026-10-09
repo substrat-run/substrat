@@ -111,7 +111,7 @@ import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
 import { blankSqlComments, executableSqlStatements } from '@substrat-run/kernel';
 import {
-  COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3273,6 +3273,13 @@ export class ControlPlaneDO extends DurableObject {
     if (!scope) return 'missing';
     if (scope.reap_claimed_at !== null) return 'reaping';
     return 'recorded'; // idempotent retry of this move
+  }
+
+  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): ScopeCopyBackfillResult | 'invalid' {
+    if (!scriptRef) return 'invalid';
+    if (this.sql.exec(COPY_BACKFILL_SQL, ...copyBackfillParams(tenantId, scopeId, scriptRef)).rowsWritten > 0) return 'recorded';
+    return copyBackfillRefusal(this.sql.exec('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
+      .toArray()[0] as { reap_claimed_at: string | null } | undefined);
   }
 
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): ScopeScriptCopyRow[] {

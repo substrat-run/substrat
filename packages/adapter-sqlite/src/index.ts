@@ -706,7 +706,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import {
-  COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -8927,6 +8927,12 @@ export class SqliteScopeHost implements ScopeHost {
           .get(tenantId, scopeId) as { reap_claimed_at: string | null } | undefined;
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (scope.reap_claimed_at !== null) throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
+      },
+      backfillScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef) => {
+        if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
+        if (this.directory.prepare(COPY_BACKFILL_SQL).run(...copyBackfillParams(tenantId, scopeId, scriptRef)).changes > 0) return 'recorded';
+        return copyBackfillRefusal(this.directory.prepare('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?')
+          .get(tenantId, scopeId) as { reap_claimed_at: string | null } | undefined);
       },
       claimExpiredScopeScriptCopies: async (_actor, input) => {
         const limit = assertRowLimit('limit', input.limit);

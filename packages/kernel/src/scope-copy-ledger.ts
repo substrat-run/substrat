@@ -68,6 +68,38 @@ export const COPY_CLAIM_SQL = `
     AND state = 'pending' AND (lease_until IS NULL OR lease_until <= ?)`;
 
 /**
+ * The move id every backfilled entry carries (#1722): one entry per (scope, script), so a re-run
+ * of the backfill conflicts with its own earlier write instead of adding a second.
+ */
+export const BACKFILL_MOVE_ID = 'backfill:1722';
+
+/**
+ * Record a copy made before the ledger existed, as `retained` (#1722). Never pending, so no move's
+ * confirmation and no lease sweep ever acts on it; never `eligible`, because a historic copy has
+ * no recorded load stamp for a fenced wipe to compare. Refused under a reap claim, like any new
+ * entry, and skipped when the ledger already names the script for this scope in any state: from
+ * that entry on the ledger tracks that store, historic data in it included.
+ * Params: `copyBackfillParams`.
+ */
+export const COPY_BACKFILL_SQL = `
+  INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state, last_attempt_at)
+  SELECT tenant_id, scope_id, ?, ?, 'retained', strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM scopes
+  WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
+      WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id AND copy.script_ref = ?)
+  ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`;
+
+export const copyBackfillParams = (tenantId: string, scopeId: string, scriptRef: string): string[] =>
+  [scriptRef, BACKFILL_MOVE_ID, tenantId, scopeId, scriptRef];
+
+/** What a backfill insert did: wrote the entry, found the script already ledgered, or was refused. */
+export type ScopeCopyBackfillResult = 'recorded' | 'ledgered' | 'reaping' | 'missing';
+
+/** Read the outcome of a backfill insert that wrote nothing, from the scope row. */
+export const copyBackfillRefusal = (scope: { reap_claimed_at: string | null } | undefined): ScopeCopyBackfillResult =>
+  !scope ? 'missing' : scope.reap_claimed_at !== null ? 'reaping' : 'ledgered';
+
+/**
  * The fence a copy move's restore carries into the destination's own store (#1722). The vertical
  * that holds the destination has no reach to the directory, so the move's lease travels with
  * the restore instead: the store refuses the load, inside the load's own transaction, once

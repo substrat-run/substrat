@@ -469,7 +469,7 @@ import {
   shapeTopUpBatch,
   type ConnectLinkKeyRow,
 } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import type { PlatformRequestSettle } from '@substrat-run/kernel';
 import {
@@ -783,6 +783,7 @@ interface ControlPlaneStub {
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
+  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): Promise<ScopeCopyBackfillResult | 'invalid'>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
@@ -7234,6 +7235,11 @@ export class CloudflareScopeHost implements ScopeHost {
         const result = await this.cp.beginScopeScriptReap(tenantId, scopeId);
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (result === 'pending') throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
+      },
+      backfillScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef) => {
+        const result = await this.cp.backfillScopeScriptCopy(tenantId, scopeId, scriptRef);
+        if (result === 'invalid') throw substratError('conflict', 'a backfilled copy must name a real script');
+        return result;
       },
       claimExpiredScopeScriptCopies: async (_actor, input) =>
         (await this.cp.claimExpiredScopeScriptCopies(input)).map(scopeScriptCopyOf),
