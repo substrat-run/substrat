@@ -370,7 +370,8 @@ describe('PATCH input declarations', () => {
   });
 
   it('refuses a normalizer-shaped overwrite on anything but a string leaf', () => {
-    const trim = z.string().trim()._zod.def.checks![0]!;
+    // The trim closure itself, on an object: only a string leaf may carry it.
+    const trim = z.string().trim()._zod.def.checks![0]! as unknown as z.core.$ZodCheck<{ value?: string }>;
     const value = z.object({ value: z.string().optional() }).check(trim).optional();
     expect(() => update(z.object({ id: z.string(), value })))
       .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'overwrite'/);
