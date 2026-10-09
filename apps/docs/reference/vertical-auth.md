@@ -196,7 +196,7 @@ including the two OIDC ones where Better Auth stays dormant:
   an abandon the original `from` keeps any owner seat it still holds, until the next owner
   removes it in the app.
   Wire both as vertical-host's hooks of the same names, which seat and revoke between them.
-- `createInvite` / `listInvites` / `getInvite` / `revokeInvite` / `inviteMatches` /
+- `createInvite` / `listInvites` / `getInvite` / `revokeInvite` / `inviteMatches` / `inviteLink` /
   `claimInviteByCapability` — member invites, the post-setup join path. An invite pre-mints a
   member principal, grants it a role at scope level, and mints its link: a `become` capability
   in the scope's own storage, minted by the member who invites. It works once, has no expiry
@@ -206,8 +206,10 @@ including the two OIDC ones where Better Auth stays dormant:
   included, and never for a principal holding nothing there (an invite at a role that confers
   no permission at all is refused `409`). The directory records the secret's hash and which capability the invite is;
   accepting checks the secret is an open invite, exchanges it in the scope, and binds the
-  invitee's verified `sub` to that principal. The inviter is not re-checked at accept: the
-  role was bounded when it was granted, and withdrawing the invite revokes the link. An invite
+  invitee's verified `sub` to that principal. The inviter is not re-checked at accept, but the
+  link is: if what the invited principal holds has changed since the link was minted, the
+  link is revoked and refused. Withdrawing the invite revokes the link first, then removes
+  the row. An invite
   minted before this (a hash-only row) is still accepted by its hash through `claimInvite`. The four HTTP routes over these — `GET`/`POST /api/invites`,
   `POST /api/invites/:principal/revoke`, `POST /api/accept-invite` — are written once as
   `mountInviteRoutes(app, deps)` from `@substrat-run/vertical-auth/invite-routes` — a
