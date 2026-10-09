@@ -7236,9 +7236,13 @@ export class CloudflareScopeHost implements ScopeHost {
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (result === 'pending') throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
-      backfillScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef) => {
+      backfillScopeScriptCopy: async (actor, tenantId, scopeId, scriptRef, opts) => {
         if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
-        return this.cp.backfillScopeScriptCopy(tenantId, scopeId, scriptRef);
+        const result = await this.cp.backfillScopeScriptCopy(tenantId, scopeId, scriptRef);
+        if (result === 'recorded') {
+          await this.recordAdmin(actor, 'backfillScopeCopy', { tenantId, scopeId }, null, { scriptRef, fromLogId: opts?.fromLogId ?? null });
+        }
+        return result;
       },
       claimExpiredScopeScriptCopies: async (_actor, input) =>
         (await this.cp.claimExpiredScopeScriptCopies(input)).map(scopeScriptCopyOf),

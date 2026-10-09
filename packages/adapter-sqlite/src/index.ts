@@ -8928,9 +8928,12 @@ export class SqliteScopeHost implements ScopeHost {
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (scope.reap_claimed_at !== null) throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
       },
-      backfillScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef) => {
+      backfillScopeScriptCopy: async (actor, tenantId, scopeId, scriptRef, opts) => {
         if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
-        if (this.directory.prepare(COPY_BACKFILL_SQL).run(...copyBackfillParams(tenantId, scopeId, scriptRef)).changes > 0) return 'recorded';
+        if (this.directory.prepare(COPY_BACKFILL_SQL).run(...copyBackfillParams(tenantId, scopeId, scriptRef)).changes > 0) {
+          this.recordAdmin(actor, 'backfillScopeCopy', { tenantId, scopeId }, null, { scriptRef, fromLogId: opts?.fromLogId ?? null });
+          return 'recorded';
+        }
         return copyBackfillRefusal(this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as
           { reap_claimed_at: string | null } | undefined);
       },

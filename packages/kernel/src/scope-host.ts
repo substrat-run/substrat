@@ -2731,9 +2731,14 @@ export interface HostAdmin {
    * and erasure, never wiped by the sweep. One entry per (scope, script), under `BACKFILL_MOVE_ID`.
    * Answers `ledgered`, writing nothing, when the ledger already names the script for the scope in
    * any state; `reaping` under a reap claim; `missing` for an unknown scope. Never throws for those,
-   * so a backfill page reports each one instead of stopping.
+   * so a backfill page reports each one instead of stopping. A recorded entry is audited as
+   * `backfillScopeCopy`.
    */
-  backfillScopeScriptCopy(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string): Promise<ScopeCopyBackfillResult>;
+  backfillScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string,
+    /** The admin-log row the script was read from, named in the `backfillScopeCopy` row a recorded entry writes. */
+    opts?: { fromLogId?: string },
+  ): Promise<ScopeCopyBackfillResult>;
   /** Move a failed retry to the back of the due queue without changing its state. */
   touchScopeScriptCopy(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string, moveId: string): Promise<void>;
   listScopeScriptCopies(

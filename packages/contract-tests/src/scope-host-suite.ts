@@ -5796,8 +5796,12 @@ export function scopeHostContractSuite(
       const s = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t1, scopeId: s });
       const [historic, tracked] = [`version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`];
-      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, historic)).toBe('recorded');
+      const from = ulid();
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, historic, { fromLogId: from })).toBe('recorded');
       expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, historic)).toBe('ledgered'); // a re-run writes nothing
+      // Audited once, naming the script and the log row it was read from.
+      expect((await host.admin.auditLog(staff, { scopeId: s, action: 'backfillScopeCopy' })).map((r) => r.after))
+        .toEqual([{ scriptRef: historic, fromLogId: from }]);
       const [entry] = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
       expect(entry).toMatchObject({ scriptRef: historic, moveId: BACKFILL_MOVE_ID, state: 'retained', role: null, leaseUntil: null });
       // Never pending, so no lease sweep ever claims it, and a reap is not held off by it.
