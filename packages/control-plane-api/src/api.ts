@@ -2889,8 +2889,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * independent, and the scope's DO carries the SOURCE lineage's applied-migration
    * journal. The digest gate refuses the crossing unless the scope's bound version and
    * the target's serving version carry the same migration digest — or the operator
-   * acknowledges having read both surfaces (`ackMigrations`). The source script's copy
-   * is never deleted — flipping `servingRef` + version back is the backout.
+   * acknowledges having read both surfaces (`ackMigrations`). Once the move is confirmed the
+   * source script's copy is wiped by the sweep (#1722, `moveOntoServing`), so it is no backout:
+   * rollback is an explicit snapshot or backup taken before the rebind.
    */
   const rebindScopeOntoVertical = async (
     c: ReqCtx,
@@ -2937,9 +2938,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const move = { acknowledge: opts.acknowledge };
     if (opts.abandonData) {
       // Directory-only crossing: no bytes move, so the frontier gate has nothing to
-      // protect — the target provisions its own schema from scratch. The source
-      // script's copy is untouched and remains the backout, same as a carried rebind.
-      // The scope serves nothing until `/verticals/:slug/instances` re-provisions it.
+      // protect — the target provisions its own schema from scratch. The source script's
+      // copy is the only copy of the scope's data, and its deployment predates the export a
+      // fenced wipe needs, so it is kept (`retained`), never swept, and reap and erasure still
+      // reach it. The scope serves nothing until `/verticals/:slug/instances` re-provisions it.
       const sourceRef = await routeOf(c, scope);
       const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
       if (moveId && sourceRef) {
@@ -2982,8 +2984,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // #1742, as adopt. Data landed on the target script — only then do routing flip and the
     // pointer cross. `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited.
-    // No extra snapshot here (adopt-serving's precedent): the source script's copy is the
-    // pre-migration state, and it is never deleted — that copy is the backout.
+    // No snapshot is taken here: the old copy is swept once the move is confirmed, so an
+    // operator who wants a way back takes a snapshot or backup first.
     const restored = await moveOntoServing(c, scope, source, dest, serving.ref, move);
     await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
     // #1674: re-assert the recorded OFF positions in the store the scope now routes to.
@@ -2997,7 +2999,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * ledger, leased to this move, before any bytes move, and the destination's entry names the
    * stamp its restore leaves, so a crash-recovery sweep can wipe an unbound restore if this
    * request dies. The route flips only while that lease is live and unclaimed, and the same
-   * write settles the destination `done` and keeps the source `retained`: the backout.
+   * write settles the destination `done`.
+   *
+   * The old source is then `eligible`, as a carry's is: the scheduled sweep wipes it, fenced on
+   * the stamp and revision this export read, so a copy that took a write since is kept for staff
+   * rather than deleted. The old copy is not a backout; rollback is an explicit snapshot or
+   * backup taken before the move (the decided policy). A source whose deployment predates the
+   * stamped export cannot be wiped under a fence, and stays `retained`. A move that fails or is
+   * never confirmed keeps its source too: the catch below settles both ends `retained`.
    */
   const moveOntoServing = async (
     c: ReqCtx, scope: Scope, source: VerticalClient, dest: VerticalClient, servingRef: string,
@@ -3018,14 +3027,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
       }
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
-      const dump = await source.exportScope(scopeId);
+      const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
+        source.exportScopeStamped(scopeId),
+      );
       const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, {
         scopeId, exact: true, loadStamp: restoredStamp,
         ...(moveId ? { fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch) } : {}),
       });
       await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, servingRef, {
         ...routeOpts, expectedErasureEpoch: erasureEpoch,
-        ...(moveId ? { confirmMove: { moveId, source: 'retained' as const } } : {}),
+        ...(moveId ? { confirmMove: sourceStamp
+          ? { moveId, source: 'eligible' as const, sourceMarker: { loadStamp: sourceStamp, revision: sourceRevision } }
+          : { moveId, source: 'retained' as const } } : {}),
       }).catch(relayHostRefusal);
       return restored;
     } catch (error) {

@@ -7,11 +7,12 @@ import {
   CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, SCOPE_COPY_LEASE_MS, carriedAwayDump, copyRestoreFenceLapsed, dumpMetaValue, ulid,
   webCryptoSecretBox, type CopyRestoreFence, type LoadMarker,
 } from '@substrat-run/kernel';
-import { platformActorId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
+import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import {
   ControlPlaneError,
   createControlPlaneApi,
   settleExpiredScopeScriptCopies,
+  sweepScopeScriptCopies,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   type VerticalClient,
@@ -38,6 +39,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
   type Store = { tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null };
   type Hook = (ref: string, sid: string) => Promise<void>;
   const hooks: { restore?: Hook; marker?: Hook } = {};
+  let failRestoreInto: string | null = null;
   const scripts = new Map<string, Map<string, Store>>();
   const redacted: string[] = [];
   const storesOf = (ref: string) => {
@@ -58,6 +60,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
       restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[],
         opts?: { loadStamp?: string; expect?: LoadMarker; fence?: CopyRestoreFence }) => {
         await hooks.restore?.(ref, sid);
+        if (failRestoreInto === ref) throw new ControlPlaneError(503, `storage blip in ${ref}`);
         // As the scope DO does, first in the load: the move's lease, against the store's clock.
         if (opts?.fence && copyRestoreFenceLapsed(opts.fence, Date.now())) {
           throw new ControlPlaneError(412, COPY_RESTORE_FENCE_LAPSED);
@@ -301,4 +304,93 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     expect(pushed.status, await pushed.clone().text()).toBe(200);
     expect(storeOf(refOf.get(versions.v2)!, sid).tables).toEqual(notes('kept'));
   });
+
+  // The decided adopt/rebind policy (#1722): once the move is confirmed, the old copy is not a
+  // backout. It is eligible, and the sweep wipes it under the same fence as a carry's source:
+  // a copy that took a write since the export is kept for staff, never deleted. A move that
+  // fails keeps its source. Rollback is an explicit snapshot taken before the move.
+  const install = async () => {
+    const sid = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: sid, vertical: slug });
+    await host.admin.activateScope(staff, t, sid);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v1);
+    // A legacy install: routed by its version's own script, not born on the serving one.
+    await host.admin.setScopeServingRef(staff, t, sid, null);
+    storesOf(refOf.get(versions.v1)!).set(sid, { tables: notes('kept'), loadStamp: ulid(), revision: '1' });
+    return sid;
+  };
+  const SERVING = `${slug}-serving`;
+  const TARGET = 'crash-dst';
+  const TARGET_SERVING = `${TARGET}-serving`;
+  const ledgerByRef = async (sid: ScopeId) =>
+    Object.fromEntries((await host.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+      .map((copy) => [copy.scriptRef, copy.state]));
+  const wiped = (ref: string, sid: ScopeId) => dumpMetaValue(storeOf(ref, sid).tables, CARRIED_AWAY_KEY) !== null;
+  const servingOnce = (() => {
+    let done: Promise<void> | undefined;
+    return () => (done ??= (async () => {
+      await host.admin.setVerticalServing(staff, slug, { ref: SERVING, versionId: versions.v2, doClasses: [], migrationTag: 't1' });
+      await host.admin.registerVertical(staff, { slug: TARGET, name: 'Crash Dst', source: 'cli', ownerTenant: t });
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: TARGET, version: '1.0.0', manifestDigest: 'm-dst', permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: `${TARGET}-${id.toLowerCase()}`,
+      });
+      await host.admin.setVerticalServing(staff, TARGET, { ref: TARGET_SERVING, versionId: id, doClasses: [], migrationTag: 't1' });
+    })());
+  })();
+
+  for (const [move, to, call] of [
+    ['adopt', SERVING, (sid: ScopeId) => app.request(`/tenants/${t}/scopes/${sid}/adopt-serving`, { method: 'POST', headers: asStaff })],
+    ['rebind', TARGET_SERVING, (sid: ScopeId) => app.request(`/tenants/${t}/scopes/${sid}/rebind-vertical`, {
+      method: 'POST', headers: asStaff, body: JSON.stringify({ vertical: TARGET }),
+    })],
+  ] as const) {
+    it(`a confirmed ${move} leaves the old copy eligible, and the sweep wipes it`, async () => {
+      await servingOnce();
+      const sid = await install();
+      const from = refOf.get(versions.v1)!;
+      const res = await call(sid);
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(await ledgerByRef(sid)).toEqual({ [from]: 'eligible', [to]: 'done' });
+      expect(storeOf(from, sid).tables).toEqual(notes('kept')); // nothing is wiped before the sweep
+      await sweepScopeScriptCopies(cleanup());
+      expect(await ledgerByRef(sid)).toEqual({ [from]: 'done', [to]: 'done' });
+      expect(wiped(from, sid)).toBe(true);
+      expect(storeOf(to, sid).tables).toEqual(notes('kept'));
+      // Erasure as before: the route, and nothing the ledger has settled.
+      redacted.length = 0;
+      expect((await shred(sid, ulid())).status).toBe(200);
+      expect(redacted).toEqual([`${to} ${sid}`]);
+    });
+
+    it(`a ${move} whose old copy took a write after the export keeps it for staff`, async () => {
+      await servingOnce();
+      const sid = await install();
+      const from = refOf.get(versions.v1)!;
+      expect((await call(sid)).status).toBe(200);
+      const before = storeOf(from, sid);
+      storesOf(from).set(sid, { ...before, tables: notes('kept', 'late write'), revision: '2' });
+      await sweepScopeScriptCopies(cleanup());
+      expect((await ledgerByRef(sid))[from]).toBe('kept');
+      expect(storeOf(from, sid).tables).toEqual(notes('kept', 'late write'));
+    });
+
+    it(`a ${move} that fails keeps its source, and the sweep leaves it`, async () => {
+      await servingOnce();
+      const sid = await install();
+      const from = refOf.get(versions.v1)!;
+      failRestoreInto = to;
+      try {
+        expect((await call(sid)).status).toBeGreaterThanOrEqual(500);
+      } finally {
+        failRestoreInto = null;
+      }
+      expect(await ledgerByRef(sid)).toEqual({ [from]: 'retained', [to]: 'retained' });
+      expect((await host.admin.getScopeRecord(staff, t, sid))!.servingRef ?? null).toBeNull();
+      await sweepScopeScriptCopies(cleanup());
+      expect(await ledgerByRef(sid)).toEqual({ [from]: 'retained', [to]: 'retained' });
+      expect(storeOf(from, sid).tables).toEqual(notes('kept'));
+    });
+  }
 });

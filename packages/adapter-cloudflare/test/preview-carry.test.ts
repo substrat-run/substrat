@@ -1777,4 +1777,80 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
     });
   });
+
+  describe('a confirmed adopt or rebind gives up its old copy (#1722)', () => {
+    // The decided adopt/rebind policy: a confirmed move's old copy is eligible, and the sweep
+    // wipes it under the carry's fence; a failed move keeps it. On real namespaces. Last in the
+    // file: the installs it adds and the serving scripts it sets would change what every
+    // preview push above forks from.
+    let targetLineage: Promise<void> | undefined;
+    const servingSetup = async () => {
+      const stable = stableDeploymentRefFor(slug);
+      if (!hostOf.has(stable)) hostOf.set(stable, hostFor('v3'));
+      if (!(await dir.admin.verticalServing(staff, slug))) {
+        await dir.admin.setVerticalServing(staff, slug, { ref: stable, versionId: version.v2, doClasses: [], migrationTag: 't1' });
+      }
+      const target = 'carry-dst';
+      const targetServing = `${target}-serving`;
+      targetLineage ??= (async () => {
+        await dir.admin.registerVertical(staff, { slug: target, name: 'Carry Dst', source: 'cli', ownerTenant: t });
+        const id = ulid();
+        await dir.admin.publishVersion(staff, {
+          id, verticalSlug: target, version: '1.0.0', manifestDigest: 'm-dst', permissionDigest: 'p', migrationDigest: 'g',
+          deploymentRef: `${target}-${id.toLowerCase()}`,
+        });
+        await dir.admin.setVerticalServing(staff, target, { ref: targetServing, versionId: id, doClasses: [], migrationTag: 't1' });
+      })();
+      await targetLineage;
+      hostOf.set(targetServing, hostFor('v2'));
+      return { stable, target, targetServing };
+    };
+    const legacyInstall = async () => {
+      const sid = scopeId.parse(ulid());
+      await dir.provisionScope(staff, { tenantId: t, scopeId: sid, vertical: slug });
+      await dir.admin.activateScope(staff, t, sid);
+      await dir.admin.bindScopeVersion(staff, t, sid, version.v1);
+      await dir.admin.setScopeServingRef(staff, t, sid, null);
+      await hostFor('v1').restoreScopeLocal(sid, notes('kept'));
+      return sid;
+    };
+    const ledgerByRef = async (sid: ScopeId) =>
+      Object.fromEntries((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+        .map((copy) => [copy.scriptRef, copy.state]));
+    for (const move of ['adopt', 'rebind'] as const) {
+      it(`a confirmed ${move} leaves the old copy eligible, and the sweep wipes it under the fence`, async () => {
+        const { stable, target, targetServing } = await servingSetup();
+        const sid = await legacyInstall();
+        const to = move === 'adopt' ? stable : targetServing;
+        const res = move === 'adopt'
+          ? await api.request(`/tenants/${t}/scopes/${sid}/adopt-serving`, { method: 'POST', headers: auth })
+          : await api.request(`/tenants/${t}/scopes/${sid}/rebind-vertical`, {
+            method: 'POST', headers: auth, body: JSON.stringify({ vertical: target }),
+          });
+        expect(res.status, await res.clone().text()).toBe(200);
+        const from = refOf.get(version.v1)!;
+        expect(await ledgerByRef(sid)).toEqual({ [from]: 'eligible', [to]: 'done' });
+        expect(bodiesIn(await hostFor('v1').exportScopeLocal(sid))).toEqual(['kept']);
+        await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
+        expect(await ledgerByRef(sid)).toEqual({ [from]: 'done', [to]: 'done' });
+        expect(await tombstoneIn('v1', sid)).not.toBeNull();
+        expect(bodiesIn(await hostOf.get(to)!.exportScopeLocal(sid))).toEqual(['kept']);
+      });
+    }
+    it('an adopt whose restore fails keeps its source, and the sweep leaves it', async () => {
+      const { stable } = await servingSetup();
+      const sid = await legacyInstall();
+      hooks.restore = async (ref, s) => {
+        if (ref === stable && s === sid) throw new Error('serving script unavailable');
+      };
+      expect((await api.request(`/tenants/${t}/scopes/${sid}/adopt-serving`, { method: 'POST', headers: auth })).status)
+        .toBeGreaterThanOrEqual(500);
+      delete hooks.restore;
+      const from = refOf.get(version.v1)!;
+      expect(await ledgerByRef(sid)).toEqual({ [from]: 'retained', [stable]: 'retained' });
+      await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
+      expect(await ledgerByRef(sid)).toEqual({ [from]: 'retained', [stable]: 'retained' });
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(sid))).toEqual(['kept']);
+    });
+  });
 });

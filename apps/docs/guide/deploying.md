@@ -394,7 +394,10 @@ from your laptop:
 
 Legacy scopes that predate the stable serving script hop onto it once with
 `substrat scope adopt-serving <scopeId>` (export → restore → flip, data-first; idempotent, and
-`--vertical <slug>` backfills every scope of a vertical).
+`--vertical <slug>` backfills every scope of a vertical). Once the move is confirmed, the copy
+left in the old script is deleted by the platform's scheduled sweep, the same for a
+`substrat scope rebind` onto another lineage. If you want a way back, snapshot or back up the
+scope **before** the move; the old copy is not kept as one.
 
 ## See what you've pushed — `substrat versions`
 

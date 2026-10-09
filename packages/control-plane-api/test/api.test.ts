@@ -6708,6 +6708,11 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
   const clientFor = (ref: string) =>
     ({
       exportScope: async (sc: string) => { dispatchCalls.push('export'); return ensure(ref).get(sc) ?? []; },
+      // A deployment that predates the load stamp (#1722): a move off it keeps its source.
+      exportScopeStamped: async (sc: string) => {
+        dispatchCalls.push('export');
+        return { tables: ensure(ref).get(sc) ?? [], loadStamp: null, revision: null };
+      },
       restoreScope: async (_t: string, sc: string, tables: ScopeDumpTable[]) => {
         dispatchCalls.push('restore');
         ensure(ref).set(sc, tables);
