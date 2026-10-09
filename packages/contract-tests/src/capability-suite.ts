@@ -405,6 +405,10 @@ export function capabilityContractSuite(
           share(alice, { entity: folder('F'), permissions: [CAP_READ], operations: ['cap/no-such-op'] }),
         );
         expect(errorCodeOf(err)).toBe('validation_failed');
+        const malformed = await refusal(
+          share(alice, { entity: folder('F'), permissions: [CAP_READ], operations: ['attachments.read.extra'] }),
+        );
+        expect(errorCodeOf(malformed)).toBe('validation_failed');
       });
 
       it('an expiry that is not in the future is refused at the mint', async () => {

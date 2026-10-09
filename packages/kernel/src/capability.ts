@@ -547,7 +547,7 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
       const permissions = [...new Set(input.permissions)];
       const operations = input.operations ? [...new Set(input.operations)] : null;
       for (const op of operations ?? []) {
-        if (!deps.isOperation(op)) {
+        if (op !== CAPABILITY_ATTACHMENTS_READ && !deps.isOperation(op)) {
           throw substratError(
             'validation_failed',
             `ctx.capabilities.mint: '${op}' is not an operation on this host — an allowlist ` +
@@ -669,6 +669,11 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
 
 /** The pseudo-operation an exchange's spine event names, on `attachments.upload`'s pattern. */
 export const CAPABILITY_EXCHANGE_OPERATION = 'capabilities.exchange';
+/** An explicit allowlist entry for attachment reads; it grants no permission by itself. */
+export const CAPABILITY_ATTACHMENTS_READ = 'attachments.read';
+const CAPABILITY_ATTACHMENT_READ_OPERATIONS = new Set([
+  'attachments.list', 'attachments.open', 'attachments.search',
+]);
 
 /**
  * Trade a secret for what it grants — ONE counted use. Runs inside the scope's
@@ -805,7 +810,8 @@ export function resolveCapabilitySession(
   }
   if (row.operations !== null) {
     const allowed = JSON.parse(row.operations) as string[];
-    if (!allowed.includes(operation)) {
+    if (!allowed.includes(operation) &&
+        !(allowed.includes(CAPABILITY_ATTACHMENTS_READ) && CAPABILITY_ATTACHMENT_READ_OPERATIONS.has(operation))) {
       throw substratError(
         'forbidden',
         `capability ${row.id} may not invoke '${operation}' — it is not on the capability's ` +
