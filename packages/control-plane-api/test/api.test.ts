@@ -1681,6 +1681,9 @@ describe('control-plane API', () => {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       verticals: { 'legacy-vert': legacyVertical },
+      // The hosted path (#1722): per-script resolution wired, so the reap drains the ledger first
+      // and still reaches this unrouted scope's store where its vertical resolves by slug.
+      resolveVerticalRef: async () => undefined,
     });
     const djson = (path: string, method: string, body?: unknown) =>
       delegated.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -1705,6 +1708,7 @@ describe('control-plane API', () => {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       verticals: { 'broken-vert': brokenVertical },
+      resolveVerticalRef: async () => undefined,
     });
     const res2 = await delegated2.request(`/tenants/${tL}/scopes/${sB}/reap`, {
       method: 'POST', headers: auth, body: JSON.stringify({ backup: false }),

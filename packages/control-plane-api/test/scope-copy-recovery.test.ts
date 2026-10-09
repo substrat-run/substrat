@@ -40,6 +40,8 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
   type Hook = (ref: string, sid: string) => Promise<void>;
   const hooks: { restore?: Hook; marker?: Hook; read?: Hook } = {};
   let failRestoreInto: string | null = null;
+  /** Scripts built before `/internal/delete-scope`: their delete answers 501. */
+  const noDeleteVerb = new Set<string>();
   const scripts = new Map<string, Map<string, Store>>();
   const redacted: string[] = [];
   const storesOf = (ref: string) => {
@@ -91,6 +93,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
         return { tables: storeOf(ref, input.sourceScopeId).tables.length };
       },
       deleteScope: async (input: { scopeId: string }) => {
+        if (noDeleteVerb.has(ref)) throw new ControlPlaneError(501, `${ref} does not implement POST /internal/delete-scope`);
         storesOf(ref).delete(input.scopeId);
       },
       redactSubject: async (sid: string) => {
@@ -111,6 +114,9 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
   let app: ReturnType<typeof createControlPlaneApi>;
   /** The same control plane with a lease a test can outlive in real time. */
   let shortLease: ReturnType<typeof createControlPlaneApi>;
+  /** The same control plane resolving a vertical by slug too, as the hosted one does: to its
+   *  serving script (`resolveVerticalFor`). Set once the serving script exists. */
+  let bySlug: ReturnType<typeof createControlPlaneApi>;
   const LEASE = 600;
   const cleanup = () => ({ admin: host.admin, actor: staff, resolveRef: async (ref: string) => deployment(ref) });
   const afterLease = () => new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000);
@@ -165,6 +171,10 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     };
     app = createControlPlaneApi(options);
     shortLease = createControlPlaneApi({ ...options, copyLeaseMs: LEASE });
+    bySlug = createControlPlaneApi({
+      ...options,
+      resolveVertical: async (s: string) => (s === slug ? deployment(`${slug}-serving`) : undefined),
+    });
     await host.admin.createTenant(staff, { id: t, slug: 'crash-co', name: 'Crash Co' });
     await host.admin.registerVertical(staff, { slug, name: 'Crash Vert', source: 'cli', ownerTenant: t });
     for (const v of ['v1', 'v2'] as const) {
@@ -535,5 +545,86 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     expect((await app.request(`/tenants/${t}/scopes/${fork}`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
     expect(await host.admin.getScopeRecord(staff, t, fork)).toBeUndefined();
     expect(storesOf(ref).has(fork)).toBe(false);
+  });
+
+  // Review r2: a scope nothing routes (no pin, no bound version) keeps its store where its vertical
+  // resolves by slug. With per-script resolution wired, reap and erasure must still reach it, and a
+  // script that predates the delete verb strands its bytes (200 + storageStranded), never 501s.
+  const unrouted = async (opts: { fork?: boolean; archived?: boolean } = {}) => {
+    await servingOnce();
+    const prod = await install();
+    const sid = scopeId.parse(ulid());
+    await host.provisionScope(staff, {
+      tenantId: t, scopeId: sid, vertical: slug, ...(opts.fork ? { forkedFrom: prod, kind: 'archive' } : {}),
+    });
+    await host.admin.activateScope(staff, t, sid);
+    await host.admin.setScopeServingRef(staff, t, sid, null);
+    if (opts.archived) await host.admin.archiveScope(staff, t, sid);
+    storesOf(SERVING).set(sid, { tables: notes('unrouted'), loadStamp: ulid(), revision: '1' });
+    const record = (await host.admin.getScopeRecord(staff, t, sid))!;
+    expect([record.servingRef ?? null, record.verticalVersionId ?? null]).toEqual([null, null]);
+    return { prod, sid };
+  };
+
+  it('deleting an unrouted fork removes its store where the vertical resolves by slug', async () => {
+    const { sid } = await unrouted({ fork: true });
+    const res = await bySlug.request(`/tenants/${t}/scopes/${sid}`, { method: 'DELETE', headers: asStaff });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).not.toHaveProperty('storageStranded');
+    expect(storesOf(SERVING).has(sid)).toBe(false);
+  });
+
+  it('reaping an unrouted archived scope removes its store where the vertical resolves by slug', async () => {
+    const { sid } = await unrouted({ archived: true });
+    const res = await bySlug.request(`/tenants/${t}/scopes/${sid}/reap`, {
+      method: 'POST', headers: asStaff, body: JSON.stringify({ backup: false }),
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(storesOf(SERVING).has(sid)).toBe(false);
+  });
+
+  it('erasure of an unrouted scope reaches its store where the vertical resolves by slug', async () => {
+    const { sid } = await unrouted();
+    redacted.length = 0;
+    expect((await bySlug.request(`/tenants/${t}/scopes/${sid}/subjects/${ulid()}/shred`, { method: 'POST', headers: asStaff })).status)
+      .toBe(200);
+    expect(redacted).toEqual([`${SERVING} ${sid}`]);
+  });
+
+  it('a snapshot of an unrouted scope ledgers the slug-resolved script it lands in', async () => {
+    const { sid } = await unrouted();
+    const res = await bySlug.request(`/tenants/${t}/scopes/${sid}/snapshots`, { method: 'POST', headers: asStaff, body: '{}' });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { id: snap } = (await res.json()) as { id: ScopeId };
+    expect(storeOf(SERVING, snap).tables).toEqual(notes('unrouted'));
+    expect(await ledgerByRef(snap)).toEqual({ [SERVING]: 'retained' });
+    expect((await bySlug.request(`/tenants/${t}/scopes/${snap}`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
+    expect(storesOf(SERVING).has(snap)).toBe(false);
+  });
+
+  it('a script without the delete verb strands its bytes: 200 and storageStranded, by either reap route', async () => {
+    const old = `${slug}-predates-delete`;
+    noDeleteVerb.add(old);
+    try {
+      for (const route of ['delete', 'reap'] as const) {
+        await servingOnce();
+        const prod = await install();
+        const sid = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t, scopeId: sid, vertical: slug, ...(route === 'delete' ? { forkedFrom: prod, kind: 'archive' } : {}),
+        });
+        await host.admin.activateScope(staff, t, sid);
+        await host.admin.setScopeServingRef(staff, t, sid, old);
+        if (route === 'reap') await host.admin.archiveScope(staff, t, sid);
+        storesOf(old).set(sid, { tables: notes('stranded'), loadStamp: ulid(), revision: '1' });
+        const res = route === 'delete'
+          ? await bySlug.request(`/tenants/${t}/scopes/${sid}`, { method: 'DELETE', headers: asStaff })
+          : await bySlug.request(`/tenants/${t}/scopes/${sid}/reap`, { method: 'POST', headers: asStaff, body: JSON.stringify({ backup: false }) });
+        expect(res.status, await res.clone().text()).toBe(200);
+        expect(await res.json()).toMatchObject({ storageStranded: true });
+      }
+    } finally {
+      noDeleteVerb.delete(old);
+    }
   });
 });

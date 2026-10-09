@@ -4710,6 +4710,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // on); the DIRECTORY half — provenance row, activation, version bind — runs here.
   // With no vertical client resolved (co-located host, tests, self-host) the host's
   // in-process snapshotScope does both halves against its own SCOPE namespace.
+  /**
+   * The script a slug-resolved scope lives in, by the hosted resolver's rule: the vertical's
+   * stable serving script, else its prod channel's version script (control-plane worker
+   * `resolveVerticalFor`). Null unless the platform can also reach that script by ref.
+   */
+  const slugRefOf = async (c: ReqCtx, slug: string): Promise<string | null> => {
+    const actor = c.get('actor');
+    const serving = await c.var.admin.verticalServing(actor, slug).catch(() => null);
+    let ref = serving?.ref ?? null;
+    if (!ref) {
+      const prod = (await c.var.admin.listChannels(actor, slug).catch(() => [])).find((ch) => ch.channel === 'prod');
+      ref = prod ? ((await c.var.admin.getVersion(actor, prod.versionId, slug))?.deploymentRef ?? null) : null;
+    }
+    return ref && (await options.resolveVerticalRef?.(ref)) ? ref : null;
+  };
+
   const orchestratedSnapshot = async (
     c: ReqCtx,
     tenantId: TenantId,
@@ -4723,15 +4739,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const snapId = scopeIdSchema.parse(ulid());
     // #1722: the script the copy lands in (the source's own), named in the ledger before the
     // copy, so a bind that fails, or a request that dies, leaves a fork reap and erasure reach.
-    // Only a script the platform can name by ref is ledgered: a slug-resolved deployment has no
-    // per-script door for reap or erasure to use.
+    // A source resolved by slug lives where the hosted resolver sends a slug (`slugRefOf`); that
+    // script is ledgered when the platform can reach it by ref. Otherwise the fork has no route
+    // and no entry, and reap and erasure reach it through the same slug resolution instead.
     const ref = !options.resolveVerticalRef
       ? null
       : deployment.via === 'serving-script'
         ? (scope.servingRef ?? null)
         : deployment.via === 'bound-version' && scope.vertical && scope.verticalVersionId
           ? ((await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null)
-          : null;
+          : deployment.via === 'slug' && scope.vertical
+            ? await slugRefOf(c, scope.vertical)
+            : null;
     // The fork routes by its bound version's script, so only then does the bind route it onto the copy.
     const bindRoutesThere = deployment.via === 'bound-version' && Boolean(scope.verticalVersionId);
     // Directory row FIRST, as `provisioning` (K-31's two-phase shape, used as
@@ -4835,6 +4854,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  /**
+   * Delete a scope's storage in every script that may hold it, before the directory forgets it.
+   * Answers whether some of it is stranded (a script that predates `/internal/delete-scope`).
+   *
+   * #1722: with per-script resolution, the ledger names every copy a move or a fork wrote, and
+   * the route names the live store; `reapScopeScriptCopies` reaches both, under the reap claim.
+   * A scope nothing routes (no pin, no bound version) may still keep its store where its vertical
+   * resolves by slug, which is where it was provisioned, so that deployment is reached too, as
+   * it was before the ledger. Without per-script resolution there is only that deployment, and
+   * a ledgered copy the platform cannot reach refuses the reap.
+   */
+  const reapScopeStorage = async (c: ReqCtx, scope: Scope): Promise<boolean> => {
+    const actor = c.get('actor');
+    if (!options.resolveVerticalRef) {
+      await assertNoUnreachableScopeCopies(c.var.admin, actor, scope.tenantId, scope.id);
+      return deleteScopeStorageOrStrand(await verticalForScope(c, scope), scope.tenantId, scope.id);
+    }
+    const unrouted = (await routeOf(c, scope)) === null;
+    const { storageStranded } = await reapScopeScriptCopies(
+      { admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, scope.tenantId, scope.id);
+    const bySlug = unrouted ? await deleteScopeStorageOrStrand(await verticalForScope(c, scope), scope.tenantId, scope.id) : false;
+    return storageStranded || bySlug;
+  };
+
   app.delete('/tenants/:tenantId/scopes/:scopeId', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -4852,12 +4895,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // local/placeholder wipe, hostnames + directory row, audit) — the same
       // storage-before-row ordering deleteSnapshot itself keeps, so a crash
       // between the two converges on retry.
-      // #1722: with per-script resolution every reap drains the ledger, routed or not (a fork
-      // whose bind failed has no route but may hold a copy), as the preview and GC reaps do.
-      if (!options.resolveVerticalRef) await assertNoUnreachableScopeCopies(c.var.admin, actor, tenantId, scopeId);
-      const storageStranded = options.resolveVerticalRef
-        ? (await reapScopeScriptCopies({ admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, tenantId, scopeId), false)
-        : await deleteScopeStorageOrStrand(await verticalForScope(c, scope), tenantId, scopeId);
+      const storageStranded = await reapScopeStorage(c, scope);
       await c.var.host.deleteSnapshot(actor, tenantId, scopeId);
       return c.json({ deleted: scopeId, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
@@ -5003,7 +5041,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
     }
-    if (!currentRef && copies.every((copy) => copy.state === 'done')) {
+    // A scope nothing routes may still keep its store where its vertical resolves by slug (where
+    // it was provisioned), so erasure reaches that deployment too, as reap does (`reapScopeStorage`).
+    const bySlug = currentRef ? undefined : await verticalForScope(c, scope);
+    if (!currentRef && !bySlug && copies.every((copy) => copy.state === 'done')) {
       return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
     }
     const refs = new Set(copies.filter((copy) => copy.state !== 'done').map((copy) => copy.scriptRef));
@@ -5014,6 +5055,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (!script) throw new ControlPlaneError(502, `scope ${scopeId}'s copy in '${ref}' cannot be reached for erasure`);
       redactions.push(await script.redactSubject(scopeId, subjectId));
     }
+    if (bySlug) redactions.push(await bySlug.redactSubject(scopeId, subjectId));
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
       versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
       copyCount: copies.length,
@@ -5501,12 +5543,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       // By this point the backup contract has resolved (a copy landed, or the caller
       // explicitly declined one), so stranding is a bookkeeping fact, not data loss.
-      // #1722: with per-script resolution every reap drains the ledger, routed or not (a fork
-      // whose bind failed has no route but may hold a copy), as the preview and GC reaps do.
-      if (!options.resolveVerticalRef) await assertNoUnreachableScopeCopies(c.var.admin, actor, tenantId, scopeId);
-      const storageStranded = options.resolveVerticalRef
-        ? (await reapScopeScriptCopies({ admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, tenantId, scopeId), false)
-        : await deleteScopeStorageOrStrand(await verticalForScope(c, scope), tenantId, scopeId);
+      const storageStranded = await reapScopeStorage(c, scope);
       await c.var.admin.reapScope(actor, tenantId, scopeId, {
         ...(backup ? { backupRef: backupRefOf(backup) } : {}),
       });

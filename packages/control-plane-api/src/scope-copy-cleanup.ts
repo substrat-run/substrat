@@ -168,8 +168,15 @@ export async function sweepScopeScriptCopies(input: ScopeCopyCleanup): Promise<{
   return { expired: expired.claimed, retried: retried.tried, failed: expired.failed + retried.failed };
 }
 
-/** A destructive reap reaches every named script before the directory forgets the scope. */
-export async function reapScopeScriptCopies(input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+/**
+ * A destructive reap reaches every named script before the directory forgets the scope.
+ * `storageStranded` when a script answered 501 to its delete: it predates the verb, so its bytes
+ * are unreachable through every platform verb and die with the script at orphan cleanup (#248).
+ * That is a bookkeeping fact, not a failure, as on the reap routes before the ledger.
+ */
+export async function reapScopeScriptCopies(
+  input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId,
+): Promise<{ storageStranded: boolean }> {
   // The directory claim and new move records serialize on one store. A carry that
   // already began keeps this reap retryable; one starting later cannot restore bytes
   // after the scripts have been drained and the row removed.
@@ -183,14 +190,21 @@ export async function reapScopeScriptCopies(input: ScopeCopyCleanup, tenantId: T
   const current = await routeOf(input, tenantId, scopeId);
   const refs = new Set(copies.filter((c) => c.state !== 'done').map((c) => c.scriptRef));
   if (current) refs.add(current);
+  let storageStranded = false;
   for (const ref of refs) {
     const client = await input.resolveRef(ref);
     if (!client) throw new Error(`copy script '${ref}' cannot be reached for reap`);
-    await client.deleteScope({ tenantId, scopeId });
+    try {
+      await client.deleteScope({ tenantId, scopeId });
+    } catch (e) {
+      if (!(e instanceof ControlPlaneError && e.status === 501)) throw e;
+      storageStranded = true;
+    }
   }
   for (const copy of copies) {
     if (copy.state !== 'done') {
       await input.admin.settleScopeScriptCopy(input.actor, tenantId, scopeId, copy.scriptRef, copy.moveId, 'done');
     }
   }
+  return { storageStranded };
 }
