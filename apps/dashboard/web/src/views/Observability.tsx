@@ -10,7 +10,6 @@ import { AppFilter, PageHead } from '../components/ObsControls';
 import { LogQueryBar } from '../components/LogQueryBar';
 import { Flow } from './Flow';
 import { ProcessMap } from './ProcessMap';
-import { FieldReads } from './FieldReads';
 import { RequestSlideOver } from './RequestSlideOver';
 import { closeRecordInUrl, closeRequestInUrl, openRequestInUrl, recordInUrl, requestInUrl } from '../lib/request-url';
 import { RecordPanel } from './RecordPanel';
@@ -190,9 +189,10 @@ export function Observability({
   }
 
   if (section === 'processes') {
-    // Process views share an app; the map keeps its own period because a lifecycle's week
-    // is not the log's hour.
-    const sub = view === 'flow' ? 'flow' : view === 'fields' ? 'fields' : 'map';
+    // Two views of one app (#1744): its declared state machines with what moved through
+    // them, and a current snapshot of its wiring. Only the map has a period, and it keeps
+    // its own (24h / 7 days / 30 days) — a lifecycle's week is not the log's hour.
+    const sub = view === 'flow' ? 'flow' : 'map';
     const period = q.period === '24h' || q.period === '30d' ? q.period : '7d';
     return (
       <Page>
@@ -200,11 +200,7 @@ export function Observability({
           <PageHead
             title="Processes"
             sub={
-              sub === 'fields'
-                ? app
-                  ? <>Sampled fields returned by <strong style={{ fontWeight: 550 }}>{app.name}</strong>.</>
-                  : 'Sampled response fields returned by each app.'
-                : sub === 'map'
+              sub === 'map'
                 ? app
                   ? <>What moved through <strong style={{ fontWeight: 550 }}>{app.name}</strong>'s declared lifecycles.</>
                   : "What moved through each app's declared lifecycles."
@@ -220,15 +216,12 @@ export function Observability({
           tabs={[
             { value: 'map', label: 'State machines' },
             { value: 'flow', label: 'Flow' },
-            { value: 'fields', label: 'Field counts' },
           ]}
           value={sub}
           onChange={(v) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: v })}
         />
         {!app ? (
           <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: sub })} />
-        ) : sub === 'fields' ? (
-          <FieldReads scopeId={app.app_scope_id} hours={hours} nonce={nonce} />
         ) : sub === 'flow' ? (
           <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />
         ) : (

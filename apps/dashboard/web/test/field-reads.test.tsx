@@ -1,7 +1,8 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { api, type FieldReadsView } from '../src/lib/api';
+import { api, type AppRow, type FieldReadsView } from '../src/lib/api';
+import { Data } from '../src/views/AppDetail';
 import { FieldReads } from '../src/views/FieldReads';
 
 let root: Root;
@@ -30,7 +31,7 @@ const answer: FieldReadsView = {
 
 it('shows vertical assertion, rate and window beside sampled counts', async () => {
   vi.spyOn(api, 'appFieldReads').mockResolvedValue(answer);
-  await act(async () => root.render(<FieldReads scopeId="scope-a" hours={24} nonce={0} />));
+  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
   expect(container.textContent).toContain('Vertical-asserted');
   expect(container.textContent).toContain('10.0% router sample');
   expect(container.textContent).toContain(window.since);
@@ -40,12 +41,25 @@ it('shows vertical assertion, rate and window beside sampled counts', async () =
 
 it('uses the unarmed empty state only when there are no router arms', async () => {
   vi.spyOn(api, 'appFieldReads').mockResolvedValue({ ...answer, groups: [] });
-  await act(async () => root.render(<FieldReads scopeId="scope-a" hours={24} nonce={0} />));
+  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
   expect(container.textContent).toContain('No requests were armed');
 });
 
 it('shows an unknown rate without guessing for older router lines', async () => {
   vi.spyOn(api, 'appFieldReads').mockResolvedValue({ ...answer, groups: [{ ...answer.groups[0]!, sampleRate: null }] });
-  await act(async () => root.render(<FieldReads scopeId="scope-a" hours={24} nonce={0} />));
+  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
   expect(container.textContent).toContain('rate unknown');
+});
+
+it('sits beside the declared Field coverage card on the app page, for that app only', async () => {
+  vi.spyOn(api, 'appFieldCoverage').mockResolvedValue({
+    available: true, entities: [], declared: 2, returned: 2, neverReturnedErasable: 0, operations: 1 });
+  const reads = vi.spyOn(api, 'appFieldReads').mockResolvedValue(answer);
+  vi.spyOn(api, 'appModel').mockReturnValue(new Promise(() => {}));
+  const app = { app_scope_id: 'scope-a', name: 'Acme', vertical_slug: 'acme/widgets', status: 'active' } as AppRow;
+  await act(async () => root.render(<Data app={app} section="schema" onSection={() => {}} />));
+  const headings = [...container.querySelectorAll('h3')].map((h) => h.textContent);
+  expect(headings.slice(0, 2)).toEqual(['Field coverage', 'Sampled field counts']);
+  expect(reads).toHaveBeenCalledWith('scope-a', 24);
+  expect(container.textContent).toContain('acme/get.optional');
 });

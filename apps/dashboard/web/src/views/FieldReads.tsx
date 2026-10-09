@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react';
 import { api, type FieldReadsView } from '../lib/api';
 import { card } from '../components/ui';
 
-/** Sampled response fields for one installed app. Counts are the vertical's assertions. */
-export function FieldReads({ scopeId, hours, nonce }: { scopeId: string; hours: number; nonce: number }) {
+/**
+ * Sampled response fields for one installed app — the observed half beside the declared
+ * Field coverage card. Counts are the vertical's assertions, for this scope only.
+ */
+export function FieldReads({ scopeId, hours = 24 }: { scopeId: string; hours?: number }) {
   const [view, setView] = useState<FieldReadsView | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -13,24 +16,33 @@ export function FieldReads({ scopeId, hours, nonce }: { scopeId: string; hours: 
     api.appFieldReads(scopeId, hours).then((answer) => { if (live) setView(answer); })
       .catch(() => { if (live) setError('Field counts could not be loaded.'); });
     return () => { live = false; };
-  }, [scopeId, hours, nonce]);
+  }, [scopeId, hours]);
 
-  if (error) return <p role="alert">{error}</p>;
-  if (!view) return <p>Loading field counts…</p>;
-  if (!view.available) return <p>Field counts are not available for this version yet.</p>;
-  if (view.groups.length === 0) return <p>No requests were armed for field coverage in this window.</p>;
+  const body = error ? <p role="alert">{error}</p>
+    : !view ? <p>Loading field counts…</p>
+    : !view.available ? <p>Field counts are not available for this version yet.</p>
+    : view.groups.length === 0 ? <p>No requests were armed for field coverage in this window.</p>
+    : null;
 
+  return <div style={{ ...card, padding: 14, display: 'grid', gap: 12 }}>
+    <h3 style={{ margin: 0, fontSize: 15 }}>Sampled field counts</h3>
+    {body ?? <Groups view={view!} />}
+  </div>;
+}
+
+function Groups({ view }: { view: FieldReadsView }) {
   return <div style={{ display: 'grid', gap: 12 }}>
     <p style={{ margin: 0, fontSize: 13 }}>
-      Vertical-asserted counts of fields returned in sampled response serialisations. A zero means
+      Vertical-asserted counts of fields this installed app returned in sampled response
+      serialisations, from requests the router sent to it. A zero means
       no return was observed in this sample; it does not prove a field is unused. Null fields count
       as returned. Absent optional fields are excluded from the eligible count.
     </p>
     {view.groups.map((group, i) => {
       const rate = group.sampleRate === null ? 'rate unknown' : `${(group.sampleRate * 100).toPrecision(3)}% router sample`;
       const window = view.window ? `${view.window.since}–${view.window.until}` : 'window unknown';
-      return <div key={`${group.sampleRate ?? 'unknown'}-${i}`} style={{ ...card, padding: 14 }}>
-        <h3 style={{ margin: '0 0 6px' }}>Vertical-asserted field counts · {rate} · {window}</h3>
+      return <div key={`${group.sampleRate ?? 'unknown'}-${i}`} style={{ display: 'grid' }}>
+        <h4 style={{ margin: '0 0 6px' }}>Vertical-asserted field counts · {rate} · {window}</h4>
         <p style={{ margin: '0 0 10px', fontSize: 12 }}>
           {group.armedRequests} armed requests; {group.refused} malformed reports refused. {rate}; {window}.
         </p>
