@@ -23,7 +23,10 @@
  * 5. **The revoke.** Revoking it refuses the exchange and records the revoker. It revokes only
  *    a principal-minted `become` — never an `act` share, never the platform's own `become`.
  * 6. **Tenant isolation.** Another tenant's name for the scope is refused, writing nothing.
- * 7. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
+ * 7. **The target's holdings reach as the checker's do.** A key the target holds only at the
+ *    TENANT node, and an entity-narrowed grant it holds only through an ORG, both count: a
+ *    minter short of them is refused, one holding them passes.
+ * 8. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
  *    mints — the bound is evaluated at mint, and an empty set would cover trivially. Its twin:
  *    the same principal, once it holds a role, is minted for.
  */
@@ -32,6 +35,7 @@ import {
   CAPABILITY_BECOME_MINTED,
   CAPABILITY_SECRET_PREFIX,
   capabilityBecomeMintedPayload,
+  orgId,
   permissionKey,
   platformActorId,
   principalId,
@@ -316,6 +320,30 @@ export function becomeMintContractSuite(
         const cap = await minted(owner, readerTarget);
         expect(await fixture.verbs.revokeBecomeCapability(t1, s2, cap.id, owner)).toBe(false);
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+      });
+    });
+
+    describe('the target\'s holdings reach as the checker\'s do', () => {
+      it('a key held only at the tenant node counts: a scope reader is refused, the owner passes', async () => {
+        const tenantTarget = p();
+        await host.admin.assignRole(staff, { principalId: tenantTarget, roleKey: 'writer', node: { tenantId: t1, scopeId: null } });
+        const before = await snapshot();
+        expect(await mint(reader, tenantTarget)).toEqual({ ok: false, coverage: { covered: false, missing: [WRITE] } });
+        expect(await snapshot()).toEqual(before);
+        expect((await mint(owner, tenantTarget)).ok).toBe(true);
+      });
+
+      it('an entity-narrowed grant held only through an org counts: the sibling holder is refused, the ancestor holder passes', async () => {
+        const orgTarget = p();
+        const org = orgId.parse(ulid());
+        await host.admin.createOrg(staff, { id: org, tenantId: t1, slug: `become-${ulid().toLowerCase()}`, name: 'Become Org' });
+        await host.admin.addMember(staff, t1, orgTarget, org);
+        await host.admin.grantToOrg(staff, org, READ, node(), doc('d1'));
+        await host.admin.assignRole(staff, { principalId: orgTarget, roleKey: 'member', node: node() });
+        const before = await snapshot();
+        expect(await mint(siblingReader, orgTarget)).toEqual({ ok: false, coverage: { covered: false, missing: [READ] } });
+        expect(await snapshot()).toEqual(before);
+        expect((await mint(folderReader, orgTarget)).ok).toBe(true);
       });
     });
 
