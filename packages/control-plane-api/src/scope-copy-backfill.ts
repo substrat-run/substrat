@@ -412,8 +412,8 @@ export async function backfillScopeScriptCopies(
  *   script copy, and a backfilled entry is always one, so it is missed whatever its epoch.
  * - A row with **no stamp** (written before the stamps) cannot be ordered, so it is missed: the
  *   re-erasure that asks for sees the open copy and goes orchestrated, which converges.
- * A scope with a backfilled entry and no backfill row (its audit write failed after the insert)
- * counts every erased subject, which is the safe answer.
+ * Each backfill row commits with its entry, in the insert's own unit, so a backfilled entry always
+ * has one; a scope found without any still counts every erased subject, the safe answer.
  */
 async function erasedBeforeBackfill(admin: HostAdmin, actor: PlatformActorId, tl: Timeline): Promise<string[]> {
   const filter = { tenantId: tl.tenantId, scopeId: tl.scopeId };
