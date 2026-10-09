@@ -1,5 +1,17 @@
 # @substrat-run/adapter-sqlite
 
+## 0.141.0
+
+### Patch Changes
+
+- 6a05977: Track per-script scope copies in a directory ledger before any are written, through confirmed carries, adopts and rebinds; retry fenced cleanup, and drain recorded copies during reap. Coordinate subject redaction across recorded copies before destroying its key. A copy move whose request died is settled by the scheduled sweep once its lease runs out, so it no longer blocks erasure or reap. A destination restore carries the move's lease and refuses itself once it has run out. After a confirmed adopt-serving or cross-lineage rebind, the copy left in the old script is deleted by the sweep, under the same fence as a carry's source; take a snapshot first to keep a way back.
+- a7c6652: Hold schedule cadence, freshness checks, executor retries, jobs, and connector dispatch while a scope or its tenant is suspended. Due work resumes after reactivation.
+- Updated dependencies [48be1e6]
+- Updated dependencies [51bb25b]
+- Updated dependencies [6a05977]
+  - @substrat-run/contracts@0.141.0
+  - @substrat-run/kernel@0.141.0
+
 ## 0.140.0
 
 ### Minor Changes
@@ -6038,7 +6050,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

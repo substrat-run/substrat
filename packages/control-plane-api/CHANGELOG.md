@@ -1,5 +1,21 @@
 # @substrat-run/control-plane-api
 
+## 0.141.0
+
+### Minor Changes
+
+- ae43f7a: Read sampled, tenant-scoped field coverage from Workers Logs, joined to router-owned dispatches and grouped by the effective sampling rate. The dashboard shows vertical-asserted per-field counts and the not-observed tail.
+
+### Patch Changes
+
+- 6a05977: Track per-script scope copies in a directory ledger before any are written, through confirmed carries, adopts and rebinds; retry fenced cleanup, and drain recorded copies during reap. Coordinate subject redaction across recorded copies before destroying its key. A copy move whose request died is settled by the scheduled sweep once its lease runs out, so it no longer blocks erasure or reap. A destination restore carries the move's lease and refuses itself once it has run out. After a confirmed adopt-serving or cross-lineage rebind, the copy left in the old script is deleted by the sweep, under the same fence as a carry's source; take a snapshot first to keep a way back.
+- Updated dependencies [48be1e6]
+- Updated dependencies [51bb25b]
+- Updated dependencies [6a05977]
+  - @substrat-run/contracts@0.141.0
+  - @substrat-run/kernel@0.141.0
+  - @substrat-run/control-plane-client@0.1.6
+
 ## 0.140.0
 
 ### Minor Changes

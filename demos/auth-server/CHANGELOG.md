@@ -1,5 +1,22 @@
 # @substrat-run/demo-auth-server
 
+## 0.12.0
+
+### Minor Changes
+
+- d4fc0fc: Add email account invitations with BankID linking or password and Twilio Verify SMS enrollment. Applications can require BankID or password plus SMS, enforced when issuing an authorization code. Configure the Twilio account SID, auth token, and Verify service SID to enable SMS.
+
+  Recognize the invitation and phone-factor plugins and Twilio transport as server auth wiring in the boundary linter.
+
+### Patch Changes
+
+- Updated dependencies [48be1e6]
+- Updated dependencies [51bb25b]
+- Updated dependencies [6a05977]
+  - @substrat-run/contracts@0.141.0
+  - @substrat-run/kernel@0.141.0
+  - @substrat-run/vertical-host@0.141.0
+
 ## 0.11.17
 
 ### Patch Changes

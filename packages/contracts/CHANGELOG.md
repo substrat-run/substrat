@@ -1,5 +1,12 @@
 # @substrat-run/contracts
 
+## 0.141.0
+
+### Minor Changes
+
+- 48be1e6: Add a separate `attachments: 'read'` capability mint field for attachment list, open and search. Existing operation allowlists retain their meaning. Existing capability rows read the nullable attachment opt-in as absent after the additive spine upgrade; no rows are backfilled. Attachment reads still check the target's read key as the capability.
+- 51bb25b: Refuse PATCH operations with required body fields or Zod defaults unless the declaration gives a nonempty `patchException` reason. The check also applies when a composed engine operation is bound to PATCH. A downstream vertical can make the body fields optional without defaults, route a full replacement as PUT, or declare and review a reasoned exception.
+
 ## 0.140.0
 
 ### Minor Changes
@@ -6337,7 +6344,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
