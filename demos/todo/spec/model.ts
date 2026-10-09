@@ -224,6 +224,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
     input: z.object({ listId: z.string(), name: z.string().min(1) }),
     output: todoEntities.list.fields,
     http: { method: 'PATCH', path: '/lists/{listId}' },
+    patchException: 'This rename command requires a name; its handler writes only name.',
     emits: {
       entity: 'list',
       entityIdFrom: 'id',

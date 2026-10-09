@@ -611,6 +611,8 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
     readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     readonly path: CheckedPath<O>;
   };
+  /** A reasoned exception when a PATCH input cannot be an optional, default-free field bag. */
+  readonly patchException?: string;
   /**
    * This operation's MCP rendering (#112) — the ONE knob, and it is optional.
    *
@@ -822,6 +824,7 @@ export function defineOperations<
     assertListsArePaged(operations);
     assertConcurrencyMovesVersion(operations);
     assertFieldBagsDeclareConcurrency(operations, entities, engines ?? []);
+    assertPatchInputs(operations);
     assertTrashedDeclarations(operations, entities);
     return operations;
   };
@@ -1047,6 +1050,43 @@ function isOptionalSchema(schema: unknown, depth = 0): boolean {
       return isOptionalSchema(def.innerType, depth + 1);
     default:
       return false;
+  }
+}
+
+/** A default fills an absent PATCH field before its handler can preserve the old value. */
+function hasInputDefault(schema: unknown, depth = 0): boolean {
+  if (depth > 16) return false;
+  const def = (schema as { _zod?: { def?: unknown } })?._zod?.def as
+    | { type?: string; innerType?: unknown; in?: unknown; out?: unknown }
+    | undefined;
+  if (def?.type === 'default' || def?.type === 'prefault') return true;
+  return [def?.innerType, def?.in, def?.out].some((inner) => inner !== undefined && hasInputDefault(inner, depth + 1));
+}
+
+/** Check the effective HTTP method, both on local operations and bound engine routes. */
+function assertPatchInputs(operations: Record<string, unknown>): void {
+  for (const [name, value] of Object.entries(operations)) {
+    const op = value as {
+      http?: { method?: string; path?: string };
+      input?: z.ZodObject<z.ZodRawShape>;
+      patchException?: unknown;
+    };
+    const reason = op.patchException;
+    if (reason !== undefined && (typeof reason !== 'string' || reason.trim() === '')) {
+      throw new Error(`model: '${name}' declares patchException without a reason`);
+    }
+    if (op.http?.method !== 'PATCH' || reason !== undefined) continue;
+    const pathFields = new Set([...((op.http.path ?? '').matchAll(/\{([^}]+)\}/g))].map((match) => match[1]));
+    for (const [field, schema] of Object.entries(op.input?.shape ?? {})) {
+      if (pathFields.has(field)) continue;
+      const offence = hasInputDefault(schema) ? 'has a default' : !isOptionalSchema(schema) ? 'is required' : null;
+      if (offence !== null) {
+        throw new Error(
+          `model: '${name}' routes as PATCH, but body field '${field}' ${offence}; ` +
+            'route it as PUT, make the field optional without a default, or declare patchException with a reason',
+        );
+      }
+    }
   }
 }
 
@@ -1994,6 +2034,7 @@ export function defineEngineRoutes<const Ops extends Record<string, object>>(ope
       }
       out[name] = { ...(op as object), http };
     }
+    assertPatchInputs(out);
     return out as { [K in keyof R]: (K extends keyof Ops ? Ops[K] : never) & { http: R[K] } };
   };
 }

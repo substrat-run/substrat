@@ -206,6 +206,17 @@ handler, and a new operation cannot forget to.
 
 Omit `input` entirely for an operation that takes no body.
 
+A `PATCH` route takes a partial update: every body field must be optional, and none may
+have a Zod default or prefault. A default turns an omitted field into a supplied value
+before the handler sees it. Path parameters may remain required. `defineOperations`
+checks this when the module loads; `defineEngineRoutes` checks it when an engine
+operation is bound to its final HTTP method. A full replacement belongs on `PUT`.
+When a PATCH operation deliberately requires a body field, declare
+`patchException: 'reason'` on the operation. The reason must explain why the handler
+preserves the other fields, so a reviewer can check the exception against its code.
+This declaration check cannot inspect a handler's SQL or prove that an omitted field
+is preserved.
+
 ### Where `PERMISSIONS` comes from
 
 That array is the one thing in the model written twice: the keys are also declared, with their
@@ -427,6 +438,8 @@ Every one of these is a compile error, not a lint:
   the row and every other field optional over that entity's own columns is the shape that
   loses updates, and one with no `concurrency` is refused at module load, the same way a
   bare-array list output is
+- **a PATCH input is partial** — body fields are optional and have no defaults; a required
+  field needs a reasoned `patchException`, or the route must use `PUT` for full replacement
 - `piiClass` is required, and anything other than `'none'` requires a `subjectId`, because an
   erasure has to be keyable
 - a `payload` cannot carry a field the entity marks `erasable` or `outsideText` — immutable

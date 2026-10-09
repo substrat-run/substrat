@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { defineEntities } from '../src/model.js';
 import {
+  defineEngineRoutes,
   defineOperations,
   eventsEmittedBy,
   operationInputsOf,
@@ -252,6 +253,72 @@ ops({
     output: z.object({ id: z.string() }),
     http: { method: 'PUT', path: '/customers/{id}' },
   },
+});
+
+describe('PATCH input declarations', () => {
+  const update = (input: z.ZodObject<z.ZodRawShape>, patchException?: string) =>
+    ops({
+      'customer/update': {
+        summary: 'Update a customer',
+        permission: 'customer:manage',
+        input,
+        output: entities.customer.fields,
+        http: { method: 'PATCH', path: '/customers/{id}' },
+        ...(patchException === undefined ? {} : { patchException }),
+      },
+    });
+
+  it('accepts optional, default-free body fields and a required path key', () => {
+    expect(() => update(z.object({ id: z.string(), name: z.string().nullable().optional() }))).not.toThrow();
+  });
+
+  it('refuses a full replacement behind PATCH and names the remedy', () => {
+    expect(() => update(z.object({ id: z.string(), name: z.string(), status: z.string().default('lead') })))
+      .toThrow(/customer\/update.*name.*route it as PUT, make the field optional without a default, or declare patchException with a reason/);
+  });
+
+  it('refuses defaults and prefaults even inside optional wrappers', () => {
+    expect(() => update(z.object({ id: z.string(), name: z.string().default('new').optional() })))
+      .toThrow(/customer\/update.*name.*default/);
+    expect(() => update(z.object({ id: z.string(), name: z.string().prefault('new').nullable().optional() })))
+      .toThrow(/customer\/update.*name.*default/);
+  });
+
+  it('accepts a reasoned exception, but not an empty reason', () => {
+    expect(() => update(z.object({ id: z.string(), name: z.string() }), 'The handler writes only name.'))
+      .not.toThrow();
+    expect(() => update(z.object({ id: z.string(), name: z.string() }), '  '))
+      .toThrow(/customer\/update.*patchException without a reason/);
+  });
+
+  it('allows full replacement through PUT', () => {
+    expect(() => ops({
+      'customer/update': {
+        summary: 'Replace a customer',
+        permission: 'customer:manage',
+        input: z.object({ id: z.string(), name: z.string(), status: z.string().default('lead') }),
+        output: entities.customer.fields,
+        http: { method: 'PUT', path: '/customers/{id}' },
+      },
+    })).not.toThrow();
+  });
+
+  it('checks an engine operation when its route is bound to PATCH', () => {
+    const engine = ops({
+      'customer/update': {
+        summary: 'Update a customer',
+        permission: 'customer:manage',
+        input: z.object({ id: z.string(), name: z.string() }),
+        output: entities.customer.fields,
+      },
+    });
+    expect(() => defineEngineRoutes(engine)({
+      'customer/update': { method: 'PATCH', path: '/customers/{id}' },
+    })).toThrow(/customer\/update.*name.*route it as PUT/);
+    expect(() => defineEngineRoutes(engine)({
+      'customer/update': { method: 'PUT', path: '/customers/{id}' },
+    })).not.toThrow();
+  });
 });
 
 // --- events: entityIdFrom names an OUTPUT field (the #695 defect) -----------
