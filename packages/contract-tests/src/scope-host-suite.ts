@@ -42,6 +42,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
+  SCOPE_COPY_LEASE_MS,
   isSearchIndexTable,
   platformIntentFailureMessage,
   REDACTED_DELIVERY_NOTE,
@@ -5738,6 +5739,184 @@ export function scopeHostContractSuite(
       expect(log).toHaveLength(2); // first bind and winner; refusals record no successful move
       await host.admin.bindScopeVersion(staff, t1, s, v1); // legacy unconditional caller
       expect((await host.admin.getScopeRecord(staff, t1, s))!.verticalVersionId).toBe(v1);
+    });
+
+    it('copy ledger is additive, scoped by tenant and scope, and fences old move receipts (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const ref = `version-${ulid().toLowerCase()}`;
+      const first = ulid();
+      const next = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, first);
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, first); // retry keeps its state
+      await expect(host.admin.recordScopeScriptCopy(staff, t2, s, ref, next)).rejects.toThrow();
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t2, scopeId: s })).toEqual([]);
+      expect(await host.admin.settleScopeScriptCopy(staff, t2, s, ref, first, 'done')).toBe(false);
+      const other = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: other });
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, other, ref, first, 'done')).toBe(false);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'eligible',
+        { loadStamp: 'stamp', revision: '2' })).toBe(true);
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, next);
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, first);
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, state: 'eligible' })).toHaveLength(1);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'done')).toBe(true);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'eligible')).toBe(false);
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s }))
+        .map(({ moveId, state }) => ({ moveId, state })).sort((a, b) => a.moveId.localeCompare(b.moveId)))
+        .toEqual([{ moveId: first, state: 'done' }, { moveId: next, state: 'pending' }]
+          .sort((a, b) => a.moveId.localeCompare(b.moveId)));
+      const [pageOne] = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, limit: 1 });
+      const pageTwo = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, limit: 1,
+        after: { scriptRef: pageOne!.scriptRef, moveId: pageOne!.moveId } });
+      expect(pageTwo).toHaveLength(1);
+      expect(pageTwo[0]!.moveId).not.toBe(pageOne!.moveId);
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.tenantId).toBe(t1);
+      await expectRefusal(host.admin.beginScopeScriptReap(staff, t1, s), 'precondition_failed');
+      await host.admin.settleScopeScriptCopy(staff, t1, s, ref, next, 'retained');
+      const beforeClaim = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      await host.admin.beginScopeScriptReap(staff, t1, s); // retry the same claim
+      await expectRefusal(host.admin.recordScopeScriptCopy(staff, t1, s, ref, ulid()), 'precondition_failed');
+      await host.admin.recordScopeScriptCopy(staff, t1, other, ref, ulid());
+      // The reap claim lives on the directory row, never in the ledger: every listing, scoped or
+      // fleet-wide and in every state, holds only the copies recorded above, so counts and pages
+      // are unchanged by the claim.
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).toEqual(beforeClaim);
+      for (const state of [undefined, 'pending', 'eligible', 'retained', 'kept', 'done'] as const) {
+        const listed = await host.admin.listScopeScriptCopies(staff, { ...(state ? { state } : {}), limit: 1000 });
+        expect(listed.filter((copy) => copy.tenantId === t1 && copy.scopeId === s)
+          .every((copy) => copy.scriptRef === ref && [first, next].includes(copy.moveId))).toBe(true);
+      }
+      expect(beforeClaim.map((copy) => copy.moveId).sort()).toEqual([first, next].sort());
+    });
+
+    it('a pending copy entry is claimed only once its lease ran out, and only once (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const move = ulid();
+      const [from, to] = [`version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`];
+      await host.admin.recordScopeScriptCopy(staff, t1, s, from, move, { role: 'source' });
+      await host.admin.recordScopeScriptCopy(staff, t1, s, to, move, { role: 'destination', loadStamp: 'restore-stamp' });
+      const mine = <T extends { scopeId: string }>(copies: T[]) => copies.filter((copy) => copy.scopeId === s);
+      const listed = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      expect(listed.map(({ scriptRef, role, loadStamp, state }) => ({ scriptRef, role, loadStamp, state }))
+        .sort((a, b) => a.scriptRef.localeCompare(b.scriptRef))).toEqual([
+        { scriptRef: from, role: 'source', loadStamp: null, state: 'pending' },
+        { scriptRef: to, role: 'destination', loadStamp: 'restore-stamp', state: 'pending' },
+      ].sort((a, b) => a.scriptRef.localeCompare(b.scriptRef)));
+      expect(listed.every((copy) => copy.leaseUntil !== null && copy.leaseUntil > new Date().toISOString())).toBe(true);
+      // A live lease: the move is still in flight, and no sweep may settle it.
+      const now = new Date();
+      expect(mine(await host.admin.claimExpiredScopeScriptCopies(staff,
+        { now: now.toISOString(), leaseUntil: new Date(now.getTime() + 1000).toISOString(), owner: 'sweep:a', limit: 1000 }))).toEqual([]);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, to, move, 'done', undefined, { claimedBy: 'sweep:a' })).toBe(false);
+      // Past the lease: one sweep claims both, and a second sweep inside the first one's lease does not.
+      const later = new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000);
+      const leaseUntil = new Date(later.getTime() + SCOPE_COPY_LEASE_MS).toISOString();
+      const claimed = mine(await host.admin.claimExpiredScopeScriptCopies(staff,
+        { now: later.toISOString(), leaseUntil, owner: 'sweep:a', limit: 1000 }));
+      expect(claimed.map((copy) => copy.scriptRef).sort()).toEqual([from, to].sort());
+      expect(claimed.every((copy) => copy.leaseUntil === leaseUntil)).toBe(true);
+      expect(mine(await host.admin.claimExpiredScopeScriptCopies(staff,
+        { now: later.toISOString(), leaseUntil, owner: 'sweep:b', limit: 1000 }))).toEqual([]);
+      // Settled only by its claimant.
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, to, move, 'done', undefined, { claimedBy: 'sweep:b' })).toBe(false);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, to, move, 'done', undefined, { claimedBy: 'sweep:a' })).toBe(true);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, from, move, 'retained', undefined, { claimedBy: 'sweep:a' })).toBe(true);
+      // A claimed move can no longer confirm a bind: the sweep and the move never both act.
+      const route = `version-${ulid().toLowerCase()}`;
+      await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, route,
+        { expectedErasureEpoch: 0, confirmMove: { moveId: move, source: 'eligible' } }), 'precondition_failed');
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.servingRef ?? null).toBeNull();
+    });
+
+    it('a copy move confirms with the bind that routes onto it, in the same write (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [from, to] = [`version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`];
+      const move = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, from, move, { role: 'source' });
+      await host.admin.recordScopeScriptCopy(staff, t1, s, to, move, { role: 'destination', loadStamp: 'restore-stamp' });
+      // A confirmation naming another move refuses, and writes nothing.
+      await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, to,
+        { expectedErasureEpoch: 0, confirmMove: { moveId: ulid(), source: 'eligible' } }), 'precondition_failed');
+      await host.admin.setScopeServingRef(staff, t1, s, to, {
+        expectedErasureEpoch: 0,
+        confirmMove: { moveId: move, source: 'eligible', sourceMarker: { loadStamp: 'export-stamp', revision: '7' } },
+      });
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.servingRef).toBe(to);
+      const settled = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      expect(settled.map(({ scriptRef, state, loadStamp, revision }) => ({ scriptRef, state, loadStamp, revision }))
+        .sort((a, b) => a.scriptRef.localeCompare(b.scriptRef))).toEqual([
+        { scriptRef: from, state: 'eligible', loadStamp: 'export-stamp', revision: '7' },
+        { scriptRef: to, state: 'done', loadStamp: 'restore-stamp', revision: null },
+      ].sort((a, b) => a.scriptRef.localeCompare(b.scriptRef)));
+      // Nothing of a confirmed move is left for a crash-recovery sweep.
+      const later = new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000);
+      expect((await host.admin.claimExpiredScopeScriptCopies(staff, { now: later.toISOString(),
+        leaseUntil: later.toISOString(), owner: 'sweep:c', limit: 1000 })).filter((copy) => copy.scopeId === s)).toEqual([]);
+      // And it confirms once: the same confirmation again refuses.
+      await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, from,
+        { expectedErasureEpoch: 0, confirmMove: { moveId: move, source: 'eligible' } }), 'precondition_failed');
+    });
+
+    it('a reap claim refuses a conditional bind until the scope row is deleted (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, `version-${ulid().toLowerCase()}`,
+        { expectedErasureEpoch: 0 }), 'precondition_failed');
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.servingRef ?? null).toBeNull();
+      await expectRefusal(host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, ulid()),
+        'precondition_failed');
+      // The claim survives a reaper that crashed: a second reaper resumes it, and it still refuses.
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      await expectRefusal(host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, ulid()),
+        'precondition_failed');
+    });
+
+    it('an erasure during a reap counts only real copies, so the claim cannot stall it (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      const subject = ulid();
+      const move = ulid();
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [sealed] = await host.admin.sealSubjectPayloads(staff, t1, s, [{ subjectId: subject, plaintext: 'private' }]);
+      const ref = `version-${ulid().toLowerCase()}`;
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, move);
+      await host.admin.settleScopeScriptCopy(staff, t1, s, ref, move, 'retained');
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      const copies = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      expect(copies.map((copy) => copy.moveId)).toEqual([move]);
+      const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+        vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+      expect((await host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted,
+        { versionId: null, servingRef: null, epoch: 0, copyCount: copies.length })).keyDestroyed).toBe(true);
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+    });
+
+    it('subject keys survive a pending copy move until every copy can be reached (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      const subject = ulid();
+      const move = ulid();
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [sealed] = await host.admin.sealSubjectPayloads(staff, t1, s, [{ subjectId: subject, plaintext: 'private' }]);
+      await host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, move);
+      const [copy] = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+        vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+      const expected = { versionId: null, servingRef: null, epoch: 0, copyCount: 1 };
+      await expectRefusal(host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted, expected), 'precondition_failed');
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual(['private']);
+      await host.admin.settleScopeScriptCopy(staff, t1, s, copy!.scriptRef, move, 'retained');
+      await expectRefusal(host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted,
+        { ...expected, copyCount: 0 }), 'precondition_failed');
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual(['private']);
+      expect((await host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted, expected)).keyDestroyed).toBe(true);
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual([null]);
     });
 
     // #1722 (Codex #2008 r7): the admin-log record of a staff resolution of a kept copy. The

@@ -72,6 +72,9 @@ import {
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
+  sweepScopeScriptCopies,
+  reapScopeScriptCopies,
+  assertNoUnreachableScopeCopies,
   createWfpUploader,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
@@ -1662,6 +1665,12 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const host = hostFor(env);
     const resolveVersion = resolveVerticalVersionFor(env);
+    const resolveRef = resolveVerticalRefFor(env);
+    // #1722: before the reaps below, so a preview whose carry crashed is settled, not refused.
+    if (resolveRef) {
+      const copies = await sweepScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef });
+      if (copies.failed) console.error(`scope-copy cleanup: ${copies.failed} of ${copies.expired + copies.retried} copies need retry`);
+    }
     // #1416 — the failure digest's "since the previous pass", read BEFORE the sweep:
     // a drained batch this pass lands carries its vertical's own pass time, and read
     // afterwards it would pose as the previous pass and hide failures nobody mailed.
@@ -1698,9 +1707,17 @@ export default {
           { admin: host.admin, actor: SWEEP_ACTOR, issuerClient: resolveVerticalForScopeFor(env) },
           rec,
         );
-        if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
-          const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
-          if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+        if (resolveRef) {
+          // #1722: a script that predates the delete verb strands its bytes; the reap records it
+          // as an ops failure and goes on, so an expired fork is never pinned forever.
+          const { storageStranded } = await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
+          if (storageStranded) console.warn(`snapshot reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
+        } else {
+          await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
+          if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+            const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
+            if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+          }
         }
         await host.deleteSnapshot(SWEEP_ACTOR, tenantId, scopeId);
       },
@@ -1712,9 +1729,16 @@ export default {
       reapArchivedAfterDays: parseRetentionDays(env.SCOPE_RETENTION_DAYS),
       reapScopeFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
-        if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
-          const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
-          if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+        if (resolveRef) {
+          // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
+          const { storageStranded } = await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
+          if (storageStranded) console.warn(`retention reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
+        } else {
+          await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
+          if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+            const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
+            if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+          }
         }
         // Automated retention / tenant-teardown reap: force past the bound-hostname guard
         // (that guard stops the interactive per-scope mistake, not the aged-out sweep).

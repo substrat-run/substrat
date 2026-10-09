@@ -1,10 +1,12 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage, type TenantId } from '@substrat-run/contracts';
-import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, WRITE_REVISION_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, LOAD_STAMP_KEY, SCOPE_COPY_LEASE_MS, WRITE_REVISION_KEY, dumpMetaValue, type CopyRestoreFence, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
   createControlPlaneApi,
+  retryScopeScriptCopies,
+  settleExpiredScopeScriptCopies,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   stableDeploymentRefFor,
@@ -49,7 +51,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // `marker` runs before a `loadMarker` read and `markerRead` after it: a carry reads the
   // destination's marker after its export, and the source's again right before its bind (r12).
   const hooks: {
-    export?: Hook; marker?: Hook; markerRead?: Hook; kept?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook;
+    export?: Hook; marker?: Hook; markerRead?: Hook; kept?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook; redact?: Hook;
   } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
@@ -75,6 +77,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       throw new ControlPlaneError(status, e instanceof Error ? e.message : String(e));
     }
   };
+  /** Every restore the platform asked for, with the copy-move fence it sent. */
+  const fencesSent: { ref: string; sid: ScopeId; fence?: CopyRestoreFence; wipe: boolean }[] = [];
   const clientFor = (ref: string): VerticalClient => {
     const host = hostOf.get(ref)!;
     return {
@@ -95,9 +99,12 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           loadStamp?: string;
           expect?: { loadStamp: string | null; revision: string | null };
           markCopy?: ScopeLineage;
+          fence?: CopyRestoreFence;
         },
       ) =>
         relay(async () => {
+          // What the platform sends, before a script that cannot fence drops it (#1722).
+          fencesSent.push({ ref, sid, fence: opts?.fence, wipe: dumpMetaValue(tables, CARRIED_AWAY_KEY) !== null });
           await hooks.restore?.(ref, sid, tables);
           const out = await host.restoreScopeLocal(
             sid,
@@ -110,7 +117,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
               // the source, which is what keeps it from reading as a copy of another scope (#2003).
               sourceScopeId: opts?.sourceScopeId,
               exact: opts?.exact,
-              ...(unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect }),
+              ...(unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect, fence: opts?.fence }),
               ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
             },
           );
@@ -166,6 +173,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
         relay(() => host.snapshotScopeLocal(input.sourceScopeId, input.newScopeId)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
+      redactSubject: (sid: ScopeId, subject: string) => relay(async () => {
+        await hooks.redact?.(ref, sid);
+        return host.redactSubjectLocal(sid, subject);
+      }),
       clearCopyMark: (sid: ScopeId, lineage: ScopeLineage, opts: { expect?: { loadStamp: string | null; revision: string | null } } = {}) =>
         relay(() => host.clearCopyMarkLocal(sid, lineage, ...(opts.expect ? [opts.expect] : []))),
     } as unknown as VerticalClient;
@@ -481,6 +492,336 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await hostFor('v1').restoreScopeLocal(created.body.scopeId, notes(...bodies));
       return created.body;
     };
+    it('three successive versions leave one serving copy and two wiped copies', async () => {
+      const p = await fresh('three-versions', 'from v1');
+      expect((await push('three-versions', 'v2')).status).toBe(200);
+      await hostFor('v2').restoreScopeLocal(p.scopeId, notes('from v1', 'from v2'));
+      expect((await push('three-versions', 'v3')).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v3), bodies: ['from v1', 'from v2'] });
+      expect(await Promise.all((['v1', 'v2', 'v3'] as const).map(async (v) => ({
+        bodies: bodiesIn(await hostFor(v).exportScopeLocal(p.scopeId)),
+        wiped: (await tombstoneIn(v, p.scopeId)) !== null,
+      })))).toEqual([
+        { bodies: [], wiped: true },
+        { bodies: [], wiped: true },
+        { bodies: ['from v1', 'from v2'], wiped: false },
+      ]);
+    });
+    it('records a failed source wipe and reaps its copy before deleting the preview row', async () => {
+      const p = await fresh('failed-wipe-reap', 'copied data');
+      hooks.wipe = async (ref, sid) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('source wipe unavailable');
+      };
+      expect((await push('failed-wipe-reap', 'v2')).status).toBe(200);
+      delete hooks.wipe;
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['copied data'] });
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['copied data']);
+      expect((await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId })).some((f) => f.stage === 'source-copy')).toBe(true);
+
+      const pending = await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId });
+      // The carry's source entry (the preview's creation also ledgered v1, as its destination).
+      const source = pending.find((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'source')!;
+      expect(source.state).toBe('eligible');
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, source.scriptRef,
+        source.moveId, 'retained')).toBe(true);
+      const pendingMove = ulid();
+      await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, pendingMove);
+
+      const path = '/verticals/carry-vert/previews/failed-wipe-reap';
+      expect((await api.request(path, { method: 'DELETE', headers: auth })).status).toBe(412);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeDefined();
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!,
+        pendingMove, 'retained')).toBe(true);
+      const reaped = await api.request(path, { method: 'DELETE', headers: auth });
+      expect(reaped.status).toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .every((copy) => copy.state === 'done')).toBe(true);
+    }, 20_000);
+    it('retries a failed source wipe from the ledger', async () => {
+      const p = await fresh('retry-wipe', 'kept until retry');
+      const neighbor = await fresh('retry-neighbor', 'must survive');
+      hooks.wipe = async (ref, sid) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('temporary wipe failure');
+      };
+      expect((await push('retry-wipe', 'v2')).status).toBe(200);
+      delete hooks.wipe;
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['kept until retry']);
+      const report = await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
+      expect(report.done).toBeGreaterThan(0);
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(neighbor.scopeId))).toEqual(['must survive']);
+      expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .find((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'source')?.state).toBe('done');
+    }, 20_000);
+    it('does not destroy the subject key until every script copy confirms redaction', async () => {
+      const p = await fresh('erase-pending', 'copy before erasure');
+      hooks.wipe = async (ref, sid) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('temporary wipe failure');
+      };
+      expect((await push('erase-pending', 'v2')).status).toBe(200);
+      delete hooks.wipe;
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      expect(sealed).not.toBeNull();
+      hooks.redact = async (ref, sid) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('old script unavailable');
+      };
+      const path = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBeGreaterThanOrEqual(500);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+      delete hooks.redact;
+      const eligible = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .find((copy) => copy.state === 'eligible');
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, eligible!.scriptRef,
+        eligible!.moveId, 'retained')).toBe(true);
+      const pendingMove = ulid();
+      await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, pendingMove);
+      const reached: string[] = [];
+      hooks.redact = async (ref) => { reached.push(ref); };
+      // A move in flight answers retry-later before any script is asked to redact.
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(412);
+      expect(reached).toEqual([]);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!,
+        pendingMove, 'retained')).toBe(true);
+      reached.length = 0;
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);
+      expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+    }, 20_000);
+    it('erasure waits for a carry held after its source recheck', async () => {
+      const p = await fresh('erase-race');
+      const subject = ulid();
+      const v1 = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(p.scopeId)) as unknown as {
+        testSubjectEvent(scopeId: string, tenantId: string, subjectId: string): Promise<string>;
+      };
+      const eventId = await v1.testSubjectEvent(p.scopeId, t, subject);
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.markerRead = held.hook;
+      const moving = push('erase-race', 'v2');
+      await held.reached;
+      const shredded = await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
+        method: 'POST', headers: auth,
+      });
+      expect(shredded.status).toBe(412);
+      held.release();
+      expect((await moving).status).toBe(200);
+      expect((await served(p.hostname)).ref).toBe(refOf.get(version.v2));
+      expect((await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
+        method: 'POST', headers: auth,
+      })).status).toBe(200);
+      const v2outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
+      const landed = v2outbox.rows.find((r) => r[v2outbox.columns.indexOf('id')] === eventId);
+      expect(landed?.[v2outbox.columns.indexOf('payload')]).toBeFalsy();
+    });
+    it('does not finalize erasure while a carry can still restore an unbound copy', async () => {
+      const p = await fresh('erase-unbound-race');
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      const v1 = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(p.scopeId)) as unknown as {
+        testSubjectEvent(scopeId: string, tenantId: string, subjectId: string): Promise<string>;
+      };
+      const eventId = await v1.testSubjectEvent(p.scopeId, t, subject);
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const moving = push('erase-unbound-race', 'v2');
+      await held.reached;
+      try {
+        const response = await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
+          method: 'POST', headers: auth,
+        });
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }]))
+          .toEqual(['private']);
+      } finally {
+        held.release();
+      }
+      // The refused erasure touched nothing, so the carry it waited for lands as it would have.
+      expect((await moving).status).toBe(200);
+      const outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
+      const row = outbox.rows.find((r) => r[outbox.columns.indexOf('id')] === eventId);
+      expect(row?.[outbox.columns.indexOf('payload')]).not.toBeNull();
+      expect((await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
+        method: 'POST', headers: auth,
+      })).status).toBe(200);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual([null]);
+      const redacted = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
+      expect(redacted.rows.find((r) => r[redacted.columns.indexOf('id')] === eventId)?.[redacted.columns.indexOf('payload')])
+        .toBeFalsy();
+    }, 20_000);
+    it('does not reap a preview while a carry can still restore its destination', async () => {
+      const p = await fresh('reap-unbound-race', 'keep until move settles');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const moving = push('reap-unbound-race', 'v2');
+      await held.reached;
+      try {
+        const reaped = await api.request('/verticals/carry-vert/previews/reap-unbound-race', {
+          method: 'DELETE', headers: auth,
+        });
+        expect(reaped.status).toBe(412);
+        expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeDefined();
+      } finally {
+        held.release();
+        await moving;
+      }
+      const reaped = await api.request('/verticals/carry-vert/previews/reap-unbound-race', {
+        method: 'DELETE', headers: auth,
+      });
+      expect(reaped.status).toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+    }, 20_000);
+    // Crash recovery (#1722): a carry killed with its move still pending. The hold is never
+    // released in the first case, which is the crash; erasure and reap answer retry-later until
+    // the sweep settles the move after its lease ran out, and then they land.
+    const sweepAfterLease = () => settleExpiredScopeScriptCopies(
+      { admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) },
+      { now: new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000) },
+    );
+    /** The carry's two entries, by version; the preview's creation (v1, as a destination) is left out. */
+    const ledgerOf = async (sid: ScopeId) =>
+      Object.fromEntries((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+        .filter((copy) => !(copy.scriptRef === refOf.get(version.v1) && copy.role === 'destination'))
+        .map((copy) => [copy.scriptRef === refOf.get(version.v1) ? 'v1' : 'v2', copy.state]));
+    it('a carry that crashed before its restore is swept, and erasure and reap then land', async () => {
+      const p = await fresh('crash-before-restore', 'kept');
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      void push('crash-before-restore', 'v2'); // never resumes
+      await held.reached;
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'pending', v2: 'pending' });
+      const shred = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
+      const reap = '/verticals/carry-vert/previews/crash-before-restore';
+      expect((await api.request(shred, { method: 'POST', headers: auth })).status).toBe(412);
+      expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(412);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+      expect((await sweepAfterLease()).failed).toBe(0);
+      // The source is the route; this move's restore never reached the destination, and a move
+      // that is only slow could still deliver it, so that script stays named.
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'done', v2: 'retained' });
+      expect((await api.request(shred, { method: 'POST', headers: auth })).status).toBe(200);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+      expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
+    }, 20_000);
+    it('a carry that crashed after its restore is swept, and its late bind is refused', async () => {
+      const p = await fresh('crash-before-bind', 'kept');
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      // The source's marker, read again right before the bind: the carry stops there.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.markerRead = held.hook;
+      const moving = push('crash-before-bind', 'v2');
+      await held.reached;
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual(['kept']);
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'pending', v2: 'pending' });
+      const shred = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
+      const reap = '/verticals/carry-vert/previews/crash-before-bind';
+      expect((await api.request(shred, { method: 'POST', headers: auth })).status).toBe(412);
+      expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(412);
+      expect((await sweepAfterLease()).failed).toBe(0);
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'done', v2: 'done' });
+      expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+      // The carry was only slow: its bind now lies outside its lease and is refused, so the scope
+      // stays on the source with its data, and the swept destination is not served.
+      held.release();
+      expect((await moving).status).toBe(412);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['kept'] });
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'done', v2: 'done' });
+      expect((await api.request(shred, { method: 'POST', headers: auth })).status).toBe(200);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+      expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+    }, 20_000);
+    // The destination's own store enforces the move's lease (#1722): a restore that outlived it is
+    // refused inside the load's transaction, so nothing lands after a sweep, a reap or an erasure.
+    it('a restore inside its fence lands; one past it is refused and writes nothing', async () => {
+      const p = await fresh('restore-fence', 'kept');
+      const fenceAt = (offsetMs: number): CopyRestoreFence =>
+        ({ moveId: ulid(), notAfter: new Date(Date.now() + offsetMs).toISOString(), erasureEpoch: 0 });
+      await expect(hostFor('v2').restoreScopeLocal(p.scopeId, notes('late'), { fence: fenceAt(-1000) }))
+        .rejects.toThrow(COPY_RESTORE_FENCE_LAPSED);
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
+      await hostFor('v2').restoreScopeLocal(p.scopeId, notes('in time'), { fence: fenceAt(60_000) });
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual(['in time']);
+    });
+    it('a carry that resumes after its lease ran out and the scope was reaped restores nothing', async () => {
+      const lease = 1_200;
+      const shortApi = createControlPlaneApi({
+        host: dir,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        platformBaseDomains: ['global.substrat.run'],
+        provisionRetryDelaysMs: [1],
+        resolveVerticalVersion: async (s, versionId) => {
+          const ref = s === slug ? refOf.get(versionId) : undefined;
+          return ref ? clientFor(ref) : undefined;
+        },
+        resolveVerticalRef: async (ref) => (hostOf.has(ref) ? clientFor(ref) : undefined),
+        copyLeaseMs: lease,
+      });
+      const p = await fresh('reaped-under-carry', 'kept');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const moving = shortApi.request(`/verticals/${slug}/previews`, {
+        method: 'POST', headers: auth, body: JSON.stringify({ tag: 'reaped-under-carry', versionId: version.v2 }),
+      });
+      await held.reached;
+      // Past the lease, with the carry still alive: the sweep settles the move, and the reap claims
+      // the scope and deletes every copy the ledger names.
+      await new Promise((resolve) => setTimeout(resolve, lease + 200));
+      expect((await settleExpiredScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) }))
+        .failed).toBe(0);
+      expect((await api.request('/verticals/carry-vert/previews/reaped-under-carry', { method: 'DELETE', headers: auth })).status)
+        .toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+      held.release();
+      expect((await moving).status).toBe(412);
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
+    }, 20_000);
+    // Review r1: the bind confirms the carry's source `retained`, and only the tail promotes it,
+    // after checking the destination was not overtaken. A sweep in between must not wipe it.
+    it('a sweep between the bind and the overtaken-destination check leaves the source alone', async () => {
+      const p = await fresh('sweep-before-check', 'kept');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.read = held.hook;
+      const moving = push('sweep-before-check', 'v2');
+      await held.reached;
+      const source = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .find((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'source')!;
+      expect(source.state).toBe('retained');
+      await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['kept']);
+      held.release();
+      expect((await moving).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['kept'] });
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+    });
+    it('erasure retries when a bind moves the route after its script inventory was read', async () => {
+      const p = await fresh('erase-route-race');
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      let moved = false;
+      hooks.redact = async (ref, sid) => {
+        if (moved || ref !== refOf.get(version.v1) || sid !== p.scopeId) return;
+        moved = true;
+        expect((await bindTo(p.scopeId, 'v2')).status).toBe(200);
+      };
+      const path = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
+      // The concurrent bind may tombstone the old script before redaction reaches it.
+      // That refusal must leave the key intact so a fresh inventory can be retried.
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(409);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+      delete hooks.redact;
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+    });
     afterEach(() => {
       for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
       unfenced.clear();
@@ -1460,6 +1801,95 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['old data'] });
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
       expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+      // The re-carry is a copy move of its own (review r2). Three loads reached v1, each fenced for
+      // its own move: the preview's creation, R's carry, and the re-carry. Each move is a v1
+      // destination in the ledger, done.
+      const loads = fencesSent.filter((r) => r.ref === refOf.get(version.v1) && r.sid === p.scopeId && !r.wipe && r.fence);
+      expect(loads).toHaveLength(3);
+      const moves = loads.map((r) => r.fence!.moveId);
+      expect(new Set(moves).size).toBe(3);
+      expect(Date.parse(loads[2]!.fence!.notAfter)).toBeGreaterThan(Date.now());
+      const v1Destinations = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .filter((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'destination');
+      for (const moveId of moves) {
+        expect(v1Destinations.find((copy) => copy.moveId === moveId)?.state).toBe('done');
+      }
+    });
+  });
+
+  describe('a confirmed adopt or rebind gives up its old copy (#1722)', () => {
+    // The decided adopt/rebind policy: a confirmed move's old copy is eligible, and the sweep
+    // wipes it under the carry's fence; a failed move keeps it. On real namespaces. Last in the
+    // file: the installs it adds and the serving scripts it sets would change what every
+    // preview push above forks from.
+    let targetLineage: Promise<void> | undefined;
+    const servingSetup = async () => {
+      const stable = stableDeploymentRefFor(slug);
+      if (!hostOf.has(stable)) hostOf.set(stable, hostFor('v3'));
+      if (!(await dir.admin.verticalServing(staff, slug))) {
+        await dir.admin.setVerticalServing(staff, slug, { ref: stable, versionId: version.v2, doClasses: [], migrationTag: 't1' });
+      }
+      const target = 'carry-dst';
+      const targetServing = `${target}-serving`;
+      targetLineage ??= (async () => {
+        await dir.admin.registerVertical(staff, { slug: target, name: 'Carry Dst', source: 'cli', ownerTenant: t });
+        const id = ulid();
+        await dir.admin.publishVersion(staff, {
+          id, verticalSlug: target, version: '1.0.0', manifestDigest: 'm-dst', permissionDigest: 'p', migrationDigest: 'g',
+          deploymentRef: `${target}-${id.toLowerCase()}`,
+        });
+        await dir.admin.setVerticalServing(staff, target, { ref: targetServing, versionId: id, doClasses: [], migrationTag: 't1' });
+      })();
+      await targetLineage;
+      hostOf.set(targetServing, hostFor('v2'));
+      return { stable, target, targetServing };
+    };
+    const legacyInstall = async () => {
+      const sid = scopeId.parse(ulid());
+      await dir.provisionScope(staff, { tenantId: t, scopeId: sid, vertical: slug });
+      await dir.admin.activateScope(staff, t, sid);
+      await dir.admin.bindScopeVersion(staff, t, sid, version.v1);
+      await dir.admin.setScopeServingRef(staff, t, sid, null);
+      await hostFor('v1').restoreScopeLocal(sid, notes('kept'));
+      return sid;
+    };
+    const ledgerByRef = async (sid: ScopeId) =>
+      Object.fromEntries((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+        .map((copy) => [copy.scriptRef, copy.state]));
+    for (const move of ['adopt', 'rebind'] as const) {
+      it(`a confirmed ${move} leaves the old copy eligible, and the sweep wipes it under the fence`, async () => {
+        const { stable, target, targetServing } = await servingSetup();
+        const sid = await legacyInstall();
+        const to = move === 'adopt' ? stable : targetServing;
+        const res = move === 'adopt'
+          ? await api.request(`/tenants/${t}/scopes/${sid}/adopt-serving`, { method: 'POST', headers: auth })
+          : await api.request(`/tenants/${t}/scopes/${sid}/rebind-vertical`, {
+            method: 'POST', headers: auth, body: JSON.stringify({ vertical: target }),
+          });
+        expect(res.status, await res.clone().text()).toBe(200);
+        const from = refOf.get(version.v1)!;
+        expect(await ledgerByRef(sid)).toEqual({ [from]: 'eligible', [to]: 'done' });
+        expect(bodiesIn(await hostFor('v1').exportScopeLocal(sid))).toEqual(['kept']);
+        await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
+        expect(await ledgerByRef(sid)).toEqual({ [from]: 'done', [to]: 'done' });
+        expect(await tombstoneIn('v1', sid)).not.toBeNull();
+        expect(bodiesIn(await hostOf.get(to)!.exportScopeLocal(sid))).toEqual(['kept']);
+      });
+    }
+    it('an adopt whose restore fails keeps its source, and the sweep leaves it', async () => {
+      const { stable } = await servingSetup();
+      const sid = await legacyInstall();
+      hooks.restore = async (ref, s) => {
+        if (ref === stable && s === sid) throw new Error('serving script unavailable');
+      };
+      expect((await api.request(`/tenants/${t}/scopes/${sid}/adopt-serving`, { method: 'POST', headers: auth })).status)
+        .toBeGreaterThanOrEqual(500);
+      delete hooks.restore;
+      const from = refOf.get(version.v1)!;
+      expect(await ledgerByRef(sid)).toEqual({ [from]: 'retained', [stable]: 'retained' });
+      await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
+      expect(await ledgerByRef(sid)).toEqual({ [from]: 'retained', [stable]: 'retained' });
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(sid))).toEqual(['kept']);
     });
   });
 });

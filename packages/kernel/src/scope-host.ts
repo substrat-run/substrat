@@ -1,6 +1,7 @@
 import type { ModuleLog } from './module-log.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
+import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
   ExportReadInput,
@@ -2552,7 +2553,11 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     versionId: string,
-    opts?: { snapshot?: boolean; acknowledge?: BindAcknowledgement; expectedVersionId?: string | null },
+    opts?: {
+      snapshot?: boolean; acknowledge?: BindAcknowledgement; expectedVersionId?: string | null; expectedErasureEpoch?: number;
+      /** #1722: the copy move this bind routes the scope onto, confirmed in the same write. */
+      confirmMove?: ScopeCopyMoveConfirmation;
+    },
   ): Promise<void>;
   /**
    * Which apps in the scope's tenant binding `versionId` would break (#1756): the answer
@@ -2656,7 +2661,7 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     servingRef: string | null,
-    opts?: { acknowledge?: BindAcknowledgement },
+    opts?: { acknowledge?: BindAcknowledgement; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation },
   ): Promise<void>;
 
   /**
@@ -2686,6 +2691,47 @@ export interface HostAdmin {
     scopeId: ScopeId,
     resolution: KeptCopyResolution,
   ): Promise<void>;
+
+  /** A script that holds or held this scope's data. The moveId fences delayed cleanup
+   * from a later rollback and carry through the same script. */
+  recordScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
+    scriptRef: string, moveId: string,
+    /** Which end of the move this script is, and for a destination the load stamp its restore
+     *  will leave: what a crash-recovery sweep fences its wipe on. The entry is leased to the
+     *  recording move for `leaseMs` (default `SCOPE_COPY_LEASE_MS`). */
+    opts?: { role?: ScopeCopyRole; loadStamp?: string | null; leaseMs?: number },
+  ): Promise<void>;
+  /**
+   * Claim up to `limit` pending entries whose lease ran out before `now` (a move that crashed,
+   * or a sweep that did), leasing each to `owner` until `leaseUntil`. An entry whose lease is
+   * live is never returned, so a move still in flight keeps it; and a move whose lease ran out
+   * can no longer confirm (`confirmMove`), so the claimant cannot lose a race to it.
+   */
+  claimExpiredScopeScriptCopies(
+    actor: PlatformActorId,
+    input: { now: string; leaseUntil: string; owner: string; limit: number },
+  ): Promise<ScopeScriptCopy[]>;
+  /** Reserve a scope for script cleanup only when no copy move is in flight. The claim is a
+   * column on the directory row, not a ledger entry: it refuses new moves and the conditional
+   * bind until the row itself is deleted, and a crashed reaper resumes it. */
+  beginScopeScriptReap(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
+  /** Only a confirmed move makes a source eligible for a nonterminal wipe. */
+  settleScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
+    scriptRef: string, moveId: string,
+    state: 'eligible' | 'retained' | 'kept' | 'done',
+    marker?: { loadStamp: string | null; revision: string | null },
+    /** A sweep's own claim: the entry settles only while it is still pending under that owner. */
+    opts?: { claimedBy?: string },
+  ): Promise<boolean>;
+  /** Move a failed retry to the back of the due queue without changing its state. */
+  touchScopeScriptCopy(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string, moveId: string): Promise<void>;
+  listScopeScriptCopies(
+    actor: PlatformActorId,
+    filter: { tenantId?: TenantId; scopeId?: ScopeId; state?: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; limit?: number;
+      after?: { scriptRef: string; moveId: string } },
+  ): Promise<ScopeScriptCopy[]>;
 
   /**
    * When each of a CO-LOCATED scope's migrations actually ran (#1236), newest
@@ -3573,6 +3619,16 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     subjectId: string,
+  ): Promise<SubjectShredReceipt>;
+  /** Monotone directory fence against a carry from before subject erasure. */
+  scopeErasureEpoch(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
+  /** Finish an orchestrated erasure only after every script holding a copy has redacted it.
+   * The copy count fences a move that was recorded after the coordinator listed scripts;
+   * ledger rows are append-only, so a changed count means that inventory is stale. */
+  finalizeSubjectShred(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
+    subjectId: string, redactions: readonly SubjectRedactionCounts[],
+    expected: { versionId: string | null; servingRef: string | null; epoch: number; copyCount: number },
   ): Promise<SubjectShredReceipt>;
 
   // -- impersonation (K-42, #868) --------------------------------------------
@@ -4869,6 +4925,39 @@ export interface OpsFailureInput {
   message: string;
   /** The upstream provider's trace reference, when the message carried one. */
   reference?: string | null;
+}
+
+/** How long a recorded copy move owns its pending entries before a sweep may settle them (#1722). */
+export const SCOPE_COPY_LEASE_MS = 30 * 60_000;
+
+/** Which end of a copy move a script is (#1722). Null on an entry recorded without one. */
+export type ScopeCopyRole = 'source' | 'destination';
+
+/**
+ * A copy move's confirmation, written with the bind that routes the scope onto its destination
+ * (#1722). The bind lands only while every entry of the move is still pending, leased to the move
+ * (no sweep has claimed it) and inside its lease; in the same write the destination entries
+ * settle `done` (the route reaches them) and the source entries settle as the `source` field
+ * says, with `sourceMarker` as the marker a later fenced wipe expects.
+ */
+export interface ScopeCopyMoveConfirmation {
+  moveId: string;
+  source: 'eligible' | 'retained';
+  sourceMarker?: { loadStamp: string | null; revision: string | null };
+}
+
+/** Directory inventory of one script's copy of a scope (#1722). */
+export interface ScopeScriptCopy {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  scriptRef: string;
+  moveId: string;
+  state: 'pending' | 'eligible' | 'retained' | 'kept' | 'done';
+  loadStamp: string | null;
+  revision: string | null;
+  role: ScopeCopyRole | null;
+  /** Until when the pending entry belongs to its move (or to the sweep that claimed it). */
+  leaseUntil: string | null;
 }
 
 /** One staff resolution of a kept copy (#1722), as `recordKeptCopyResolution` logs it. */

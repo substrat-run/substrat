@@ -133,7 +133,8 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
+import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
+import { SCOPE_COPY_LEASE_MS, copyRestoreFence } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
 import {
@@ -156,6 +157,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
+import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
@@ -343,6 +345,9 @@ export interface ControlPlaneApiOptions {
    * resolvers, which is only correct before any scope has adopted the serving script.
    */
   resolveVerticalRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+  /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
+   *  (`CopyRestoreFence`). `SCOPE_COPY_LEASE_MS` unless a test needs a lease it can outlive. */
+  copyLeaseMs?: number;
   /**
    * Uploads a built vertical bundle to the platform runtime (a WfP dispatch
    * namespace), injected by the host so this package holds no Cloudflare SDK and the
@@ -1408,6 +1413,7 @@ const namedTenants = (c: Context<{ Variables: Vars }>): string[] => {
  */
 export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ Variables: Vars }> {
   const { host, authenticate, authenticateBuilder, authenticateTenantService } = options;
+  const copyLeaseMs = options.copyLeaseMs ?? SCOPE_COPY_LEASE_MS;
   const app = new Hono<{ Variables: Vars }>();
 
   // The CLI version advisory (#971), stamped on EVERY response — including the 401 the
@@ -2739,7 +2745,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
      *  and `exact` when the platform exported them itself rather than a caller supplying them.
      *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, and `expect`, the marker
      *  the carry read from `dest`, so a store that moved since is never overwritten. */
-    source: { scopeId: ScopeId; exact: boolean; loadStamp?: string; expect?: LoadMarker },
+    source: { scopeId: ScopeId; exact: boolean; loadStamp?: string; expect?: LoadMarker; fence?: CopyRestoreFence },
   ): ReturnType<VerticalClient['restoreScope']> => {
     // #2005: every carry, reuse, adopt and governed restore lands here. When the directory says
     // the destination is not primary, the vertical marks it a copy in its own storage — a carry
@@ -2754,6 +2760,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         exact: source.exact,
         loadStamp: source.loadStamp,
         expect: source.expect,
+        ...(source.fence ? { fence: source.fence } : {}),
         ...(markCopy ? { markCopy } : {}),
       }),
     );
@@ -2801,13 +2808,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!source || !dest) {
       throw new ControlPlaneError(501, 'adopt-serving needs dispatch resolution for both ends');
     }
-    const dump = await source.exportScope(scopeId);
     // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
-    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true });
-    // Data landed — only now flip routing and move the version pointer.
-    await c.var.admin
-      .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge })
-      .catch(relayHostRefusal);
+    // Data landed — only then does routing flip and the version pointer move.
+    const restored = await moveOntoServing(c, scope, source, dest, serving.ref, { acknowledge: opts.acknowledge });
     await c.var.admin
       .bindScopeVersion(actor, tenantId, scopeId, serving.versionId, { acknowledge: opts.acknowledge })
       .catch(relayHostRefusal);
@@ -2888,8 +2891,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * independent, and the scope's DO carries the SOURCE lineage's applied-migration
    * journal. The digest gate refuses the crossing unless the scope's bound version and
    * the target's serving version carry the same migration digest — or the operator
-   * acknowledges having read both surfaces (`ackMigrations`). The source script's copy
-   * is never deleted — flipping `servingRef` + version back is the backout.
+   * acknowledges having read both surfaces (`ackMigrations`). Once the move is confirmed the
+   * source script's copy is wiped by the sweep (#1722, `moveOntoServing`), so it is no backout:
+   * rollback is an explicit snapshot or backup taken before the rebind.
    */
   const rebindScopeOntoVertical = async (
     c: ReqCtx,
@@ -2936,10 +2940,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const move = { acknowledge: opts.acknowledge };
     if (opts.abandonData) {
       // Directory-only crossing: no bytes move, so the frontier gate has nothing to
-      // protect — the target provisions its own schema from scratch. The source
-      // script's copy is untouched and remains the backout, same as a carried rebind.
-      // The scope serves nothing until `/verticals/:slug/instances` re-provisions it.
-      await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, move).catch(relayHostRefusal);
+      // protect — the target provisions its own schema from scratch. The source script's
+      // copy is the only copy of the scope's data, and its deployment predates the export a
+      // fenced wipe needs, so it is kept (`retained`), never swept, and reap and erasure still
+      // reach it. The scope serves nothing until `/verticals/:slug/instances` re-provisions it.
+      const sourceRef = await routeOf(c, scope);
+      const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
+      if (moveId && sourceRef) {
+        await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, { role: 'source' });
+      }
+      try {
+        const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
+        await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, {
+          ...move, expectedErasureEpoch: erasureEpoch, ...(moveId ? { confirmMove: { moveId, source: 'retained' } } : {}),
+        }).catch(relayHostRefusal);
+      } finally {
+        if (moveId) await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId, 'retained');
+      }
       await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
       return { servingRef: serving.ref, versionId: serving.versionId, dataAbandoned: true };
     }
@@ -2967,17 +2984,72 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!source || !dest) {
       throw new ControlPlaneError(501, 'rebind-vertical needs dispatch resolution for both ends');
     }
-    const dump = await source.exportScope(scopeId);
-    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true }); // #1742, as adopt
-    // Data landed on the target script — only now flip routing and cross the pointer.
-    // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
-    // extra snapshot here (adopt-serving's precedent): the source script's copy is the
-    // pre-migration state, and it is never deleted — that copy is the backout.
-    await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, move).catch(relayHostRefusal);
+    // #1742, as adopt. Data landed on the target script — only then do routing flip and the
+    // pointer cross. `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited.
+    // No snapshot is taken here: the old copy is swept once the move is confirmed, so an
+    // operator who wants a way back takes a snapshot or backup first.
+    const restored = await moveOntoServing(c, scope, source, dest, serving.ref, move);
     await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
     // #1674: re-assert the recorded OFF positions in the store the scope now routes to.
     await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
     return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
+  };
+
+  /**
+   * The copy move under adopt-serving and rebind-vertical (#1722): export from the script the
+   * scope routes to, restore onto the serving script, then flip the route. Both ends are in the
+   * ledger, leased to this move, before any bytes move, and the destination's entry names the
+   * stamp its restore leaves, so a crash-recovery sweep can wipe an unbound restore if this
+   * request dies. The route flips only while that lease is live and unclaimed, and the same
+   * write settles the destination `done`.
+   *
+   * The old source is then `eligible`, as a carry's is: the scheduled sweep wipes it, fenced on
+   * the stamp and revision this export read, so a copy that took a write since is kept for staff
+   * rather than deleted. The old copy is not a backout; rollback is an explicit snapshot or
+   * backup taken before the move (the decided policy). A source whose deployment predates the
+   * stamped export cannot be wiped under a fence, and stays `retained`. A move that fails or is
+   * never confirmed keeps its source too: the catch below settles both ends `retained`.
+   */
+  const moveOntoServing = async (
+    c: ReqCtx, scope: Scope, source: VerticalClient, dest: VerticalClient, servingRef: string,
+    routeOpts: { acknowledge?: BindAcknowledgement },
+  ): ReturnType<VerticalClient['restoreScope']> => {
+    const actor = c.get('actor');
+    const { tenantId, id: scopeId } = scope;
+    const sourceRef = await routeOf(c, scope);
+    const moveId = sourceRef !== servingRef ? ulid() : null;
+    const restoredStamp = ulid();
+    const recordedAt = Date.now();
+    if (moveId && sourceRef) {
+      await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, { role: 'source', leaseMs: copyLeaseMs });
+    }
+    try {
+      if (moveId) {
+        await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, servingRef, moveId,
+          { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
+      }
+      const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
+      const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
+        source.exportScopeStamped(scopeId),
+      );
+      const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, {
+        scopeId, exact: true, loadStamp: restoredStamp,
+        ...(moveId ? { fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch) } : {}),
+      });
+      await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, servingRef, {
+        ...routeOpts, expectedErasureEpoch: erasureEpoch,
+        ...(moveId ? { confirmMove: sourceStamp
+          ? { moveId, source: 'eligible' as const, sourceMarker: { loadStamp: sourceStamp, revision: sourceRevision } }
+          : { moveId, source: 'retained' as const } } : {}),
+      }).catch(relayHostRefusal);
+      return restored;
+    } catch (error) {
+      if (moveId) await Promise.allSettled([
+        ...(sourceRef ? [c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, 'retained')] : []),
+        c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, servingRef, moveId, 'retained'),
+      ]);
+      throw error;
+    }
   };
 
   /** The script a scope's requests reach: its serving pin, else its bound version's own script. */
@@ -2992,6 +3064,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   /** A carry that landed (#1710): where the data went, and what `bindAfterCarry` settles with (#1722). */
   type Carried = {
+    moveId: string;
+    erasureEpoch: number;
     from: string;
     to: string;
     tables: number;
@@ -3095,53 +3169,83 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `so the version was not bound (#1710)`,
       );
     }
-    const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
-      source.exportScopeStamped(scope.id),
-    );
-    // What the destination holds now, read before the binding is checked again. The restore
-    // sends it back and is refused if the store moved since: another carry into the same script
-    // loaded it, or it went live under another carry's bind and took a write. That is a CI retry
-    // of the same version, held before its restore while the first run bound and served.
-    const destMarker = await retryTransient(() => dest.loadMarker(scope.id));
-    const now = await c.var.admin.getScopeRecord(actor, scope.tenantId, scope.id);
-    if (
-      !now ||
-      (now.verticalVersionId ?? null) !== (scope.verticalVersionId ?? null) ||
-      (now.servingRef ?? null) !== (scope.servingRef ?? null)
-    ) {
-      throw new ControlPlaneError(
-        412,
-        `scope ${scope.id} was re-pointed while its data was being copied out of '${from}', so nothing was ` +
-          `moved or bound (#1722). Reload the scope and retry.`,
-      );
-    }
-    if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
-      throw new ControlPlaneError(
-        412,
-        `the copy of scope ${scope.id} in '${from}' was already carried to another script and wiped, so nothing ` +
-          `was moved or bound (#1722). Reload the scope and retry.`,
-      );
-    }
+    // Before exporting or restoring anything, retain the script identity in the directory, so a
+    // failed carry stays named for reap and erasure. Both entries are leased to this move: if this
+    // request dies, a sweep settles them once the lease runs out, and the move can then no longer
+    // confirm its bind.
+    const moveId = ulid();
     // #1742: the recorded OFF positions ride the restore, as on adopt and rebind. #1722: so does
-    // a stamp of this carry's own, which a refused bind's wipe of the copy expects.
+    // a stamp of this carry's own, which a refused bind's wipe of the copy expects, and which the
+    // destination's entry names before the restore so a crash-recovery sweep can fence on it.
     const restoredStamp = ulid();
-    const restored = await restoreCarryingSwitches(actor, dest, scope.tenantId, scope.id, dump, {
-      scopeId: scope.id,
-      exact: true,
-      loadStamp: restoredStamp,
-      ...(destMarker === 'unfenced' ? {} : { expect: destMarker }),
-    });
-    return {
-      from,
-      to,
-      tables: restored.tables,
-      switchedOff: restored.switchedOff,
-      source,
-      dest,
-      sourceStamp,
-      sourceRevision,
-      restoredStamp,
-    };
+    const recordedAt = Date.now();
+    await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, from, moveId, { role: 'source', leaseMs: copyLeaseMs });
+    try {
+      // The unbound destination can also survive a refused bind or a failed best-effort
+      // cleanup. Name it before any bytes are restored so reap and erasure can find it.
+      await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId,
+        { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
+      const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
+      const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
+        source.exportScopeStamped(scope.id),
+      );
+      // What the destination holds now, read before the binding is checked again. The restore
+      // sends it back and is refused if the store moved since: another carry into the same script
+      // loaded it, or it went live under another carry's bind and took a write. That is a CI retry
+      // of the same version, held before its restore while the first run bound and served.
+      const destMarker = await retryTransient(() => dest.loadMarker(scope.id));
+      const now = await c.var.admin.getScopeRecord(actor, scope.tenantId, scope.id);
+      if (
+        !now ||
+        (now.verticalVersionId ?? null) !== (scope.verticalVersionId ?? null) ||
+        (now.servingRef ?? null) !== (scope.servingRef ?? null)
+      ) {
+        throw new ControlPlaneError(
+          412,
+          `scope ${scope.id} was re-pointed while its data was being copied out of '${from}', so nothing was ` +
+            `moved or bound (#1722). Reload the scope and retry.`,
+        );
+      }
+      if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
+        throw new ControlPlaneError(
+          412,
+          `the copy of scope ${scope.id} in '${from}' was already carried to another script and wiped, so nothing ` +
+            `was moved or bound (#1722). Reload the scope and retry.`,
+        );
+      }
+      const restored = await restoreCarryingSwitches(actor, dest, scope.tenantId, scope.id, dump, {
+        scopeId: scope.id,
+        exact: true,
+        loadStamp: restoredStamp,
+        ...(destMarker === 'unfenced' ? {} : { expect: destMarker }),
+        // The store refuses this load once the move's lease can have run out (#1722).
+        fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch),
+      });
+      return {
+        moveId,
+        erasureEpoch,
+        from,
+        to,
+        tables: restored.tables,
+        switchedOff: restored.switchedOff,
+        source,
+        dest,
+        sourceStamp,
+        sourceRevision,
+        restoredStamp,
+      };
+    } catch (error) {
+      // Neither script can be discarded based on this unconfirmed move. A retry or reap
+      // can still reach both. A crash leaves them pending and blocks key finalization.
+      const settled = await Promise.allSettled([
+        c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, from, moveId, 'retained'),
+        c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId, 'retained'),
+      ]);
+      for (const result of settled) {
+        if (result.status === 'rejected') recordCarryCleanup(c, scope, versionId, 'copy-ledger', result.reason);
+      }
+      throw error;
+    }
   };
 
   /**
@@ -3280,22 +3384,43 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await dropUnboundCopy(c, scope, versionId, stale);
         throw new CarrySourceChanged(scope.id, stale.from, stale.to, attempt);
       }
+      // The fresh carry restored over the stale one's copy in the same script and holds its own
+      // entries for both ends, so the stale move leaves nothing of its own behind (#1722).
+      await supersedeMove(c, scope, versionId, stale);
       carried = next;
     }
+    // #1722: the write that moves the route confirms the move, while its lease is live. That is the
+    // bind itself, unless a pin still routes the scope to the source until it is cleared below.
+    // The source is confirmed `retained`, not `eligible`: `settleCarriedSource` may still have to
+    // carry it again (an overtaken destination), and promotes it only once that is ruled out, so
+    // no sweep can wipe it first. A request that dies in between leaves it kept, not swept.
+    const unpins = Boolean(opts.clearServingRef && scope.servingRef);
+    const confirmMove = carried
+      ? { confirmMove: { moveId: carried.moveId, source: 'retained' as const,
+          sourceMarker: { loadStamp: carried.sourceStamp, revision: carried.sourceRevision } } }
+      : {};
     try {
       await c.var.admin
         .bindScopeVersion(actor, scope.tenantId, scope.id, versionId, {
           acknowledge: opts.acknowledge,
           ...(opts.snapshot ? { snapshot: true } : {}),
           expectedVersionId: scope.verticalVersionId ?? null,
+          ...(carried ? { expectedErasureEpoch: carried.erasureEpoch } : {}),
+          ...(unpins ? {} : confirmMove),
         })
         .catch(relayHostRefusal);
     } catch (e) {
       if (carried) await dropUnboundCopy(c, scope, versionId, carried);
       throw e;
     }
-    if (opts.clearServingRef && scope.servingRef) {
-      await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null).catch(relayHostRefusal);
+    if (unpins) {
+      try {
+        await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null,
+          carried ? { expectedErasureEpoch: carried.erasureEpoch, ...confirmMove } : undefined).catch(relayHostRefusal);
+      } catch (e) {
+        if (carried) await dropUnboundCopy(c, scope, versionId, carried);
+        throw e;
+      }
     }
     try {
       await c.var.admin.reassertSystemSwitches(
@@ -3310,17 +3435,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  /** Settle a carry that a fresh carry into the same script replaced. Best effort, recorded. */
+  const supersedeMove = async (c: ReqCtx, scope: Scope, versionId: string, stale: Carried): Promise<void> => {
+    const settled = await Promise.allSettled([stale.from, stale.to].map((ref) =>
+      c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, ref, stale.moveId, 'done')));
+    for (const result of settled) {
+      if (result.status === 'rejected') recordCarryCleanup(c, scope, versionId, 'copy-ledger', result.reason);
+    }
+  };
+
   /**
    * The copy a carry restored for a bind that did not land, wiped unless the scope routes to
    * that script now. Best effort: it never throws, and a failure is recorded.
    */
   const dropUnboundCopy = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
+    let route: string | null = null;
     try {
-      const route = await currentRoute(c, scope, versionId, carried);
-      if (route === carried.to) return;
-      await wipeCarriedCopy(carried.dest, scope, { loadStamp: carried.restoredStamp }, route ?? carried.from);
+      route = await currentRoute(c, scope, versionId, carried);
+      if (route === carried.to) {
+        await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.to, carried.moveId, 'done');
+        return;
+      }
+      const wiped = await wipeCarriedCopy(carried.dest, scope, { loadStamp: carried.restoredStamp }, route ?? carried.from);
+      await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.to, carried.moveId,
+        wiped ? 'done' : 'retained');
     } catch (e) {
       recordCarryCleanup(c, scope, versionId, 'unbound-copy', e);
+      await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.to, carried.moveId,
+        'retained').catch((err) => recordCarryCleanup(c, scope, versionId, 'unbound-copy-ledger', err));
+    } finally {
+      await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.from, carried.moveId,
+        route === carried.from ? 'done' : 'retained')
+        .catch((err) => recordCarryCleanup(c, scope, versionId, 'source-copy-ledger', err));
     }
   };
 
@@ -3408,7 +3554,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // The caller read the route elsewhere, so a copy that changed in any way since the export (a
     // load as much as a write: a staff restore-forward into it racing this carry, Codex #2008 r8)
     // is kept in the store rather than left an unmarked orphan.
-    if (await wipeCarriedCopy(carried.source, scope, expect, carried.to, true)) return;
+    if (await wipeCarriedCopy(carried.source, scope, expect, carried.to, true)) {
+      await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.from, carried.moveId, 'done', expect);
+      return;
+    }
     // A rollback that restored into it since made it the live store again: it is no kept copy, and
     // a marker this refusal set while the rollback had not yet bound comes off.
     const route = await currentRoute(c, scope, versionId, carried);
@@ -3416,7 +3565,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await releaseIfLive(c, scope, versionId, carried, carried.source, carried.from);
       return;
     }
-    if (route === carried.to && (await bringClearForward(c, scope, versionId, carried))) return;
+    if (route === carried.to && (await bringClearForward(c, scope, versionId, carried))) {
+      await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.from, carried.moveId, 'done', expect);
+      return;
+    }
+    await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.from, carried.moveId, 'kept', expect);
     recordCarryCleanup(
       c,
       scope,
@@ -3446,34 +3599,70 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const settleCarriedSource = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
     const actor = c.get('actor');
+    const finishDestination = async () => {
+      if ((await currentRoute(c, scope, versionId, carried)) === carried.to) {
+        await c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, carried.to, carried.moveId, 'done');
+      } else {
+        await dropUnboundCopy(c, scope, versionId, carried);
+      }
+    };
     try {
       const route = await currentRoute(c, scope, versionId, carried);
-      if (route === carried.from) return;
+      if (route !== carried.to) {
+        await dropUnboundCopy(c, scope, versionId, carried);
+        return;
+      }
       // The store this carry landed in is live; a kept marker another carry set while racing it
       // does not belong on it (#1722 r8).
-      if (route === carried.to) await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
-      if (route === carried.to && (await isCarriedAway(carried.dest, scope))) {
+      await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
+      let sourceMarker = { loadStamp: carried.sourceStamp, revision: carried.sourceRevision };
+      if (await isCarriedAway(carried.dest, scope)) {
         const { tables: dump, loadStamp: stamp, revision } = await retryTransient(() =>
           carried.source.exportScopeStamped(scope.id),
         );
         if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
           throw new ControlPlaneError(500, `both copies of scope ${scope.id} hold the carried_away tombstone; nothing was wiped`);
         }
-        await restoreCarryingSwitches(actor, carried.dest, scope.tenantId, scope.id, dump, {
-          scopeId: scope.id,
-          exact: true,
-          loadStamp: ulid(),
-        });
+        // The re-carry is a copy move of its own (#1722): in the ledger and leased before it
+        // writes, and fenced, so it cannot land after a reap or an erasure has settled the scope.
+        const recarryId = ulid();
+        const restoredStamp = ulid();
+        const recordedAt = Date.now();
+        await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, carried.to, recarryId,
+          { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
+        try {
+          const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
+          await restoreCarryingSwitches(actor, carried.dest, scope.tenantId, scope.id, dump, {
+            scopeId: scope.id,
+            exact: true,
+            loadStamp: restoredStamp,
+            fence: copyRestoreFence(recarryId, recordedAt, copyLeaseMs, erasureEpoch),
+          });
+        } finally {
+          // The scope routes to this store, so the route reaches whatever landed in it.
+          await c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, carried.to, recarryId, 'done');
+        }
         if (await isCarriedAway(carried.dest, scope)) {
           throw new ControlPlaneError(500, `scope ${scope.id}'s store in '${carried.to}' was wiped again; its source copy stays`);
         }
         // Re-carried, so the fence expects what the re-export read.
-        await keepOrWipeSource(c, scope, versionId, carried, { loadStamp: stamp, revision });
+        sourceMarker = { loadStamp: stamp, revision };
+      }
+      // Only now may the sweep wipe the source: the destination holds the data.
+      const eligible = await c.var.admin.settleScopeScriptCopy(
+        actor, scope.tenantId, scope.id, carried.from, carried.moveId, 'eligible', sourceMarker,
+      );
+      if (!eligible) {
+        await finishDestination(); // a later move through this script superseded this carry
         return;
       }
-      await keepOrWipeSource(c, scope, versionId, carried, { loadStamp: carried.sourceStamp, revision: carried.sourceRevision });
+      await keepOrWipeSource(c, scope, versionId, carried, sourceMarker);
+      await finishDestination();
     } catch (e) {
       recordCarryCleanup(c, scope, versionId, 'source-copy', e);
+      // This call can no longer restore another destination copy. Clear its pending
+      // move if it is still serving, even when the source wipe needs a sweep retry.
+      await finishDestination().catch((err) => recordCarryCleanup(c, scope, versionId, 'destination-copy-ledger', err));
     }
   };
 
@@ -4521,6 +4710,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // on); the DIRECTORY half — provenance row, activation, version bind — runs here.
   // With no vertical client resolved (co-located host, tests, self-host) the host's
   // in-process snapshotScope does both halves against its own SCOPE namespace.
+  /**
+   * The script a slug-resolved scope lives in, by the hosted resolver's rule: the vertical's
+   * stable serving script, else its prod channel's version script (control-plane worker
+   * `resolveVerticalFor`). Null unless the platform can also reach that script by ref.
+   */
+  const slugRefOf = async (c: ReqCtx, slug: string): Promise<string | null> => {
+    const actor = c.get('actor');
+    const serving = await c.var.admin.verticalServing(actor, slug).catch(() => null);
+    let ref = serving?.ref ?? null;
+    if (!ref) {
+      const prod = (await c.var.admin.listChannels(actor, slug).catch(() => [])).find((ch) => ch.channel === 'prod');
+      ref = prod ? ((await c.var.admin.getVersion(actor, prod.versionId, slug))?.deploymentRef ?? null) : null;
+    }
+    return ref && (await options.resolveVerticalRef?.(ref)) ? ref : null;
+  };
+
   const orchestratedSnapshot = async (
     c: ReqCtx,
     tenantId: TenantId,
@@ -4528,9 +4733,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     opts: { kind?: string; expiresAt?: string },
   ): Promise<ScopeId> => {
     const actor = c.get('actor');
-    const vertical = await verticalForScope(c, scope);
+    const deployment = await deploymentForScope(c, scope);
+    const vertical = deployment?.client;
     if (!vertical) return c.var.host.snapshotScope(actor, tenantId, scope.id, opts);
     const snapId = scopeIdSchema.parse(ulid());
+    // #1722: the script the copy lands in (the source's own), named in the ledger before the
+    // copy, so a bind that fails, or a request that dies, leaves a fork reap and erasure reach.
+    // A pinned or bound source names it with the same value its client was resolved from. A
+    // source resolved by slug is resolved once, here (`slugRefOf`), and copied through THAT
+    // ref's client, so a serving move or a promote between two reads cannot put the bytes in
+    // one script and the ledger entry on another. Without a ref (no per-script resolution, or
+    // a slug script the platform cannot reach by ref) the fork has no entry, and reap and
+    // erasure reach it through the slug resolution instead.
+    let ref: string | null = null;
+    let copier = vertical;
+    if (options.resolveVerticalRef) {
+      if (deployment.via === 'serving-script') ref = scope.servingRef ?? null;
+      else if (deployment.via === 'bound-version' && scope.vertical && scope.verticalVersionId) {
+        ref = (await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null;
+      } else if (deployment.via === 'slug' && scope.vertical) {
+        ref = await slugRefOf(c, scope.vertical);
+        const byRef = ref ? await options.resolveVerticalRef(ref) : undefined;
+        if (byRef) copier = byRef;
+        else ref = null;
+      }
+    }
     // Directory row FIRST, as `provisioning` (K-31's two-phase shape, used as
     // intended): a crash between the row and the data copy leaves an inert
     // provisioning row — which, carrying provenance and an expiry, the GC sweep
@@ -4545,12 +4772,34 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       forkedAt: new Date().toISOString(),
       expiresAt: opts.expiresAt,
     });
-    await retryTransient(() => vertical.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId, tenantId }));
-    await c.var.admin.activateScope(actor, tenantId, snapId);
-    // Bound to the SOURCE's current version: source and fork share a deployment, so
-    // the fork resolves to the DO namespace its bytes actually live in.
-    if (scope.verticalVersionId) {
-      await c.var.admin.bindScopeVersion(actor, tenantId, snapId, scope.verticalVersionId);
+    const moveId = ref ? ulid() : null;
+    try {
+      if (moveId && ref) {
+        // No load stamp: the vertical's in-script copy leaves none, so a crash-recovery sweep keeps
+        // this copy (`retained`) rather than wiping it, and reap and erasure still reach it.
+        await c.var.admin.recordScopeScriptCopy(actor, tenantId, snapId, ref, moveId, { role: 'destination', leaseMs: copyLeaseMs });
+      }
+      await retryTransient(() => copier.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId, tenantId }));
+      await c.var.admin.activateScope(actor, tenantId, snapId);
+      // Bound to the SOURCE's current version: source and fork share a deployment, so
+      // the fork resolves to the DO namespace its bytes actually live in.
+      if (scope.verticalVersionId) {
+        await c.var.admin.bindScopeVersion(actor, tenantId, snapId, scope.verticalVersionId);
+      }
+      // The fork's route is the script its bytes were copied into, never the serving pointer
+      // `provisionScope` stamped (which may have moved since), and the write that sets it confirms
+      // the move. A fork of a bound source routes by its bound version, whose script is `ref`: its
+      // stamped pin is cleared, so a later bind of the fork carries its data like any other scope's.
+      // A fork of a pinned or slug-resolved source is pinned to `ref`, the script it lives in.
+      if (moveId && ref) {
+        await c.var.admin.setScopeServingRef(actor, tenantId, snapId, deployment.via === 'bound-version' ? null : ref,
+          { confirmMove: { moveId, source: 'retained' } });
+      }
+    } catch (e) {
+      if (moveId && ref) {
+        await c.var.admin.settleScopeScriptCopy(actor, tenantId, snapId, ref, moveId, 'retained').catch(() => undefined);
+      }
+      throw e;
     }
     return snapId;
   };
@@ -4615,6 +4864,39 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  /**
+   * Delete a scope's storage in every script that may hold it, before the directory forgets it.
+   * Answers whether some of it is stranded (a script that predates `/internal/delete-scope`).
+   *
+   * #1722: with per-script resolution, the ledger names every copy a move or a fork wrote, and
+   * the route names the live store; `reapScopeScriptCopies` reaches both, under the reap claim.
+   * A scope nothing routes (no pin, no bound version) may still keep its store where its vertical
+   * resolves by slug, which is where it was provisioned, so that deployment is reached too, as
+   * it was before the ledger. Without per-script resolution there is only that deployment, and
+   * a ledgered copy the platform cannot reach refuses the reap.
+   */
+  const reapScopeStorage = async (c: ReqCtx, scope: Scope): Promise<boolean> => {
+    const actor = c.get('actor');
+    // The deployment the scope's vertical resolves to, deleted through; a 501 there is recorded
+    // as stranded storage, as `reapScopeScriptCopies` records its own.
+    const viaDeployment = async (): Promise<boolean> => {
+      const stranded = await deleteScopeStorageOrStrand(await verticalForScope(c, scope), scope.tenantId, scope.id);
+      if (stranded) {
+        await recordStrandedStorage(c.var.admin, actor, scope.tenantId, scope.id, `the deployment its vertical '${scope.vertical}' resolves to`);
+      }
+      return stranded;
+    };
+    if (!options.resolveVerticalRef) {
+      await assertNoUnreachableScopeCopies(c.var.admin, actor, scope.tenantId, scope.id);
+      return viaDeployment();
+    }
+    const unrouted = (await routeOf(c, scope)) === null;
+    const { storageStranded } = await reapScopeScriptCopies(
+      { admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, scope.tenantId, scope.id);
+    const bySlug = unrouted ? await viaDeployment() : false;
+    return storageStranded || bySlug;
+  };
+
   app.delete('/tenants/:tenantId/scopes/:scopeId', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -4632,8 +4914,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // local/placeholder wipe, hostnames + directory row, audit) — the same
       // storage-before-row ordering deleteSnapshot itself keeps, so a crash
       // between the two converges on retry.
-      const vertical = await verticalForScope(c, scope);
-      const storageStranded = await deleteScopeStorageOrStrand(vertical, tenantId, scopeId);
+      const storageStranded = await reapScopeStorage(c, scope);
       await c.var.host.deleteSnapshot(actor, tenantId, scopeId);
       return c.json({ deleted: scopeId, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
@@ -4765,7 +5046,39 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const subjectId = dataSubjectIdSchema.parse(c.req.param('subjectId'));
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
+    const copies = await listAllScopeScriptCopies(c.var.admin, c.get('actor'), tenantId, scopeId);
+    // A move in flight can still restore a copy no inventory read now would name. Its entries
+    // settle when it confirms or fails, or, if it died, when the sweep finds its lease run out.
+    if (copies.some((copy) => copy.state === 'pending')) {
+      throw new ControlPlaneError(412, `scope ${scopeId} has a copy move in flight; retry the erasure after it settles`);
+    }
+    const erasureEpoch = await c.var.admin.scopeErasureEpoch(c.get('actor'), tenantId, scopeId);
+    const currentRef = await routeOf(c, scope);
+    if (!options.resolveVerticalRef) {
+      if (currentRef || copies.some((copy) => copy.state !== 'done')) {
+        throw new ControlPlaneError(502, `scope ${scopeId} has script copies, but this control plane cannot reach their deployments`);
+      }
+      return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
+    }
+    // A scope nothing routes may still keep its store where its vertical resolves by slug (where
+    // it was provisioned), so erasure reaches that deployment too, as reap does (`reapScopeStorage`).
+    const bySlug = currentRef ? undefined : await verticalForScope(c, scope);
+    if (!currentRef && !bySlug && copies.every((copy) => copy.state === 'done')) {
+      return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
+    }
+    const refs = new Set(copies.filter((copy) => copy.state !== 'done').map((copy) => copy.scriptRef));
+    if (currentRef) refs.add(currentRef);
+    const redactions = [];
+    for (const ref of refs) {
+      const script = await options.resolveVerticalRef(ref);
+      if (!script) throw new ControlPlaneError(502, `scope ${scopeId}'s copy in '${ref}' cannot be reached for erasure`);
+      redactions.push(await script.redactSubject(scopeId, subjectId));
+    }
+    if (bySlug) redactions.push(await bySlug.redactSubject(scopeId, subjectId));
+    return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
+      versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
+      copyCount: copies.length,
+    }).catch(relayHostRefusal));
   });
 
   // -- directory backups (#40) -----------------------------------------------
@@ -5247,10 +5560,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     }
     try {
-      const vertical = await verticalForScope(c, scope);
       // By this point the backup contract has resolved (a copy landed, or the caller
       // explicitly declined one), so stranding is a bookkeeping fact, not data loss.
-      const storageStranded = await deleteScopeStorageOrStrand(vertical, tenantId, scopeId);
+      const storageStranded = await reapScopeStorage(c, scope);
       await c.var.admin.reapScope(actor, tenantId, scopeId, {
         ...(backup ? { backupRef: backupRefOf(backup) } : {}),
       });
@@ -8262,17 +8574,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    *  its hostnames. Storage-before-row, the same ordering the DELETE route uses — a crash
    *  between the two converges on retry. Shared by that route and by the create path, which
    *  reaps a HALF-BUILT leftover before re-forking (see `orchestratedPreview`). */
+  /** Answers whether some of the preview's storage was stranded (and recorded as such). */
   const reapPreview = async (
     c: ReqCtx,
     preview: Scope,
-  ): Promise<void> => {
+  ): Promise<{ storageStranded: boolean }> => {
     // A fork's own sign-in clients go FIRST (#1704): a failure here leaves the preview in
     // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
     // would name those clients again. A clean room never had one.
     await retireClientsOfReapedScope(previewAuthDeps(c), preview);
-    const vertical = await verticalForScope(c, preview);
-    if (vertical) await vertical.deleteScope({ tenantId: preview.tenantId, scopeId: preview.id });
+    let storageStranded = false;
+    if (options.resolveVerticalRef) {
+      ({ storageStranded } = await reapScopeScriptCopies({
+        admin: c.var.admin,
+        actor: c.get('actor'),
+        resolveRef: options.resolveVerticalRef,
+      }, preview.tenantId, preview.id));
+    } else {
+      await assertNoUnreachableScopeCopies(c.var.admin, c.get('actor'), preview.tenantId, preview.id);
+      const vertical = await verticalForScope(c, preview);
+      if (vertical) await vertical.deleteScope({ tenantId: preview.tenantId, scopeId: preview.id });
+    }
+    // Co-located hosts have no script ref; their storage is wiped by deleteSnapshot.
     await c.var.host.deleteSnapshot(c.get('actor'), preview.tenantId, preview.id);
+    return { storageStranded };
   };
 
   /** The preview-login seam (#1704, `preview-auth.ts`): the directory, and each issuer's deployment. */
@@ -8625,7 +8950,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     };
     let row: ProvisionScopeInput;
-    let restore: (() => Promise<unknown>) | null;
+    /** `fenced`: the ledger stamp and lease of this fork's restore (#1722), when it has one. */
+    let restore: ((fenced: { loadStamp?: string; fence?: CopyRestoreFence }) => Promise<unknown>) | null;
     /** #2009: the directory's classification of the row below, which every restore of it carries. */
     const markCopyOfRow = () => {
       const lineage = copyLineageOf({ kind: row.kind ?? '', forkedFrom: row.forkedFrom ?? null });
@@ -8663,8 +8989,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // pushes a fresh version per try) — #559 (2).
       // #2009: a load classifies nothing by itself, so the restore carries the directory's
       // classification of the row below, as every restore onto a non-primary scope does.
-      restore = () =>
-        target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true, ...markCopyOfRow() });
+      restore = (fenced) =>
+        target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true, ...markCopyOfRow(), ...fenced });
     } else {
       // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
       // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
@@ -8682,17 +9008,50 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         expiresAt: expiresAt ?? undefined,
       };
       // #2009: marked a copy on the directory's word, as the fork above.
-      restore = target ? () => target.restoreScope(tenantId, previewId, [], markCopyOfRow()) : null;
+      restore = target ? (fenced) => target.restoreScope(tenantId, previewId, [], { ...markCopyOfRow(), ...fenced }) : null;
     }
+    // #1722: the PR version's script, named in the ledger before the restore writes into it.
+    // Nothing routes the new row there until the bind, so without the entry a failure between
+    // the two leaves a fork of the source's data that reap and erasure never reach.
+    const targetRef = restore && options.resolveVerticalRef
+      ? ((await c.var.admin.getVersion(actor, opts.versionId, slug))?.deploymentRef ?? null)
+      : null;
+    let fork: { moveId: string } | null = null;
     try {
       // Inside the try: a host writes the directory row FIRST and then migrates, projects and
       // seats, so a provision that throws can leave a `provisioning` row too. A provision
       // that never wrote one (the tag's slug taken by a racing create) marks nothing: the
       // write below targets this create's own id, which does not exist, and is swallowed.
       await c.var.host.provisionScope(actor, row);
-      if (restore) await restoreOrRecord(restore);
+      if (restore) {
+        let fenced = {};
+        if (targetRef) {
+          const moveId = ulid();
+          const restoredStamp = ulid();
+          const recordedAt = Date.now();
+          await c.var.admin.recordScopeScriptCopy(actor, tenantId, previewId, targetRef, moveId,
+            { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
+          fork = { moveId };
+          const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, previewId);
+          fenced = { loadStamp: restoredStamp, fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch) };
+        }
+        const load = restore;
+        await restoreOrRecord(() => load(fenced));
+      }
       await c.var.admin.activateScope(actor, tenantId, previewId);
+      // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a
+      // preview scope also admits a pending version (#513), which is what a clean-room rehearsal
+      // of not-yet-admitted code needs. It routes the row onto the fork, so it confirms the move.
+      await c.var.admin.bindScopeVersion(actor, tenantId, previewId, opts.versionId,
+        fork ? { confirmMove: { moveId: fork.moveId, source: 'retained' } } : undefined);
     } catch (e) {
+      // The fork stays named for reap and erasure; if this request had died instead, the sweep
+      // would settle the entry once its lease ran out.
+      const unbound = fork;
+      if (unbound && targetRef) {
+        await c.var.admin.settleScopeScriptCopy(actor, tenantId, previewId, targetRef, unbound.moveId, 'retained')
+          .catch(() => undefined);
+      }
       // Expire the row this create left behind, so the next create reaps it at once rather
       // than refusing it as in flight for the whole bound (#1920) — that next create is the
       // CLI's retry after a known-dead attempt (#1918). The row stays until then, or until
@@ -8703,10 +9062,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         .catch(() => undefined);
       throw e;
     }
-    // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a
-    // preview scope also admits a pending version (#513), which is what a clean-room rehearsal
-    // of not-yet-admitted code needs.
-    await c.var.admin.bindScopeVersion(actor, tenantId, previewId, opts.versionId);
     const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, previewId, opts.tag, surface);
     await assertServesBoundVersion(previewId);
     const auth = await wireLogin(previewId, hostname, source);
@@ -8830,8 +9185,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // Storage-before-row, the same ordering as the fork hard-delete: wipe the DO in the
       // PR version's deployment, then deleteSnapshot (fork-only re-check, hostnames + row,
       // audit). A crash between the two converges on retry.
-      await reapPreview(c, preview);
-      return c.json({ deleted: preview.id });
+      const { storageStranded } = await reapPreview(c, preview);
+      return c.json({ deleted: preview.id, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       throw e;

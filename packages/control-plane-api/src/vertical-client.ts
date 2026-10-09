@@ -110,7 +110,7 @@ import {
   PLATFORM_SECRET_HEADER,
   WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
-import type { KeptCopy, LoadMarker, OpenedAttachment, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
@@ -1148,6 +1148,17 @@ export class VerticalClient {
     await this.postInternal<unknown>('/internal/delete-scope', input, 'delete-scope');
   }
 
+  /** Scope-side erasure in this exact script; no key is destroyed by this verb. */
+  async redactSubject(scopeId: ScopeId, subjectId: string): Promise<SubjectRedactionCounts> {
+    const answer = await this.postInternal<SubjectRedactionCounts>('/internal/redact-subject', { scopeId, subjectId }, 'redact-subject');
+    if (!answer || typeof answer.events !== 'number' || typeof answer.intents !== 'number' ||
+        typeof answer.jobRuns !== 'number' || !Array.isArray(answer.intentIds) ||
+        typeof answer.idempotencyResults !== 'number' || !answer.vertical) {
+      throw new ControlPlaneError(502, `script answered redact-subject incompletely for scope ${scopeId}`);
+    }
+    return answer;
+  }
+
   /**
    * The scope's full dump — the ONE verb here that deliberately moves scope bytes
    * across the boundary, for the governed `scope pull` (§8). The control-plane route
@@ -1211,6 +1222,8 @@ export class VerticalClient {
       loadStamp?: string;
       expect?: LoadMarker;
       markCopy?: ScopeLineage;
+      /** #1722: the copy move's lease, carried to the store; a load after `notAfter` is refused. */
+      fence?: CopyRestoreFence;
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
     // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
@@ -1233,6 +1246,7 @@ export class VerticalClient {
         ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),
         ...(opts?.expect ? { expect: opts.expect } : {}),
         ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
+        ...(opts?.fence ? { fence: opts.fence } : {}),
       },
       'restore',
     );

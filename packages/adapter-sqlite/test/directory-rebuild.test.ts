@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ADMIN_LOG_INDEX_DDL, SETTLE_OUTCOME_SQL, auditedOperationsSql, settleOutcomeParamsOf } from '@substrat-run/kernel';
+import { ADMIN_LOG_INDEX_DDL, SETTLE_OUTCOME_SQL, auditedOperationsSql, settleOutcomeParamsOf, webCryptoSecretBox } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
@@ -225,6 +225,99 @@ describe.each(CASES)('#1573: the $table rebuild is atomic', (c) => {
     await new SqliteScopeHost({ dir }).close();
     expect(inspect((db) => db.prepare(c.select).all())).toEqual(c.expected);
     expect(scratchTables()).toEqual([]);
+  });
+});
+
+describe('#1722 directory additions on an existing SQLite store', () => {
+  // A scope row from before the additive migration holds a NULL epoch. Every compare-and-set
+  // reads it as 0, in its WHERE and in its SET, or the first bind or erasure after the
+  // migration is refused forever (or advances NULL + 1 = NULL and fences nothing).
+  it('runs a conditional bind and an erasure finalization over a pre-migration NULL epoch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-null-epoch-'));
+    const staff = '01JZ00000000000000000000ST' as never;
+    const tenant = '01JZ0000000000000000000TEN' as never;
+    const scope = '01JZ0000000000000000000SCP' as never;
+    const [v1, v2] = ['01JZ00000000000000000000V1', '01JZ00000000000000000000V2'];
+    const secretBox = webCryptoSecretBox('k', new Uint8Array(32).fill(7));
+    try {
+      const seed = new SqliteScopeHost({ dir, secretBox });
+      await seed.admin.createTenant(staff, { id: tenant, slug: 'null-epoch', name: 'Null epoch' });
+      await seed.admin.registerVertical(staff, { slug: 'null-epoch', name: 'Null epoch', source: 'cli', ownerTenant: tenant });
+      for (const [index, id] of [v1, v2].entries()) {
+        await seed.admin.publishVersion(staff, { id, verticalSlug: 'null-epoch', version: `1.0.${index}`,
+          manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null });
+      }
+      await seed.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'null-epoch' });
+      await seed.admin.activateScope(staff, tenant, scope);
+      await seed.admin.bindScopeVersion(staff, tenant, scope, v1);
+      const [sealed] = await seed.admin.sealSubjectPayloads(staff, tenant, scope, [{ subjectId: 'subject', plaintext: 'private' }]);
+      await seed.close();
+      const file = join(dir, '_directory.sqlite');
+      const before = new Database(file);
+      before.exec(`DROP TABLE scope_script_copies;
+        ALTER TABLE scopes DROP COLUMN erasure_epoch;
+        ALTER TABLE scopes DROP COLUMN reap_claimed_at;`);
+      before.close();
+      const epochOf = () => {
+        const db = new Database(file, { readonly: true });
+        try {
+          return (db.prepare('SELECT erasure_epoch FROM scopes WHERE scope_id = ?').get(scope) as { erasure_epoch: number | null }).erasure_epoch;
+        } finally {
+          db.close();
+        }
+      };
+      const host = new SqliteScopeHost({ dir, secretBox });
+      try {
+        expect(epochOf()).toBeNull();
+        expect(await host.admin.scopeErasureEpoch(staff, tenant, scope)).toBe(0);
+        await expect(host.admin.bindScopeVersion(staff, tenant, scope, v2, { expectedVersionId: v1, expectedErasureEpoch: 1 }))
+          .rejects.toThrow(/erasure changed/);
+        await host.admin.bindScopeVersion(staff, tenant, scope, v2, { expectedVersionId: v1, expectedErasureEpoch: 0 });
+        await host.admin.setScopeServingRef(staff, tenant, scope, null, { expectedErasureEpoch: 0 });
+        expect(epochOf()).toBeNull(); // a bind compares the epoch; only an erasure moves it
+        const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+          vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+        expect((await host.admin.finalizeSubjectShred(staff, tenant, scope, 'subject', redacted,
+          { versionId: v2, servingRef: null, epoch: 0, copyCount: 0 })).keyDestroyed).toBe(true);
+        expect(epochOf()).toBe(1);
+        expect(await host.admin.openSubjectPayloads(staff, tenant, scope, [{ subjectId: 'subject', sealed: sealed! }])).toEqual([null]);
+        // The carry that read epoch 0 before that erasure can no longer bind.
+        await expect(host.admin.bindScopeVersion(staff, tenant, scope, v1, { expectedVersionId: v2, expectedErasureEpoch: 0 }))
+          .rejects.toThrow(/erasure changed/);
+        await expect(host.admin.setScopeServingRef(staff, tenant, scope, 'elsewhere', { expectedErasureEpoch: 0 }))
+          .rejects.toThrow(/erasure or reap changed/);
+      } finally {
+        await host.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('adds an empty copy ledger and nullable zero epoch without changing scope routing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-copy-ledger-'));
+    try {
+      await new SqliteScopeHost({ dir }).close();
+      const file = join(dir, '_directory.sqlite');
+      const before = new Database(file);
+      before.exec(`DROP TABLE scope_script_copies;
+        ALTER TABLE scopes DROP COLUMN erasure_epoch;
+        ALTER TABLE scopes DROP COLUMN reap_claimed_at;
+        INSERT INTO scopes (scope_id, tenant_id, vertical, vertical_version_id, serving_ref, created_at)
+        VALUES ('old-scope', 'old-tenant', 'old-vertical', 'old-version', 'old-script', '2026-01-01T00:00:00.000Z')`);
+      before.close();
+      await new SqliteScopeHost({ dir }).close();
+      const after = new Database(file, { readonly: true });
+      try {
+        expect(after.prepare('SELECT vertical_version_id, serving_ref, erasure_epoch, reap_claimed_at FROM scopes WHERE scope_id = ?')
+          .get('old-scope')).toEqual({ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: null, reap_claimed_at: null });
+        expect(after.prepare('SELECT * FROM scope_script_copies').all()).toEqual([]);
+      } finally {
+        after.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

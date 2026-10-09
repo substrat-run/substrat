@@ -39,6 +39,11 @@ describe('a route whose default is an act reads its body strictly (#1724)', () =
         calls.push(`export ${ref} ${sid}`);
         return storeOf(ref).get(sid) ?? [];
       },
+      // A deployment that predates the load stamp (#1722).
+      exportScopeStamped: async (sid: string) => {
+        calls.push(`export ${ref} ${sid}`);
+        return { tables: storeOf(ref).get(sid) ?? [], loadStamp: null, revision: null };
+      },
       restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[]) => {
         calls.push(`restore ${ref} ${sid}`);
         storeOf(ref).set(sid, tables);

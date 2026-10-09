@@ -1681,6 +1681,9 @@ describe('control-plane API', () => {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       verticals: { 'legacy-vert': legacyVertical },
+      // The hosted path (#1722): per-script resolution wired, so the reap drains the ledger first
+      // and still reaches this unrouted scope's store where its vertical resolves by slug.
+      resolveVerticalRef: async () => undefined,
     });
     const djson = (path: string, method: string, body?: unknown) =>
       delegated.request(path, { method, headers: auth, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -1705,6 +1708,7 @@ describe('control-plane API', () => {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       verticals: { 'broken-vert': brokenVertical },
+      resolveVerticalRef: async () => undefined,
     });
     const res2 = await delegated2.request(`/tenants/${tL}/scopes/${sB}/reap`, {
       method: 'POST', headers: auth, body: JSON.stringify({ backup: false }),
@@ -2191,11 +2195,23 @@ describe('control-plane API', () => {
         calls.length = 0;
         const failed = await dj(`/tenants/${tH}/scopes/${legacy}/version`, 'POST', { versionId: v2 });
         expect(failed.status).toBe(500);
-        expect(clear).toHaveBeenCalledExactlyOnceWith(staff, tH, legacy, null);
-        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
+        // #1722: the unpin is the write that routes onto the carry's destination, so it is the one
+        // that carries the erasure fence and confirms the move.
+        expect(clear).toHaveBeenCalledExactlyOnceWith(staff, tH, legacy, null, {
+          expectedErasureEpoch: 0,
+          // Retained until the carry's tail rules out an overtaken destination (review r1).
+          confirmMove: expect.objectContaining({ source: 'retained' }),
+        });
+        // #1722: the copy restored into v2 is routed by nothing while the pin stands, so the
+        // failed unpin wipes it (the tombstone load, on a deployment without a fenced wipe) and the
+        // ledger stops naming it; the retry below carries again from the pinned store.
+        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`,
+          `restore ${refOf.get(v2)} ${legacy}`]);
         // Binding has advanced, but the pin still selects the serving script's store.
         expect(await boundOf(legacy)).toMatchObject({ verticalVersionId: v2, servingRef: 'carry-vert' });
-        expect(rows(v2, legacy)).toEqual([['serving-row']]);
+        expect(storeOf(refOf.get(v2)!).get(legacy)?.some((tb) => tb.name === 't')).toBe(false);
+        expect((await host.admin.listScopeScriptCopies(staff, { tenantId: tH, scopeId: legacy }))
+          .filter((copy) => copy.state !== 'done')).toEqual([]);
         expect(await host.admin.resolveHostname(previewHostname)).toMatchObject({ scopeId: legacy, deploymentRef: 'carry-vert' });
 
         // A write while the pin is still active must survive the same-version retry.
@@ -6730,6 +6746,11 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
   const clientFor = (ref: string) =>
     ({
       exportScope: async (sc: string) => { dispatchCalls.push('export'); return ensure(ref).get(sc) ?? []; },
+      // A deployment that predates the load stamp (#1722): a move off it keeps its source.
+      exportScopeStamped: async (sc: string) => {
+        dispatchCalls.push('export');
+        return { tables: ensure(ref).get(sc) ?? [], loadStamp: null, revision: null };
+      },
       restoreScope: async (_t: string, sc: string, tables: ScopeDumpTable[]) => {
         dispatchCalls.push('restore');
         ensure(ref).set(sc, tables);

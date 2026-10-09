@@ -275,3 +275,56 @@ describe('#2064: the hosted admin-log rebuild keeps every index the kernel lists
     expect(seen.settle).toMatch(/USING INDEX _substrat_admin_log_operation/);
   });
 });
+
+describe('#1722 directory additions on an existing Durable Object', () => {
+  // As on the pure adapter: a pre-migration row's NULL epoch is 0 to every compare-and-set, in
+  // its WHERE and in its SET, so the first bind and erasure after the migration both land.
+  it('runs a conditional bind and an erasure finalization over a pre-migration NULL epoch', async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`null-epoch-${ulid()}`));
+    const result = await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('DROP TABLE scope_script_copies');
+      state.storage.sql.exec('ALTER TABLE scopes DROP COLUMN erasure_epoch');
+      state.storage.sql.exec('ALTER TABLE scopes DROP COLUMN reap_claimed_at');
+      state.storage.sql.exec(`INSERT INTO scopes (scope_id, tenant_id, vertical, vertical_version_id, serving_ref, created_at)
+        VALUES ('old-scope', 'old-tenant', 'old-vertical', 'v1', NULL, '2026-01-01T00:00:00.000Z')`);
+      const cp = new ControlPlaneDO(state, env);
+      const epoch = () => state.storage.sql.exec('SELECT erasure_epoch FROM scopes WHERE scope_id = ?', 'old-scope')
+        .toArray()[0]!.erasure_epoch;
+      const migrated = epoch();
+      const read = cp.scopeErasureEpoch('old-tenant', 'old-scope');
+      const staleBind = cp.bindScopeVersion('old-scope', 'v2', 'old-vertical', 'v1', 1);
+      const bind = cp.bindScopeVersion('old-scope', 'v2', 'old-vertical', 'v1', 0);
+      const pin = cp.setScopeServingRef('old-scope', null, 0);
+      const afterBind = epoch();
+      const erased = cp.claimSubjectErasure('old-tenant', 'old-scope', 'v2', null, 0, 0);
+      const afterErasure = epoch();
+      const fencedBind = cp.bindScopeVersion('old-scope', 'v1', 'old-vertical', 'v2', 0);
+      const fencedPin = cp.setScopeServingRef('old-scope', 'elsewhere', 0);
+      return { migrated, read, staleBind, bind, pin, afterBind, erased, afterErasure, fencedBind, fencedPin };
+    });
+    expect(result).toEqual({
+      migrated: null, read: 0, staleBind: false, bind: true, pin: true, afterBind: null,
+      erased: true, afterErasure: 1, fencedBind: false, fencedPin: false,
+    });
+  });
+
+  it('adds an empty copy ledger and nullable zero epoch without changing scope routing', async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`copy-ledger-${ulid()}`));
+    const result = await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('DROP TABLE scope_script_copies');
+      state.storage.sql.exec('ALTER TABLE scopes DROP COLUMN erasure_epoch');
+      state.storage.sql.exec('ALTER TABLE scopes DROP COLUMN reap_claimed_at');
+      state.storage.sql.exec(`INSERT INTO scopes (scope_id, tenant_id, vertical, vertical_version_id, serving_ref, created_at)
+        VALUES ('old-scope', 'old-tenant', 'old-vertical', 'old-version', 'old-script', '2026-01-01T00:00:00.000Z')`);
+      new ControlPlaneDO(state, env);
+      return {
+        scope: state.storage.sql.exec('SELECT vertical_version_id, serving_ref, erasure_epoch, reap_claimed_at FROM scopes WHERE scope_id = ?', 'old-scope').toArray(),
+        copies: state.storage.sql.exec('SELECT * FROM scope_script_copies').toArray(),
+      };
+    });
+    expect(result.scope).toEqual([{ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: null, reap_claimed_at: null }]);
+    expect(result.copies).toEqual([]);
+  });
+});

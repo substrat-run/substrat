@@ -75,6 +75,21 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
       return eventId;
     }
 
+    /** Classified payload for carry × erasure ordering tests. */
+    testSubjectEvent(scopeId: string, tenantId: string, subjectId: string): string {
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      const eventId = ulid();
+      sql.exec(
+        `INSERT INTO _substrat_outbox
+         (id, type, schema_version, occurred_at, tenant_id, scope_id, actor, entity_type, entity_id,
+          pii_class, subject_id, payload)
+         VALUES (?, 'pv.subject', 1, ?, ?, ?, ?, 'note', ?, 'direct', ?, ?)`,
+        eventId, new Date().toISOString(), tenantId, scopeId, JSON.stringify(ulid()), eventId,
+        subjectId, JSON.stringify({ name: 'private' }),
+      );
+      return eventId;
+    }
+
     /**
      * #2005 × #1722 (Codex #2008 r10): a copy made before the marker — its origin row removed through
      * the raw handle, past the write revision, as a store that never had one never moved it.

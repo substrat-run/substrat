@@ -160,7 +160,9 @@ Usage:
                                               adapter-sqlite scope file, or a .dump.json)
   substrat scope adopt-serving <scopeId>      migrate a legacy scope onto its vertical's
                                               stable serving script so promotes stop
-                                              stranding its data (idempotent). Use
+                                              stranding its data (idempotent). The old
+                                              copy is deleted once the move is confirmed:
+                                              snapshot first to keep a way back. Use
                                               --vertical <slug> to backfill every scope.
                                               --ack-export-break adopts even when what is
                                               served drops an export another app imports
@@ -181,8 +183,10 @@ Usage:
                                               primary URL (default: an additive alias)
   substrat scope rebind <scopeId> --to <vertical>
                                               move a scope onto a DIFFERENT vertical
-                                              lineage's serving script, data carried
-                                              (staff; --ack-migrations to cross a
+                                              lineage's serving script, data carried;
+                                              the old copy is deleted once the move is
+                                              confirmed, so snapshot first to keep a way
+                                              back (staff; --ack-migrations to cross a
                                               differing migration surface;
                                               --abandon-data for a source script that
                                               predates /internal/export — directory-only

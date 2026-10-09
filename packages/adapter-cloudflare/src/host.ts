@@ -469,6 +469,7 @@ import {
   shapeTopUpBatch,
   type ConnectLinkKeyRow,
 } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import type { PlatformRequestSettle } from '@substrat-run/kernel';
 import {
@@ -778,13 +779,22 @@ interface ControlPlaneStub {
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null): Promise<void>;
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
+  scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
+  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
+  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
+  claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
+  beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
+  settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
+  touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
+  listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
+    after?: { scriptRef: string; moveId: string } }): Promise<ScopeScriptCopyRow[]>;
   markScopeProvisioned(scopeId: string, versionId: string | null): Promise<void>;
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
   ): Promise<void>;
-  setScopeServingRef(scopeId: string, servingRef: string | null): Promise<void>;
+  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
@@ -1677,9 +1687,11 @@ interface ScopeStubRpc {
       expect?: LoadMarker;
       markCopy?: boolean;
       provisionedFor?: TenantId;
+      /** #1722: the copy move's lease; `lapsed` once `notAfter` has passed. */
+      fence?: CopyRestoreFence;
     },
   ): Promise<
-    { refused: 'changed' | 'kept' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }
+    { refused: 'changed' | 'kept' | 'lapsed' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }
   >;
   /** #1722: the kept-copy marker, or null. */
   keptCopy(): Promise<KeptCopy | null>;
@@ -3325,6 +3337,8 @@ export class CloudflareScopeHost implements ScopeHost {
       expect?: LoadMarker;
       markCopy?: ScopeLineage;
       tenantId?: TenantId;
+      /** #1722: the copy move's lease; the store refuses a load after `notAfter`. */
+      fence?: CopyRestoreFence;
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     if (opts?.markCopy) assertCopyLineage(opts.markCopy);
@@ -3342,12 +3356,14 @@ export class CloudflareScopeHost implements ScopeHost {
     const out = await this.scopeStub(scopeId).importDumpChecked(tables, scopeId, {
       ...load,
       ...(opts?.expect ? { expect: opts.expect } : {}),
+      ...(opts?.fence ? { fence: opts.fence } : {}),
     });
     if (out.refused === false) {
       return { tables: tables.length, ...(carry ? { switchedOff: out.switchedOff } : {}) };
     }
     if (out.refused === 'kept') throw substratError('conflict', KEPT_COPY_REFUSAL);
     if (out.refused === 'tenant') throw substratError('conflict', out.message);
+    if (out.refused === 'lapsed') throw substratError('precondition_failed', COPY_RESTORE_FENCE_LAPSED);
     // A retry of a load that already committed (its answer was lost on the way back) is
     // refused by the marker that load itself moved. The store holding THIS request's stamp
     // says so: no other load writes it. Answered as applied, without `switchedOff`, so the
@@ -3466,6 +3482,17 @@ export class CloudflareScopeHost implements ScopeHost {
   async markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }> {
     assertCopyLineage(lineage);
     return { marked: await this.scopeStub(scopeId).markCopy() };
+  }
+
+  /** Scope-side half of an erasure, reached through this script's own DO binding. */
+  async redactSubjectLocal(scopeId: ScopeId, subjectId: string): Promise<SubjectRedactionCounts> {
+    const answer = await this.scopeStub(scopeId).redactSubject(subjectId);
+    if (typeof answer === 'object' && 'failure' in answer && answer.failure) throw fromWireFailure(answer.failure);
+    if (typeof answer === 'number' || !('jobRuns' in answer) || !('idempotencyResults' in answer) ||
+        !Array.isArray(answer.intentIds) || !('vertical' in answer) || !isModuleErasureCounts(answer.vertical)) {
+      throw substratError('unavailable', `scope ${scopeId} runs a DO whose subject erasure is incomplete — redeploy and retry`);
+    }
+    return answer as SubjectRedactionCounts;
   }
 
   /**
@@ -7169,6 +7196,9 @@ export class CloudflareScopeHost implements ScopeHost {
         if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
           throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
+        if (opts?.expectedErasureEpoch !== undefined && await this.cp.scopeErasureEpoch(tenantId, scopeId) !== opts.expectedErasureEpoch) {
+          throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
+        }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
@@ -7184,13 +7214,35 @@ export class CloudflareScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId);
+        if (!await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch, opts?.confirmMove)) {
+          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        }
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,
           ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },
+      recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, opts) => {
+        const result = await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, opts?.role ?? null, opts?.loadStamp ?? null,
+          ...(opts?.leaseMs !== undefined ? [opts.leaseMs] : []));
+        if (result === 'invalid') throw substratError('conflict', 'copy script and move must name a real script');
+        if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        if (result === 'reaping') throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
+      },
+      beginScopeScriptReap: async (_actor, tenantId, scopeId) => {
+        const result = await this.cp.beginScopeScriptReap(tenantId, scopeId);
+        if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        if (result === 'pending') throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
+      },
+      claimExpiredScopeScriptCopies: async (_actor, input) =>
+        (await this.cp.claimExpiredScopeScriptCopies(input)).map(scopeScriptCopyOf),
+      settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker, opts) =>
+        this.cp.settleScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, state, marker?.loadStamp ?? null, marker?.revision ?? null,
+          opts?.claimedBy),
+      touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) =>
+        this.cp.touchScopeScriptCopy(tenantId, scopeId, scriptRef, moveId),
+      listScopeScriptCopies: async (_actor, filter) => (await this.cp.listScopeScriptCopies(filter)).map(scopeScriptCopyOf),
       /**
        * Record that this scope's provision has now run against `versionId` (#1172).
        *
@@ -7266,7 +7318,9 @@ export class CloudflareScopeHost implements ScopeHost {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
-        await this.cp.setScopeServingRef(scopeId, servingRef);
+        if (!await this.cp.setScopeServingRef(scopeId, servingRef, opts?.expectedErasureEpoch, opts?.confirmMove)) {
+          throw substratError('precondition_failed', 'scope erasure or reap changed; reload and retry');
+        }
         await this.recordAdmin(
           actor,
           'setScopeServingRef',
@@ -8141,6 +8195,33 @@ export class CloudflareScopeHost implements ScopeHost {
           { subjectId },
           eventsRedacted + intentsRedacted + jobRunsRedacted + idempotencyResults + moduleRowsErased(vertical),
         );
+        return receipt;
+      },
+      scopeErasureEpoch: async (_actor, tenantId, scopeId) => this.cp.scopeErasureEpoch(tenantId, scopeId),
+      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected): Promise<SubjectShredReceipt> => {
+        await this.assertScope(tenantId, scopeId);
+        if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
+        if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef,
+          expected.epoch, expected.copyCount)) {
+          throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
+        }
+        const intentIds = [...new Set(redactions.flatMap((r) => r.intentIds))];
+        await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
+        const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, new Date().toISOString());
+        const receipt = subjectShredReceipt.parse({
+          subjectId,
+          eventsRedacted: redactions.reduce((n, r) => n + r.events, 0),
+          intentsRedacted: redactions.reduce((n, r) => n + r.intents, 0),
+          jobRunsRedacted: redactions.reduce((n, r) => n + r.jobRuns, 0),
+          verticalRows: redactions.flatMap((r) => r.vertical.verticalRows),
+          hookRows: redactions.flatMap((r) => r.vertical.hookRows),
+          unreachedEntities: redactions.flatMap((r) => r.vertical.unreachedEntities),
+          keyDestroyed: existed,
+          tombstoned: true,
+        });
+        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId },
+          redactions.reduce((n, r) => n + r.events + r.intents + r.jobRuns + r.idempotencyResults + moduleRowsErased(r.vertical), 0));
         return receipt;
       },
 

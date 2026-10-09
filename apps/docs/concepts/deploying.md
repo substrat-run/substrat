@@ -186,7 +186,10 @@ environment-wide runbook — one tenant's rewind is a clean, self-contained blas
   file, or a dump. This is the deliberate recovery when a time-boxed rewind is not the right tool.
 - **Legacy adoption.** A scope that predates the stable serving script hops onto it once with
   `adopt-serving` (export → restore → flip, data-first), so future promotes stop stranding its
-  data.
+  data. A cross-lineage `scope rebind` moves the data the same way. In both, the copy left in
+  the old script is **deleted once the move is confirmed**: it is not a backout. To keep a way
+  back, take a snapshot or backup of the scope first and restore from that. An old copy that
+  took a write after the move read it is kept for review instead of deleted.
 
 ## The whole shape
 
