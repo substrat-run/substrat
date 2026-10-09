@@ -577,10 +577,15 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       });
       expect(shredded.status).toBe(200);
       held.release();
-      await moving;
-      const outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
-      const row = outbox.rows.find((r) => r[outbox.columns.indexOf('id')] === eventId);
-      expect(row?.[outbox.columns.indexOf('payload')]).toBeNull();
+      expect((await moving).status).toBe(412);
+      expect((await served(p.hostname)).ref).toBe(refOf.get(version.v1));
+      const v1outbox = (await hostFor('v1').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
+      const redacted = v1outbox.rows.find((r) => r[v1outbox.columns.indexOf('id')] === eventId);
+      expect(redacted?.[v1outbox.columns.indexOf('payload')]).toBeNull();
+      expect((await push('erase-race', 'v2')).status).toBe(200);
+      const v2outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
+      const landed = v2outbox.rows.find((r) => r[v2outbox.columns.indexOf('id')] === eventId);
+      expect(landed?.[v2outbox.columns.indexOf('payload')]).toBeNull();
     });
     afterEach(() => {
       for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
