@@ -1053,21 +1053,109 @@ function isOptionalSchema(schema: unknown, depth = 0): boolean {
   }
 }
 
+type PatchSchemaIssue = { kind: 'default' } | { kind: 'uninspectable'; schemaKind: string } | null;
+
 /** A default fills an absent PATCH field before its handler can preserve the old value. */
-function hasInputDefault(schema: unknown): boolean {
+function inputDefaultIssue(schema: unknown): PatchSchemaIssue {
   const pending = [schema];
   const seen = new Set<unknown>();
   while (pending.length > 0) {
     const current = pending.pop();
-    if (current === undefined || seen.has(current)) continue;
+    if (current === undefined || current === null || seen.has(current)) continue;
     seen.add(current);
     const def = (current as { _zod?: { def?: unknown } })?._zod?.def as
-      | { type?: string; innerType?: unknown; in?: unknown; out?: unknown }
+      | {
+          type?: string;
+          innerType?: unknown;
+          in?: unknown;
+          out?: unknown;
+          getter?: () => unknown;
+          shape?: Record<string, unknown> | (() => Record<string, unknown>);
+          element?: unknown;
+          keyType?: unknown;
+          valueType?: unknown;
+          options?: unknown[];
+          items?: unknown[];
+          rest?: unknown;
+          left?: unknown;
+          right?: unknown;
+          catchall?: unknown;
+        }
       | undefined;
-    if (def?.type === 'default' || def?.type === 'prefault') return true;
-    pending.push(def?.innerType, def?.in, def?.out);
+    if (def?.type === 'default' || def?.type === 'prefault' || def?.type === 'catch') return { kind: 'default' };
+    if (typeof def?.type !== 'string') return { kind: 'uninspectable', schemaKind: 'unknown' };
+    switch (def.type) {
+      case 'optional':
+      case 'nullable':
+      case 'nullish':
+      case 'readonly':
+        pending.push(def.innerType);
+        break;
+      case 'lazy':
+        try {
+          pending.push(def.getter?.());
+        } catch {
+          return { kind: 'uninspectable', schemaKind: 'lazy' };
+        }
+        break;
+      case 'object': {
+        try {
+          const shape = typeof def.shape === 'function' ? def.shape() : def.shape;
+          if (!shape || typeof shape !== 'object') return { kind: 'uninspectable', schemaKind: 'object' };
+          pending.push(...Object.values(shape), def.catchall);
+        } catch {
+          return { kind: 'uninspectable', schemaKind: 'object' };
+        }
+        break;
+      }
+      case 'array':
+        pending.push(def.element);
+        break;
+      case 'record':
+      case 'map':
+        pending.push(def.keyType, def.valueType);
+        break;
+      case 'set':
+        pending.push(def.valueType);
+        break;
+      case 'union':
+        if (!Array.isArray(def.options)) return { kind: 'uninspectable', schemaKind: 'union' };
+        pending.push(...def.options);
+        break;
+      case 'tuple':
+        if (!Array.isArray(def.items)) return { kind: 'uninspectable', schemaKind: 'tuple' };
+        pending.push(...def.items, def.rest);
+        break;
+      case 'intersection':
+        pending.push(def.left, def.right);
+        break;
+      case 'pipe':
+        pending.push(def.in, def.out);
+        break;
+      // These kinds cannot contain another schema that can apply a default.
+      case 'string':
+      case 'number':
+      case 'boolean':
+      case 'bigint':
+      case 'date':
+      case 'symbol':
+      case 'undefined':
+      case 'null':
+      case 'any':
+      case 'unknown':
+      case 'never':
+      case 'void':
+      case 'literal':
+      case 'enum':
+      case 'file':
+      case 'template_literal':
+      case 'function':
+        break;
+      default:
+        return { kind: 'uninspectable', schemaKind: def.type };
+    }
   }
-  return false;
+  return null;
 }
 
 /** Check the effective HTTP method, both on local operations and bound engine routes. */
@@ -1086,7 +1174,14 @@ function assertPatchInputs(operations: Record<string, unknown>): void {
     const pathFields = new Set(Array.from((op.http.path ?? '').matchAll(/\{([^}]+)\}/g), (match) => match[1]));
     for (const [field, schema] of Object.entries(op.input?.shape ?? {})) {
       if (pathFields.has(field)) continue;
-      const offence = hasInputDefault(schema) ? 'has a default' : !isOptionalSchema(schema) ? 'is required' : null;
+      const issue = inputDefaultIssue(schema);
+      const offence = issue?.kind === 'default'
+        ? 'has a default'
+        : issue?.kind === 'uninspectable'
+          ? `uses an uninspectable Zod schema kind '${issue.schemaKind}'`
+          : !isOptionalSchema(schema)
+            ? 'is required'
+            : null;
       if (offence !== null) {
         throw new Error(
           `model: '${name}' routes as PATCH, but body field '${field}' ${offence}; ` +

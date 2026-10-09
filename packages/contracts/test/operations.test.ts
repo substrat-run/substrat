@@ -288,6 +288,54 @@ describe('PATCH input declarations', () => {
       .toThrow(/customer\/update.*name.*default/);
   });
 
+  it('finds and refuses defaults inside lazy schemas', () => {
+    const name = z.lazy(() => z.string().default('x')).optional();
+    expect(name.parse(undefined)).toBe('x');
+    expect(() => update(z.object({ id: z.string(), name }))).toThrow(/customer\/update.*name.*default/);
+  });
+
+  it('finds and refuses defaults in nested object shapes', () => {
+    const details = z.object({ child: z.string().default('x') }).optional();
+    expect(details.parse({})).toEqual({ child: 'x' });
+    expect(() => update(z.object({ id: z.string(), details }))).toThrow(/customer\/update.*details.*default/);
+  });
+
+  it('finds and refuses defaults in array elements', () => {
+    const values = z.array(z.string().default('x')).optional();
+    expect(values.parse([undefined])).toEqual(['x']);
+    expect(() => update(z.object({ id: z.string(), values }))).toThrow(/customer\/update.*values.*default/);
+  });
+
+  it('finds and refuses defaults in record values', () => {
+    const values = z.record(z.string(), z.string().default('x')).optional();
+    expect(values.parse({ key: undefined })).toEqual({ key: 'x' });
+    expect(() => update(z.object({ id: z.string(), values }))).toThrow(/customer\/update.*values.*default/);
+  });
+
+  it('finds and refuses defaults in union options', () => {
+    const choice = z.union([
+      z.object({ kind: z.literal('a'), child: z.string().default('x') }),
+      z.object({ kind: z.literal('b') }),
+    ]).optional();
+    expect(choice.parse({ kind: 'a' })).toEqual({ kind: 'a', child: 'x' });
+    expect(() => update(z.object({ id: z.string(), choice }))).toThrow(/customer\/update.*choice.*default/);
+  });
+
+  it('finds and refuses defaults in discriminated union options', () => {
+    const choice = z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('a'), child: z.string().default('x') }),
+      z.object({ kind: z.literal('b') }),
+    ]).optional();
+    expect(choice.parse({ kind: 'a' })).toEqual({ kind: 'a', child: 'x' });
+    expect(() => update(z.object({ id: z.string(), choice }))).toThrow(/customer\/update.*choice.*default/);
+  });
+
+  it('refuses schema kinds it cannot inspect', () => {
+    const opaque = { _zod: { def: { type: 'future_schema_kind' } } } as unknown as z.ZodType;
+    expect(() => update(z.object({ id: z.string(), opaque })))
+      .toThrow(/customer\/update.*opaque.*uninspectable Zod schema kind 'future_schema_kind'/);
+  });
+
   it('accepts a reasoned exception, but not an empty reason', () => {
     expect(() => update(z.object({ id: z.string(), name: z.string() }), 'The handler writes only name.'))
       .not.toThrow();
