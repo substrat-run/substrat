@@ -481,6 +481,22 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await hostFor('v1').restoreScopeLocal(created.body.scopeId, notes(...bodies));
       return created.body;
     };
+    it('records a failed source wipe, but a later preview reap currently leaves that copy behind', async () => {
+      const p = await fresh('failed-wipe-reap', 'copied data');
+      hooks.wipe = async (ref, sid) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('source wipe unavailable');
+      };
+      expect((await push('failed-wipe-reap', 'v2')).status).toBe(200);
+      delete hooks.wipe;
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['copied data'] });
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['copied data']);
+      expect((await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId })).some((f) => f.stage === 'source-copy')).toBe(true);
+
+      const reaped = await api.request('/verticals/carry-vert/previews/failed-wipe-reap', { method: 'DELETE', headers: auth });
+      expect(reaped.status).toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['copied data']);
+    });
     afterEach(() => {
       for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
       unfenced.clear();
