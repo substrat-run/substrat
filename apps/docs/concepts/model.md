@@ -467,12 +467,20 @@ a handler's SQL or prove that an omitted field is preserved.
 The walk is about omission: nothing in the schema may give an omitted field, or a partial
 object, a value the caller did not send. So it refuses defaults, prefaults and `.catch()`
 anywhere in the tree, transforms, preprocessing and codecs, any `.overwrite()` on an object,
-array, record, union or intersection, and a schema kind or check kind it does not know.
+array, record, union or intersection, and a schema kind or check kind it does not know. The
+input object itself is held to the same rules: it must be a plain `z.object`, and an
+`.overwrite()` or `.transform()` on the whole body is refused.
 Ordinary normalization of a supplied string is allowed: `.trim()`, `.toLowerCase()`,
 `.toUpperCase()` and `.normalize()` on a string field only rewrite what the caller sent, so
 `z.string().trim().optional()` passes. Those four are recognized precisely; a custom
-`.overwrite()` is arbitrary code and is refused even on a string. Validation checks such as
-`.min()`, `.max()`, formats and `.refine()` are allowed.
+`.overwrite()` is arbitrary code and is refused even on a string. Declarative validation
+checks such as `.min()`, `.max()` and formats are allowed.
+
+One limit the check cannot close: a `.refine()`, `.superRefine()` or `.check()` callback
+receives the parsed value by reference and can mutate it, and nothing at load time can tell
+such a callback from a validator. Refusing every callback would refuse legitimate
+validation, so they pass the check. Mutating the value inside one is unsupported on a PATCH
+input, and keeping those callbacks to validation is the author's responsibility.
 
 ## Composing engines
 
