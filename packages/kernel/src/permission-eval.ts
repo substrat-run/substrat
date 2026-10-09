@@ -565,12 +565,13 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
      * A capability or a switched-off subject holds nothing here, as `covers` says.
      */
     async holdings(subject: CheckSubject, node: Node): Promise<Holdings> {
-      if (subject.kind === 'capability') return { permissions: [], narrowed: [] };
+      const none: Holdings = { permissions: [], roles: [], granted: [], narrowed: [] };
+      if (subject.kind === 'capability') return none;
       const now = reader.now();
       const scope = reader.scopeFor(node);
-      if (await switchedOff(subject, node, scope)) return { permissions: [], narrowed: [] };
-      const { held, narrowed } = await holdingsOf(subject, node, now, scope, true);
-      return { permissions: [...held] as PermissionKey[], narrowed };
+      if (await switchedOff(subject, node, scope)) return none;
+      const { held, roles, granted, narrowed } = await holdingsOf(subject, node, now, scope, true);
+      return { permissions: [...held] as PermissionKey[], roles: [...roles], granted: [...granted] as PermissionKey[], narrowed };
     },
 
     check,
@@ -589,11 +590,13 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     scope: ScopeTupleReader | undefined,
     /** `covers` asks for the node-level set only, and skips parsing the entity grants. */
     withNarrowed: boolean,
-  ): Promise<{ held: Set<string>; narrowed: Holdings['narrowed'] }> {
+  ): Promise<{ held: Set<string>; roles: Set<string>; granted: Set<string>; narrowed: Holdings['narrowed'] }> {
     const subjects = await subjectsOf(subject, node, now);
     const getRole = roleReaderFor(node.tenantId);
     const nodeObjs = nodeObjectsOf(node);
     const held = new Set<string>();
+    const roles = new Set<string>();
+    const granted = new Set<string>();
     const narrowed = new Map<string, Holdings['narrowed'][number]>();
     for (const nodeObj of nodeObjs) {
       for (const s of subjects) {
@@ -604,8 +607,13 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
           : await reader.tenantTuples(node.tenantId, s.ref, '');
         for (const row of rows) {
           const grant = heldBy(row, nodeObj.obj, now);
-          if (grant?.role !== undefined) for (const p of (await getRole(grant.role))?.permissions ?? []) held.add(p);
-          else if (grant) held.add(grant.permission);
+          if (grant?.role !== undefined) {
+            roles.add(grant.role);
+            for (const p of (await getRole(grant.role))?.permissions ?? []) held.add(p);
+          } else if (grant) {
+            granted.add(grant.permission);
+            held.add(grant.permission);
+          }
           else if (withNarrowed && nodeObj.scoped) {
             const entity = narrowedBy(row, nodeObjs, now);
             if (entity) narrowed.set(`${entity.permission}\n${row.object}`, entity);
@@ -613,7 +621,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
         }
       }
     }
-    return { held, narrowed: [...narrowed.values()] };
+    return { held, roles, granted, narrowed: [...narrowed.values()] };
   }
 
 }

@@ -979,16 +979,24 @@ function markRevoked(sql: ScopedSql, id: CapabilityId, author: CapabilityAuthor 
 }
 
 /**
- * A canonical digest of what a principal holds (#1686): its node-level permissions — scope and
- * tenant level, through its orgs, roles expanded — and its entity-narrowed grants, each sorted
- * and deduplicated, so two reads of the same holdings in any order give the same digest. Taken
- * when a principal mints a `become` for it, and again at the exchange: any change in between, up
- * or down, through a tuple, an org membership or a role's definition, changes the digest.
+ * A canonical digest of what a principal holds (#1686): the role KEYS it holds at the node, as
+ * assigned, the permissions granted to it directly at the node, and its entity-narrowed grants —
+ * at scope and tenant level, through its orgs — each sorted and deduplicated, so two reads of the
+ * same holdings in any order give the same digest. Taken when a principal mints a `become` for it,
+ * and again at the exchange: a role assigned or taken away, a grant added or removed, an org joined
+ * or left, all change it, and the link dies.
+ *
+ * Role KEYS, not their expansions, deliberately: a role's definition is the vertical's code,
+ * re-projected on a push and reviewed at the permission-diff checkpoint — nothing an inviter
+ * controls. Expanding it would revoke every open invite at a role whenever a release adds a key to
+ * that role.
  */
 export async function holdingsDigest(held: Holdings): Promise<string> {
+  const sorted = (xs: Iterable<string>) => [...new Set(xs)].sort();
   const canonical = JSON.stringify({
-    permissions: [...new Set<string>(held.permissions)].sort(),
-    narrowed: [...new Set(held.narrowed.map((n) => `${n.permission} ${n.entity.entityType}:${n.entity.entityId}`))].sort(),
+    roles: sorted(held.roles),
+    granted: sorted(held.granted),
+    narrowed: sorted(held.narrowed.map((n) => `${n.permission} ${n.entity.entityType}:${n.entity.entityId}`)),
   });
   return capabilityTokenHash(canonical);
 }

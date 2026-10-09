@@ -89,8 +89,12 @@ export interface PermissionChecker {
 
 /** What `PermissionChecker.holdings` answers. */
 export interface Holdings {
-  /** Held at the node (scope or tenant level), deduplicated. */
+  /** Held at the node (scope or tenant level), roles expanded, deduplicated — what `covers` compares. */
   permissions: PermissionKey[];
+  /** The role keys held at the node, as assigned — unexpanded, deduplicated. */
+  roles: string[];
+  /** The permissions granted directly at the node (not through a role), deduplicated. */
+  granted: PermissionKey[];
   /** Live entity-narrowed grants, one per (permission, entity). */
   narrowed: { permission: PermissionKey; entity: EntityRef }[];
 }

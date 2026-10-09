@@ -30,10 +30,12 @@
  *    scope (a principal's or the platform's) is refused another link; never-exchanged links,
  *    open or revoked, leave it untaken, and a seat taken in another scope is not taken here.
  * 9. **The link dies when its principal's holdings change.** The mint records a digest of what
- *    the target holds; the exchange recomputes it, and a link whose principal was raised through
- *    (i) a scope-level role, (ii) a tenant-level role, (iii) an org joined, or (iv) a role
- *    redefined is revoked — with no revoker — and refused, its use untaken. Its twin: nothing
- *    changed (another principal raised meanwhile), and the link exchanges.
+ *    the target holds — role keys as assigned, direct and narrowed grants — and the exchange
+ *    recomputes it: a link whose principal was given (i) another scope-level role, (ii) a
+ *    tenant-level role, or (iii) an org that holds more is revoked — with no revoker — and
+ *    refused, its use untaken. Its twins: nothing changed (another principal raised meanwhile),
+ *    and (iv) a role it holds redefined to carry more — a role's definition is the vertical's
+ *    code, not the inviter's doing — and the link exchanges.
  * 10. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
  *    mints — the bound is evaluated at mint, and an empty set would cover trivially. Its twin:
  *    the same principal, once it holds a role, is minted for.
@@ -391,13 +393,21 @@ export function becomeMintContractSuite(
         await expectDead(cap);
       });
 
-      it('(iv) a role it holds redefined to carry more', async () => {
+      it('(iv) a role it holds redefined to carry more does NOT kill it: role definitions are the vertical\'s code', async () => {
         const target = p();
         const key = `widening-${ulid().toLowerCase()}`;
         await host.admin.defineRole(staff, t1, { key, permissions: [READ], source: 'vertical' });
         await host.admin.assignRole(staff, { principalId: target, roleKey: key, node: node() });
         const cap = await minted(owner, target);
         await host.admin.defineRole(staff, t1, { key, permissions: [READ, WRITE], source: 'vertical' });
+        expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ uses: 1, revokedAt: null });
+      });
+
+      it('(v) a direct node-level grant added', async () => {
+        const target = await seat();
+        const cap = await minted(owner, target);
+        await host.admin.grant(staff, { principalId: target, permission: WRITE, node: node(), grantedBy: owner });
         await expectDead(cap);
       });
 
