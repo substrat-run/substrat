@@ -1,5 +1,5 @@
-import { problemDetail } from '@substrat-run/contracts';
-import type { ConnectionProbe } from '@substrat-run/contracts';
+import { errorCode, problemDetail } from '@substrat-run/contracts';
+import type { ConnectionProbe, ErrorCode } from '@substrat-run/contracts';
 
 import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER } from './headers.js';
 
@@ -104,6 +104,26 @@ export class ControlPlaneError extends Error {
   readonly url: string | undefined;
   /** True for a 2xx answer that was not the JSON the route promises. */
   readonly malformed: boolean;
+
+  /**
+   * The taxonomy code the refusal's problem document declared (#113), so a caller can branch
+   * on what the plane said it was rather than on the sentence it said it in. `undefined` for a
+   * body that named none: an `about:blank` relay, a route the plane does not have (Hono's
+   * plain-text 404), a transport error, or an error raised on this side.
+   *
+   * Deliberately not called `code`: `errorCodeOf` reads a `code` property, and this error is
+   * the plane's answer relayed, not a throw that declared itself here.
+   */
+  get problemCode(): ErrorCode | undefined {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(this.body ?? '');
+    } catch {
+      return undefined;
+    }
+    const code = errorCode.safeParse((parsed as { code?: unknown } | null)?.code);
+    return code.success ? code.data : undefined;
+  }
 }
 
 /**

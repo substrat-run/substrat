@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { moduleManifest, permissionKey, type PermissionKey, type OrgId } from '@substrat-run/contracts';
+import { moduleManifest, permissionKey, substratError, type PermissionKey, type OrgId } from '@substrat-run/contracts';
 import {
   assertAllowed,
   MEMBER_ADD_REQUESTED,
@@ -1336,7 +1336,7 @@ const deleteTeamOp: OperationHandler<Record<string, never>, { members: Array<{ p
     [ctx.principal],
   )[0];
   if (!me || me.role_key !== 'owner') {
-    throw new Error('permission denied: only the owner can delete the organization');
+    throw substratError('permission_denied', 'permission denied: only the owner can delete the organization');
   }
   const active = ctx.sql.query<DashboardMemberRow>(`SELECT * FROM dashboard_members WHERE status IN ('active','joining')`);
   ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE status IN ('active','joining')`);
@@ -1371,7 +1371,10 @@ const removeMemberOp: OperationHandler<
   if (!row || !row.principal) return null;
   const bound = await ctx.canAssign(row.role_key);
   if (!bound.covered) {
-    throw new Error(`permission denied: you cannot remove a '${row.role_key}': you do not hold ${bound.missing.join(', ')}`);
+    throw substratError(
+      'permission_denied',
+      `permission denied: you cannot remove a '${row.role_key}': you do not hold ${bound.missing.join(', ')}`,
+    );
   }
   const team = ctx.sql.query<{ org_id: string }>('SELECT org_id FROM dashboard_team LIMIT 1')[0];
   if (!team) throw new Error('team not initialised');

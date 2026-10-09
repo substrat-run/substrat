@@ -67,7 +67,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import { LIST_PAGE_MAX, denialQuery, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
 import {
   ControlPlaneError,
   ControlPlaneTransport,
@@ -1753,8 +1753,9 @@ export class TenantNarrowedControlPlane {
       );
       return r.affected;
     } catch (e) {
-      // A route the plane does not have is a bare 404; an unknown scope or version names itself.
-      if (e instanceof ControlPlaneError && e.status === 404 && !/unknown/i.test(e.message)) return [];
+      // A route the plane does not have is a bare 404 with no code; an unknown scope or version
+      // is a `not_found` the plane declared (#113).
+      if (e instanceof ControlPlaneError && e.status === 404 && e.problemCode === undefined) return [];
       throw e;
     }
   }
@@ -2027,7 +2028,7 @@ export class TenantNarrowedControlPlane {
   async unbindHostname(scopeId: ScopeId, hostname: string): Promise<void> {
     const own = await this.listHostnames(scopeId);
     if (!own.some((h) => h.hostname === hostname.toLowerCase())) {
-      throw new ControlPlaneError(404, `hostname '${hostname}' is not bound to this app`);
+      throw substratError('not_found', `hostname '${hostname}' is not bound to this app`);
     }
     return this.call(`/hostnames/${encodeURIComponent(hostname)}`, { method: 'DELETE' });
   }
