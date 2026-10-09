@@ -212,10 +212,11 @@ export interface SecretBox {
 
 - **dev / self-host** — AES-GCM via Web Crypto, key from env. Fail closed if unset. The rule is
   already written down at [wire-auth.ts](../../packages/contracts/src/wire-auth.ts):
-  *"An unset secret is a failure, not a bypass."* Note the router secret currently does the
-  opposite ([routed-node.ts](../../packages/vertical-host/src/routed-node.ts), `expectedSecret &&`)
-  and Better Auth ships a hardcoded fallback
-  ([staff-auth.ts:32](../../apps/control-plane/src/staff-auth.ts)); neither is a precedent to
+  *"An unset secret is a failure, not a bypass."* The router secret has done the same since
+  #966: with no secret configured, [`readRoutedNode`](../../packages/vertical-host/src/routed-node.ts)
+  refuses an assertion unless the worker opts into `allowUnsigned` for local dev. Better Auth,
+  by contrast, ships a hardcoded fallback
+  ([staff-auth.ts:32](../../apps/control-plane/src/staff-auth.ts)), which is not a precedent to
   copy here.
 - **hosted** — Cloudflare Secrets Store binding, or an external KMS behind the same interface.
 
