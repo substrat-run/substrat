@@ -37,12 +37,19 @@ export async function listAllScopeScriptCopies(
 }
 
 /** The directory's current routing decision, with no fallback to a different script. */
-async function routeOf(input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId): Promise<string | null> {
+export async function routeOf(input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId): Promise<string | null> {
   const scope = await input.admin.getScopeRecord(input.actor, tenantId, scopeId);
   if (!scope) return null;
   if (scope.servingRef) return scope.servingRef;
   if (!scope.vertical || !scope.verticalVersionId) return null;
   return (await input.admin.getVersion(input.actor, scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null;
+}
+
+/** Whether the scope's store in this script holds the tombstone a wipe leaves: proof it was wiped. */
+export async function carriedAway(holder: VerticalClient, scopeId: ScopeId): Promise<boolean> {
+  const meta = await holder.readScopeTable(scopeId, { table: '_substrat_meta', limit: 100, offset: 0 });
+  const key = meta.columns.indexOf('key');
+  return key >= 0 && meta.rows.some((r) => r[key] === CARRIED_AWAY_KEY);
 }
 
 /** One eligible source. A changed store is kept, never discarded to satisfy the ledger. */
@@ -67,9 +74,7 @@ export async function retryScopeScriptCopy(input: ScopeCopyCleanup, copy: ScopeS
   if (!result.wiped) {
     // An earlier wipe may have committed and only the ledger receipt failed. Its tombstone is
     // proof of deletion, whereas a changed store with no tombstone must be kept for review.
-    const meta = await holder.readScopeTable(copy.scopeId, { table: '_substrat_meta', limit: 100, offset: 0 });
-    const key = meta.columns.indexOf('key');
-    const alreadyWiped = key >= 0 && meta.rows.some((r) => r[key] === CARRIED_AWAY_KEY);
+    const alreadyWiped = await carriedAway(holder, copy.scopeId);
     await input.admin.settleScopeScriptCopy(input.actor, copy.tenantId, copy.scopeId, copy.scriptRef, copy.moveId,
       alreadyWiped ? 'done' : 'kept', { loadStamp: copy.loadStamp, revision: copy.revision });
     return alreadyWiped ? 'done' : 'kept';

@@ -42,6 +42,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
+  BACKFILL_MOVE_ID,
   SCOPE_COPY_LEASE_MS,
   isSearchIndexTable,
   platformIntentFailureMessage,
@@ -5789,6 +5790,35 @@ export function scopeHostContractSuite(
           .every((copy) => copy.scriptRef === ref && [first, next].includes(copy.moveId))).toBe(true);
       }
       expect(beforeClaim.map((copy) => copy.moveId).sort()).toEqual([first, next].sort());
+    });
+
+    it('a backfilled copy is retained, once per script, never over a ledgered one, and never under a reap claim (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [historic, tracked] = [`version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`];
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, historic)).toBe('recorded');
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, historic)).toBe('ledgered'); // a re-run writes nothing
+      const [entry] = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      expect(entry).toMatchObject({ scriptRef: historic, moveId: BACKFILL_MOVE_ID, state: 'retained', role: null, leaseUntil: null });
+      // Never pending, so no lease sweep ever claims it, and a reap is not held off by it.
+      expect((await host.admin.claimExpiredScopeScriptCopies(staff, {
+        now: new Date(Date.now() + 365 * 86_400_000).toISOString(), leaseUntil: new Date().toISOString(), owner: 'sweep:test', limit: 1000,
+      })).filter((c) => c.scopeId === s)).toEqual([]);
+      // A script the ledger already names for this scope, in ANY state, is not backfilled again.
+      const move = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, tracked, move, { role: 'source' });
+      await host.admin.settleScopeScriptCopy(staff, t1, s, tracked, move, 'done');
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, tracked)).toBe('ledgered');
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).map((c) => c.moveId).sort())
+        .toEqual([BACKFILL_MOVE_ID, move].sort());
+      // Scoped by tenant: the same scope id under another tenant is unknown.
+      expect(await host.admin.backfillScopeScriptCopy(staff, t2, s, `version-${ulid().toLowerCase()}`)).toBe('missing');
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, scopeId.parse(ulid()), historic)).toBe('missing');
+      // Under a reap claim nothing new enters the ledger, so the reap's own listing stays whole.
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      const late = `version-${ulid().toLowerCase()}`;
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, late)).toBe('reaping');
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).some((c) => c.scriptRef === late)).toBe(false);
     });
 
     it('a pending copy entry is claimed only once its lease ran out, and only once (#1722)', async () => {

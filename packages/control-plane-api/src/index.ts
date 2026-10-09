@@ -48,6 +48,9 @@ export {
   assertNoUnreachableScopeCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
   settleExpiredScopeScriptCopies, sweepScopeScriptCopies,
 } from './scope-copy-cleanup.js';
+export {
+  backfillScopeScriptCopies, type CopyBackfillEntry, type CopyBackfillOutcome, type CopyBackfillPage,
+} from './scope-copy-backfill.js';
 export { versionReachedAt } from './scope-deployment.js';
 // #1705 PR 2: the cross-vertical phase's reach for a control plane whose scopes live elsewhere.
 export { hostedCrossVerticalReach } from './cross-vertical.js';
