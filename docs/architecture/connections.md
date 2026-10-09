@@ -468,7 +468,7 @@ that needs to MAIL a round to someone else is the other case again, and gets a r
 
 **The two states are separate MAC families.** The link's key is HKDF from the dashboard's
 `SESSION_SECRET`; the platform round's is HKDF from `PLATFORM_SECRET` under its own purpose
-label (`signConnectState`, in the kernel beside `platform-call.ts` — two workers hold the
+label (`signConnectState`, in the kernel — two workers hold the
 halves, so it must not be written twice). A token verifies under at most one. If either
 could sign for the other, a vertical holding the shared script secret could mint a claim
 naming the dashboard's own scope.
