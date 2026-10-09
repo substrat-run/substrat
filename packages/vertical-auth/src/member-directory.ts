@@ -11,8 +11,9 @@
  * Since #1686 the token is the secret of a `become` capability in the scope's own Durable
  * Object (single use, revocable, on the spine), and `capability_id` names it: the scope judges
  * the secret, this row says which capability IS the invite and which principal it seats. A row
- * with no `capability_id` is LEGACY — minted before #1686 by hash alone — and is still redeemed
- * the old way, by hash; an invite has no expiry, so nothing ages those out (see `claimInvite`).
+ * with no `capability_id` is LEGACY — hash alone, as every invite was before #1686 and as
+ * ticket0's own desk-invite flow still writes them — and is still redeemed the old way, by hash;
+ * an invite has no expiry, so nothing ages those out (see `claimInvite`).
  */
 import type { RegistrySql } from './site-registry.js';
 import { OWNER_SEAT_DDL } from './owner-seat.js';
@@ -58,8 +59,8 @@ const inviteRowOf = (r: Record<string, unknown>): InviteRow => ({
 
 /**
  * Record an invite under its token's hash. `capabilityId` names the `become` capability whose
- * secret the token is (#1686); null writes a legacy hash-only row, which nothing in this package
- * mints any more.
+ * secret the token is (#1686); null writes a legacy hash-only row, which this package's own
+ * invite routes no longer mint.
  */
 export function createInvite(
   sql: RegistrySql, scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string,
@@ -98,12 +99,11 @@ export function inviteExists(sql: RegistrySql, scopeId: string, tokenHash: strin
  * none. Deleting the row is what stops an accept here; the revoke makes the scope agree.
  */
 export function revokeInvite(sql: RegistrySql, scopeId: string, principal: string): string | null {
-  const open = [...sql.exec(
-    'SELECT capability_id FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0',
+  const gone = [...sql.exec(
+    'DELETE FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0 RETURNING capability_id',
     scopeId, principal,
   )][0];
-  sql.exec('DELETE FROM invite WHERE scope_id = ? AND principal = ? AND claimed = 0', scopeId, principal);
-  return (open?.capability_id as string | null | undefined) ?? null;
+  return (gone?.capability_id as string | null | undefined) ?? null;
 }
 
 /**
@@ -132,9 +132,13 @@ export function claimInviteByCapability(
     'SELECT token_hash FROM invite WHERE scope_id = ? AND capability_id = ? AND principal = ? AND claimed = 0',
     scopeId, capabilityId, principal,
   )][0];
-  if (!inv) return null;
+  return inv ? bindInvite(sql, scopeId, sub, principal, inv.token_hash as string) : null;
+}
+
+/** Bind the subject to the invite's principal and consume the invite — the write both claims share. */
+function bindInvite(sql: RegistrySql, scopeId: string, sub: string, principal: string, tokenHash: string): string {
   sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, principal);
-  sql.exec('UPDATE invite SET claimed = 1 WHERE scope_id = ? AND token_hash = ?', scopeId, inv.token_hash);
+  sql.exec('UPDATE invite SET claimed = 1 WHERE scope_id = ? AND token_hash = ?', scopeId, tokenHash);
   return principal;
 }
 
@@ -157,10 +161,7 @@ export function claimInvite(sql: RegistrySql, scopeId: string, sub: string, toke
     'SELECT principal FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0 AND capability_id IS NULL',
     scopeId, tokenHash,
   )][0];
-  if (!inv) return null;
-  sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, inv.principal);
-  sql.exec('UPDATE invite SET claimed = 1 WHERE scope_id = ? AND token_hash = ?', scopeId, tokenHash);
-  return inv.principal as string;
+  return inv ? bindInvite(sql, scopeId, sub, inv.principal as string, tokenHash) : null;
 }
 
 /**

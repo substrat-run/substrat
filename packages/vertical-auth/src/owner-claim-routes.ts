@@ -29,7 +29,7 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, type CapabilityExchange, type ScopeId, type TenantId } from '@substrat-run/contracts';
-import { capabilityTokenHash, plausibleCapabilitySecret } from '@substrat-run/kernel';
+import { redeemBecomeLink } from './become-link.js';
 import type { IdentityStub } from './identity-do.js';
 import type { AuthProvider, AuthSubject } from './provider.js';
 import { bodyOf } from './request-body.js';
@@ -92,19 +92,6 @@ export function mountOwnerClaim<E extends object, N extends { tenantId: TenantId
   app: Hono<{ Bindings: E }>,
   deps: OwnerClaimRouteDeps<E, N>,
 ): void {
-  /**
-   * Steps 2–4: refused before the exchange unless the secret is the scope's current link, so a
-   * stale or unrelated secret keeps its use, and a token that is no capability secret reaches
-   * neither the directory nor the scope.
-   */
-  const redeem = async (env: E, node: N, directory: OwnerClaimDirectory, sub: string, secret: string): Promise<string | null> => {
-    if (!plausibleCapabilitySecret(secret)) return null;
-    if (!(await directory.ownerClaimMatches(node.scopeId, await capabilityTokenHash(secret)))) return null;
-    const exchanged = await deps.host(env).exchangeCapability(node.tenantId, node.scopeId, secret, { mode: 'become' });
-    if (exchanged?.kind !== 'principal') return null;
-    return directory.claimOwnerByCapability(node.scopeId, sub, exchanged.capabilityId, exchanged.principal);
-  };
-
   app.post('/api/claim-owner', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     const subject = await (await deps.authProvider(c.env, c.req.raw)).resolve(c.req.raw.headers);
@@ -112,7 +99,15 @@ export function mountOwnerClaim<E extends object, N extends { tenantId: TenantId
       throw new HTTPException(401, { message: `sign in before claiming this ${deps.noun ?? 'workspace'}` });
     }
     const { token } = await bodyOf(c, claimOwnerBody);
-    const principal = await redeem(c.env, node, deps.directory(c.env, node), subject.sub, token);
+    const directory = deps.directory(c.env, node);
+    const principal = await redeemBecomeLink(
+      {
+        matches: (hash) => directory.ownerClaimMatches(node.scopeId, hash),
+        exchange: (secret) => deps.host(c.env).exchangeCapability(node.tenantId, node.scopeId, secret, { mode: 'become' }),
+        bind: (id, owner) => directory.claimOwnerByCapability(node.scopeId, subject.sub, id, owner),
+      },
+      token,
+    );
     if (!principal) throw new HTTPException(400, { message: REFUSED });
     await deps.onClaimed?.(c, { node, principal, subject });
     return c.json({ ok: true, principal });

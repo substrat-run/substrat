@@ -640,6 +640,7 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
         throw substratError(
           'forbidden',
           `capability ${id} is a become capability and is revoked by the host that minted it, not ctx.capabilities`,
+          // The reason predates principal-minted `become` rows and is kept: a caller may match on it.
           { reason: 'capability_platform_minted' },
         );
       }
@@ -653,11 +654,7 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
           );
         }
       }
-      deps.sql.exec(
-        `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
-         WHERE id = ? AND revoked_at IS NULL`,
-        [deps.now, JSON.stringify(revoker), id],
-      );
+      markRevoked(deps.sql, id, revoker, deps.now);
       const payload: CapabilityRevokedPayload = {
         capabilityId: id,
         entity: grant.entity,
@@ -903,9 +900,21 @@ export async function mintBecomeCapability(
   now: Instant,
 ): Promise<MintedCapability> {
   const input = checkBecomeInput(raw, now);
+  return insertBecome(sql, input, { platform: actor }, now);
+}
+
+/**
+ * The one `become` row write, for the platform's mint and a principal's alike: a fresh id and
+ * secret, the secret's hash stored, the secret returned once.
+ */
+async function insertBecome(
+  sql: ScopedSql,
+  input: { principal: PrincipalId; expiresAt?: Instant; maxUses: number; label?: string },
+  author: CapabilityAuthor,
+  now: Instant,
+): Promise<MintedCapability> {
   const id = capabilityIdSchema.parse(ulid());
   const secret = mintCapabilitySecret();
-  const author: CapabilityAuthor = { platform: actor };
   sql.exec(
     `INSERT INTO _substrat_capabilities
        (id, token_hash, mode, label, entity_type, entity_id, permissions, operations, attachments,
@@ -918,11 +927,22 @@ export async function mintBecomeCapability(
       input.principal,
       JSON.stringify(author),
       now,
-      input.expiresAt,
+      input.expiresAt ?? null,
       input.maxUses,
     ],
   );
-  return { id, secret, expiresAt: input.expiresAt };
+  return { id, secret, expiresAt: input.expiresAt ?? null };
+}
+
+/** The one revoke write: stamps `author` once, on a row not yet revoked. True when this call did. */
+function markRevoked(sql: ScopedSql, id: CapabilityId, author: CapabilityAuthor, now: Instant): boolean {
+  return (
+    sql.exec(
+      `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
+       WHERE id = ? AND revoked_at IS NULL`,
+      [now, JSON.stringify(author), id],
+    ).changes === 1
+  );
 }
 
 /**
@@ -940,12 +960,7 @@ export function revokeCapabilityAsPlatform(
   const q = capabilityByIdQuery(id);
   const row = sql.query<CapabilityRow>(q.sql, q.params)[0];
   if (!row) return undefined;
-  const author: CapabilityAuthor = { platform: actor };
-  sql.exec(
-    `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
-     WHERE id = ? AND revoked_at IS NULL`,
-    [now, JSON.stringify(author), id],
-  );
+  markRevoked(sql, id, { platform: actor }, now);
   return capabilityRecordOf(row);
 }
 
@@ -1000,26 +1015,9 @@ export async function mintBecomeCapabilityAsPrincipal(
   if (input.expiresAt !== undefined && input.expiresAt <= deps.now) {
     throw substratError('validation_failed', `mintBecomeCapability: expiresAt ${input.expiresAt} is not in the future`);
   }
-  const id = capabilityIdSchema.parse(ulid());
-  const secret = mintCapabilitySecret();
-  deps.sql.exec(
-    `INSERT INTO _substrat_capabilities
-       (id, token_hash, mode, label, entity_type, entity_id, permissions, operations, attachments,
-        principal, minted_by, minted_at, expires_at, max_uses, uses)
-     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0)`,
-    [
-      id,
-      await capabilityTokenHash(secret),
-      input.label ?? null,
-      input.principal,
-      JSON.stringify(minter satisfies CapabilityAuthor),
-      deps.now,
-      input.expiresAt ?? null,
-      input.maxUses,
-    ],
-  );
+  const minted = await insertBecome(deps.sql, input, minter, deps.now);
   const payload: CapabilityBecomeMintedPayload = {
-    capabilityId: id,
+    capabilityId: minted.id,
     principal: input.principal,
     expiresAt: input.expiresAt ?? null,
     maxUses: input.maxUses,
@@ -1029,11 +1027,11 @@ export async function mintBecomeCapabilityAsPrincipal(
   deps.emit({
     type: CAPABILITY_BECOME_MINTED,
     schemaVersion: 1,
-    entity: { entityType: 'capability', entityId: id },
+    entity: { entityType: 'capability', entityId: minted.id },
     piiClass: 'none',
     payload,
   });
-  return { id, secret, expiresAt: input.expiresAt ?? null };
+  return minted;
 }
 
 /**
@@ -1053,11 +1051,5 @@ export function revokeBecomeCapabilityAsPrincipal(
   const q = capabilityByIdQuery(id);
   const row = sql.query<CapabilityRow>(q.sql, q.params)[0];
   if (!row || row.mode !== 'become' || typeof JSON.parse(row.minted_by) !== 'string') return false;
-  return (
-    sql.exec(
-      `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
-       WHERE id = ? AND revoked_at IS NULL`,
-      [now, JSON.stringify(by satisfies CapabilityAuthor), id],
-    ).changes === 1
-  );
+  return markRevoked(sql, id, by, now);
 }

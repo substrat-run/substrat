@@ -557,7 +557,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       if (await switchedOff(subject, node, scope)) {
         return { covered: false, missing: [...new Set(required)] as [PermissionKey, ...PermissionKey[]] };
       }
-      return coverageOf(required, (await holdingsOf(subject, node, now, scope)).held);
+      return coverageOf(required, (await holdingsOf(subject, node, now, scope, false)).held);
     },
 
     /**
@@ -569,7 +569,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       const now = reader.now();
       const scope = reader.scopeFor(node);
       if (await switchedOff(subject, node, scope)) return { permissions: [], narrowed: [] };
-      const { held, narrowed } = await holdingsOf(subject, node, now, scope);
+      const { held, narrowed } = await holdingsOf(subject, node, now, scope, true);
       return { permissions: [...held] as PermissionKey[], narrowed };
     },
 
@@ -587,6 +587,8 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
     node: Node,
     now: string,
     scope: ScopeTupleReader | undefined,
+    /** `covers` asks for the node-level set only, and skips parsing the entity grants. */
+    withNarrowed: boolean,
   ): Promise<{ held: Set<string>; narrowed: Holdings['narrowed'] }> {
     const subjects = await subjectsOf(subject, node, now);
     const getRole = roleReaderFor(node.tenantId);
@@ -604,7 +606,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
           const grant = heldBy(row, nodeObj.obj, now);
           if (grant?.role !== undefined) for (const p of (await getRole(grant.role))?.permissions ?? []) held.add(p);
           else if (grant) held.add(grant.permission);
-          else if (nodeObj.scoped) {
+          else if (withNarrowed && nodeObj.scoped) {
             const entity = narrowedBy(row, nodeObjs, now);
             if (entity) narrowed.set(`${entity.permission}\n${row.object}`, entity);
           }

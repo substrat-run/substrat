@@ -60,6 +60,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { capabilityTokenHash, plausibleCapabilitySecret, ulid } from '@substrat-run/kernel';
+import { redeemBecomeLink } from './become-link.js';
 import type { IdentityStub } from './identity-do.js';
 import { invitePath, sha256Hex } from './owner-claim-link.js';
 import { bodyOf } from './request-body.js';
@@ -192,15 +193,16 @@ export async function mintMemberInvite(
     throw new HTTPException(500, { message: 'the canAssign bound did not answer with a coverage — refusing' });
   }
   if (!bound.data.covered) return { ok: false, coverage: bound.data };
+  const ungrant = () => steps.rollback(principal).catch(() => undefined);
   let minted: BoundedBecomeMint;
   try {
     minted = boundedBecomeMint.parse(await steps.mint({ principal, maxUses: 1, label: MEMBER_INVITE_LABEL }));
   } catch (err) {
-    await steps.rollback(principal).catch(() => undefined);
+    await ungrant();
     throw err;
   }
   if (!minted.ok) {
-    await steps.rollback(principal).catch(() => undefined);
+    await ungrant();
     return { ok: false, coverage: minted.coverage };
   }
   const link = minted.minted;
@@ -208,7 +210,7 @@ export async function mintMemberInvite(
     await steps.record(principal, await capabilityTokenHash(link.secret), link.id);
   } catch (err) {
     await steps.revokeCapability(link.id).catch(() => undefined);
-    await steps.rollback(principal).catch(() => undefined);
+    await ungrant();
     throw err;
   }
   const origin = input.origin.replace(/\/$/, '');
@@ -216,12 +218,11 @@ export async function mintMemberInvite(
 }
 
 /**
- * Accept an invite (#1150, #1686) — the one copy both the vertical's `/api/accept-invite` and any
- * other accept door run. A capability-era secret is checked against the directory BEFORE the
- * scope exchanges it (a withdrawn, accepted or unrelated secret keeps its use), then exchanged in
- * the scope (single use, on the spine as `capability.exercised`), then bound — only while the row
- * still names that capability and principal. A token that is not a capability secret is a LEGACY
- * invite, redeemed by hash (`claimInvite`). Null for every refusal, one answer.
+ * Accept an invite (#1150, #1686) — the one copy every accept door runs. A capability secret is
+ * redeemed as every `become` link is (`redeemBecomeLink`): checked against the directory before
+ * the scope spends its use, exchanged, then bound only while the row still names that capability
+ * and principal. A token that is not a capability secret is a LEGACY hash-only invite, redeemed by
+ * hash (`claimInvite`). Null for every refusal, one answer.
  */
 export async function acceptMemberInvite(
   deps: {
@@ -233,13 +234,17 @@ export async function acceptMemberInvite(
   token: string,
 ): Promise<string | null> {
   if (!plausibleCapabilitySecret(token)) {
-    // LEGACY — an invite minted before #1686 (see `claimInvite`).
+    // LEGACY — a hash-only invite (see `claimInvite`).
     return deps.directory.claimInvite(scopeId, sub, await sha256Hex(token));
   }
-  if (!(await deps.directory.inviteMatches(scopeId, await capabilityTokenHash(token)))) return null;
-  const exchanged = await deps.exchange(token);
-  if (exchanged?.kind !== 'principal') return null;
-  return deps.directory.claimInviteByCapability(scopeId, sub, exchanged.capabilityId, exchanged.principal);
+  return redeemBecomeLink(
+    {
+      matches: (hash) => deps.directory.inviteMatches(scopeId, hash),
+      exchange: deps.exchange,
+      bind: (capabilityId, principal) => deps.directory.claimInviteByCapability(scopeId, sub, capabilityId, principal),
+    },
+    token,
+  );
 }
 
 /**
