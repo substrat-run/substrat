@@ -53,7 +53,7 @@
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
-    "hono": "^4.13.12",
+    "hono": "^4.13.13",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
