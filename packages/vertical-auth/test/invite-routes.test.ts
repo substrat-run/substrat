@@ -218,9 +218,9 @@ function deps(overrides: Partial<InviteRouteDeps<Env, typeof NODE>> = {}): Invit
     revokeBecomeCapability: async (_env, node, id, by) => {
       log.push(`revokeBecomeCapability ${node.scopeId} ${id} ${by}`);
       const cap = capabilities.get(id);
-      if (!cap || cap.revokedBy) return false;
+      if (!cap || cap.revokedBy) return { ok: true, revoked: false };
       cap.revokedBy = by;
-      return true;
+      return { ok: true, revoked: true };
     },
     // The scope's exchange: single use, refused once revoked.
     exchangeCapability: async (_env, _node, secret): Promise<CapabilityExchange | null> => {

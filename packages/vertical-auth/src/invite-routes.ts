@@ -44,12 +44,14 @@ import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
   boundedBecomeMint,
+  boundedBecomeRevoke,
   capabilityId,
   coverage,
   coverageRefusal,
   principalId,
   z,
   type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
   type CapabilityExchange,
   type CapabilityId,
   type Coverage,
@@ -141,7 +143,7 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
    * Revoke an invite's link (#1686) — the host's `revokeBecomeCapability`, recording `by`. What a
    * withdrawal does to the capability once the row is gone, and what a failed create undoes.
    */
-  revokeBecomeCapability: (env: E, node: N, capabilityId: CapabilityId, by: PrincipalId) => Promise<boolean>;
+  revokeBecomeCapability: (env: E, node: N, capabilityId: CapabilityId, by: PrincipalId) => Promise<BoundedBecomeRevoke>;
   /** Exchange an invite's secret in the scope (#1686) — the host's `exchangeCapability`, `become` only. */
   exchangeCapability: (env: E, node: N, secret: string) => Promise<CapabilityExchange | null>;
   /** The configured `AuthProvider` — who is accepting. Resolved per request, as the vertical does. */
@@ -263,13 +265,16 @@ export async function acceptMemberInvite(
 export async function withdrawMemberInvite(
   steps: {
     directory: Pick<InviteDirectory, 'inviteLink' | 'revokeInvite'>;
-    revokeCapability: (capabilityId: CapabilityId) => Promise<unknown>;
+    revokeCapability: (capabilityId: CapabilityId) => Promise<BoundedBecomeRevoke>;
   },
   scopeId: string,
   principal: string,
 ): Promise<void> {
   const link = await steps.directory.inviteLink(scopeId, principal);
-  if (link) await steps.revokeCapability(capabilityId.parse(link));
+  if (link) {
+    const revoke = boundedBecomeRevoke.parse(await steps.revokeCapability(capabilityId.parse(link)));
+    if (!revoke.ok) throw uncovered(revoke.coverage.missing, principal, 'withdraw the link of');
+  }
   await steps.directory.revokeInvite(scopeId, principal);
 }
 

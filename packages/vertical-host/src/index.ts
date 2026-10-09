@@ -80,6 +80,7 @@ import {
   capabilityFilterQuery,
   capabilityId,
   type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
   type CapabilityId,
   type PrincipalBecomeCapabilityInput,
   type CapabilityFilter,
@@ -523,7 +524,7 @@ export interface VerticalScopeHost {
   mintBecomeCapabilityBounded?(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBecomeCapabilityInput,
   ): Promise<BoundedBecomeMint>;
-  revokeBecomeCapability?(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<boolean>;
+  revokeBecomeCapability?(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<BoundedBecomeRevoke>;
 }
 
 /**
@@ -2212,7 +2213,10 @@ export function mountPlatformSurface<Env extends object>(
       // The link first, named by the row, then the row (#1686) — vertical-auth's
       // `withdrawMemberInvite` order: a failed revoke leaves the row for the retry to find.
       const link = await surface.directory.inviteLink(body.scopeId, body.principal);
-      if (link) await surface.host.revokeBecomeCapability(body.tenantId, body.scopeId, capabilityId.parse(link), body.caller);
+      if (link) {
+        const revoke = await surface.host.revokeBecomeCapability(body.tenantId, body.scopeId, capabilityId.parse(link), body.caller);
+        if (!revoke.ok) assertCovered(revoke.coverage, body.principal, 'withdraw the link of');
+      }
       await surface.directory.revokeInvite(body.scopeId, body.principal);
     }
     const unbound = await surface.directory.unbindPrincipal(body.scopeId, body.principal);

@@ -42,6 +42,7 @@ import {
   scopeId,
   tenantId,
   type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
   type CapabilityId,
   type CapabilityRecord,
   type EntityRef,
@@ -64,7 +65,7 @@ export interface BecomeMintVerbs {
     caller: PrincipalId,
     input: PrincipalBecomeCapabilityInput,
   ): Promise<BoundedBecomeMint>;
-  revokeBecomeCapability(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<boolean>;
+  revokeBecomeCapability(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<BoundedBecomeRevoke>;
 }
 
 const READ = permissionKey.parse('cap:read');
@@ -286,10 +287,31 @@ export function becomeMintContractSuite(
     describe('the revoke', () => {
       it('refuses the exchange after it, records the revoker, and is idempotent', async () => {
         const cap = await minted(owner, readerTarget);
-        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, owner)).toBe(true);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, owner)).toEqual({ ok: true, revoked: true });
         expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' })).toBeNull();
         expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ revokedBy: owner, uses: 0 });
-        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, owner)).toBe(false);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, owner)).toEqual({ ok: true, revoked: false });
+      });
+
+      it('is bounded in the kernel: a revoker short of what the link\'s principal holds is refused, writing nothing', async () => {
+        const cap = await minted(owner, writerTarget);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, reader)).toEqual({
+          ok: false,
+          coverage: { covered: false, missing: [WRITE] },
+        });
+        expect((await records()).find((r) => r.id === cap.id)?.revokedAt).toBeNull();
+        expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+      });
+
+      it('…while one who holds all of it may revoke a link someone else minted', async () => {
+        const cap = await minted(owner, readerTarget);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, reader)).toEqual({ ok: true, revoked: true });
+        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ revokedBy: reader });
+      });
+
+      it('…and the minter may always revoke its own link', async () => {
+        const cap = await minted(reader, readerTarget);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, reader)).toEqual({ ok: true, revoked: true });
       });
 
       it('…its live twin still exchanges', async () => {
@@ -302,7 +324,7 @@ export function becomeMintContractSuite(
           entity: folder('F'),
           permissions: [READ],
         });
-        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, share.id, owner)).toBe(false);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, share.id, owner)).toEqual({ ok: true, revoked: false });
         expect((await host.exchangeCapability(t1, s1, share.secret, { mode: 'act' }))?.kind).toBe('session');
       });
 
@@ -312,13 +334,13 @@ export function becomeMintContractSuite(
           maxUses: 1,
           expiresAt: new Date(Date.now() + 60_000).toISOString() as Instant,
         });
-        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, platform.id, owner)).toBe(false);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s1, platform.id, owner)).toEqual({ ok: true, revoked: false });
         expect((await host.exchangeCapability(t1, s1, platform.secret, { mode: 'become' }))?.kind).toBe('principal');
       });
 
       it('another scope cannot revoke it', async () => {
         const cap = await minted(owner, readerTarget);
-        expect(await fixture.verbs.revokeBecomeCapability(t1, s2, cap.id, owner)).toBe(false);
+        expect(await fixture.verbs.revokeBecomeCapability(t1, s2, cap.id, owner)).toEqual({ ok: true, revoked: false });
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
       });
     });

@@ -254,6 +254,7 @@ import type {
   VerticalCaller,
   BecomeCapabilityInput,
   BoundedBecomeMint,
+  BoundedBecomeRevoke,
   PrincipalBecomeCapabilityInput,
   CapabilityExchange,
   CapabilityId,
@@ -4866,10 +4867,14 @@ export function defineScopeDO(
      * Revoke a `become` capability a principal minted (#1686) — withdrawing a member invite's
      * link, with `by` recorded as the revoker. False for any other capability.
      */
-    async revokeBecomeCapabilityFor(id: string, by: PrincipalId): Promise<boolean> {
+    async revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke> {
       await this.ensureMigrations();
       return await this.queue.enqueue(() =>
-        revokeBecomeCapabilityAsPrincipal(doSpineSql(this.sql), id, principalId.parse(by), instant.parse(new Date().toISOString())),
+        revokeBecomeCapabilityAsPrincipal(
+          { sql: doSpineSql(this.sql), checker: this.checker, node: { tenantId, scopeId }, now: instant.parse(new Date().toISOString()) },
+          id,
+          principalId.parse(by),
+        ),
       );
     }
 

@@ -110,6 +110,7 @@ import {
   type CheckSubject,
   type BecomeCapabilityInput,
   type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
   type PrincipalBecomeCapabilityInput,
   principalBecomeCapabilityInput,
   type Instant,
@@ -4805,18 +4806,23 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * Revoke a `become` capability a principal minted (#1686) — withdrawing a member invite's
-   * link, recorded with `by` as the revoker. False for anything else: a platform-minted or an
-   * `act` capability is not this verb's. The withdrawal's bound is the caller's, checked before.
+   * link, recorded with `by` as the revoker. `revoked` is false for anything else: a platform-minted
+   * or an `act` capability is not this verb's. The kernel bounds `by` in the same turn: the link's
+   * minter, or someone holding everything its principal holds now.
    */
   async revokeBecomeCapability(
     tenantId: TenantId,
     scopeId: ScopeId,
     capabilityId: CapabilityId,
     by: PrincipalId,
-  ): Promise<boolean> {
+  ): Promise<BoundedBecomeRevoke> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.turn(() =>
-      revokeBecomeCapabilityAsPrincipal(spineSql(rt.db), capabilityId, principalId.parse(by), this.clock()),
+      revokeBecomeCapabilityAsPrincipal(
+        { sql: spineSql(rt.db), checker: this.checker, node: { tenantId, scopeId }, now: this.clock() },
+        capabilityId,
+        principalId.parse(by),
+      ),
     );
   }
 

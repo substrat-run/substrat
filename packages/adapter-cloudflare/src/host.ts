@@ -69,6 +69,7 @@ import {
   capabilityExchange,
   mintedCapability,
   boundedBecomeMint,
+  boundedBecomeRevoke,
   principalBecomeCapabilityInput,
   capabilityGrant,
   principalId,
@@ -183,6 +184,7 @@ import {
   type OnBehalfOf,
   type BecomeCapabilityInput,
   type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
   type PrincipalBecomeCapabilityInput,
   type CapabilityExchange,
   type CapabilityId,
@@ -1322,7 +1324,7 @@ interface ScopeStubRpc {
     input: PrincipalBecomeCapabilityInput,
   ): Promise<BoundedBecomeMint>;
   /** Revoke a `become` a principal minted (#1686); false for any other capability. */
-  revokeBecomeCapabilityFor(id: string, by: PrincipalId): Promise<boolean>;
+  revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke>;
   /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
   listCapabilities(filter?: CapabilityFilter): Promise<CapabilityPage>;
   /** #1834: the system door's state read — where a module's schedules stand on this scope
@@ -4981,15 +4983,17 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * Revoke a `become` capability a principal minted (#1686) — what withdrawing a member invite
-   * does to its link. True when this call revoked it; false when it was already revoked or is
-   * not such a capability (a platform-minted claim link, an `act` share). Who may withdraw is
-   * the caller's bound, checked before.
+   * does to its link. `revoked` is false when it was already revoked or is not such a capability
+   * (a platform-minted claim link, an `act` share). The kernel bounds `by` in the same ScopeDO
+   * task: the link's minter, or someone holding everything its principal holds now.
    */
   async revokeBecomeCapability(
     tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId,
-  ): Promise<boolean> {
+  ): Promise<BoundedBecomeRevoke> {
     await this.scopeRoleGate(tenantId, scopeId, 'revokeBecomeCapability');
-    return this.scopeStub(scopeId).revokeBecomeCapabilityFor(capabilityId, principalId.parse(by));
+    return boundedBecomeRevoke.parse(
+      await this.scopeStub(scopeId).revokeBecomeCapabilityFor(tenantId, scopeId, capabilityId, principalId.parse(by)),
+    );
   }
 
   /** The (tenant, scope) gate the scope-role verbs share — `assignScopeRoleBounded`'s two checks. */

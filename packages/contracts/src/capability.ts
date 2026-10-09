@@ -203,6 +203,17 @@ export const boundedBecomeMint = z.union([z.object({ ok: z.literal(true), minted
 export type BoundedBecomeMint = z.infer<typeof boundedBecomeMint>;
 
 /**
+ * What a host's bounded `become` revoke answers (#1686): whether this call revoked it, or the
+ * coverage that refused the revoker — who must be the link's minter, or hold everything its
+ * principal holds now (whoever could have minted it). A refusal writes nothing.
+ */
+export const boundedBecomeRevoke = z.union([
+  z.object({ ok: z.literal(true), revoked: z.boolean() }),
+  z.object({ ok: z.literal(false), coverage }),
+]);
+export type BoundedBecomeRevoke = z.infer<typeof boundedBecomeRevoke>;
+
+/**
  * What an exchange yields: a session to act as the capability (`act`), or the principal
  * the holder becomes (`become`). A refused exchange — an unknown, expired, revoked or
  * used-up secret — is `null`, one answer for all four, so a probe learns nothing.

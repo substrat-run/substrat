@@ -19,6 +19,8 @@ import {
   entityObjectRef,
   type BecomeCapabilityInput,
   type BecomeMintRefusal,
+  type BoundedBecomeRevoke,
+  type Coverage,
   type CapabilityAuthor,
   type CapabilityBecomeMintedPayload,
   type CapabilityExchange,
@@ -43,7 +45,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { toBase64url } from './base64url.js';
-import { PermissionDenied, type PermissionChecker } from './permission-checker.js';
+import { PermissionDenied, type Holdings, type PermissionChecker } from './permission-checker.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
 
@@ -998,14 +1000,28 @@ export async function becomeMintRefusal(
   }
   const held = await checker.holdings({ kind: 'principal', id: target }, node);
   if (held.permissions.length === 0) return { ok: false, refused: 'target-holds-nothing' };
+  const coverage = await coversHoldings(checker, caller, held, node);
+  return coverage ? { ok: false, coverage } : null;
+}
+
+/**
+ * Does `caller` hold everything in `held` at `node`? Node-level keys compared as `covers`
+ * compares, and each entity-narrowed grant re-asked through `check` on its entity. Null when it
+ * does; otherwise the refusal naming what is lacked.
+ */
+async function coversHoldings(
+  checker: Pick<PermissionChecker, 'check' | 'covers'>,
+  caller: PrincipalId,
+  held: Holdings,
+  node: Node,
+): Promise<Extract<Coverage, { covered: false }> | null> {
   const nodeLevel = await checker.covers({ kind: 'principal', id: caller }, held.permissions, node);
   const missing = new Set<PermissionKey>(nodeLevel.covered ? [] : nodeLevel.missing);
   for (const { permission, entity } of held.narrowed) {
     if (missing.has(permission)) continue;
     if (!(await checker.check({ kind: 'principal', id: caller }, permission, node, entity)).allowed) missing.add(permission);
   }
-  if (missing.size === 0) return null;
-  return { ok: false, coverage: { covered: false, missing: [...missing] as [PermissionKey, ...PermissionKey[]] } };
+  return missing.size === 0 ? null : { covered: false, missing: [...missing] as [PermissionKey, ...PermissionKey[]] };
 }
 
 /**
@@ -1046,18 +1062,29 @@ export async function mintBecomeCapabilityAsPrincipal(
  * Revoke a `become` capability a PRINCIPAL minted (#1686) — what withdrawing a member invite
  * does to its link, recorded with `by` as the revoker. Only such a row: a platform-minted one
  * (an owner claim link) is the platform's to revoke, and an `act` one is `ctx.capabilities`'.
- * True when this call revoked it; false when it was already revoked or is not such a row.
- * Who may withdraw the invite is the caller's bound to check, before this.
+ *
+ * Bounded here, not only by the caller: `by` must be the link's minter, or hold everything its
+ * principal holds now — whoever could have minted it, as a module's revoke of an `act` link is
+ * open to whoever could have minted that. A refusal writes nothing. `revoked` is true when this
+ * call revoked it; false when it was already revoked or is not such a row.
  */
-export function revokeBecomeCapabilityAsPrincipal(
-  sql: ScopedSql,
+export async function revokeBecomeCapabilityAsPrincipal(
+  deps: { sql: ScopedSql; checker: Pick<PermissionChecker, 'check' | 'covers' | 'holdings'>; node: Node; now: Instant },
   rawId: string,
   by: PrincipalId,
-  now: Instant,
-): boolean {
+): Promise<BoundedBecomeRevoke> {
   const id = capabilityIdSchema.parse(rawId);
   const q = capabilityByIdQuery(id);
-  const row = sql.query<CapabilityRow>(q.sql, q.params)[0];
-  if (!row || row.mode !== 'become' || typeof JSON.parse(row.minted_by) !== 'string') return false;
-  return markRevoked(sql, id, by, now);
+  const row = deps.sql.query<CapabilityRow>(q.sql, q.params)[0];
+  const minter: unknown = row ? JSON.parse(row.minted_by) : null;
+  if (!row || row.mode !== 'become' || typeof minter !== 'string') return { ok: true, revoked: false };
+  if (minter !== by) {
+    if (!deps.checker.holdings) {
+      throw substratError('unavailable', 'this permission checker cannot read what a principal holds — refusing to revoke a become capability');
+    }
+    const held = await deps.checker.holdings({ kind: 'principal', id: principalIdSchema.parse(row.principal) }, deps.node);
+    const coverage = await coversHoldings(deps.checker, by, held, deps.node);
+    if (coverage) return { ok: false, coverage };
+  }
+  return { ok: true, revoked: markRevoked(deps.sql, id, by, deps.now) };
 }
