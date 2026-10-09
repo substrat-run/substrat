@@ -468,6 +468,7 @@ import {
   shapeTopUpBatch,
   type ConnectLinkKeyRow,
 } from '@substrat-run/kernel';
+import { scopeScriptCopyOf, type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import type { PlatformRequestSettle } from '@substrat-run/kernel';
 import {
@@ -777,24 +778,22 @@ interface ControlPlaneStub {
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number): Promise<boolean>;
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
-  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
+  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
+  claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
-  settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null): Promise<boolean>;
+  settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
   listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
-    after?: { scriptRef: string; moveId: string } }): Promise<{
-    tenant_id: string; scope_id: string; script_ref: string; move_id: string;
-    state: string; load_stamp: string | null; revision: string | null;
-  }[]>;
+    after?: { scriptRef: string; moveId: string } }): Promise<ScopeScriptCopyRow[]>;
   markScopeProvisioned(scopeId: string, versionId: string | null): Promise<void>;
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
   ): Promise<void>;
-  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number): Promise<boolean>;
+  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
@@ -7196,7 +7195,7 @@ export class CloudflareScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        if (!await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch)) {
+        if (!await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch, opts?.confirmMove)) {
           throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
@@ -7205,8 +7204,8 @@ export class CloudflareScopeHost implements ScopeHost {
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },
-      recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
-        const result = await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId);
+      recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, opts) => {
+        const result = await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, opts?.role ?? null, opts?.loadStamp ?? null);
         if (result === 'invalid') throw substratError('conflict', 'copy script and move must name a real script');
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (result === 'reaping') throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
@@ -7216,22 +7215,14 @@ export class CloudflareScopeHost implements ScopeHost {
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (result === 'pending') throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
-      settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
-        this.cp.settleScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, state, marker?.loadStamp ?? null, marker?.revision ?? null),
+      claimExpiredScopeScriptCopies: async (_actor, input) =>
+        (await this.cp.claimExpiredScopeScriptCopies(input)).map(scopeScriptCopyOf),
+      settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker, opts) =>
+        this.cp.settleScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, state, marker?.loadStamp ?? null, marker?.revision ?? null,
+          opts?.claimedBy),
       touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) =>
         this.cp.touchScopeScriptCopy(tenantId, scopeId, scriptRef, moveId),
-      listScopeScriptCopies: async (_actor, filter) => {
-        const rows = await this.cp.listScopeScriptCopies(filter);
-        return rows.map((r) => ({
-          tenantId: r.tenant_id as TenantId,
-          scopeId: r.scope_id as ScopeId,
-          scriptRef: r.script_ref,
-          moveId: r.move_id,
-          state: r.state as 'pending' | 'eligible' | 'retained' | 'kept' | 'done',
-          loadStamp: r.load_stamp,
-          revision: r.revision,
-        }));
-      },
+      listScopeScriptCopies: async (_actor, filter) => (await this.cp.listScopeScriptCopies(filter)).map(scopeScriptCopyOf),
       /**
        * Record that this scope's provision has now run against `versionId` (#1172).
        *
@@ -7307,7 +7298,7 @@ export class CloudflareScopeHost implements ScopeHost {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
-        if (!await this.cp.setScopeServingRef(scopeId, servingRef, opts?.expectedErasureEpoch)) {
+        if (!await this.cp.setScopeServingRef(scopeId, servingRef, opts?.expectedErasureEpoch, opts?.confirmMove)) {
           throw substratError('precondition_failed', 'scope erasure or reap changed; reload and retry');
         }
         await this.recordAdmin(

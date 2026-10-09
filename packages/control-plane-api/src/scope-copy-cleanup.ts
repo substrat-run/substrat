@@ -1,6 +1,6 @@
 import { errorCodeOf, type PlatformActorId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { CARRIED_AWAY_KEY, isPrimaryScope, type HostAdmin, type ScopeScriptCopy } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, SCOPE_COPY_LEASE_MS, isPrimaryScope, ulid, type HostAdmin, type ScopeScriptCopy } from '@substrat-run/kernel';
 import type { VerticalClient } from './vertical-client.js';
 
 export interface ScopeCopyCleanup {
@@ -93,6 +93,79 @@ export async function retryScopeScriptCopies(input: ScopeCopyCleanup, limit = 10
     }
   }
   return { tried: copies.length, done, failed };
+}
+
+/**
+ * Crash recovery (#1722): settle the pending entries of moves whose lease ran out, a carry, adopt
+ * or rebind that died between recording its copies and confirming its bind. Bounded, idempotent,
+ * and never racing a live move: an entry is claimed only once its lease has run out, and a move
+ * past its lease can no longer confirm a bind, so whichever claims it acts alone.
+ *
+ * An expired entry has no confirmed bind (the confirmation settles every entry of the move in
+ * the bind's own write). So for each one:
+ * - the scope routes to its script: that store is live, and the route reaches it (`done`);
+ * - a destination the scope does not route to: its restore, if it ever landed, is wiped, fenced
+ *   on the load stamp the move recorded before restoring. The wipe loads the tombstone over the
+ *   whole store, so nothing of the scope, an erased subject's rows included, is left in it, and
+ *   its new load stamp refuses a late restore that still expects the store it read (`done`). A
+ *   refused fence, or a deployment with no fenced wipe, keeps the entry (`retained`, still
+ *   reached by reap and erasure): the restore may not have landed yet;
+ * - a source the scope no longer routes to (another move took the route since): `retained`.
+ *
+ * A failure leaves the entry claimed until the sweep's lease runs out, and a later pass takes it
+ * again. Until then erasure and reap answer retry-later, as they do for any pending move.
+ */
+export async function settleExpiredScopeScriptCopies(
+  input: ScopeCopyCleanup, opts: { now?: Date; limit?: number } = {},
+): Promise<{ claimed: number; settled: number; failed: number }> {
+  const now = opts.now ?? new Date();
+  const owner = `sweep:${ulid()}`;
+  const claimed = await input.admin.claimExpiredScopeScriptCopies(input.actor, {
+    now: now.toISOString(),
+    leaseUntil: new Date(now.getTime() + SCOPE_COPY_LEASE_MS).toISOString(),
+    owner,
+    limit: opts.limit ?? 50,
+  });
+  let settled = 0;
+  let failed = 0;
+  for (const copy of claimed) {
+    try {
+      const state = await settledStateOf(input, copy);
+      if (await input.admin.settleScopeScriptCopy(input.actor, copy.tenantId, copy.scopeId, copy.scriptRef, copy.moveId,
+        state, undefined, { claimedBy: owner })) settled++;
+    } catch {
+      failed++;
+    }
+  }
+  return { claimed: claimed.length, settled, failed };
+}
+
+async function settledStateOf(input: ScopeCopyCleanup, copy: ScopeScriptCopy): Promise<'done' | 'retained'> {
+  const scope = await input.admin.getScopeRecord(input.actor, copy.tenantId, copy.scopeId);
+  if (!scope) return 'retained';
+  const route = await routeOf(input, copy.tenantId, copy.scopeId);
+  if (route === copy.scriptRef) return 'done';
+  if (copy.role !== 'destination' || !copy.loadStamp) return 'retained';
+  const holder = await input.resolveRef(copy.scriptRef);
+  if (!holder) throw new Error(`copy script '${copy.scriptRef}' cannot be reached`);
+  const result = await holder.wipeCarriedCopy({
+    scopeId: copy.scopeId,
+    expectLoadStamp: copy.loadStamp,
+    carriedTo: route ?? copy.scriptRef,
+    at: new Date().toISOString(),
+    ...(!isPrimaryScope(scope) ? { markCopy: { kind: scope.kind, forkedFrom: scope.forkedFrom } } : {}),
+  });
+  // Only a wipe that ran ends this copy. A refused fence may mean the restore has not landed
+  // YET: a move that is slow rather than dead can still restore after its lease ran out, and
+  // the entry must then still name the script for reap and erasure.
+  return result !== 'unfenced' && result.wiped ? 'done' : 'retained';
+}
+
+/** The scheduled pass over the ledger: crashed moves first, then the eligible sources' wipes. */
+export async function sweepScopeScriptCopies(input: ScopeCopyCleanup): Promise<{ expired: number; retried: number; failed: number }> {
+  const expired = await settleExpiredScopeScriptCopies(input);
+  const retried = await retryScopeScriptCopies(input);
+  return { expired: expired.claimed, retried: retried.tried, failed: expired.failed + retried.failed };
 }
 
 /** A destructive reap reaches every named script before the directory forgets the scope. */

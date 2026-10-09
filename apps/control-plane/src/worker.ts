@@ -72,7 +72,7 @@ import {
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
-  retryScopeScriptCopies,
+  sweepScopeScriptCopies,
   reapScopeScriptCopies,
   assertNoUnreachableScopeCopies,
   createWfpUploader,
@@ -1666,9 +1666,10 @@ export default {
     const host = hostFor(env);
     const resolveVersion = resolveVerticalVersionFor(env);
     const resolveRef = resolveVerticalRefFor(env);
+    // #1722: before the reaps below, so a preview whose carry crashed is settled, not refused.
     if (resolveRef) {
-      const copies = await retryScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef });
-      if (copies.failed) console.error(`scope-copy cleanup: ${copies.failed} of ${copies.tried} copies need retry`);
+      const copies = await sweepScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef });
+      if (copies.failed) console.error(`scope-copy cleanup: ${copies.failed} of ${copies.expired + copies.retried} copies need retry`);
     }
     // #1416 — the failure digest's "since the previous pass", read BEFORE the sweep:
     // a drained batch this pass lands carries its vertical's own pass time, and read

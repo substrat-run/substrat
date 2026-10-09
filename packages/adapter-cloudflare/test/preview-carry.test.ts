@@ -1,11 +1,12 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage, type TenantId } from '@substrat-run/contracts';
-import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, WRITE_REVISION_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, SCOPE_COPY_LEASE_MS, WRITE_REVISION_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
   createControlPlaneApi,
   retryScopeScriptCopies,
+  settleExpiredScopeScriptCopies,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   stableDeploymentRefFor,
@@ -573,8 +574,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, pendingMove);
       const reached: string[] = [];
       hooks.redact = async (ref) => { reached.push(ref); };
+      // A move in flight answers retry-later before any script is asked to redact.
       expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(412);
-      expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
+      expect(reached).toEqual([]);
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
       expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!,
         pendingMove, 'retained')).toBe(true);
@@ -628,18 +630,13 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }]))
           .toEqual(['private']);
       } finally {
-        hooks.wipe = async (ref, sid) => {
-          if (ref === refOf.get(version.v2) && sid === p.scopeId) throw new Error('unbound cleanup unavailable');
-        };
         held.release();
-        await moving;
       }
+      // The refused erasure touched nothing, so the carry it waited for lands as it would have.
+      expect((await moving).status).toBe(200);
       const outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
       const row = outbox.rows.find((r) => r[outbox.columns.indexOf('id')] === eventId);
       expect(row?.[outbox.columns.indexOf('payload')]).not.toBeNull();
-      expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId, state: 'retained' }))
-        .some((copy) => copy.scriptRef === refOf.get(version.v2))).toBe(true);
-      delete hooks.wipe;
       expect((await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
         method: 'POST', headers: auth,
       })).status).toBe(200);
@@ -669,6 +666,69 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         method: 'DELETE', headers: auth,
       });
       expect(reaped.status).toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+    }, 20_000);
+    // Crash recovery (#1722): a carry killed with its move still pending. The hold is never
+    // released in the first case, which is the crash; erasure and reap answer retry-later until
+    // the sweep settles the move after its lease ran out, and then they land.
+    const sweepAfterLease = () => settleExpiredScopeScriptCopies(
+      { admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) },
+      { now: new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000) },
+    );
+    const ledgerOf = async (sid: ScopeId) =>
+      Object.fromEntries((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+        .map((copy) => [copy.scriptRef === refOf.get(version.v1) ? 'v1' : 'v2', copy.state]));
+    it('a carry that crashed before its restore is swept, and erasure and reap then land', async () => {
+      const p = await fresh('crash-before-restore', 'kept');
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      void push('crash-before-restore', 'v2'); // never resumes
+      await held.reached;
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'pending', v2: 'pending' });
+      const shred = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
+      const reap = '/verticals/carry-vert/previews/crash-before-restore';
+      expect((await api.request(shred, { method: 'POST', headers: auth })).status).toBe(412);
+      expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(412);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+      expect((await sweepAfterLease()).failed).toBe(0);
+      // The source is the route; this move's restore never reached the destination, and a move
+      // that is only slow could still deliver it, so that script stays named.
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'done', v2: 'retained' });
+      expect((await api.request(shred, { method: 'POST', headers: auth })).status).toBe(200);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+      expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
+    }, 20_000);
+    it('a carry that crashed after its restore is swept, and its late bind is refused', async () => {
+      const p = await fresh('crash-before-bind', 'kept');
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      // The source's marker, read again right before the bind: the carry stops there.
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.markerRead = held.hook;
+      const moving = push('crash-before-bind', 'v2');
+      await held.reached;
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual(['kept']);
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'pending', v2: 'pending' });
+      const shred = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
+      const reap = '/verticals/carry-vert/previews/crash-before-bind';
+      expect((await api.request(shred, { method: 'POST', headers: auth })).status).toBe(412);
+      expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(412);
+      expect((await sweepAfterLease()).failed).toBe(0);
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'done', v2: 'done' });
+      expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
+      // The carry was only slow: its bind now lies outside its lease and is refused, so the scope
+      // stays on the source with its data, and the swept destination is not served.
+      held.release();
+      expect((await moving).status).toBe(412);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['kept'] });
+      expect(await ledgerOf(p.scopeId)).toEqual({ v1: 'done', v2: 'done' });
+      expect((await api.request(shred, { method: 'POST', headers: auth })).status).toBe(200);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+      expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(200);
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
     }, 20_000);
     it('erasure retries when a bind moves the route after its script inventory was read', async () => {

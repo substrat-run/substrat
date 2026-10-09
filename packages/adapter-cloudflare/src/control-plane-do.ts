@@ -110,6 +110,11 @@ import {
 import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
 import { blankSqlComments, executableSqlStatements } from '@substrat-run/kernel';
+import {
+  COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
+  type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
+} from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -794,6 +799,11 @@ const DIRECTORY_DDL = `
     load_stamp TEXT,
     revision TEXT,
     last_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    -- 'source' | 'destination'. A pending entry belongs to its move until lease_until; a
+    -- sweep that claims it after that sets lease_owner (kernel scope-copy-ledger.ts).
+    role TEXT,
+    lease_until TEXT,
+    lease_owner TEXT,
     PRIMARY KEY (tenant_id, scope_id, script_ref, move_id)
   );
   CREATE INDEX IF NOT EXISTS scope_script_copies_state ON scope_script_copies (state, scope_id);
@@ -3149,12 +3159,9 @@ export class ControlPlaneDO extends DurableObject {
   /** Point a scope's routing at the serving script its data now lives in (#286). False when a
    *  conditional move lost its compare-and-set: the host throws, since a refusal thrown here
    *  would cross the RPC boundary without its code. */
-  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number): boolean {
-    const changed = expectedErasureEpoch === undefined
-      ? this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?', servingRef, scopeId)
-      : this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ? AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL',
-          servingRef, scopeId, expectedErasureEpoch);
-    return changed.rowsWritten > 0;
+  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number,
+    confirmMove?: ScopeCopyMoveConfirmation): boolean {
+    return this.moveScopeRow('serving_ref = ?', [servingRef], scopeId, { expectedErasureEpoch, confirmMove });
   }
 
   /** Move a fork's GC deadline forward, or pin it (`null`) — preview-and-snapshots.md §9. */
@@ -3189,18 +3196,41 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** False when a conditional bind lost its compare-and-set (the host throws, as above). */
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number): boolean {
-    const update = expectedVersionId === undefined
-      ? expectedErasureEpoch === undefined
-        ? this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?', versionId, verticalSlug, scopeId)
-        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL',
-            versionId, verticalSlug, scopeId, expectedErasureEpoch)
-      : expectedErasureEpoch === undefined
-        ? this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ?',
-            versionId, verticalSlug, scopeId, expectedVersionId)
-        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ? AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL',
-            versionId, verticalSlug, scopeId, expectedVersionId, expectedErasureEpoch);
-    return update.rowsWritten > 0;
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null,
+    expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): boolean {
+    return this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, verticalSlug], scopeId,
+      { expectedVersionId, expectedErasureEpoch, confirmMove });
+  }
+
+  /**
+   * Move a scope's binding or route (#1722), conditionally: on the binding the caller read, on
+   * the erasure epoch its carry read (a NULL epoch, from before the column, is 0) with no reap
+   * claimed, and on its copy move still owning a live lease. The move's confirmation commits in
+   * the same transaction as the row. False when any condition failed and nothing was written.
+   */
+  private moveScopeRow(
+    set: string, setArgs: (string | null)[], scopeId: string,
+    cond: { expectedVersionId?: string | null; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation },
+  ): boolean {
+    const now = new Date().toISOString();
+    return this.ctx.storage.transactionSync(() => {
+      const moved = this.sql.exec(
+        `UPDATE scopes SET ${set} WHERE scope_id = ?
+         ${cond.expectedVersionId === undefined ? '' : 'AND vertical_version_id IS ?'}
+         ${cond.expectedErasureEpoch === undefined ? '' : 'AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL'}
+         ${cond.confirmMove === undefined ? '' : COPY_MOVE_LIVE_PREDICATE}`,
+        ...setArgs, scopeId,
+        ...(cond.expectedVersionId === undefined ? [] : [cond.expectedVersionId]),
+        ...(cond.expectedErasureEpoch === undefined ? [] : [cond.expectedErasureEpoch]),
+        ...(cond.confirmMove === undefined ? [] : copyMoveLiveParams(cond.confirmMove, now)),
+      );
+      if (moved.rowsWritten === 0) return false;
+      if (cond.confirmMove) {
+        const { tenant_id } = this.sql.exec('SELECT tenant_id FROM scopes WHERE scope_id = ?', scopeId).one() as { tenant_id: string };
+        this.sql.exec(COPY_MOVE_CONFIRM_SQL, ...copyMoveConfirmParams(cond.confirmMove, tenant_id, scopeId, now));
+      }
+      return true;
+    });
   }
 
   scopeErasureEpoch(tenantId: string, scopeId: string): number {
@@ -3226,14 +3256,15 @@ export class ControlPlaneDO extends DurableObject {
     ).rowsWritten > 0;
   }
 
-  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): 'recorded' | 'reaping' | 'missing' | 'invalid' {
+  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string,
+    role: ScopeCopyRole | null = null, loadStamp: string | null = null): 'recorded' | 'reaping' | 'missing' | 'invalid' {
     if (!scriptRef || !moveId) return 'invalid';
     const written = this.sql.exec(
-      `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
-       SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
+      `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state, role, load_stamp, lease_until)
+       SELECT tenant_id, scope_id, ?, ?, 'pending', ?, ?, ? FROM scopes
        WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
        ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
-      scriptRef, moveId, tenantId, scopeId,
+      scriptRef, moveId, role, loadStamp, new Date(Date.now() + SCOPE_COPY_LEASE_MS).toISOString(), tenantId, scopeId,
     );
     if (written.rowsWritten > 0) return 'recorded';
     const scope = this.sql.exec('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
@@ -3241,6 +3272,25 @@ export class ControlPlaneDO extends DurableObject {
     if (!scope) return 'missing';
     if (scope.reap_claimed_at !== null) return 'reaping';
     return 'recorded'; // idempotent retry of this move
+  }
+
+  claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): ScopeScriptCopyRow[] {
+    const limit = assertRowLimit('limit', input.limit);
+    return this.ctx.storage.transactionSync(() => {
+      const due = this.sql.exec(COPY_EXPIRED_SQL, input.now, limit).toArray() as
+        { tenant_id: string; scope_id: string; script_ref: string; move_id: string }[];
+      const claimed: ScopeScriptCopyRow[] = [];
+      for (const r of due) {
+        if (this.sql.exec(COPY_CLAIM_SQL, input.owner, input.leaseUntil,
+          r.tenant_id, r.scope_id, r.script_ref, r.move_id, input.now).rowsWritten === 0) continue;
+        claimed.push(this.sql.exec(
+          `SELECT ${SCOPE_SCRIPT_COPY_COLUMNS} FROM scope_script_copies
+           WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?`,
+          r.tenant_id, r.scope_id, r.script_ref, r.move_id,
+        ).one() as unknown as ScopeScriptCopyRow);
+      }
+      return claimed;
+    });
   }
 
   beginScopeScriptReap(tenantId: string, scopeId: string): 'claimed' | 'pending' | 'missing' {
@@ -3261,14 +3311,16 @@ export class ControlPlaneDO extends DurableObject {
 
   settleScopeScriptCopy(
     tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string,
-    loadStamp: string | null, revision: string | null,
+    loadStamp: string | null, revision: string | null, claimedBy?: string,
   ): boolean {
     return this.sql.exec(
       `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
          last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
        WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
-         AND (state <> 'done' OR ? = 'done')`,
+         AND (state <> 'done' OR ? = 'done')
+         ${claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
       state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId, state,
+      ...(claimedBy === undefined ? [] : [claimedBy]),
     ).rowsWritten > 0;
   }
 
@@ -3281,10 +3333,7 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
-    after?: { scriptRef: string; moveId: string } }): {
-    tenant_id: string; scope_id: string; script_ref: string; move_id: string;
-    state: string; load_stamp: string | null; revision: string | null;
-  }[] {
+    after?: { scriptRef: string; moveId: string } }): ScopeScriptCopyRow[] {
     const where: string[] = [];
     const args: (string | number)[] = [];
     if (filter.tenantId) { where.push('tenant_id = ?'); args.push(filter.tenantId); }
@@ -3298,9 +3347,9 @@ export class ControlPlaneDO extends DurableObject {
     const limit = assertRowLimit('limit', filter.limit ?? 100);
     const order = filter.scopeId ? 'script_ref, move_id' : 'last_attempt_at, tenant_id, scope_id, script_ref';
     return this.sql.exec(
-      `SELECT * FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      `SELECT ${SCOPE_SCRIPT_COPY_COLUMNS} FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY ${order} LIMIT ?`, ...args, limit,
-    ).toArray() as never;
+    ).toArray() as unknown as ScopeScriptCopyRow[];
   }
 
   /**

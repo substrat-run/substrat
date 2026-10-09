@@ -704,6 +704,11 @@ import {
   type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
+import {
+  COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
+  type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
+} from '@substrat-run/kernel';
 import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -2060,6 +2065,11 @@ export class SqliteScopeHost implements ScopeHost {
         load_stamp TEXT,
         revision TEXT,
         last_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        -- 'source' | 'destination'. A pending entry belongs to its move until lease_until; a
+        -- sweep that claims it after that sets lease_owner (kernel scope-copy-ledger.ts).
+        role TEXT,
+        lease_until TEXT,
+        lease_owner TEXT,
         PRIMARY KEY (tenant_id, scope_id, script_ref, move_id)
       );
       CREATE INDEX IF NOT EXISTS scope_script_copies_state ON scope_script_copies (state, scope_id);
@@ -8865,14 +8875,7 @@ export class SqliteScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        const update = this.directory.prepare(
-          `UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?
-           ${opts?.expectedVersionId === undefined ? '' : 'AND vertical_version_id IS ?'}
-           ${opts?.expectedErasureEpoch === undefined ? '' : 'AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL'}`,
-        ).run(versionId, v.verticalSlug, scopeId,
-          ...(opts?.expectedVersionId === undefined ? [] : [opts.expectedVersionId]),
-          ...(opts?.expectedErasureEpoch === undefined ? [] : [opts.expectedErasureEpoch]));
-        if (update.changes === 0) {
+        if (!this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, v.verticalSlug], tenantId, scopeId, opts)) {
           throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
         this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
@@ -8883,19 +8886,37 @@ export class SqliteScopeHost implements ScopeHost {
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },
-      recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
+      recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, opts) => {
         if (!scriptRef || !moveId) throw substratError('conflict', 'copy script and move must name a real script');
         const result = this.directory.prepare(
-          `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
-           SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
+          `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state, role, load_stamp, lease_until)
+           SELECT tenant_id, scope_id, ?, ?, 'pending', ?, ?, ? FROM scopes
            WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
            ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
-        ).run(scriptRef, moveId, tenantId, scopeId);
+        ).run(scriptRef, moveId, opts?.role ?? null, opts?.loadStamp ?? null,
+          new Date(Date.now() + SCOPE_COPY_LEASE_MS).toISOString(), tenantId, scopeId);
         if (result.changes > 0) return;
         const scope = this.directory.prepare('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?')
           .get(tenantId, scopeId) as { reap_claimed_at: string | null } | undefined;
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (scope.reap_claimed_at !== null) throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
+      },
+      claimExpiredScopeScriptCopies: async (_actor, input) => {
+        const limit = assertRowLimit('limit', input.limit);
+        return this.directory.transaction(() => {
+          const due = this.directory.prepare(COPY_EXPIRED_SQL).all(input.now, limit) as
+            { tenant_id: string; scope_id: string; script_ref: string; move_id: string }[];
+          const claimed: ScopeScriptCopyRow[] = [];
+          for (const r of due) {
+            if (this.directory.prepare(COPY_CLAIM_SQL).run(input.owner, input.leaseUntil,
+              r.tenant_id, r.scope_id, r.script_ref, r.move_id, input.now).changes === 0) continue;
+            claimed.push(this.directory.prepare(
+              `SELECT ${SCOPE_SCRIPT_COPY_COLUMNS} FROM scope_script_copies
+               WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?`,
+            ).get(r.tenant_id, r.scope_id, r.script_ref, r.move_id) as ScopeScriptCopyRow);
+          }
+          return claimed.map(scopeScriptCopyOf);
+        })();
       },
       beginScopeScriptReap: async (_actor, tenantId, scopeId) => {
         const result = this.directory.prepare(
@@ -8912,13 +8933,15 @@ export class SqliteScopeHost implements ScopeHost {
         if (scope.reap_claimed_at !== null) return; // a reaper resumes its earlier claim
         throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
-      settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
+      settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker, opts) =>
         this.directory.prepare(
           `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
              last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
-             AND (state <> 'done' OR ? = 'done')`,
-        ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state).changes > 0,
+             AND (state <> 'done' OR ? = 'done')
+             ${opts?.claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
+        ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state,
+          ...(opts?.claimedBy === undefined ? [] : [opts.claimedBy])).changes > 0,
       touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
         this.directory.prepare(
           `UPDATE scope_script_copies SET last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -8939,14 +8962,10 @@ export class SqliteScopeHost implements ScopeHost {
         const limit = assertRowLimit('limit', filter.limit ?? 100);
         const order = filter.scopeId ? 'script_ref, move_id' : 'last_attempt_at, tenant_id, scope_id, script_ref';
         const rows = this.directory.prepare(
-          `SELECT * FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+          `SELECT ${SCOPE_SCRIPT_COPY_COLUMNS} FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
            ORDER BY ${order} LIMIT ?`,
-        ).all(...args, limit) as {
-          tenant_id: string; scope_id: string; script_ref: string; move_id: string;
-          state: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; load_stamp: string | null; revision: string | null;
-        }[];
-        return rows.map((r) => ({ tenantId: r.tenant_id as TenantId, scopeId: r.scope_id as ScopeId,
-          scriptRef: r.script_ref, moveId: r.move_id, state: r.state, loadStamp: r.load_stamp, revision: r.revision }));
+        ).all(...args, limit) as ScopeScriptCopyRow[];
+        return rows.map(scopeScriptCopyOf);
       },
       /**
        * Record that this scope's provision has now run against `versionId` (#1172).
@@ -9029,10 +9048,9 @@ export class SqliteScopeHost implements ScopeHost {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
-        const moved = this.directory
-          .prepare(`UPDATE scopes SET serving_ref = ? WHERE scope_id = ? ${opts?.expectedErasureEpoch === undefined ? '' : 'AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL'}`)
-          .run(servingRef, scopeId, ...(opts?.expectedErasureEpoch === undefined ? [] : [opts.expectedErasureEpoch]));
-        if (moved.changes === 0) throw substratError('precondition_failed', 'scope erasure or reap changed; reload and retry');
+        if (!this.moveScopeRow('serving_ref = ?', [servingRef], tenantId, scopeId, opts)) {
+          throw substratError('precondition_failed', 'scope erasure or reap changed; reload and retry');
+        }
         this.recordAdmin(
           actor,
           'setScopeServingRef',
@@ -11662,6 +11680,35 @@ export class SqliteScopeHost implements ScopeHost {
    * directory. `PRAGMA table_info` is available in the pure adapter (the DO adapter
    * has to attempt-and-tolerate instead — see its `ensureDirectoryColumns`).
    */
+  /**
+   * Move a scope's binding or route (#1722), conditionally: on the binding the caller read, on
+   * the erasure epoch its carry read (a NULL epoch, from before the column, is 0) with no reap
+   * claimed, and on its copy move still owning a live lease. The move's confirmation commits in
+   * the same transaction as the row. False when any condition failed and nothing was written.
+   */
+  private moveScopeRow(
+    set: string, setArgs: (string | null)[], tenantId: TenantId, scopeId: ScopeId,
+    cond?: { expectedVersionId?: string | null; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation },
+  ): boolean {
+    const now = new Date().toISOString();
+    return this.directory.transaction(() => {
+      const moved = this.directory.prepare(
+        `UPDATE scopes SET ${set} WHERE scope_id = ?
+         ${cond?.expectedVersionId === undefined ? '' : 'AND vertical_version_id IS ?'}
+         ${cond?.expectedErasureEpoch === undefined ? '' : 'AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL'}
+         ${cond?.confirmMove === undefined ? '' : COPY_MOVE_LIVE_PREDICATE}`,
+      ).run(...setArgs, scopeId,
+        ...(cond?.expectedVersionId === undefined ? [] : [cond.expectedVersionId]),
+        ...(cond?.expectedErasureEpoch === undefined ? [] : [cond.expectedErasureEpoch]),
+        ...(cond?.confirmMove === undefined ? [] : copyMoveLiveParams(cond.confirmMove, now)));
+      if (moved.changes === 0) return false;
+      if (cond?.confirmMove) {
+        this.directory.prepare(COPY_MOVE_CONFIRM_SQL).run(...copyMoveConfirmParams(cond.confirmMove, tenantId, scopeId, now));
+      }
+      return true;
+    })();
+  }
+
   private ensureColumn(db: Database.Database, table: string, column: string, ddl: string): boolean {
     // Without case, as SQLite resolves a column name: a restore may have added this column
     // already, untyped and spelled as a newer kernel's dump spelled it (#1883).

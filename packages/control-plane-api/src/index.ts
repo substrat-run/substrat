@@ -44,7 +44,10 @@ export type {
 // (`./browser`): a bundler resolving the root entry would pull the whole server.
 export * from './browser.js';
 export { VerticalClient, AUDITED_CALL_DEADLINE_MS } from './vertical-client.js';
-export { assertNoUnreachableScopeCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies } from './scope-copy-cleanup.js';
+export {
+  assertNoUnreachableScopeCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
+  settleExpiredScopeScriptCopies, sweepScopeScriptCopies,
+} from './scope-copy-cleanup.js';
 export { versionReachedAt } from './scope-deployment.js';
 // #1705 PR 2: the cross-vertical phase's reach for a control plane whose scopes live elsewhere.
 export { hostedCrossVerticalReach } from './cross-vertical.js';

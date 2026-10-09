@@ -42,6 +42,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
+  SCOPE_COPY_LEASE_MS,
   isSearchIndexTable,
   platformIntentFailureMessage,
   REDACTED_DELIVERY_NOTE,
@@ -5788,6 +5789,76 @@ export function scopeHostContractSuite(
           .every((copy) => copy.scriptRef === ref && [first, next].includes(copy.moveId))).toBe(true);
       }
       expect(beforeClaim.map((copy) => copy.moveId).sort()).toEqual([first, next].sort());
+    });
+
+    it('a pending copy entry is claimed only once its lease ran out, and only once (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const move = ulid();
+      const [from, to] = [`version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`];
+      await host.admin.recordScopeScriptCopy(staff, t1, s, from, move, { role: 'source' });
+      await host.admin.recordScopeScriptCopy(staff, t1, s, to, move, { role: 'destination', loadStamp: 'restore-stamp' });
+      const mine = <T extends { scopeId: string }>(copies: T[]) => copies.filter((copy) => copy.scopeId === s);
+      const listed = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      expect(listed.map(({ scriptRef, role, loadStamp, state }) => ({ scriptRef, role, loadStamp, state }))
+        .sort((a, b) => a.scriptRef.localeCompare(b.scriptRef))).toEqual([
+        { scriptRef: from, role: 'source', loadStamp: null, state: 'pending' },
+        { scriptRef: to, role: 'destination', loadStamp: 'restore-stamp', state: 'pending' },
+      ].sort((a, b) => a.scriptRef.localeCompare(b.scriptRef)));
+      expect(listed.every((copy) => copy.leaseUntil !== null && copy.leaseUntil > new Date().toISOString())).toBe(true);
+      // A live lease: the move is still in flight, and no sweep may settle it.
+      const now = new Date();
+      expect(mine(await host.admin.claimExpiredScopeScriptCopies(staff,
+        { now: now.toISOString(), leaseUntil: new Date(now.getTime() + 1000).toISOString(), owner: 'sweep:a', limit: 1000 }))).toEqual([]);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, to, move, 'done', undefined, { claimedBy: 'sweep:a' })).toBe(false);
+      // Past the lease: one sweep claims both, and a second sweep inside the first one's lease does not.
+      const later = new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000);
+      const leaseUntil = new Date(later.getTime() + SCOPE_COPY_LEASE_MS).toISOString();
+      const claimed = mine(await host.admin.claimExpiredScopeScriptCopies(staff,
+        { now: later.toISOString(), leaseUntil, owner: 'sweep:a', limit: 1000 }));
+      expect(claimed.map((copy) => copy.scriptRef).sort()).toEqual([from, to].sort());
+      expect(claimed.every((copy) => copy.leaseUntil === leaseUntil)).toBe(true);
+      expect(mine(await host.admin.claimExpiredScopeScriptCopies(staff,
+        { now: later.toISOString(), leaseUntil, owner: 'sweep:b', limit: 1000 }))).toEqual([]);
+      // Settled only by its claimant.
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, to, move, 'done', undefined, { claimedBy: 'sweep:b' })).toBe(false);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, to, move, 'done', undefined, { claimedBy: 'sweep:a' })).toBe(true);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, from, move, 'retained', undefined, { claimedBy: 'sweep:a' })).toBe(true);
+      // A claimed move can no longer confirm a bind: the sweep and the move never both act.
+      const route = `version-${ulid().toLowerCase()}`;
+      await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, route,
+        { expectedErasureEpoch: 0, confirmMove: { moveId: move, source: 'eligible' } }), 'precondition_failed');
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.servingRef ?? null).toBeNull();
+    });
+
+    it('a copy move confirms with the bind that routes onto it, in the same write (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [from, to] = [`version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`];
+      const move = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, from, move, { role: 'source' });
+      await host.admin.recordScopeScriptCopy(staff, t1, s, to, move, { role: 'destination', loadStamp: 'restore-stamp' });
+      // A confirmation naming another move refuses, and writes nothing.
+      await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, to,
+        { expectedErasureEpoch: 0, confirmMove: { moveId: ulid(), source: 'eligible' } }), 'precondition_failed');
+      await host.admin.setScopeServingRef(staff, t1, s, to, {
+        expectedErasureEpoch: 0,
+        confirmMove: { moveId: move, source: 'eligible', sourceMarker: { loadStamp: 'export-stamp', revision: '7' } },
+      });
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.servingRef).toBe(to);
+      const settled = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      expect(settled.map(({ scriptRef, state, loadStamp, revision }) => ({ scriptRef, state, loadStamp, revision }))
+        .sort((a, b) => a.scriptRef.localeCompare(b.scriptRef))).toEqual([
+        { scriptRef: from, state: 'eligible', loadStamp: 'export-stamp', revision: '7' },
+        { scriptRef: to, state: 'done', loadStamp: 'restore-stamp', revision: null },
+      ].sort((a, b) => a.scriptRef.localeCompare(b.scriptRef)));
+      // Nothing of a confirmed move is left for a crash-recovery sweep.
+      const later = new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000);
+      expect((await host.admin.claimExpiredScopeScriptCopies(staff, { now: later.toISOString(),
+        leaseUntil: later.toISOString(), owner: 'sweep:c', limit: 1000 })).filter((copy) => copy.scopeId === s)).toEqual([]);
+      // And it confirms once: the same confirmation again refuses.
+      await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, from,
+        { expectedErasureEpoch: 0, confirmMove: { moveId: move, source: 'eligible' } }), 'precondition_failed');
     });
 
     it('a reap claim refuses a conditional bind until the scope row is deleted (#1722)', async () => {

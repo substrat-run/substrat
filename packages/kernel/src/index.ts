@@ -44,6 +44,8 @@ export type {
   OpsFailureInput,
   KeptCopyResolution,
   ScopeScriptCopy,
+  ScopeCopyRole,
+  ScopeCopyMoveConfirmation,
   IssueFilter,
   TelemetryPruneReport,
   SweepRunFilter,
@@ -113,6 +115,18 @@ export type {
   OutboundMailAttachment,
 } from './mail-sender.js';
 export {
+  COPY_CLAIM_SQL,
+  COPY_EXPIRED_SQL,
+  COPY_MOVE_CONFIRM_SQL,
+  COPY_MOVE_LIVE_PREDICATE,
+  SCOPE_SCRIPT_COPY_COLUMNS,
+  copyMoveConfirmParams,
+  copyMoveLiveParams,
+  scopeScriptCopyOf,
+  type ScopeScriptCopyRow,
+} from './scope-copy-ledger.js';
+export {
+  SCOPE_COPY_LEASE_MS,
   assertRedrainWindow,
   attachmentBlobKey,
   attachmentSha256,

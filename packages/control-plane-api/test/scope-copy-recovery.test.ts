@@ -1,0 +1,248 @@
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import {
+  CARRIED_AWAY_KEY, SCOPE_COPY_LEASE_MS, carriedAwayDump, dumpMetaValue, ulid, webCryptoSecretBox, type LoadMarker,
+} from '@substrat-run/kernel';
+import { platformActorId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
+import {
+  ControlPlaneError,
+  createControlPlaneApi,
+  settleExpiredScopeScriptCopies,
+  DEV_ACTOR_HEADER,
+  UNSAFE_devPlatformActorAuth,
+  type VerticalClient,
+} from '../src/index.js';
+
+/**
+ * Crash recovery for the copy ledger (#1722), on the pure adapter. A carry records both ends of
+ * its move, leased to it, before it restores anything; this suite kills one at the two points
+ * that leave a pending move behind (after recording, before the restore; after the restore,
+ * before the bind) by never letting it continue. Erasure and reap must then answer retry-later,
+ * not finalize over a copy nobody would reach again; the sweep, once the lease has run out,
+ * settles the move; and both then succeed. The workerd twin is in adapter-cloudflare
+ * `preview-carry.test.ts`.
+ *
+ * Each fake deployment fences the way a real one does: a restore that expects a marker is
+ * refused when the store moved, and a wipe runs only on the load stamp it expects.
+ */
+describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const t = tenantId.parse(ulid());
+  const slug = 'crash-vert';
+
+  type Store = { tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null };
+  type Hook = (ref: string, sid: string) => Promise<void>;
+  const hooks: { restore?: Hook; marker?: Hook } = {};
+  const scripts = new Map<string, Map<string, Store>>();
+  const redacted: string[] = [];
+  const storesOf = (ref: string) => {
+    if (!scripts.has(ref)) scripts.set(ref, new Map());
+    return scripts.get(ref)!;
+  };
+  const storeOf = (ref: string, sid: string): Store =>
+    storesOf(ref).get(sid) ?? { tables: [], loadStamp: null, revision: null };
+  const deployment = (ref: string): VerticalClient =>
+    ({
+      exportScope: async (sid: string) => storeOf(ref, sid).tables,
+      exportScopeStamped: async (sid: string) => storeOf(ref, sid),
+      loadMarker: async (sid: string): Promise<LoadMarker> => {
+        await hooks.marker?.(ref, sid);
+        const { loadStamp, revision } = storeOf(ref, sid);
+        return { loadStamp, revision };
+      },
+      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[], opts?: { loadStamp?: string; expect?: LoadMarker }) => {
+        await hooks.restore?.(ref, sid);
+        const now = storeOf(ref, sid);
+        if (opts?.expect && (opts.expect.loadStamp !== now.loadStamp || opts.expect.revision !== now.revision)) {
+          throw new ControlPlaneError(412, `store ${sid} in ${ref} moved since the carry read it`);
+        }
+        storesOf(ref).set(sid, { tables, loadStamp: opts?.loadStamp ?? ulid(), revision: null });
+        return { tables: tables.length };
+      },
+      wipeCarriedCopy: async (input: { scopeId: string; expectLoadStamp: string | null; expectRevision?: string | null; carriedTo: string; at: string }) => {
+        const now = storeOf(ref, input.scopeId);
+        if (now.loadStamp !== input.expectLoadStamp ||
+            (input.expectRevision !== undefined && now.revision !== input.expectRevision)) return { wiped: false };
+        storesOf(ref).set(input.scopeId, { tables: carriedAwayDump({ to: input.carriedTo, at: input.at }), loadStamp: ulid(), revision: null });
+        return { wiped: true };
+      },
+      readScopeTable: async (sid: string) => {
+        const meta = storeOf(ref, sid).tables.find((tb) => tb.name === '_substrat_meta');
+        return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
+      },
+      keptCopy: async () => null,
+      deleteScope: async (input: { scopeId: string }) => {
+        storesOf(ref).delete(input.scopeId);
+      },
+      redactSubject: async (sid: string) => {
+        redacted.push(`${ref} ${sid}`);
+        return { events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+          vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } };
+      },
+    }) as unknown as VerticalClient;
+
+  const refOf = new Map<string, string>();
+  const versions: Record<'v1' | 'v2', string> = { v1: '', v2: '' };
+  const notes = (...ids: string[]): ScopeDumpTable[] => [
+    { name: 'notes', ddl: 'CREATE TABLE notes(id TEXT)', columns: ['id'], rows: ids.map((id) => [id]) },
+  ];
+
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+  const cleanup = () => ({ admin: host.admin, actor: staff, resolveRef: async (ref: string) => deployment(ref) });
+  const afterLease = () => new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000);
+
+  const push = (tag: string, v: 'v1' | 'v2', extra: object = {}) =>
+    app.request(`/verticals/${slug}/previews`, {
+      method: 'POST', headers: asStaff, body: JSON.stringify({ tag, versionId: versions[v], empty: true, ...extra }),
+    });
+  const fresh = async (tag: string) => {
+    const res = await push(tag, 'v1', { ttlHours: null });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { scopeId: sid } = (await res.json()) as { scopeId: ScopeId };
+    storesOf(refOf.get(versions.v1)!).set(sid, { tables: notes('kept'), loadStamp: ulid(), revision: '1' });
+    return sid;
+  };
+  const shred = (sid: ScopeId, subject: string) =>
+    app.request(`/tenants/${t}/scopes/${sid}/subjects/${subject}/shred`, { method: 'POST', headers: asStaff });
+  const reap = (tag: string) => app.request(`/verticals/${slug}/previews/${tag}`, { method: 'DELETE', headers: asStaff });
+  const ledgerOf = async (sid: ScopeId) =>
+    Object.fromEntries((await host.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+      .map((copy) => [copy.scriptRef === refOf.get(versions.v1) ? 'v1' : 'v2', copy.state]));
+  /** A carry that stops where `hook` matches and never continues: the crash. */
+  const crashAt = (which: 'restore' | 'marker', ref: string, sid: ScopeId) => {
+    let reached!: () => void;
+    const at = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    hooks[which] = async (r, s) => {
+      if (r !== ref || s !== sid) return;
+      reached();
+      await held;
+    };
+    return { at, release };
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-copy-recovery-'));
+    host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(3)) });
+    app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      platformBaseDomains: ['global.substrat.run'],
+      provisionRetryDelaysMs: [1],
+      resolveVerticalVersion: async (s: string, versionId: string) => {
+        const ref = s === slug ? refOf.get(versionId) : undefined;
+        return ref ? deployment(ref) : undefined;
+      },
+      resolveVerticalRef: async (ref: string) => deployment(ref),
+    });
+    await host.admin.createTenant(staff, { id: t, slug: 'crash-co', name: 'Crash Co' });
+    await host.admin.registerVertical(staff, { slug, name: 'Crash Vert', source: 'cli', ownerTenant: t });
+    for (const v of ['v1', 'v2'] as const) {
+      const id = ulid();
+      const ref = `${slug}-${id.toLowerCase()}`;
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version: v === 'v1' ? '1.0.0' : '1.0.1', manifestDigest: `m-${v}`,
+        permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
+      });
+      refOf.set(id, ref);
+      versions[v] = id;
+    }
+  });
+
+  afterEach(() => {
+    delete hooks.restore;
+    delete hooks.marker;
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('crash after the move is recorded and before the restore: retry-later, swept, then erasure and reap land', async () => {
+    const sid = await fresh('crash-before-restore');
+    const subject = ulid();
+    const [sealed] = await host.admin.sealSubjectPayloads(staff, t, sid, [{ subjectId: subject, plaintext: 'private' }]);
+    const crash = crashAt('restore', refOf.get(versions.v2)!, sid);
+    void push('crash-before-restore', 'v2'); // never resumes
+    await crash.at;
+    expect(await ledgerOf(sid)).toEqual({ v1: 'pending', v2: 'pending' });
+
+    expect((await shred(sid, subject)).status).toBe(412);
+    expect(await host.admin.openSubjectPayloads(staff, t, sid, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+    expect((await reap('crash-before-restore')).status).toBe(412);
+    expect(await host.admin.getScopeRecord(staff, t, sid)).toBeDefined();
+
+    // Inside the lease the move still owns its entries: the sweep takes nothing.
+    expect(await settleExpiredScopeScriptCopies(cleanup())).toEqual({ claimed: 0, settled: 0, failed: 0 });
+    expect(await ledgerOf(sid)).toEqual({ v1: 'pending', v2: 'pending' });
+
+    const swept = await settleExpiredScopeScriptCopies(cleanup(), { now: afterLease() });
+    expect(swept.failed).toBe(0);
+    // The source is still the route; the destination never received this move's restore, and a
+    // move that is slow rather than dead could still deliver it, so its entry stays reachable.
+    expect(await ledgerOf(sid)).toEqual({ v1: 'done', v2: 'retained' });
+    expect(await settleExpiredScopeScriptCopies(cleanup(), { now: afterLease() })).toEqual({ claimed: 0, settled: 0, failed: 0 });
+
+    redacted.length = 0;
+    expect((await shred(sid, subject)).status).toBe(200);
+    expect(redacted.sort()).toEqual([`${refOf.get(versions.v1)} ${sid}`, `${refOf.get(versions.v2)} ${sid}`].sort());
+    expect(await host.admin.openSubjectPayloads(staff, t, sid, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+    expect((await reap('crash-before-restore')).status).toBe(200);
+    expect(await host.admin.getScopeRecord(staff, t, sid)).toBeUndefined();
+    expect(storesOf(refOf.get(versions.v1)!).has(sid)).toBe(false);
+    expect(storesOf(refOf.get(versions.v2)!).has(sid)).toBe(false);
+  });
+
+  it('crash after the restore and before the bind: the sweep wipes the unbound copy, and the late bind loses', async () => {
+    const sid = await fresh('crash-before-bind');
+    const subject = ulid();
+    const [sealed] = await host.admin.sealSubjectPayloads(staff, t, sid, [{ subjectId: subject, plaintext: 'private' }]);
+    // The source's marker is read again right before the bind: the carry stops there.
+    const crash = crashAt('marker', refOf.get(versions.v1)!, sid);
+    const moving = push('crash-before-bind', 'v2');
+    await crash.at;
+    expect(storeOf(refOf.get(versions.v2)!, sid).tables).toEqual(notes('kept'));
+    expect(await ledgerOf(sid)).toEqual({ v1: 'pending', v2: 'pending' });
+
+    expect((await shred(sid, subject)).status).toBe(412);
+    expect((await reap('crash-before-bind')).status).toBe(412);
+
+    const swept = await settleExpiredScopeScriptCopies(cleanup(), { now: afterLease() });
+    expect(swept.failed).toBe(0);
+    expect(await ledgerOf(sid)).toEqual({ v1: 'done', v2: 'done' });
+    expect(dumpMetaValue(storeOf(refOf.get(versions.v2)!, sid).tables, CARRIED_AWAY_KEY)).not.toBeNull();
+
+    // The carry was only slow. It now reaches its bind, which its lease no longer covers: the
+    // bind is refused, the route stays on the source, and the data is where it always was.
+    crash.release();
+    expect((await moving).status).toBe(412);
+    const scope = (await host.admin.getScopeRecord(staff, t, sid))!;
+    expect(scope.verticalVersionId).toBe(versions.v1);
+    expect(storeOf(refOf.get(versions.v1)!, sid).tables).toEqual(notes('kept'));
+    expect(await ledgerOf(sid)).toEqual({ v1: 'done', v2: 'done' });
+
+    expect((await shred(sid, subject)).status).toBe(200);
+    expect(await host.admin.openSubjectPayloads(staff, t, sid, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+    expect((await reap('crash-before-bind')).status).toBe(200);
+    expect(await host.admin.getScopeRecord(staff, t, sid)).toBeUndefined();
+  });
+
+  it('a carry inside its lease confirms with its bind and leaves the sweep nothing', async () => {
+    const sid = await fresh('live-carry');
+    const pushed = await push('live-carry', 'v2');
+    expect(pushed.status, await pushed.clone().text()).toBe(200);
+    expect(await ledgerOf(sid)).toEqual({ v1: 'done', v2: 'done' });
+    expect(dumpMetaValue(storeOf(refOf.get(versions.v1)!, sid).tables, CARRIED_AWAY_KEY)).not.toBeNull();
+    expect(storeOf(refOf.get(versions.v2)!, sid).tables).toEqual(notes('kept'));
+    const swept = await settleExpiredScopeScriptCopies(cleanup(), { now: afterLease() });
+    expect(swept.claimed).toBe(0);
+  });
+});
