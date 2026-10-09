@@ -5742,7 +5742,7 @@ app.get('/api/github/connect', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  // Throws "permission denied" (→ 403 via onError) if the caller may not connect providers.
+  // Throws a `permission_denied` (→ 403 via onError) if the caller may not connect providers.
   const { principal } = (await dash.invoke('dashboard/begin-connection', { provider: 'github' })) as { principal: string };
   const state = await signGithubState(c.env, { tenantId: node.tenantId, principal, provider: 'github' });
   return c.redirect(installUrl(cfg, state));

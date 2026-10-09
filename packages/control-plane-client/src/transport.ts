@@ -75,6 +75,18 @@ export interface ControlPlaneErrorDetail {
   cause?: unknown;
 }
 
+/** The `code` a refusal's body declared, when it is JSON naming one from the closed taxonomy. */
+function problemCodeOf(body: string | undefined): ErrorCode | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body ?? '');
+  } catch {
+    return undefined;
+  }
+  const code = errorCode.safeParse((parsed as { code?: unknown } | null)?.code);
+  return code.success ? code.data : undefined;
+}
+
 /** A non-2xx (or unreachable) control-plane response. `status` is 0 on a transport error. */
 export class ControlPlaneError extends Error {
   constructor(
@@ -95,6 +107,7 @@ export class ControlPlaneError extends Error {
     this.headers = detail.headers;
     this.url = detail.url;
     this.malformed = detail.malformed === true;
+    this.problemCode = problemCodeOf(detail.body);
   }
 
   /** The refusal's raw body text; `undefined` for an error the transport did not read off a response. */
@@ -104,7 +117,6 @@ export class ControlPlaneError extends Error {
   readonly url: string | undefined;
   /** True for a 2xx answer that was not the JSON the route promises. */
   readonly malformed: boolean;
-
   /**
    * The taxonomy code the refusal's problem document declared (#113), so a caller can branch
    * on what the plane said it was rather than on the sentence it said it in. `undefined` for a
@@ -114,16 +126,7 @@ export class ControlPlaneError extends Error {
    * Deliberately not called `code`: `errorCodeOf` reads a `code` property, and this error is
    * the plane's answer relayed, not a throw that declared itself here.
    */
-  get problemCode(): ErrorCode | undefined {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(this.body ?? '');
-    } catch {
-      return undefined;
-    }
-    const code = errorCode.safeParse((parsed as { code?: unknown } | null)?.code);
-    return code.success ? code.data : undefined;
-  }
+  readonly problemCode: ErrorCode | undefined;
 }
 
 /**
