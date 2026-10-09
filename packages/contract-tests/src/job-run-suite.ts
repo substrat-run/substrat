@@ -475,12 +475,15 @@ export function jobRunContractSuite(
 
       it('a pass that renews at every step is not taken over, though it outlasts its lease', async () => {
         const s = await newScope();
-        // Four 300 ms steps on a 1 s lease; a rival drive at each step boundary finds nothing due.
+        // Four 300 ms steps on a 1 s lease. Rival drives poll until the pass settles, so they are
+        // still polling after the first claim's own lease ran out: only a renewal keeps them out.
         const run = await startLeased(s, 'stepped', { steps: 4 });
         const began = Date.now();
         const pass = host.runDueJobs(t, s);
+        let settled = false;
+        void pass.then(() => (settled = true), () => (settled = true));
         const rivals: number[] = [];
-        while (stepBodies.length < 4) {
+        while (!settled) {
           rivals.push((await host.runDueJobs(t, s)).attempted);
           await sleep(20);
         }
