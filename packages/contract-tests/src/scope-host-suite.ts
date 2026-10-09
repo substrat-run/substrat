@@ -5905,6 +5905,20 @@ export function scopeHostContractSuite(
         { expectedErasureEpoch: 0, confirmMove: { moveId: move, source: 'eligible' } }), 'precondition_failed');
     });
 
+    it('a backfill and an orchestrated erasure each record the erasure epoch they ran under (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const epochs = async (action: 'backfillScopeCopy' | 'shredSubject') =>
+        (await host.admin.auditLog(staff, { scopeId: s, action })).map((r) => r.before);
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`)).toBe('recorded');
+      const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+        vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+      await host.admin.finalizeSubjectShred(staff, t1, s, ulid(), redacted, { versionId: null, servingRef: null, epoch: 0, copyCount: 1 });
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`)).toBe('recorded');
+      expect(await epochs('backfillScopeCopy')).toEqual([{ erasureEpoch: 0 }, { erasureEpoch: 1 }]);
+      expect(await epochs('shredSubject')).toEqual([{ erasureEpoch: 0 }]);
+    });
+
     it('a move that routes onto a backfilled script settles that entry in the confirming write (#1722)', async () => {
       const s = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t1, scopeId: s });

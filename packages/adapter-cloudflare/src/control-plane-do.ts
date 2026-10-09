@@ -111,7 +111,7 @@ import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
 import { blankSqlComments, executableSqlStatements } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3276,10 +3276,12 @@ export class ControlPlaneDO extends DurableObject {
     return 'recorded'; // idempotent retry of this move
   }
 
-  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): ScopeCopyBackfillResult {
-    if (this.sql.exec(COPY_BACKFILL_SQL, ...copyBackfillParams(tenantId, scopeId, scriptRef)).rowsWritten > 0) return 'recorded';
-    return copyBackfillRefusal(this.sql.exec(COPY_BACKFILL_SCOPE_SQL, tenantId, scopeId).toArray()[0] as
-      { reap_claimed_at: string | null } | undefined);
+  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): { result: ScopeCopyBackfillResult; erasureEpoch: number } {
+    return this.ctx.storage.transactionSync(() => {
+      const written = this.sql.exec(COPY_BACKFILL_SQL, ...copyBackfillParams(tenantId, scopeId, scriptRef)).rowsWritten > 0;
+      const scope = this.sql.exec(COPY_BACKFILL_SCOPE_SQL, tenantId, scopeId).toArray()[0] as CopyBackfillScopeRow | undefined;
+      return { result: written ? 'recorded' : copyBackfillRefusal(scope), erasureEpoch: scope?.erasure_epoch ?? 0 };
+    });
   }
 
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): ScopeScriptCopyRow[] {

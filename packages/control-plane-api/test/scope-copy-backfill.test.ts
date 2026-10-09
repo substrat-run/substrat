@@ -289,6 +289,30 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     expect(writes).toEqual([]);
   });
 
+  it('an erasure claimed before a copy was recorded is reported, though its audit row landed after', async () => {
+    // The race: the erasure's claim counts the scope's copies, then (while it destroys the key) the
+    // backfill records one more, and only then is the erasure's row written. Its row sorts after the
+    // backfill's, but its claim compared the epoch before the backfill's: it never reached the copy.
+    const sid = await provision();
+    await host.admin.setScopeServingRef(staff, t, sid, null);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v1!.id);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v2!.id);
+    const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+      vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+    await Promise.all([
+      host.admin.finalizeSubjectShred(staff, t, sid, 'subject-raced', redacted, { versionId: versions.v2!.id, servingRef: null, epoch: 0, copyCount: 0 }),
+      host.admin.backfillScopeScriptCopy(staff, t, sid, refOf('v1')),
+    ]);
+    const [shred] = await host.admin.auditLog(staff, { scopeId: sid, action: 'shredSubject' });
+    const [recorded] = await host.admin.auditLog(staff, { scopeId: sid, action: 'backfillScopeCopy' });
+    expect(shred!.id > recorded!.id).toBe(true); // the row order alone would call it reached
+    expect([shred!.before, recorded!.before]).toEqual([{ erasureEpoch: 0 }, { erasureEpoch: 1 }]);
+    const pages = await backfillAll(true, 50);
+    expect(pages.flatMap((p) => p.erasedBefore).filter((e) => e.scopeId === sid)).toEqual([
+      { tenantId: t, scopeId: sid, subjects: ['subject-raced'] },
+    ]);
+  });
+
   it('a script no deployment answers for is a failure, never an unchecked entry', async () => {
     const sid = await provision(); // born pinned now: its pin is the route
     await host.admin.setScopeServingRef(staff, t, sid, null);

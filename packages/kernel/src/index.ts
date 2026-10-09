@@ -128,6 +128,7 @@ export {
   copyBackfillParams,
   copyBackfillRefusal,
   type ScopeCopyBackfillResult,
+  type CopyBackfillScopeRow,
   COPY_EXPIRED_SQL,
   COPY_MOVE_CONFIRM_SQL,
   COPY_MOVE_LIVE_PREDICATE,

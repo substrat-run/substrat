@@ -349,9 +349,14 @@ export async function backfillScopeScriptCopies(
 }
 
 /**
- * The subjects whose last erasure in the scope is older than its last `backfillScopeCopy` row: none
- * of their erasures reached the copy recorded then. A scope with a backfilled entry and no such row
- * (its audit write failed after the insert) counts every erased subject, which is the safe answer.
+ * The subjects whose last erasure in the scope never reached its last backfilled copy. Both rows
+ * carry the erasure epoch they ran under (`before.erasureEpoch`): the backfill the epoch read in its
+ * insert's own transaction, an orchestrated erasure the epoch its claim compared. A claim that came
+ * first moved the epoch past what it compared, so its erasure is below the backfill's epoch even
+ * when its audit row landed later; one that came after counted the recorded copy and redacted it.
+ * A row without an epoch (a direct shred, which no copy move races, or a backfill row from before
+ * this) is ordered by its id. A scope with a backfilled entry and no backfill row (its audit write
+ * failed after the insert) counts every erased subject, which is the safe answer.
  */
 async function erasedBeforeBackfill(admin: HostAdmin, actor: PlatformActorId, tl: Timeline): Promise<string[]> {
   const filter = { tenantId: tl.tenantId, scopeId: tl.scopeId };
@@ -359,10 +364,19 @@ async function erasedBeforeBackfill(admin: HostAdmin, actor: PlatformActorId, tl
     allRows(admin, actor, { ...filter, action: 'shredSubject' }),
     admin.auditLog(actor, { ...filter, action: 'backfillScopeCopy', order: 'desc', limit: 1 }),
   ]);
-  const last = new Map<string, string>();
+  const epochOf = (r: AdminLogEntry): number | null => {
+    const v = objectOf(r.before)?.erasureEpoch;
+    return typeof v === 'number' ? v : null;
+  };
+  const last = new Map<string, AdminLogEntry>();
   for (const r of shreds) {
     const subject = stringOf(objectOf(r.after)?.subjectId);
-    if (subject) last.set(subject, r.id);
+    if (subject) last.set(subject, r);
   }
-  return [...last].filter(([, id]) => !backfill || id < backfill.id).map(([subject]) => subject).sort();
+  const missed = (r: AdminLogEntry): boolean => {
+    if (!backfill) return true;
+    const [mine, theirs] = [epochOf(r), epochOf(backfill)];
+    return mine !== null && theirs !== null ? mine < theirs : r.id < backfill.id;
+  };
+  return [...last].filter(([, r]) => missed(r)).map(([subject]) => subject).sort();
 }

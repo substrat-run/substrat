@@ -108,11 +108,21 @@ export const COPY_BACKFILL_SUPERSEDE_SQL = `
         AND tracked.script_ref = scope_script_copies.script_ref AND tracked.move_id <> '${BACKFILL_MOVE_ID}'
         AND tracked.state = 'done')`;
 
-/** The scope row a backfill insert that wrote nothing is explained by. Params: tenantId, scopeId. */
-export const COPY_BACKFILL_SCOPE_SQL = 'SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?';
+/**
+ * The scope row read in the backfill insert's own transaction: what explains an insert that wrote
+ * nothing, and the erasure epoch a recorded entry was written under. An erasure claimed before the
+ * insert moved the epoch past what it compared (its `shredSubject` row's `before`), so a subject
+ * whose erasure's epoch is below this one never reached the recorded copy, whatever order their
+ * audit rows landed in. Params: tenantId, scopeId.
+ */
+export const COPY_BACKFILL_SCOPE_SQL =
+  'SELECT reap_claimed_at, COALESCE(erasure_epoch, 0) AS erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?';
+
+/** `COPY_BACKFILL_SCOPE_SQL`'s row. */
+export interface CopyBackfillScopeRow { reap_claimed_at: string | null; erasure_epoch: number }
 
 /** Read the outcome of a backfill insert that wrote nothing, from `COPY_BACKFILL_SCOPE_SQL`'s row. */
-export const copyBackfillRefusal = (scope: { reap_claimed_at: string | null } | undefined): ScopeCopyBackfillResult =>
+export const copyBackfillRefusal = (scope: CopyBackfillScopeRow | undefined): ScopeCopyBackfillResult =>
   !scope ? 'missing' : scope.reap_claimed_at !== null ? 'reaping' : 'ledgered';
 
 /**

@@ -783,7 +783,7 @@ interface ControlPlaneStub {
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
-  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): Promise<ScopeCopyBackfillResult>;
+  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): Promise<{ result: ScopeCopyBackfillResult; erasureEpoch: number }>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
@@ -7238,9 +7238,10 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       backfillScopeScriptCopy: async (actor, tenantId, scopeId, scriptRef, opts) => {
         if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
-        const result = await this.cp.backfillScopeScriptCopy(tenantId, scopeId, scriptRef);
+        const { result, erasureEpoch } = await this.cp.backfillScopeScriptCopy(tenantId, scopeId, scriptRef);
         if (result === 'recorded') {
-          await this.recordAdmin(actor, 'backfillScopeCopy', { tenantId, scopeId }, null, { scriptRef, fromLogId: opts?.fromLogId ?? null });
+          await this.recordAdmin(actor, 'backfillScopeCopy', { tenantId, scopeId }, { erasureEpoch },
+            { scriptRef, fromLogId: opts?.fromLogId ?? null });
         }
         return result;
       },
@@ -8228,7 +8229,8 @@ export class CloudflareScopeHost implements ScopeHost {
           keyDestroyed: existed,
           tombstoned: true,
         });
-        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        // The epoch the claim compared (#1722): the backfill orders itself against this erasure by it.
+        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, { erasureEpoch: expected.epoch }, receipt);
         await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId },
           redactions.reduce((n, r) => n + r.events + r.intents + r.jobRuns + r.idempotencyResults + moduleRowsErased(r.vertical), 0));
         return receipt;
