@@ -228,6 +228,33 @@ describe.each(CASES)('#1573: the $table rebuild is atomic', (c) => {
   });
 });
 
+describe('#1722 directory additions on an existing SQLite store', () => {
+  it('adds an empty copy ledger and zero erasure epoch without changing scope routing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-copy-ledger-'));
+    try {
+      await new SqliteScopeHost({ dir }).close();
+      const file = join(dir, '_directory.sqlite');
+      const before = new Database(file);
+      before.exec(`DROP TABLE scope_script_copies;
+        ALTER TABLE scopes DROP COLUMN erasure_epoch;
+        INSERT INTO scopes (scope_id, tenant_id, vertical, vertical_version_id, serving_ref, created_at)
+        VALUES ('old-scope', 'old-tenant', 'old-vertical', 'old-version', 'old-script', '2026-01-01T00:00:00.000Z')`);
+      before.close();
+      await new SqliteScopeHost({ dir }).close();
+      const after = new Database(file, { readonly: true });
+      try {
+        expect(after.prepare('SELECT vertical_version_id, serving_ref, erasure_epoch FROM scopes WHERE scope_id = ?')
+          .get('old-scope')).toEqual({ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: 0 });
+        expect(after.prepare('SELECT * FROM scope_script_copies').all()).toEqual([]);
+      } finally {
+        after.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('#1573: the admin log accepts a tenant-less row once rebuilt', () => {
   it('is the point of the rebuild — `tenant_id` no longer NOT NULL', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-directory-rebuild-null-'));

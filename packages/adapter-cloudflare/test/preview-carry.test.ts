@@ -514,14 +514,16 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
 
       const pending = await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId });
       expect(pending).toMatchObject([{ scriptRef: refOf.get(version.v1), state: 'eligible' }]);
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, pending[0]!.scriptRef,
+        pending[0]!.moveId, 'retained')).toBe(true);
+      await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, ulid());
 
       const reaped = await api.request('/verticals/carry-vert/previews/failed-wipe-reap', { method: 'DELETE', headers: auth });
       expect(reaped.status).toBe(200);
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
-      expect(await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId })).toMatchObject([
-        { scriptRef: refOf.get(version.v1), state: 'done' },
-      ]);
+      expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .map((copy) => copy.state)).toEqual(['done', 'done']);
     });
     it('retries a failed source wipe from the ledger', async () => {
       const p = await fresh('retry-wipe', 'kept until retry');
@@ -555,6 +557,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await api.request(path, { method: 'POST', headers: auth })).status).toBeGreaterThanOrEqual(500);
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
       delete hooks.redact;
+      const [eligible] = await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId });
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, eligible!.scriptRef,
+        eligible!.moveId, 'retained')).toBe(true);
+      await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, ulid());
       const reached: string[] = [];
       hooks.redact = async (ref) => { reached.push(ref); };
       expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);
