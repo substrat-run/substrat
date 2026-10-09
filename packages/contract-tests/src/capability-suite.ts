@@ -410,7 +410,7 @@ export function capabilityContractSuite(
         );
         expect(errorCodeOf(malformed)).toBe('validation_failed');
         const malformedAttachments = await refusal(
-          share(alice, { entity: folder('F'), permissions: [CAP_READ], attachments: 'write' as 'read' }),
+          share(alice, { entity: folder('F'), permissions: [CAP_READ], attachments: 'write' }),
         );
         expect(errorCodeOf(malformedAttachments)).toBe('validation_failed');
       });
