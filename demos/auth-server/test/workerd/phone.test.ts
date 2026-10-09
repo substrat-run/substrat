@@ -1,17 +1,24 @@
-import { env, fetchMock, runInDurableObject } from 'cloudflare:test';
-import { afterEach, describe, expect, it } from 'vitest';
+import { env, runInDurableObject } from 'cloudflare:test';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ulid } from '@substrat-run/kernel';
 
-afterEach(() => { fetchMock.deactivate(); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe('SMS verification in the deployed Durable Object', () => {
   it('uses delivered Twilio configuration, enrolls the phone, and rotates the password session', async () => {
-    fetchMock.activate();
-    fetchMock.disableNetConnect();
     const service = `VA${'b'.repeat(32)}`;
-    const twilio = fetchMock.get('https://verify.twilio.com');
-    twilio.intercept({ method: 'POST', path: `/v2/Services/${service}/Verifications` }).reply(200, { status: 'pending' });
-    twilio.intercept({ method: 'POST', path: `/v2/Services/${service}/VerificationCheck` }).reply(200, { status: 'approved' });
+    // Twilio, answering each expected request once; any other egress throws. The Durable
+    // Object runs in the test's isolate, so stubbing the global is stubbing its egress.
+    const twilio = [
+      { url: `https://verify.twilio.com/v2/Services/${service}/Verifications`, body: { status: 'pending' } },
+      { url: `https://verify.twilio.com/v2/Services/${service}/VerificationCheck`, body: { status: 'approved' } },
+    ];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      const at = twilio.findIndex((e) => request.method === 'POST' && e.url === request.url);
+      if (at < 0) throw new Error(`unexpected egress: ${request.method} ${request.url}`);
+      return Response.json(twilio.splice(at, 1)[0]!.body);
+    });
     const scope = ulid();
     const stub = env.AUTH.get(env.AUTH.idFromName(scope));
     await runInDurableObject(stub, async (instance) => (instance as unknown as import('../../src/auth-do.js').AuthServerDO).provisionInstance({ tenantId: ulid(), scopeId: scope, slug: 'acme-auth', name: 'Acme Auth' }, [
@@ -45,6 +52,6 @@ describe('SMS verification in the deployed Durable Object', () => {
     // revocation rather than assuming this is the account's only session.
     const oldSession = await stub.fetch(new Request('https://auth-server.test/api/auth/get-session', { headers: { cookie } }));
     expect(await oldSession.json()).toBeNull();
-    fetchMock.assertNoPendingInterceptors();
+    expect(twilio).toEqual([]);
   });
 });

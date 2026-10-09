@@ -14,9 +14,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
+import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { resolveWranglerConfig } from '@substrat-run/cli/dist/push.js';
 import { ATTACHMENT_BLOB_BINDING, blobStoreBindingName } from '@substrat-run/contracts';
+import { defineConfig } from 'vitest/config';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /**
@@ -62,18 +63,18 @@ writeFileSync(
   }),
 );
 
-export default defineWorkersConfig({
+export default defineConfig({
+  // The suite walks one deployment through provision → due work → sweep → delete,
+  // so storage must carry across `it` blocks.
+  plugins: [cloudflareTest({ wrangler: { configPath: config } })],
   test: {
     include: ['test/workerd/**/*.test.ts'],
     testTimeout: 30_000,
-    poolOptions: {
-      workers: {
-        // The suite walks one deployment through provision → due work → sweep → delete,
-        // so storage must carry across `it` blocks.
-        isolatedStorage: false,
-        singleWorker: true,
-        wrangler: { configPath: config },
-      },
-    },
+    // One file at a time, as the old pool's `singleWorker` ran them.
+    fileParallelism: false,
+    // workerd reports a Durable Object RPC rejection as "Uncaught (in promise)" on the server side
+    // even when the caller awaits it and asserts `.rejects`; the plugin's node-compat `process`
+    // events now hand those reports to vitest. Printed, not failed: parity with the old pool (#2131).
+    dangerouslyIgnoreUnhandledErrors: true,
   },
 });

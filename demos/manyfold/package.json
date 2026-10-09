@@ -88,7 +88,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@scalar/api-reference": "^1.64.0",
     "@substrat-run/cli": "workspace:^",

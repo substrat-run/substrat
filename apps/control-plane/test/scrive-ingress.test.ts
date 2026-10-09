@@ -1,5 +1,5 @@
-import { SELF, env, fetchMock } from 'cloudflare:test';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { SELF, env } from 'cloudflare:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { connectionId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
@@ -60,9 +60,23 @@ describe('scrive webhook ingress (#574 phase 2)', () => {
     dispatchedAt: new Date().toISOString(),
   });
 
+  /**
+   * The provider, as this suite answers it: each expected request is queued with its reply and
+   * answered once, and any other request throws — net-connect disabled. The worker runs in the
+   * test's isolate, so stubbing the global is stubbing its egress.
+   */
+  const expected: { method: string; url: string; reply: () => Response }[] = [];
+  const expectFetch = (method: string, path: string, reply: () => Response) =>
+    expected.push({ method, url: `${SCRIVE}${path}`, reply });
+  let egress: MockInstance<typeof fetch>;
+
   beforeAll(async () => {
-    fetchMock.activate();
-    fetchMock.disableNetConnect();
+    egress = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      const at = expected.findIndex((e) => e.method === request.method && e.url === request.url);
+      if (at < 0) throw new Error(`unexpected egress: ${request.method} ${request.url}`);
+      return expected.splice(at, 1)[0]!.reply();
+    });
 
     await warmControlPlane(env.CONTROL_PLANE);
     const host = hostFor();
@@ -81,9 +95,9 @@ describe('scrive webhook ingress (#574 phase 2)', () => {
     await host.admin.putConnectorState(conn, dispatchKey('inst-2'), dispatchRow('inst-2', 'doc-2'));
   });
 
-  afterEach(() => fetchMock.assertNoPendingInterceptors());
-  // Other test files share this worker (singleWorker) — leave the dispatcher as found.
-  afterAll(() => fetchMock.deactivate());
+  afterEach(() => expect(expected).toEqual([]));
+  // Other test files share this isolate — leave `fetch` as found.
+  afterAll(() => egress.mockRestore());
 
   const post = (path: string) => SELF.fetch(`https://cp.test${path}`, { method: 'POST' });
 
@@ -112,18 +126,13 @@ describe('scrive webhook ingress (#574 phase 2)', () => {
   });
 
   it('verifies the token and reconciles against the provider (200, body never read)', async () => {
-    fetchMock
-      .get(SCRIVE)
-      .intercept({ method: 'GET', path: '/api/v2/documents/doc-1/get' })
-      .reply(
-        200,
-        JSON.stringify({
-          id: 'doc-1',
-          status: 'pending',
-          parties: [{ id: 'p1', sign_time: null, fields: [{ type: 'name', value: 'Alice' }] }],
-        }),
-        { headers: { 'content-type': 'application/json' } },
-      );
+    expectFetch('GET', '/api/v2/documents/doc-1/get', () =>
+      Response.json({
+        id: 'doc-1',
+        status: 'pending',
+        parties: [{ id: 'p1', sign_time: null, fields: [{ type: 'name', value: 'Alice' }] }],
+      }),
+    );
 
     const res = await post(`/hooks/scrive/${conn}/inst-1/${TOKEN}`);
     expect(res.status).toBe(200);
@@ -137,10 +146,7 @@ describe('scrive webhook ingress (#574 phase 2)', () => {
   });
 
   it('answers 500 when the provider fails after verification, so Scrive retries', async () => {
-    fetchMock
-      .get(SCRIVE)
-      .intercept({ method: 'GET', path: '/api/v2/documents/doc-2/get' })
-      .reply(500, 'provider down');
+    expectFetch('GET', '/api/v2/documents/doc-2/get', () => new Response('provider down', { status: 500 }));
 
     const res = await post(`/hooks/scrive/${conn}/inst-2/${TOKEN}`);
     expect(res.status).toBe(500);

@@ -62,19 +62,14 @@ catalog:
   # workers-types 5 while everyone else was on 4. Those were the workspace
   # disagreeing with itself, and a catalog ends that by construction.
   #
-  # The versions are deliberately the ones that currently WORK, not the newest.
-  # vitest 4 needs @cloudflare/vitest-pool-workers 0.21, which replaced
-  # `defineWorkersConfig` with a vitest-4 plugin API (it ships a codemod for the
-  # migration) — a real migration through the production Durable Object adapter,
-  # and not something to bundle into a dependency-policy change. Tracked
-  # separately; the catalog is what will make it a one-line bump when it lands.
-  #
-  # One peer conflict survives and cannot be resolved by pinning: wrangler 4.123
-  # wants workers-types ^5, pool-workers 0.9 wants ^4. It resolves itself with
-  # the vitest 4 migration above.
-  vitest: ^3.2.7
-  '@vitest/ui': ^3.2.7
-  '@cloudflare/vitest-pool-workers': ^0.12.21
+  # The Workers test integration is `@cloudflare/vitest-plugin` (#2121), the renamed
+  # successor of `@cloudflare/vitest-pool-workers`, which is deprecated and stopped at
+  # 0.23.0 with a per-instance prototype re-wrap that stalled large workerd suites. The
+  # plugin is a vitest plugin (`cloudflareTest(...)` in `plugins`) rather than a pool
+  # config, and it peers on vitest 4 or 5.
+  vitest: ^5.0.3
+  '@vitest/ui': ^5.0.3
+  '@cloudflare/vitest-plugin': ^1.4.0
   '@cloudflare/workers-types': ^4.20250109.0
   wrangler: ^4.146.0
   '@types/node': ^22.20.5
@@ -115,12 +110,6 @@ overrides:
   # `pnpm.auditConfig.ignoreGhsas`, one id, reason in the PR.
   hono: 4.13.8
   better-sqlite3: 13.0.3
-  # vitest 3 depends on tinypool ^1.1.1, and every 1.x is inside
-  # GHSA-5gmw-xhrv-c9v3 / GHSA-85c8-ppgw-ccpr (critical, prototype-pollution
-  # gadget to RCE); the first fix is 2.1.2 and no 1.x is coming. vitest 3 runs on
-  # 2.x unchanged. Drop this line with the vitest 4 migration (the catalog note
-  # above) — vitest 4 no longer depends on tinypool.
-  tinypool: 2.2.0
   # The latest concurrently releases pin shell-quote EXACTLY (9.2.4 and 10.0.5,
   # the newest of each line, both pin 1.9.0), and 1.8.4–1.10.x are inside
   # GHSA-pqg4-j6r4-53mv (critical, command injection through `quote()`); the first
@@ -145,12 +134,6 @@ overrides:
 # on a package that references a module it never declared. The peer
 # declarations still matter, and matter most, for consumers installing these
 # packages FROM npm, where pnpm's checking does apply.
-
-patchedDependencies:
-  # The pool rewrapped its RPC prototype for every new DO, building an unbounded
-  # proxy chain during large contract runs (#2121). Fixed only in the renamed
-  # @cloudflare/vitest-plugin >= 1.2.0, which needs vitest 4: the vitest 4 migration removes it.
-  '@cloudflare/vitest-pool-workers@0.12.21': patches/@cloudflare__vitest-pool-workers@0.12.21.patch
 
 peerDependencyRules:
   allowedVersions:
