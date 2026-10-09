@@ -423,9 +423,9 @@ mountLinkShareDownload(app, {
 - **A link never writes a file.** Through a capability, `upload` and `remove` are refused
   even when the capability carries the write key, and the refusal is recorded.
 - **A download is not a use.** `maxUses` still counts exchanges only.
-- **An operations-narrowed capability reads no attachments by default.** Add the explicit
-  `attachments.read` entry to its `operations` list to allow attachment list, open and
-  search. This entry grants no permission: every read still checks the target's
+- **An operations-narrowed capability reads no attachments by default.** Set
+  `attachments: 'read'` when minting it to allow attachment list, open and search. This
+  opt-in grants no permission: every read still checks the target's
   `readPermission` as the capability, including its subtree and the minter's current access.
   It never allows upload or removal.
 - **Nothing about the response is cacheable or executable.** It is sent

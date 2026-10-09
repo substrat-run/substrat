@@ -28,7 +28,6 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import {
-  CAPABILITY_ATTACHMENTS_READ,
   CAPABILITY_SESSION_PRUNE_BATCH,
   ulid,
   type ManualClock,
@@ -136,7 +135,7 @@ export function capabilityExpiryContractSuite(
 
       // The capability's own expiry.
       const short = await share({
-        entity: folder('F'), permissions: [CAP_READ], operations: [CAPABILITY_ATTACHMENTS_READ], expiresAt: at(HOUR),
+        entity: folder('F'), permissions: [CAP_READ], attachments: 'read', expiresAt: at(HOUR),
       });
       const shortFiles = await filesOf((await session(short.secret)).token);
       clock.advance(HOUR - MINUTE);

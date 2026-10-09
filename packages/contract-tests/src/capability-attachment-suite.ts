@@ -24,7 +24,7 @@
  *    refused with the same answer.
  * 5. **A download is not a use.** `uses` counts exchanges; opening and listing leave it
  *    where the exchange put it.
- * 6. **The door's other refusals.** An operation allowlist without `attachments.read`
+ * 6. **The door's other refusals.** An operation allowlist without the attachment opt-in
  *    refuses attachment reads (`forbidden`), next to the listed operation working; a
  *    token that is not a session is `unauthenticated`.
  */
@@ -42,7 +42,7 @@ import {
   type MintedCapability,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { CAPABILITY_ATTACHMENTS_READ, ulid, type ScopeAttachments, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type ScopeAttachments, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { capMod } from './modules.js';
 
@@ -238,7 +238,7 @@ export function capabilityAttachmentContractSuite(
         expect(errorCodeOf(await refusal(closed.search('capybara')))).toBe('forbidden');
 
         const open = await filesOf(await sessionOf((await share(alice, {
-          ...spec, operations: [CAPABILITY_ATTACHMENTS_READ],
+          ...spec, attachments: 'read',
         })).secret));
         expect((await open.search('capybara')).map((r) => r.id)).toEqual([inF.id]);
       });
@@ -362,8 +362,7 @@ export function capabilityAttachmentContractSuite(
 
       it('the attachment opt-in permits reads only within the target and its read key', async () => {
         const minted = await share(alice, {
-          entity: folder('F'), permissions: [CAP_READ],
-          operations: ['cap/read', CAPABILITY_ATTACHMENTS_READ],
+          entity: folder('F'), permissions: [CAP_READ], operations: ['cap/read'], attachments: 'read',
         });
         const token = await sessionOf(minted.secret);
         const surface = await filesOf(token);
@@ -373,6 +372,7 @@ export function capabilityAttachmentContractSuite(
         expect(errorCodeOf(await refusal(surface.list(doc('d3'))))).toBe('permission_denied');
         const stub = await host.getCapabilityScope(token, t1, s1);
         await expect(stub.invoke('cap/read', { entity: doc('d1') })).resolves.toBeTruthy();
+        expect(errorCodeOf(await refusal(stub.invoke('attachments.list', { entity: doc('d1') })))).toBe('forbidden');
         expect(errorCodeOf(await refusal(stub.invoke('cap/comment', { doc: doc('d1'), body: 'no' })))).toBe('forbidden');
         expect(await denialsOf(minted.id)).toContainEqual(
           expect.objectContaining({ permission: 'cap:read', operation: 'attachments.open' }),
@@ -381,7 +381,7 @@ export function capabilityAttachmentContractSuite(
 
       it('the opt-in cannot replace the target readPermission', async () => {
         const minted = await share(alice, {
-          entity: folder('F'), permissions: [CAP_WRITE], operations: [CAPABILITY_ATTACHMENTS_READ],
+          entity: folder('F'), permissions: [CAP_WRITE], attachments: 'read',
         });
         const surface = await filesOf(await sessionOf(minted.secret));
         expect(errorCodeOf(await refusal(surface.open(files.d1.id)))).toBe('permission_denied');
@@ -391,9 +391,20 @@ export function capabilityAttachmentContractSuite(
         );
       });
 
+      it('an operation name `attachments.read` in an old allowlist is not an attachment opt-in', async () => {
+        const minted = await share(alice, {
+          entity: folder('F'), permissions: [CAP_READ], operations: ['attachments.read'],
+        });
+        const token = await sessionOf(minted.secret);
+        const stub = await host.getCapabilityScope(token, t1, s1);
+        await expect(stub.invoke('attachments.read', { entity: doc('d1') })).resolves.toMatchObject({ read: doc('d1') });
+        const surface = await filesOf(token);
+        expect(errorCodeOf(await refusal(surface.list(doc('d1'))))).toBe('forbidden');
+      });
+
       it('revocation closes an opted-in attachment session', async () => {
         const minted = await share(alice, {
-          entity: folder('F'), permissions: [CAP_READ], operations: [CAPABILITY_ATTACHMENTS_READ],
+          entity: folder('F'), permissions: [CAP_READ], attachments: 'read',
         });
         const surface = await filesOf(await sessionOf(minted.secret));
         expect((await surface.open(files.d1.id))?.record.id).toBe(files.d1.id);
@@ -403,7 +414,7 @@ export function capabilityAttachmentContractSuite(
 
       it('an opted-in session cannot cross a scope or tenant boundary', async () => {
         const minted = await share(alice, {
-          entity: folder('F'), permissions: [CAP_READ], operations: [CAPABILITY_ATTACHMENTS_READ],
+          entity: folder('F'), permissions: [CAP_READ], attachments: 'read',
         });
         const token = await sessionOf(minted.secret);
         const sibling = scopeId.parse(ulid());
