@@ -6225,6 +6225,39 @@ describe('control-plane API — observability proxy', () => {
       },
     };
 
+    it('pins field counts to an installed app and the credential tenant', async () => {
+      const slug = `field-${ulid().slice(-6).toLowerCase()}`;
+      const sc = scopeId.parse(ulid());
+      const versionId = ulid();
+      await host.admin.createTenant(staff, { id: builderTenant, slug: `tenant-${slug}`, name: 'Field tenant' });
+      await host.admin.registerVertical(staff, { slug, name: 'Field demo', source: 'cli', ownerTenant: builderTenant });
+      await host.admin.publishVersion(staff, {
+        id: versionId, verticalSlug: slug, version: '1.0.0', manifestDigest: 'm',
+        permissionDigest: 'p', migrationDigest: 'g', deploymentRef: `${slug}-v1`,
+        manifestJson: JSON.stringify({ version: '1.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
+          doClasses: [], bindings: [], digests: { manifest: 'm', permission: 'p', migration: 'g' },
+          registry: { permissions: [], roles: [], entityGrants: [] },
+          outputSurface: [{ operationId: 'field/get', fields: ['id'] }] }),
+      });
+      await host.provisionScope(staff, { tenantId: builderTenant, scopeId: sc, vertical: slug });
+      const seen: unknown[] = [];
+      const app = appWith({ ...tenantReader, fieldCoverage: async (input: unknown) => {
+        seen.push(input);
+        return { tenantId: builderTenant, vertical: slug, source: 'vertical-asserted', groups: [] };
+      } });
+      const route = `/observability/tenant-field-coverage?scopeId=${sc}&versionId=${versionId}`;
+      const own = await app.request(route, { headers: asBuilder });
+      expect(own.status, await own.text()).toBe(200);
+      expect(seen[0]).toMatchObject({ tenantId: builderTenant, vertical: slug, scopeId: sc,
+        services: [slug], declared: { 'field/get': ['id'] }, versionId });
+      const someoneElse = tenantId.parse(ulid());
+      expect((await app.request(`${route}&tenantId=${someoneElse}`, { headers: asBuilder })).status).toBe(200);
+      expect(seen[1]).toMatchObject({ tenantId: builderTenant });
+      const foreignScope = scopeId.parse(ulid());
+      expect((await app.request(`/observability/tenant-field-coverage?scopeId=${foreignScope}&versionId=${versionId}`, { headers: asBuilder })).status).toBe(404);
+      expect(seen).toHaveLength(2);
+    });
+
     /**
      * A reader can answer the script grain and still have no tenant dimension at all —
      * the tenant is the one fact a runtime cannot record by itself. 501, never an empty
