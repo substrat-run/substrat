@@ -611,6 +611,8 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
     readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     readonly path: CheckedPath<O>;
   };
+  /** A reasoned exception when a PATCH input cannot be an optional, default-free field bag. */
+  readonly patchException?: string;
   /**
    * This operation's MCP rendering (#112) — the ONE knob, and it is optional.
    *
@@ -822,6 +824,7 @@ export function defineOperations<
     assertListsArePaged(operations);
     assertConcurrencyMovesVersion(operations);
     assertFieldBagsDeclareConcurrency(operations, entities, engines ?? []);
+    assertPatchInputs(operations);
     assertTrashedDeclarations(operations, entities);
     return operations;
   };
@@ -1047,6 +1050,235 @@ function isOptionalSchema(schema: unknown, depth = 0): boolean {
       return isOptionalSchema(def.innerType, depth + 1);
     default:
       return false;
+  }
+}
+
+type PatchSchemaIssue = { kind: 'default' } | { kind: 'uninspectable'; schemaKind: string } | null;
+
+/** A default fills an absent PATCH field before its handler can preserve the old value. */
+function inputDefaultIssue(schema: unknown): PatchSchemaIssue {
+  const pending = [schema];
+  const seen = new Set<unknown>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined || current === null || seen.has(current)) continue;
+    seen.add(current);
+    const def = (current as { _zod?: { def?: unknown } })?._zod?.def as
+      | {
+          type?: string;
+          innerType?: unknown;
+          in?: unknown;
+          out?: unknown;
+          getter?: () => unknown;
+          shape?: Record<string, unknown> | (() => Record<string, unknown>);
+          element?: unknown;
+          keyType?: unknown;
+          valueType?: unknown;
+          options?: unknown[];
+          items?: unknown[];
+          rest?: unknown;
+          left?: unknown;
+          right?: unknown;
+          catchall?: unknown;
+          checks?: unknown;
+          transform?: unknown;
+          reverseTransform?: unknown;
+        }
+      | undefined;
+    if (def?.type === 'default' || def?.type === 'prefault' || def?.type === 'catch') return { kind: 'default' };
+    if (typeof def?.type !== 'string') return { kind: 'uninspectable', schemaKind: 'unknown' };
+    const checkIssue = checksIssue({ type: def.type, checks: def.checks });
+    if (checkIssue) return checkIssue;
+    switch (def.type) {
+      case 'optional':
+      case 'nullable':
+      case 'nullish':
+      case 'readonly':
+        pending.push(def.innerType);
+        break;
+      case 'lazy':
+        try {
+          pending.push(def.getter?.());
+        } catch {
+          return { kind: 'uninspectable', schemaKind: 'lazy' };
+        }
+        break;
+      case 'object': {
+        try {
+          const shape = typeof def.shape === 'function' ? def.shape() : def.shape;
+          if (!shape || typeof shape !== 'object') return { kind: 'uninspectable', schemaKind: 'object' };
+          pending.push(...Object.values(shape), def.catchall);
+        } catch {
+          return { kind: 'uninspectable', schemaKind: 'object' };
+        }
+        break;
+      }
+      case 'array':
+        pending.push(def.element);
+        break;
+      case 'record':
+      case 'map':
+        pending.push(def.keyType, def.valueType);
+        break;
+      case 'set':
+        pending.push(def.valueType);
+        break;
+      case 'union':
+        if (!Array.isArray(def.options)) return { kind: 'uninspectable', schemaKind: 'union' };
+        pending.push(...def.options);
+        break;
+      case 'tuple':
+        if (!Array.isArray(def.items)) return { kind: 'uninspectable', schemaKind: 'tuple' };
+        pending.push(...def.items, def.rest);
+        break;
+      case 'intersection':
+        pending.push(def.left, def.right);
+        break;
+      case 'pipe':
+        if (def.transform !== undefined || def.reverseTransform !== undefined) {
+          return { kind: 'uninspectable', schemaKind: 'pipe transform' };
+        }
+        pending.push(def.in, def.out);
+        break;
+      // These kinds cannot contain another schema that can apply a default.
+      case 'string':
+      case 'number':
+      case 'boolean':
+      case 'bigint':
+      case 'date':
+      case 'symbol':
+      case 'undefined':
+      case 'null':
+      case 'any':
+      case 'unknown':
+      case 'never':
+      case 'void':
+      case 'literal':
+      case 'enum':
+      case 'file':
+      case 'template_literal':
+      case 'function':
+        break;
+      default:
+        return { kind: 'uninspectable', schemaKind: def.type };
+    }
+  }
+  return null;
+}
+
+/** A check that can change the parsed value, judged on one node; its children are walked elsewhere. */
+function checksIssue(def: { type: string; checks?: unknown }): PatchSchemaIssue {
+  if (def.checks === undefined) return null;
+  if (!Array.isArray(def.checks)) return { kind: 'uninspectable', schemaKind: `${def.type} checks` };
+  for (const check of def.checks) {
+    const checkDef = (check as { _zod?: { def?: unknown }; def?: unknown })?._zod?.def ??
+      (check as { def?: unknown })?.def;
+    const checkKind = (checkDef as { check?: unknown; type?: unknown } | undefined)?.check ??
+      (checkDef as { type?: unknown } | undefined)?.type;
+    // A named string normalizer rewrites only a string the caller supplied, so it
+    // cannot give an omitted field a value.
+    if (checkKind === 'overwrite' && def.type === 'string' && isStringNormalizer(checkDef)) continue;
+    // Zod check classes are extensible. Permit only known validation checks;
+    // overwrite and future check kinds could change the parsed value.
+    if (typeof checkKind !== 'string' || !PATCH_VALUE_PRESERVING_CHECKS.has(checkKind)) {
+      return { kind: 'uninspectable', schemaKind: typeof checkKind === 'string' ? checkKind : `${def.type} check` };
+    }
+  }
+  return null;
+}
+
+/**
+ * The input object itself: a plain object, so its fields are the body, and nothing on it
+ * that can rewrite the parsed body as a whole.
+ */
+function inputRootIssue(input: unknown): PatchSchemaIssue {
+  if (input === undefined) return null;
+  const def = (input as { _zod?: { def?: unknown } })?._zod?.def as
+    | { type?: unknown; checks?: unknown; catchall?: unknown }
+    | undefined;
+  if (typeof def?.type !== 'string') return { kind: 'uninspectable', schemaKind: 'unknown' };
+  if (def.type !== 'object') return { kind: 'uninspectable', schemaKind: def.type };
+  return checksIssue({ type: def.type, checks: def.checks }) ?? inputDefaultIssue(def.catchall);
+}
+
+const PATCH_VALUE_PRESERVING_CHECKS = new Set([
+  'min_length',
+  'max_length',
+  'length_equals',
+  'string_format',
+  'greater_than',
+  'less_than',
+  'number_format',
+  'number_multiple_of',
+  'bigint_format',
+  'date_minimum',
+  'date_maximum',
+  'mime_type',
+  'size',
+  'property',
+  'custom',
+]);
+
+let stringNormalizerSources: Set<string> | undefined;
+
+/**
+ * Zod builds `.trim()`, `.toLowerCase()`, `.toUpperCase()` and `.normalize()` as overwrite
+ * checks with a fresh closure each time, so they are recognized by their source text, read
+ * from the same Zod this package loads. A custom `.overwrite()` is arbitrary code and does
+ * not match, even on a string.
+ */
+function isStringNormalizer(checkDef: unknown): boolean {
+  const tx = (checkDef as { tx?: unknown } | undefined)?.tx;
+  if (typeof tx !== 'function') return false;
+  stringNormalizerSources ??= new Set(
+    [z.string().trim(), z.string().toLowerCase(), z.string().toUpperCase(), z.string().normalize()].map(
+      (schema) => String((schema._zod.def.checks?.[0]?._zod.def as { tx?: unknown } | undefined)?.tx),
+    ),
+  );
+  return stringNormalizerSources.has(Function.prototype.toString.call(tx));
+}
+
+/** Check the effective HTTP method, both on local operations and bound engine routes. */
+function assertPatchInputs(operations: Record<string, unknown>): void {
+  for (const [name, value] of Object.entries(operations)) {
+    const op = value as {
+      http?: { method?: string; path?: string };
+      input?: z.ZodObject<z.ZodRawShape>;
+      patchException?: unknown;
+    };
+    const reason = op.patchException;
+    if (reason !== undefined && (typeof reason !== 'string' || reason.trim() === '')) {
+      throw new Error(`model: '${name}' declares patchException without a reason`);
+    }
+    if (op.http?.method !== 'PATCH' || reason !== undefined) continue;
+    const rootIssue = inputRootIssue(op.input);
+    if (rootIssue !== null) {
+      const offence = rootIssue.kind === 'default'
+        ? 'has a default'
+        : `uses an uninspectable Zod schema kind '${rootIssue.schemaKind}'`;
+      throw new Error(
+        `model: '${name}' routes as PATCH, but its input object ${offence}; ` +
+          'route it as PUT, drop the hook that rewrites the body, or declare patchException with a reason',
+      );
+    }
+    const pathFields = new Set(Array.from((op.http.path ?? '').matchAll(/\{([^}]+)\}/g), (match) => match[1]));
+    for (const [field, schema] of Object.entries(op.input?.shape ?? {})) {
+      if (pathFields.has(field)) continue;
+      const issue = inputDefaultIssue(schema);
+      const offence = issue?.kind === 'default'
+        ? 'has a default'
+        : issue?.kind === 'uninspectable'
+          ? `uses an uninspectable Zod schema kind '${issue.schemaKind}'`
+          : !isOptionalSchema(schema)
+            ? 'is required'
+            : null;
+      if (offence !== null) {
+        throw new Error(
+          `model: '${name}' routes as PATCH, but body field '${field}' ${offence}; ` +
+            'route it as PUT, make the field optional without a default, or declare patchException with a reason',
+        );
+      }
+    }
   }
 }
 
@@ -1994,6 +2226,7 @@ export function defineEngineRoutes<const Ops extends Record<string, object>>(ope
       }
       out[name] = { ...(op as object), http };
     }
+    assertPatchInputs(out);
     return out as { [K in keyof R]: (K extends keyof Ops ? Ops[K] : never) & { http: R[K] } };
   };
 }

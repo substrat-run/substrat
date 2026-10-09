@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { moduleId, platformActorId, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type FetchLike, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
@@ -37,6 +37,9 @@ export function errorsOfScope<E extends { id: string }>(errors: readonly E[], sc
 export function scheduleContractSuite(
   adapterName: string,
   makeFixture: () => Promise<ScopeHostFixture>,
+  suspendAtSystemDoor: (host: ScopeHost, suspend: () => Promise<void>, resumeBeforeCatch?: () => Promise<void>) => () => void,
+  /** Interpose after the pass's first fire has run and before its next schedule is read. */
+  suspendAfterFirstFire: (host: ScopeHost, suspend: () => Promise<void>) => () => void,
 ): void {
   describe(`schedule contract (#383): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
@@ -290,6 +293,163 @@ export function scheduleContractSuite(
       }[];
       const denial = denials.find((d) => d.operation === 'sched-denied/tick');
       expect(denial?.invocation_id).toBe(failedRow!.invocation_id);
+    });
+
+    it('a tenant suspension holds every scope schedule, while another tenant still runs', async () => {
+      const sibling = scopeId.parse(ulid());
+      const otherTenant = tenantId.parse(ulid());
+      const otherScope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: sibling, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, sibling);
+      await host.admin.createTenant(staff, { id: otherTenant, slug: `sched-${otherTenant.toLowerCase()}`, name: 'Sched' });
+      await host.admin.grantEntitlement(staff, otherTenant, 'sched');
+      await host.provisionScope(staff, { tenantId: otherTenant, scopeId: otherScope, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, otherTenant, otherScope);
+
+      await host.admin.setTenantStatus(staff, t, 'suspended');
+      expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(0);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, s)).fired).toBe(0);
+      expect((await host.runDueSchedules(SCHED_MODULE, otherTenant, otherScope)).fired).toBe(2);
+
+      await host.admin.setTenantStatus(staff, t, 'active');
+      expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(2);
+      expect((await (await host.getScope(reader, t, sibling)).invoke('sched/count'))).toBe(1);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(0);
+    });
+
+    it('a previously fired schedule stays due through several held cadences and fires once on reactivation', async () => {
+      const held = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: held, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, held);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(2);
+      const first = Date.now();
+      await host.admin.suspendScope(staff, t, held);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        for (const hours of [2, 4, 6]) {
+          vi.setSystemTime(first + hours * 3_600_000);
+          expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(0);
+        }
+        await host.admin.unsuspendScope(staff, t, held);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(2);
+        expect((await (await host.getScope(reader, t, held)).invoke('sched/count'))).toBe(2);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a suspension at the system door does not consume an already due cadence', async () => {
+      const racing = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: racing, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, racing);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(2);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const restore = suspendAtSystemDoor(host, () => host.admin.suspendScope(staff, t, racing).then(() => {}));
+      try {
+        vi.setSystemTime(Date.now() + 2 * 3_600_000);
+        expect(await host.runDueSchedules(SCHED_MODULE, t, racing)).toMatchObject({ fired: 0, failed: 0, skipped: 2, lifecycleHeld: true });
+        restore();
+        await host.admin.unsuspendScope(staff, t, racing);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(2);
+        expect((await (await host.getScope(reader, t, racing)).invoke('sched/count'))).toBe(2);
+      } finally {
+        restore();
+        vi.useRealTimers();
+      }
+    });
+
+    it('a brief suspension whose refusal arrives after reactivation still leaves that schedule due', async () => {
+      const racing = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: racing, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, racing);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(2);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const restore = suspendAtSystemDoor(
+        host,
+        () => host.admin.suspendScope(staff, t, racing).then(() => {}),
+        () => host.admin.unsuspendScope(staff, t, racing).then(() => {}),
+      );
+      try {
+        vi.setSystemTime(Date.now() + 2 * 3_600_000);
+        expect(await host.runDueSchedules(SCHED_MODULE, t, racing)).toMatchObject({ fired: 1, failed: 0, skipped: 1, lifecycleHeld: true });
+        restore();
+        expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(1);
+        expect((await (await host.getScope(reader, t, racing)).invoke('sched/count'))).toBe(2);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(0);
+      } finally {
+        restore();
+        vi.useRealTimers();
+      }
+    });
+
+    it('a suspension between two fires of one pass holds the later schedule', async () => {
+      const between = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: between, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, between);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, between)).fired).toBe(2);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const restore = suspendAfterFirstFire(host, () => host.admin.suspendScope(staff, t, between).then(() => {}));
+      try {
+        vi.setSystemTime(Date.now() + 2 * 3_600_000);
+        // The first fire ran while the scope was live; the second meets the suspension and is
+        // held, never run on the lifecycle read the first fire made.
+        expect(await host.runDueSchedules(SCHED_MODULE, t, between)).toMatchObject({ fired: 1, failed: 0, skipped: 1, lifecycleHeld: true });
+        restore();
+        expect((await host.runDueSchedules(SCHED_MODULE, t, between)).fired).toBe(0);
+        await host.admin.unsuspendScope(staff, t, between);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, between)).fired).toBe(1);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, between)).fired).toBe(0);
+      } finally {
+        restore();
+        vi.useRealTimers();
+      }
+    });
+
+    it('a retry queued before suspension waits without an attempt, then drains once', async () => {
+      const retryScope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: retryScope, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, retryScope);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, retryScope)).fired).toBe(2);
+      const ran: string[] = [];
+      host.registerExecutor(`suspend-${retryScope}`, 'sched.ticked', async (_admin, event) => {
+        ran.push(event.id);
+      });
+
+      await host.admin.suspendScope(staff, t, retryScope);
+      const held = await host.drainDue(t, retryScope).catch((error: unknown) => {
+        expect(String(error)).toMatch(/scope not active/);
+        return null;
+      });
+      expect(held === null || held.attempted === 0).toBe(true);
+      expect(ran).toEqual([]);
+
+      await host.admin.unsuspendScope(staff, t, retryScope);
+      expect((await host.drainDue(t, retryScope)).delivered).toBe(1);
+      expect(ran).toHaveLength(1);
+      expect((await host.drainDue(t, retryScope)).attempted).toBe(0);
+    });
+
+    it('a suspension inside the first delivery leaves later outbox work due', async () => {
+      const draining = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: draining, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, draining);
+      const stub = await host.getSystemScope(SCHED_MODULE, t, draining);
+      await stub.invoke('sched/tick');
+      await stub.invoke('sched/tick');
+      const ran: string[] = [];
+      host.registerExecutor(`mid-suspend-${draining}`, 'sched.ticked', async (_admin, event) => {
+        ran.push(event.id);
+        if (ran.length === 1) await host.admin.suspendScope(staff, t, draining);
+      });
+
+      const first = await host.drainDue(t, draining);
+      expect(first).toMatchObject({ attempted: 1, delivered: 1, lifecycleHeld: true });
+      expect(ran).toHaveLength(1);
+      await host.admin.unsuspendScope(staff, t, draining);
+      expect(await host.drainDue(t, draining)).toMatchObject({ attempted: 1, delivered: 1 });
+      expect(ran).toHaveLength(2);
+      expect((await host.drainDue(t, draining)).attempted).toBe(0);
     });
 
     /**

@@ -31,10 +31,16 @@ export function grantLine(r: CapabilityRecord): string {
   return `${r.permissions.join(', ')} on ${r.entity.entityType}:${r.entity.entityId}`;
 }
 
-/** The operation allowlist, or the words for its absence. Only an `act` capability has one. */
+/**
+ * The operation allowlist, or the words for its absence. Only an `act` capability has one. A
+ * narrowed link that opted in to attachment reads says so: its allowlist alone would read as
+ * a link that can open no file. An un-narrowed link reads attachments anyway.
+ */
 export function operationsLine(r: CapabilityRecord): string {
   if (r.mode === 'become') return '—';
-  return r.operations === null ? 'any the keys allow' : r.operations.join(', ');
+  if (r.operations === null) return 'any the keys allow';
+  const ops = r.operations.join(', ');
+  return r.attachments === 'read' ? `${ops} + attachments: read` : ops;
 }
 
 /** Who minted or revoked it: a principal's id, or the platform actor behind `HostAdmin`. */

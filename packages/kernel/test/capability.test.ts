@@ -72,6 +72,7 @@ const capRow = (over: Partial<CapabilityRow> = {}): CapabilityRow => ({
   entity_id: 'F',
   permissions: JSON.stringify([READ]),
   operations: null,
+  attachments: null,
   principal: null,
   minted_by: JSON.stringify(ALICE),
   minted_at: '2025-12-01T00:00:00.000Z',

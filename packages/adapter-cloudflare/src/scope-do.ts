@@ -4063,6 +4063,7 @@ export function defineScopeDO(
             sessionHash,
             instant.parse(new Date().toISOString()),
             operation,
+            true,
           );
         } catch (err) {
           return { failure: toWireFailure(err) };
@@ -6241,6 +6242,8 @@ export function defineScopeDO(
         // #2066: the rows already there get the legacy mark below, never a digest.
         'ALTER TABLE _substrat_migrations ADD COLUMN sql_digest TEXT',
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
+        // #2126: NULL keeps every existing capability's attachment behavior unchanged.
+        'ALTER TABLE _substrat_capabilities ADD COLUMN attachments TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
         // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.

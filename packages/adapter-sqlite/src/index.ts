@@ -48,6 +48,7 @@ import {
   identityLink,
   identityPool,
   instant,
+  isSubstratError,
   connection,
   capabilityGrant,
   connectionGrant,
@@ -3500,7 +3501,7 @@ export class SqliteScopeHost implements ScopeHost {
       authority.kind === 'capability-session'
         ? {
             kind: 'capability',
-            id: resolveCapabilitySession(spineSql(rt.db), authority.hash, this.clock(), operation),
+            id: resolveCapabilitySession(spineSql(rt.db), authority.hash, this.clock(), operation, true),
           }
         : authority;
     const node = { tenantId: rt.tenantId, scopeId: rt.scopeId };
@@ -4174,14 +4175,13 @@ export class SqliteScopeHost implements ScopeHost {
     // Same lifecycle gates as the principal door, and reached the same way: a
     // suspended tenant refuses a support session exactly as it refuses a user.
     const scope = this.directory
-      .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
-      .get(scopeId) as { tenant_id: string; status: string } | undefined;
+      .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string } | undefined;
     if (!scope || scope.tenant_id !== tenantId) {
       throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
-    if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
-    }
+    const refusal = this.scopeWorkRefusal(tenantId, scopeId);
+    if (refusal) throw substratError('conflict', refusal, { reason: SCOPE_GATE_REASONS.notActive });
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     return this.buildStub(tenantId, scopeId, rt, asPrincipal(record.principal), options, record.id);
@@ -4214,14 +4214,13 @@ export class SqliteScopeHost implements ScopeHost {
       throw substratError('not_found', `module not registered on this host: ${moduleId}`);
     }
     const scope = this.directory
-      .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
-      .get(scopeId) as { tenant_id: string; status: string } | undefined;
+      .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { tenant_id: string } | undefined;
     if (!scope || scope.tenant_id !== tenantId) {
       throw substratError('not_found', `unknown scope: ${scopeId}`);
     }
-    if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
-    }
+    const refusal = this.scopeWorkRefusal(tenantId, scopeId);
+    if (refusal) throw substratError('conflict', refusal, { reason: SCOPE_GATE_REASONS.notActive });
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId }, undefined, undefined, purge);
@@ -4531,6 +4530,19 @@ export class SqliteScopeHost implements ScopeHost {
     return rt;
   }
 
+  /** The directory's current hold, read again when background work is about to run. */
+  private scopeWorkRefusal(tenantId: TenantId, scopeId: ScopeId, allowProvisioning = false): string | null {
+    const row = this.directory
+      .prepare(`SELECT s.status AS scope, t.status AS tenant
+                  FROM scopes s JOIN tenants t ON t.tenant_id = s.tenant_id
+                  WHERE s.scope_id = ? AND s.tenant_id = ?`)
+      .get(scopeId, tenantId) as { scope: string; tenant: string } | undefined;
+    if (!row) return `unknown scope for tenant: (${tenantId}, ${scopeId})`;
+    // A connector can serve provisioning work; suspension still holds it.
+    if (allowProvisioning && row.scope === 'provisioning' && row.tenant === 'active') return null;
+    return lifecycleRefusal(row as Parameters<typeof lifecycleRefusal>[0], { tenantId, scopeId });
+  }
+
   /**
    * The exchange (#1672) — a secret traded for a session, or for the principal a `become`
    * capability yields. One serialized scope task and one transaction, so the use it takes
@@ -4812,10 +4824,7 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<FreshnessReport> {
     const report: FreshnessReport = { checks: [] };
     if (!this.modules.has(moduleId)) return report;
-    const scope = this.directory
-      .prepare('SELECT status FROM scopes WHERE scope_id = ? AND tenant_id = ?')
-      .get(scopeId, tenantId) as { status: string } | undefined;
-    if (!scope || scope.status !== 'active') return report;
+    if (this.scopeWorkRefusal(tenantId, scopeId)) return report;
 
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -4904,10 +4913,7 @@ export class SqliteScopeHost implements ScopeHost {
     // not this driver's problem to raise — it simply has nothing due (the sweep
     // already enumerated `active` scopes; this guards a race where one archived
     // between enumeration and here).
-    const scope = this.directory
-      .prepare('SELECT status FROM scopes WHERE scope_id = ? AND tenant_id = ?')
-      .get(scopeId, tenantId) as { status: string } | undefined;
-    if (!scope || scope.status !== 'active') return report;
+    if (this.scopeWorkRefusal(tenantId, scopeId)) return report;
 
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
@@ -4998,6 +5004,14 @@ export class SqliteScopeHost implements ScopeHost {
         }
         report.fired += 1;
       } catch (err) {
+        // The system door can meet a suspension after the cadence gate. A refused
+        // fire did not run, so leave its row due for the first live pass.
+        if (isSubstratError(err) && err.code === 'conflict' && err.extensions.reason === SCOPE_GATE_REASONS.notActive) {
+          report.lifecycleHeld = true;
+          report.skipped += 1;
+          report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+          continue;
+        }
         status = 'failed';
         failure = { error: err };
         report.failed += 1;
@@ -5630,6 +5644,12 @@ export class SqliteScopeHost implements ScopeHost {
     lines: AsyncLinePass,
     outcomes: ExecutorOutcome[] | undefined,
   ): Promise<void> {
+    // A request that started while live may commit after a suspension. Its outbox
+    // stays due without an attempt, just as a scheduled retry does.
+    if (this.scopeWorkRefusal(rt.tenantId, rt.scopeId)) {
+      report.lifecycleHeld = true;
+      return;
+    }
     const now = new Date().toISOString();
     const scope = this.executorScope(rt);
     // #2005: a non-primary scope (a fork, a snapshot, a preview of either kind) causes no
@@ -5656,6 +5676,10 @@ export class SqliteScopeHost implements ScopeHost {
         .all(deliveryId, executor.eventType, now) as OutboxRow[];
 
       for (const row of rows) {
+        if (this.scopeWorkRefusal(rt.tenantId, rt.scopeId)) {
+          report.lifecycleHeld = true;
+          return;
+        }
         report.attempted += 1;
         // #1901: this attempt's line. Its number is the one the journal records, which
         // `recordExecutorDelivery` answers — the Durable Object's RPC does the same.
@@ -5810,6 +5834,9 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   async drainDue(tenantId: TenantId, scopeId: ScopeId): Promise<ExecutorDrainReport> {
+    if (this.scopeWorkRefusal(tenantId, scopeId)) {
+      return { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0, lifecycleHeld: true };
+    }
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     // #1525: null, and honestly so — a sweep is not a call. An attempt this pass makes
@@ -6041,8 +6068,7 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     input: StartJobRunInput,
   ): Promise<JobRun> {
-    const rt = this.runtime(tenantId, scopeId);
-    await this.applyPendingMigrations(rt);
+    const rt = await this.openActiveScope(tenantId, scopeId);
     return jobRunOf(await startJobRun(this.jobStore(rt), input, ulid, this.clock));
   }
 
@@ -6051,8 +6077,7 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: { maxPasses?: number; limit?: number },
   ): Promise<JobDriveReport> {
-    const rt = this.runtime(tenantId, scopeId);
-    await this.applyPendingMigrations(rt);
+    const rt = await this.openActiveScope(tenantId, scopeId);
     // #1575: the kernel's extraction jobs are this host's own, bound to this scope — no
     // deployment registers them, and none can shadow them. The backfill starts here, on
     // the drive, so a scope's first request never pays for attachments that predate it.
@@ -6099,6 +6124,8 @@ export class SqliteScopeHost implements ScopeHost {
     // directory, so a node control plane can drain routed intents exactly as the
     // Cloudflare one does; the context build is the same one `dispatchExecutors` hands
     // an in-process connector.
+    const refusal = this.scopeWorkRefusal(tenantId, scopeId, true);
+    if (refusal) throw substratError('conflict', refusal, { reason: SCOPE_GATE_REASONS.notActive });
     const rt = this.runtime(tenantId, scopeId);
     // `false`: this path deliberately does NOT enqueue, so nothing is held and
     // the connection's reads take an ordinary serialized turn. Built on a view bound to
@@ -12896,6 +12923,8 @@ export class SqliteScopeHost implements ScopeHost {
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
+    // #2126: NULL keeps every existing capability's attachment behavior unchanged.
+    this.ensureColumn(db, '_substrat_capabilities', 'attachments', 'attachments TEXT');
     db.exec(GRANT_CHILDREN_INDEX_DDL);
     // Executor retry state (#100), same reasoning: scopes provisioned before it
     // already have the table. Defaults read as "terminal", which is exactly right
