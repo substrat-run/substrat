@@ -645,9 +645,12 @@ merges. The supplied sweeper's firing half is held in workerd on a fixture verti
 the release carrying #1902 is live),
 `lint:tests`, `lint:floating-promises` (`tools/floating-promises.mjs`, #2131: oxlint's
 type-aware `no-floating-promises` over every workerd suite, found from the vitest configs that
-load `@cloudflare/vitest-plugin`. Its run-time half is `tools/vitest/workerd-rejections.mjs`,
-the setup file those configs share: a rejection still unhandled when a test ends fails it,
-paired by workerd's own `rejectionHandled` so an awaited RPC rejection does not — and it refuses
+load `@cloudflare/vitest-plugin`, and the shared contract-tests suites they run; a suite whose
+nearest tsconfig.json does not include it with the plugin's types is refused, not read untyped.
+Its run-time half is `tools/vitest/workerd-rejections.mjs`, the setup file those configs share
+(`pnpm test:workerd-rejections` holds it): a rejection still unhandled when a test ends fails it
+and its file, so a retry cannot clear it, paired by workerd's own `rejectionHandled` so an
+awaited RPC rejection does not — and it refuses
 `expect(<RPC promise>).rejects`, which vitest asserts on a pipelined call on the result: write
 `expect(() => stub.method()).rejects`), `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
