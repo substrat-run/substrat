@@ -38,7 +38,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
 
   type Store = { tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null };
   type Hook = (ref: string, sid: string) => Promise<void>;
-  const hooks: { restore?: Hook; marker?: Hook; read?: Hook } = {};
+  const hooks: { restore?: Hook; marker?: Hook; read?: Hook; slugResolved?: Hook } = {};
   let failRestoreInto: string | null = null;
   /** Scripts built before `/internal/delete-scope`: their delete answers 501. */
   const noDeleteVerb = new Set<string>();
@@ -173,7 +173,14 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     shortLease = createControlPlaneApi({ ...options, copyLeaseMs: LEASE });
     bySlug = createControlPlaneApi({
       ...options,
-      resolveVertical: async (s: string) => (s === slug ? deployment(`${slug}-serving`) : undefined),
+      // As the hosted resolver: the vertical's serving script, read live.
+      resolveVertical: async (s: string) => {
+        if (s !== slug) return undefined;
+        const ref = (await host.admin.verticalServing(staff, slug))?.ref;
+        if (!ref) return undefined;
+        await hooks.slugResolved?.(ref, '');
+        return deployment(ref);
+      },
     });
     await host.admin.createTenant(staff, { id: t, slug: 'crash-co', name: 'Crash Co' });
     await host.admin.registerVertical(staff, { slug, name: 'Crash Vert', source: 'cli', ownerTenant: t });
@@ -193,6 +200,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     delete hooks.restore;
     delete hooks.marker;
     delete hooks.read;
+    delete hooks.slugResolved;
   });
 
   afterAll(async () => {
@@ -597,7 +605,9 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     expect(res.status, await res.clone().text()).toBe(201);
     const { id: snap } = (await res.json()) as { id: ScopeId };
     expect(storeOf(SERVING, snap).tables).toEqual(notes('unrouted'));
-    expect(await ledgerByRef(snap)).toEqual({ [SERVING]: 'retained' });
+    // Routed onto the script its copy landed in, by the write that confirmed the move.
+    expect(await ledgerByRef(snap)).toEqual({ [SERVING]: 'done' });
+    expect((await host.admin.getScopeRecord(staff, t, snap))?.servingRef).toBe(SERVING);
     expect((await bySlug.request(`/tenants/${t}/scopes/${snap}`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
     expect(storesOf(SERVING).has(snap)).toBe(false);
   });
@@ -627,4 +637,35 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
       noDeleteVerb.delete(old);
     }
   });
+
+  // Review r3: the slug-resolved script is resolved once, and the copy goes through that ref, so a
+  // serving move between the resolution and the ledger read cannot split the bytes from the entry.
+  it('a snapshot taken while the serving script moves is ledgered, routed and reaped where its bytes land', async () => {
+    const { sid } = await unrouted();
+    const moved = `${slug}-serving-next`;
+    storesOf(moved).set(sid, { tables: notes('unrouted'), loadStamp: ulid(), revision: '1' });
+    hooks.slugResolved = async () => {
+      delete hooks.slugResolved; // once: the serving script moves right after the first resolution
+      await host.admin.setVerticalServing(staff, slug, { ref: moved, versionId: versions.v2, doClasses: [], migrationTag: 't2' });
+    };
+    try {
+      const res = await bySlug.request(`/tenants/${t}/scopes/${sid}/snapshots`, { method: 'POST', headers: asStaff, body: '{}' });
+      expect(res.status, await res.clone().text()).toBe(201);
+      const { id: snap } = (await res.json()) as { id: ScopeId };
+      const landed = [SERVING, moved].filter((ref) => storesOf(ref).has(snap));
+      expect(landed).toHaveLength(1);
+      const [where] = landed;
+      expect(await ledgerByRef(snap)).toEqual({ [where!]: 'done' });
+      expect((await host.admin.getScopeRecord(staff, t, snap))?.servingRef).toBe(where);
+      redacted.length = 0;
+      expect((await bySlug.request(`/tenants/${t}/scopes/${snap}/subjects/${ulid()}/shred`, { method: 'POST', headers: asStaff })).status)
+        .toBe(200);
+      expect(redacted).toContain(`${where} ${snap}`);
+      expect((await bySlug.request(`/tenants/${t}/scopes/${snap}`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
+      expect(storesOf(where!).has(snap)).toBe(false);
+    } finally {
+      await host.admin.setVerticalServing(staff, slug, { ref: SERVING, versionId: versions.v2, doClasses: [], migrationTag: 't1' });
+    }
+  });
+
 });

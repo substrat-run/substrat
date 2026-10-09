@@ -4739,20 +4739,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const snapId = scopeIdSchema.parse(ulid());
     // #1722: the script the copy lands in (the source's own), named in the ledger before the
     // copy, so a bind that fails, or a request that dies, leaves a fork reap and erasure reach.
-    // A source resolved by slug lives where the hosted resolver sends a slug (`slugRefOf`); that
-    // script is ledgered when the platform can reach it by ref. Otherwise the fork has no route
-    // and no entry, and reap and erasure reach it through the same slug resolution instead.
-    const ref = !options.resolveVerticalRef
-      ? null
-      : deployment.via === 'serving-script'
-        ? (scope.servingRef ?? null)
-        : deployment.via === 'bound-version' && scope.vertical && scope.verticalVersionId
-          ? ((await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null)
-          : deployment.via === 'slug' && scope.vertical
-            ? await slugRefOf(c, scope.vertical)
-            : null;
-    // The fork routes by its bound version's script, so only then does the bind route it onto the copy.
-    const bindRoutesThere = deployment.via === 'bound-version' && Boolean(scope.verticalVersionId);
+    // A pinned or bound source names it with the same value its client was resolved from. A
+    // source resolved by slug is resolved once, here (`slugRefOf`), and copied through THAT
+    // ref's client, so a serving move or a promote between two reads cannot put the bytes in
+    // one script and the ledger entry on another. Without a ref (no per-script resolution, or
+    // a slug script the platform cannot reach by ref) the fork has no entry, and reap and
+    // erasure reach it through the slug resolution instead.
+    let ref: string | null = null;
+    let copier = vertical;
+    if (options.resolveVerticalRef) {
+      if (deployment.via === 'serving-script') ref = scope.servingRef ?? null;
+      else if (deployment.via === 'bound-version' && scope.vertical && scope.verticalVersionId) {
+        ref = (await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null;
+      } else if (deployment.via === 'slug' && scope.vertical) {
+        ref = await slugRefOf(c, scope.vertical);
+        const byRef = ref ? await options.resolveVerticalRef(ref) : undefined;
+        if (byRef) copier = byRef;
+        else ref = null;
+      }
+    }
     // Directory row FIRST, as `provisioning` (K-31's two-phase shape, used as
     // intended): a crash between the row and the data copy leaves an inert
     // provisioning row — which, carrying provenance and an expiry, the GC sweep
@@ -4774,16 +4779,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // this copy (`retained`) rather than wiping it, and reap and erasure still reach it.
         await c.var.admin.recordScopeScriptCopy(actor, tenantId, snapId, ref, moveId, { role: 'destination', leaseMs: copyLeaseMs });
       }
-      await retryTransient(() => vertical.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId, tenantId }));
+      await retryTransient(() => copier.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId, tenantId }));
       await c.var.admin.activateScope(actor, tenantId, snapId);
       // Bound to the SOURCE's current version: source and fork share a deployment, so
       // the fork resolves to the DO namespace its bytes actually live in.
       if (scope.verticalVersionId) {
-        await c.var.admin.bindScopeVersion(actor, tenantId, snapId, scope.verticalVersionId,
-          moveId && bindRoutesThere ? { confirmMove: { moveId, source: 'retained' } } : undefined);
+        await c.var.admin.bindScopeVersion(actor, tenantId, snapId, scope.verticalVersionId);
       }
-      if (moveId && ref && !bindRoutesThere) {
-        await c.var.admin.settleScopeScriptCopy(actor, tenantId, snapId, ref, moveId, 'retained');
+      // The fork's route is the script its bytes were copied into, taken from the same `ref`, not
+      // from the serving pointer `provisionScope` stamped (which may have moved since). Pinning it
+      // there routes the fork onto its copy, so it is the write that confirms the move.
+      if (moveId && ref) {
+        await c.var.admin.setScopeServingRef(actor, tenantId, snapId, ref, { confirmMove: { moveId, source: 'retained' } });
       }
     } catch (e) {
       if (moveId && ref) {
