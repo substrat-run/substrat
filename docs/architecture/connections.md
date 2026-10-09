@@ -213,7 +213,7 @@ export interface SecretBox {
 - **dev / self-host** — AES-GCM via Web Crypto, key from env. Fail closed if unset. The rule is
   already written down at [platform-call.ts:40](../../packages/kernel/src/platform-call.ts):
   *"An unset secret is a failure, not a bypass."* Note the router secret currently does the
-  opposite ([routed-node.ts:65](../../packages/kernel/src/routed-node.ts), `expectedSecret &&`)
+  opposite ([routed-node.ts](../../packages/vertical-host/src/routed-node.ts), `expectedSecret &&`)
   and Better Auth ships a hardcoded fallback
   ([staff-auth.ts:32](../../apps/control-plane/src/staff-auth.ts)); neither is a precedent to
   copy here.

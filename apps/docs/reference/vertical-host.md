@@ -521,6 +521,33 @@ network round-trip, and holding a scope's transaction open across it would be th
 harness and records the result through its own operations. Margin is not here either —
 the line carries list price; the platform's rate lives beside entitlements.
 
+## Trusting the edges
+
+The code that reads what the router asserted about a request, and writes that assertion down.
+It lived in the kernel until #1978; nothing in it needs a kernel guarantee.
+
+- **`readRoutedNode(headers, options)`**, **`RouterAssertionError`** — the vertical's side of
+  the router contract: read the `(tenant, scope, surface)` the router asserted over its service
+  binding. A request with **no** assertion is legitimate — that is a standalone deploy — so it
+  answers `null`; a present but unsigned, incomplete or malformed one throws.
+- **`invocationLog(options)`**, **`withInvocationLog(worker, options)`**, **`invocationStampOf`**
+  — one structured log line per invocation, stamped with the tenant and scope the router
+  asserted: the two dimensions Cloudflare cannot record, because observability is keyed on the
+  script and one vertical's script serves every tenant that installed it. A successful request
+  otherwise emits no log event at all, so this line is what gives a tenant-facing log view any
+  rows. The stamp is written from `readRoutedNode`'s *verified* answer, never from the header: a
+  forged tenant would file chosen text on somebody else's dashboard, and an un-routed local
+  invocation writes nothing. `withInvocationLog` is the same stamp around a whole module
+  worker's `fetch`, and it is what the platform wraps every uploaded vertical in (#1893).
+  Mounted as middleware, `app.use('*', invocationLog({ routerSecret }))` **first** on a Hono
+  app, it writes the line itself when nothing outside stamped the request, and steps aside when
+  something did: the two share one stamp per request through `invocationStampOf`, so a request
+  is never logged twice. `pnpm lint:invocation-log` refuses a missing, late or secretless mount
+  (#1418). The line's shape, `InvocationLogLine`, is the kernel's
+  ([`invocation-line.ts`](/reference/kernel#trusting-the-edges)), re-exported here.
+- **`assertPlatformCall`**, **`PlatformCallError`**, **`kickFlags`** — is the platform itself
+  calling? Still defined in the kernel and re-exported here; import them from here.
+
 ## License
 
 AGPL-3.0-only (dual-licensed commercially).

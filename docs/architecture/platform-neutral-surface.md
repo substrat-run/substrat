@@ -250,7 +250,7 @@ Each vertical ships its own thin HTTP server, but the *conventions* are shared a
   and the **same Zod schema** is both the runtime validator and the documented contract
   (no drift). `buildOpenApiDocument` renders OpenAPI 3.1 with one path per operation under
   `POST /api/op/{operationName}`.
-- **Routing contract** — `packages/kernel/src/routed-node.ts`. `readRoutedNode(headers, opts)`
+- **Routing contract** — `packages/vertical-host/src/routed-node.ts`. `readRoutedNode(headers, opts)`
   returns `{ tenantId, scopeId, surface, verticalSlug }` by reading the `x-substrat-*`
   headers a front router stamps (signed by `x-substrat-router` against `expectedSecret`).
   `HeaderReader` is just `{ get(name): string | null }`, which a real `Headers` or a plain

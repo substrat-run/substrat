@@ -1,10 +1,10 @@
-import type { HeaderReader } from './routed-node.js';
 import type { ScopeStubOptions } from './scope-host.js';
 import {
   EXPORTED_EVENTS_HEADER,
   PLATFORM_REQUEST_HEADER,
   PLATFORM_SECRET_HEADER,
 } from '@substrat-run/contracts/wire-headers';
+import { secretMatches } from './secret-match.js';
 
 /**
  * Authenticating a call FROM the platform TO a vertical (K-31).
@@ -15,8 +15,8 @@ import {
  *
  * It is shared code for the same reason `readRoutedNode` is — five verticals each
  * re-deriving how to trust a header is five chances to get it wrong, and the one that
- * gets it wrong is not obviously broken. Both are moving from the kernel to
- * `vertical-host` (#1978), which already re-exports them.
+ * gets it wrong is not obviously broken. `readRoutedNode` moved to `vertical-host` in
+ * #1978 and this one is moving after it; `vertical-host` already re-exports it.
  *
  * Note the direction. `readRoutedNode` answers "which tenant is this request for",
  * and a request with no assertion is legitimate (a standalone deploy). This answers
@@ -25,18 +25,13 @@ import {
  * So this one **fails closed with no configuration at all**.
  */
 
+/** The one method this needs from a `Headers`. A real `Headers` satisfies it. */
+interface HeaderReader {
+  get(name: string): string | null;
+}
+
 /** Thrown when a call does not prove it came from the platform. */
 export class PlatformCallError extends Error {}
-
-/** Constant-time compare, so a wrong secret leaks nothing through timing. */
-export function secretMatches(presented: string | null, expected: string): boolean {
-  if (!presented || presented.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) {
-    diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
-  }
-  return diff === 0;
-}
 
 /**
  * Both kick flags as the stub options that raise them (#1705 PR 2): spread into `getScope`'s
