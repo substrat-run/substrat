@@ -4067,6 +4067,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     input: z.object({ folderId: z.string(), name: z.string().trim().min(1) }),
     output: ticket0Entities.savedReplyFolder.fields,
     http: { method: 'PATCH', path: '/saved-reply-folders/{folderId}' },
+    patchException: 'This rename command requires a name; its handler writes only name.',
     concurrency: { over: 'savedReplyFolder', idFrom: 'folderId' },
     emits: {
       entity: 'savedReplyFolder',

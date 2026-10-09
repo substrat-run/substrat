@@ -206,6 +206,17 @@ handler, and a new operation cannot forget to.
 
 Omit `input` entirely for an operation that takes no body.
 
+A `PATCH` route takes a partial update: every body field must be optional, and none may
+have a Zod default or prefault. A default turns an omitted field into a supplied value
+before the handler sees it. Path parameters may remain required. `defineOperations`
+checks this when the module loads; `defineEngineRoutes` checks it when an engine
+operation is bound to its final HTTP method. A full replacement belongs on `PUT`.
+When a PATCH operation deliberately requires a body field, declare
+`patchException: 'reason'` on the operation. The reason must explain why the handler
+preserves the other fields, so a reviewer can check the exception against its code.
+This declaration check cannot inspect a handler's SQL or prove that an omitted field
+is preserved.
+
 ### Where `PERMISSIONS` comes from
 
 That array is the one thing in the model written twice: the keys are also declared, with their
@@ -440,6 +451,36 @@ document, a raw header. It may sit on its row and never ride an event.
 
 That check resolves through `emits.entity`, so it is exact: a `name` marked erasable on
 `customer` does not wrongly refuse an event about an `office` carrying its own `name`.
+
+## What runtime declaration checks refuse
+
+A `PATCH` route takes a partial update: every body field must be optional, and none may
+have a Zod default or prefault. A default turns an omitted field into a supplied value
+before the handler sees it. Path parameters may remain required. `defineOperations`
+checks this when the module loads; `defineEngineRoutes` checks it when an engine operation
+is bound to its final HTTP method. A full replacement belongs on `PUT`. When a PATCH
+operation deliberately requires a body field, declare `patchException: 'reason'` on the
+operation. The reason must explain why the handler preserves the other fields, so a
+reviewer can check the exception against its code. This declaration check cannot inspect
+a handler's SQL or prove that an omitted field is preserved.
+
+The walk is about omission: nothing in the schema may give an omitted field, or a partial
+object, a value the caller did not send. So it refuses defaults, prefaults and `.catch()`
+anywhere in the tree, transforms, preprocessing and codecs, any `.overwrite()` on an object,
+array, record, union or intersection, and a schema kind or check kind it does not know. The
+input object itself is held to the same rules: it must be a plain `z.object`, and an
+`.overwrite()` or `.transform()` on the whole body is refused.
+Ordinary normalization of a supplied string is allowed: `.trim()`, `.toLowerCase()`,
+`.toUpperCase()` and `.normalize()` on a string field only rewrite what the caller sent, so
+`z.string().trim().optional()` passes. Those four are recognized precisely; a custom
+`.overwrite()` is arbitrary code and is refused even on a string. Declarative validation
+checks such as `.min()`, `.max()` and formats are allowed.
+
+One limit the check cannot close: a `.refine()`, `.superRefine()` or `.check()` callback
+receives the parsed value by reference and can mutate it, and nothing at load time can tell
+such a callback from a validator. Refusing every callback would refuse legitimate
+validation, so they pass the check. Mutating the value inside one is unsupported on a PATCH
+input, and keeping those callbacks to validation is the author's responsibility.
 
 ## Composing engines
 
