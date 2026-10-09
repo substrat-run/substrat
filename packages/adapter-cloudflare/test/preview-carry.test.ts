@@ -481,6 +481,21 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await hostFor('v1').restoreScopeLocal(created.body.scopeId, notes(...bodies));
       return created.body;
     };
+    it('three successive versions leave one serving copy and two wiped copies', async () => {
+      const p = await fresh('three-versions', 'from v1');
+      expect((await push('three-versions', 'v2')).status).toBe(200);
+      await hostFor('v2').restoreScopeLocal(p.scopeId, notes('from v1', 'from v2'));
+      expect((await push('three-versions', 'v3')).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v3), bodies: ['from v1', 'from v2'] });
+      expect(await Promise.all((['v1', 'v2', 'v3'] as const).map(async (v) => ({
+        bodies: bodiesIn(await hostFor(v).exportScopeLocal(p.scopeId)),
+        wiped: (await tombstoneIn(v, p.scopeId)) !== null,
+      })))).toEqual([
+        { bodies: [], wiped: true },
+        { bodies: [], wiped: true },
+        { bodies: ['from v1', 'from v2'], wiped: false },
+      ]);
+    });
     it('records a failed source wipe, but a later preview reap currently leaves that copy behind', async () => {
       const p = await fresh('failed-wipe-reap', 'copied data');
       hooks.wipe = async (ref, sid) => {
