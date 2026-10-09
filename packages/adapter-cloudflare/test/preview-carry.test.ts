@@ -1892,4 +1892,102 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(sid))).toEqual(['kept']);
     });
   });
+
+  describe('the backfill ledgers a copy made before the ledger existed (#1722)', () => {
+    // A pointer-only rebind, as every move before the ledger was: v1's script keeps the scope's
+    // data and the ledger names nothing. After the adopt/rebind block, because the walk reads the
+    // whole log and records the historic copies of every scope above too.
+    const backfill = async (dryRun: boolean) => {
+      const entries: { scopeId: string | null; scriptRef: string | null; outcome: string; reason?: string }[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const res = await api.request('/scope-copies/backfill', {
+          method: 'POST', headers: auth, body: JSON.stringify({ dryRun, limit: 200, ...(cursor ? { cursor } : {}) }),
+        });
+        expect(res.status, await res.clone().text()).toBe(200);
+        const page = (await res.json()) as { entries: typeof entries; nextCursor: string; done: boolean };
+        entries.push(...page.entries);
+        if (page.done) return entries;
+        cursor = page.nextCursor;
+      }
+    };
+    const ledgerOf = async (sid: ScopeId) =>
+      (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+        .map(({ scriptRef, moveId, state }) => ({ scriptRef, moveId, state }));
+    let sid: ScopeId;
+    let wipedSid: ScopeId;
+    let bare: string;
+
+    beforeAll(async () => {
+      sid = scopeId.parse(ulid());
+      await dir.provisionScope(staff, { tenantId: t, scopeId: sid, vertical: slug });
+      await dir.admin.activateScope(staff, t, sid);
+      await dir.admin.bindScopeVersion(staff, t, sid, version.v1);
+      await dir.admin.setScopeServingRef(staff, t, sid, null);
+      await hostFor('v1').restoreScopeLocal(sid, notes('historic'));
+      await dir.admin.bindScopeVersion(staff, t, sid, version.v2);
+      // A version with no script of its own: the log names it, and no ref can be read from it.
+      bare = ulid();
+      await dir.admin.publishVersion(staff, {
+        id: bare, verticalSlug: slug, version: '1.0.9', manifestDigest: 'm-bare', permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: null,
+      });
+      await dir.admin.bindScopeVersion(staff, t, sid, bare);
+      await dir.admin.bindScopeVersion(staff, t, sid, version.v2);
+      // A scope whose v3 copy a wipe already emptied: its tombstone is the proof.
+      wipedSid = scopeId.parse(ulid());
+      await dir.provisionScope(staff, { tenantId: t, scopeId: wipedSid, vertical: slug });
+      await dir.admin.activateScope(staff, t, wipedSid);
+      await dir.admin.bindScopeVersion(staff, t, wipedSid, version.v3);
+      await dir.admin.setScopeServingRef(staff, t, wipedSid, null);
+      await hostFor('v3').restoreScopeLocal(wipedSid, notes('carried'));
+      const { loadStamp } = await hostFor('v3').loadMarkerLocal(wipedSid);
+      expect(await hostFor('v3').wipeCarriedLocal(wipedSid, loadStamp, { to: refOf.get(version.v2)!, at: new Date().toISOString() }, {}))
+        .toBe(true);
+      await dir.admin.bindScopeVersion(staff, t, wipedSid, version.v2);
+    });
+
+    it('a dry run reports the historic copy and the failure, and writes nothing', async () => {
+      const entries = await backfill(true);
+      const mine = entries.filter((e) => e.scopeId === sid);
+      expect(mine).toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v1), outcome: 'would-record' }));
+      expect(mine).toContainEqual(expect.objectContaining({ outcome: 'failure', reason: expect.stringContaining(`version ${bare}`) }));
+      expect(entries.filter((e) => e.scopeId === wipedSid))
+        .toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v3), outcome: 'wiped' }));
+      expect(await ledgerOf(sid)).toEqual([]);
+    });
+
+    it('records the historic copy as retained, leaves its store as it was, and a re-run is a no-op', async () => {
+      const entries = (await backfill(false)).filter((e) => e.scopeId === sid);
+      expect(entries).toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v1), outcome: 'recorded' }));
+      expect(entries.filter((e) => e.outcome === 'failure').length).toBeGreaterThan(0);
+      const ledger = await ledgerOf(sid);
+      // Every backfilled entry is retained. v1 holds the data; the scope was also born on the
+      // serving script the adopt block above set, which the log names too, and which holds nothing.
+      expect(ledger).toContainEqual({ scriptRef: refOf.get(version.v1), moveId: 'backfill:1722', state: 'retained' });
+      expect(ledger.every((c) => c.moveId === 'backfill:1722' && c.state === 'retained')).toBe(true);
+      expect(ledger.map((c) => c.scriptRef)).not.toContain(refOf.get(version.v2));
+      expect(await ledgerOf(wipedSid)).toEqual([]);
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(sid))).toEqual(['historic']);
+      expect(await tombstoneIn('v1', sid)).toBeNull();
+
+      const again = (await backfill(false)).filter((e) => e.scopeId === sid);
+      expect(again.some((e) => e.outcome === 'recorded')).toBe(false);
+      expect(again).toContainEqual(expect.objectContaining({ scriptRef: refOf.get(version.v1), outcome: 'ledgered' }));
+      expect(await ledgerOf(sid)).toEqual(ledger);
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(sid))).toEqual(['historic']);
+    });
+
+    it('erasure then reaches the historic copy', async () => {
+      const reached: string[] = [];
+      hooks.redact = async (ref, s) => { if (s === sid) reached.push(ref); };
+      try {
+        const res = await api.request(`/tenants/${t}/scopes/${sid}/subjects/${ulid()}/shred`, { method: 'POST', headers: auth });
+        expect(res.status, await res.clone().text()).toBe(200);
+      } finally {
+        delete hooks.redact;
+      }
+      expect(reached).toEqual(expect.arrayContaining([refOf.get(version.v1), refOf.get(version.v2)]));
+    });
+  });
 });
