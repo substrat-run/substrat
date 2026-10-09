@@ -7771,7 +7771,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const outputSurface = storedDeployManifest.parse(JSON.parse(json)).outputSurface ?? [];
     const declared = Object.fromEntries(outputSurface.map((op) => [op.operationId, op.fields]));
     return c.json(await options.observability.fieldCoverage({
-      tenantId: input.tenantId, vertical: installed.vertical, services, declared,
+      tenantId: input.tenantId, vertical: installed.vertical, scopeId: input.scopeId, services, declared,
       versionId: input.versionId, hours: input.hours,
       ...(input.since ? { since: input.since, until: input.until } : {}),
     }));

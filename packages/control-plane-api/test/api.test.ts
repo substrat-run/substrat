@@ -6237,7 +6237,7 @@ describe('control-plane API — observability proxy', () => {
       const route = `/observability/tenant-field-coverage?scopeId=${sc}&versionId=${versionId}`;
       const own = await app.request(route, { headers: asBuilder });
       expect(own.status, await own.text()).toBe(200);
-      expect(seen[0]).toMatchObject({ tenantId: builderTenant, vertical: slug,
+      expect(seen[0]).toMatchObject({ tenantId: builderTenant, vertical: slug, scopeId: sc,
         services: [slug], declared: { 'field/get': ['id'] }, versionId });
       const someoneElse = tenantId.parse(ulid());
       expect((await app.request(`${route}&tenantId=${someoneElse}`, { headers: asBuilder })).status).toBe(200);

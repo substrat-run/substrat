@@ -12,7 +12,7 @@ it('queries only one tenant and one app family, then joins router rate before re
     requests.push(body.parameters);
     const router = body.parameters.filters.some((f) => JSON.stringify(f).includes('"router"'));
     const source = router
-      ? { router: 'request', tenantId: tenant, vertical: 'acme/widgets', fieldCoverageId: id, fieldCoverageRate: 0.2 }
+      ? { router: 'request', tenantId: tenant, scopeId: 'scope-a', vertical: 'acme/widgets', fieldCoverageId: id, fieldCoverageRate: 0.2 }
       : { substrat: 'invocation', tenantId: tenant, vertical: 'acme/widgets', versionId: 'v1',
           method: 'GET', operation: 'acme/get', fieldCoverageId: id,
           outputFields: { present: ['id'], empty: [], absent: [] } };
@@ -21,12 +21,15 @@ it('queries only one tenant and one app family, then joins router rate before re
       { status: 200 });
   }));
   const read = await createCfObservabilityReader({ accountId: 'acct', apiToken: 'tok' }).fieldCoverage!({
-    tenantId: tenant, vertical: 'acme/widgets', services: ['acme-widgets'], versionId: 'v1',
+    tenantId: tenant, vertical: 'acme/widgets', scopeId: 'scope-a', services: ['acme-widgets'], versionId: 'v1',
     declared: { 'acme/get': ['id'] }, hours: 1,
   });
   expect(requests).toHaveLength(3); // vertical plus both router environments
   expect(requests.every((r) => JSON.stringify(r.filters).includes(tenant))).toBe(true);
   expect(requests.every((r) => JSON.stringify(r.filters).includes('acme/widgets'))).toBe(true);
+  // The router queries are narrowed to the page's scope, read off the router's own line.
+  expect(requests.filter((r) => JSON.stringify(r.filters).includes('"router"'))
+    .every((r) => JSON.stringify(r.filters).includes('"scopeId"') && JSON.stringify(r.filters).includes('scope-a'))).toBe(true);
   expect(read.groups[0]?.sampleRate).toBe(0.2);
   expect(read.groups[0]?.operations[0]?.fields[0]?.present).toBe(1);
 });

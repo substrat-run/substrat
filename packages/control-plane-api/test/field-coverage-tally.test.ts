@@ -83,6 +83,20 @@ describe('router-owned field coverage rates (#1331)', () => {
     expect(tallyFieldCoverageByRate([own], [], scope)).toEqual([]);
   });
 
+  it('counts only dispatches the router sent to the page scope, never a sibling install', () => {
+    const own = line();
+    const sibling = line({ scopeId: '01JZ0000000000000000SCP001' });
+    const siblingRouter = { ...routerLine(idOf(sibling)), source: { ...routerLine(idOf(sibling)).source, scopeId: '01JZ0000000000000000SCP002' } };
+    const one = { ...scope, scopeId: '01JZ0000000000000000SCP001' };
+    const rated = tallyFieldCoverageByRate([own, sibling], [routerLine(idOf(own)), siblingRouter], one);
+    expect(rated[0]).toMatchObject({ armedRequests: 1 });
+    expect(rated[0]?.operations[0]?.responses).toBe(1);
+    // The vertical's own scopeId is not what decides it: the sibling report claims the page scope.
+    expect(tallyFieldCoverage([sibling], [siblingRouter], one).operations).toEqual([]);
+    // With no scope named, both installs count — the tenant-wide read stays as it was.
+    expect(tallyFieldCoverageByRate([own, sibling], [routerLine(idOf(own)), siblingRouter], scope)[0]?.armedRequests).toBe(2);
+  });
+
   it('counts a duplicate router dispatch under only its first recorded rate', () => {
     const report = line();
     const first = routerLine(idOf(report));

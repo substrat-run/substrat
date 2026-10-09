@@ -97,6 +97,11 @@ export interface FieldCoverageScope {
   tenantId: string;
   /** The app's vertical slug, as the router resolves it onto its line (`vertical`). */
   vertical: string;
+  /**
+   * The one installed app (`scopeId` on the router's line), when the read is for a single
+   * scope. Omitted, every scope of this vertical in the tenant counts.
+   */
+  scopeId?: string;
   /** The app's script family stems. Empty names no script, so nothing counts. */
   services: readonly string[];
   /**
@@ -123,17 +128,27 @@ function serviceOf(event: object): unknown {
 function dispatchIdsFor(routerEvents: Iterable<unknown>, scope: FieldCoverageScope): Set<string> {
   const ids = new Set<string>();
   for (const event of routerEvents) {
-    if (event === null || typeof event !== 'object') continue;
-    const service = serviceOf(event);
-    if (typeof service !== 'string' || !ROUTER_SCRIPT_NAMES.includes(service)) continue;
-    const source = (event as Record<string, unknown>)['source'];
-    if (source === null || typeof source !== 'object') continue;
-    const line = source as Record<string, unknown>;
-    if (line['router'] !== 'request' || line['tenantId'] !== scope.tenantId || line['vertical'] !== scope.vertical) continue;
-    const id = line[FIELD_COVERAGE_ID_FIELD];
-    if (typeof id === 'string' && DISPATCH_ID.test(id)) ids.add(id);
+    const vouched = routerDispatch(event, scope);
+    if (vouched) ids.add(vouched.id);
   }
   return ids;
+}
+
+/**
+ * One router request line that vouches for a dispatch in `scope`, or `undefined`. Tenant, app
+ * and scope are read off the ROUTER's line only, never off the vertical's report.
+ */
+function routerDispatch(event: unknown, scope: FieldCoverageScope): { id: string; line: Record<string, unknown> } | undefined {
+  if (event === null || typeof event !== 'object') return undefined;
+  const service = serviceOf(event);
+  if (typeof service !== 'string' || !ROUTER_SCRIPT_NAMES.includes(service)) return undefined;
+  const source = (event as Record<string, unknown>)['source'];
+  if (source === null || typeof source !== 'object') return undefined;
+  const line = source as Record<string, unknown>;
+  if (line['router'] !== 'request' || line['tenantId'] !== scope.tenantId || line['vertical'] !== scope.vertical) return undefined;
+  if (scope.scopeId !== undefined && line['scopeId'] !== scope.scopeId) return undefined;
+  const id = line[FIELD_COVERAGE_ID_FIELD];
+  return typeof id === 'string' && DISPATCH_ID.test(id) ? { id, line } : undefined;
 }
 
 /**
@@ -291,18 +306,13 @@ export function tallyFieldCoverageByRate(
   const ids = new Map<number | null, Set<string>>();
   const assigned = new Set<string>();
   for (const event of routerEvents) {
-    if (event === null || typeof event !== 'object') continue;
-    if (!ROUTER_SCRIPT_NAMES.includes(String(serviceOf(event)))) continue;
-    const source = (event as Record<string, unknown>)['source'];
-    if (source === null || typeof source !== 'object') continue;
-    const line = source as Record<string, unknown>;
-    const id = line[FIELD_COVERAGE_ID_FIELD];
-    if (line['router'] !== 'request' || line['tenantId'] !== scope.tenantId || line['vertical'] !== scope.vertical || typeof id !== 'string' || !DISPATCH_ID.test(id)) continue;
+    const vouched = routerDispatch(event, scope);
+    if (!vouched) continue;
+    const { id, line } = vouched;
     // A duplicate router line cannot assign one response to several rates.
     if (assigned.has(id)) continue;
     assigned.add(id);
-    // The tally below still checks router script, tenant, app, and dispatch id. The rate
-    // comes only from this router line, never from the vertical's report.
+    // The rate comes only from this router line, never from the vertical's report.
     const candidate = line['fieldCoverageRate'];
     const rate = typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0 && candidate <= 1
       ? candidate : null;

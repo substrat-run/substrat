@@ -1126,6 +1126,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
         { key: 'router', operation: 'eq', type: 'string', value: 'request' },
         { key: 'vertical', operation: 'eq', type: 'string', value: input.vertical },
+        { key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId },
         { key: FIELD_COVERAGE_ID_FIELD, operation: 'regex', type: 'string', value: '^[0-9A-HJKMNP-TV-Z]{26}$' },
         { key: '$metadata.service', operation: 'eq', type: 'string', value: service },
       ], timeframe)))).flat();

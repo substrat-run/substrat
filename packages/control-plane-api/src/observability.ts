@@ -436,6 +436,8 @@ export interface ObservabilityReader {
   fieldCoverage?(input: {
     tenantId: string;
     vertical: string;
+    /** The one installed app; only router lines dispatched to it vouch for a report. */
+    scopeId: string;
     services: readonly string[];
     declared?: Readonly<Record<string, readonly string[]>>;
     versionId?: string;
