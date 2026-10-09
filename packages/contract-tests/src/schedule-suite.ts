@@ -309,7 +309,7 @@ export function scheduleContractSuite(
       expect((await host.runDueSchedules(SCHED_MODULE, otherTenant, otherScope)).fired).toBe(2);
 
       await host.admin.setTenantStatus(staff, t, 'active');
-      expect(await host.runDueSchedules(SCHED_MODULE, t, sibling)).toMatchObject({ fired: 2 });
+      expect(await host.runDueSchedules(SCHED_MODULE, t, sibling)).toEqual({ fired: 2 });
       expect((await (await host.getScope(reader, t, sibling)).invoke('sched/count'))).toBe(1);
       expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(0);
     });
