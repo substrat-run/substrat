@@ -133,7 +133,8 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
+import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
+import { SCOPE_COPY_LEASE_MS, copyRestoreFence } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
 import {
@@ -344,6 +345,9 @@ export interface ControlPlaneApiOptions {
    * resolvers, which is only correct before any scope has adopted the serving script.
    */
   resolveVerticalRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+  /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
+   *  (`CopyRestoreFence`). `SCOPE_COPY_LEASE_MS` unless a test needs a lease it can outlive. */
+  copyLeaseMs?: number;
   /**
    * Uploads a built vertical bundle to the platform runtime (a WfP dispatch
    * namespace), injected by the host so this package holds no Cloudflare SDK and the
@@ -1408,6 +1412,7 @@ const namedTenants = (c: Context<{ Variables: Vars }>): string[] => {
  */
 export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ Variables: Vars }> {
   const { host, authenticate, authenticateBuilder, authenticateTenantService } = options;
+  const copyLeaseMs = options.copyLeaseMs ?? SCOPE_COPY_LEASE_MS;
   const app = new Hono<{ Variables: Vars }>();
 
   // The CLI version advisory (#971), stamped on EVERY response — including the 401 the
@@ -2738,7 +2743,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
      *  and `exact` when the platform exported them itself rather than a caller supplying them.
      *  #1722: `loadStamp`, the stamp a carry leaves on the copy it lands, and `expect`, the marker
      *  the carry read from `dest`, so a store that moved since is never overwritten. */
-    source: { scopeId: ScopeId; exact: boolean; loadStamp?: string; expect?: LoadMarker },
+    source: { scopeId: ScopeId; exact: boolean; loadStamp?: string; expect?: LoadMarker; fence?: CopyRestoreFence },
   ): ReturnType<VerticalClient['restoreScope']> => {
     // #2005: every carry, reuse, adopt and governed restore lands here. When the directory says
     // the destination is not primary, the vertical marks it a copy in its own storage — a carry
@@ -2753,6 +2758,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         exact: source.exact,
         loadStamp: source.loadStamp,
         expect: source.expect,
+        ...(source.fence ? { fence: source.fence } : {}),
         ...(markCopy ? { markCopy } : {}),
       }),
     );
@@ -3002,16 +3008,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const sourceRef = await routeOf(c, scope);
     const moveId = sourceRef !== servingRef ? ulid() : null;
     const restoredStamp = ulid();
-    if (moveId && sourceRef) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, { role: 'source' });
+    const recordedAt = Date.now();
+    if (moveId && sourceRef) {
+      await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, { role: 'source', leaseMs: copyLeaseMs });
+    }
     try {
       if (moveId) {
         await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, servingRef, moveId,
-          { role: 'destination', loadStamp: restoredStamp });
+          { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
       }
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
       const dump = await source.exportScope(scopeId);
-      const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump,
-        { scopeId, exact: true, loadStamp: restoredStamp });
+      const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, {
+        scopeId, exact: true, loadStamp: restoredStamp,
+        ...(moveId ? { fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch) } : {}),
+      });
       await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, servingRef, {
         ...routeOpts, expectedErasureEpoch: erasureEpoch,
         ...(moveId ? { confirmMove: { moveId, source: 'retained' as const } } : {}),
@@ -3152,12 +3163,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // a stamp of this carry's own, which a refused bind's wipe of the copy expects, and which the
     // destination's entry names before the restore so a crash-recovery sweep can fence on it.
     const restoredStamp = ulid();
-    await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, from, moveId, { role: 'source' });
+    const recordedAt = Date.now();
+    await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, from, moveId, { role: 'source', leaseMs: copyLeaseMs });
     try {
       // The unbound destination can also survive a refused bind or a failed best-effort
       // cleanup. Name it before any bytes are restored so reap and erasure can find it.
       await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId,
-        { role: 'destination', loadStamp: restoredStamp });
+        { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
       const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
         source.exportScopeStamped(scope.id),
@@ -3191,6 +3203,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         exact: true,
         loadStamp: restoredStamp,
         ...(destMarker === 'unfenced' ? {} : { expect: destMarker }),
+        // The store refuses this load once the move's lease can have run out (#1722).
+        fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch),
       });
       return {
         moveId,

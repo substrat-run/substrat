@@ -116,6 +116,11 @@ export type {
 } from './mail-sender.js';
 export {
   COPY_CLAIM_SQL,
+  COPY_RESTORE_FENCE_LAPSED,
+  copyRestoreFence,
+  copyRestoreFenceLapsed,
+  copyRestoreFenceMarginMs,
+  type CopyRestoreFence,
   COPY_EXPIRED_SQL,
   COPY_MOVE_CONFIRM_SQL,
   COPY_MOVE_LIVE_PREDICATE,

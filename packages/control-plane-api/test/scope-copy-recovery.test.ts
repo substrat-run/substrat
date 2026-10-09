@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import {
-  CARRIED_AWAY_KEY, SCOPE_COPY_LEASE_MS, carriedAwayDump, dumpMetaValue, ulid, webCryptoSecretBox, type LoadMarker,
+  CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, SCOPE_COPY_LEASE_MS, carriedAwayDump, copyRestoreFenceLapsed, dumpMetaValue, ulid,
+  webCryptoSecretBox, type CopyRestoreFence, type LoadMarker,
 } from '@substrat-run/kernel';
 import { platformActorId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import {
@@ -54,8 +55,13 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
         const { loadStamp, revision } = storeOf(ref, sid);
         return { loadStamp, revision };
       },
-      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[], opts?: { loadStamp?: string; expect?: LoadMarker }) => {
+      restoreScope: async (_t: string, sid: string, tables: ScopeDumpTable[],
+        opts?: { loadStamp?: string; expect?: LoadMarker; fence?: CopyRestoreFence }) => {
         await hooks.restore?.(ref, sid);
+        // As the scope DO does, first in the load: the move's lease, against the store's clock.
+        if (opts?.fence && copyRestoreFenceLapsed(opts.fence, Date.now())) {
+          throw new ControlPlaneError(412, COPY_RESTORE_FENCE_LAPSED);
+        }
         const now = storeOf(ref, sid);
         if (opts?.expect && (opts.expect.loadStamp !== now.loadStamp || opts.expect.revision !== now.revision)) {
           throw new ControlPlaneError(412, `store ${sid} in ${ref} moved since the carry read it`);
@@ -94,6 +100,9 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   let app: ReturnType<typeof createControlPlaneApi>;
+  /** The same control plane with a lease a test can outlive in real time. */
+  let shortLease: ReturnType<typeof createControlPlaneApi>;
+  const LEASE = 600;
   const cleanup = () => ({ admin: host.admin, actor: staff, resolveRef: async (ref: string) => deployment(ref) });
   const afterLease = () => new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000);
 
@@ -131,7 +140,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-copy-recovery-'));
     host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(3)) });
-    app = createControlPlaneApi({
+    const options = {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       platformBaseDomains: ['global.substrat.run'],
@@ -141,7 +150,9 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
         return ref ? deployment(ref) : undefined;
       },
       resolveVerticalRef: async (ref: string) => deployment(ref),
-    });
+    };
+    app = createControlPlaneApi(options);
+    shortLease = createControlPlaneApi({ ...options, copyLeaseMs: LEASE });
     await host.admin.createTenant(staff, { id: t, slug: 'crash-co', name: 'Crash Co' });
     await host.admin.registerVertical(staff, { slug, name: 'Crash Vert', source: 'cli', ownerTenant: t });
     for (const v of ['v1', 'v2'] as const) {
@@ -244,5 +255,50 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     expect(storeOf(refOf.get(versions.v2)!, sid).tables).toEqual(notes('kept'));
     const swept = await settleExpiredScopeScriptCopies(cleanup(), { now: afterLease() });
     expect(swept.claimed).toBe(0);
+  });
+
+  // The destination restore carries the move's lease and refuses itself past it (#1722), so a
+  // carry that is slow rather than dead cannot land a copy after the sweep, reap or erasure that
+  // waited for its lease.
+  const pushShort = (tag: string) => shortLease.request(`/verticals/${slug}/previews`, {
+    method: 'POST', headers: asStaff, body: JSON.stringify({ tag, versionId: versions.v2, empty: true }),
+  });
+  const outlive = () => new Promise((resolve) => setTimeout(resolve, LEASE + 100));
+
+  it('a restore that resumes after its lease ran out is refused and writes nothing', async () => {
+    const sid = await fresh('fence-lapsed');
+    const crash = crashAt('restore', refOf.get(versions.v2)!, sid);
+    const moving = pushShort('fence-lapsed');
+    await crash.at;
+    await outlive();
+    crash.release();
+    const refused = await moving;
+    expect(refused.status).toBe(412);
+    expect(await refused.text()).toContain('lease ran out');
+    expect(storesOf(refOf.get(versions.v2)!).has(sid)).toBe(false);
+    expect(storeOf(refOf.get(versions.v1)!, sid).tables).toEqual(notes('kept'));
+    expect((await host.admin.getScopeRecord(staff, t, sid))!.verticalVersionId).toBe(versions.v1);
+  });
+
+  it('a restore that resumes after the scope was reaped is refused and writes nothing', async () => {
+    const sid = await fresh('fence-reaped');
+    const crash = crashAt('restore', refOf.get(versions.v2)!, sid);
+    const moving = pushShort('fence-reaped');
+    await crash.at;
+    await outlive();
+    expect((await settleExpiredScopeScriptCopies(cleanup())).failed).toBe(0);
+    expect((await reap('fence-reaped')).status).toBe(200);
+    expect(await host.admin.getScopeRecord(staff, t, sid)).toBeUndefined();
+    crash.release();
+    expect((await moving).status).toBe(412);
+    expect(storesOf(refOf.get(versions.v1)!).has(sid)).toBe(false);
+    expect(storesOf(refOf.get(versions.v2)!).has(sid)).toBe(false);
+  });
+
+  it('a restore inside its lease lands', async () => {
+    const sid = await fresh('fence-live');
+    const pushed = await pushShort('fence-live');
+    expect(pushed.status, await pushed.clone().text()).toBe(200);
+    expect(storeOf(refOf.get(versions.v2)!, sid).tables).toEqual(notes('kept'));
   });
 });

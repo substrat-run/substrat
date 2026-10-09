@@ -110,7 +110,7 @@ import {
   PLATFORM_SECRET_HEADER,
   WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
-import type { KeptCopy, LoadMarker, OpenedAttachment, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
@@ -1222,6 +1222,8 @@ export class VerticalClient {
       loadStamp?: string;
       expect?: LoadMarker;
       markCopy?: ScopeLineage;
+      /** #1722: the copy move's lease, carried to the store; a load after `notAfter` is refused. */
+      fence?: CopyRestoreFence;
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
     // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
@@ -1244,6 +1246,7 @@ export class VerticalClient {
         ...(opts?.loadStamp ? { loadStamp: opts.loadStamp } : {}),
         ...(opts?.expect ? { expect: opts.expect } : {}),
         ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
+        ...(opts?.fence ? { fence: opts.fence } : {}),
       },
       'restore',
     );

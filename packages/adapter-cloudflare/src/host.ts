@@ -468,7 +468,7 @@ import {
   shapeTopUpBatch,
   type ConnectLinkKeyRow,
 } from '@substrat-run/kernel';
-import { scopeScriptCopyOf, type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import type { PlatformRequestSettle } from '@substrat-run/kernel';
 import {
@@ -781,7 +781,7 @@ interface ControlPlaneStub {
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
-  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
+  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
@@ -1686,9 +1686,11 @@ interface ScopeStubRpc {
       expect?: LoadMarker;
       markCopy?: boolean;
       provisionedFor?: TenantId;
+      /** #1722: the copy move's lease; `lapsed` once `notAfter` has passed. */
+      fence?: CopyRestoreFence;
     },
   ): Promise<
-    { refused: 'changed' | 'kept' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }
+    { refused: 'changed' | 'kept' | 'lapsed' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }
   >;
   /** #1722: the kept-copy marker, or null. */
   keptCopy(): Promise<KeptCopy | null>;
@@ -3331,6 +3333,8 @@ export class CloudflareScopeHost implements ScopeHost {
       expect?: LoadMarker;
       markCopy?: ScopeLineage;
       tenantId?: TenantId;
+      /** #1722: the copy move's lease; the store refuses a load after `notAfter`. */
+      fence?: CopyRestoreFence;
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     if (opts?.markCopy) assertCopyLineage(opts.markCopy);
@@ -3348,12 +3352,14 @@ export class CloudflareScopeHost implements ScopeHost {
     const out = await this.scopeStub(scopeId).importDumpChecked(tables, scopeId, {
       ...load,
       ...(opts?.expect ? { expect: opts.expect } : {}),
+      ...(opts?.fence ? { fence: opts.fence } : {}),
     });
     if (out.refused === false) {
       return { tables: tables.length, ...(carry ? { switchedOff: out.switchedOff } : {}) };
     }
     if (out.refused === 'kept') throw substratError('conflict', KEPT_COPY_REFUSAL);
     if (out.refused === 'tenant') throw substratError('conflict', out.message);
+    if (out.refused === 'lapsed') throw substratError('precondition_failed', COPY_RESTORE_FENCE_LAPSED);
     // A retry of a load that already committed (its answer was lost on the way back) is
     // refused by the marker that load itself moved. The store holding THIS request's stamp
     // says so: no other load writes it. Answered as applied, without `switchedOff`, so the
@@ -7205,7 +7211,8 @@ export class CloudflareScopeHost implements ScopeHost {
         });
       },
       recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, opts) => {
-        const result = await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, opts?.role ?? null, opts?.loadStamp ?? null);
+        const result = await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, opts?.role ?? null, opts?.loadStamp ?? null,
+          ...(opts?.leaseMs !== undefined ? [opts.leaseMs] : []));
         if (result === 'invalid') throw substratError('conflict', 'copy script and move must name a real script');
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (result === 'reaping') throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);

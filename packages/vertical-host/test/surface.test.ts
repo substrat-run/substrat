@@ -456,6 +456,22 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     }, ENV);
     expect(fenced.status).toBe(200);
     expect(opts).toMatchObject({ expect: { loadStamp: null, revision: 'ev-9' } });
+
+    // The copy move's lease, forwarded whole for the store to enforce; a malformed one is refused.
+    const fence = { moveId: 'move-1', notAfter: '2026-10-09T12:00:00.000Z', erasureEpoch: 2 };
+    const leased = await appWith(restoring).request('/internal/restore', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ scopeId: SCOPE, tables: [], fence }),
+    }, ENV);
+    expect(leased.status).toBe(200);
+    expect(opts).toMatchObject({ fence });
+    const malformed = await appWith(restoring).request('/internal/restore', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ scopeId: SCOPE, tables: [], fence: { ...fence, notAfter: 'whenever' } }),
+    }, ENV);
+    expect(malformed.status).toBe(400);
   });
 
   it('serves the kept-copy read and discard behind the gate, and 501s on a host that keeps no copies (#1722)', async () => {

@@ -377,6 +377,7 @@ import {
   type UndrainedRead,
   type ConsumerDelivery,
 } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, copyRestoreFenceLapsed, type CopyRestoreFence } from '@substrat-run/kernel';
 import type {
   DrainedEvent,
   EventFacetInput,
@@ -527,6 +528,9 @@ const foreignTenant = (held: string | null, tenantId: string): string =>
 
 /** #2016: the load refusals `tenantReceiptRefusal` raised, told apart by identity, not by text. */
 const tenantRefusals = new WeakSet<Error>();
+/** #1722: a load refused because its copy move's lease ran out (`CopyRestoreFence`), told apart
+ *  from a store that moved, since the host must not read it as an applied retry. */
+const fenceRefusals = new WeakSet<Error>();
 
 /**
  * The scope spine, as this adapter builds it — one of two hand-written copies (#969).
@@ -6379,6 +6383,7 @@ export function defineScopeDO(
         resolveKept,
         markCopy,
         provisionedFor,
+        fence,
       }: {
         /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
          *  the replay re-points the grants, in the same event: a dump from before the switch was
@@ -6405,6 +6410,10 @@ export function defineScopeDO(
         /** #2016: the tenant the platform says this scope belongs to. Recorded as its receipt; a
          *  store whose receipt names another tenant refuses the load (`conflict`) untouched. */
         provisionedFor?: TenantId;
+        /** #1722: a copy move's lease (`CopyRestoreFence`). Read against this store's own clock
+         *  inside the load's transaction: past `notAfter`, the load is refused and nothing is
+         *  written, since a sweep, reap or erasure may already have settled the move. */
+        fence?: CopyRestoreFence;
       } = {},
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
@@ -6446,6 +6455,13 @@ export function defineScopeDO(
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
       }
       const switched = await this.revision.transaction(async () => {
+        // #1722: first, before any read: a store a reap has since emptied must refuse the late load
+        // too, and the check is against this store's clock, inside the load's own transaction.
+        if (fence && copyRestoreFenceLapsed(fence, Date.now())) {
+          const lapsed = substratError('precondition_failed', COPY_RESTORE_FENCE_LAPSED);
+          fenceRefusals.add(lapsed);
+          throw lapsed;
+        }
         const before = this.loadMarker();
         // #1713: the lifecycle the platform delivered here, read before the drops take it.
         const lifecycleBefore = readLifecycle(this.switchSql());
@@ -6642,10 +6658,11 @@ export function defineScopeDO(
       tables: ScopeDumpTable[],
       destScopeId: ScopeId,
       opts: Parameters<this['importDump']>[2],
-    ): Promise<{ refused: 'changed' | 'kept' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }> {
+    ): Promise<{ refused: 'changed' | 'kept' | 'lapsed' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }> {
       try {
         return { refused: false, switchedOff: await this.importDump(tables, destScopeId, opts) };
       } catch (e) {
+        if (e instanceof Error && fenceRefusals.has(e)) return { refused: 'lapsed' };
         const code = errorCodeOf(e);
         if (code === 'precondition_failed') return { refused: 'changed' };
         if (e instanceof Error && tenantRefusals.has(e)) return { refused: 'tenant', message: e.message };

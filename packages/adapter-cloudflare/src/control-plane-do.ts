@@ -3257,14 +3257,15 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string,
-    role: ScopeCopyRole | null = null, loadStamp: string | null = null): 'recorded' | 'reaping' | 'missing' | 'invalid' {
+    role: ScopeCopyRole | null = null, loadStamp: string | null = null, leaseMs: number = SCOPE_COPY_LEASE_MS,
+  ): 'recorded' | 'reaping' | 'missing' | 'invalid' {
     if (!scriptRef || !moveId) return 'invalid';
     const written = this.sql.exec(
       `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state, role, load_stamp, lease_until)
        SELECT tenant_id, scope_id, ?, ?, 'pending', ?, ?, ? FROM scopes
        WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
        ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
-      scriptRef, moveId, role, loadStamp, new Date(Date.now() + SCOPE_COPY_LEASE_MS).toISOString(), tenantId, scopeId,
+      scriptRef, moveId, role, loadStamp, new Date(Date.now() + leaseMs).toISOString(), tenantId, scopeId,
     );
     if (written.rowsWritten > 0) return 'recorded';
     const scope = this.sql.exec('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)

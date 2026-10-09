@@ -64,6 +64,44 @@ export const COPY_CLAIM_SQL = `
   WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
     AND state = 'pending' AND (lease_until IS NULL OR lease_until <= ?)`;
 
+/**
+ * The fence a copy move's restore carries into the destination's own store (#1722). The vertical
+ * that holds the destination has no reach to the directory, so the move's lease travels with
+ * the restore instead: the store refuses the load, inside the load's own transaction, once
+ * `notAfter` has passed, and writes nothing.
+ *
+ * `notAfter` sits a margin inside the move's lease (`copyRestoreFence`), and everything that could
+ * make a late restore wrong waits for that lease to end first. A sweep claims an entry only once
+ * its lease has run out. A reap claims the scope, and an erasure finalizes, only while no entry
+ * of any move is pending, so for an unconfirmed move only after that sweep. A restore that is
+ * not refused therefore committed before any of them, and one that would land after any of them
+ * is refused. The margin absorbs clock skew between the directory and the destination, and
+ * `moveId` and `erasureEpoch` name the move and the erasure state it was issued under.
+ */
+export interface CopyRestoreFence {
+  moveId: string;
+  notAfter: string;
+  erasureEpoch: number;
+}
+
+/** How far inside the lease a restore must commit: five minutes, or a quarter of a short lease. */
+export const copyRestoreFenceMarginMs = (leaseMs: number): number => Math.min(5 * 60_000, Math.floor(leaseMs / 4));
+
+/** The fence for a move whose entries were recorded no earlier than `recordedAt` (epoch ms). */
+export const copyRestoreFence = (
+  moveId: string, recordedAt: number, leaseMs: number, erasureEpoch: number,
+): CopyRestoreFence => ({
+  moveId,
+  notAfter: new Date(recordedAt + leaseMs - copyRestoreFenceMarginMs(leaseMs)).toISOString(),
+  erasureEpoch,
+});
+
+/** Whether a restore carrying `fence` may no longer land at `now` (epoch ms). */
+export const copyRestoreFenceLapsed = (fence: CopyRestoreFence, now: number): boolean => now > Date.parse(fence.notAfter);
+
+/** The refusal a lapsed fence answers with, the same words on every host. */
+export const COPY_RESTORE_FENCE_LAPSED = "the copy move's lease ran out before its restore; nothing was loaded (#1722)";
+
 /** A ledger row as both adapters read it. */
 export interface ScopeScriptCopyRow {
   tenant_id: string;

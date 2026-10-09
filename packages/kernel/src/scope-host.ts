@@ -2699,8 +2699,8 @@ export interface HostAdmin {
     scriptRef: string, moveId: string,
     /** Which end of the move this script is, and for a destination the load stamp its restore
      *  will leave: what a crash-recovery sweep fences its wipe on. The entry is leased to the
-     *  recording move for `SCOPE_COPY_LEASE_MS`. */
-    opts?: { role?: ScopeCopyRole; loadStamp?: string | null },
+     *  recording move for `leaseMs` (default `SCOPE_COPY_LEASE_MS`). */
+    opts?: { role?: ScopeCopyRole; loadStamp?: string | null; leaseMs?: number },
   ): Promise<void>;
   /**
    * Claim up to `limit` pending entries whose lease ran out before `now` (a move that crashed,

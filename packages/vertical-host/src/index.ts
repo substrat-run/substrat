@@ -31,6 +31,7 @@ import {
   type CarriedAway,
   type KeptCopy,
   type LoadMarker,
+  type CopyRestoreFence,
   type InvokeOptions,
   type AppliedMigration,
   type SwitchedOff,
@@ -232,6 +233,9 @@ export interface VerticalScopeHost {
       expect?: LoadMarker;
       markCopy?: ScopeLineage;
       tenantId?: TenantId;
+      /** #1722: the copy move's lease (`CopyRestoreFence`); a load after `notAfter` is refused
+       *  in the load's own transaction. A host built before it ignores it. */
+      fence?: CopyRestoreFence;
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
   /** #2005: mark one scope a copy in its own storage, given the directory's classification of it,
@@ -678,6 +682,13 @@ const restoreBody = z.object({
    *  so the restore marks it a copy in its own storage (and refuses if it classifies a primary).
    *  Absent from a platform that predates it: nothing is marked. */
   markCopy: scopeLineage.optional(),
+  /** #1722: the copy move's lease. The store refuses the load, in its own transaction, once
+   *  `notAfter` has passed. Absent from a platform that predates it, or outside a copy move. */
+  fence: z.object({
+    moveId: z.string().min(1),
+    notAfter: z.string().datetime(),
+    erasureEpoch: z.number().int().nonnegative(),
+  }).strict().optional(),
   tables: z.array(
     z.object({
       name: z.string(),
@@ -1047,6 +1058,7 @@ export function mountPlatformSurface<Env extends object>(
       expect: body.expect,
       markCopy: body.markCopy,
       tenantId: body.tenantId,
+      fence: body.fence,
     });
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });

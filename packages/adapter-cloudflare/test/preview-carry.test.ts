@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage, type TenantId } from '@substrat-run/contracts';
-import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, SCOPE_COPY_LEASE_MS, WRITE_REVISION_KEY, dumpMetaValue, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, LOAD_STAMP_KEY, SCOPE_COPY_LEASE_MS, WRITE_REVISION_KEY, dumpMetaValue, type CopyRestoreFence, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
   createControlPlaneApi,
@@ -97,6 +97,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           loadStamp?: string;
           expect?: { loadStamp: string | null; revision: string | null };
           markCopy?: ScopeLineage;
+          fence?: CopyRestoreFence;
         },
       ) =>
         relay(async () => {
@@ -112,7 +113,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
               // the source, which is what keeps it from reading as a copy of another scope (#2003).
               sourceScopeId: opts?.sourceScopeId,
               exact: opts?.exact,
-              ...(unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect }),
+              ...(unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect, fence: opts?.fence }),
               ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
             },
           );
@@ -730,6 +731,51 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
       expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(200);
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+    }, 20_000);
+    // The destination's own store enforces the move's lease (#1722): a restore that outlived it is
+    // refused inside the load's transaction, so nothing lands after a sweep, a reap or an erasure.
+    it('a restore inside its fence lands; one past it is refused and writes nothing', async () => {
+      const p = await fresh('restore-fence', 'kept');
+      const fenceAt = (offsetMs: number): CopyRestoreFence =>
+        ({ moveId: ulid(), notAfter: new Date(Date.now() + offsetMs).toISOString(), erasureEpoch: 0 });
+      await expect(hostFor('v2').restoreScopeLocal(p.scopeId, notes('late'), { fence: fenceAt(-1000) }))
+        .rejects.toThrow(COPY_RESTORE_FENCE_LAPSED);
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
+      await hostFor('v2').restoreScopeLocal(p.scopeId, notes('in time'), { fence: fenceAt(60_000) });
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual(['in time']);
+    });
+    it('a carry that resumes after its lease ran out and the scope was reaped restores nothing', async () => {
+      const lease = 1_200;
+      const shortApi = createControlPlaneApi({
+        host: dir,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        platformBaseDomains: ['global.substrat.run'],
+        provisionRetryDelaysMs: [1],
+        resolveVerticalVersion: async (s, versionId) => {
+          const ref = s === slug ? refOf.get(versionId) : undefined;
+          return ref ? clientFor(ref) : undefined;
+        },
+        resolveVerticalRef: async (ref) => (hostOf.has(ref) ? clientFor(ref) : undefined),
+        copyLeaseMs: lease,
+      });
+      const p = await fresh('reaped-under-carry', 'kept');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const moving = shortApi.request(`/verticals/${slug}/previews`, {
+        method: 'POST', headers: auth, body: JSON.stringify({ tag: 'reaped-under-carry', versionId: version.v2 }),
+      });
+      await held.reached;
+      // Past the lease, with the carry still alive: the sweep settles the move, and the reap claims
+      // the scope and deletes every copy the ledger names.
+      await new Promise((resolve) => setTimeout(resolve, lease + 200));
+      expect((await settleExpiredScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) }))
+        .failed).toBe(0);
+      expect((await api.request('/verticals/carry-vert/previews/reaped-under-carry', { method: 'DELETE', headers: auth })).status)
+        .toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
+      held.release();
+      expect((await moving).status).toBe(412);
+      expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
     }, 20_000);
     it('erasure retries when a bind moves the route after its script inventory was read', async () => {
       const p = await fresh('erase-route-race');

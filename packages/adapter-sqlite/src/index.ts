@@ -8894,7 +8894,7 @@ export class SqliteScopeHost implements ScopeHost {
            WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
            ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
         ).run(scriptRef, moveId, opts?.role ?? null, opts?.loadStamp ?? null,
-          new Date(Date.now() + SCOPE_COPY_LEASE_MS).toISOString(), tenantId, scopeId);
+          new Date(Date.now() + (opts?.leaseMs ?? SCOPE_COPY_LEASE_MS)).toISOString(), tenantId, scopeId);
         if (result.changes > 0) return;
         const scope = this.directory.prepare('SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?')
           .get(tenantId, scopeId) as { reap_claimed_at: string | null } | undefined;
