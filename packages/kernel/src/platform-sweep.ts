@@ -726,8 +726,13 @@ export interface PlatformSweepReport {
  * adds is one request to a DO that is already awake.
  */
 export interface StorageGaugeSweepOptions {
-  /** One scope's database size, in bytes. A throw counts that scope `failed` and keeps its last reading. */
-  read: (scope: Scope) => Promise<number>;
+  /**
+   * One scope's database size, in bytes. A throw counts that scope `failed` and keeps its last
+   * reading. `null` says this scope has no database this reader can measure (on the hosted
+   * plane, a scope bound to no vertical, which the drain counted without waking anything): it
+   * is `skipped`, not an error, so it does not reach the failure digest every day.
+   */
+  read: (scope: Scope) => Promise<number | null>;
   /** The most scopes read in one pass, stalest first. Default `STORAGE_SAMPLE_BATCH`. `0` pauses sampling. */
   batch?: number;
   /** A scope is due once its latest reading is at least this old. Default one day. */
@@ -749,9 +754,10 @@ export interface StorageGaugeSweepReport {
   due: number;
   /** Due scopes left for a later pass because the batch was full. */
   deferred: number;
-  /** Size reads that answered, and that failed. */
+  /** Size reads that answered, that failed, and that the reader declined (`null`). */
   read: number;
   failed: number;
+  skipped: number;
   /** Rows the directory wrote (a reading for a scope reaped meanwhile writes none). */
   recorded: number;
   /** Samples past retention deleted. */
@@ -2736,7 +2742,16 @@ async function sweepStorageGauge(
   reached: readonly Scope[],
   report: PlatformSweepReport,
 ): Promise<StorageGaugeSweepReport> {
-  const out: StorageGaugeSweepReport = { reached: reached.length, due: 0, deferred: 0, read: 0, failed: 0, recorded: 0, pruned: 0 };
+  const out: StorageGaugeSweepReport = {
+    reached: reached.length,
+    due: 0,
+    deferred: 0,
+    read: 0,
+    failed: 0,
+    skipped: 0,
+    recorded: 0,
+    pruned: 0,
+  };
   const batch = gauge.batch ?? STORAGE_SAMPLE_BATCH;
   const maxAgeMs = gauge.maxAgeMs ?? STORAGE_SAMPLE_MAX_AGE_MS;
   try {
@@ -2763,6 +2778,10 @@ async function sweepStorageGauge(
       await mapBounded(take, options.concurrency ?? 8, async (s) => {
         try {
           const bytes = await gauge.read(s);
+          if (bytes === null) {
+            out.skipped += 1;
+            return;
+          }
           if (!Number.isInteger(bytes) || bytes < 0) throw new Error(`not a size: ${String(bytes)}`);
           readings.push({ tenantId: s.tenantId, scopeId: s.id, bytes, readAt: new Date().toISOString() });
           out.read += 1;

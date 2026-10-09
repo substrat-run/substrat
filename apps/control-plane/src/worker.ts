@@ -1268,6 +1268,25 @@ function deploymentForScopeFor(
  * for the scope, never from the caller, so the intents executed are only ever the scope's own.
  */
 /**
+ * The storage-gauge phase's reader (#1524): one scope's database size, read through the
+ * deployment that holds its DO, the same `/internal/database-size` the console's on-demand
+ * reading uses. A scope bound to no vertical has no database on this plane, so it is skipped
+ * (`null`). A vertical scope whose deployment does not resolve FAILS rather than falling back
+ * to this host, whose namespace is a module-less placeholder: waking it would create an empty
+ * database and record its size as the scope's.
+ */
+export function storageReaderFor(
+  resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'databaseSize'> | undefined>,
+): (scope: Scope) => Promise<number | null> {
+  return async (scope) => {
+    if (!scope.vertical) return null;
+    const client = await resolve(scope);
+    if (!client) throw new Error(`no deployment resolves for vertical '${scope.vertical}'`);
+    return client.databaseSize(scope.id);
+  };
+}
+
+/**
  * Re-run one scope's provision in the vertical's own deployment (#1172).
  *
  * The sweep decides WHICH scopes (bound version ahead of the one their provision last
@@ -1755,6 +1774,9 @@ export default {
       // execute each with platform authority, and settle back. The same `drainOneScope` the router
       // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
       drainPlatformRequestsFn: platformDrain.drain,
+      // #1524: the stored storage gauge. The kernel reads only scopes the drain above just
+      // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
+      storageGauge: { read: storageReaderFor(resolveVerticalForScopeFor(env)) },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
       // missing whatever that hook mints, and nothing else would ever deliver it.
