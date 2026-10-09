@@ -312,6 +312,10 @@ jobs:
       # path; oxlint's type-aware `no-floating-promises` sees every path. Reads the built
       # declarations, so it sits after the build like lint:permissions.
       - run: pnpm lint:floating-promises
+      # …and the run-time half, the workerd setup file every workerd suite loads: fixture suites
+      # that leave a rejection where it must be caught (a later test under retry, the file's last
+      # turn) and a twin that must pass, run in workerd and read back from vitest's report.
+      - run: pnpm test:workerd-rejections
       # The `_substrat_*` spine is built independently by each adapter — the pure one in
       # adapter-sqlite, the hosted one across scope-do.ts and control-plane-do.ts. The
       # copies were in step when written and nothing kept them so, which makes a column

@@ -4,5 +4,5 @@
     "noEmit": true,
     "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
   },
-  "include": ["src", "test", "supplied-sweeper", "vitest.config.ts", "vitest.supplied-sweeper.config.ts"]
+  "include": ["src", "test", "supplied-sweeper", "rejection-fixtures", "vitest.config.ts", "vitest.supplied-sweeper.config.ts", "vitest.rejection-fixtures.config.ts"]
 }
