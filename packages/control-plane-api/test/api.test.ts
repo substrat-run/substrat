@@ -223,6 +223,34 @@ describe('control-plane API', () => {
     await json(`/tenants/${t1}/entitlements/workorder`, 'DELETE');
   });
 
+  it('serves the stored storage gauge on /meters, and reads no scope to do it (#1524)', async () => {
+    // Its own host, so the scope it provisions does not reach the fleet-wide listings below.
+    const gaugeDir = mkdtempSync(join(tmpdir(), 'cp-api-gauge-'));
+    const gaugeHost = new SqliteScopeHost({ dir: gaugeDir });
+    const gaugeApp = createControlPlaneApi({ host: gaugeHost, authenticate: UNSAFE_devPlatformActorAuth() });
+    try {
+      const tg = tenantId.parse(ulid());
+      await gaugeHost.admin.createTenant(staff, { id: tg, slug: 'gauge-co', name: 'Gauge Co' });
+      const s = scopeId.parse(ulid());
+      await gaugeHost.provisionScope(staff, { tenantId: tg, scopeId: s });
+      await gaugeHost.admin.activateScope(staff, tg, s);
+      const readAt = new Date().toISOString();
+      await gaugeHost.admin.recordScopeStorage!(staff, [{ tenantId: tg, scopeId: s, bytes: 65_536, readAt }]);
+      // The live read the on-demand card uses. GET /meters must never reach it.
+      const live = vi.spyOn(gaugeHost.admin, 'scopeDatabaseSize');
+      const get = async (path: string) => (await gaugeApp.request(path, { headers: auth })).json();
+
+      const one = await get(`/meters?tenantId=${tg}`);
+      expect(one.perTenant[0].storage).toMatchObject({ basis: 'scope-databases', bytes: 65_536, sampled: 1, newestReadAt: readAt });
+      expect(one.storage.bytes).toBe(65_536);
+      expect((await get('/meters')).storage.bytes).toBe(65_536);
+      expect(live).not.toHaveBeenCalled();
+    } finally {
+      await gaugeHost.close();
+      rmSync(gaugeDir, { recursive: true, force: true });
+    }
+  });
+
   // -- identity mirror (builder-plane.md §4) --------------------------------
 
   it('mirrors an identity link in and out — the builder-plane whoami feed', async () => {

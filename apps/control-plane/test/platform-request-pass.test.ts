@@ -13,7 +13,14 @@ import {
 } from '@substrat-run/contracts';
 import { drainScopePlatformRequests } from '@substrat-run/control-plane-api';
 import { INERT_SCOPE_REASON, ulid, type PlatformSweepReport } from '@substrat-run/kernel';
-import worker, { drainContextOf, drainTarget, platformRequestSweepRun, recordPlatformRequestPass, timedDrain } from '../src/worker.js';
+import worker, {
+  drainContextOf,
+  drainTarget,
+  platformRequestSweepRun,
+  recordPlatformRequestPass,
+  storageReaderFor,
+  timedDrain,
+} from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -347,5 +354,43 @@ describe('drainContextOf: a held scope\'s intents wait (#1713)', () => {
       undefined,
     );
     expect(ctx.lifecycle).toEqual({ scope: 'active', tenant: 'reaped' });
+  });
+});
+
+/**
+ * #1524 — the storage-gauge phase's hosted reader. A scope's DO lives in its vertical's
+ * deployment, so the size is read there; never from this plane's placeholder namespace.
+ */
+describe('storageReaderFor (#1524)', () => {
+  const scope = (vertical: string | null) =>
+    ({ id: scopeId.parse(ulid()), tenantId: tenantId.parse(ulid()), vertical }) as unknown as Parameters<
+      ReturnType<typeof storageReaderFor>
+    >[0];
+
+  it('reads through the deployment that resolves for the scope', async () => {
+    const asked: string[] = [];
+    const s = scope('todo');
+    const read = storageReaderFor(async () => ({
+      databaseSize: async (id) => {
+        asked.push(id);
+        return 12_288;
+      },
+    }));
+    await expect(read(s)).resolves.toBe(12_288);
+    expect(asked).toEqual([s.id]);
+  });
+
+  it('fails, rather than reading a placeholder, when no deployment resolves', async () => {
+    await expect(storageReaderFor(async () => undefined)(scope('todo'))).rejects.toThrow(/no deployment resolves for vertical 'todo'/);
+  });
+
+  it('skips a scope bound to no vertical, without resolving anything', async () => {
+    let resolved = 0;
+    const read = storageReaderFor(async () => {
+      resolved += 1;
+      return undefined;
+    });
+    await expect(read(scope(null))).resolves.toBeNull();
+    expect(resolved).toBe(0);
   });
 });
