@@ -155,16 +155,20 @@ export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilt
   const where: string[] = ["s.status <> 'reaped'"];
   const params: (string | number)[] = [];
   if (filter.tenantId) {
-    where.push('g.tenant_id = ?');
+    where.push('s.tenant_id = ?');
     params.push(filter.tenantId);
   }
   if (filter.scopeId) {
-    where.push('g.scope_id = ?');
+    where.push('s.scope_id = ?');
     params.push(filter.scopeId);
   }
   let tail = '';
+  // `latest` is joined on the scope's newest day, which the (scope_id, day) key answers with
+  // one seek per scope, so a meter read touches one sample per scope however much history
+  // retention holds, rather than reading every day and discarding all but the last.
+  let latestDay = '';
   if (filter.latest) {
-    where.push('g.day = (SELECT MAX(m.day) FROM _substrat_scope_storage m WHERE m.scope_id = g.scope_id)');
+    latestDay = ' AND g.day = (SELECT MAX(m.day) FROM _substrat_scope_storage m WHERE m.scope_id = s.scope_id)';
   } else {
     if (filter.since) {
       where.push('g.day >= ?');
@@ -182,8 +186,8 @@ export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilt
   // deleted at reap, and any that survived are still never read.
   const rows = sql(
     `SELECT g.tenant_id, g.scope_id, g.day, g.bytes, g.read_at
-       FROM _substrat_scope_storage g
-       JOIN scopes s ON s.scope_id = g.scope_id AND s.tenant_id = g.tenant_id
+       FROM scopes s
+       JOIN _substrat_scope_storage g ON g.scope_id = s.scope_id AND g.tenant_id = s.tenant_id${latestDay}
       WHERE ${where.join(' AND ')}
       ORDER BY g.scope_id, g.day${tail}`,
     params,

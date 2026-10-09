@@ -271,7 +271,7 @@ export interface PlatformSweepOptions {
   telemetryBatch?: number;
   /**
    * Sample scope database sizes into the stored storage gauge (#1524). UNSET (the default)
-   * skips the phase, as does a host without `recordScopeStorage`/`listScopeStorage`.
+   * skips the phase, as does a host without `recordScopeStorage`/`listScopeStorageAttempts`.
    * Injected for the reason `drainPlatformRequestsFn` is: on the hosted plane a scope's DO
    * lives in its vertical's deployment, and only the control plane can reach it there.
    */
@@ -1155,7 +1155,7 @@ export async function runPlatformSweep(
   // namespace is a placeholder, so the platform-intent drain is what reaches the vertical's DO
   // and is the phase that counts whenever it is configured.
   const reachedThisPass = new Map<string, Scope>();
-  const reachedBy: 'drain' | 'platform-request' = options.drainPlatformRequestsFn ? 'platform-request' : 'drain';
+  const viaPlatformDrain = Boolean(options.drainPlatformRequestsFn);
 
   if (options.drainRetries !== false) {
     const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
@@ -1163,7 +1163,7 @@ export async function runPlatformSweep(
       if (failedThisPass.has(s.id)) return; // fails closed — draining is only noise
       try {
         const r = await host.drainDue(s.tenantId, s.id);
-        if (reachedBy === 'drain') reachedThisPass.set(s.id, s);
+        if (!viaPlatformDrain) reachedThisPass.set(s.id, s);
         report.scopesDrained += 1;
         report.drainTotals.attempted += r.attempted;
         report.drainTotals.delivered += r.delivered;
@@ -1189,8 +1189,8 @@ export async function runPlatformSweep(
       }
       try {
         const r = await drain(s.tenantId, s.id);
-        if (!r.unreachable) reachedThisPass.set(s.id, s);
         if (r.unreachable) report.platformRequestTotals.unreachable += 1;
+        else reachedThisPass.set(s.id, s);
         if (r.drained > 0) report.platformRequestTotals.scopes += 1;
         report.platformRequestTotals.drained += r.drained;
         report.platformRequestTotals.done += r.done;
@@ -2736,6 +2736,8 @@ export function startPlatformSweeper(
  * already reached, record every attempt in one directory call, then prune past retention. A
  * failed read is an error entry; its scope keeps its last sample and waits a day like any other.
  */
+const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+
 async function sweepStorageGauge(
   admin: HostAdmin,
   options: PlatformSweepOptions,
@@ -2767,11 +2769,7 @@ async function sweepStorageGauge(
           const at = tried.get(s.id);
           return at === undefined || at <= staleBefore;
         })
-        .sort((a, b) => {
-          const x = tried.get(a.id) ?? '';
-          const y = tried.get(b.id) ?? '';
-          return x < y ? -1 : x > y ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-        });
+        .sort((a, b) => cmp(tried.get(a.id) ?? '', tried.get(b.id) ?? '') || cmp(a.id, b.id));
       const take = due.slice(0, batch);
       out.due = due.length;
       out.deferred = due.length - take.length;

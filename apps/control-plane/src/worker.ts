@@ -1258,16 +1258,6 @@ function deploymentForScopeFor(
 }
 
 /**
- * Drain one scope's pending platform-intents now: pull them from the vertical's
- * `/internal` surface (its DO lives in the vertical's deployment, K-31), execute each
- * with platform authority via the registered handlers, settle back. The unit shared by
- * the 15-minute cron sweep (reliability) and the router kick (latency, platform-intents.md
- * §"router kick") — a vertical whose response carried `x-substrat-platform-request` gets
- * drained in seconds instead of at the next sweep. A scope with no bound deployment drains
- * nothing. The identity is inherent: the tenant/vertical come from THIS directory's record
- * for the scope, never from the caller, so the intents executed are only ever the scope's own.
- */
-/**
  * The storage-gauge phase's reader (#1524): one scope's database size, read through the
  * deployment that holds its DO, the same `/internal/database-size` the console's on-demand
  * reading uses. A scope bound to no vertical has no database on this plane, so it is skipped
@@ -1286,6 +1276,16 @@ export function storageReaderFor(
   };
 }
 
+/**
+ * Drain one scope's pending platform-intents now: pull them from the vertical's
+ * `/internal` surface (its DO lives in the vertical's deployment, K-31), execute each
+ * with platform authority via the registered handlers, settle back. The unit shared by
+ * the 15-minute cron sweep (reliability) and the router kick (latency, platform-intents.md
+ * §"router kick") — a vertical whose response carried `x-substrat-platform-request` gets
+ * drained in seconds instead of at the next sweep. A scope with no bound deployment drains
+ * nothing. The identity is inherent: the tenant/vertical come from THIS directory's record
+ * for the scope, never from the caller, so the intents executed are only ever the scope's own.
+ */
 /**
  * Re-run one scope's provision in the vertical's own deployment (#1172).
  *

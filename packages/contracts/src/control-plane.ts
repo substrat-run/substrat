@@ -1686,7 +1686,13 @@ export const meterScopeCounts = z.object({
 });
 export type MeterScopeCounts = z.infer<typeof meterScopeCounts>;
 
-/** What a storage figure deliberately does not count — see `storageMeterReading`. */
+/**
+ * What a storage figure deliberately does NOT count, named on every figure so a consumer
+ * cannot mistake the number for the whole bill:
+ * - `attachments`: attachment bytes live in a blob store. The scope holds only their rows.
+ * - `tenant-stores`: per-tenant D1 databases are separate databases.
+ * - `lake`: shipped event history is volume in the lake, not in any scope.
+ */
 export const storageExclusion = z.enum(['attachments', 'tenant-stores', 'lake']);
 export type StorageExclusion = z.infer<typeof storageExclusion>;
 
@@ -1809,23 +1815,15 @@ export const meterReading = z.object({
 export type MeterReading = z.infer<typeof meterReading>;
 
 /**
- * Storage, read on demand (#1524): the size of each of one tenant's scope DATABASES,
- * and their sum. Read-only first, by decision — nothing is stored, no sweep takes it,
- * and there is no fleet-wide form. Reading a scope's size wakes that scope's Durable
- * Object, so a periodic or fleet-wide reading would bill a DO invocation per idle scope
- * per interval. The reading is taken when a person asks for it and costs what they asked.
+ * Storage, read on demand (#1524): the size of each of one tenant's scope DATABASES, and
+ * their sum, read live when a person asks. Reading a scope's size wakes that scope's Durable
+ * Object, so this reading is paged and has no fleet-wide form. The stored daily figure that
+ * `/meters` serves without a wake is `storageGauge`.
  *
  * What it counts: `SqlStorage.databaseSize` on Cloudflare, `page_count × page_size` on
  * SQLite. That is rows, indexes, the spine, and free pages the database has not given back.
- * What it deliberately does NOT count, named in `excluded` so a consumer cannot mistake
- * the number for the whole bill:
- * - `attachments`: attachment bytes live in a blob store. The scope holds only their rows.
- * - `tenant-stores`: per-tenant D1 databases are separate databases.
- * - `lake`: shipped event history is volume in the lake, not in any scope.
+ * What it does not count is named in `excluded` (`storageExclusion`).
  */
-// `storageExclusion` and `STORAGE_EXCLUSIONS` are declared above `storageGauge`, which
-// meter 1's row carries.
-
 /** One scope's database size, or why it could not be read. Exactly one of the two is set. */
 export const scopeStorageReading = z.union([
   z.object({ scopeId, status: scopeStatus, bytes: z.number().int().nonnegative() }),

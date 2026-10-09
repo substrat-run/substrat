@@ -887,7 +887,6 @@ export type {
   StorageGaugeSweepOptions,
   StorageGaugeSweepReport,
 } from './platform-sweep.js';
-export { STORAGE_SAMPLE_BATCH, STORAGE_SAMPLE_MAX_AGE_MS } from './platform-sweep.js';
 // #1653: which scopes are the real install, and which version runs on them — shared so
 // every receipt writer and the sweep answer both questions the same way.
 export {
@@ -939,23 +938,15 @@ export type {
   MeterEntitlementInput,
   MeterInput,
   MeterScopeInput,
-  MeterStorageInput,
   MeterTenantInput,
 } from './meters.js';
 export {
   SCOPE_STORAGE_DDL,
-  STORAGE_GAUGE_PRUNE_BATCH,
-  STORAGE_GAUGE_RETENTION_MONTHS,
-  STORAGE_HISTORY_LIMIT_DEFAULT,
-  STORAGE_HISTORY_LIMIT_MAX,
-  foldStorageGauge,
   forgetScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
-  storageGaugeDay,
-  storageRetentionHorizon,
   type ScopeStorageAttempt,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
