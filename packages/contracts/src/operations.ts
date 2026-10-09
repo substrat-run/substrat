@@ -1080,10 +1080,27 @@ function inputDefaultIssue(schema: unknown): PatchSchemaIssue {
           left?: unknown;
           right?: unknown;
           catchall?: unknown;
+          checks?: unknown;
+          transform?: unknown;
+          reverseTransform?: unknown;
         }
       | undefined;
     if (def?.type === 'default' || def?.type === 'prefault' || def?.type === 'catch') return { kind: 'default' };
     if (typeof def?.type !== 'string') return { kind: 'uninspectable', schemaKind: 'unknown' };
+    if (def.checks !== undefined) {
+      if (!Array.isArray(def.checks)) return { kind: 'uninspectable', schemaKind: `${def.type} checks` };
+      for (const check of def.checks) {
+        const checkDef = (check as { _zod?: { def?: unknown }; def?: unknown })?._zod?.def ??
+          (check as { def?: unknown })?.def;
+        const checkKind = (checkDef as { check?: unknown; type?: unknown } | undefined)?.check ??
+          (checkDef as { type?: unknown } | undefined)?.type;
+        // Zod check classes are extensible. Permit only known validation checks;
+        // overwrite and future check kinds could change the parsed value.
+        if (typeof checkKind !== 'string' || !PATCH_VALUE_PRESERVING_CHECKS.has(checkKind)) {
+          return { kind: 'uninspectable', schemaKind: typeof checkKind === 'string' ? checkKind : `${def.type} check` };
+        }
+      }
+    }
     switch (def.type) {
       case 'optional':
       case 'nullable':
@@ -1130,6 +1147,9 @@ function inputDefaultIssue(schema: unknown): PatchSchemaIssue {
         pending.push(def.left, def.right);
         break;
       case 'pipe':
+        if (def.transform !== undefined || def.reverseTransform !== undefined) {
+          return { kind: 'uninspectable', schemaKind: 'pipe transform' };
+        }
         pending.push(def.in, def.out);
         break;
       // These kinds cannot contain another schema that can apply a default.
@@ -1157,6 +1177,24 @@ function inputDefaultIssue(schema: unknown): PatchSchemaIssue {
   }
   return null;
 }
+
+const PATCH_VALUE_PRESERVING_CHECKS = new Set([
+  'min_length',
+  'max_length',
+  'length_equals',
+  'string_format',
+  'greater_than',
+  'less_than',
+  'number_format',
+  'number_multiple_of',
+  'bigint_format',
+  'date_minimum',
+  'date_maximum',
+  'mime_type',
+  'size',
+  'property',
+  'custom',
+]);
 
 /** Check the effective HTTP method, both on local operations and bound engine routes. */
 function assertPatchInputs(operations: Record<string, unknown>): void {

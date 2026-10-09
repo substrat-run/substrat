@@ -492,7 +492,7 @@ describe('every sweep and count leaves the suspended queue alone, and still swee
   });
 
   it('auto-tag reads the accepted one only', async () => {
-    const { d, held, kept } = await pair({ autoTag: { rules: [{ in: 'either', contains: 'e', tag: 'seen' }] } });
+    const { d, held, kept } = await pair({ autoTag: { rules: [{ in: 'either', contains: ' e ', tag: ' seen ' }] } });
     expect(await kit.sweep(d, 'ticket0/auto-tag', 'tagged')).toBe(1);
     expect(await kit.tags(d, kept)).toEqual(['seen']);
     expect(await kit.tags(d, held)).toEqual([]);

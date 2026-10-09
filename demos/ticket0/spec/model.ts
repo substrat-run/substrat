@@ -429,11 +429,16 @@ export const NO_REPLY_MAX_HOURS = 720;
  * `{ contain: 'refund' }` is refused at save time rather than saved as a rule that
  * never matches.
  */
+const autoTagText = z.string().refine((value) => {
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= AUTO_TAG_TEXT_MAX;
+}, `must have between 1 and ${AUTO_TAG_TEXT_MAX} non-whitespace characters`);
+
 export const autoTagRule = z
   .object({
     in: z.enum(['subject', 'body', 'either']),
-    contains: z.string().trim().min(1).max(AUTO_TAG_TEXT_MAX),
-    tag: z.string().trim().min(1).max(AUTO_TAG_TEXT_MAX),
+    contains: autoTagText,
+    tag: autoTagText,
   })
   .strict();
 export type AutoTagRule = z.infer<typeof autoTagRule>;

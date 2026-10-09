@@ -336,6 +336,25 @@ describe('PATCH input declarations', () => {
       .toThrow(/customer\/update.*opaque.*uninspectable Zod schema kind 'future_schema_kind'/);
   });
 
+  it('refuses codecs that can produce a value for an omitted field', () => {
+    const value = z.codec(z.object({}), z.object({ value: z.string().default('x') }), {
+      decode: () => ({ value: 'x' }),
+      encode: () => ({}),
+    }).optional();
+    expect(value.parse({})).toEqual({ value: 'x' });
+    expect(() => update(z.object({ id: z.string(), value })))
+      .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'pipe transform'/);
+  });
+
+  it('refuses overwrite checks that add a value to a parsed object', () => {
+    const value = z.object({ value: z.string().optional() })
+      .overwrite((input) => ({ ...input, value: 'x' }))
+      .optional();
+    expect(value.parse({})).toEqual({ value: 'x' });
+    expect(() => update(z.object({ id: z.string(), value })))
+      .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'overwrite'/);
+  });
+
   it('accepts a reasoned exception, but not an empty reason', () => {
     expect(() => update(z.object({ id: z.string(), name: z.string() }), 'The handler writes only name.'))
       .not.toThrow();

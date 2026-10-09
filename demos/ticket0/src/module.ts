@@ -62,6 +62,7 @@ import {
   AUTO_TAG_RULES_MAX,
   autoTagRule,
   businessHoursSchedule,
+  deskSettingsBlob,
   DESK_METRICS_AGENTS,
   DESK_METRICS_MAX_DAYS,
   DESK_METRICS_WINDOW_DAYS,
@@ -2827,9 +2828,22 @@ function autoTagRules(row: DeskRow): AutoTagRule[] {
   const usable: AutoTagRule[] = [];
   for (const candidate of rules.slice(0, AUTO_TAG_RULES_MAX)) {
     const parsed = autoTagRule.safeParse(candidate);
-    if (parsed.success) usable.push(parsed.data);
+    if (parsed.success) usable.push(normalizeAutoTagRule(parsed.data));
   }
   return usable;
+}
+
+/** Keep the PATCH input check pure while retaining the stored rule normalization. */
+function normalizeAutoTagRule(rule: AutoTagRule): AutoTagRule {
+  return { ...rule, contains: rule.contains.trim(), tag: rule.tag.trim() };
+}
+
+function normalizeDeskSettings(settings: z.infer<typeof deskSettingsBlob>): z.infer<typeof deskSettingsBlob> {
+  if (!settings.autoTag) return settings;
+  return {
+    ...settings,
+    autoTag: { ...settings.autoTag, rules: settings.autoTag.rules.map(normalizeAutoTagRule) },
+  };
 }
 
 /**
@@ -3911,7 +3925,7 @@ const operations = {
     const settings =
       input.settings === undefined
         ? current.settings
-        : JSON.stringify({ ...storedSettings(current), ...input.settings });
+        : JSON.stringify({ ...storedSettings(current), ...normalizeDeskSettings(input.settings) });
     refuseUnreachableTargets({ ...current, settings });
     ctx.sql.exec(
       `UPDATE ticket0_desk_settings
