@@ -2984,6 +2984,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
       lastError: expect.stringContaining(`leaseMs ${RACE_LEASE_MS}`),
     });
     expect(briefPasses).toBe(0);
+    // JOB_ADMISSION_MISS_MAX claims, each held 0.85 × RACE_LEASE_MS: ~8.5 s of deliberate waiting.
   }, 20_000);
 
   it('#2034: twin — a BEGIN resets the admission misses', async () => {

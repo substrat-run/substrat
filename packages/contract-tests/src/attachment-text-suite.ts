@@ -72,7 +72,7 @@ const item = (id: string): EntityRef => ({ entityType: 'item', entityId: id });
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 const UPLOAD_BATCH_SIZE = 20;
 /** For a test that uploads and extracts thousands of files: the setup, not the search, takes the time. */
-const SETUP_HEAVY_MS = 300_000;
+const SETUP_HEAVY_MS = 120_000;
 
 
 /** What a fixture builds its host with. Omitted extractors are the host's real ones. */
