@@ -1046,7 +1046,9 @@ async function becomeLinkStateOf(
  * Role KEYS, not their expansions, deliberately: a role's definition is the vertical's code,
  * re-projected on a push and reviewed at the permission-diff checkpoint — nothing an inviter
  * controls. Expanding it would revoke every open invite at a role whenever a release adds a key to
- * that role.
+ * that role. The price, by design: a REDEFINITION can make the invitee hold more than the minter
+ * held when it minted — a release that widens the role widens what the link becomes. That is a
+ * change only code or staff make (`defineRole` has no HTTP route), never an inviter.
  *
  * What the digest deliberately does not see, so nobody relies on it as a reach check:
  * - the LEVEL a grant is held at — a key moved between the scope and the tenant node leaves it
@@ -1055,7 +1057,8 @@ async function becomeLinkStateOf(
  *   minter's coverage of that entity was checked through `check`, whose reach grows the same way;
  * - module authority decided from a principal column (an assignee, an author) rather than a tuple
  *   — neither the bound nor the digest sees it.
- * None of these lets the link yield more than its minter held: the identity a link binds is per
+ * None of these three lets the link yield more than its minter held (a role redefinition can, by
+ * design — see above): the identity a link binds is per
  * (scope, sub), so what it becomes is this principal in this scope only. The first two are judged
  * by the same checker, over the same flattened set and the same walk, that bounded the minter;
  * the third is a row the scope itself points at this principal, as it would for any member it
