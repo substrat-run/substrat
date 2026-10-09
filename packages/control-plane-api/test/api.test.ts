@@ -2191,11 +2191,22 @@ describe('control-plane API', () => {
         calls.length = 0;
         const failed = await dj(`/tenants/${tH}/scopes/${legacy}/version`, 'POST', { versionId: v2 });
         expect(failed.status).toBe(500);
-        expect(clear).toHaveBeenCalledExactlyOnceWith(staff, tH, legacy, null);
-        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
+        // #1722: the unpin is the write that routes onto the carry's destination, so it is the one
+        // that carries the erasure fence and confirms the move.
+        expect(clear).toHaveBeenCalledExactlyOnceWith(staff, tH, legacy, null, {
+          expectedErasureEpoch: 0,
+          confirmMove: expect.objectContaining({ source: 'eligible' }),
+        });
+        // #1722: the copy restored into v2 is routed by nothing while the pin stands, so the
+        // failed unpin wipes it (the tombstone load, on a deployment without a fenced wipe) and the
+        // ledger stops naming it; the retry below carries again from the pinned store.
+        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`,
+          `restore ${refOf.get(v2)} ${legacy}`]);
         // Binding has advanced, but the pin still selects the serving script's store.
         expect(await boundOf(legacy)).toMatchObject({ verticalVersionId: v2, servingRef: 'carry-vert' });
-        expect(rows(v2, legacy)).toEqual([['serving-row']]);
+        expect(storeOf(refOf.get(v2)!).get(legacy)?.some((tb) => tb.name === 't')).toBe(false);
+        expect((await host.admin.listScopeScriptCopies(staff, { tenantId: tH, scopeId: legacy }))
+          .filter((copy) => copy.state !== 'done')).toEqual([]);
         expect(await host.admin.resolveHostname(previewHostname)).toMatchObject({ scopeId: legacy, deploymentRef: 'carry-vert' });
 
         // A write while the pin is still active must survive the same-version retry.
