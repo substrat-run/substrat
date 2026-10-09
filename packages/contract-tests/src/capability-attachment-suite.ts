@@ -402,6 +402,7 @@ export function capabilityAttachmentContractSuite(
           id: otherTenant, slug: `cap-att-${otherTenant.toLowerCase()}`, name: 'Other Tenant',
         });
         await host.admin.grantEntitlement(staff, otherTenant, 'cap');
+        await host.provisionBlobStore(staff, { tenantId: otherTenant, vertical: 'cap-vertical', binding: 'ATTACHMENTS' });
         await host.provisionScope(staff, { tenantId: otherTenant, scopeId: otherScope, vertical: 'cap-vertical' });
         await host.admin.activateScope(staff, otherTenant, otherScope);
         if (!host.getCapabilityAttachments) throw new Error('host has no getCapabilityAttachments');
