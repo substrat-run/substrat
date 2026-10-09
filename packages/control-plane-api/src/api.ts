@@ -4828,7 +4828,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
       versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
-    }));
+    }).catch(relayHostRefusal));
   });
 
   // -- directory backups (#40) -----------------------------------------------
