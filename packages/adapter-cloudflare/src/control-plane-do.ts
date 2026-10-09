@@ -3204,10 +3204,11 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   scopeErasureEpoch(tenantId: string, scopeId: string): number {
-    const row = this.sql.exec('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
-      .toArray()[0] as { erasure_epoch: number | null } | undefined;
+    // NULL on every row from before the column (#1722): the same 0 every CAS compares against.
+    const row = this.sql.exec('SELECT COALESCE(erasure_epoch, 0) AS erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
+      .toArray()[0] as { erasure_epoch: number } | undefined;
     if (!row) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-    return row.erasure_epoch ?? 0;
+    return row.erasure_epoch;
   }
 
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null,

@@ -8844,9 +8844,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
           throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
-        const epoch = this.directory.prepare('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
-          .get(tenantId, scopeId) as { erasure_epoch: number | null } | undefined;
-        if (opts?.expectedErasureEpoch !== undefined && (epoch?.erasure_epoch ?? 0) !== opts.expectedErasureEpoch) {
+        const epoch = this.directory.prepare('SELECT COALESCE(erasure_epoch, 0) AS erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
+          .get(tenantId, scopeId) as { erasure_epoch: number } | undefined;
+        if (opts?.expectedErasureEpoch !== undefined && epoch?.erasure_epoch !== opts.expectedErasureEpoch) {
           throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
         }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
@@ -10213,10 +10213,11 @@ export class SqliteScopeHost implements ScopeHost {
         return receipt;
       },
       scopeErasureEpoch: async (_actor, tenantId, scopeId) => {
-        const row = this.directory.prepare('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
-          .get(tenantId, scopeId) as { erasure_epoch: number | null } | undefined;
+        // NULL on every row from before the column (#1722): the same 0 every CAS compares against.
+        const row = this.directory.prepare('SELECT COALESCE(erasure_epoch, 0) AS erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
+          .get(tenantId, scopeId) as { erasure_epoch: number } | undefined;
         if (!row) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-        return row.erasure_epoch ?? 0;
+        return row.erasure_epoch;
       },
       finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected) => {
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
