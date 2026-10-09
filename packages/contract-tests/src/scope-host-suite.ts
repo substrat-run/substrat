@@ -9159,9 +9159,16 @@ export function scopeHostContractSuite(
         await record(tr, kept, 1, day(0, '02:00:00'));
         await record(tr, reaped, 2, day(-1, '02:00:00'));
         await record(tr, reaped, 3, day(0, '02:00:00'));
+        // A sample past retention, so the prune below (which reads the raw table, with no join
+        // to scope status) can tell whether reap deleted the rows or only the join hides them.
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        expect(await record(tr, reaped, 5, old.toISOString())).toEqual({ recorded: 1 });
 
         await host.admin.archiveScope(staff, tr, reaped);
         await host.admin.reapScope(staff, tr, reaped);
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
 
         expect((await host.admin.listScopeStorage!(staff, { tenantId: tr })).map((r) => r.scopeId)).toEqual([kept]);
         expect(await record(tr, reaped, 4, day(0, '03:00:00'))).toEqual({ recorded: 0 });
