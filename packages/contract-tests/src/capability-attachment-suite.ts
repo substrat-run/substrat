@@ -238,7 +238,7 @@ export function capabilityAttachmentContractSuite(
         expect(errorCodeOf(await refusal(closed.search('capybara')))).toBe('forbidden');
 
         const open = await filesOf(await sessionOf((await share(alice, {
-          ...spec, attachments: 'read',
+          ...spec, operations: ['cap/read'], attachments: 'read',
         })).secret));
         expect((await open.search('capybara')).map((r) => r.id)).toEqual([inF.id]);
       });
@@ -381,7 +381,7 @@ export function capabilityAttachmentContractSuite(
 
       it('the opt-in cannot replace the target readPermission', async () => {
         const minted = await share(alice, {
-          entity: folder('F'), permissions: [CAP_WRITE], attachments: 'read',
+          entity: folder('F'), permissions: [CAP_WRITE], operations: ['cap/comment'], attachments: 'read',
         });
         const surface = await filesOf(await sessionOf(minted.secret));
         expect(errorCodeOf(await refusal(surface.open(files.d1.id)))).toBe('permission_denied');
@@ -404,7 +404,7 @@ export function capabilityAttachmentContractSuite(
 
       it('revocation closes an opted-in attachment session', async () => {
         const minted = await share(alice, {
-          entity: folder('F'), permissions: [CAP_READ], attachments: 'read',
+          entity: folder('F'), permissions: [CAP_READ], operations: ['cap/read'], attachments: 'read',
         });
         const surface = await filesOf(await sessionOf(minted.secret));
         expect((await surface.open(files.d1.id))?.record.id).toBe(files.d1.id);
@@ -414,7 +414,7 @@ export function capabilityAttachmentContractSuite(
 
       it('an opted-in session cannot cross a scope or tenant boundary', async () => {
         const minted = await share(alice, {
-          entity: folder('F'), permissions: [CAP_READ], attachments: 'read',
+          entity: folder('F'), permissions: [CAP_READ], operations: ['cap/read'], attachments: 'read',
         });
         const token = await sessionOf(minted.secret);
         const sibling = scopeId.parse(ulid());
