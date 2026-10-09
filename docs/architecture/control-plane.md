@@ -1240,11 +1240,15 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
   written only for a non-reaped scope the directory holds under the named tenant. Kept
   **thirteen months**, pruned by the same phase at most 500 rows per pass. A reaped scope's
   rows are deleted at reap, and reads join on scope status as a second guard.
-- **A failed read keeps the last value.** It is a `storage` error in the pass report and the
-  scope's attempt row. A scope bound to no vertical is skipped, not failed.
+- **A failed read keeps the last value, and is named.** It is a `storage` error in the pass
+  report and the scope's attempt row, and the figure on `/meters` counts it (`failing`, with
+  `lastFailedAt`), so the console says "the last read of N scopes failed" rather than letting
+  them go silently missing. The next successful read clears it. A scope bound to no vertical
+  is skipped, not failed.
 - **Labelled by coverage and age.** The figure carries `sampled` of `total` non-reaped scopes
   and the `oldestReadAt` it is "as of". The console calls it a total only when every scope is
-  sampled and the oldest sample is under two days old; otherwise it is `partial` or `stale`.
+  sampled, none is failing and the oldest sample is under two days old; otherwise it is
+  `partial`, `failing` or `stale`.
 - **History, not yet a price.** The day rows are what a byte-day (and so GB-month) figure
   needs, through `HostAdmin.listScopeStorage`. Nothing prices them yet, because a GB-month
   over days the pass did not sample is a coverage question the bill has to answer first.

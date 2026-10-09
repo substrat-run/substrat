@@ -22,8 +22,10 @@ scope's latest try in `_substrat_scope_storage_attempts`. A reaped scope's rows 
 at reap. The meter's `storage` field (`storageGauge`) says what it
 sums (scope databases only, with attachments, per-tenant D1 databases and the lake named as
 excluded), how many scopes it covers (`sampled` of `total`) and the `oldestReadAt` it is as
-of. The console shows it on the Meters view and the tenant page, and calls it a total only
-when every scope is sampled and no sample is older than two days.
+of, plus how many scopes' last read FAILED (`failing`, `lastFailedAt`), so a scope that keeps
+failing is named rather than silently missing. The console shows it on the Meters view and the
+tenant page, and calls it a total only when every scope is sampled, none is failing and no
+sample is older than two days.
 
 `HostAdmin.recordScopeStorage`, `listScopeStorage`, `listScopeStorageAttempts` and `pruneScopeStorage` are new OPTIONAL
 methods, and the phase is skipped on a host without them, so an adapter built before this
