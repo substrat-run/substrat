@@ -140,8 +140,8 @@ export const capabilityRecord = z.discriminatedUnion('mode', [
     permissions: z.array(permissionKey).min(1),
     /** Null = any operation the keys allow. */
     operations: z.array(z.string().min(1)).nullable(),
-    /** Null = attachment readers remain refused when `operations` is narrowed. */
-    attachments: z.literal('read').nullable(),
+    /** Absent/null = attachment readers remain refused when `operations` is narrowed. */
+    attachments: z.literal('read').nullable().optional(),
   }),
   z.object({
     mode: z.literal('become'),
