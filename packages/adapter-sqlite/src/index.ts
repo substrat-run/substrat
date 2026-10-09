@@ -2023,7 +2023,7 @@ export class SqliteScopeHost implements ScopeHost {
         status TEXT NOT NULL DEFAULT 'active',
         schema_version TEXT NOT NULL DEFAULT '0',
         vertical_version_id TEXT,
-        erasure_epoch INTEGER NOT NULL DEFAULT 0,
+        erasure_epoch INTEGER,
         provisioned_version_id TEXT,
         -- Last FAILED migration attempt (§5.3). All null / 0 = healthy. Written on
         -- the failure path so a scope that fails closed stops rendering as active;
@@ -8842,8 +8842,8 @@ export class SqliteScopeHost implements ScopeHost {
           throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
         const epoch = this.directory.prepare('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
-          .get(tenantId, scopeId) as { erasure_epoch: number } | undefined;
-        if (opts?.expectedErasureEpoch !== undefined && epoch?.erasure_epoch !== opts.expectedErasureEpoch) {
+          .get(tenantId, scopeId) as { erasure_epoch: number | null } | undefined;
+        if (opts?.expectedErasureEpoch !== undefined && (epoch?.erasure_epoch ?? 0) !== opts.expectedErasureEpoch) {
           throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
         }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
@@ -8865,7 +8865,7 @@ export class SqliteScopeHost implements ScopeHost {
         const update = this.directory.prepare(
           `UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?
            ${opts?.expectedVersionId === undefined ? '' : 'AND vertical_version_id IS ?'}
-           ${opts?.expectedErasureEpoch === undefined ? '' : 'AND erasure_epoch = ?'}`,
+           ${opts?.expectedErasureEpoch === undefined ? '' : 'AND COALESCE(erasure_epoch, 0) = ?'}`,
         ).run(versionId, v.verticalSlug, scopeId,
           ...(opts?.expectedVersionId === undefined ? [] : [opts.expectedVersionId]),
           ...(opts?.expectedErasureEpoch === undefined ? [] : [opts.expectedErasureEpoch]));
@@ -9040,7 +9040,7 @@ export class SqliteScopeHost implements ScopeHost {
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
         const moved = this.directory
-          .prepare(`UPDATE scopes SET serving_ref = ? WHERE scope_id = ? ${opts?.expectedErasureEpoch === undefined ? '' : 'AND erasure_epoch = ?'}`)
+          .prepare(`UPDATE scopes SET serving_ref = ? WHERE scope_id = ? ${opts?.expectedErasureEpoch === undefined ? '' : 'AND COALESCE(erasure_epoch, 0) = ?'}`)
           .run(servingRef, scopeId, ...(opts?.expectedErasureEpoch === undefined ? [] : [opts.expectedErasureEpoch]));
         if (moved.changes === 0) throw substratError('precondition_failed', 'scope erasure changed; reload and retry');
         this.recordAdmin(
@@ -10224,16 +10224,16 @@ export class SqliteScopeHost implements ScopeHost {
       },
       scopeErasureEpoch: async (_actor, tenantId, scopeId) => {
         const row = this.directory.prepare('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
-          .get(tenantId, scopeId) as { erasure_epoch: number } | undefined;
+          .get(tenantId, scopeId) as { erasure_epoch: number | null } | undefined;
         if (!row) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-        return row.erasure_epoch;
+        return row.erasure_epoch ?? 0;
       },
       finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected) => {
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
         const claimed = this.directory.prepare(
-          `UPDATE scopes SET erasure_epoch = erasure_epoch + 1
+          `UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
            WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
-             AND serving_ref IS ? AND erasure_epoch = ?
+             AND serving_ref IS ? AND COALESCE(erasure_epoch, 0) = ?
              AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
                WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
                  AND copy.state = 'pending')
@@ -11865,7 +11865,7 @@ export class SqliteScopeHost implements ScopeHost {
     // #1172: which version this scope's provision hook last ran against. Null on every
     // existing row, which reads as "unknown, reconcile once" rather than "up to date".
     this.ensureColumn(this.directory, 'scopes', 'provisioned_version_id', 'provisioned_version_id TEXT');
-    this.ensureColumn(this.directory, 'scopes', 'erasure_epoch', 'erasure_epoch INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumn(this.directory, 'scopes', 'erasure_epoch', 'erasure_epoch INTEGER');
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.ensureColumn(this.directory, 'tenants', 'deleting_at', 'deleting_at TEXT');
     this.ensureColumn(

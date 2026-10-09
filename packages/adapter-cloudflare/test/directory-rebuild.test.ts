@@ -277,7 +277,7 @@ describe('#2064: the hosted admin-log rebuild keeps every index the kernel lists
 });
 
 describe('#1722 directory additions on an existing Durable Object', () => {
-  it('adds an empty copy ledger and zero erasure epoch without changing scope routing', async () => {
+  it('adds an empty copy ledger and nullable zero epoch without changing scope routing', async () => {
     await warmControlPlane(env.CONTROL_PLANE);
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`copy-ledger-${ulid()}`));
     const result = await runInDurableObject(stub, (_instance, state) => {
@@ -291,7 +291,7 @@ describe('#1722 directory additions on an existing Durable Object', () => {
         copies: state.storage.sql.exec('SELECT * FROM scope_script_copies').toArray(),
       };
     });
-    expect(result.scope).toEqual([{ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: 0 }]);
+    expect(result.scope).toEqual([{ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: null }]);
     expect(result.copies).toEqual([]);
   });
 });

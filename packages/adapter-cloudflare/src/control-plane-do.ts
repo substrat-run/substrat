@@ -758,7 +758,7 @@ const DIRECTORY_DDL = `
     status TEXT NOT NULL DEFAULT 'active',
     schema_version TEXT NOT NULL DEFAULT '0',
     vertical_version_id TEXT,
-    erasure_epoch INTEGER NOT NULL DEFAULT 0,
+    erasure_epoch INTEGER,
     -- Last FAILED migration attempt (§5.3). All null / 0 = healthy. Written on the
     -- failure path so a scope that fails closed stops rendering as active, and
     -- cleared on the next success. See ScopeDO.applyPendingMigrations.
@@ -1289,7 +1289,7 @@ const SCOPE_COLUMNS_ADDED = [
   'name TEXT',
   'vertical TEXT',
   'vertical_version_id TEXT',
-  'erasure_epoch INTEGER NOT NULL DEFAULT 0',
+  'erasure_epoch INTEGER',
   'provisioned_version_id TEXT',
   'migration_failed_version TEXT',
   'migration_error TEXT',
@@ -3146,7 +3146,7 @@ export class ControlPlaneDO extends DurableObject {
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number): void {
     const changed = expectedErasureEpoch === undefined
       ? this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ?', servingRef, scopeId)
-      : this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ? AND erasure_epoch = ?',
+      : this.sql.exec('UPDATE scopes SET serving_ref = ? WHERE scope_id = ? AND COALESCE(erasure_epoch, 0) = ?',
           servingRef, scopeId, expectedErasureEpoch);
     if (changed.rowsWritten === 0) throw substratError('precondition_failed', 'scope erasure changed; reload and retry');
   }
@@ -3186,12 +3186,12 @@ export class ControlPlaneDO extends DurableObject {
     const update = expectedVersionId === undefined
       ? expectedErasureEpoch === undefined
         ? this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?', versionId, verticalSlug, scopeId)
-        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND erasure_epoch = ?',
+        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND COALESCE(erasure_epoch, 0) = ?',
             versionId, verticalSlug, scopeId, expectedErasureEpoch)
       : expectedErasureEpoch === undefined
         ? this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ?',
             versionId, verticalSlug, scopeId, expectedVersionId)
-        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ? AND erasure_epoch = ?',
+        : this.sql.exec('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ? AND vertical_version_id IS ? AND COALESCE(erasure_epoch, 0) = ?',
             versionId, verticalSlug, scopeId, expectedVersionId, expectedErasureEpoch);
     if (update.rowsWritten === 0) {
       throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
@@ -3200,17 +3200,17 @@ export class ControlPlaneDO extends DurableObject {
 
   scopeErasureEpoch(tenantId: string, scopeId: string): number {
     const row = this.sql.exec('SELECT erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
-      .toArray()[0] as { erasure_epoch: number } | undefined;
+      .toArray()[0] as { erasure_epoch: number | null } | undefined;
     if (!row) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-    return row.erasure_epoch;
+    return row.erasure_epoch ?? 0;
   }
 
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null,
     expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): boolean {
     return this.sql.exec(
-      `UPDATE scopes SET erasure_epoch = erasure_epoch + 1
+      `UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
        WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
-         AND serving_ref IS ? AND erasure_epoch = ?
+         AND serving_ref IS ? AND COALESCE(erasure_epoch, 0) = ?
          AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
            WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
              AND copy.state = 'pending')

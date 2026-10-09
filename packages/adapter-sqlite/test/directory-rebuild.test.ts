@@ -229,7 +229,7 @@ describe.each(CASES)('#1573: the $table rebuild is atomic', (c) => {
 });
 
 describe('#1722 directory additions on an existing SQLite store', () => {
-  it('adds an empty copy ledger and zero erasure epoch without changing scope routing', async () => {
+  it('adds an empty copy ledger and nullable zero epoch without changing scope routing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-copy-ledger-'));
     try {
       await new SqliteScopeHost({ dir }).close();
@@ -244,7 +244,7 @@ describe('#1722 directory additions on an existing SQLite store', () => {
       const after = new Database(file, { readonly: true });
       try {
         expect(after.prepare('SELECT vertical_version_id, serving_ref, erasure_epoch FROM scopes WHERE scope_id = ?')
-          .get('old-scope')).toEqual({ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: 0 });
+          .get('old-scope')).toEqual({ vertical_version_id: 'old-version', serving_ref: 'old-script', erasure_epoch: null });
         expect(after.prepare('SELECT * FROM scope_script_copies').all()).toEqual([]);
       } finally {
         after.close();
