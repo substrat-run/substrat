@@ -1267,17 +1267,16 @@ function deploymentForScopeFor(
  * database and record its size as the scope's.
  */
 /**
- * A 404 the vertical's router answered because it has no such route: its body is NOT the
- * vertical's JSON error envelope (`{ "error": … }`). vertical-host's `classifyError` and a
- * vertical's own `mapError` also answer 404, for a scope or row it could not find, and those
- * come enveloped. Hono's miss is plain text. A 404 whose body could not be read is not
- * assumed to be a miss.
+ * A 404 the vertical's router answered because it has no such route: a non-empty body that is
+ * not JSON (Hono's miss is plain text). vertical-host's `classifyError` and a vertical's own
+ * `mapError` also answer 404, for a scope or row it could not find, and those come as the JSON
+ * envelope. A 404 whose body is empty or could not be read proves nothing, so it is not a miss.
  */
 function isRouteMiss(err: ControlPlaneError): boolean {
-  if (err.status !== 404 || err.body === undefined) return false;
+  if (err.status !== 404 || !err.body?.trim()) return false;
   try {
-    const parsed = JSON.parse(err.body) as { error?: unknown } | null;
-    return !(typeof parsed === 'object' && parsed !== null && 'error' in parsed);
+    JSON.parse(err.body);
+    return false;
   } catch {
     return true;
   }

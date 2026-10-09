@@ -595,6 +595,24 @@ describe('VerticalClient — database size (#1524)', () => {
     expect(miss).toMatchObject({ status: 404, body: '404 Not Found' });
     const enveloped = await refused(404, JSON.stringify({ error: 'unknown scope' }));
     expect(enveloped).toMatchObject({ status: 404, message: 'unknown scope', body: '{"error":"unknown scope"}' });
+    expect(await refused(404, '')).toMatchObject({ status: 404, body: '' });
+  });
+
+  it('a refusal whose body could not be read carries no body, which is not an empty one (#1524)', async () => {
+    const client = new VerticalClient({
+      fetch: (async () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.error(new Error('stream broke'));
+            },
+          }),
+          { status: 404, statusText: 'Not Found' },
+        )) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const err = (await client.databaseSize(s).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err).toMatchObject({ status: 404, body: undefined, message: 'vertical refused introspection: 404 Not Found' });
   });
 });
 

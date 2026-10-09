@@ -11,7 +11,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ControlPlaneError, drainScopePlatformRequests } from '@substrat-run/control-plane-api';
+import { ControlPlaneError, VerticalClient, drainScopePlatformRequests } from '@substrat-run/control-plane-api';
 import { INERT_SCOPE_REASON, StorageReadUnsupported, ulid, type PlatformSweepReport } from '@substrat-run/kernel';
 import worker, {
   drainContextOf,
@@ -384,37 +384,44 @@ describe('storageReaderFor (#1524)', () => {
     await expect(storageReaderFor(async () => undefined)(scope('todo'))).rejects.toThrow(/no deployment resolves for vertical 'todo'/);
   });
 
-  it('turns a deployment without the route (501, or a plain-text route miss) into the standing condition', async () => {
-    const failing = (status: number, body?: string) =>
-      storageReaderFor(async () => ({
-        databaseSize: async () => {
-          throw new ControlPlaneError(status, `vertical refused introspection (${status})`, undefined, { body });
+  /** A real `VerticalClient` whose deployment answers `res` — the producer the reader classifies. */
+  const answeredBy = (res: () => Response) =>
+    storageReaderFor(
+      async () =>
+        new VerticalClient({ fetch: (async () => res()) as unknown as typeof fetch, platformSecret: 'secret' }),
+    );
+  const erroredBody = (status: number) => () =>
+    new Response(
+      new ReadableStream({
+        start(c) {
+          c.error(new Error('stream broke'));
         },
-      }));
-    for (const [status, body] of [
-      [501, '{"error":"this deployment cannot read a database size (#1524). Redeploy it"}'],
-      [404, '404 Not Found'], // Hono's own miss: no route at all
+      }),
+      { status },
+    );
+
+  it('turns a deployment without the route (501, or a plain-text route miss) into the standing condition', async () => {
+    for (const [status, res] of [
+      [501, () => Response.json({ error: 'this deployment cannot read a database size (#1524). Redeploy it' }, { status: 501 })],
+      [404, () => new Response('404 Not Found', { status: 404 })], // Hono's own miss: no route at all
     ] as const) {
-      const err = await failing(status, body)(scope('todo')).catch((e: unknown) => e);
+      const err = await answeredBy(res)(scope('todo')).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(StorageReadUnsupported);
       expect((err as Error).message).toMatch(new RegExp(`vertical 'todo' cannot read a database size \\(${status}\\)`));
     }
   });
 
-  it("passes a vertical's own enveloped 404, an unread 404 and any other failure on as real failures", async () => {
-    const failing = (status: number, body?: string) =>
-      storageReaderFor(async () => ({
-        databaseSize: async () => {
-          throw new ControlPlaneError(status, 'unknown scope', undefined, { body });
-        },
-      }));
-    // The twin of the route miss: the vertical HAS the route and answered with its envelope.
-    for (const [status, body] of [
-      [404, '{"error":"unknown scope 01J…","code":"not_found"}'],
-      [404, undefined],
-      [503, 'upstream unavailable'],
-    ] as const) {
-      const err = await failing(status, body)(scope('todo')).catch((e: unknown) => e);
+  it("passes an enveloped, an empty or an unread 404, and any other failure, on as real failures", async () => {
+    // The twins of the route miss: the vertical HAS the route and answered with its envelope,
+    // or the body proves nothing either way.
+    for (const res of [
+      () => Response.json({ error: 'unknown scope 01J…' }, { status: 404 }),
+      () => new Response('', { status: 404 }),
+      () => new Response('   ', { status: 404 }),
+      erroredBody(404),
+      () => new Response('upstream unavailable', { status: 503 }),
+    ]) {
+      const err = await answeredBy(res)(scope('todo')).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ControlPlaneError);
       expect(err).not.toBeInstanceOf(StorageReadUnsupported);
     }
