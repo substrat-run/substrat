@@ -373,14 +373,19 @@ scheduleContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
-}, (host, suspend) => {
+}, (host, suspend, resumeBeforeCatch) => {
   // Interpose after the coordinator's cadence read and before the system door.
   const target = host as unknown as { openSystemDoor: (...args: unknown[]) => Promise<unknown> };
   const original = target.openSystemDoor.bind(host);
   target.openSystemDoor = async (...args) => {
     target.openSystemDoor = original;
     await suspend();
-    return original(...args);
+    try {
+      return await original(...args);
+    } catch (error) {
+      await resumeBeforeCatch?.();
+      throw error;
+    }
   };
   return () => { target.openSystemDoor = original; };
 });

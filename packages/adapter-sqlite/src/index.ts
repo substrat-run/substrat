@@ -48,6 +48,7 @@ import {
   identityLink,
   identityPool,
   instant,
+  isSubstratError,
   connection,
   capabilityGrant,
   connectionGrant,
@@ -4978,7 +4979,7 @@ export class SqliteScopeHost implements ScopeHost {
       } catch (err) {
         // The system door can meet a suspension after the cadence gate. A refused
         // fire did not run, so leave its row due for the first live pass.
-        if (this.scopeWorkRefusal(tenantId, scopeId) === (err instanceof Error ? err.message : String(err))) {
+        if (isSubstratError(err) && err.code === 'conflict' && err.extensions.reason === SCOPE_GATE_REASONS.notActive) {
           report.lifecycleHeld = true;
           report.skipped += 1;
           report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });

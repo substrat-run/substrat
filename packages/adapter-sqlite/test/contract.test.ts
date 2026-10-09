@@ -222,7 +222,7 @@ scheduleContractSuite('adapter-sqlite', async () => {
       rmSync(dir, { recursive: true, force: true });
     },
   };
-}, (host, suspend) => {
+}, (host, suspend, resumeBeforeCatch) => {
   const original = host.getSystemScope.bind(host);
   let once = false;
   host.getSystemScope = async (...args) => {
@@ -230,7 +230,12 @@ scheduleContractSuite('adapter-sqlite', async () => {
       once = true;
       await suspend();
     }
-    return original(...args);
+    try {
+      return await original(...args);
+    } catch (error) {
+      await resumeBeforeCatch?.();
+      throw error;
+    }
   };
   return () => { host.getSystemScope = original; };
 });
