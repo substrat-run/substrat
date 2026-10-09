@@ -258,7 +258,8 @@ export {
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
   CAPABILITY_BECOME_MINT_OPERATION,
-  becomeMintRefusal,
+  becomeMintCheck,
+  holdingsDigest,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
 } from './capability.js';

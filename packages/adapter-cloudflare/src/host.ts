@@ -4966,7 +4966,7 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * A principal's `become` mint (#1686) — a member invite's link, minted by the member who
-   * invites. The bound (`becomeMintRefusal`: the caller holds everything the target holds here)
+   * invites. The bound (`becomeMintCheck`: the caller holds everything the target holds here)
    * and the write are one ScopeDO task; a refusal is `{ ok: false, coverage }` and writes
    * nothing. Same gate as the scope-role verbs, which the invite grants with beside it.
    */

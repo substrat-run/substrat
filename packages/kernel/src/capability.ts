@@ -113,6 +113,10 @@ export const CAPABILITY_DDL = `
     -- NULL = no attachment read opt-in; 'read' explicitly allows attachment readers.
     attachments TEXT,
     principal TEXT,
+    -- #1686: a principal-minted 'become' only — the digest of what \`principal\` held when it was
+    -- minted (\`holdingsDigest\`). The exchange recomputes it, and a link whose principal's
+    -- holdings have changed since is revoked rather than exchanged. NULL on every other row.
+    target_digest TEXT,
     -- JSON capabilityAuthor: a principal id (a module minted it, and its authority is
     -- re-checked on every use) or {"platform": …} (HostAdmin minted it).
     minted_by TEXT NOT NULL,
@@ -168,12 +172,14 @@ export interface CapabilityRow {
   last_used_at: string | null;
   revoked_at: string | null;
   revoked_by: string | null;
+  /** #1686: a principal-minted `become`'s holdings digest at mint; NULL elsewhere. */
+  target_digest?: string | null;
 }
 
 /** Every column a read returns — everything but `token_hash`, which no reader has a use for. */
 export const CAPABILITY_COLUMNS =
   'id, mode, label, entity_type, entity_id, permissions, operations, attachments, principal, minted_by, ' +
-  'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by';
+  'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by, target_digest';
 
 /** The row the permission checker reads for a capability subject (`ScopeTupleReader.capability`). */
 export function capabilityByIdQuery(id: string): { sql: string; params: SqlValue[] } {
@@ -702,6 +708,12 @@ export async function exchangeCapability(
     sql: ScopedSql;
     now: Instant;
     emit: (capability: CapabilityId, event: DomainEventInput) => void;
+    /**
+     * What a principal holds now (#1686) — the checker's `holdings` at this scope. A
+     * principal-minted `become` is exchanged only while its principal's holdings digest is the
+     * one recorded at mint; absent, such a link is refused.
+     */
+    holdings?: (principal: PrincipalId) => Promise<Holdings>;
   },
   secret: unknown,
   /**
@@ -719,6 +731,18 @@ export async function exchangeCapability(
   )[0];
   if (!row || !capabilityExchangeable(row, deps.now)) return null;
   if (mode !== undefined && row.mode !== mode) return null;
+  if (row.mode === 'become' && typeof JSON.parse(row.minted_by) === 'string') {
+    // A principal minted it (#1686): the bound held against what its principal held THEN. If
+    // that has changed in any way since — a role raised or lowered, a grant added, an org joined,
+    // a role redefined — the link is revoked here, with no revoker, and refused: the one answer
+    // a refusal always gets, and nothing written beyond the revoke. Its use is never taken.
+    if (!deps.holdings || !row.target_digest) return null;
+    const held = await deps.holdings(principalIdSchema.parse(row.principal));
+    if ((await holdingsDigest(held)) !== row.target_digest) {
+      markRevoked(deps.sql, capabilityIdSchema.parse(row.id), null, deps.now);
+      return null;
+    }
+  }
   const taken = deps.sql.exec(
     `UPDATE _substrat_capabilities SET uses = uses + 1, last_used_at = ?
      WHERE id = ? AND uses = ?`,
@@ -914,14 +938,16 @@ async function insertBecome(
   input: { principal: PrincipalId; expiresAt?: Instant; maxUses: number; label?: string },
   author: CapabilityAuthor,
   now: Instant,
+  /** A principal's mint only: the target's `holdingsDigest` now. */
+  targetDigest: string | null = null,
 ): Promise<MintedCapability> {
   const id = capabilityIdSchema.parse(ulid());
   const secret = mintCapabilitySecret();
   sql.exec(
     `INSERT INTO _substrat_capabilities
        (id, token_hash, mode, label, entity_type, entity_id, permissions, operations, attachments,
-        principal, minted_by, minted_at, expires_at, max_uses, uses)
-     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0)`,
+        principal, minted_by, minted_at, expires_at, max_uses, uses, target_digest)
+     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0, ?)`,
     [
       id,
       await capabilityTokenHash(secret),
@@ -931,20 +957,40 @@ async function insertBecome(
       now,
       input.expiresAt ?? null,
       input.maxUses,
+      targetDigest,
     ],
   );
   return { id, secret, expiresAt: input.expiresAt ?? null };
 }
 
-/** The one revoke write: stamps `author` once, on a row not yet revoked. True when this call did. */
-function markRevoked(sql: ScopedSql, id: CapabilityId, author: CapabilityAuthor, now: Instant): boolean {
+/**
+ * The one revoke write: stamps `author` once, on a row not yet revoked. True when this call did.
+ * `null` is the kernel's own revoke — a link whose principal's holdings changed (#1686) — which no
+ * person or platform actor made, and is recorded with no revoker.
+ */
+function markRevoked(sql: ScopedSql, id: CapabilityId, author: CapabilityAuthor | null, now: Instant): boolean {
   return (
     sql.exec(
       `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
        WHERE id = ? AND revoked_at IS NULL`,
-      [now, JSON.stringify(author), id],
+      [now, author === null ? null : JSON.stringify(author), id],
     ).changes === 1
   );
+}
+
+/**
+ * A canonical digest of what a principal holds (#1686): its node-level permissions — scope and
+ * tenant level, through its orgs, roles expanded — and its entity-narrowed grants, each sorted
+ * and deduplicated, so two reads of the same holdings in any order give the same digest. Taken
+ * when a principal mints a `become` for it, and again at the exchange: any change in between, up
+ * or down, through a tuple, an org membership or a role's definition, changes the digest.
+ */
+export async function holdingsDigest(held: Holdings): Promise<string> {
+  const canonical = JSON.stringify({
+    permissions: [...new Set<string>(held.permissions)].sort(),
+    narrowed: [...new Set(held.narrowed.map((n) => `${n.permission} ${n.entity.entityType}:${n.entity.entityId}`))].sort(),
+  });
+  return capabilityTokenHash(canonical);
 }
 
 /**
@@ -981,7 +1027,8 @@ export const CAPABILITY_BECOME_MINT_OPERATION = 'capabilities.mint-become';
  * entity. Anything less mints impersonation upward — a lead inviting a stranger in as the owner.
  *
  * The bound is evaluated at mint, against what the target holds then; the exchange does not
- * re-check it. So a target holding nothing at the node is refused outright: its empty set would
+ * re-check the minter. It compares the target's holdings instead: a link whose principal's
+ * holdings have changed since the mint is revoked rather than exchanged (`exchangeCapability`). So a target holding nothing at the node is refused outright: its empty set would
  * cover trivially, and the link would yield whatever that principal is granted later. A member
  * invite never meets this — it grants the role before it mints.
  *
@@ -991,17 +1038,18 @@ export const CAPABILITY_BECOME_MINT_OPERATION = 'capabilities.mint-become';
  * target outside the scope (an identity directory) is not visible here; the one caller today,
  * a member invite, always targets a principal it has just minted.
  *
- * Null when the mint may go ahead; otherwise the refusal, as the host answers it — a `Coverage`
- * naming what the caller lacks, as `canAssign`'s does, `target-holds-nothing`, or
+ * When the mint may go ahead, the target's `holdingsDigest` — what the mint records, and what the
+ * exchange compares against. Otherwise the refusal, as the host answers it — a `Coverage` naming
+ * what the caller lacks, as `canAssign`'s does, `target-holds-nothing`, or
  * `target-already-claimed`. A checker with
  * no `holdings` cannot say what the target holds, so the bound refuses rather than guess.
  */
-export async function becomeMintRefusal(
+export async function becomeMintCheck(
   deps: { sql: ScopedSql; checker: Pick<PermissionChecker, 'check' | 'covers' | 'holdings'> },
   caller: PrincipalId,
   target: PrincipalId,
   node: Node,
-): Promise<BecomeMintRefusal | null> {
+): Promise<BecomeMintRefusal | { ok: true; targetDigest: string }> {
   const { checker } = deps;
   if (becomeClaimed(deps.sql, target)) return { ok: false, refused: 'target-already-claimed' };
   if (!checker.holdings) {
@@ -1010,7 +1058,7 @@ export async function becomeMintRefusal(
   const held = await checker.holdings({ kind: 'principal', id: target }, node);
   if (held.permissions.length === 0) return { ok: false, refused: 'target-holds-nothing' };
   const coverage = await coversHoldings(checker, caller, held, node);
-  return coverage ? { ok: false, coverage } : null;
+  return coverage ? { ok: false, coverage } : { ok: true, targetDigest: await holdingsDigest(held) };
 }
 
 /** Has any `become` capability for `principal` been exchanged in this scope — platform-minted or not? */
@@ -1044,7 +1092,7 @@ async function coversHoldings(
 }
 
 /**
- * A principal's `become` mint (#1686) — the write a member invite makes once `becomeMintRefusal`
+ * A principal's `become` mint (#1686) — the write a member invite makes once `becomeMintCheck`
  * has said yes, in the same scope task. Recorded with the principal as its minter, and on the
  * spine as `capability.become-minted` through `emit`, whose actor the host stamps as `minter`.
  * No expiry unless one is given, as an invite has never had one; the use limit is required.
@@ -1053,12 +1101,14 @@ export async function mintBecomeCapabilityAsPrincipal(
   deps: { sql: ScopedSql; now: Instant; emit: (event: DomainEventInput) => void },
   minter: PrincipalId,
   raw: PrincipalBecomeCapabilityInput,
+  /** `becomeMintCheck`'s answer: the target's holdings now, which the exchange compares against. */
+  targetDigest: string,
 ): Promise<MintedCapability> {
   const input = principalBecomeCapabilityInput.parse(raw);
   if (input.expiresAt !== undefined && input.expiresAt <= deps.now) {
     throw substratError('validation_failed', `mintBecomeCapability: expiresAt ${input.expiresAt} is not in the future`);
   }
-  const minted = await insertBecome(deps.sql, input, minter, deps.now);
+  const minted = await insertBecome(deps.sql, input, minter, deps.now, targetDigest);
   const payload: CapabilityBecomeMintedPayload = {
     capabilityId: minted.id,
     principal: input.principal,

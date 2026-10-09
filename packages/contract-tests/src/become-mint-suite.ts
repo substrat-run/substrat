@@ -29,7 +29,12 @@
  * 8. **A seat already taken.** A target some `become` link has been exchanged into in this
  *    scope (a principal's or the platform's) is refused another link; never-exchanged links,
  *    open or revoked, leave it untaken, and a seat taken in another scope is not taken here.
- * 9. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
+ * 9. **The link dies when its principal's holdings change.** The mint records a digest of what
+ *    the target holds; the exchange recomputes it, and a link whose principal was raised through
+ *    (i) a scope-level role, (ii) a tenant-level role, (iii) an org joined, or (iv) a role
+ *    redefined is revoked — with no revoker — and refused, its use untaken. Its twin: nothing
+ *    changed (another principal raised meanwhile), and the link exchanges.
+ * 10. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
  *    mints — the bound is evaluated at mint, and an empty set would cover trivially. Its twin:
  *    the same principal, once it holds a role, is minted for.
  */
@@ -352,6 +357,57 @@ export function becomeMintContractSuite(
         const cap = await minted(owner, await seat());
         expect(await fixture.verbs.revokeBecomeCapability(t1, s2, cap.id, owner)).toEqual({ ok: true, revoked: false });
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+      });
+    });
+
+    describe('the link dies when its principal\'s holdings change', () => {
+      /** The link is refused, revoked by the kernel (no revoker), and its use never taken. */
+      const expectDead = async (cap: MintedCapability) => {
+        expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' })).toBeNull();
+        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ uses: 0, revokedBy: null, revokedAt: expect.any(String) });
+      };
+
+      it('(i) a scope-level role raised', async () => {
+        const target = await seat();
+        const cap = await minted(owner, target);
+        await host.admin.assignRole(staff, { principalId: target, roleKey: 'writer', node: node() });
+        await expectDead(cap);
+      });
+
+      it('(ii) a tenant-level role raised', async () => {
+        const target = await seat();
+        const cap = await minted(owner, target);
+        await host.admin.assignRole(staff, { principalId: target, roleKey: 'writer', node: { tenantId: t1, scopeId: null } });
+        await expectDead(cap);
+      });
+
+      it('(iii) an org joined that holds more', async () => {
+        const target = await seat();
+        const org = orgId.parse(ulid());
+        await host.admin.createOrg(staff, { id: org, tenantId: t1, slug: `raise-${ulid().toLowerCase()}`, name: 'Raise Org' });
+        await host.admin.grantToOrg(staff, org, WRITE, node());
+        const cap = await minted(owner, target);
+        await host.admin.addMember(staff, t1, target, org);
+        await expectDead(cap);
+      });
+
+      it('(iv) a role it holds redefined to carry more', async () => {
+        const target = p();
+        const key = `widening-${ulid().toLowerCase()}`;
+        await host.admin.defineRole(staff, t1, { key, permissions: [READ], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: target, roleKey: key, node: node() });
+        const cap = await minted(owner, target);
+        await host.admin.defineRole(staff, t1, { key, permissions: [READ, WRITE], source: 'vertical' });
+        await expectDead(cap);
+      });
+
+      it('the twin: nothing about its principal changed — another raised meanwhile — and the link exchanges', async () => {
+        const target = await seat();
+        const bystander = await seat();
+        const cap = await minted(owner, target);
+        await host.admin.assignRole(staff, { principalId: bystander, roleKey: 'writer', node: node() });
+        expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+        expect((await records()).find((r) => r.id === cap.id)).toMatchObject({ uses: 1, revokedAt: null });
       });
     });
 

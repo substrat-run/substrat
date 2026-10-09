@@ -322,7 +322,7 @@ import {
   type TableStep,
   CAPABILITY_EXCHANGE_OPERATION,
   CAPABILITY_BECOME_MINT_OPERATION,
-  becomeMintRefusal,
+  becomeMintCheck,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
   capabilityAttachmentWriteRefused,
@@ -4802,6 +4802,9 @@ export function defineScopeDO(
                   [],
                   now,
                 ), event),
+              holdings: this.checker.holdings
+                ? (principal) => this.checker.holdings!({ kind: 'principal', id: principal }, { tenantId, scopeId })
+                : undefined,
             },
             secret,
             mode,
@@ -4814,7 +4817,7 @@ export function defineScopeDO(
 
     /**
      * A principal's `become` mint (#1686) — a member invite's link. The kernel's
-     * `becomeMintRefusal` and the write in ONE queued body and one storage transaction, so
+     * `becomeMintCheck` and the write in ONE queued body and one storage transaction, so
      * nothing the target or the caller holds moves between the check and the mint; a refusal
      * writes nothing. On the spine as `capability.become-minted`, the caller its actor.
      */
@@ -4828,8 +4831,8 @@ export function defineScopeDO(
       const minter = principalId.parse(caller);
       const parsed = principalBecomeCapabilityInput.parse(input);
       return await this.queue.enqueue(async (): Promise<BoundedBecomeMint> => {
-        const refused = await becomeMintRefusal({ sql: doSpineSql(this.sql), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
-        if (refused) return refused;
+        const checked = await becomeMintCheck({ sql: doSpineSql(this.sql), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
+        if (!checked.ok) return checked;
         const liveSince = this.liveHighWaterMark();
         const now = instant.parse(new Date().toISOString());
         let minted: MintedCapability | undefined;
@@ -4856,6 +4859,7 @@ export function defineScopeDO(
             },
             minter,
             parsed,
+            checked.targetDigest,
           );
         });
         await this.settleCommitted(tenantId, scopeId, liveSince, null);
@@ -6318,6 +6322,8 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // #2126: NULL keeps every existing capability's attachment behavior unchanged.
         'ALTER TABLE _substrat_capabilities ADD COLUMN attachments TEXT',
+        // #1686: NULL on every row already there — none is a principal-minted become.
+        'ALTER TABLE _substrat_capabilities ADD COLUMN target_digest TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
         // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.
