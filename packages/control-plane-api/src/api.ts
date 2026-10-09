@@ -2803,10 +2803,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const sourceRef = await routeOf(c, scope);
     const moveId = sourceRef !== serving.ref ? ulid() : null;
     if (moveId && sourceRef) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId);
-    if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId);
-    const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
     let restored;
     try {
+      if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId);
+      const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
       const dump = await source.exportScope(scopeId);
       // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
       restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true });
@@ -2959,8 +2959,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const sourceRef = await routeOf(c, scope);
       const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
       if (moveId && sourceRef) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId);
-      const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
       try {
+        const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
         await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref,
           { ...move, expectedErasureEpoch: erasureEpoch }).catch(relayHostRefusal);
       } finally {
@@ -2996,10 +2996,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const sourceRef = await routeOf(c, scope);
     const moveId = sourceRef !== serving.ref ? ulid() : null;
     if (moveId && sourceRef) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId);
-    if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId);
-    const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
     let restored;
     try {
+      if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId);
+      const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
       const dump = await source.exportScope(scopeId);
       restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true }); // #1742, as adopt
       // Data landed on the target script — only now flip routing and cross the pointer.
