@@ -292,6 +292,28 @@ export function scheduleContractSuite(
       expect(denial?.invocation_id).toBe(failedRow!.invocation_id);
     });
 
+    it('a tenant suspension holds every scope schedule, while another tenant still runs', async () => {
+      const sibling = scopeId.parse(ulid());
+      const otherTenant = tenantId.parse(ulid());
+      const otherScope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: sibling, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, sibling);
+      await host.admin.createTenant(staff, { id: otherTenant, slug: `sched-${otherTenant.toLowerCase()}`, name: 'Sched' });
+      await host.admin.grantEntitlement(staff, otherTenant, 'sched');
+      await host.provisionScope(staff, { tenantId: otherTenant, scopeId: otherScope, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, otherTenant, otherScope);
+
+      await host.admin.setTenantStatus(staff, t, 'suspended');
+      expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(0);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, s)).fired).toBe(0);
+      expect((await host.runDueSchedules(SCHED_MODULE, otherTenant, otherScope)).fired).toBe(2);
+
+      await host.admin.setTenantStatus(staff, t, 'active');
+      expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(2);
+      expect((await (await host.getScope(reader, t, sibling)).invoke('sched/count'))).toBe(1);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(0);
+    });
+
     /**
      * #1288's backfill, on a dump captured before the column: a restore builds the table
      * from the kernel's DDL (#1883) and derives each row's `kind` from its key, by the
