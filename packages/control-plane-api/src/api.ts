@@ -2958,7 +2958,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // The scope serves nothing until `/verticals/:slug/instances` re-provisions it.
       const sourceRef = await routeOf(c, scope);
       const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
-      if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId);
+      if (moveId && sourceRef) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId);
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
       try {
         await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref,
