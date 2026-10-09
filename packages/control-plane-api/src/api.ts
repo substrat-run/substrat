@@ -4827,7 +4827,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       redactions.push(await script.redactSubject(scopeId, subjectId));
     }
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
-      versionId: scope.verticalVersionId, servingRef: scope.servingRef, epoch: erasureEpoch,
+      versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
     }));
   });
 
