@@ -4796,10 +4796,7 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<FreshnessReport> {
     const report: FreshnessReport = { checks: [] };
     if (!this.modules.has(moduleId)) return report;
-    const scope = this.directory
-      .prepare('SELECT status FROM scopes WHERE scope_id = ? AND tenant_id = ?')
-      .get(scopeId, tenantId) as { status: string } | undefined;
-    if (!scope || scope.status !== 'active') return report;
+    if (this.scopeWorkRefusal(tenantId, scopeId)) return report;
 
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);

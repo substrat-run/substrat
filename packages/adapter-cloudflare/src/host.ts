@@ -5087,8 +5087,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const report: FreshnessReport = { checks: [] };
     if (!this.moduleIds.has(moduleId)) return report;
     if (!this.cpLess) {
-      const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-      if (!rec || rec.status !== 'active') return report;
+      if (await this.cp.scopeAccessRefusal(tenantId, scopeId)) return report;
     } else if (lifecycleRefusal(await this.validateScopeAccess(tenantId, scopeId)) !== null) {
       // #2016: the pair is held to the scope's own record first, so a sweep roster entry whose
       // tenant disagrees with the scope is refused before the probe reads or writes anything.
@@ -5140,8 +5139,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // the same call that holds the pair to the scope's own record (#2016): a roster entry whose
     // tenant disagrees is refused before a grant, a cadence row or a run is read or written.
     if (!this.cpLess) {
-      const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-      if (!rec || rec.status !== 'active') return report;
+      if (await this.cp.scopeAccessRefusal(tenantId, scopeId)) return report;
     } else if (lifecycleRefusal(await this.validateScopeAccess(tenantId, scopeId)) !== null) {
       // #1713: the lifecycle the platform delivered holds the scope. Every schedule is
       // `skipped` and no cadence row moves, as under the kill switch, so a schedule that
