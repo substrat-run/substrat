@@ -367,6 +367,18 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     })]);
   });
 
+  it('a fork born pinned is still born where its source was routed', async () => {
+    // After the vertical serves in place, a fork's own row takes the serving pin, but its bytes went
+    // into its source's route: `unpinned`'s bound v2.
+    await tick();
+    const pinnedFork = scopeId.parse(ulid());
+    await host.importScope(staff, { tenantId: t, scopeId: pinnedFork, kind: 'snapshot', vertical: slug, forkedFrom: unpinned },
+      { scopeId: unpinned, capturedAt: new Date().toISOString(), tables: [] });
+    expect((await host.admin.getScopeRecord(staff, t, pinnedFork))?.servingRef).toBe(serving);
+    const pages = await backfillAll(true, 50);
+    expect(outcomesOf(pages, pinnedFork)).toEqual([`${refOf('v2')} would-record`]);
+  });
+
   it('a recorded copy is reached by the reap, which drains it', async () => {
     await reapScopeScriptCopies({ admin: host.admin, actor: staff, resolveRef: async (ref) => deployment(ref) }, t, moved);
     expect(writes).toEqual(expect.arrayContaining([`delete ${refOf('v1')}`, `delete ${refOf('v2')}`]));

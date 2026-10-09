@@ -23,9 +23,9 @@ import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type S
  * - **Birth by slug.** A non-preview scope born unpinned was provisioned through its vertical's
  *   slug, into the script of the version on `prod` at that instant (`listChannelHistory`), and no
  *   later row names that script unless a bind happens to. A preview is born by its own bind.
- * - **A fork** is born into the script its source was routed to at that instant, derived the same
- *   way from the source's timeline (the source's slug resolves to its vertical's serving script
- *   when that vertical served in place then).
+ * - **A fork** is born into the script its source was routed to at that instant, whatever pin its
+ *   own row took, derived the same way from the source's timeline (the source's slug resolves to
+ *   its vertical's serving script when that vertical served in place then).
  *
  * What cannot be derived is a **failure**: reported in every response, written as an ops record on
  * a real run (`scope.copy-backfill`), never marked clean, and reported again on a re-run. That is a
@@ -258,14 +258,19 @@ class Deriver {
     }
     // provisionScope: where the store was born, when no other row names it.
     if (row.id !== tl.provision?.id) return [];
-    if (after?.kind === 'preview' || pinnedBefore(tl, row.id)) return []; // born by its bind, or on its pin
+    if (after?.kind === 'preview') return []; // born by its bind
     const vertical = stringOf(after?.vertical) ?? row.vertical;
     if (!vertical) return [];
+    // A fork's bytes went into its source's route, whatever pin its own row took: before #2130 its
+    // directory row inherited the vertical's serving ref like any install's (review r2).
     const forkedFrom = stringOf(after?.forkedFrom);
-    if (!forkedFrom) return [await this.slugAt(vertical, row.at)];
-    const source = await this.timeline(tl.tenantId, forkedFrom as ScopeId);
-    if (!source.exists && !source.rows.length) return [{ failure: `the fork's source ${forkedFrom} is not in the directory or the log` }];
-    return [await this.routeAt(source, row.id, row.at)];
+    if (forkedFrom) {
+      const source = await this.timeline(tl.tenantId, forkedFrom as ScopeId);
+      if (!source.exists && !source.rows.length) return [{ failure: `the fork's source ${forkedFrom} is not in the directory or the log` }];
+      return [await this.routeAt(source, row.id, row.at)];
+    }
+    if (pinnedBefore(tl, row.id)) return []; // born on its pin, which its rows or its route name
+    return [await this.slugAt(vertical, row.at)];
   }
 }
 
