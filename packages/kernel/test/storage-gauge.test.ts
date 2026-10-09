@@ -21,9 +21,16 @@ describe('storage gauge arithmetic (#1524)', () => {
     expect(storageGaugeDay('2026-03-02T00:30:00.000+01:00')).toBe('2026-03-01');
   });
 
-  it('keeps thirteen calendar months', () => {
-    expect(storageRetentionHorizon(Date.parse('2026-10-09T12:00:00Z'))).toBe('2025-09-09');
-    expect(storageRetentionHorizon(Date.parse('2027-01-31T00:00:00Z'))).toBe('2025-12-31');
+  it('keeps thirteen calendar months, clamping a month end to the shorter month', () => {
+    const at = (iso: string) => storageRetentionHorizon(Date.parse(`${iso}T12:00:00Z`));
+    expect(at('2026-10-09')).toBe('2025-09-09');
+    expect(at('2027-01-31')).toBe('2025-12-31');
+    // Month ends whose target month is shorter: never rolled forward into the month after.
+    expect(at('2027-03-31')).toBe('2026-02-28');
+    expect(at('2025-03-31')).toBe('2024-02-29'); // leap year
+    expect(at('2026-12-31')).toBe('2025-11-30');
+    expect(at('2027-03-28')).toBe('2026-02-28');
+    expect(at('2027-03-01')).toBe('2026-02-01');
   });
 
   it('sums readings and names its oldest and newest, or nulls when nothing is sampled', () => {
