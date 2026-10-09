@@ -240,7 +240,7 @@ import {
   ENTITY_STATE_MOVES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   CAPABILITY_BECOME_MINT_OPERATION,
-  becomeMintBound,
+  becomeMintRefusal,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
   capabilityAttachmentWriteRefused,
@@ -4757,7 +4757,7 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
-   * A principal's `become` mint (#1686) — a member invite's link. The kernel's `becomeMintBound`
+   * A principal's `become` mint (#1686) — a member invite's link. The kernel's `becomeMintRefusal`
    * and the write in ONE scope turn and one transaction, so nothing the target or the caller
    * holds can move between the check and the mint; a refusal writes nothing. The mint is on the
    * spine as `capability.become-minted`, the caller its actor.
@@ -4772,8 +4772,8 @@ export class SqliteScopeHost implements ScopeHost {
     const minter = principalId.parse(caller);
     const parsed = principalBecomeCapabilityInput.parse(input);
     const outcome = await rt.actor.turn(async (): Promise<BoundedBecomeMint> => {
-      const coverage = await becomeMintBound(this.checker, minter, parsed.principal, { tenantId, scopeId });
-      if (!coverage.covered) return { ok: false, coverage };
+      const refused = await becomeMintRefusal(this.checker, minter, parsed.principal, { tenantId, scopeId });
+      if (refused) return refused;
       const now = this.clock();
       rt.db.exec('BEGIN IMMEDIATE');
       try {

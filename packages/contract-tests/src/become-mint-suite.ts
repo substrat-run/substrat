@@ -23,6 +23,9 @@
  * 5. **The revoke.** Revoking it refuses the exchange and records the revoker. It revokes only
  *    a principal-minted `become` — never an `act` share, never the platform's own `become`.
  * 6. **Tenant isolation.** Another tenant's name for the scope is refused, writing nothing.
+ * 7. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
+ *    mints — the bound is evaluated at mint, and an empty set would cover trivially. Its twin:
+ *    the same principal, once it holds a role, is minted for.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -91,18 +94,19 @@ export function becomeMintContractSuite(
     const owner = p(); // owner at s1: read + write + admin
     const reader = p(); // reader at s1
     const nobody = p(); // holds nothing
-    const folderReader = p(); // cap:read on folder F only (d1 lies beneath it)
-    const siblingReader = p(); // cap:read on doc d2 only
+    const folderReader = p(); // member, plus cap:read on folder F only (d1 lies beneath it)
+    const siblingReader = p(); // member, plus cap:read on doc d2 only
     const writerTarget = p(); // writer at s1
     const readerTarget = p(); // reader at s1
-    const narrowTarget = p(); // cap:read on doc d1 only
+    const narrowTarget = p(); // member, plus cap:read on doc d1 only
+    const emptyTarget = p(); // holds nothing — until the last case grants it reader
 
     const node = (scope: ScopeId = s1) => ({ tenantId: t1, scopeId: scope });
     const mint = (caller: PrincipalId, principal: PrincipalId, scope: ScopeId = s1, tenant: TenantId = t1) =>
       fixture.verbs.mintBecomeCapabilityBounded(tenant, scope, caller, { principal, maxUses: 1, label: 'member invite' });
     const minted = async (caller: PrincipalId, principal: PrincipalId): Promise<MintedCapability> => {
       const out = await mint(caller, principal);
-      if (!out.ok) throw new Error(`expected a mint, refused: ${out.coverage.missing.join(', ')}`);
+      if (!out.ok) throw new Error(`expected a mint, refused: ${JSON.stringify(out)}`);
       return out.minted;
     };
     const records = async (scope: ScopeId = s1): Promise<CapabilityRecord[]> =>
@@ -125,11 +129,13 @@ export function becomeMintContractSuite(
       await host.admin.defineRole(staff, t1, { key: 'owner', permissions: [READ, WRITE, ADMIN], source: 'vertical' });
       await host.admin.defineRole(staff, t1, { key: 'writer', permissions: [READ, WRITE], source: 'vertical' });
       await host.admin.defineRole(staff, t1, { key: 'reader', permissions: [READ], source: 'vertical' });
+      await host.admin.defineRole(staff, t1, { key: 'member', permissions: [ADMIN], source: 'vertical' });
       const assign = (principalId: PrincipalId, roleKey: string) => host.admin.assignRole(staff, { principalId, roleKey, node: node() });
       await assign(owner, 'owner');
       await assign(reader, 'reader');
       await assign(writerTarget, 'writer');
       await assign(readerTarget, 'reader');
+      for (const m of [folderReader, siblingReader, narrowTarget]) await assign(m, 'member');
       // The tree in s1:  F ─┬─ d1
       //                     └─ d2
       const stub = await host.getScope(owner, t1, s1);
@@ -178,7 +184,7 @@ export function becomeMintContractSuite(
       it('a minter holding it on a sibling is refused — and so is one holding nothing', async () => {
         const before = await snapshot();
         expect(await mint(siblingReader, narrowTarget)).toEqual({ ok: false, coverage: { covered: false, missing: [READ] } });
-        expect(await mint(nobody, narrowTarget)).toEqual({ ok: false, coverage: { covered: false, missing: [READ] } });
+        expect(await mint(nobody, narrowTarget)).toEqual({ ok: false, coverage: { covered: false, missing: [ADMIN, READ] } });
         expect(await snapshot()).toEqual(before);
       });
 
@@ -189,7 +195,7 @@ export function becomeMintContractSuite(
       });
 
       it('the scope-wide holder covers the narrowed target too', async () => {
-        expect((await mint(reader, narrowTarget)).ok).toBe(true);
+        expect((await mint(owner, narrowTarget)).ok).toBe(true);
       });
     });
 
@@ -310,6 +316,26 @@ export function becomeMintContractSuite(
         const cap = await minted(owner, readerTarget);
         expect(await fixture.verbs.revokeBecomeCapability(t1, s2, cap.id, owner)).toBe(false);
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+      });
+    });
+
+    describe('nothing to become', () => {
+      it('a target holding nothing at the node is refused, even by the owner — nothing recorded, nothing on the spine', async () => {
+        const before = await snapshot();
+        expect(await mint(owner, emptyTarget)).toEqual({ ok: false, refused: 'target-holds-nothing' });
+        expect(await mint(nobody, emptyTarget)).toEqual({ ok: false, refused: 'target-holds-nothing' });
+        expect(await snapshot()).toEqual(before);
+      });
+
+      it('…and so is one holding only an entity-narrowed grant: the node-level set is what must be there', async () => {
+        const narrowOnly = p();
+        await host.admin.grant(staff, { principalId: narrowOnly, permission: READ, node: node(), entity: doc('d1'), grantedBy: owner });
+        expect(await mint(owner, narrowOnly)).toEqual({ ok: false, refused: 'target-holds-nothing' });
+      });
+
+      it('the twin: once it holds a role, the same principal is minted for', async () => {
+        await host.admin.assignRole(staff, { principalId: emptyTarget, roleKey: 'reader', node: node() });
+        expect((await mint(owner, emptyTarget)).ok).toBe(true);
       });
     });
 

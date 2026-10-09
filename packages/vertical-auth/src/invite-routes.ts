@@ -203,6 +203,11 @@ export async function mintMemberInvite(
   }
   if (!minted.ok) {
     await ungrant();
+    // The grant just made is what the principal holds; it holds nothing only when the role
+    // carries no permission at all — nothing to invite anyone into.
+    if (!('coverage' in minted)) {
+      throw new HTTPException(409, { message: `'${input.roleKey}' confers nothing here — there is nothing to invite anyone into` });
+    }
     return { ok: false, coverage: minted.coverage };
   }
   const link = minted.minted;

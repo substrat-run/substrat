@@ -18,6 +18,7 @@ import {
   substratError,
   entityObjectRef,
   type BecomeCapabilityInput,
+  type BecomeMintRefusal,
   type CapabilityAuthor,
   type CapabilityBecomeMintedPayload,
   type CapabilityExchange,
@@ -30,7 +31,6 @@ import {
   type CapabilityRecord,
   type CapabilityRevokedPayload,
   type CheckSubject,
-  type Coverage,
   type Decision,
   type DomainEventInput,
   type EntityRef,
@@ -978,30 +978,38 @@ export const CAPABILITY_BECOME_MINT_OPERATION = 'capabilities.mint-become';
  * there, and must be able to exercise every entity-narrowed grant the target holds on that same
  * entity. Anything less mints impersonation upward — a lead inviting a stranger in as the owner.
  *
- * The answer is a `Coverage` naming what the caller lacks, as `canAssign`'s is. A checker with
+ * The bound is evaluated at mint, against what the target holds then; the exchange does not
+ * re-check it. So a target holding nothing at the node is refused outright: its empty set would
+ * cover trivially, and the link would yield whatever that principal is granted later. A member
+ * invite never meets this — it grants the role before it mints.
+ *
+ * Null when the mint may go ahead; otherwise the refusal, as the host answers it — a `Coverage`
+ * naming what the caller lacks, as `canAssign`'s does, or `target-holds-nothing`. A checker with
  * no `holdings` cannot say what the target holds, so the bound refuses rather than guess.
  */
-export async function becomeMintBound(
+export async function becomeMintRefusal(
   checker: Pick<PermissionChecker, 'check' | 'covers' | 'holdings'>,
   caller: PrincipalId,
   target: PrincipalId,
   node: Node,
-): Promise<Coverage> {
+): Promise<BecomeMintRefusal | null> {
   if (!checker.holdings) {
     throw substratError('unavailable', 'this permission checker cannot read what a principal holds — refusing to mint a become capability');
   }
   const held = await checker.holdings({ kind: 'principal', id: target }, node);
+  if (held.permissions.length === 0) return { ok: false, refused: 'target-holds-nothing' };
   const nodeLevel = await checker.covers({ kind: 'principal', id: caller }, held.permissions, node);
   const missing = new Set<PermissionKey>(nodeLevel.covered ? [] : nodeLevel.missing);
   for (const { permission, entity } of held.narrowed) {
     if (missing.has(permission)) continue;
     if (!(await checker.check({ kind: 'principal', id: caller }, permission, node, entity)).allowed) missing.add(permission);
   }
-  return missing.size === 0 ? { covered: true, missing: [] } : { covered: false, missing: [...missing] as [PermissionKey, ...PermissionKey[]] };
+  if (missing.size === 0) return null;
+  return { ok: false, coverage: { covered: false, missing: [...missing] as [PermissionKey, ...PermissionKey[]] } };
 }
 
 /**
- * A principal's `become` mint (#1686) — the write a member invite makes once `becomeMintBound`
+ * A principal's `become` mint (#1686) — the write a member invite makes once `becomeMintRefusal`
  * has said yes, in the same scope task. Recorded with the principal as its minter, and on the
  * spine as `capability.become-minted` through `emit`, whose actor the host stamps as `minter`.
  * No expiry unless one is given, as an invite has never had one; the use limit is required.

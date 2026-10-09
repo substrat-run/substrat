@@ -186,13 +186,20 @@ export const mintedCapability = z.object({
 export type MintedCapability = z.infer<typeof mintedCapability>;
 
 /**
- * What a host's bounded `become` mint answers (#1686): the minted capability, or the coverage
- * that refused it — naming what the minter lacks — with nothing written.
+ * Why a host's bounded `become` mint refused (#1686), with nothing written: the coverage naming
+ * what the minter lacks, or that the target holds nothing at the node to become. The second
+ * is its own answer because a `Coverage` refusal must name a missing key and there is none: a
+ * target with an empty node-level set would cover trivially, and a link to it would yield
+ * whatever that principal is granted later rather than anything the minter held.
  */
-export const boundedBecomeMint = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), minted: mintedCapability }),
+export const becomeMintRefusal = z.union([
   z.object({ ok: z.literal(false), coverage }),
+  z.object({ ok: z.literal(false), refused: z.literal('target-holds-nothing') }),
 ]);
+export type BecomeMintRefusal = z.infer<typeof becomeMintRefusal>;
+
+/** What a host's bounded `become` mint answers (#1686): the minted capability, or the refusal. */
+export const boundedBecomeMint = z.union([z.object({ ok: z.literal(true), minted: mintedCapability }), becomeMintRefusal]);
 export type BoundedBecomeMint = z.infer<typeof boundedBecomeMint>;
 
 /**

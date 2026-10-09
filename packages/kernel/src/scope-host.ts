@@ -2226,7 +2226,7 @@ export interface HostAdmin {
    *
    * `become` is impersonation by another name, so module code never mints one. This is the
    * platform's mint; a principal mints one only through an adapter's bounded host verb (a
-   * member invite, `becomeMintBound`, #1686). Audited in the admin log (never the secret, never
+   * member invite, `becomeMintRefusal`, #1686). Audited in the admin log (never the secret, never
    * its hash). Refuses an unknown or inactive scope, as `getScope` does.
    */
   mintCapability(

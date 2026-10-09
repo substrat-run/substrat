@@ -321,7 +321,7 @@ import {
   type TableStep,
   CAPABILITY_EXCHANGE_OPERATION,
   CAPABILITY_BECOME_MINT_OPERATION,
-  becomeMintBound,
+  becomeMintRefusal,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
   capabilityAttachmentWriteRefused,
@@ -4813,7 +4813,7 @@ export function defineScopeDO(
 
     /**
      * A principal's `become` mint (#1686) — a member invite's link. The kernel's
-     * `becomeMintBound` and the write in ONE queued body and one storage transaction, so
+     * `becomeMintRefusal` and the write in ONE queued body and one storage transaction, so
      * nothing the target or the caller holds moves between the check and the mint; a refusal
      * writes nothing. On the spine as `capability.become-minted`, the caller its actor.
      */
@@ -4827,8 +4827,8 @@ export function defineScopeDO(
       const minter = principalId.parse(caller);
       const parsed = principalBecomeCapabilityInput.parse(input);
       return await this.queue.enqueue(async (): Promise<BoundedBecomeMint> => {
-        const coverage = await becomeMintBound(this.checker, minter, parsed.principal, { tenantId, scopeId });
-        if (!coverage.covered) return { ok: false, coverage };
+        const refused = await becomeMintRefusal(this.checker, minter, parsed.principal, { tenantId, scopeId });
+        if (refused) return refused;
         const liveSince = this.liveHighWaterMark();
         const now = instant.parse(new Date().toISOString());
         let minted: MintedCapability | undefined;

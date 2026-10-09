@@ -763,6 +763,20 @@ describe('mountInviteRoutes — the link is a become capability', () => {
     expect([...scopeRoles.values()].every((r) => r.size === 0)).toBe(true);
   });
 
+  it('a role conferring nothing leaves nothing to become — 409, the grant taken back, nothing recorded', async () => {
+    app = mount({
+      mintBecomeCapabilityBounded: async (_env, node, caller, input) => {
+        log.push(`mintBecomeCapabilityBounded ${node.scopeId} ${caller} ${input.principal}`);
+        return { ok: false, refused: 'target-holds-nothing' };
+      },
+    });
+    const res = await app.request('http://app.example/api/invites', json({ roleKey: 'editor' }), env());
+    expect(res.status).toBe(409);
+    expect(await res.text()).toMatch(/'editor' confers nothing here/);
+    expect(log.map((l) => l.split(' ')[0])).toEqual(['assignScopeRoleBounded', 'mintBecomeCapabilityBounded', 'revokeScopeRole']);
+    expect(directory.invites.size).toBe(0);
+  });
+
   it('a mint that throws takes the grant back and rethrows; nothing is recorded', async () => {
     app = mount({
       mintBecomeCapabilityBounded: async () => {
