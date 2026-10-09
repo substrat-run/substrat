@@ -79,6 +79,7 @@ import {
   denialFilter,
   capabilityFilterQuery,
   capabilityId,
+  becomeLinkState,
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
   type BecomeLinkState,
@@ -2139,8 +2140,13 @@ export function mountPlatformSurface<Env extends object>(
     // #1686: where each invite's link stands, read from the scope in one call — never "open" for
     // a link the kernel revoked (its principal's holdings changed) or that expired.
     const ids = invites.flatMap((i) => (i.capabilityId ? [capabilityId.parse(i.capabilityId)] : []));
-    const states = ids.length > 0 ? await surface.host.becomeLinkStates(ref.tenantId, ref.scopeId, ids) : [];
-    const linkOf = new Map(ids.map((id, n) => [id as string, states[n] ?? null]));
+    const states = ids.length > 0 ? (await surface.host.becomeLinkStates(ref.tenantId, ref.scopeId, ids)).map((s) => becomeLinkState.parse(s)) : [];
+    // One answer per id asked, as vertical-auth's `withLinkStates` holds it: a short answer would
+    // list some invite with no state, which is not the same as a legacy invite's `null`.
+    if (states.length !== ids.length) {
+      throw new HTTPException(500, { message: 'the scope answered a link state per id it was not asked for — refusing' });
+    }
+    const linkOf = new Map(ids.map((id, n) => [id as string, states[n]!]));
     const open = invites.map(({ capabilityId: link, ...i }) => ({
       ...i,
       roles: roles.get(i.principal) ?? [],

@@ -250,6 +250,21 @@ describe('/internal/members — an installed vertical’s members, managed from 
     expect((await post('/internal/members/remove', { tenantId: t1, scopeId: s1, caller: owner, principal: minted.principal })).status).toBe(200);
   });
 
+  it('refuses a roster whose scope answers fewer link states than it was asked for, rather than listing an invite with none', async () => {
+    const minted = (await (await invite(owner, 'agent', 'short@example.test')).json()) as { principal: PrincipalId };
+    const real = surfaceHost.becomeLinkStates;
+    surfaceHost.becomeLinkStates = async () => [];
+    try {
+      const res = await roster();
+      expect(res.status).toBe(500);
+      expect(await res.text()).toMatch(/link state per id/);
+    } finally {
+      surfaceHost.becomeLinkStates = real;
+    }
+    expect((await roster()).status).toBe(200); // the twin: the real answer lists it
+    expect((await post('/internal/members/remove', { tenantId: t1, scopeId: s1, caller: owner, principal: minted.principal })).status).toBe(200);
+  });
+
   it('lets an agent invite an agent — the bound is what the caller holds, not a title', async () => {
     expect((await invite(agent, 'agent')).status).toBe(201);
   });
