@@ -122,6 +122,7 @@ export {
   copyRestoreFenceMarginMs,
   type CopyRestoreFence,
   BACKFILL_MOVE_ID,
+  COPY_BACKFILL_SCOPE_SQL,
   COPY_BACKFILL_SQL,
   copyBackfillParams,
   copyBackfillRefusal,

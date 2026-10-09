@@ -1,6 +1,6 @@
-import type { AdminLogEntry, PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { AdminAction, AdminLogEntry, ScopeId, TenantId } from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
-import { carriedAway, listAllScopeScriptCopies, routeOf, type ScopeCopyCleanup } from './scope-copy-cleanup.js';
+import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type ScopeCopyCleanup } from './scope-copy-cleanup.js';
 
 /**
  * The backfill of copies made before the directory's copy ledger existed (#1722).
@@ -29,7 +29,6 @@ import { carriedAway, listAllScopeScriptCopies, routeOf, type ScopeCopyCleanup }
  * `dryRun` walks the same rows and writes nothing.
  */
 
-export const BACKFILL_ACTIONS = ['bindScopeVersion', 'setScopeServingRef'] as const;
 export const BACKFILL_PAGE_MAX = 200;
 
 export type CopyBackfillOutcome =
@@ -72,35 +71,37 @@ export interface CopyBackfillPage {
   erasedBefore: { tenantId: string; scopeId: string }[];
 }
 
-interface Candidate {
-  row: AdminLogEntry;
-  scriptRef?: string;
-  failure?: string;
-}
+type Candidate = { scriptRef: string } | { failure: string };
+type Version = Awaited<ReturnType<HostAdmin['getVersion']>>;
+
+const ACTIONS: AdminAction[] = ['bindScopeVersion', 'setScopeServingRef'];
+const REFUSED = {
+  missing: 'the scope has no directory row; its copy has no ledger anchor',
+  reaping: 'the scope is being reaped; the reap does not reach this copy',
+} as const;
 
 const objectOf = (v: unknown): Record<string, unknown> | null =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
 const stringOf = (v: unknown): string | null => typeof v === 'string' && v.length > 0 ? v : null;
 
 /** Every script one row names, or the failure that keeps it from naming one. */
-async function candidatesOf(admin: HostAdmin, actor: PlatformActorId, row: AdminLogEntry): Promise<Candidate[]> {
+async function candidatesOf(row: AdminLogEntry, versionOf: (id: string, vertical: string) => Promise<Version>): Promise<Candidate[]> {
   const before = objectOf(row.before);
   const after = objectOf(row.after);
   if (row.action === 'setScopeServingRef') {
     return [stringOf(before?.servingRef), stringOf(after?.servingRef)]
       .filter((ref): ref is string => ref !== null)
-      .map((scriptRef) => ({ row, scriptRef }));
+      .map((scriptRef) => ({ scriptRef }));
   }
   const vertical = stringOf(after?.vertical) ?? row.vertical;
   const versionId = stringOf(after?.versionId);
-  if (!versionId || !vertical) return [{ row, failure: 'the bind row names no version or vertical' }];
-  const versionIds = [versionId, stringOf(before?.versionId)].filter((id): id is string => id !== null);
+  if (!versionId || !vertical) return [{ failure: 'the bind row names no version or vertical' }];
   const out: Candidate[] = [];
-  for (const id of versionIds) {
-    const v = await admin.getVersion(actor, id, vertical);
-    if (!v) out.push({ row, failure: `version ${id} of '${vertical}' is not in the registry` });
-    else if (!v.deploymentRef) out.push({ row, failure: `version ${id} of '${vertical}' names no deployment script` });
-    else out.push({ row, scriptRef: v.deploymentRef });
+  for (const id of [versionId, stringOf(before?.versionId)].filter((v): v is string => v !== null)) {
+    const v = await versionOf(id, vertical);
+    if (!v) out.push({ failure: `version ${id} of '${vertical}' is not in the registry` });
+    else if (!v.deploymentRef) out.push({ failure: `version ${id} of '${vertical}' names no deployment script` });
+    else out.push({ scriptRef: v.deploymentRef });
   }
   return out;
 }
@@ -111,40 +112,41 @@ export async function backfillScopeScriptCopies(
 ): Promise<CopyBackfillPage> {
   const { admin, actor } = input;
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), BACKFILL_PAGE_MAX);
-  const rows = await admin.auditLog(actor, {
-    action: [...BACKFILL_ACTIONS], order: 'asc', limit, ...(opts.cursor ? { cursor: opts.cursor } : {}),
-  });
+  const rows = await admin.auditLog(actor, { action: ACTIONS, order: 'asc', limit, ...(opts.cursor ? { cursor: opts.cursor } : {}) });
+  // Read once per page: rows of one scope, and of one version, repeat, and nothing here moves them.
+  const versions = new Map<string, Promise<Version>>();
+  const versionOf = (id: string, vertical: string) => {
+    const key = `${vertical}/${id}`;
+    if (!versions.has(key)) versions.set(key, admin.getVersion(actor, id, vertical));
+    return versions.get(key)!;
+  };
+  const scopes = new Map<string, { route: string | null; known: Set<string> } | null>();
+  const scopeOf = async (tenantId: TenantId, scopeId: ScopeId) => {
+    const key = `${tenantId}/${scopeId}`;
+    if (!scopes.has(key)) {
+      const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+      scopes.set(key, scope ? {
+        route: await routeOfScope(input, scope, (id, vertical) => versionOf(id, vertical)),
+        known: new Set((await listAllScopeScriptCopies(admin, actor, tenantId, scopeId)).map((copy) => copy.scriptRef)),
+      } : null);
+    }
+    return scopes.get(key)!;
+  };
   const entries: CopyBackfillEntry[] = [];
-  const ledgered = new Map<string, Set<string>>();
   const historic = new Map<string, { tenantId: TenantId; scopeId: ScopeId }>();
   for (const row of rows) {
-    for (const c of await candidatesOf(admin, actor, row)) {
-      const tenantId = row.tenantId as TenantId | null;
-      const scopeId = row.scopeId as ScopeId | null;
-      const base = { fromLogId: row.id, tenantId, scopeId, scriptRef: c.scriptRef ?? null };
-      if (c.failure || !c.scriptRef || !tenantId || !scopeId) {
-        entries.push({ ...base, outcome: 'failure', reason: c.failure ?? 'the row names no tenant or scope' });
-        continue;
-      }
-      const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
-      if (!scope) {
-        entries.push({ ...base, outcome: 'failure', reason: 'the scope has no directory row; its copy has no ledger anchor' });
-        continue;
-      }
-      if (await routeOf(input, tenantId, scopeId) === c.scriptRef) {
-        entries.push({ ...base, outcome: 'route' });
-        continue;
-      }
-      const key = `${tenantId}/${scopeId}`;
-      let known = ledgered.get(key);
-      if (!known) {
-        known = new Set((await listAllScopeScriptCopies(admin, actor, tenantId, scopeId)).map((copy) => copy.scriptRef));
-        ledgered.set(key, known);
-      }
-      if (known.has(c.scriptRef)) {
-        entries.push({ ...base, outcome: 'ledgered' });
-        continue;
-      }
+    const tenantId = row.tenantId as TenantId | null;
+    const scopeId = row.scopeId as ScopeId | null;
+    for (const c of await candidatesOf(row, versionOf)) {
+      const scriptRef = 'scriptRef' in c ? c.scriptRef : null;
+      const base = { fromLogId: row.id, tenantId, scopeId, scriptRef };
+      const failure = (reason: string) => entries.push({ ...base, outcome: 'failure', reason });
+      if ('failure' in c) { failure(c.failure); continue; }
+      if (!tenantId || !scopeId) { failure('the row names no tenant or scope'); continue; }
+      const scope = await scopeOf(tenantId, scopeId);
+      if (!scope) { failure(REFUSED.missing); continue; }
+      if (scope.route === c.scriptRef) { entries.push({ ...base, outcome: 'route' }); continue; }
+      if (scope.known.has(c.scriptRef)) { entries.push({ ...base, outcome: 'ledgered' }); continue; }
       // The tombstone is the only thing that lets a script off: anything else, an unreachable
       // script or a failed read included, is recorded and so stays reachable by reap and erasure.
       let reason: string | undefined;
@@ -152,7 +154,8 @@ export async function backfillScopeScriptCopies(
       if (!holder) reason = 'no deployment resolves for this script; recorded unchecked';
       else {
         try {
-          if (await carriedAway(holder, scopeId)) {
+          if (await hasCarriedAwayTombstone(holder, scopeId)) {
+            scope.known.add(c.scriptRef); // a later row naming it is answered from here
             entries.push({ ...base, outcome: 'wiped' });
             continue;
           }
@@ -163,36 +166,27 @@ export async function backfillScopeScriptCopies(
       let outcome: CopyBackfillOutcome = 'would-record';
       if (!opts.dryRun) {
         const result = await admin.backfillScopeScriptCopy(actor, tenantId, scopeId, c.scriptRef);
-        if (result === 'reaping' || result === 'missing') {
-          entries.push({ ...base, outcome: 'failure',
-            reason: result === 'reaping' ? 'the scope is being reaped; the reap does not reach this copy' : 'the scope has no directory row' });
-          continue;
-        }
+        if (result === 'reaping' || result === 'missing') { failure(REFUSED[result]); continue; }
         outcome = result;
       }
-      known.add(c.scriptRef);
-      historic.set(key, { tenantId, scopeId });
+      scope.known.add(c.scriptRef);
+      historic.set(`${tenantId}/${scopeId}`, { tenantId, scopeId });
       entries.push({ ...base, outcome, ...(reason ? { reason } : {}) });
     }
   }
-  const erasedBefore: CopyBackfillPage['erasedBefore'] = [];
-  for (const s of historic.values()) {
-    if ((await admin.auditLog(actor, { tenantId: s.tenantId, scopeId: s.scopeId, action: 'shredSubject', limit: 1 })).length) {
-      erasedBefore.push(s);
-    }
-  }
+  const erased = await Promise.all([...historic.values()].map(async (s) =>
+    (await admin.auditLog(actor, { tenantId: s.tenantId, scopeId: s.scopeId, action: 'shredSubject', limit: 1 })).length > 0));
+  const failures = entries.filter((entry) => entry.outcome === 'failure');
   if (!opts.dryRun) {
-    for (const e of entries.filter((entry) => entry.outcome === 'failure')) {
-      await admin.recordOpsFailure({
-        actor,
-        operation: 'scope.copy-backfill',
-        stage: 'unresolved',
-        tenantId: e.tenantId as TenantId | null,
-        scopeId: e.scopeId as ScopeId | null,
-        message: `admin-log row ${e.fromLogId}${e.scriptRef ? ` (script '${e.scriptRef}')` : ''}: ${e.reason} — ` +
-          'a copy this names is not in the copy ledger, so reap and erasure do not reach it (#1722)',
-      });
-    }
+    await Promise.all(failures.map((e) => admin.recordOpsFailure({
+      actor,
+      operation: 'scope.copy-backfill',
+      stage: 'unresolved',
+      tenantId: e.tenantId as TenantId | null,
+      scopeId: e.scopeId as ScopeId | null,
+      message: `admin-log row ${e.fromLogId}${e.scriptRef ? ` (script '${e.scriptRef}')` : ''}: ${e.reason} — ` +
+        'a copy this names is not in the copy ledger, so reap and erasure do not reach it (#1722)',
+    })));
   }
   const counts = { 'would-record': 0, recorded: 0, ledgered: 0, route: 0, wiped: 0, failure: 0 };
   for (const e of entries) counts[e.outcome]++;
@@ -203,6 +197,6 @@ export async function backfillScopeScriptCopies(
     rowsRead: rows.length,
     entries,
     counts,
-    erasedBefore,
+    erasedBefore: [...historic.values()].filter((_, i) => erased[i]),
   };
 }

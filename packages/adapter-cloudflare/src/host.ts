@@ -783,7 +783,7 @@ interface ControlPlaneStub {
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
-  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): Promise<ScopeCopyBackfillResult | 'invalid'>;
+  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): Promise<ScopeCopyBackfillResult>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
@@ -7237,9 +7237,8 @@ export class CloudflareScopeHost implements ScopeHost {
         if (result === 'pending') throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
       backfillScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef) => {
-        const result = await this.cp.backfillScopeScriptCopy(tenantId, scopeId, scriptRef);
-        if (result === 'invalid') throw substratError('conflict', 'a backfilled copy must name a real script');
-        return result;
+        if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
+        return this.cp.backfillScopeScriptCopy(tenantId, scopeId, scriptRef);
       },
       claimExpiredScopeScriptCopies: async (_actor, input) =>
         (await this.cp.claimExpiredScopeScriptCopies(input)).map(scopeScriptCopyOf),

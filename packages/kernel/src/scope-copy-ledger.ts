@@ -67,10 +67,7 @@ export const COPY_CLAIM_SQL = `
   WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
     AND state = 'pending' AND (lease_until IS NULL OR lease_until <= ?)`;
 
-/**
- * The move id every backfilled entry carries (#1722): one entry per (scope, script), so a re-run
- * of the backfill conflicts with its own earlier write instead of adding a second.
- */
+/** The move id every backfilled entry carries (#1722), which names it as one in a listing. */
 export const BACKFILL_MOVE_ID = 'backfill:1722';
 
 /**
@@ -86,8 +83,7 @@ export const COPY_BACKFILL_SQL = `
   SELECT tenant_id, scope_id, ?, ?, 'retained', strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM scopes
   WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
     AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
-      WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id AND copy.script_ref = ?)
-  ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`;
+      WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id AND copy.script_ref = ?)`;
 
 export const copyBackfillParams = (tenantId: string, scopeId: string, scriptRef: string): string[] =>
   [scriptRef, BACKFILL_MOVE_ID, tenantId, scopeId, scriptRef];
@@ -95,7 +91,10 @@ export const copyBackfillParams = (tenantId: string, scopeId: string, scriptRef:
 /** What a backfill insert did: wrote the entry, found the script already ledgered, or was refused. */
 export type ScopeCopyBackfillResult = 'recorded' | 'ledgered' | 'reaping' | 'missing';
 
-/** Read the outcome of a backfill insert that wrote nothing, from the scope row. */
+/** The scope row a backfill insert that wrote nothing is explained by. Params: tenantId, scopeId. */
+export const COPY_BACKFILL_SCOPE_SQL = 'SELECT reap_claimed_at FROM scopes WHERE tenant_id = ? AND scope_id = ?';
+
+/** Read the outcome of a backfill insert that wrote nothing, from `COPY_BACKFILL_SCOPE_SQL`'s row. */
 export const copyBackfillRefusal = (scope: { reap_claimed_at: string | null } | undefined): ScopeCopyBackfillResult =>
   !scope ? 'missing' : scope.reap_claimed_at !== null ? 'reaping' : 'ledgered';
 

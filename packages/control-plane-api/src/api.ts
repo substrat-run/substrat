@@ -6347,7 +6347,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!options.resolveVerticalRef) throw new ControlPlaneError(501, 'the copy backfill needs dispatch resolution by script');
     return c.json(await backfillScopeScriptCopies(
       { admin: c.var.admin, actor: c.get('actor'), resolveRef: options.resolveVerticalRef },
-      { dryRun: body.dryRun, ...(body.cursor ? { cursor: body.cursor } : {}), ...(body.limit ? { limit: body.limit } : {}) },
+      body,
     ));
   });
 
