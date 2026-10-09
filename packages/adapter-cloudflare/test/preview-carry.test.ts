@@ -561,6 +561,27 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
     });
+    it('a carry held after its source recheck cannot resurrect a shredded subject', async () => {
+      const p = await fresh('erase-race');
+      const subject = ulid();
+      const v1 = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(p.scopeId)) as unknown as {
+        testSubjectEvent(scopeId: string, tenantId: string, subjectId: string): Promise<string>;
+      };
+      const eventId = await v1.testSubjectEvent(p.scopeId, t, subject);
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v1) && sid === p.scopeId);
+      hooks.markerRead = held.hook;
+      const moving = push('erase-race', 'v2');
+      await held.reached;
+      const shredded = await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
+        method: 'POST', headers: auth,
+      });
+      expect(shredded.status).toBe(200);
+      held.release();
+      await moving;
+      const outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
+      const row = outbox.rows.find((r) => r[outbox.columns.indexOf('id')] === eventId);
+      expect(row?.[outbox.columns.indexOf('payload')]).toBeNull();
+    });
     afterEach(() => {
       for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
       unfenced.clear();
