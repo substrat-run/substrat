@@ -1094,6 +1094,9 @@ function inputDefaultIssue(schema: unknown): PatchSchemaIssue {
           (check as { def?: unknown })?.def;
         const checkKind = (checkDef as { check?: unknown; type?: unknown } | undefined)?.check ??
           (checkDef as { type?: unknown } | undefined)?.type;
+        // A named string normalizer rewrites only a string the caller supplied, so it
+        // cannot give an omitted field a value.
+        if (checkKind === 'overwrite' && def.type === 'string' && isStringNormalizer(checkDef)) continue;
         // Zod check classes are extensible. Permit only known validation checks;
         // overwrite and future check kinds could change the parsed value.
         if (typeof checkKind !== 'string' || !PATCH_VALUE_PRESERVING_CHECKS.has(checkKind)) {
@@ -1195,6 +1198,25 @@ const PATCH_VALUE_PRESERVING_CHECKS = new Set([
   'property',
   'custom',
 ]);
+
+let stringNormalizerSources: Set<string> | undefined;
+
+/**
+ * Zod builds `.trim()`, `.toLowerCase()`, `.toUpperCase()` and `.normalize()` as overwrite
+ * checks with a fresh closure each time, so they are recognized by their source text, read
+ * from the same Zod this package loads. A custom `.overwrite()` is arbitrary code and does
+ * not match, even on a string.
+ */
+function isStringNormalizer(checkDef: unknown): boolean {
+  const tx = (checkDef as { tx?: unknown } | undefined)?.tx;
+  if (typeof tx !== 'function') return false;
+  stringNormalizerSources ??= new Set(
+    [z.string().trim(), z.string().toLowerCase(), z.string().toUpperCase(), z.string().normalize()].map(
+      (schema) => String((schema._zod.def.checks?.[0]?._zod.def as { tx?: unknown } | undefined)?.tx),
+    ),
+  );
+  return stringNormalizerSources.has(Function.prototype.toString.call(tx));
+}
 
 /** Check the effective HTTP method, both on local operations and bound engine routes. */
 function assertPatchInputs(operations: Record<string, unknown>): void {

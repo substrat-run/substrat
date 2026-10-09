@@ -355,6 +355,27 @@ describe('PATCH input declarations', () => {
       .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'overwrite'/);
   });
 
+  it('accepts the named string normalizers, which only rewrite a supplied string', () => {
+    const name = z.string().trim().toLowerCase().toUpperCase().normalize('NFC').min(1).optional();
+    expect(z.object({ name }).parse({})).toEqual({});
+    expect(() => update(z.object({ id: z.string(), name }))).not.toThrow();
+    expect(() => update(z.object({ id: z.string(), name: z.email().trim().optional() }))).not.toThrow();
+  });
+
+  it('refuses a custom overwrite on a string, which is arbitrary code', () => {
+    const name = z.string().overwrite((input) => input || 'x').optional();
+    expect(z.object({ name }).parse({ name: '' })).toEqual({ name: 'x' });
+    expect(() => update(z.object({ id: z.string(), name })))
+      .toThrow(/customer\/update.*name.*uninspectable Zod schema kind 'overwrite'/);
+  });
+
+  it('refuses a normalizer-shaped overwrite on anything but a string leaf', () => {
+    const trim = z.string().trim()._zod.def.checks![0]!;
+    const value = z.object({ value: z.string().optional() }).check(trim).optional();
+    expect(() => update(z.object({ id: z.string(), value })))
+      .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'overwrite'/);
+  });
+
   it('accepts a reasoned exception, but not an empty reason', () => {
     expect(() => update(z.object({ id: z.string(), name: z.string() }), 'The handler writes only name.'))
       .not.toThrow();
