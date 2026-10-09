@@ -2801,18 +2801,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(501, 'adopt-serving needs dispatch resolution for both ends');
     }
     const sourceRef = await routeOf(c, scope);
-    const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
-    if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId);
+    const moveId = sourceRef !== serving.ref ? ulid() : null;
+    if (moveId && sourceRef) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId);
+    if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId);
     const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
-    const dump = await source.exportScope(scopeId);
-    // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
-    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true });
-    // Data landed — only now flip routing and move the version pointer.
-    await c.var.admin
-      .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge, expectedErasureEpoch: erasureEpoch })
-      .catch(relayHostRefusal);
-    if (moveId && (await routeOf(c, (await c.var.admin.getScopeRecord(actor, tenantId, scopeId))!)) === serving.ref) {
-      await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId, 'retained');
+    let restored;
+    try {
+      const dump = await source.exportScope(scopeId);
+      // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
+      restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true });
+      // Data landed — only now flip routing and move the version pointer.
+      await c.var.admin
+        .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge, expectedErasureEpoch: erasureEpoch })
+        .catch(relayHostRefusal);
+    } catch (error) {
+      if (moveId) await Promise.allSettled([
+        ...(sourceRef ? [c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, 'retained')] : []),
+        c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId, 'retained'),
+      ]);
+      throw error;
+    }
+    if (moveId) {
+      if (sourceRef) await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, 'retained');
+      await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId, 'done');
     }
     await c.var.admin
       .bindScopeVersion(actor, tenantId, scopeId, serving.versionId, { acknowledge: opts.acknowledge })
@@ -2945,7 +2956,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // protect — the target provisions its own schema from scratch. The source
       // script's copy is untouched and remains the backout, same as a carried rebind.
       // The scope serves nothing until `/verticals/:slug/instances` re-provisions it.
-      await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, move).catch(relayHostRefusal);
+      const sourceRef = await routeOf(c, scope);
+      const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
+      if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId);
+      const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
+      try {
+        await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref,
+          { ...move, expectedErasureEpoch: erasureEpoch }).catch(relayHostRefusal);
+      } finally {
+        if (moveId) await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId, 'retained');
+      }
       await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
       return { servingRef: serving.ref, versionId: serving.versionId, dataAbandoned: true };
     }
@@ -2974,19 +2994,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(501, 'rebind-vertical needs dispatch resolution for both ends');
     }
     const sourceRef = await routeOf(c, scope);
-    const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
-    if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId);
+    const moveId = sourceRef !== serving.ref ? ulid() : null;
+    if (moveId && sourceRef) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId);
+    if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId);
     const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
-    const dump = await source.exportScope(scopeId);
-    const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true }); // #1742, as adopt
-    // Data landed on the target script — only now flip routing and cross the pointer.
-    // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
-    // extra snapshot here (adopt-serving's precedent): the source script's copy is the
-    // pre-migration state, and it is never deleted — that copy is the backout.
-    await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref,
-      { ...move, expectedErasureEpoch: erasureEpoch }).catch(relayHostRefusal);
-    if (moveId && (await routeOf(c, (await c.var.admin.getScopeRecord(actor, tenantId, scopeId))!)) === serving.ref) {
-      await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId, 'retained');
+    let restored;
+    try {
+      const dump = await source.exportScope(scopeId);
+      restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true }); // #1742, as adopt
+      // Data landed on the target script — only now flip routing and cross the pointer.
+      // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
+      // extra snapshot here (adopt-serving's precedent): the source script's copy is the
+      // pre-migration state, and it is never deleted — that copy is the backout.
+      await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref,
+        { ...move, expectedErasureEpoch: erasureEpoch }).catch(relayHostRefusal);
+    } catch (error) {
+      if (moveId) await Promise.allSettled([
+        ...(sourceRef ? [c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, 'retained')] : []),
+        c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId, 'retained'),
+      ]);
+      throw error;
+    }
+    if (moveId) {
+      if (sourceRef) await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef, moveId, 'retained');
+      await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, serving.ref, moveId, 'done');
     }
     await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
     // #1674: re-assert the recorded OFF positions in the store the scope now routes to.
