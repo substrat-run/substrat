@@ -77,18 +77,30 @@ it's *unreachable*.
 
 ## Scope lifecycle
 
-`provisioning → active → suspended ⇄ active → archiving → archived`
+`provisioning → active ⇄ suspended`, then `→ archived → reaped`
 
 Provisioning is idempotent and journaled, safe to re-run and safe to drive from a
 reconciliation sweep ([Tenants & scopes](/concepts/tenancy)). Provisioning requires an
-existing **active tenant** — a scope can never be orphaned. The rest of the lifecycle is
-control-plane work; every transition is validated (an illegal one fails closed) and audited:
+existing **active tenant** — a scope can never be orphaned. A provisioned scope serves
+nothing until it is **activated**. The rest of the lifecycle is control-plane work; every
+transition is validated (an illegal one fails closed) and audited:
 
-- **Suspend** fails `getScope` closed for every scope under the tenant. It's how an incident
-  or a non-payment is contained without deleting anything — the same fail-closed path that
-  stops a confused-deputy bug.
-- **Archive** exports the scope's storage and releases it, keeping the registry row and the
-  event history forever. **Un-archive is a restore, not a flag flip.**
+- **Suspend** fails `getScope` closed for that scope; suspending a **tenant** does the same
+  for every scope under it, without touching their rows. It's how an incident or a
+  non-payment is contained without deleting anything — the same fail-closed path that stops
+  a confused-deputy bug.
+- **Archive** stops the scope serving and nothing more: it is a status change, the scope's
+  storage stays where it is, and **un-archive** returns it to `active` with its data intact. A
+  scope can be archived from `provisioning` too — that is how a failed or stuck provision is
+  abandoned — and the archive records the status it left.
+- **Reap** is what releases the storage. Only an archived scope can be reaped, by staff or by
+  the sweep once it has been archived longer than the retention window; the scope's database
+  is wiped, and the directory row stays as a tombstone, with the audit trail and the burned
+  slug. The event history already shipped to the history tier is not touched. Reaped is
+  terminal.
+- **Storage is metered until reap.** The [storage gauge](/book/12-metering-and-billing) counts every
+  scope that holds data, archived and suspended ones included, because their bytes are still
+  there. A scope archived straight from `provisioning` never held data and is not counted.
 - **Jurisdiction is immutable.** Fixed at provisioning; a scope's execution domain can never
   relocate. There is no edit affordance because there is no edit.
 
@@ -139,29 +151,33 @@ the drain settles it `failed` rather than act on what it could not read.
 
 The platform runs one recurring pass — the **platform sweep** — that does every unit of
 scheduled work the system has, in a fixed order: reconciling stragglers' migrations,
-draining retryable effects and pending platform intents, re-running the provision hook
-where a scope's bound version has moved past the one it was provisioned against, running
-each vertical's declared [`schedules`](/concepts/modules#recurring-work-schedules),
-judging its declared freshness expectations, reaping expired previews and
-long-archived scopes and lapsed tenants, reconciling connectors, draining each scope's
-domain events to Tier 2 through the injected `EventSink` — absent a sink, nothing
-drains — and shipping the staff access log last. The full list with what each phase
-skips is on the [`platform-sweep.ts` row](/reference/kernel). Three of those phases leave a durable
-per-unit record that the console and `/sweep-runs` read — each live connection swept,
-each schedule run, each freshness verdict — when a deployment configures the recorder;
-the rest report through the pass's own summary. It is *the scheduler's unit of
-work*; it holds no timer of its own. A deployment drives it — a node server calls
-`startPlatformSweeper` at boot, a Cloudflare deployment arms a singleton
-`PlatformSweeperDO` alarm (a dispatch namespace doesn't honour `wrangler` crons, so an
-alarm is the timer such a deployment can own).
+draining retryable effects and pending platform intents, sampling scope storage for the
+stored gauge, re-running the provision hook where a scope's bound version has moved past
+the one it was provisioned against, running each vertical's declared
+[`schedules`](/concepts/modules#recurring-work-schedules), judging its declared freshness
+expectations, reaping expired previews and long-archived scopes and lapsed tenants,
+reconciling connectors, draining each scope's domain events to Tier 2 through the injected
+`EventSink` — absent a sink, nothing drains — and shipping the staff access log last. The
+full list with what each phase skips is on the [`platform-sweep.ts` row](/reference/kernel).
+Three of those phases leave a durable per-unit record that the console and `/sweep-runs`
+read — each live connection swept, each schedule run, each freshness verdict — when a
+deployment configures the recorder; the rest report through the pass's own summary. It is
+*the scheduler's unit of work*; it holds no timer of its own. A deployment drives it: a node
+server calls `startPlatformSweeper` at boot, the hosted control plane runs it from a
+15-minute cron, and a vertical deployed into the dispatch namespace (which does not honour
+`wrangler` crons) runs it from a singleton `PlatformSweeperDO` alarm, which the uploader
+supplies when the vertical declares schedules and exports no sweeper of its own.
 
 Because module operations run in the vertical's own runtime — where its code and its
-scopes' data live — the sweep runs **there**, not in the control plane (whose scope
-storage is empty by design). For each vertical that declares schedules, the pass
-enumerates its live scopes and invokes each due operation under a system actor, recording
-per-scope outcomes and stepping over any failure rather than letting it sink the pass. A
-schedule fires no more often than its cadence, tracked per scope; a fork or snapshot is
-skipped, so a test copy never runs real recurring side effects.
+scopes' data live — a vertical's **schedules** run there, in that vertical's sweeper, not in
+the control plane (whose scope storage is empty by design). The control plane's pass does
+the platform-side work instead: it reaches each scope over the vertical's `/internal`
+surface to drain its intents, sample its storage, reconcile its provision and reap it. For
+each vertical that declares schedules, its sweeper enumerates its live scopes and invokes
+each due operation under a system actor, recording per-scope outcomes and stepping over any
+failure rather than letting it sink the pass. A schedule fires no more often than its
+cadence, tracked per scope; a fork or snapshot is skipped, so a test copy never runs real
+recurring side effects.
 
 ## Entitlements gate modules, not features
 
@@ -179,13 +195,13 @@ have it.
 That bluntness is what makes the *load gate* safe to enforce at the boundary rather than
 sprinkled through business logic.
 
-**The flag also carries a plan.** Since #33 an entitlement is not only an on/off SKU: it
-carries a `plan` — `quota`, `expiresAt`, and a `tier` — that a vertical reads at request time
+**The flag also carries a plan.** An entitlement is not only an on/off SKU: a grant carries
+a `plan` (the tier), a `quota` and an `expiresAt`, which a vertical reads at request time
 through `ctx.entitlement(key)` / `ctx.entitlements()` to gate features and enforce quota
 *within* a module it already holds. So entitlements are the load gate **and** a
 feature/plan surface — the earlier "not a feature flag" line was too absolute. The kernel
 enforces two things itself: presence (the load gate above) and **expiry**, which fails closed
-at the gate exactly as a revoke would; `quota` and `tier` are expression only — the vertical
+at the gate exactly as a revoke would; `quota` and `plan` are expression only — the vertical
 reads the number and enforces its own meaning. For a **hosted** vertical these are read from a
 **scope-local projection**, so gating a feature needs no control-plane binding. It is the same
 mechanism as the load gate and, like it, **uncached today** (a DO-cached variant is the open

@@ -3500,7 +3500,12 @@ export interface HostAdmin {
   suspendScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /** suspended → active. */
   unsuspendScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
-  /** active|suspended → archived. Stops the active-scope meter (§9). */
+  /**
+   * provisioning|active|suspended → archived. Stops the active-scope meter (§9). A status
+   * change only: the storage stays until `reapScope`. Records the status it left as
+   * `archivedFromStatus` (#1524), so a scope abandoned while still provisioning, which never
+   * held data, is not metered for storage.
+   */
   archiveScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /**
    * archived → active. A RESTORE, never a flag flip (control-plane.md §4.2):
