@@ -4503,13 +4503,15 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /** The directory's current hold, read again when background work is about to run. */
-  private scopeWorkRefusal(tenantId: TenantId, scopeId: ScopeId): string | null {
+  private scopeWorkRefusal(tenantId: TenantId, scopeId: ScopeId, allowProvisioning = false): string | null {
     const row = this.directory
       .prepare(`SELECT s.status AS scope, t.status AS tenant
                   FROM scopes s JOIN tenants t ON t.tenant_id = s.tenant_id
                   WHERE s.scope_id = ? AND s.tenant_id = ?`)
       .get(scopeId, tenantId) as { scope: string; tenant: string } | undefined;
     if (!row) return `unknown scope for tenant: (${tenantId}, ${scopeId})`;
+    // A connector can serve provisioning work; suspension still holds it.
+    if (allowProvisioning && row.scope === 'provisioning' && row.tenant === 'active') return null;
     return lifecycleRefusal(row as Parameters<typeof lifecycleRefusal>[0], { tenantId, scopeId });
   }
 
@@ -6086,7 +6088,9 @@ export class SqliteScopeHost implements ScopeHost {
     // directory, so a node control plane can drain routed intents exactly as the
     // Cloudflare one does; the context build is the same one `dispatchExecutors` hands
     // an in-process connector.
-    const rt = await this.openActiveScope(tenantId, scopeId);
+    const refusal = this.scopeWorkRefusal(tenantId, scopeId, true);
+    if (refusal) throw substratError('conflict', refusal, { reason: SCOPE_GATE_REASONS.notActive });
+    const rt = this.runtime(tenantId, scopeId);
     // `false`: this path deliberately does NOT enqueue, so nothing is held and
     // the connection's reads take an ordinary serialized turn. Built on a view bound to
     // the event, so its admin rows carry it and nothing else the host serves does (#2055).
