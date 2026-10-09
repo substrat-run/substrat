@@ -50,7 +50,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // `marker` runs before a `loadMarker` read and `markerRead` after it: a carry reads the
   // destination's marker after its export, and the source's again right before its bind (r12).
   const hooks: {
-    export?: Hook; marker?: Hook; markerRead?: Hook; kept?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook;
+    export?: Hook; marker?: Hook; markerRead?: Hook; kept?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook; redact?: Hook;
   } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
@@ -167,7 +167,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
         relay(() => host.snapshotScopeLocal(input.sourceScopeId, input.newScopeId)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
-      redactSubject: (sid: ScopeId, subject: string) => relay(() => host.redactSubjectLocal(sid, subject)),
+      redactSubject: (sid: ScopeId, subject: string) => relay(async () => {
+        await hooks.redact?.(ref, sid);
+        return host.redactSubjectLocal(sid, subject);
+      }),
       clearCopyMark: (sid: ScopeId, lineage: ScopeLineage, opts: { expect?: { loadStamp: string | null; revision: string | null } } = {}) =>
         relay(() => host.clearCopyMarkLocal(sid, lineage, ...(opts.expect ? [opts.expect] : []))),
     } as unknown as VerticalClient;
@@ -534,6 +537,29 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId })).toMatchObject([
         { scriptRef: refOf.get(version.v1), state: 'done' },
       ]);
+    });
+    it('does not destroy the subject key until every script copy confirms redaction', async () => {
+      const p = await fresh('erase-pending', 'copy before erasure');
+      hooks.wipe = async (ref, sid) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('temporary wipe failure');
+      };
+      expect((await push('erase-pending', 'v2')).status).toBe(200);
+      delete hooks.wipe;
+      const subject = ulid();
+      const [sealed] = await dir.admin.sealSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, plaintext: 'private' }]);
+      expect(sealed).not.toBeNull();
+      hooks.redact = async (ref, sid) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('old script unavailable');
+      };
+      const path = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBeGreaterThanOrEqual(500);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+      delete hooks.redact;
+      const reached: string[] = [];
+      hooks.redact = async (ref) => { reached.push(ref); };
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);
+      expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
     });
     afterEach(() => {
       for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
