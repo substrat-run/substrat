@@ -109,6 +109,7 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     await tick();
     const sid = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t, scopeId: sid, vertical: slug });
+    await host.admin.activateScope(staff, t, sid); // the store exists: what bounds its birth
     return sid;
   };
 
@@ -367,19 +368,58 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     await tick();
     const settled = scopeId.parse(ulid()); // an hour after the promote: born on `first`
     await host.provisionScope(staff, { tenantId: t, scopeId: settled, vertical: tie });
+    await host.admin.activateScope(staff, t, settled);
     await tick();
     await host.admin.promoteVersion(staff, tie, 'prod', second);
     vi.setSystemTime(Date.now() + BIRTH_WINDOW_MS - 60_000); // inside the window after the promote
     const raced = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t, scopeId: raced, vertical: tie });
+    await host.admin.activateScope(staff, t, raced);
     await tick();
     const pages = await backfillAll(true, 50);
     expect(entriesOf(pages, settled)).toEqual([expect.objectContaining({
       scriptRef: `${tie}-${first.toLowerCase()}`, outcome: 'would-record',
     })]);
     expect(entriesOf(pages, raced)).toEqual([expect.objectContaining({
-      outcome: 'failure', reason: expect.stringContaining('within 15 minutes before'),
+      outcome: 'failure', reason: expect.stringContaining('changed where its slug resolves between'),
     })]);
+  });
+
+  it('a slug change after the birth row is ambiguous until the store is shown to exist (#1722 r3)', async () => {
+    // The dashboard's connected install writes the directory row first and provisions the store
+    // after, and a retried install provisions again with no new row: only the activation says when
+    // the store existed. A promote 5 s after an unactivated birth row is ambiguous; one after an
+    // activation is not.
+    const late = 'late-vert';
+    await tick();
+    await host.admin.registerVertical(staff, { slug: late, name: 'Late Vert', source: 'cli', ownerTenant: t });
+    const [first, second, third] = [ulid(), ulid(), ulid()];
+    for (const [id, version] of [[first, '1.0.0'], [second, '1.0.1'], [third, '1.0.2']] as const) {
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: late, version, manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: `${late}-${id.toLowerCase()}`,
+      });
+    }
+    await host.admin.promoteVersion(staff, late, 'prod', first);
+    await tick();
+    const activated = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: activated, vertical: late });
+    await host.admin.activateScope(staff, t, activated);
+    const pending = scopeId.parse(ulid()); // its store not shown to exist yet
+    await host.provisionScope(staff, { tenantId: t, scopeId: pending, vertical: late });
+    vi.setSystemTime(Date.now() + 5_000);
+    await host.admin.promoteVersion(staff, late, 'prod', second);
+    await tick();
+    const pages = await backfillAll(true, 50);
+    expect(entriesOf(pages, activated)).toEqual([expect.objectContaining({
+      scriptRef: `${late}-${first.toLowerCase()}`, outcome: 'would-record',
+    })]);
+    expect(entriesOf(pages, pending)).toEqual([expect.objectContaining({
+      outcome: 'failure', reason: expect.stringContaining('any later time'),
+    })]);
+    // Activated later, after the promote: still ambiguous, for the birth could be on either side.
+    await host.admin.activateScope(staff, t, pending);
+    expect(entriesOf(await backfillAll(true, 50), pending)).toEqual([expect.objectContaining({ outcome: 'failure' })]);
   });
 
   it('a fork born pinned is still born where its source was routed', async () => {
@@ -396,8 +436,7 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
 
   it('a scope with no provisionScope row still records its binds and pins, and reports only its birth', async () => {
     await tick();
-    const sid = scopeId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: t, scopeId: sid, vertical: slug }); // born pinned
+    const sid = await provision(); // born pinned
     await host.admin.setScopeServingRef(staff, t, sid, null);
     await host.admin.bindScopeVersion(staff, t, sid, versions.v1!.id);
     await host.admin.bindScopeVersion(staff, t, sid, versions.v2!.id);

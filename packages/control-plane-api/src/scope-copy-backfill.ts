@@ -31,9 +31,10 @@ import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type S
  * a real run (`scope.copy-backfill`), never marked clean, and reported again on a re-run. That is a
  * row naming no version, a version the registry no longer holds or that names no script, a scope
  * or fork source whose directory row is gone, a scope with no `provisionScope` row (its other rows
- * are still derived), a slug with no `prod` version at the time or one that changed within
- * `BIRTH_WINDOW_MS` before the birth row (the install path writes that row after the store is born,
- * so the order is unknown), a script no deployment answers for, and a store that cannot be read.
+ * are still derived), a slug with no `prod` version at the time or one that changed while the store
+ * may have been born (from `BIRTH_WINDOW_MS` before the birth row to the scope's activation: the
+ * row can come before or after the birth, see `slugAt`), a script no deployment answers for, and a
+ * store that cannot be read.
  *
  * - **Never a wipe, never a phantom.** `retained` is reached by reap and erasure and is never swept.
  *   A real run reads one thing, the derived home's `_substrat_meta`, for the tombstone that proves
@@ -57,9 +58,10 @@ import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type S
 export const BACKFILL_PAGE_MAX = 200;
 
 /**
- * How long before its `provisionScope` row a store may have been born. The install path provisions
- * in the vertical first and writes the directory row after, retries included; a slug change inside
- * this window makes the birth script ambiguous, and so a failure.
+ * How long BEFORE its `provisionScope` row a store may have been born. `POST /verticals/:slug/instances`
+ * provisions in the vertical first and writes the directory row after, inside one request, whose
+ * `retryTransient` waits about three seconds at most: fifteen minutes is a generous margin over
+ * that, not a measured bound. The other side of the window has no constant (`birthEnd`).
  */
 export const BIRTH_WINDOW_MS = 15 * 60_000;
 
@@ -105,7 +107,10 @@ export interface CopyBackfillPage {
 type Candidate = { scriptRef: string } | { failure: string };
 type Version = Awaited<ReturnType<HostAdmin['getVersion']>>;
 
+/** The rows a page walks: each can name a home. */
 const TIMELINE: AdminAction[] = ['provisionScope', 'bindScopeVersion', 'setScopeServingRef'];
+/** A scope's own rows: those, and its activation, which bounds its birth. */
+const SCOPE_TIMELINE: AdminAction[] = [...TIMELINE, 'activateScope'];
 
 const objectOf = (v: unknown): Record<string, unknown> | null =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
@@ -151,6 +156,16 @@ function pinnedBefore(tl: Timeline, id: string): string | null | undefined {
   return tl.exists ? tl.servingRefNow : undefined;
 }
 
+/**
+ * The latest a scope's store can have been born: its first activation after its birth row, which a
+ * provision writes once the store exists, else its next bind or pin (a move that needed the store),
+ * else unknown (`null`, any later time).
+ */
+function birthEnd(tl: Timeline, provision: AdminLogEntry): string | null {
+  const after = tl.rows.filter((r) => r.id > provision.id);
+  return (after.find((r) => r.action === 'activateScope') ?? after.find((r) => r.action !== 'provisionScope'))?.at ?? null;
+}
+
 class Deriver {
   private readonly versions = new Map<string, Promise<Version>>();
   private readonly timelines = new Map<string, Promise<Timeline>>();
@@ -175,7 +190,7 @@ class Deriver {
     const { admin, actor } = this.input;
     const [scope, rows, copies] = await Promise.all([
       admin.getScopeRecord(actor, tenantId, scopeId),
-      allRows(admin, actor, { tenantId, scopeId, action: TIMELINE }),
+      allRows(admin, actor, { tenantId, scopeId, action: SCOPE_TIMELINE }),
       listAllScopeScriptCopies(admin, actor, tenantId, scopeId),
     ]);
     const provision = rows.find((r) => r.action === 'provisionScope');
@@ -200,18 +215,23 @@ class Deriver {
     return { scriptRef: v.deploymentRef };
   }
 
-  /** Where `vertical`'s slug resolved at `at`: its serving script when it served in place, else prod's. */
-  private async slugAt(vertical: string, at: string): Promise<Candidate> {
+  /**
+   * Where `vertical`'s slug resolved for a store born around `at`: its serving script when it served
+   * in place, else prod's. Ordered against other tables by time alone, and the birth is not at `at`
+   * itself. The install path writes the directory row after the vertical provisioned the store
+   * (`BIRTH_WINDOW_MS` before it); the dashboard's connected install writes it first and provisions
+   * after, and a retried install provisions again with no new row. So the birth lies anywhere from
+   * `BIRTH_WINDOW_MS` before `at` to `until`, the first evidence the store exists (`birthEnd`), or
+   * any time after when there is none, and a slug change in that window is ambiguous, never a guess.
+   */
+  private async slugAt(vertical: string, at: string, until: string | null): Promise<Candidate> {
     const { admin, actor } = this.input;
     this.servingHistory ??= allRows(admin, actor, { action: 'setVerticalServing' });
-    // Ordered against other tables by time alone, and `at` is when the directory row was written,
-    // which on the install path comes after the vertical provisioned the store: a change in the
-    // window before it may have come first or after, so it is ambiguous, never a guess.
     const from = new Date(Date.parse(at) - BIRTH_WINDOW_MS).toISOString();
-    const inWindow = (when: string) => when >= from && when <= at;
+    const inWindow = (when: string) => when >= from && (until === null || when <= until);
     const ambiguous = {
-      failure: `'${vertical}' changed where its slug resolves within ${BIRTH_WINDOW_MS / 60_000} minutes before ${at}, ` +
-        'so the script the store was born in is not known',
+      failure: `'${vertical}' changed where its slug resolves between ${from} and ${until ?? 'any later time'}, ` +
+        'where the store was born, so the script it was born in is not known',
     };
     const servingRows = (await this.servingHistory).filter((r) => r.vertical === vertical || objectOf(r.after)?.vertical === vertical);
     if (servingRows.some((r) => inWindow(r.at))) return ambiguous;
@@ -234,15 +254,18 @@ class Deriver {
     return this.scriptOf(prod.versionId, vertical);
   }
 
-  /** The script `tl`'s scope was routed to just before log row `id` was written at `at`. */
-  async routeAt(tl: Timeline, id: string, at: string): Promise<Candidate> {
+  /**
+   * The script `tl`'s scope was routed to just before log row `id` was written at `at`. When that is
+   * its slug, the resolution is read over `at` to `until`, as `slugAt` says.
+   */
+  async routeAt(tl: Timeline, id: string, at: string, until: string | null): Promise<Candidate> {
     const pin = pinnedBefore(tl, id);
     if (pin === undefined) return { failure: `scope ${tl.scopeId} is gone and its pin at the time is not in the log` };
-    return pin ? { scriptRef: pin } : this.unpinnedRouteAt(tl, id, at);
+    return pin ? { scriptRef: pin } : this.unpinnedRouteAt(tl, id, at, until);
   }
 
   /** Where `tl`'s scope routed just before row `id` with no pin: its bound version, else its slug. */
-  async unpinnedRouteAt(tl: Timeline, id: string, at: string): Promise<Candidate> {
+  async unpinnedRouteAt(tl: Timeline, id: string, at: string, until: string | null = at): Promise<Candidate> {
     const bind = tl.rows.filter((r) => r.action === 'bindScopeVersion' && r.id < id).at(-1);
     if (bind) {
       const after = objectOf(bind.after);
@@ -252,7 +275,7 @@ class Deriver {
       return this.scriptOf(versionId, vertical);
     }
     if (!tl.vertical) return { failure: 'its vertical is not in the log or the directory' };
-    return this.slugAt(tl.vertical, at);
+    return this.slugAt(tl.vertical, at, until);
   }
 
   /** The script one timeline row names as a home of its scope, or why it cannot be derived. */
@@ -286,10 +309,10 @@ class Deriver {
     if (forkedFrom) {
       const source = await this.timeline(tl.tenantId, forkedFrom as ScopeId);
       if (!source.exists && !source.rows.length) return [{ failure: `the fork's source ${forkedFrom} is not in the directory or the log` }];
-      return [await this.routeAt(source, row.id, row.at)];
+      return [await this.routeAt(source, row.id, row.at, birthEnd(tl, row))];
     }
     if (pinnedBefore(tl, row.id)) return []; // born on its pin, which its rows or its route name
-    return [await this.slugAt(vertical, row.at)];
+    return [await this.slugAt(vertical, row.at, birthEnd(tl, row))];
   }
 }
 
