@@ -168,7 +168,9 @@ Scope routing is **per-scope truth**: `scopes.serving_ref` names the script a sc
 data lives in (set at provision for scopes born on the serving script; set by the
 one-time **adopt-serving** hop — export → restore into the serving script → flip —
 for legacy scopes; once the flip is confirmed the old script's copy is deleted by the
-copy-ledger sweep (#1722), so rollback is an explicit snapshot taken first), and `readHostname` resolves `COALESCE(serving_ref, bound
+copy-ledger sweep (#1722), so rollback is an explicit snapshot taken first; copies made
+before the ledger existed are recorded `retained` by the staff backfill, `POST /scope-copies/backfill`,
+which reads every script a scope was routed to from the never-swept admin log and never wipes), and `readHostname` resolves `COALESCE(serving_ref, bound
 version's ref)`. What is conceded is per-scope staged rollout across versions —
 which one shared namespace never truly offered — so blast radius stays per-vertical,
 the boundary D-30 drew. The safety net replacing it (#286): versions are badged
