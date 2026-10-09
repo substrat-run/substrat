@@ -1,5 +1,5 @@
 ---
-description: "A vertical metering and invoicing its own customers, and the platform metering a tenant: what is counted, what is priced, and what (like storage) is only read on demand."
+description: "A vertical metering and invoicing its own customers, and the platform metering a tenant: what is counted, what is priced, and what (like storage) is measured but not yet priced."
 ---
 
 # 12. Metering and billing
@@ -119,7 +119,7 @@ The commercial design names four meters. Here is the state of each:
 | **2. Engine licensing** | entitlements, grouped by key and plan, with expired ones counted apart | counted, live |
 | **3. Usage** | platform-provided model calls, with tokens and list price | **counted**, and priced when read |
 | | event history retained | measurable in the lake, and nothing reads it yet |
-| | storage (scope databases) | **read on demand**, per tenant. Not stored, not priced |
+| | storage (scope databases) | **sampled daily** and read on demand, per tenant. Not priced |
 | | API calls | **not counted** |
 | **4. Network transactions** | orders flowing between tenants | not countable, because that flow does not exist |
 
@@ -160,16 +160,21 @@ model host, and that call is not metered.
 
 ### Storage: the honest answer
 
-**Storage is read, not metered.** Staff can read one tenant's storage on demand from the
-tenant's page in the console. It is the sum of its scope databases, each one's size as the
-Durable Object SQL API reports it (`page_count × page_size` on SQLite). Nothing stores the
-reading, nothing sweeps for it, and there is no fleet-wide total.
+**Storage is measured, not yet priced.** It is the sum of a tenant's scope databases, each
+one's size as the Durable Object SQL API reports it (`page_count × page_size` on SQLite).
+There are two readings of it.
 
-Asking only on demand is deliberate. Reading a scope's size wakes that scope, so a daily sweep
-would cost a Durable Object invocation per scope per day, including every scope nobody uses.
-A stored storage gauge waits until the on-demand number has been looked at for a while.
+The **stored** figure is in the console's Meters view and on each tenant's page. The scheduled
+pass samples each scope at most once a day, and only a scope another part of the same pass
+already woke, so the gauge never wakes a scope nobody uses. It keeps one sample per scope per
+day for thirteen months. The figure says how many scopes it covers and how old its oldest
+sample is, and it is called a total only when it covers every scope with a sample under two
+days old.
 
-What the reading leaves out, and says it leaves out:
+The **live** reading is a button on the tenant's page. It wakes every scope it reads, so it
+waits to be asked.
+
+What both leave out, and say they leave out:
 
 - **Attachment files.** Attachment rows record their own byte size, but the bytes live in a
   blob store rather than in the scope.
@@ -183,8 +188,9 @@ What the reading leaves out, and says it leaves out:
 A reading covers at most one page of the tenant's scopes and says when it is partial: a page
 still to read, or a scope whose read failed. A sum is only called a total when a single page
 covered every scope and every one answered. A walk over several pages never is, because the
-directory can change between pages. So a storage line on an invoice still needs a decision: a stored gauge built on this
-reading, or event-history bytes as the unit being sold.
+directory can change between pages. The daily samples are what a GB-month figure would be
+built from, but a storage line on an invoice still needs a decision: how to price days the
+pass did not sample, or whether event-history bytes are the unit being sold instead.
 
 ### Requests are not billable either
 

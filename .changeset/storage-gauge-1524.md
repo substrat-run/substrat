@@ -1,0 +1,29 @@
+---
+'@substrat-run/contracts': minor
+'@substrat-run/kernel': minor
+'@substrat-run/adapter-sqlite': minor
+'@substrat-run/adapter-cloudflare': minor
+'@substrat-run/contract-tests': patch
+'@substrat-run/console': patch
+---
+
+A tenant's storage is now a stored gauge: `GET /meters` carries a storage figure per tenant and for the fleet, and serving it wakes no scope.
+
+The scheduled pass samples scope database sizes in a new storage phase, configured with
+`storageGauge: { read }` on `runPlatformSweep`. It reads only scopes an earlier phase of the
+same pass already reached (the platform-intent drain, or the executor drain on a host without
+one), so a sample never wakes an idle scope. A scope is due once a day, at most 100 per pass,
+never-read first and then the stalest. A failed read keeps the last stored value.
+
+Samples are kept in the directory's new `_substrat_scope_storage` table, one row per scope per
+UTC day (a later same-day reading replaces an earlier one), for thirteen months. A reaped
+scope's rows are deleted at reap. The meter's `storage` field (`storageGauge`) says what it
+sums (scope databases only, with attachments, per-tenant D1 databases and the lake named as
+excluded), how many scopes it covers (`sampled` of `total`) and the `oldestReadAt` it is as
+of. The console shows it on the Meters view and the tenant page, and calls it a total only
+when every scope is sampled and no sample is older than two days.
+
+`HostAdmin.recordScopeStorage`, `listScopeStorage` and `pruneScopeStorage` are new OPTIONAL
+methods, and the phase is skipped on a host without them, so an adapter built before this
+still satisfies the interface. The meter's `storage` fields are optional for the same reason:
+a host that keeps no gauge reports none, rather than a zero.

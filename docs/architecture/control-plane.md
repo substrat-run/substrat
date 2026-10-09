@@ -1132,8 +1132,8 @@ are honestly computable *honest*, and display them.
   fan-in sink that does not exist yet; reads emit nothing, so API-call volume is unmeterable
   from the spine *by construction*; and `drained_at` is declared but written nowhere in the
   repo, so a metering consumer has no cursor to resume from. *Storage* has since become
-  readable on demand, per tenant, for scope databases only (§5.2). It is a reading, not a
-  stored gauge.
+  measurable for scope databases only (§5.2): readable on demand per tenant, and kept as a
+  stored daily gauge that `/meters` serves without waking a scope.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
@@ -1185,13 +1185,13 @@ answers `SqlStorage.databaseSize` on Cloudflare and `page_count × page_size` on
 through `HostAdmin.scopeDatabaseSize` when the scope is co-located and through the
 vertical's `/internal/database-size` when a vertical's deployment holds its DO.
 
-**Read-only first, by decision.** A stored gauge would bundle a migration, a cadence and a
-billing-truth decision before anyone had seen a number. The cadence is the trap. A reading
-wakes the scope, so a daily sweep would cost a DO invocation per scope per day, on scopes
-nobody uses. So:
+**The on-demand reading came first, by decision.** A stored gauge would have bundled a
+migration, a cadence and a billing-truth decision before anyone had seen a number, and the
+cadence looked like a trap: a reading wakes the scope. The stored gauge below answers that
+without a wake of its own. The on-demand reading stays the live one:
 
-- **No sweep, no drain phase, no fleet-wide form.** `tenantId` is required, and the card
-  reads nothing until the button is pressed.
+- **No fleet-wide form.** `tenantId` is required, and the card reads nothing live until the
+  button is pressed.
 - **Bounded per request.** A reading is one page of the tenant's scopes, at most 200
   (default 50), with at most 8 reads in flight. A tenant with thousands of scopes is read a
   page per press, and the card says how many scopes remain unread.
@@ -1215,6 +1215,35 @@ nobody uses. So:
 Preview forks are scopes of the tenant and are included. Backups are objects in a bucket
 and are not. The number is what the scope databases occupy, free pages included, which is
 what Cloudflare bills a DO for. It is not live row volume.
+
+#### The stored gauge
+
+The scheduled pass keeps a **stored** figure beside the live one, and `GET /meters` serves it
+as `storage` on each `perTenant` row and summed on the reading. Serving it is a directory read.
+
+- **No wake of its own.** The pass already reaches every active scope's DO on every tick,
+  through the platform-intent drain (`/internal/platform-requests` → the scope DO). The
+  storage phase runs straight after it and reads only scopes that drain reached in the same
+  pass (the executor drain, on a host with no platform drain). A scope nothing woke is never
+  read, so a sample is one extra request to a DO that is already awake. On the hosted plane
+  the read goes through the vertical's `/internal/database-size`, the same route as the live
+  reading, with the same rule: no deployment resolves, the read fails; it never falls back to
+  the control plane's placeholder namespace.
+- **Bounded.** A scope is due when its latest sample is a day old or it has none. At most 100
+  scopes are read per pass, never-read first, then the stalest; the rest wait for the next
+  pass (`deferred` in the sweep report). `batch: 0` pauses sampling.
+- **One row per scope per UTC day** in the directory's `_substrat_scope_storage`, the day's
+  latest reading (a later same-day reading replaces it, an older one never does). The row is
+  written only for a non-reaped scope the directory holds under the named tenant. Kept
+  **thirteen months**, pruned by the same phase at most 500 rows per pass. A reaped scope's
+  rows are deleted at reap, and reads join on scope status as a second guard.
+- **A failed read keeps the last value.** It is a `storage` error in the pass report.
+- **Labelled by coverage and age.** The figure carries `sampled` of `total` non-reaped scopes
+  and the `oldestReadAt` it is "as of". The console calls it a total only when every scope is
+  sampled and the oldest sample is under two days old; otherwise it is `partial` or `stale`.
+- **History, not yet a price.** The day rows are what a byte-day (and so GB-month) figure
+  needs, through `HostAdmin.listScopeStorage`. Nothing prices them yet, because a GB-month
+  over days the pass did not sample is a coverage question the bill has to answer first.
 
 ## 6. Auth: the sequencing
 
