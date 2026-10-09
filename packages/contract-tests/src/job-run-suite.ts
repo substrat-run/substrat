@@ -303,13 +303,13 @@ export function jobRunContractSuite(
           for (let i = 0; i < steps; i += 1) {
             await pass.step(`s${i}`, async () => {
               stepBodies.push(`s${i}`);
-              await sleep(60);
+              await sleep(300);
             });
           }
           return { done: true };
         },
         { maxAttempts: 3, baseDelayMs: 0 },
-        { leaseMs: 100 },
+        { leaseMs: 500 },
       );
       host.registerJob(
         JOBS_MODULE,
@@ -475,17 +475,17 @@ export function jobRunContractSuite(
 
       it('a pass that renews at every step is not taken over, though it outlasts its lease', async () => {
         const s = await newScope();
-        // Four 60 ms steps on a 100 ms lease; a rival drive at each step boundary finds nothing due.
+        // Four 300 ms steps on a 500 ms lease; a rival drive at each step boundary finds nothing due.
         const run = await startLeased(s, 'stepped', { steps: 4 });
         const began = Date.now();
         const pass = host.runDueJobs(t, s);
         const rivals: number[] = [];
-        while (stepBodies.length < 4) {
+        for (let step = 0; step < 4; step += 1) {
+          while (stepBodies.length <= step) await sleep(20);
           rivals.push((await host.runDueJobs(t, s)).attempted);
-          await sleep(20);
         }
         expect(await pass).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
-        expect(Date.now() - began).toBeGreaterThan(100);
+        expect(Date.now() - began).toBeGreaterThan(500);
         expect(rivals.every((n) => n === 0)).toBe(true);
         expect(stepBodies).toEqual(['s0', 's1', 's2', 's3']);
         expect(await runOf(s, run.id)).toMatchObject({ status: 'done' });
