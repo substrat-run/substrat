@@ -53,6 +53,7 @@
     "todo-demo": "pnpm --filter @substrat-run/demo-todo",
     "lint:tests": "node tools/test-independence.mjs",
     "lint:floating-promises": "node tools/floating-promises.mjs",
+    "test:workerd-rejections": "node --test tools/vitest/workerd-rejections.test.mjs",
     "lint:docs": "node tools/lint-docs.mjs",
     "lint:docs:drift": "node tools/docs-drift.mjs",
     "lint:docs:structure": "node tools/docs-structure.mjs",

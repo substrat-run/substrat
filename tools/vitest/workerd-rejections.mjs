@@ -11,12 +11,11 @@
  * A rejection nobody handles — a forgotten `await` on a local promise, or an un-awaited RPC
  * call on the caller's side — never gets it.
  *
- * So the rule is node's own: a rejection still unhandled at the end of a test fails that test,
- * and one still unhandled when the file ends fails the file. Registering a listener here also
- * stops vitest's own from reporting each event as it comes (vitest steps aside when the process
- * has another `unhandledRejection` listener), which is what turned every awaited RPC rejection
- * into an unhandled error. The listeners are removed when the file ends, so a rejection that
- * lands later still reaches vitest's own listener.
+ * So the rule is node's own. A rejection still unhandled when a test ends fails that test; and
+ * any such rejection also fails the FILE at its end, so a retry that passes cannot clear it.
+ * Registering a listener here also stops vitest's own from reporting each event as it comes
+ * (vitest steps aside when the process has another `unhandledRejection` listener), which is what
+ * turned every awaited RPC rejection into an unhandled error.
  */
 import { afterAll, afterEach, beforeAll, chai, expect } from 'vitest';
 
@@ -52,7 +51,7 @@ if (!Object.hasOwn(chai.Assertion.prototype, GUARDED)) {
 }
 
 /**
- * Each unhandled promise → its reason, wrapped to name the test it was raised in.
+ * Each unhandled promise → its reason, wrapped to name the test it landed during.
  * @type {Map<Promise<unknown>, Error>}
  */
 const pending = new Map();
@@ -60,25 +59,43 @@ const pending = new Map();
 const onUnhandled = (reason, promise) => {
   const test = expect.getState().currentTestName;
   const message = reason instanceof Error ? reason.message : String(reason);
-  pending.set(promise, new Error(`a rejection nobody handled, raised ${test ? `in "${test}"` : 'outside a test'}: ${message}`, { cause: reason }));
+  pending.set(promise, new Error(`a rejection nobody handled, landed ${test ? `during "${test}"` : 'outside a test'}: ${message}`, { cause: reason }));
 };
 /** @param {Promise<unknown>} promise */
 const onHandled = (promise) => pending.delete(promise);
 
-function failOnPending() {
-  if (pending.size === 0) return;
+/**
+ * Every rejection a test has been failed for in this file. `afterAll` fails the FILE on any of
+ * them as well, because a test's failure alone can be laundered: under `retry`, the test that
+ * caught a rejection raised by an earlier one runs again, clean, and passes — and `afterAll` is
+ * not retried.
+ * @type {Error[]}
+ */
+const reported = [];
+
+/** The unpaired rejections so far, moved to `reported`. */
+function takePending() {
   const errors = [...pending.values()];
   pending.clear();
-  throw errors.length === 1 ? errors[0] : new AggregateError(errors, `${errors.length} rejections nobody handled`);
+  reported.push(...errors);
+  return errors;
 }
 
 beforeAll(() => {
+  reported.length = 0;
   process.on('unhandledRejection', onUnhandled);
   process.on('rejectionHandled', onHandled);
 });
-afterEach(failOnPending);
+afterEach(() => {
+  const errors = takePending();
+  if (errors.length > 0) throw errors.length === 1 ? errors[0] : new AggregateError(errors, `${errors.length} rejections nobody handled`);
+});
 afterAll(() => {
   process.off('unhandledRejection', onUnhandled);
   process.off('rejectionHandled', onHandled);
-  failOnPending();
+  takePending();
+  if (reported.length > 0) {
+    const errors = reported.splice(0);
+    throw new AggregateError(errors, `this file raised ${errors.length} rejection(s) nobody handled; a retried test that passed does not clear one`);
+  }
 });

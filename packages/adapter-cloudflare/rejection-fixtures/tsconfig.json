@@ -1,0 +1,5 @@
+{
+  // The project the type-aware lint reads these fixtures through (tools/floating-promises.mjs).
+  "extends": "../tsconfig.test.json",
+  "include": ["**/*"]
+}
