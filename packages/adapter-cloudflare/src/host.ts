@@ -7,6 +7,7 @@ import {
   delegatedReadParams,
   operationSeriesCount,
   fromWireFailure,
+  isSubstratError,
   type ErrorCode,
   type WireFailure,
   exportReadInput,
@@ -2793,13 +2794,12 @@ export class CloudflareScopeHost implements ScopeHost {
     // have none, and the directory is one global object.
     let inert: Promise<boolean> | undefined;
     const isInert = (): Promise<boolean> => (inert ??= this.isInertScope(tenantId, scopeId));
-    // #1713: a CP-less scope its lifecycle holds attempts nothing and journals nothing, so every
-    // due delivery stays due for the first pass after it is live again. Asked on the first due
-    // event, like `isInert`. Every caller passed `assertLive` already, so this is for the scope
-    // suspended between that gate and the drain: a request in flight, whose write commits while
-    // its effect waits. A host with a directory answers false without a read.
-    let held: Promise<boolean> | undefined;
-    const isHeld = (): Promise<boolean> => (held ??= this.lifecycleHeld(scopeId));
+    // A suspension can land after `assertLive`, or between two deliveries. A live
+    // verdict is never cached across this pass: each pending event meets the current
+    // directory or, on a CP-less host, the scope's delivered lifecycle.
+    const isHeld = async (): Promise<boolean> => this.cpLess
+      ? this.lifecycleHeld(scopeId)
+      : (await this.cp.scopeAccessRefusal(tenantId, scopeId)) !== null;
     drain: for (const [id, executor] of this.executors) {
       const deliveryId = `executor:${id}`;
       const { events, undecodable } = await stub.pendingExecutorDeliveries(deliveryId, executor.eventType);
@@ -2807,10 +2807,6 @@ export class CloudflareScopeHost implements ScopeHost {
       // and its handler never sees it. Terminal on the FIRST failure, unlike a handler's:
       // the decode is pure, so a retry cannot succeed. The rows behind it are delivered
       // below — the decode used to throw the whole list, on every pass.
-      if ((undecodable.length > 0 || events.length > 0) && (await isHeld())) {
-        report.lifecycleHeld = true;
-        break drain;
-      }
       // #1901: an attempt's line. The attempt number is the one the journal is about to record.
       const unitOf = (eventId: string, attempt: number) => ({
         kind: 'consumer' as const,
@@ -2827,12 +2823,20 @@ export class CloudflareScopeHost implements ScopeHost {
         outcomes?.push(executorOutcomeOf(id, event, outcome, error));
       };
       for (const bad of undecodable) {
+        if (await isHeld()) {
+          report.lifecycleHeld = true;
+          break drain;
+        }
         report.attempted += 1;
         const attempt = await stub.recordExecutorAttempt(bad.eventId, deliveryId, bad.error, null, invocationId);
         report.deadLettered += 1;
         lines.write({ ...unitOf(bad.eventId, attempt), outcome: 'dead-lettered' });
       }
       for (const event of events) {
+        if (await isHeld()) {
+          report.lifecycleHeld = true;
+          break drain;
+        }
         report.attempted += 1;
         const startedAt = Date.now();
         if (await isInert()) {
@@ -5087,8 +5091,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const report: FreshnessReport = { checks: [] };
     if (!this.moduleIds.has(moduleId)) return report;
     if (!this.cpLess) {
-      const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-      if (!rec || rec.status !== 'active') return report;
+      if (await this.cp.scopeAccessRefusal(tenantId, scopeId)) return report;
     } else if (lifecycleRefusal(await this.validateScopeAccess(tenantId, scopeId)) !== null) {
       // #2016: the pair is held to the scope's own record first, so a sweep roster entry whose
       // tenant disagrees with the scope is refused before the probe reads or writes anything.
@@ -5140,8 +5143,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // the same call that holds the pair to the scope's own record (#2016): a roster entry whose
     // tenant disagrees is refused before a grant, a cadence row or a run is read or written.
     if (!this.cpLess) {
-      const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-      if (!rec || rec.status !== 'active') return report;
+      if (await this.cp.scopeAccessRefusal(tenantId, scopeId)) return report;
     } else if (lifecycleRefusal(await this.validateScopeAccess(tenantId, scopeId)) !== null) {
       // #1713: the lifecycle the platform delivered holds the scope. Every schedule is
       // `skipped` and no cadence row moves, as under the kill switch, so a schedule that
@@ -5199,7 +5201,10 @@ export class CloudflareScopeHost implements ScopeHost {
       let stillDue = false;
       try {
         // The gate above already answered for this pass; a fire that meets a restarted scope
-        // is gated again by the door (#1834).
+        // is gated again by the door (#1834). The door is opened once, but the lifecycle is
+        // read again before every later fire: the scope does not hold a directory lifecycle,
+        // so a suspension after an earlier fire would otherwise not stop this one (#1713).
+        if (door) await this.assertLive(tenantId, scopeId);
         door ??= await this.openSystemDoor(moduleId, tenantId, scopeId, gate);
         const scope = this.buildStub(tenantId, scopeId, undefined, undefined, door);
         if (schedule.purge) {
@@ -5218,6 +5223,14 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         report.fired += 1;
       } catch (err) {
+        // A lifecycle delivery can land after the first gate but before the
+        // system door. That refusal ran nothing and must not advance cadence.
+        if (isSubstratError(err) && err.code === 'conflict' && err.extensions.reason === SCOPE_GATE_REASONS.notActive) {
+          report.lifecycleHeld = true;
+          report.skipped += 1;
+          report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+          continue;
+        }
         status = 'failed';
         failure = { error: err };
         report.failed += 1;

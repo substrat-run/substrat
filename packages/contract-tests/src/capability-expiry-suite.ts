@@ -165,6 +165,8 @@ export function capabilityExpiryContractSuite(
       await expect(read(fresh.token)).resolves.toBeTruthy();
     });
 
+    // One thousand serial exchanges cross the DO boundary in the hosted adapter;
+    // give the stress case room when the full affected suite is running.
     it('an exchange prunes at most one batch of expired sessions, and later exchanges drain the rest', async () => {
       // A scope of its own, so no other test's sessions are in the count.
       const s2 = scopeId.parse(ulid());
@@ -192,7 +194,7 @@ export function capabilityExpiryContractSuite(
       expect(await count()).toBe(exchangesToDrain);
       await exchange();
       expect(await count()).toBe(exchangesToDrain + 1);
-    });
+    }, 15_000);
 
     it('a platform `become` exchanges until its expiry, and not after', async () => {
       const early = await host.admin.mintCapability(staff, t1, s1, {
