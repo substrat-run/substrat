@@ -11,8 +11,8 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { drainScopePlatformRequests } from '@substrat-run/control-plane-api';
-import { INERT_SCOPE_REASON, ulid, type PlatformSweepReport } from '@substrat-run/kernel';
+import { ControlPlaneError, drainScopePlatformRequests } from '@substrat-run/control-plane-api';
+import { INERT_SCOPE_REASON, StorageReadUnsupported, ulid, type PlatformSweepReport } from '@substrat-run/kernel';
 import worker, {
   drainContextOf,
   drainTarget,
@@ -382,6 +382,23 @@ describe('storageReaderFor (#1524)', () => {
 
   it('fails, rather than reading a placeholder, when no deployment resolves', async () => {
     await expect(storageReaderFor(async () => undefined)(scope('todo'))).rejects.toThrow(/no deployment resolves for vertical 'todo'/);
+  });
+
+  it('turns a deployment without the route (501 or 404) into the standing condition, and passes other failures on', async () => {
+    const failing = (status: number) =>
+      storageReaderFor(async () => ({
+        databaseSize: async () => {
+          throw new ControlPlaneError(status, `vertical refused introspection: ${status}`);
+        },
+      }));
+    for (const status of [501, 404]) {
+      const err = await failing(status)(scope('todo')).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StorageReadUnsupported);
+      expect((err as Error).message).toMatch(new RegExp(`vertical 'todo' cannot read a database size \\(${status}\\)`));
+    }
+    const other = await failing(503)(scope('todo')).catch((e: unknown) => e);
+    expect(other).toBeInstanceOf(ControlPlaneError);
+    expect(other).not.toBeInstanceOf(StorageReadUnsupported);
   });
 
   it('skips a scope bound to no vertical, without resolving anything', async () => {

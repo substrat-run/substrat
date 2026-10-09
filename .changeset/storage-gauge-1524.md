@@ -16,7 +16,9 @@ only when an earlier phase of the same pass already reached it (the platform-int
 the executor drain on a host without one), so the serving fleet gains no wake. A non-serving
 scope, which no drain reaches, is read anyway, once a day. A scope is due once a day, at most 100 per pass,
 never-tried first and then the longest since a try. A failed read keeps the last stored value
-and is retried a day later, not on every pass.
+and is retried a day later, not on every pass. A vertical deployed before
+`/internal/database-size` is a standing condition: its scopes show as failing on `/meters`,
+with the reason, but stay out of the failure digest.
 
 Samples are kept in the directory's new `_substrat_scope_storage` table, one row per scope per
 UTC day (a later same-day reading replaces an earlier one), for thirteen months, and each

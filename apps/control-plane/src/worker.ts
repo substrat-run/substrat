@@ -43,6 +43,7 @@ import {
   isPrimaryScope,
   assertPlatformCall,
   PlatformCallError,
+  StorageReadUnsupported,
   webCryptoSecretBox,
   globalFetch,
   type CrossVerticalOptions,
@@ -1272,7 +1273,18 @@ export function storageReaderFor(
     if (!scope.vertical) return null;
     const client = await resolve(scope);
     if (!client) throw new Error(`no deployment resolves for vertical '${scope.vertical}'`);
-    return client.databaseSize(scope.id);
+    try {
+      return await client.databaseSize(scope.id);
+    } catch (err) {
+      // A deployment built before the route answers 501 (the route, without the host's read)
+      // or 404 (no route at all). Standing until it is redeployed, so not a digest entry.
+      if (err instanceof ControlPlaneError && (err.status === 501 || err.status === 404)) {
+        throw new StorageReadUnsupported(
+          `vertical '${scope.vertical}' cannot read a database size (${err.status}); redeploy it`,
+        );
+      }
+      throw err;
+    }
   };
 }
 

@@ -887,6 +887,7 @@ export type {
   StorageGaugeSweepOptions,
   StorageGaugeSweepReport,
 } from './platform-sweep.js';
+export { StorageReadUnsupported } from './platform-sweep.js';
 // #1653: which scopes are the real install, and which version runs on them — shared so
 // every receipt writer and the sweep answer both questions the same way.
 export {

@@ -1249,7 +1249,10 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
   report and the scope's attempt row, and the figure on `/meters` counts it (`failing`, with
   `lastFailedAt`), so the console says "the last read of N scopes failed" rather than letting
   them go silently missing. The next successful read clears it. A scope bound to no vertical
-  is skipped, not failed.
+  is skipped, not failed. A vertical deployed before `/internal/database-size` (it answers 501,
+  or 404 with no route at all) is a **standing condition**, like a paused cross-vertical edge:
+  it is recorded as the scope's failing attempt, with "redeploy it" as the reason, but kept out
+  of the pass's `errors`, so the failure digest does not mail it every day.
 - **Labelled by coverage and age.** The figure carries `sampled` of `total` non-reaped scopes
   and the `oldestReadAt` it is "as of". The console calls it a total only when every scope is
   sampled, none is failing and the oldest sample is under two days old; otherwise it is

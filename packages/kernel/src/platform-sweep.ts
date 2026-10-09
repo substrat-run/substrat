@@ -747,6 +747,22 @@ export interface StorageGaugeSweepOptions {
   pruneBatch?: number;
 }
 
+/**
+ * What a storage reader throws when the scope's deployment cannot read a size at all (#1524):
+ * a vertical built before `/internal/database-size`. That is a standing condition until the
+ * vertical is redeployed, like a paused cross-vertical edge, so the phase records it as the
+ * scope's attempt error (the meter still counts the scope `failing`, with this reason) and
+ * keeps it OUT of `report.errors`, which the failure digest mails every pass. Recognised by its
+ * `unsupported` flag rather than `instanceof`, so a copy of the kernel bundled elsewhere still
+ * matches.
+ */
+export class StorageReadUnsupported extends Error {
+  readonly unsupported = true as const;
+}
+
+const isUnsupported = (err: unknown): boolean =>
+  typeof err === 'object' && err !== null && (err as { unsupported?: unknown }).unsupported === true;
+
 /** The storage-gauge phase's per-pass bound when `batch` is unset. */
 export const STORAGE_SAMPLE_BATCH = 100;
 /** How old a reading may get before the phase reads the scope again, by default. */
@@ -766,6 +782,11 @@ export interface StorageGaugeSweepReport {
   read: number;
   failed: number;
   skipped: number;
+  /**
+   * Of `failed`, the reads whose deployment cannot read a size (`StorageReadUnsupported`): a
+   * standing condition, recorded on the scope but kept out of `errors`.
+   */
+  unsupported: number;
   /** Sample rows the directory wrote (a reading for a scope reaped meanwhile writes none). */
   recorded: number;
   /** Samples past retention deleted. */
@@ -2762,6 +2783,7 @@ async function sweepStorageGauge(
     read: 0,
     failed: 0,
     skipped: 0,
+    unsupported: 0,
     recorded: 0,
     pruned: 0,
   };
@@ -2806,7 +2828,8 @@ async function sweepStorageGauge(
         } catch (err) {
           out.failed += 1;
           attempts.push({ ...attempt, bytes: null, error: message(err) });
-          report.errors.push({ kind: 'storage', id: s.id, error: message(err) });
+          if (isUnsupported(err)) out.unsupported += 1;
+          else report.errors.push({ kind: 'storage', id: s.id, error: message(err) });
         }
       });
       if (attempts.length > 0) out.recorded = (await admin.recordScopeStorage!(options.actor, attempts)).recorded;

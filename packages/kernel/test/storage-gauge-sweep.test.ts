@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
-import { runPlatformSweep, STORAGE_SAMPLE_BATCH, type PlatformSweepOptions } from '../src/platform-sweep.js';
+import { runPlatformSweep, STORAGE_SAMPLE_BATCH, StorageReadUnsupported, type PlatformSweepOptions } from '../src/platform-sweep.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, type ScopeStorageAttempt, type ScopeStorageReadingInput } from '../src/storage-gauge.js';
 import type { FetchLike, ScopeHost } from '../src/scope-host.js';
 
@@ -186,6 +186,19 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     expect(by.get(none)).not.toHaveProperty('error');
     expect(report.storage).toMatchObject({ read: 1, failed: 1, skipped: 1, recorded: 1 });
     expect(report.errors).toEqual([{ kind: 'storage', id: broken, error: 'boom' }]);
+  });
+
+  it("records a deployment that cannot read a size as the scope's error, but keeps that standing condition out of the digest", async () => {
+    const [old, broken] = [sid(), sid()];
+    const { host, recorded } = gaugeHost({ scopes: [old, broken] });
+    const r = reader((s) => (s === old ? new StorageReadUnsupported('cannot read a database size (501); redeploy it') : new Error('boom')));
+    const report = await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: { read: r.read } });
+    // Both are recorded as failing attempts, so /meters names them…
+    expect(recorded.find((x) => x.scopeId === old)).toMatchObject({ bytes: null, error: expect.stringMatching(/501/) });
+    expect(recorded.find((x) => x.scopeId === broken)).toMatchObject({ bytes: null, error: 'boom' });
+    // …but only the ordinary failure reaches `errors`, which the failure digest mails.
+    expect(report.errors).toEqual([{ kind: 'storage', id: broken, error: 'boom' }]);
+    expect(report.storage).toMatchObject({ failed: 2, unsupported: 1 });
   });
 
   it('does not retry a scope that failed recently: it waits a day, behind nothing', async () => {
