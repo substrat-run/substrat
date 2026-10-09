@@ -3143,10 +3143,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `so the version was not bound (#1710)`,
       );
     }
-    // Before exporting or restoring anything, retain the script identity in the directory.
-    // A failed carry stays named for reap and erasure.
-    // Both entries are leased to this move (#1722): if this request dies, a sweep settles them
-    // once the lease runs out, and this move can then no longer confirm its bind.
+    // Before exporting or restoring anything, retain the script identity in the directory, so a
+    // failed carry stays named for reap and erasure. Both entries are leased to this move: if this
+    // request dies, a sweep settles them once the lease runs out, and the move can then no longer
+    // confirm its bind.
     const moveId = ulid();
     // #1742: the recorded OFF positions ride the restore, as on adopt and rebind. #1722: so does
     // a stamp of this carry's own, which a refused bind's wipe of the copy expects, and which the
