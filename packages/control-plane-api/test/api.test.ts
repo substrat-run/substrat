@@ -2195,7 +2195,8 @@ describe('control-plane API', () => {
         // that carries the erasure fence and confirms the move.
         expect(clear).toHaveBeenCalledExactlyOnceWith(staff, tH, legacy, null, {
           expectedErasureEpoch: 0,
-          confirmMove: expect.objectContaining({ source: 'eligible' }),
+          // Retained until the carry's tail rules out an overtaken destination (review r1).
+          confirmMove: expect.objectContaining({ source: 'retained' }),
         });
         // #1722: the copy restored into v2 is routed by nothing while the pin stands, so the
         // failed unpin wipes it (the tombstone load, on a deployment without a fenced wipe) and the

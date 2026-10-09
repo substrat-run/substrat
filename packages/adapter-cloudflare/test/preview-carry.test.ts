@@ -515,7 +515,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId })).some((f) => f.stage === 'source-copy')).toBe(true);
 
       const pending = await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId });
-      const source = pending.find((copy) => copy.scriptRef === refOf.get(version.v1))!;
+      // The carry's source entry (the preview's creation also ledgered v1, as its destination).
+      const source = pending.find((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'source')!;
       expect(source.state).toBe('eligible');
       expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, source.scriptRef,
         source.moveId, 'retained')).toBe(true);
@@ -548,7 +549,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(neighbor.scopeId))).toEqual(['must survive']);
       expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
-        .find((copy) => copy.scriptRef === refOf.get(version.v1))?.state).toBe('done');
+        .find((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'source')?.state).toBe('done');
     }, 20_000);
     it('does not destroy the subject key until every script copy confirms redaction', async () => {
       const p = await fresh('erase-pending', 'copy before erasure');
@@ -676,8 +677,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       { admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) },
       { now: new Date(Date.now() + SCOPE_COPY_LEASE_MS + 60_000) },
     );
+    /** The carry's two entries, by version; the preview's creation (v1, as a destination) is left out. */
     const ledgerOf = async (sid: ScopeId) =>
       Object.fromEntries((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+        .filter((copy) => !(copy.scriptRef === refOf.get(version.v1) && copy.role === 'destination'))
         .map((copy) => [copy.scriptRef === refOf.get(version.v1) ? 'v1' : 'v2', copy.state]));
     it('a carry that crashed before its restore is swept, and erasure and reap then land', async () => {
       const p = await fresh('crash-before-restore', 'kept');
@@ -786,7 +789,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const moving = push('sweep-before-check', 'v2');
       await held.reached;
       const source = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
-        .find((copy) => copy.scriptRef === refOf.get(version.v1))!;
+        .find((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'source')!;
       expect(source.state).toBe('retained');
       await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();

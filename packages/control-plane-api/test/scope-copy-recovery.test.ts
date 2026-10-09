@@ -129,8 +129,11 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
   const shred = (sid: ScopeId, subject: string) =>
     app.request(`/tenants/${t}/scopes/${sid}/subjects/${subject}/shred`, { method: 'POST', headers: asStaff });
   const reap = (tag: string) => app.request(`/verticals/${slug}/previews/${tag}`, { method: 'DELETE', headers: asStaff });
+  /** The carry's two entries, by version. The preview's own creation also ledgered v1, as the
+   *  destination of its first restore, and is left out. */
   const ledgerOf = async (sid: ScopeId) =>
     Object.fromEntries((await host.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+      .filter((copy) => !(copy.scriptRef === refOf.get(versions.v1) && copy.role === 'destination'))
       .map((copy) => [copy.scriptRef === refOf.get(versions.v1) ? 'v1' : 'v2', copy.state]));
   /** A carry that stops where `hook` matches and never continues: the crash. */
   const crashAt = (which: 'restore' | 'marker', ref: string, sid: ScopeId) => {
