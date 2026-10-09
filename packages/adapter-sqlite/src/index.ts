@@ -2046,6 +2046,18 @@ export class SqliteScopeHost implements ScopeHost {
         archived_at TEXT,
         created_at TEXT NOT NULL
       );
+      -- #1722: additive copy inventory; historical audit backfill is a separate act.
+      CREATE TABLE IF NOT EXISTS scope_script_copies (
+        tenant_id TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        script_ref TEXT NOT NULL,
+        move_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        load_stamp TEXT,
+        revision TEXT,
+        PRIMARY KEY (tenant_id, scope_id, script_ref)
+      );
+      CREATE INDEX IF NOT EXISTS scope_script_copies_state ON scope_script_copies (state, scope_id);
       -- Private host state. Module SQL opens only the scope file, never this directory;
       -- neither table is included in directory exports or scope dumps (#2074).
       CREATE TABLE IF NOT EXISTS private_continuation_keys (
@@ -8858,6 +8870,39 @@ export class SqliteScopeHost implements ScopeHost {
           ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
+      },
+      recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
+        if (!scriptRef || !moveId) throw substratError('conflict', 'copy script and move must be nonempty');
+        const result = this.directory.prepare(
+          `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
+           SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
+           WHERE tenant_id = ? AND scope_id = ?
+           ON CONFLICT (tenant_id, scope_id, script_ref) DO UPDATE SET
+             move_id = excluded.move_id, state = 'pending', load_stamp = NULL, revision = NULL`,
+        ).run(scriptRef, moveId, tenantId, scopeId);
+        if (result.changes === 0) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+      },
+      settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
+        this.directory.prepare(
+          `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?
+           WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?`,
+        ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId).changes > 0,
+      listScopeScriptCopies: async (_actor, filter) => {
+        const where: string[] = [];
+        const args: (string | number)[] = [];
+        if (filter.tenantId) { where.push('tenant_id = ?'); args.push(filter.tenantId); }
+        if (filter.scopeId) { where.push('scope_id = ?'); args.push(filter.scopeId); }
+        if (filter.state) { where.push('state = ?'); args.push(filter.state); }
+        const limit = assertRowLimit('limit', filter.limit ?? 100);
+        const rows = this.directory.prepare(
+          `SELECT * FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+           ORDER BY tenant_id, scope_id, script_ref LIMIT ?`,
+        ).all(...args, limit) as {
+          tenant_id: string; scope_id: string; script_ref: string; move_id: string;
+          state: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; load_stamp: string | null; revision: string | null;
+        }[];
+        return rows.map((r) => ({ tenantId: r.tenant_id as TenantId, scopeId: r.scope_id as ScopeId,
+          scriptRef: r.script_ref, moveId: r.move_id, state: r.state, loadStamp: r.load_stamp, revision: r.revision }));
       },
       /**
        * Record that this scope's provision has now run against `versionId` (#1172).

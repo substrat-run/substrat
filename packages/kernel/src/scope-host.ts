@@ -2687,6 +2687,24 @@ export interface HostAdmin {
     resolution: KeptCopyResolution,
   ): Promise<void>;
 
+  /** A script that holds or held this scope's data. The moveId fences delayed cleanup
+   * from a later rollback and carry through the same script. */
+  recordScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
+    scriptRef: string, moveId: string,
+  ): Promise<void>;
+  /** Only a confirmed move makes a source eligible for a nonterminal wipe. */
+  settleScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
+    scriptRef: string, moveId: string,
+    state: 'eligible' | 'retained' | 'kept' | 'done',
+    marker?: { loadStamp: string | null; revision: string | null },
+  ): Promise<boolean>;
+  listScopeScriptCopies(
+    actor: PlatformActorId,
+    filter: { tenantId?: TenantId; scopeId?: ScopeId; state?: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; limit?: number },
+  ): Promise<ScopeScriptCopy[]>;
+
   /**
    * When each of a CO-LOCATED scope's migrations actually ran (#1236), newest
    * first. `_substrat_migrations.applied_at` has been written since the table
@@ -4869,6 +4887,17 @@ export interface OpsFailureInput {
   message: string;
   /** The upstream provider's trace reference, when the message carried one. */
   reference?: string | null;
+}
+
+/** Directory inventory of one script's copy of a scope (#1722). */
+export interface ScopeScriptCopy {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  scriptRef: string;
+  moveId: string;
+  state: 'pending' | 'eligible' | 'retained' | 'kept' | 'done';
+  loadStamp: string | null;
+  revision: string | null;
 }
 
 /** One staff resolution of a kept copy (#1722), as `recordKeptCopyResolution` logs it. */

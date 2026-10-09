@@ -779,6 +779,19 @@ const DIRECTORY_DDL = `
     serving_ref TEXT,
     created_at TEXT NOT NULL
   );
+  -- #1722: durable inventory of per-script copies. A fresh directory has no rows;
+  -- the historical audit-log backfill runs separately, after this additive migration.
+  CREATE TABLE IF NOT EXISTS scope_script_copies (
+    tenant_id TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    script_ref TEXT NOT NULL,
+    move_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    load_stamp TEXT,
+    revision TEXT,
+    PRIMARY KEY (tenant_id, scope_id, script_ref)
+  );
+  CREATE INDEX IF NOT EXISTS scope_script_copies_state ON scope_script_copies (state, scope_id);
   ${PEER_BINDINGS_DDL}
   CREATE TABLE IF NOT EXISTS hostnames (
     hostname      TEXT PRIMARY KEY,
@@ -3170,6 +3183,45 @@ export class ControlPlaneDO extends DurableObject {
     if (update.rowsWritten === 0) {
       throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
     }
+  }
+
+  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): void {
+    const written = this.sql.exec(
+      `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
+       SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
+       WHERE tenant_id = ? AND scope_id = ?
+       ON CONFLICT (tenant_id, scope_id, script_ref) DO UPDATE SET
+         move_id = excluded.move_id, state = 'pending', load_stamp = NULL, revision = NULL`,
+      scriptRef, moveId, tenantId, scopeId,
+    );
+    if (written.rowsWritten === 0) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+  }
+
+  settleScopeScriptCopy(
+    tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string,
+    loadStamp: string | null, revision: string | null,
+  ): boolean {
+    return this.sql.exec(
+      `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?
+       WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?`,
+      state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId,
+    ).rowsWritten > 0;
+  }
+
+  listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number }): {
+    tenant_id: string; scope_id: string; script_ref: string; move_id: string;
+    state: string; load_stamp: string | null; revision: string | null;
+  }[] {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (filter.tenantId) { where.push('tenant_id = ?'); args.push(filter.tenantId); }
+    if (filter.scopeId) { where.push('scope_id = ?'); args.push(filter.scopeId); }
+    if (filter.state) { where.push('state = ?'); args.push(filter.state); }
+    const limit = assertRowLimit('limit', filter.limit ?? 100);
+    return this.sql.exec(
+      `SELECT * FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY tenant_id, scope_id, script_ref LIMIT ?`, ...args, limit,
+    ).toArray() as never;
   }
 
   /**

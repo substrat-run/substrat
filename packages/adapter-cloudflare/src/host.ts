@@ -778,6 +778,12 @@ interface ControlPlaneStub {
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null): Promise<void>;
+  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
+  settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null): Promise<boolean>;
+  listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number }): Promise<{
+    tenant_id: string; scope_id: string; script_ref: string; move_id: string;
+    state: string; load_stamp: string | null; revision: string | null;
+  }[]>;
   markScopeProvisioned(scopeId: string, versionId: string | null): Promise<void>;
   setVerticalServing(
     slug: string,
@@ -7177,6 +7183,24 @@ export class CloudflareScopeHost implements ScopeHost {
           ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
+      },
+      recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
+        if (!scriptRef || !moveId) throw substratError('conflict', 'copy script and move must be nonempty');
+        await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId);
+      },
+      settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
+        this.cp.settleScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, state, marker?.loadStamp ?? null, marker?.revision ?? null),
+      listScopeScriptCopies: async (_actor, filter) => {
+        const rows = await this.cp.listScopeScriptCopies(filter);
+        return rows.map((r) => ({
+          tenantId: r.tenant_id as TenantId,
+          scopeId: r.scope_id as ScopeId,
+          scriptRef: r.script_ref,
+          moveId: r.move_id,
+          state: r.state as 'pending' | 'eligible' | 'retained' | 'kept' | 'done',
+          loadStamp: r.load_stamp,
+          revision: r.revision,
+        }));
       },
       /**
        * Record that this scope's provision has now run against `versionId` (#1172).

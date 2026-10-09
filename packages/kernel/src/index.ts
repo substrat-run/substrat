@@ -43,6 +43,7 @@ export type {
   OpsFailureFilter,
   OpsFailureInput,
   KeptCopyResolution,
+  ScopeScriptCopy,
   IssueFilter,
   TelemetryPruneReport,
   SweepRunFilter,
