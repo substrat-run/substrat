@@ -19,6 +19,7 @@ import {
   readCapabilityPage,
   capabilityTokenHash,
   carriesSecret,
+  exchangeCapability,
   guardSecrets,
   holdingsDigest,
   mintCapabilitySecret,
@@ -438,5 +439,44 @@ describe('holdingsDigest', () => {
   it('does not move with a role\'s expansion: definitions are the vertical\'s code, not the inviter\'s doing', async () => {
     const one = await holdingsDigest({ permissions: [READ], roles: ['member'], granted: [], narrowed: [] });
     expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['member'], granted: [], narrowed: [] })).toBe(one);
+  });
+});
+
+/**
+ * A principal-minted `become` whose `target_digest` is NULL (#1686) — a row from before the column,
+ * or one written by hand: the exchange cannot tell whether its principal's holdings changed, so it
+ * refuses, and writes NOTHING — no revoke (it is not known to be dead) and no use taken. Its twin:
+ * the same row with the digest of what the principal holds now is exchanged.
+ */
+describe('exchange of a principal-minted become with no digest', () => {
+  const held = { permissions: [READ], roles: ['member'], granted: [], narrowed: [] };
+  const exchangeOf = async (digest: string | null) => {
+    const secret = mintCapabilitySecret();
+    const row = capRow({
+      mode: 'become', entity_type: null, entity_id: null, permissions: null, principal: ALICE, max_uses: 1,
+      minted_by: JSON.stringify(ALICE), target_digest: digest,
+    });
+    const writes: string[] = [];
+    const sql: ScopedSql = {
+      query: <T,>() => [row] as unknown as T[],
+      exec: (text) => {
+        writes.push(text.trim().split(/\s+/).slice(0, 3).join(' '));
+        return { changes: 1 };
+      },
+    };
+    const out = await exchangeCapability({ sql, now: NOW as never, emit: () => {}, holdings: async () => held }, secret, 'become');
+    return { out, writes };
+  };
+
+  it('is refused, not revoked, and no use is spent', async () => {
+    const { out, writes } = await exchangeOf(null);
+    expect(out).toBeNull();
+    expect(writes).toEqual([]);
+  });
+
+  it('…while the same row carrying the digest of what its principal holds now is exchanged', async () => {
+    const { out, writes } = await exchangeOf(await holdingsDigest(held));
+    expect(out).toMatchObject({ kind: 'principal', principal: ALICE });
+    expect(writes).toEqual(['UPDATE _substrat_capabilities SET']);
   });
 });
