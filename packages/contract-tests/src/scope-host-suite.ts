@@ -9275,6 +9275,51 @@ export function scopeHostContractSuite(
         });
       });
 
+      it('neither counts nor accepts a reading for a scope archived before it held data; one archived from active still counts', async () => {
+        const tv = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tv, slug: 'gauge-abandoned', name: 'Gauge Abandoned' });
+        const kept = await newScope(tv);
+        await record(tv, kept, 50, day(0, '09:00:00'));
+        // A failed provision is archived straight from `provisioning` (it never held data).
+        const abandoned = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tv, scopeId: abandoned });
+        await host.admin.archiveScope(staff, tv, abandoned);
+        expect((await host.admin.getScopeRecord(staff, tv, abandoned))!.archivedFromStatus).toBe('provisioning');
+        // An app deleted after it served is archived from `active`.
+        const deleted = await newScope(tv);
+        await record(tv, deleted, 70, day(-2, '09:00:00')); // due again by the time the pass runs
+        await host.admin.archiveScope(staff, tv, deleted);
+        expect((await host.admin.getScopeRecord(staff, tv, deleted))!.archivedFromStatus).toBe('active');
+
+        expect(await record(tv, abandoned, 99, day(0, '10:00:00'))).toEqual({ recorded: 0 });
+        expect((await host.admin.readMeters(staff, { tenantId: tv })).perTenant[0]!.storage).toMatchObject({
+          bytes: 120,
+          sampled: 2,
+          total: 2, // kept + deleted; never the abandoned one
+        });
+        // The storage phase never wakes it.
+        const asked: string[] = [];
+        await runPlatformSweep(host, {
+          actor: staff,
+          fetch: connectorTestFetch,
+          sweepers: {},
+          drainRetries: false,
+          storageGauge: {
+            read: async (scope) => {
+              asked.push(scope.id);
+              return host.admin.scopeDatabaseSize(staff, scope.tenantId, scope.id);
+            },
+            batch: 10_000,
+          },
+        });
+        expect(asked).not.toContain(abandoned);
+        expect(asked).toContain(deleted);
+
+        // Unarchiving clears it, as it clears archivedAt.
+        await host.admin.unarchiveScope(staff, tv, deleted);
+        expect((await host.admin.getScopeRecord(staff, tv, deleted))!.archivedFromStatus ?? null).toBeNull();
+      });
+
       it("deletes a fork's samples when the fork is deleted", async () => {
         const tk = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tk, slug: 'gauge-fork', name: 'Gauge Fork' });

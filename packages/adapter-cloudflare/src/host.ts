@@ -844,7 +844,7 @@ interface ControlPlaneStub {
   /** The three projections §5's meters fold from (#38); narrowed when a tenant is given. */
   meterRows(tenantId?: string): Promise<{
     tenants: { tenant_id: string; slug: string; status: string }[];
-    scopes: { tenant_id: string; status: string }[];
+    scopes: { tenant_id: string; status: string; archived_from_status: string | null }[];
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
     /** #1524: the stored gauge's latest sample per non-reaped scope. */
     storage: ScopeStorageSample[];
@@ -5699,6 +5699,7 @@ export class CloudflareScopeHost implements ScopeHost {
         expiresAt: r.expires_at,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         archivedAt: r.archived_at ?? null,
+        archivedFromStatus: (r.archived_from_status ?? null) as ScopeStatus | null,
         createdAt: r.created_at,
       });
     // The (version, scope) pair a bind and its impact read both start from, and the refusals
@@ -8378,6 +8379,7 @@ export class CloudflareScopeHost implements ScopeHost {
           scopes: rows.scopes.map((r) => ({
             tenantId: r.tenant_id as TenantId,
             status: r.status as ScopeStatus,
+            archivedFromStatus: r.archived_from_status as ScopeStatus | null,
           })),
           entitlements: rows.entitlements.map((r) => ({
             tenantId: r.tenant_id as TenantId,

@@ -262,6 +262,8 @@ export interface ScopeRow {
   serving_ref: string | null;
   /** When the scope last entered `archived` (§4.4); null if never archived. */
   archived_at: string | null;
+  /** The status it was archived from (#1524); null when not archived or archived before it was recorded. */
+  archived_from_status?: string | null;
   created_at: string;
 }
 
@@ -792,6 +794,9 @@ const DIRECTORY_DDL = `
     -- filter (archived longer than N days); null for scopes that never archived. Stamped
     -- by transitionScope on the edge into archived, cleared on unarchive.
     archived_at TEXT,
+    -- #1524: the status it was archived FROM. 'provisioning' = it never held data, so the
+    -- storage gauge neither reads nor counts it. Written with archived_at, cleared with it.
+    archived_from_status TEXT,
     -- The scope's data lives in THIS dispatch script (#286). NULL = legacy per-version
     -- dispatch (the bound version's own script). Set at provision once the vertical has
     -- a serving script, or by adopt-serving when a legacy scope's data is moved over.
@@ -1326,6 +1331,7 @@ const SCOPE_COLUMNS_ADDED = [
   'expires_at TEXT',
   'serving_ref TEXT',
   'archived_at TEXT',
+  'archived_from_status TEXT',
 ] as const;
 
 /**
@@ -2557,16 +2563,18 @@ export class ControlPlaneDO extends DurableObject {
       // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
       // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
       // re-archive dates from the new event. `reaped` keeps it — it is terminal history.
+      // #1524: the status it left is recorded beside the stamp and cleared with it.
       if (to === 'archived') {
         this.sql.exec(
-          'UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?',
+          'UPDATE scopes SET status = ?, archived_at = ?, archived_from_status = ? WHERE scope_id = ?',
           to,
           new Date().toISOString(),
+          row.status,
           scopeId,
         );
       } else if (to === 'active') {
         this.sql.exec(
-          'UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?',
+          'UPDATE scopes SET status = ?, archived_at = NULL, archived_from_status = NULL WHERE scope_id = ?',
           to,
           scopeId,
         );
@@ -3805,7 +3813,7 @@ export class ControlPlaneDO extends DurableObject {
    */
   meterRows(tenantId?: string): {
     tenants: { tenant_id: string; slug: string; status: string }[];
-    scopes: { tenant_id: string; status: string }[];
+    scopes: { tenant_id: string; status: string; archived_from_status: string | null }[];
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
     storage: ScopeStorageSample[];
     storageAttempts: ScopeStorageAttempt[];
@@ -3817,8 +3825,8 @@ export class ControlPlaneDO extends DurableObject {
         .exec(`SELECT tenant_id, slug, status FROM tenants${where}`, ...args)
         .toArray() as unknown as { tenant_id: string; slug: string; status: string }[],
       scopes: this.sql
-        .exec(`SELECT tenant_id, status FROM scopes${where}`, ...args)
-        .toArray() as unknown as { tenant_id: string; status: string }[],
+        .exec(`SELECT tenant_id, status, archived_from_status FROM scopes${where}`, ...args)
+        .toArray() as unknown as { tenant_id: string; status: string; archived_from_status: string | null }[],
       entitlements: this.sql
         .exec(`SELECT tenant_id, entitlement_key, plan, expires_at FROM _substrat_entitlements${where}`, ...args)
         .toArray() as unknown as {

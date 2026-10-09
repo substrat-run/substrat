@@ -15,7 +15,10 @@ The scheduled pass samples scope database sizes in a new storage phase, configur
 (active, suspended, archiving, archived; never provisioning or reaped). An active scope is read
 only when an earlier phase of the same pass already reached it (the platform-intent drain, or
 the executor drain on a host without one), so the serving fleet gains no wake. A non-serving
-scope, which no drain reaches, is read anyway, once a day. A scope is due once a day, at most 100 per pass,
+scope, which no drain reaches, is read anyway, once a day — unless it was archived straight
+from `provisioning` and so never held data: the new `scopes.archived_from_status` column
+(`Scope.archivedFromStatus`) records the status an archive left, and such a scope is neither
+read nor counted. A scope is due once a day, at most 100 per pass,
 never-tried first and then the longest since a try. A failed read keeps the last stored value
 and is retried a day later, not on every pass. A vertical deployed before
 `/internal/database-size` is a standing condition: its scopes show as failing on `/meters`,

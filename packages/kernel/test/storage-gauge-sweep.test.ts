@@ -24,6 +24,8 @@ function gaugeHost(opts: {
   scopes: ScopeId[];
   /** Scopes in another status than active. */
   statusOf?: Record<string, string>;
+  /** What an archived scope was archived from; absent = a legacy row (null). */
+  archivedFrom?: Record<string, string>;
   /** When the phase last tried each scope. */
   tried?: Record<string, string>;
   drainDue?: (s: string) => Promise<void>;
@@ -35,7 +37,13 @@ function gaugeHost(opts: {
     listScopes: async (_a: unknown, filter?: { status?: string | string[] }) => {
       const wanted = filter?.status === undefined ? undefined : [filter.status].flat();
       return opts.scopes
-        .map((id) => ({ id, tenantId: T, status: opts.statusOf?.[id] ?? 'active', vertical: 'todo' }))
+        .map((id) => ({
+          id,
+          tenantId: T,
+          status: opts.statusOf?.[id] ?? 'active',
+          archivedFromStatus: opts.archivedFrom?.[id] ?? null,
+          vertical: 'todo',
+        }))
         .filter((s) => wanted === undefined || wanted.includes(s.status));
     },
     listConnections: async () => [],
@@ -247,6 +255,19 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     expect([...r.asked].sort()).toEqual([suspended, archiving, archived].sort());
     expect(recorded.map((x) => x.scopeId).sort()).toEqual([suspended, archiving, archived].sort());
     expect(report.storage).toMatchObject({ reached: 0, resting: 3, due: 3, read: 3 });
+  });
+
+  it('never reads a scope archived straight from provisioning; archived from active, or a legacy row, still is', async () => {
+    const [neverStored, wasActive, legacy] = [sid(), sid(), sid()];
+    const { host } = gaugeHost({
+      scopes: [neverStored, wasActive, legacy],
+      statusOf: { [neverStored]: 'archived', [wasActive]: 'archived', [legacy]: 'archived' },
+      archivedFrom: { [neverStored]: 'provisioning', [wasActive]: 'active' }, // legacy: null
+    });
+    const r = reader();
+    const report = await sweep(host, { drainRetries: false, storageGauge: { read: r.read } });
+    expect([...r.asked].sort()).toEqual([wasActive, legacy].sort());
+    expect(report.storage).toMatchObject({ resting: 2, read: 2 });
   });
 
   it('reads a non-serving scope once a day, like any other, so its sample never goes stale', async () => {

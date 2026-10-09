@@ -1224,11 +1224,12 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **Every scope that holds a store is measured.** That is every status but `provisioning`
   (no store yet) and `reaped` (its store is gone). An archived or suspended scope still holds
   its storage until reap, so it is in the figure and on the bill.
-  One known gap: `archiveScope` also accepts a scope still in `provisioning`, so a scope
-  archived before it ever held data is counted and read daily too, and that read creates the
-  kernel spine it never had. The directory records no "was ever active" fact to exclude it by
-  (there is no activation timestamp, and some scopes become active without `activateScope`),
-  so it is left as is and named for a decision rather than worked around.
+  `archiveScope` deliberately accepts a scope still in `provisioning` (a failed provision is
+  archived; it is how a stuck scope is abandoned). Such a scope never held data, so the
+  archive records the status it left in `scopes.archived_from_status`, written with
+  `archived_at` and cleared with it on unarchive. A scope archived from `provisioning` is
+  neither read (a read would create the spine it never had) nor counted. A row archived
+  before the column existed has NULL there and is measured as before; there is no backfill.
 - **No wake added to the serving fleet.** The pass already reaches every active scope's DO on
   every tick, through the platform-intent drain (`/internal/platform-requests` → the scope DO).
   The storage phase runs straight after it and reads an ACTIVE scope only when that drain

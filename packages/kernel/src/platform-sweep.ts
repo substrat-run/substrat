@@ -25,7 +25,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
-import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, type ScopeStorageReadingInput } from './storage-gauge.js';
+import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
 import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -728,7 +728,8 @@ export interface PlatformSweepReport {
  * - a NON-SERVING scope (suspended, archiving, archived) always. Nothing else wakes it, and it
  *   still holds its storage until reap, so it belongs on the bill. This is the one wake the
  *   gauge adds: at most once a day per such scope, inside the same batch.
- * A provisioning scope has no store yet and is never read.
+ * A provisioning scope has no store yet and is never read, and neither is one archived
+ * straight from provisioning (`holdsStore`).
  */
 export interface StorageGaugeSweepOptions {
   /**
@@ -2791,9 +2792,11 @@ async function sweepStorageGauge(
   const maxAgeMs = gauge.maxAgeMs ?? STORAGE_SAMPLE_MAX_AGE_MS;
   try {
     if (batch > 0) {
-      const resting = await admin.listScopes(options.actor, {
-        status: STORED_SCOPE_STATUSES.filter((s) => s !== 'active'),
-      });
+      // Not one archived before it ever held data (`holdsStore`): reading it would create the
+      // spine it never had, and bill it.
+      const resting = (
+        await admin.listScopes(options.actor, { status: STORED_SCOPE_STATUSES.filter((s) => s !== 'active') })
+      ).filter(holdsStore);
       out.resting = resting.length;
       const candidates = [...reachedThisPass.values(), ...resting.filter((s) => !reachedThisPass.has(s.id))];
       const tried = new Map(

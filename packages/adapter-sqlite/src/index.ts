@@ -1301,6 +1301,8 @@ interface ScopeRow {
   serving_ref: string | null;
   /** When the scope last entered `archived` (§4.4); null if never archived. */
   archived_at: string | null;
+  /** The status it was archived from (#1524); null when not archived or archived before it was recorded. */
+  archived_from_status?: string | null;
   created_at: string;
 }
 
@@ -2062,6 +2064,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- When the scope last entered the archived state (§4.4). Drives the reap sweep's
         -- age filter; null for scopes that never archived, cleared on unarchive.
         archived_at TEXT,
+        -- #1524: the status it was archived FROM. 'provisioning' = it never held data, so the
+        -- storage gauge neither reads nor counts it. Written with archived_at, cleared with it.
+        archived_from_status TEXT,
         created_at TEXT NOT NULL
       );
       -- #1722: additive copy inventory; historical audit backfill is a separate act.
@@ -7128,6 +7133,7 @@ export class SqliteScopeHost implements ScopeHost {
         expiresAt: r.expires_at,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         archivedAt: r.archived_at ?? null,
+        archivedFromStatus: (r.archived_from_status ?? null) as ScopeStatus | null,
         createdAt: r.created_at,
       });
     // The (version, scope) pair a bind and its impact read both start from, and the refusals
@@ -7190,13 +7196,14 @@ export class SqliteScopeHost implements ScopeHost {
         // Stamp/clear archived_at so the reap sweep can age scopes (§4.4). Entering
         // `archived` records when; `unarchive` (→ active, a restore) clears it so a later
         // re-archive dates from the new event; `reaped` keeps it as terminal history.
+        // #1524: the status it left is recorded beside the stamp and cleared with it.
         if (to === 'archived') {
           this.directory
-            .prepare('UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?')
-            .run(to, new Date().toISOString(), scopeId);
+            .prepare('UPDATE scopes SET status = ?, archived_at = ?, archived_from_status = ? WHERE scope_id = ?')
+            .run(to, new Date().toISOString(), row.status, scopeId);
         } else if (to === 'active') {
           this.directory
-            .prepare('UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?')
+            .prepare('UPDATE scopes SET status = ?, archived_at = NULL, archived_from_status = NULL WHERE scope_id = ?')
             .run(to, scopeId);
         } else {
           this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
@@ -10548,11 +10555,16 @@ export class SqliteScopeHost implements ScopeHost {
             }[]
           ).map((r) => ({ tenantId: r.tenant_id as TenantId, slug: r.slug, status: r.status as TenantStatus })),
           scopes: (
-            this.directory.prepare(`SELECT tenant_id, status FROM scopes${where}`).all(...args) as {
+            this.directory.prepare(`SELECT tenant_id, status, archived_from_status FROM scopes${where}`).all(...args) as {
               tenant_id: string;
               status: string;
+              archived_from_status: string | null;
             }[]
-          ).map((r) => ({ tenantId: r.tenant_id as TenantId, status: r.status as ScopeStatus })),
+          ).map((r) => ({
+            tenantId: r.tenant_id as TenantId,
+            status: r.status as ScopeStatus,
+            archivedFromStatus: r.archived_from_status as ScopeStatus | null,
+          })),
           entitlements: (
             this.directory
               .prepare(`SELECT tenant_id, entitlement_key, plan, expires_at FROM _substrat_entitlements${where}`)
@@ -12069,6 +12081,7 @@ export class SqliteScopeHost implements ScopeHost {
       ['expires_at', 'expires_at TEXT'],
       ['serving_ref', 'serving_ref TEXT'],
       ['archived_at', 'archived_at TEXT'],
+      ['archived_from_status', 'archived_from_status TEXT'],
     ] as const) {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }

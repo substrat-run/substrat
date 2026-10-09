@@ -12,6 +12,27 @@ import { SqliteScopeHost } from '../src/index.js';
  * gone or only hidden; this reads the directory tables themselves.
  */
 describe('storage gauge rows at reap (#1524)', () => {
+  it('measures a legacy archived row whose archived_from_status is NULL, as before the column existed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-gauge-legacy-'));
+    dirs.push(dir);
+    const host = new SqliteScopeHost({ dir });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'gauge-legacy', name: 'Gauge Legacy' });
+    // Archived from provisioning, then made a legacy row: the column was never written.
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s });
+    await host.admin.archiveScope(staff, t, s);
+    const directory = (host as unknown as { directory: { prepare(q: string): { run(...a: unknown[]): void } } }).directory;
+    directory.prepare('UPDATE scopes SET archived_from_status = NULL WHERE scope_id = ?').run(s);
+
+    expect(await host.admin.recordScopeStorage!(staff, [{ tenantId: t, scopeId: s, bytes: 5, readAt: new Date().toISOString() }])).toEqual({
+      recorded: 1,
+    });
+    expect((await host.admin.readMeters(staff, { tenantId: t })).perTenant[0]!.storage).toMatchObject({ bytes: 5, sampled: 1, total: 1 });
+    await host.close();
+  });
+
   const dirs: string[] = [];
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });

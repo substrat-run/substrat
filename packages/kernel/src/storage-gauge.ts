@@ -50,11 +50,31 @@ export const SCOPE_STORAGE_DDL = `
 `;
 
 /**
- * The scopes that hold a store, and so have a size: every status but `provisioning` (no store
- * yet) and `reaped` (its store is gone). A non-serving scope (suspended, archiving, archived)
- * still holds its storage until reap, so it is measured and belongs on the bill.
+ * The statuses a scope that holds a store can be in: every status but `provisioning` (no
+ * store yet) and `reaped` (its store is gone). A non-serving scope (suspended, archiving,
+ * archived) still holds its storage until reap, so it is measured and belongs on the bill.
  */
 export const STORED_SCOPE_STATUSES = ['active', 'suspended', 'archiving', 'archived'] as const;
+
+/**
+ * Whether a scope holds a store to measure (#1524): a `STORED_SCOPE_STATUSES` status, unless
+ * it was archived straight from `provisioning` (`archivedFromStatus`). That scope never held
+ * data, so it is neither read (a read would create the spine it never had) nor counted. A row
+ * archived before the column existed has a null `archivedFromStatus` and is measured, as
+ * before. `holdsStoreSql` is the same rule for the directory's SQL.
+ */
+export function holdsStore(scope: { status: string; archivedFromStatus?: string | null }): boolean {
+  if (!(STORED_SCOPE_STATUSES as readonly string[]).includes(scope.status)) return false;
+  return !((scope.status === 'archived' || scope.status === 'archiving') && scope.archivedFromStatus === 'provisioning');
+}
+
+/** `holdsStore` over a `scopes` row, with an optional table alias (`'s.'`). */
+export function holdsStoreSql(alias = ''): string {
+  return (
+    `${alias}status IN ('active', 'suspended', 'archiving', 'archived') AND NOT ` +
+    `(${alias}status IN ('archiving', 'archived') AND ${alias}archived_from_status IS 'provisioning')`
+  );
+}
 
 /** How long a day's sample is kept: thirteen months, so a year can be compared with the one before it. */
 export const STORAGE_GAUGE_RETENTION_MONTHS = 13;
@@ -136,7 +156,7 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
     sql(
       `INSERT INTO _substrat_scope_storage_attempts (scope_id, tenant_id, attempted_at, error)
        SELECT scope_id, tenant_id, ?, ? FROM scopes
-        WHERE scope_id = ? AND tenant_id = ? AND status NOT IN ('reaped', 'provisioning')
+        WHERE scope_id = ? AND tenant_id = ? AND ${holdsStoreSql()}
        ON CONFLICT (scope_id) DO UPDATE SET attempted_at = excluded.attempted_at, error = excluded.error
         WHERE excluded.attempted_at >= _substrat_scope_storage_attempts.attempted_at`,
       [readAt, r.error ?? null, r.scopeId, r.tenantId],
@@ -145,7 +165,7 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
     recorded += sql(
       `INSERT INTO _substrat_scope_storage (scope_id, day, tenant_id, bytes, read_at)
        SELECT scope_id, ?, tenant_id, ?, ? FROM scopes
-        WHERE scope_id = ? AND tenant_id = ? AND status NOT IN ('reaped', 'provisioning')
+        WHERE scope_id = ? AND tenant_id = ? AND ${holdsStoreSql()}
        ON CONFLICT (scope_id, day) DO UPDATE SET bytes = excluded.bytes, read_at = excluded.read_at
         WHERE excluded.read_at >= _substrat_scope_storage.read_at
        RETURNING 1`,
@@ -165,7 +185,7 @@ interface SampleRow {
 
 /** Read samples — see `ScopeStorageFilter`. Every row is parsed on the way out. */
 export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilter = {}): ScopeStorageSample[] {
-  const where: string[] = ["s.status NOT IN ('reaped', 'provisioning')"];
+  const where: string[] = [holdsStoreSql('s.')];
   const params: (string | number)[] = [];
   if (filter.tenantId) {
     where.push('s.tenant_id = ?');
@@ -225,7 +245,7 @@ export function listScopeStorageAttemptRows(sql: RedactionSql, tenantId?: Tenant
     `SELECT a.tenant_id, a.scope_id, a.attempted_at, a.error
        FROM _substrat_scope_storage_attempts a
        JOIN scopes s ON s.scope_id = a.scope_id AND s.tenant_id = a.tenant_id
-      WHERE s.status NOT IN ('reaped', 'provisioning')${tenantId ? ' AND s.tenant_id = ?' : ''}
+      WHERE ${holdsStoreSql('s.')}${tenantId ? ' AND s.tenant_id = ?' : ''}
       ORDER BY a.scope_id`,
     tenantId ? [tenantId] : [],
   ) as { tenant_id: string; scope_id: string; attempted_at: string; error: string | null }[];
