@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
   CAPABILITY_SESSION_PREFIX,
   connectionId as connectionIdOf,
@@ -682,7 +682,7 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
 
   const unrecorded = () =>
     warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"substrat":"tenant-unrecorded"')).map((l) => JSON.parse(l) as { tenantId: string; scopeId: string });
-  let warn: ReturnType<typeof vi.spyOn>;
+  let warn: MockInstance<typeof console.warn>;
   beforeAll(() => {
     warn = vi.spyOn(console, 'warn');
   });

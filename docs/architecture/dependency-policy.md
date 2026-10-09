@@ -138,12 +138,17 @@ on inherited state rather than on anything anyone had written down. Moving the
 block was a prerequisite for any of the above, since a setting nobody reads
 enforces nothing.
 
-## Known follow-up
+## The Workers test integration
 
-`vitest` is pinned at 3.x because vitest 4 requires
-`@cloudflare/vitest-pool-workers` 0.21, which replaced `defineWorkersConfig` with
-a vitest-4 plugin API and ships a codemod for the migration. That is a real
-migration through the production Durable Object adapter and does not belong in a
-dependency-policy change. One peer conflict survives until it lands: wrangler
-4.123 wants `workers-types ^5`, pool-workers 0.9 wants `^4`. The catalog is what
-makes that a one-line bump when the migration happens.
+The workerd suites run on `@cloudflare/vitest-plugin` and vitest 5 (#2121). The
+plugin is the renamed successor of `@cloudflare/vitest-pool-workers`, which is
+deprecated and stopped at 0.23.0 with a per-instance prototype re-wrap that
+stalled the adapter's contract suite under load. The plugin is configured as a
+vitest plugin — `plugins: [cloudflareTest({ wrangler: { configPath } })]` in a
+plain `defineConfig` — rather than through `poolOptions`. Storage is never rolled
+back per test, which is what every suite here already assumed, and
+`fileParallelism: false` keeps the old pool's one-file-at-a-time order.
+`cloudflare:test`'s `env` is typed by augmenting `Cloudflare.Env`, and its
+`fetchMock` is gone: a suite that needs outbound requests answered stubs
+`globalThis.fetch` itself (`vi.spyOn`), since the worker under test shares the
+test's isolate.

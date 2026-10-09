@@ -310,7 +310,7 @@ const noFetch: FetchLike = async () => new Response('unused', { status: 200 });
  * `sweep-test` counts its passes in durable connector state (slowly, so the
  * non-overlap test can force a concurrent kick), `sweep-boom` always throws.
  * Drain/GC phases are off — this worker's storage is shared with the contract
- * suites (isolatedStorage: false), and the trigger tests must not consume their
+ * suites (never rolled back between tests), and the trigger tests must not consume their
  * scopes' outbox or reap their forks.
  */
 async function sweepPass(env: SweeperEnv): Promise<PlatformSweepReport> {

@@ -1,11 +1,9 @@
 // The bindings `cloudflare:test`'s `env` carries in `vitest.workers.config.ts`: the ones
 // `substrat push` derives from package.json, plus the suite's own vars.
-import type { IdentityDO } from '@substrat-run/vertical-auth';
-
-declare module 'cloudflare:test' {
-  interface ProvidedEnv {
+declare namespace Cloudflare {
+  interface Env {
     SCOPE: DurableObjectNamespace;
-    AUTH: DurableObjectNamespace<IdentityDO>;
+    AUTH: DurableObjectNamespace<import('@substrat-run/vertical-auth').IdentityDO>;
     SWEEPER: DurableObjectNamespace;
     PLATFORM_SECRET: string;
     ROUTER_SECRET: string;

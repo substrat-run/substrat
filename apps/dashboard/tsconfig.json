@@ -3,8 +3,11 @@
   "compilerOptions": {
     "noEmit": true,
     "rootDir": ".",
+    // node for the suites, which run on node (`node:crypto`, `Buffer`); the worker entry has
+    // its own config without it (tsconfig.worker.json).
     "types": [
-      "@cloudflare/workers-types"
+      "@cloudflare/workers-types",
+      "node"
     ]
   },
   "include": [

@@ -1,7 +1,8 @@
 /**
- * vitest-pool-workers re-patches the worker's module graph between test FILES
- * (even with `singleWorker: true`), which invalidates live Durable Objects: the
- * first stub call of the next file can throw
+ * The workerd test pool re-patched the worker's module graph between test FILES
+ * (vitest-pool-workers did, even one file at a time; `@cloudflare/vitest-plugin`
+ * starts a runner per file), which invalidates live Durable Objects: the first
+ * stub call of the next file can throw
  *
  *   "…/src/worker.ts changed, invalidating this Durable Object.
  *    Please retry the `DurableObjectStub#fetch()` call."

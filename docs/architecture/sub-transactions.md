@@ -43,7 +43,7 @@ primitives turned out to behave. One of them does not behave the way the issue a
 | Outer `ROLLBACK` after a savepoint was `RELEASE`d | **everything discarded** — a sub-transaction's commit is provisional |
 | Constraint error *inside* the savepoint, then `ROLLBACK TO` | recovers; `inTransaction` still true; the operation continues and commits |
 
-### Durable Objects (workerd, via `@cloudflare/vitest-pool-workers`), 7 probes
+### Durable Objects (workerd, via `@cloudflare/vitest-pool-workers`, since replaced by `@cloudflare/vitest-plugin`), 7 probes
 
 | Probe | Result |
 |---|---|

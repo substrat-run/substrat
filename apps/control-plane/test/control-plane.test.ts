@@ -35,7 +35,7 @@ describe('shared control-plane worker', () => {
     expect(res.status).toBe(200);
     // Every list route answers the platform page envelope (contracts pagination.ts);
     // a short page carries `nextCursor: null` — the walk is done. Storage is shared
-    // across test FILES (isolatedStorage: false, deliberately — durability is the
+    // across test FILES (the plugin never rolls it back — deliberately, durability is the
     // point), so another suite's seed may already be listed: assert the envelope and
     // "not ours yet", not literal emptiness.
     const page = (await res.json()) as { entries: unknown[]; nextCursor: unknown };
@@ -176,8 +176,8 @@ describe('no public account surface (OIDC)', () => {
  * test: self-serve with no vetting roster, the prefix the builder never types, and that a
  * user with no workspace is declined (fail-closed).
  *
- * In THIS file (not its own) on purpose: storage is shared across files
- * (isolatedStorage: false), so seeding a tenant elsewhere would pollute the "empty
+ * In THIS file (not its own) on purpose: storage is shared across files (the
+ * plugin never rolls it back), so seeding a tenant elsewhere would pollute the "empty
  * registry" test above. Here the seed runs after it, in guaranteed document order.
  */
 describe('builder auth — live self-serve path', () => {

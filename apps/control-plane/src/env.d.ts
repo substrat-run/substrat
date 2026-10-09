@@ -1,7 +1,7 @@
 // The bindings the workerd test reaches through `cloudflare:test`'s `env`, plus
 // the dev-actor flag miniflare injects (vitest.config.ts).
-declare module 'cloudflare:test' {
-  interface ProvidedEnv {
+declare namespace Cloudflare {
+  interface Env {
     SCOPE: DurableObjectNamespace;
     CONTROL_PLANE: DurableObjectNamespace;
     /** Better Auth's store, and the staff roster (#42). Bound in wrangler.jsonc. */
@@ -17,7 +17,7 @@ declare module 'cloudflare:test' {
     /**
      * Which Scrive the worker talks to. A `vars` entry in `wrangler.jsonc` (production
      * points at the real one), overridden in vitest.config.ts — and read back by the
-     * ingress test so its `fetchMock` intercepts whatever the config actually set,
+     * ingress test so its fetch stub answers whatever the config actually set,
      * rather than a constant that can silently disagree with it.
      */
     SCRIVE_BASE_URL?: string;

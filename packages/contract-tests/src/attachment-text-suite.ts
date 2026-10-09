@@ -70,6 +70,7 @@ const PERM_READ = permissionKey.parse('perm:read');
 const PERM_USE = permissionKey.parse('perm:use');
 const item = (id: string): EntityRef => ({ entityType: 'item', entityId: id });
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
+const UPLOAD_BATCH_SIZE = 20;
 /** For a test that uploads and extracts thousands of files: the setup, not the search, takes the time. */
 const SETUP_HEAVY_MS = 120_000;
 
@@ -307,8 +308,12 @@ export function attachmentTextContractSuite(
         }
         // Every one of these is NEWER than old.txt. A scan bound applied before the gate would
         // have spent itself on them and handed bob nothing.
-        for (let i = 0; i < 1001; i += 1) {
-          await upload(s, item('denied'), `hidden-${i}.txt`, 'text/plain', bytes(`the margay ledger, hidden ${i}`));
+        // Keep the producer path, but pipeline a bounded number of independent uploads.
+        for (let i = 0; i < 1001; i += UPLOAD_BATCH_SIZE) {
+          await Promise.all(Array.from({ length: Math.min(UPLOAD_BATCH_SIZE, 1001 - i) }, (_, offset) => {
+            const n = i + offset;
+            return upload(s, item('denied'), `hidden-${n}.txt`, 'text/plain', bytes(`the margay ledger, hidden ${n}`));
+          }));
         }
         await extract(s);
         await extract(control);
@@ -341,8 +346,11 @@ export function attachmentTextContractSuite(
       it('refuses a narrowed caller past the owner cap — the same for a term with matches and one without', async () => {
         const s = await newScope();
         await grant(s, bob, item('o0'));
-        for (let i = 0; i <= ATTACHMENT_SEARCH_OWNER_MAX; i += 1) {
-          await upload(s, item(`o${i}`), `o${i}.txt`, 'text/plain', bytes(i === 0 ? 'the jerboa note' : 'filler only'));
+        for (let i = 0; i <= ATTACHMENT_SEARCH_OWNER_MAX; i += UPLOAD_BATCH_SIZE) {
+          await Promise.all(Array.from({ length: Math.min(UPLOAD_BATCH_SIZE, ATTACHMENT_SEARCH_OWNER_MAX + 1 - i) }, (_, offset) => {
+            const n = i + offset;
+            return upload(s, item(`o${n}`), `o${n}.txt`, 'text/plain', bytes(n === 0 ? 'the jerboa note' : 'filler only'));
+          }));
         }
         await extract(s);
         const refusalOf = async (term: string) => {
