@@ -355,6 +355,34 @@ describe('PATCH input declarations', () => {
       .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'overwrite'/);
   });
 
+  it('refuses an overwrite on the input object itself, which can fill an omitted field', () => {
+    const input = z.object({ id: z.string(), name: z.string().optional() })
+      .overwrite((value) => ({ ...value, name: value.name ?? 'x' }));
+    expect(input.parse({ id: '1' })).toEqual({ id: '1', name: 'x' });
+    expect(() => update(input))
+      .toThrow(/customer\/update.*input object.*uninspectable Zod schema kind 'overwrite'/);
+  });
+
+  it('refuses an input that is not a plain object, such as a transformed one', () => {
+    const input = z.object({ id: z.string(), name: z.string().optional() })
+      .transform((value) => ({ ...value, name: value.name ?? 'x' }));
+    expect(input.parse({ id: '1' })).toEqual({ id: '1', name: 'x' });
+    expect(() => update(input as never))
+      .toThrow(/customer\/update.*input object.*uninspectable Zod schema kind 'pipe'/);
+  });
+
+  it('accepts validation on the input object, and cannot see a refine callback that mutates', () => {
+    const validated = z.object({ id: z.string(), name: z.string().optional() }).strict()
+      .refine((value) => value.name !== '', 'name must not be empty');
+    expect(() => update(validated)).not.toThrow();
+    // The documented limit: a refine callback gets the parsed object by reference, so it can
+    // mutate it, and no declaration check can tell that from a validator. Unsupported.
+    const mutating = z.object({ id: z.string(), name: z.string().optional() })
+      .superRefine((value) => { value.name ??= 'x'; });
+    expect(mutating.parse({ id: '1' })).toEqual({ id: '1', name: 'x' });
+    expect(() => update(mutating)).not.toThrow();
+  });
+
   it('accepts the named string normalizers, which only rewrite a supplied string', () => {
     const name = z.string().trim().toLowerCase().toUpperCase().normalize('NFC').min(1).optional();
     expect(z.object({ name }).parse({})).toEqual({});

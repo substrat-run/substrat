@@ -1087,23 +1087,8 @@ function inputDefaultIssue(schema: unknown): PatchSchemaIssue {
       | undefined;
     if (def?.type === 'default' || def?.type === 'prefault' || def?.type === 'catch') return { kind: 'default' };
     if (typeof def?.type !== 'string') return { kind: 'uninspectable', schemaKind: 'unknown' };
-    if (def.checks !== undefined) {
-      if (!Array.isArray(def.checks)) return { kind: 'uninspectable', schemaKind: `${def.type} checks` };
-      for (const check of def.checks) {
-        const checkDef = (check as { _zod?: { def?: unknown }; def?: unknown })?._zod?.def ??
-          (check as { def?: unknown })?.def;
-        const checkKind = (checkDef as { check?: unknown; type?: unknown } | undefined)?.check ??
-          (checkDef as { type?: unknown } | undefined)?.type;
-        // A named string normalizer rewrites only a string the caller supplied, so it
-        // cannot give an omitted field a value.
-        if (checkKind === 'overwrite' && def.type === 'string' && isStringNormalizer(checkDef)) continue;
-        // Zod check classes are extensible. Permit only known validation checks;
-        // overwrite and future check kinds could change the parsed value.
-        if (typeof checkKind !== 'string' || !PATCH_VALUE_PRESERVING_CHECKS.has(checkKind)) {
-          return { kind: 'uninspectable', schemaKind: typeof checkKind === 'string' ? checkKind : `${def.type} check` };
-        }
-      }
-    }
+    const checkIssue = checksIssue({ type: def.type, checks: def.checks });
+    if (checkIssue) return checkIssue;
     switch (def.type) {
       case 'optional':
       case 'nullable':
@@ -1181,6 +1166,41 @@ function inputDefaultIssue(schema: unknown): PatchSchemaIssue {
   return null;
 }
 
+/** A check that can change the parsed value, judged on one node; its children are walked elsewhere. */
+function checksIssue(def: { type: string; checks?: unknown }): PatchSchemaIssue {
+  if (def.checks === undefined) return null;
+  if (!Array.isArray(def.checks)) return { kind: 'uninspectable', schemaKind: `${def.type} checks` };
+  for (const check of def.checks) {
+    const checkDef = (check as { _zod?: { def?: unknown }; def?: unknown })?._zod?.def ??
+      (check as { def?: unknown })?.def;
+    const checkKind = (checkDef as { check?: unknown; type?: unknown } | undefined)?.check ??
+      (checkDef as { type?: unknown } | undefined)?.type;
+    // A named string normalizer rewrites only a string the caller supplied, so it
+    // cannot give an omitted field a value.
+    if (checkKind === 'overwrite' && def.type === 'string' && isStringNormalizer(checkDef)) continue;
+    // Zod check classes are extensible. Permit only known validation checks;
+    // overwrite and future check kinds could change the parsed value.
+    if (typeof checkKind !== 'string' || !PATCH_VALUE_PRESERVING_CHECKS.has(checkKind)) {
+      return { kind: 'uninspectable', schemaKind: typeof checkKind === 'string' ? checkKind : `${def.type} check` };
+    }
+  }
+  return null;
+}
+
+/**
+ * The input object itself: a plain object, so its fields are the body, and nothing on it
+ * that can rewrite the parsed body as a whole.
+ */
+function inputRootIssue(input: unknown): PatchSchemaIssue {
+  if (input === undefined) return null;
+  const def = (input as { _zod?: { def?: unknown } })?._zod?.def as
+    | { type?: unknown; checks?: unknown; catchall?: unknown }
+    | undefined;
+  if (typeof def?.type !== 'string') return { kind: 'uninspectable', schemaKind: 'unknown' };
+  if (def.type !== 'object') return { kind: 'uninspectable', schemaKind: def.type };
+  return checksIssue({ type: def.type, checks: def.checks }) ?? inputDefaultIssue(def.catchall);
+}
+
 const PATCH_VALUE_PRESERVING_CHECKS = new Set([
   'min_length',
   'max_length',
@@ -1231,6 +1251,16 @@ function assertPatchInputs(operations: Record<string, unknown>): void {
       throw new Error(`model: '${name}' declares patchException without a reason`);
     }
     if (op.http?.method !== 'PATCH' || reason !== undefined) continue;
+    const rootIssue = inputRootIssue(op.input);
+    if (rootIssue !== null) {
+      const offence = rootIssue.kind === 'default'
+        ? 'has a default'
+        : `uses an uninspectable Zod schema kind '${rootIssue.schemaKind}'`;
+      throw new Error(
+        `model: '${name}' routes as PATCH, but its input object ${offence}; ` +
+          'route it as PUT, drop the hook that rewrites the body, or declare patchException with a reason',
+      );
+    }
     const pathFields = new Set(Array.from((op.http.path ?? '').matchAll(/\{([^}]+)\}/g), (match) => match[1]));
     for (const [field, schema] of Object.entries(op.input?.shape ?? {})) {
       if (pathFields.has(field)) continue;
