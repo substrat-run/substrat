@@ -8178,7 +8178,7 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.assertScope(tenantId, scopeId);
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
         if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch)) {
-          throw substratError('precondition_failed', 'scope route changed during subject erasure; retry against its new script');
+          throw substratError('precondition_failed', 'scope route changed or a copy move is pending during subject erasure; retry after it settles');
         }
         const intentIds = [...new Set(redactions.flatMap((r) => r.intentIds))];
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });

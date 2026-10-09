@@ -5760,6 +5760,7 @@ export function scopeHostContractSuite(
       await host.admin.recordScopeScriptCopy(staff, t1, s, ref, first);
       expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, state: 'eligible' })).toHaveLength(1);
       expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'done')).toBe(true);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'eligible')).toBe(false);
       expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s }))
         .map(({ moveId, state }) => ({ moveId, state })).sort((a, b) => a.moveId.localeCompare(b.moveId)))
         .toEqual([{ moveId: first, state: 'done' }, { moveId: next, state: 'pending' }]

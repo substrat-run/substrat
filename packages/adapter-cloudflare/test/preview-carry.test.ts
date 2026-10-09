@@ -562,9 +562,16 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const [eligible] = await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId });
       expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, eligible!.scriptRef,
         eligible!.moveId, 'retained')).toBe(true);
-      await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, ulid());
+      const pendingMove = ulid();
+      await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, pendingMove);
       const reached: string[] = [];
       hooks.redact = async (ref) => { reached.push(ref); };
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(412);
+      expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!,
+        pendingMove, 'retained')).toBe(true);
+      reached.length = 0;
       expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);
       expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
@@ -624,6 +631,17 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
       const row = outbox.rows.find((r) => r[outbox.columns.indexOf('id')] === eventId);
       expect(row?.[outbox.columns.indexOf('payload')]).not.toBeNull();
+      expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId, state: 'retained' }))
+        .some((copy) => copy.scriptRef === refOf.get(version.v2))).toBe(true);
+      delete hooks.wipe;
+      expect((await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
+        method: 'POST', headers: auth,
+      })).status).toBe(200);
+      expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual([null]);
+      const redacted = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
+      expect(redacted.rows.find((r) => r[redacted.columns.indexOf('id')] === eventId)?.[redacted.columns.indexOf('payload')])
+        .toBeFalsy();
     }, 20_000);
     it('erasure retries when a bind moves the route after its script inventory was read', async () => {
       const p = await fresh('erase-route-race');

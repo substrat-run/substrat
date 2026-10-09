@@ -8896,8 +8896,9 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.prepare(
           `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
              last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-           WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?`,
-        ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId).changes > 0,
+           WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
+             AND (state <> 'done' OR ? = 'done')`,
+        ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state).changes > 0,
       touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
         this.directory.prepare(
           `UPDATE scope_script_copies SET last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -10196,9 +10197,12 @@ export class SqliteScopeHost implements ScopeHost {
         const claimed = this.directory.prepare(
           `UPDATE scopes SET erasure_epoch = erasure_epoch + 1
            WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
-             AND serving_ref IS ? AND erasure_epoch = ?`,
+             AND serving_ref IS ? AND erasure_epoch = ?
+             AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
+               WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
+                 AND copy.state = 'pending')`,
         ).run(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch);
-        if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route changed during subject erasure; retry');
+        if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route changed or a copy move is pending during subject erasure; retry after it settles');
         // The pure adapter has one co-located scope store. Its existing atomic shred is
         // the final local redaction and key destruction, after remote copies confirmed.
         return this.admin.shredSubject(actor, tenantId, scopeId, subjectId);

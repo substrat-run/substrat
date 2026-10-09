@@ -3210,7 +3210,10 @@ export class ControlPlaneDO extends DurableObject {
     return this.sql.exec(
       `UPDATE scopes SET erasure_epoch = erasure_epoch + 1
        WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
-         AND serving_ref IS ? AND erasure_epoch = ?`,
+         AND serving_ref IS ? AND erasure_epoch = ?
+         AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
+           WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
+             AND copy.state = 'pending')`,
       tenantId, scopeId, expectedVersionId, expectedServingRef, expectedEpoch,
     ).rowsWritten > 0;
   }
@@ -3235,8 +3238,9 @@ export class ControlPlaneDO extends DurableObject {
     return this.sql.exec(
       `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
          last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-       WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?`,
-      state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId,
+       WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
+         AND (state <> 'done' OR ? = 'done')`,
+      state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId, state,
     ).rowsWritten > 0;
   }
 
