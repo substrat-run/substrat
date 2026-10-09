@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { moduleId, platformActorId, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type FetchLike, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
@@ -312,6 +312,28 @@ export function scheduleContractSuite(
       expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(2);
       expect((await (await host.getScope(reader, t, sibling)).invoke('sched/count'))).toBe(1);
       expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(0);
+    });
+
+    it('a previously fired schedule stays due through several held cadences and fires once on reactivation', async () => {
+      const held = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: held, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, held);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(2);
+      const first = Date.now();
+      await host.admin.suspendScope(staff, t, held);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        for (const hours of [2, 4, 6]) {
+          vi.setSystemTime(first + hours * 3_600_000);
+          expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(0);
+        }
+        await host.admin.unsuspendScope(staff, t, held);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(2);
+        expect((await (await host.getScope(reader, t, held)).invoke('sched/count'))).toBe(2);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, held)).fired).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('a retry queued before suspension waits without an attempt, then drains once', async () => {

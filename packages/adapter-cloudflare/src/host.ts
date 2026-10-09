@@ -5216,6 +5216,17 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         report.fired += 1;
       } catch (err) {
+        // A lifecycle delivery can land after the first gate but before the
+        // system door. That refusal ran nothing and must not advance cadence.
+        const held = this.cpLess
+          ? lifecycleRefusal(await stub.lifecycle(), { tenantId, scopeId })
+          : (await this.cp.scopeAccessRefusal(tenantId, scopeId))?.message ?? null;
+        if (held && held === (err instanceof Error ? err.message : String(err))) {
+          report.lifecycleHeld = true;
+          report.skipped += 1;
+          report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+          continue;
+        }
         status = 'failed';
         failure = { error: err };
         report.failed += 1;
