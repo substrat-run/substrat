@@ -4906,9 +4906,10 @@ export interface OpsFailureInput {
   reference?: string | null;
 }
 
-/** Directory inventory of one script's copy of a scope (#1722). */
+/** A reserved ledger row that blocks new copy moves after reap starts. */
 export const SCOPE_REAP_CLAIM_REF = '__substrat_scope_reap__';
 
+/** Directory inventory of one script's copy of a scope (#1722). */
 export interface ScopeScriptCopy {
   tenantId: TenantId;
   scopeId: ScopeId;

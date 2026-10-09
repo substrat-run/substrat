@@ -653,7 +653,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         const reaped = await api.request('/verticals/carry-vert/previews/reap-unbound-race', {
           method: 'DELETE', headers: auth,
         });
-        expect(reaped.status).toBeGreaterThanOrEqual(400);
+        expect(reaped.status).toBe(412);
         expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeDefined();
       } finally {
         held.release();

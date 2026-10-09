@@ -1,4 +1,5 @@
-import type { PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
+import { errorCodeOf, type PlatformActorId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { CARRIED_AWAY_KEY, isPrimaryScope, type HostAdmin, type ScopeScriptCopy } from '@substrat-run/kernel';
 import type { VerticalClient } from './vertical-client.js';
 
@@ -99,7 +100,12 @@ export async function reapScopeScriptCopies(input: ScopeCopyCleanup, tenantId: T
   // The directory claim and new move records serialize on one store. A carry that
   // already began keeps this reap retryable; one starting later cannot restore bytes
   // after the scripts have been drained and the row removed.
-  await input.admin.beginScopeScriptReap(input.actor, tenantId, scopeId);
+  await input.admin.beginScopeScriptReap(input.actor, tenantId, scopeId).catch((error: unknown) => {
+    if (errorCodeOf(error) === 'precondition_failed') {
+      throw new ControlPlaneError(412, error instanceof Error ? error.message : String(error));
+    }
+    throw error;
+  });
   const copies = await listAllScopeScriptCopies(input.admin, input.actor, tenantId, scopeId);
   const current = await routeOf(input, tenantId, scopeId);
   const refs = new Set(copies.filter((c) => c.state !== 'done').map((c) => c.scriptRef));

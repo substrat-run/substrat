@@ -3535,6 +3535,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // The store this carry landed in is live; a kept marker another carry set while racing it
       // does not belong on it (#1722 r8).
       await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
+      let sourceMarker = { loadStamp: carried.sourceStamp, revision: carried.sourceRevision };
       if (await isCarriedAway(carried.dest, scope)) {
         const { tables: dump, loadStamp: stamp, revision } = await retryTransient(() =>
           carried.source.exportScopeStamped(scope.id),
@@ -3551,11 +3552,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           throw new ControlPlaneError(500, `scope ${scope.id}'s store in '${carried.to}' was wiped again; its source copy stays`);
         }
         // Re-carried, so the fence expects what the re-export read.
-        await keepOrWipeSource(c, scope, versionId, carried, { loadStamp: stamp, revision });
-        await finishDestination();
-        return;
+        sourceMarker = { loadStamp: stamp, revision };
       }
-      await keepOrWipeSource(c, scope, versionId, carried, { loadStamp: carried.sourceStamp, revision: carried.sourceRevision });
+      await keepOrWipeSource(c, scope, versionId, carried, sourceMarker);
       await finishDestination();
     } catch (e) {
       recordCarryCleanup(c, scope, versionId, 'source-copy', e);
