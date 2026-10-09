@@ -3276,11 +3276,18 @@ export class ControlPlaneDO extends DurableObject {
     return 'recorded'; // idempotent retry of this move
   }
 
-  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string): { result: ScopeCopyBackfillResult; erasureEpoch: number } {
+  /**
+   * Record a pre-ledger copy, and its `backfillScopeCopy` audit row in the same unit (#1722): the row
+   * carries the erasure epoch read here, which the backfill orders erasures by, so an entry with no
+   * row (an audit write lost after the insert) would let a later run compare against an older epoch.
+   */
+  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, audit: AdminEntryInput): ScopeCopyBackfillResult {
     return this.ctx.storage.transactionSync(() => {
       const written = this.sql.exec(COPY_BACKFILL_SQL, ...copyBackfillParams(tenantId, scopeId, scriptRef)).rowsWritten > 0;
       const scope = this.sql.exec(COPY_BACKFILL_SCOPE_SQL, tenantId, scopeId).toArray()[0] as CopyBackfillScopeRow | undefined;
-      return { result: written ? 'recorded' : copyBackfillRefusal(scope), erasureEpoch: scope?.erasure_epoch ?? 0 };
+      if (!written) return copyBackfillRefusal(scope);
+      this.recordAdmin({ ...audit, before: { erasureEpoch: scope!.erasure_epoch } });
+      return 'recorded';
     });
   }
 

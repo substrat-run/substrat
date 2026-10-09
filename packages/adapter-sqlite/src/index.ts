@@ -8930,14 +8930,15 @@ export class SqliteScopeHost implements ScopeHost {
       },
       backfillScopeScriptCopy: async (actor, tenantId, scopeId, scriptRef, opts) => {
         if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
-        const { written, scope } = this.directory.transaction(() => ({
-          written: this.directory.prepare(COPY_BACKFILL_SQL).run(...copyBackfillParams(tenantId, scopeId, scriptRef)).changes > 0,
-          scope: this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as CopyBackfillScopeRow | undefined,
-        }))();
-        if (!written) return copyBackfillRefusal(scope);
-        this.recordAdmin(actor, 'backfillScopeCopy', { tenantId, scopeId }, { erasureEpoch: scope!.erasure_epoch },
-          { scriptRef, fromLogId: opts?.fromLogId ?? null });
-        return 'recorded';
+        // The audit row commits with the entry, stamped with the erasure epoch read in the same unit.
+        return this.directory.transaction((): ScopeCopyBackfillResult => {
+          const written = this.directory.prepare(COPY_BACKFILL_SQL).run(...copyBackfillParams(tenantId, scopeId, scriptRef)).changes > 0;
+          const scope = this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as CopyBackfillScopeRow | undefined;
+          if (!written) return copyBackfillRefusal(scope);
+          this.recordAdmin(actor, 'backfillScopeCopy', { tenantId, scopeId }, { erasureEpoch: scope!.erasure_epoch },
+            { scriptRef, fromLogId: opts?.fromLogId ?? null });
+          return 'recorded';
+        })();
       },
       claimExpiredScopeScriptCopies: async (_actor, input) => {
         const limit = assertRowLimit('limit', input.limit);

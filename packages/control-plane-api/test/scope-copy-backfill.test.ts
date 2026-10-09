@@ -340,6 +340,24 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
       .toEqual([{ tenantId: t, scopeId: sid, subjects: ['subject-overlap'] }]);
   });
 
+  it('a backfilled entry and its audit row commit together, or neither does (#1722, CodeRabbit)', async () => {
+    // The row carries the epoch erasures are ordered by: an entry without it would let a later run
+    // compare against an older backfill's epoch and miss a subject.
+    const sid = await provision();
+    const raw = new Database(join(dir, '_directory.sqlite'));
+    raw.exec(`CREATE TRIGGER refuse_backfill_audit BEFORE INSERT ON _substrat_admin_log
+      WHEN NEW.action = 'backfillScopeCopy' BEGIN SELECT RAISE(ABORT, 'audit write failed'); END`);
+    try {
+      await expect(host.admin.backfillScopeScriptCopy(staff, t, sid, refOf('v1'))).rejects.toThrow(/audit write failed/);
+      expect(await ledgerOf(sid)).toEqual([]);
+    } finally {
+      raw.exec('DROP TRIGGER refuse_backfill_audit');
+      raw.close();
+    }
+    expect(await host.admin.backfillScopeScriptCopy(staff, t, sid, refOf('v1'))).toBe('recorded');
+    expect((await host.admin.auditLog(staff, { scopeId: sid, action: 'backfillScopeCopy' })).length).toBe(1);
+  });
+
   it('a re-run records nothing new and still reports every failure', async () => {
     const before = await Promise.all([moved, neverBound, fork, wiped, orphan].map(ledgerOf));
     const pages = await backfillAll(false, 50);
@@ -497,8 +515,9 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     raw.prepare("DELETE FROM _substrat_admin_log WHERE scope_id = ? AND action = 'provisionScope'").run(sid);
     raw.close();
     const pages = await backfillAll(false, 50);
-    const failures = entriesOf(pages, sid).filter((e) => e.outcome === 'failure');
-    expect(failures).toEqual([expect.objectContaining({ reason: expect.stringContaining('no provisionScope row') })]);
+    // The birth is its only failure: once per page its rows fall on.
+    const reasons = new Set(entriesOf(pages, sid).filter((e) => e.outcome === 'failure').map((e) => e.reason));
+    expect([...reasons]).toEqual([expect.stringContaining('no provisionScope row')]);
     expect(await ledgerOf(sid)).toEqual(retained(refOf('v1'), serving));
   });
 
