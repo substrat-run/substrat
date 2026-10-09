@@ -598,7 +598,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         expect((await bindTo(p.scopeId, 'v2')).status).toBe(200);
       };
       const path = `/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`;
-      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(412);
+      // The concurrent bind may tombstone the old script before redaction reaches it.
+      // That refusal must leave the key intact so a fresh inventory can be retried.
+      expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(409);
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
       delete hooks.redact;
       expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);

@@ -156,7 +156,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
-import { reapScopeScriptCopies } from './scope-copy-cleanup.js';
+import { assertNoUnreachableScopeCopies, reapScopeScriptCopies } from './scope-copy-cleanup.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
@@ -4671,6 +4671,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // storage-before-row ordering deleteSnapshot itself keeps, so a crash
       // between the two converges on retry.
       const named = await routeOf(c, scope);
+      if (!options.resolveVerticalRef) await assertNoUnreachableScopeCopies(c.var.admin, actor, tenantId, scopeId);
       const storageStranded = named && options.resolveVerticalRef
         ? (await reapScopeScriptCopies({ admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, tenantId, scopeId), false)
         : await deleteScopeStorageOrStrand(await verticalForScope(c, scope), tenantId, scopeId);
@@ -5313,6 +5314,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // By this point the backup contract has resolved (a copy landed, or the caller
       // explicitly declined one), so stranding is a bookkeeping fact, not data loss.
       const named = await routeOf(c, scope);
+      if (!options.resolveVerticalRef) await assertNoUnreachableScopeCopies(c.var.admin, actor, tenantId, scopeId);
       const storageStranded = named && options.resolveVerticalRef
         ? (await reapScopeScriptCopies({ admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, tenantId, scopeId), false)
         : await deleteScopeStorageOrStrand(await verticalForScope(c, scope), tenantId, scopeId);
@@ -8310,6 +8312,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         resolveRef: options.resolveVerticalRef,
       }, preview.tenantId, preview.id);
     } else {
+      await assertNoUnreachableScopeCopies(c.var.admin, c.get('actor'), preview.tenantId, preview.id);
       const vertical = await verticalForScope(c, preview);
       if (vertical) await vertical.deleteScope({ tenantId: preview.tenantId, scopeId: preview.id });
     }

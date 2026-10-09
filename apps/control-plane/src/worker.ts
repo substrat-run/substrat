@@ -74,6 +74,7 @@ import {
   createControlPlaneApi,
   retryScopeScriptCopies,
   reapScopeScriptCopies,
+  assertNoUnreachableScopeCopies,
   createWfpUploader,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
@@ -1707,9 +1708,12 @@ export default {
         );
         if (resolveRef) {
           await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
-        } else if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
-          const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
-          if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+        } else {
+          await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
+          if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+            const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
+            if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+          }
         }
         await host.deleteSnapshot(SWEEP_ACTOR, tenantId, scopeId);
       },
@@ -1723,9 +1727,12 @@ export default {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
         if (resolveRef) {
           await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
-        } else if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
-          const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
-          if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+        } else {
+          await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
+          if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+            const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
+            if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+          }
         }
         // Automated retention / tenant-teardown reap: force past the bound-hostname guard
         // (that guard stops the interactive per-scope mistake, not the aged-out sweep).

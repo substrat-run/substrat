@@ -8,6 +8,17 @@ export interface ScopeCopyCleanup {
   resolveRef: (scriptRef: string) => Promise<VerticalClient | undefined>;
 }
 
+/** Do not discard the directory's last pointer to a copy when dispatch is unavailable. */
+export async function assertNoUnreachableScopeCopies(
+  admin: HostAdmin, actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
+): Promise<void> {
+  for (const state of ['pending', 'eligible', 'retained', 'kept'] as const) {
+    if ((await admin.listScopeScriptCopies(actor, { tenantId, scopeId, state, limit: 1 })).length) {
+      throw new Error(`scope ${scopeId} has a ${state} script copy, but script dispatch is unavailable`);
+    }
+  }
+}
+
 /** The directory's current routing decision, with no fallback to a different script. */
 async function routeOf(input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId): Promise<string | null> {
   const scope = await input.admin.getScopeRecord(input.actor, tenantId, scopeId);
