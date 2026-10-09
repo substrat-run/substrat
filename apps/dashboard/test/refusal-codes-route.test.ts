@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, principalId, problemDetail, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { platformActorId, principalId, problemDetail, scopeId, substratError, tenantId, toProblem, type ScopeId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
@@ -63,6 +63,8 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
   const dashScope = scopeId.parse(ulid());
   let appScope: ScopeId;
   let env: Record<string, unknown>;
+  /** A refusal the plane answers the hostname bind with, in place of the bind itself. */
+  let bindRefusal: Response | undefined;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-refusal-codes-'));
@@ -95,6 +97,7 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
     const dash = await host.getScope(owner, tenant, dashScope);
     await dash.invoke('dashboard/provision-app', { appScopeId: appScope, verticalSlug: SLUG, name: 'Ledger' });
 
+    bindRefusal = undefined;
     const plane = tenantPlane(host, staff);
     env = {
       SCOPE: {},
@@ -104,6 +107,7 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
+          if (bindRefusal && init?.method === 'POST' && u.pathname === '/api/hostnames') return bindRefusal;
           return plane.request(u.pathname.replace(/^\/api/, '') + u.search, init);
         },
       },
@@ -145,6 +149,20 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
     const res = await send('POST', `/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' }, MANAGER_SUB);
     expect(res.status).toBe(403);
     expect(res.detail).toMatch(/^permission denied: dashboard:provision-app/);
+  });
+
+  it('the plane\'s own permission_denied, relayed, keeps its 403 too — by its code', async () => {
+    const refusal = toProblem(substratError('permission_denied', 'permission denied: hostnames:bind'));
+    bindRefusal = Response.json(refusal, { status: 403 });
+    expect(await send('POST', `/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' })).toEqual({
+      status: 403,
+      detail: 'permission denied: hostnames:bind',
+    });
+  });
+
+  it('the twin: the plane\'s 403 that is not a permission denial is the route\'s 409, as it always was', async () => {
+    bindRefusal = Response.json(toProblem(substratError('forbidden', 'only previews may be deleted')), { status: 403 });
+    expect((await send('POST', `/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' })).status).toBe(409);
   });
 
   it('a slug that is not the team\'s own deployment is a 404', async () => {
