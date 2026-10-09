@@ -780,6 +780,7 @@ interface ControlPlaneStub {
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null): Promise<void>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null): Promise<boolean>;
+  touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
   listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number }): Promise<{
     tenant_id: string; scope_id: string; script_ref: string; move_id: string;
     state: string; load_stamp: string | null; revision: string | null;
@@ -7201,6 +7202,8 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
         this.cp.settleScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, state, marker?.loadStamp ?? null, marker?.revision ?? null),
+      touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) =>
+        this.cp.touchScopeScriptCopy(tenantId, scopeId, scriptRef, moveId),
       listScopeScriptCopies: async (_actor, filter) => {
         const rows = await this.cp.listScopeScriptCopies(filter);
         return rows.map((r) => ({

@@ -4797,13 +4797,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const subjectId = dataSubjectIdSchema.parse(c.req.param('subjectId'));
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    if (!options.resolveVerticalRef || !(await routeOf(c, scope))) {
-      return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
-    }
     const copies = await c.var.admin.listScopeScriptCopies(c.get('actor'), { tenantId, scopeId, limit: 1001 });
     if (copies.length === 1001) throw new ControlPlaneError(409, `scope ${scopeId} has more copies than one erasure batch can verify`);
+    const currentRef = await routeOf(c, scope);
+    if (!options.resolveVerticalRef) {
+      if (copies.some((copy) => copy.state !== 'done')) {
+        throw new ControlPlaneError(502, `scope ${scopeId} has script copies, but this control plane cannot reach their deployments`);
+      }
+      return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
+    }
+    if (!currentRef && copies.every((copy) => copy.state === 'done')) {
+      return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
+    }
     const refs = new Set(copies.filter((copy) => copy.state !== 'done').map((copy) => copy.scriptRef));
-    refs.add((await routeOf(c, scope))!);
+    if (currentRef) refs.add(currentRef);
     const redactions = [];
     for (const ref of refs) {
       const script = await options.resolveVerticalRef(ref);

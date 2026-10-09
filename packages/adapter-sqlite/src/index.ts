@@ -2055,6 +2055,7 @@ export class SqliteScopeHost implements ScopeHost {
         state TEXT NOT NULL,
         load_stamp TEXT,
         revision TEXT,
+        last_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
         PRIMARY KEY (tenant_id, scope_id, script_ref, move_id)
       );
       CREATE INDEX IF NOT EXISTS scope_script_copies_state ON scope_script_copies (state, scope_id);
@@ -8883,9 +8884,16 @@ export class SqliteScopeHost implements ScopeHost {
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
         this.directory.prepare(
-          `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?
+          `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
+             last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
            WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?`,
         ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId).changes > 0,
+      touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
+        this.directory.prepare(
+          `UPDATE scope_script_copies SET last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ? AND state = 'eligible'`,
+        ).run(tenantId, scopeId, scriptRef, moveId);
+      },
       listScopeScriptCopies: async (_actor, filter) => {
         const where: string[] = [];
         const args: (string | number)[] = [];
@@ -8895,7 +8903,7 @@ export class SqliteScopeHost implements ScopeHost {
         const limit = assertRowLimit('limit', filter.limit ?? 100);
         const rows = this.directory.prepare(
           `SELECT * FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-           ORDER BY tenant_id, scope_id, script_ref LIMIT ?`,
+           ORDER BY last_attempt_at, tenant_id, scope_id, script_ref LIMIT ?`,
         ).all(...args, limit) as {
           tenant_id: string; scope_id: string; script_ref: string; move_id: string;
           state: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; load_stamp: string | null; revision: string | null;

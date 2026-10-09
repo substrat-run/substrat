@@ -2701,6 +2701,8 @@ export interface HostAdmin {
     state: 'eligible' | 'retained' | 'kept' | 'done',
     marker?: { loadStamp: string | null; revision: string | null },
   ): Promise<boolean>;
+  /** Move a failed retry to the back of the due queue without changing its state. */
+  touchScopeScriptCopy(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string, moveId: string): Promise<void>;
   listScopeScriptCopies(
     actor: PlatformActorId,
     filter: { tenantId?: TenantId; scopeId?: ScopeId; state?: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; limit?: number },

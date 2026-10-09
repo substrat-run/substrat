@@ -61,6 +61,7 @@ export async function retryScopeScriptCopies(input: ScopeCopyCleanup, limit = 10
       if (await retryScopeScriptCopy(input, copy) === 'done') done++;
     } catch {
       failed++;
+      await input.admin.touchScopeScriptCopy(input.actor, copy.tenantId, copy.scopeId, copy.scriptRef, copy.moveId);
     }
   }
   return { tried: copies.length, done, failed };

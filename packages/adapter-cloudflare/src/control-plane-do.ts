@@ -789,6 +789,7 @@ const DIRECTORY_DDL = `
     state TEXT NOT NULL,
     load_stamp TEXT,
     revision TEXT,
+    last_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (tenant_id, scope_id, script_ref, move_id)
   );
   CREATE INDEX IF NOT EXISTS scope_script_copies_state ON scope_script_copies (state, scope_id);
@@ -3201,10 +3202,19 @@ export class ControlPlaneDO extends DurableObject {
     loadStamp: string | null, revision: string | null,
   ): boolean {
     return this.sql.exec(
-      `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?
+      `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
+         last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
        WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?`,
       state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId,
     ).rowsWritten > 0;
+  }
+
+  touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): void {
+    this.sql.exec(
+      `UPDATE scope_script_copies SET last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+       WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ? AND state = 'eligible'`,
+      tenantId, scopeId, scriptRef, moveId,
+    );
   }
 
   listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number }): {
@@ -3219,7 +3229,7 @@ export class ControlPlaneDO extends DurableObject {
     const limit = assertRowLimit('limit', filter.limit ?? 100);
     return this.sql.exec(
       `SELECT * FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY tenant_id, scope_id, script_ref LIMIT ?`, ...args, limit,
+       ORDER BY last_attempt_at, tenant_id, scope_id, script_ref LIMIT ?`, ...args, limit,
     ).toArray() as never;
   }
 
