@@ -45,8 +45,9 @@ async function routeOf(input: ScopeCopyCleanup, tenantId: TenantId, scopeId: Sco
 /** `routeOf` for a scope record already read; `versionOf` lets a caller share its version reads. */
 export async function routeOfScope(
   input: ScopeCopyCleanup,
-  scope: Pick<NonNullable<Awaited<ReturnType<HostAdmin['getScopeRecord']>>>, 'servingRef' | 'vertical' | 'verticalVersionId'>,
-  versionOf = (id: string, vertical: string) => input.admin.getVersion(input.actor, id, vertical),
+  scope: { servingRef?: string | null; vertical?: string | null; verticalVersionId?: string | null },
+  versionOf: (id: string, vertical: string) => Promise<{ deploymentRef: string | null } | undefined> =
+    (id, vertical) => input.admin.getVersion(input.actor, id, vertical),
 ): Promise<string | null> {
   if (scope.servingRef) return scope.servingRef;
   if (!scope.vertical || !scope.verticalVersionId) return null;
