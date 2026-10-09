@@ -85,6 +85,12 @@ export interface FieldCoverageTally {
   refused: number;
 }
 
+/** Counts for router-armed requests at one effective rate. Null means an older router did not record it. */
+export interface RatedFieldCoverageTally extends FieldCoverageTally {
+  sampleRate: number | null;
+  armedRequests: number;
+}
+
 /** What the tally is for. Every field is the CALLER's resolution, never a line's. */
 export interface FieldCoverageScope {
   /** The tenant, forced from the principal the way every tenant read forces it. */
@@ -272,4 +278,39 @@ export function tallyFieldCoverage(
       .map(([operation, e]) => ({ operation, responses: e.responses, fields: [...e.fields.values()] })),
     refused,
   };
+}
+
+/** Partition by the router's own rate before tallying, so a changed rate is never averaged away. */
+export function tallyFieldCoverageByRate(
+  events: Iterable<unknown>,
+  routerEvents: Iterable<unknown>,
+  scope: FieldCoverageScope,
+): RatedFieldCoverageTally[] {
+  const reports = [...events];
+  const groups = new Map<number | null, unknown[]>();
+  const ids = new Map<number | null, Set<string>>();
+  for (const event of routerEvents) {
+    if (event === null || typeof event !== 'object') continue;
+    if (!ROUTER_SCRIPT_NAMES.includes(String(serviceOf(event)))) continue;
+    const source = (event as Record<string, unknown>)['source'];
+    if (source === null || typeof source !== 'object') continue;
+    const line = source as Record<string, unknown>;
+    const id = line[FIELD_COVERAGE_ID_FIELD];
+    if (line['router'] !== 'request' || line['tenantId'] !== scope.tenantId || line['vertical'] !== scope.vertical || typeof id !== 'string' || !DISPATCH_ID.test(id)) continue;
+    // The tally below still checks router script, tenant, app, and dispatch id. The rate
+    // comes only from this router line, never from the vertical's report.
+    const candidate = line['fieldCoverageRate'];
+    const rate = typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0 && candidate <= 1
+      ? candidate : null;
+    const group = groups.get(rate) ?? [];
+    group.push(event);
+    groups.set(rate, group);
+    const known = ids.get(rate) ?? new Set<string>();
+    known.add(id);
+    ids.set(rate, known);
+  }
+  return [...groups].map(([sampleRate, vouched]) => {
+    const counted = tallyFieldCoverage(reports, vouched, scope);
+    return { ...counted, sampleRate, armedRequests: ids.get(sampleRate)!.size };
+  });
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DECLARED_OUTPUT_FIELDS_MAX } from '@substrat-run/contracts';
 import { ROUTER_SCRIPT_NAMES } from '@substrat-run/contracts';
-import { FIELD_COVERAGE_OPERATIONS_MAX, tallyFieldCoverage, type FieldCoverageScope } from '../src/field-coverage-tally.js';
+import { FIELD_COVERAGE_OPERATIONS_MAX, tallyFieldCoverage, tallyFieldCoverageByRate, type FieldCoverageScope } from '../src/field-coverage-tally.js';
 import { createCfObservabilityReader } from '../src/cf-observability.js';
 import { serviceFamilyMatcher } from '../src/service-family.js';
 
@@ -59,6 +59,30 @@ const scope: FieldCoverageScope = { tenantId: TENANT, vertical: APP, services: S
 
 /** The tally over `events`, with the router having dispatched every one of them for the scope's tenant. */
 const tally = (events: unknown[], sc: FieldCoverageScope = scope) => tallyFieldCoverage(events, vouched(events, sc.tenantId), sc);
+
+describe('router-owned field coverage rates (#1331)', () => {
+  it('keeps changed rates separate and ignores a rate the vertical writes', () => {
+    const a = line({ fieldCoverageRate: 1 });
+    const b = line({ fieldCoverageRate: 1, outputFields: { present: [], empty: ['id'], absent: [] } });
+    const router = [
+      { ...routerLine(idOf(a)), source: { ...routerLine(idOf(a)).source, fieldCoverageRate: 0.1 } },
+      { ...routerLine(idOf(b)), source: { ...routerLine(idOf(b)).source, fieldCoverageRate: 0.5 } },
+    ];
+    const result = tallyFieldCoverageByRate([a, b], router, scope);
+    expect(result.map((r) => r.sampleRate)).toEqual([0.1, 0.5]);
+    expect(result.map((r) => r.operations[0]?.responses)).toEqual([1, 1]);
+  });
+
+  it('counts no forged tenant, app or router service; an older router has unknown rate', () => {
+    const own = line();
+    const id = idOf(own);
+    expect(tallyFieldCoverageByRate([own], [routerLine(id, OTHER)], scope)).toEqual([]);
+    expect(tallyFieldCoverageByRate([own], [routerLine(id, TENANT, 'other/app')], scope)).toEqual([]);
+    expect(tallyFieldCoverageByRate([own], [routerLine(id, TENANT, APP, 'acme-widgets')], scope)).toEqual([]);
+    expect(tallyFieldCoverageByRate([own], [routerLine(id)], scope)[0]?.sampleRate).toBeNull();
+    expect(tallyFieldCoverageByRate([own], [], scope)).toEqual([]);
+  });
+});
 
 describe('tallyFieldCoverage (#1923)', () => {
   it('counts per (operation, field), one per response', () => {

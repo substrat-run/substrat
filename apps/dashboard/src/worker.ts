@@ -3075,6 +3075,32 @@ app.get('/api/apps/:scopeId/field-coverage', async (c) => {
   return c.json(deriveFieldCoverage({ model, outputSurface }));
 });
 
+app.get('/api/apps/:scopeId/field-reads', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  const hours = chartHours(c.req.query('hours'));
+  const [deployment, boundVersionId] = await Promise.all([
+    verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scopeId.parse(appRow.app_scope_id)),
+  ]);
+  const { runningId } = versionPair(deployment, boundVersionId);
+  if (!runningId) return c.json({ available: false, source: 'vertical-asserted', groups: [] });
+  try {
+    const read = await cpObservability(() => cp.tenantFieldCoverage(appRow.app_scope_id, runningId, hours));
+    return c.json({ available: true, ...read as object });
+  } catch (e) {
+    if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 501)) {
+      return c.json({ available: false, source: 'vertical-asserted', groups: [] });
+    }
+    throw e;
+  }
+});
+
 app.get('/api/apps/:scopeId/migrations', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

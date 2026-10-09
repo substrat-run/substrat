@@ -23,7 +23,7 @@ export const OBS_SECTIONS: { key: ObsSection; label: string }[] = [
 export const SECTION_VIEWS: Record<ObsSection, readonly string[]> = {
   pulse: ['traffic', 'health', 'schedules', 'failures'],
   // #1744: the state machines open first, as the design has it; Flow is the switch beside them.
-  processes: ['map', 'flow'],
+  processes: ['map', 'flow', 'fields'],
   logs: ['logs', 'requests', 'patterns', 'events'],
 };
 
