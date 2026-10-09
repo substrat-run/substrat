@@ -331,8 +331,8 @@ at exactly one interface:
   `scopeHostContractSuite`. This is the whole runtime contract. `adapter-sqlite` is the
   reference.
 - **Reuse unchanged:** the kernel (`OperationContext`, the event spine, executors/
-  connectors, the permission model, `readRoutedNode`), the `contracts` package, the
-  OpenAPI builder, and the Hono control-plane transport — injecting Kubernetes
+  connectors, the permission model), `vertical-host` (`readRoutedNode`), the `contracts`
+  package, the OpenAPI builder, and the Hono control-plane transport — injecting Kubernetes
   implementations of `deployVertical` / `resolve*` / `observability` / `provisionHostname`
   in place of the Cloudflare ones.
 - **Provide new plumbing:** a front router that resolves hostname → node and stamps the

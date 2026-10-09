@@ -284,8 +284,8 @@ jobs:
       - run: pnpm lint:pins --check
       # The platform-entry checkpoint (#1893). The control plane uploads its own entry
       # module in front of every vertical's bundle, so each request is stamped whether
-      # or not the vertical mounted `invocationLog`. That module is the kernel's
-      # `withInvocationLog`, bundled into a string constant — so a kernel change that
+      # or not the vertical mounted `invocationLog`. That module is vertical-host's
+      # `withInvocationLog`, bundled into a string constant — so a change to it that
       # is not re-emitted deploys every vertical behind the OLD stamp, silently.
       - run: pnpm lint:platform-entry --check
       # The issuer-schema checkpoint (#987). `demos/auth-server`'s Drizzle schema and

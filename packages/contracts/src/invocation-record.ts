@@ -4,7 +4,7 @@
  * The router writes one Analytics Engine datapoint per resolved request, and the request
  * histogram and facet counts are read from that dataset. The router knows the tenant, scope,
  * surface and status on its own. It does not know which operation ran, how it failed, or who
- * it ran as: only the vertical's handler chain learns those, into the kernel's
+ * it ran as: only the vertical's handler chain learns those, into vertical-host's
  * `InvocationRecord`. The platform's entry (`withInvocationLog`) hands them back on one
  * response header, and the router reads it into the datapoint and strips it before the
  * response leaves.

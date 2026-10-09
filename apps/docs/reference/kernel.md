@@ -51,6 +51,20 @@ import { ulid } from '@substrat-run/kernel';
 const id = ulid(); // '01JZX6ZH2E...'
 ```
 
+Also importable from `@substrat-run/kernel/ulid`, which imports nothing at run time.
+
+## Subpaths that import nothing
+
+The platform bundles an entry module in front of every deployed vertical (#1893), and the
+package root would bring `@substrat-run/contracts`, and zod, with it. So the few things that
+entry needs have subpaths of their own, each importing nothing at run time:
+
+| Subpath | Exports |
+|---|---|
+| `@substrat-run/kernel/invocation-line` | `invocationLine` and the line's types (see [Trusting the edges](#trusting-the-edges)) |
+| `@substrat-run/kernel/ulid` | `ulid`, `createUlid`, `ulidCeiling`, `ulidFloor`, `ulidTime` |
+| `@substrat-run/kernel/secret-match` | `secretMatches`: the constant-time compare behind the router assertion and the platform-call check |
+
 ## The other seams
 
 Everything below is in the kernel for the same reason: it is a rule two or more

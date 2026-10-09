@@ -16,7 +16,7 @@
 
 Two deprecations are withdrawn, and these names stay in the kernel:
 
-- **The invocation line's shape** (`InvocationLogLine`, `OutputFieldsReport`) stays, beside `invocationLine`, because the scope host writes the consumer and schedule lines with it. `@substrat-run/vertical-host` still re-exports both types. The kernel also gains two subpaths that import nothing at run time: `@substrat-run/kernel/invocation-line` and `@substrat-run/kernel/ulid`.
+- **The invocation line's shape** (`InvocationLogLine`, `OutputFieldsReport`) stays, beside `invocationLine`, because the scope host writes the consumer and schedule lines with it. `@substrat-run/vertical-host` still re-exports both types. The kernel also gains three subpaths that import nothing at run time, for code bundled in front of every vertical: `@substrat-run/kernel/invocation-line`, `@substrat-run/kernel/ulid` and `@substrat-run/kernel/secret-match` (`secretMatches`, the constant-time compare).
 - **`isUpgradeRequest`** stays beside the `LiveReadSurface` contract, because the hosted adapter's live-read door uses it too. `@substrat-run/vertical-host` still re-exports it.
 
 `assertPlatformCall`, `PlatformCallError` and `kickFlags` remain deprecated kernel exports for now. Import them from `@substrat-run/vertical-host`.
