@@ -3808,6 +3808,7 @@ export class ControlPlaneDO extends DurableObject {
     scopes: { tenant_id: string; status: string }[];
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
     storage: ScopeStorageSample[];
+    storageAttempts: ScopeStorageAttempt[];
   } {
     const where = tenantId ? ' WHERE tenant_id = ?' : '';
     const args = tenantId ? [tenantId] : [];
@@ -3828,6 +3829,7 @@ export class ControlPlaneDO extends DurableObject {
       }[],
       // #1524: the stored gauge's latest sample per non-reaped scope. A directory read only.
       storage: listScopeStorageRows(doRedactionSql(this.sql), { tenantId: tenantId as TenantId | undefined, latest: true }),
+      storageAttempts: listScopeStorageAttemptRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
     };
   }
 

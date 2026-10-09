@@ -848,6 +848,7 @@ interface ControlPlaneStub {
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
     /** #1524: the stored gauge's latest sample per non-reaped scope. */
     storage: ScopeStorageSample[];
+    storageAttempts: ScopeStorageAttempt[];
   }>;
   /** #1524: the stored storage gauge — kernel `storage-gauge.ts`, run inside the directory DO. */
   recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
@@ -8385,6 +8386,7 @@ export class CloudflareScopeHost implements ScopeHost {
             expiresAt: r.expires_at,
           })),
           storage: rows.storage,
+          storageAttempts: rows.storageAttempts,
         });
         // Tenants covered, not totals: "read one tenant's meter" and "metered the whole
         // fleet" are different acts, and K-24 exists to tell them apart.

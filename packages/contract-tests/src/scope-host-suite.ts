@@ -9132,8 +9132,23 @@ export function scopeHostContractSuite(
           ].sort(),
         );
 
+        // /meters names the failing scope rather than letting it go missing; its last good
+        // reading is still in the sum. A declined scope is not failing.
+        expect((await host.admin.readMeters(staff, { tenantId: tf })).perTenant[0]!.storage).toMatchObject({
+          bytes: 700,
+          sampled: 1,
+          total: 2,
+          failing: 1,
+          lastFailedAt: day(0, '05:00:00'),
+        });
+
         // A successful read clears the error and moves the attempt on.
         await record(tf, s, 900, day(0, '07:00:00'));
+        expect((await host.admin.readMeters(staff, { tenantId: tf })).perTenant[0]!.storage).toMatchObject({
+          bytes: 900,
+          failing: 0,
+          lastFailedAt: null,
+        });
         expect((await host.admin.listScopeStorageAttempts!(staff)).find((a) => a.scopeId === s)).toMatchObject({
           attemptedAt: day(0, '07:00:00'),
           error: null,
@@ -9165,6 +9180,8 @@ export function scopeHostContractSuite(
           total: 2,
           oldestReadAt: day(-1, '06:00:00'),
           newestReadAt: day(0, '06:00:00'),
+          failing: 0,
+          lastFailedAt: null,
         });
         expect(a.storage).toEqual(a.perTenant[0]!.storage);
         const b = await host.admin.readMeters(staff, { tenantId: tb });

@@ -203,15 +203,18 @@ export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilt
   );
 }
 
-/** Every non-reaped scope's latest attempt — what the storage phase picks due scopes by. */
-export function listScopeStorageAttemptRows(sql: RedactionSql): ScopeStorageAttempt[] {
+/**
+ * Every non-reaped scope's latest attempt — what the storage phase picks due scopes by, and
+ * what a meter reading names failing scopes from. `tenantId` narrows to one tenant.
+ */
+export function listScopeStorageAttemptRows(sql: RedactionSql, tenantId?: TenantId): ScopeStorageAttempt[] {
   const rows = sql(
     `SELECT a.tenant_id, a.scope_id, a.attempted_at, a.error
        FROM _substrat_scope_storage_attempts a
        JOIN scopes s ON s.scope_id = a.scope_id AND s.tenant_id = a.tenant_id
-      WHERE s.status <> 'reaped'
+      WHERE s.status <> 'reaped'${tenantId ? ' AND s.tenant_id = ?' : ''}
       ORDER BY a.scope_id`,
-    [],
+    tenantId ? [tenantId] : [],
   ) as { tenant_id: string; scope_id: string; attempted_at: string; error: string | null }[];
   return rows.map((r) => ({
     tenantId: r.tenant_id as TenantId,
@@ -237,12 +240,21 @@ export function forgetScopeStorage(sql: RedactionSql, scopeId: string): void {
 
 /**
  * Fold latest samples into one gauge. `total` is the caller's count of non-reaped scopes;
- * samples are expected to be the latest per non-reaped scope (`listScopeStorage({ latest })`).
+ * samples are expected to be the latest per non-reaped scope (`listScopeStorage({ latest })`),
+ * and attempts the latest per non-reaped scope (`listScopeStorageAttempts`).
  */
 export function foldStorageGauge(
   samples: readonly { bytes: number; readAt: string }[],
   total: number,
+  attempts: readonly { attemptedAt: string; error: string | null }[] = [],
 ): StorageGauge {
+  let failing = 0;
+  let lastFailed: string | null = null;
+  for (const a of attempts) {
+    if (a.error === null) continue;
+    failing += 1;
+    if (lastFailed === null || a.attemptedAt > lastFailed) lastFailed = a.attemptedAt;
+  }
   let bytes = 0;
   let oldest: string | null = null;
   let newest: string | null = null;
@@ -259,5 +271,7 @@ export function foldStorageGauge(
     total,
     oldestReadAt: oldest as StorageGauge['oldestReadAt'],
     newestReadAt: newest as StorageGauge['newestReadAt'],
+    failing,
+    lastFailedAt: lastFailed as StorageGauge['lastFailedAt'],
   };
 }

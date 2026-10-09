@@ -82,7 +82,7 @@ export function StorageCard({
       {stored && (
         <div style={{ marginBottom: 12, fontSize: 13, color: 'var(--text-secondary)' }}>
           <strong style={{ color: 'var(--text-primary)' }}>Stored: {daily.value}</strong>{' '}
-          {daily.label !== 'total' && <Badge status="warning">{daily.label}</Badge>} {daily.detail}
+          {daily.label !== 'total' && <Badge status={daily.label === 'failing' ? 'danger' : 'warning'}>{daily.label}</Badge>} {daily.detail}
         </div>
       )}
       {error && (

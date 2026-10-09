@@ -118,6 +118,8 @@ describe('gaugeView (#1524)', () => {
     total: 2,
     oldestReadAt: '2026-09-21T06:00:00.000Z' as never,
     newestReadAt: '2026-09-21T08:00:00.000Z' as never,
+    failing: 0,
+    lastFailedAt: null,
     ...over,
   });
 
@@ -137,6 +139,20 @@ describe('gaugeView (#1524)', () => {
     expect(gaugeView(gauge({ oldestReadAt: at(STORAGE_STALE_AFTER_MS + 1000) }), NOW).label).toBe('stale');
     expect(gaugeView(gauge({ oldestReadAt: at(STORAGE_STALE_AFTER_MS - 60_000) }), NOW).label).toBe('total');
     expect(gaugeView(gauge({ sampled: 1, total: 3, oldestReadAt: at(STORAGE_STALE_AFTER_MS + 1000) }), NOW).label).toBe('stale');
+  });
+
+  it('names a scope whose last read failed, never calling the figure a total', () => {
+    const v = gaugeView(gauge({ failing: 1, lastFailedAt: '2026-09-21T11:00:00.000Z' as never }), NOW);
+    expect(v.label).toBe('failing');
+    expect(v.value).toBe('2.0 KiB'); // its last good reading is still in the sum
+    expect(v.detail).toMatch(/The last read of 1 scope failed, most recently at /);
+    // A scope that has only ever failed is named too, not left as "not sampled".
+    const never = gaugeView(
+      gauge({ sampled: 0, bytes: 0, oldestReadAt: null, newestReadAt: null, failing: 2, lastFailedAt: '2026-09-21T11:00:00.000Z' as never }),
+      NOW,
+    );
+    expect(never).toMatchObject({ value: '—', label: 'failing' });
+    expect(never.detail).toContain('The last read of 2 scopes failed');
   });
 
   it('shows no number when nothing is sampled, or the host keeps no gauge', () => {

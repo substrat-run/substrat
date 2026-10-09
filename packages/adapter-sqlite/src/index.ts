@@ -10570,6 +10570,7 @@ export class SqliteScopeHost implements ScopeHost {
           })),
           // #1524: the stored gauge's latest sample per non-reaped scope. A directory read only.
           storage: listScopeStorageRows(redactionSqlOf(this.directory), { tenantId: only, latest: true }),
+          storageAttempts: listScopeStorageAttemptRows(redactionSqlOf(this.directory), only),
         });
         // The count that matters for K-24 is how many TENANTS this reading covered —
         // "read the meter for one tenant" and "metered the whole fleet" are different

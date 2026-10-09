@@ -1,0 +1,49 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { ulid } from '@substrat-run/kernel';
+import { SqliteScopeHost } from '../src/index.js';
+
+/**
+ * #1524: reap DELETES a scope's storage samples and its attempt row. Every read of either
+ * also joins on scope status, so the shared contract suite cannot see whether the rows are
+ * gone or only hidden; this reads the directory tables themselves.
+ */
+describe('storage gauge rows at reap (#1524)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it("deletes the reaped scope's samples and attempt, and keeps its sibling's", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-gauge-reap-'));
+    dirs.push(dir);
+    const host = new SqliteScopeHost({ dir });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: 'gauge-reap', name: 'Gauge Reap' });
+    const [kept, reaped] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+    for (const s of [kept, reaped]) {
+      await host.provisionScope(staff, { tenantId: t, scopeId: s });
+      await host.admin.activateScope(staff, t, s);
+    }
+    const now = new Date().toISOString();
+    await host.admin.recordScopeStorage!(staff, [
+      { tenantId: t, scopeId: kept, bytes: 1, readAt: now },
+      { tenantId: t, scopeId: reaped, bytes: 2, readAt: now },
+    ]);
+    const directory = (host as unknown as { directory: { prepare(q: string): { get(...a: unknown[]): unknown } } }).directory;
+    const count = (table: string, scope: string) =>
+      (directory.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE scope_id = ?`).get(scope) as { n: number }).n;
+    expect([count('_substrat_scope_storage', reaped), count('_substrat_scope_storage_attempts', reaped)]).toEqual([1, 1]);
+
+    await host.admin.archiveScope(staff, t, reaped);
+    await host.admin.reapScope(staff, t, reaped);
+
+    expect([count('_substrat_scope_storage', reaped), count('_substrat_scope_storage_attempts', reaped)]).toEqual([0, 0]);
+    expect([count('_substrat_scope_storage', kept), count('_substrat_scope_storage_attempts', kept)]).toEqual([1, 1]);
+    await host.close();
+  });
+});

@@ -141,7 +141,7 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
         const v = gaugeView(r.storage, Date.now());
         return (
           <span title={v.detail} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            {v.label !== 'total' && v.label !== 'not recorded' && <Badge status="warning">{v.label}</Badge>}
+            {v.label !== 'total' && v.label !== 'not recorded' && <Badge status={v.label === 'failing' ? 'danger' : 'warning'}>{v.label}</Badge>}
             <span style={{ fontFamily: 'var(--font-mono)' }}>{v.value}</span>
           </span>
         );

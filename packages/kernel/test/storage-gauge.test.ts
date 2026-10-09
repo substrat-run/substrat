@@ -43,6 +43,8 @@ describe('storage gauge arithmetic (#1524)', () => {
       total: 3,
       oldestReadAt: '2026-08-05T10:00:00.000Z',
       newestReadAt: '2026-08-06T10:00:00.000Z',
+      failing: 0,
+      lastFailedAt: null,
     });
     expect(foldStorageGauge([], 2)).toMatchObject({ bytes: 0, sampled: 0, total: 2, oldestReadAt: null, newestReadAt: null });
   });
@@ -77,6 +79,31 @@ describe('storage gauge arithmetic (#1524)', () => {
       oldestReadAt: '2026-08-01T00:00:00.000Z',
       newestReadAt: '2026-08-06T00:00:00.000Z',
     });
+  });
+
+  it("counts each tenant's failing scopes from its own latest attempts, and names the latest failure", () => {
+    const r = fold({
+      tenants: [
+        { tenantId: t(1), slug: 'a', status: 'active' },
+        { tenantId: t(2), slug: 'b', status: 'active' },
+      ],
+      scopes: [
+        { tenantId: t(1), status: 'active' },
+        { tenantId: t(1), status: 'active' },
+        { tenantId: t(2), status: 'active' },
+      ],
+      storage: [{ tenantId: t(1), bytes: 10, readAt: '2026-08-06T00:00:00.000Z' }],
+      storageAttempts: [
+        { tenantId: t(1), attemptedAt: '2026-08-06T00:00:00.000Z', error: null },
+        { tenantId: t(1), attemptedAt: '2026-08-06T03:00:00.000Z', error: 'vertical answered 501' },
+        { tenantId: t(2), attemptedAt: '2026-08-05T03:00:00.000Z', error: 'boom' },
+      ],
+    });
+    expect(r.perTenant.map((p) => [p.slug, p.storage?.failing, p.storage?.lastFailedAt])).toEqual([
+      ['a', 1, '2026-08-06T03:00:00.000Z'],
+      ['b', 1, '2026-08-05T03:00:00.000Z'],
+    ]);
+    expect(r.storage).toMatchObject({ failing: 2, lastFailedAt: '2026-08-06T03:00:00.000Z', bytes: 10 });
   });
 
   it('carries no storage at all from a host that keeps no gauge, rather than a zero', () => {

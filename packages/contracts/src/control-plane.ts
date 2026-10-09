@@ -1723,6 +1723,14 @@ export const storageGauge = z.object({
   oldestReadAt: instant.nullable(),
   /** The freshest reading in the sum, or null when nothing is sampled. */
   newestReadAt: instant.nullable(),
+  /**
+   * Non-reaped scopes whose LATEST read attempt failed. Their last good sample (if any) is
+   * still in `bytes`, so a surface must say the figure has failing scopes rather than let
+   * them go silently missing.
+   */
+  failing: z.number().int().nonnegative(),
+  /** When the most recent of those failures happened, or null when none is failing. */
+  lastFailedAt: instant.nullable(),
 });
 export type StorageGauge = z.infer<typeof storageGauge>;
 
