@@ -207,8 +207,11 @@ including the two OIDC ones where Better Auth stays dormant:
   no permission at all is refused `409`). The directory records the secret's hash and which capability the invite is;
   accepting checks the secret is an open invite, exchanges it in the scope, and binds the
   invitee's verified `sub` to that principal. The inviter is not re-checked at accept, but the
-  link is: if what the invited principal holds has changed since the link was minted, the
-  link is revoked and refused. Withdrawing the invite revokes the link first, then removes
+  link is: if what the invited principal holds (its role keys, direct and narrowed grants) has
+  changed since the link was minted, the link is revoked and refused. A role's definition is
+  not part of that, since it is the vertical's code. `GET /api/invites` shows each invite's
+  `link` (`open`, `used`, `expired`, or `revoked` with its reason), so a dead link never
+  reads as open. Withdrawing the invite revokes the link first, then removes
   the row. An invite
   minted before this (a hash-only row) is still accepted by its hash through `claimInvite`. The four HTTP routes over these — `GET`/`POST /api/invites`,
   `POST /api/invites/:principal/revoke`, `POST /api/accept-invite` — are written once as
@@ -218,8 +221,8 @@ including the two OIDC ones where Better Auth stays dormant:
   supplies only what is its own: how a request resolves to a scope, what "admin" means (its
   `requireAdmin` returns the `{ principal }` it admitted), which roles a teammate may be
   invited at, its directory, the host's `assignScopeRoleBounded`, `revokeScopeRole`,
-  `revokeScopeRolesBounded`, `mintBecomeCapabilityBounded`, `revokeBecomeCapability` and
-  `exchangeCapability`, and its auth provider. The admin gate runs before the body is
+  `revokeScopeRolesBounded`, `mintBecomeCapabilityBounded`, `revokeBecomeCapability`,
+  `exchangeCapability` and `becomeLinkStates`, and its auth provider. The admin gate runs before the body is
   read; after it, creating an invite and revoking one both apply the assignment bound and
   refuse `403` naming what is missing, with nothing granted, recorded or removed. Creating is
   bounded by the role it confers. Revoking is bounded by the roles the invite's principal
