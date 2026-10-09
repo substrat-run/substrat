@@ -4937,7 +4937,8 @@ export type ScopeCopyRole = 'source' | 'destination';
  * A copy move's confirmation, written with the bind that routes the scope onto its destination
  * (#1722). The bind lands only while every entry of the move is still pending, leased to the move
  * (no sweep has claimed it) and inside its lease; in the same write the destination entries
- * settle `done` (the route reaches them) and the source entries settle `source`.
+ * settle `done` (the route reaches them) and the source entries settle as the `source` field
+ * says, with `sourceMarker` as the marker a later fenced wipe expects.
  */
 export interface ScopeCopyMoveConfirmation {
   moveId: string;

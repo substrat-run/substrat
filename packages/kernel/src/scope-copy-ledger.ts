@@ -34,8 +34,11 @@ export const copyMoveLiveParams = (confirm: ScopeCopyMoveConfirmation, now: stri
 
 /**
  * Run in the bind's own transaction once its row update landed: the destination is now the
- * route, and the source becomes what the move says (a carry's source is eligible for its fenced
- * wipe; an adopt or rebind keeps its source as the backout). Params: `copyMoveConfirmParams`.
+ * route, and the source becomes the state the confirmation names, with the marker its export
+ * read. An adopt or rebind names `eligible`, so the sweep wipes the old copy under its fence
+ * (the old copy is no backout; rollback is a snapshot taken first). A carry names `retained`
+ * and promotes the source itself once it has ruled out an overtaken destination. A source on a
+ * deployment that cannot fence a wipe stays `retained`. Params: `copyMoveConfirmParams`.
  */
 export const COPY_MOVE_CONFIRM_SQL = `
   UPDATE scope_script_copies SET
