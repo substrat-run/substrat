@@ -12,6 +12,7 @@ import { Badge, Button, Card, Stat, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { tenantTone } from '../lib/fleet';
 import type { Api } from '../lib/api';
+import { EXCLUSION_LABEL, gaugeView } from '../lib/storage';
 
 /**
  * §5's meters, rendered (#38) — and the two that are missing, said out loud.
@@ -30,6 +31,11 @@ import type { Api } from '../lib/api';
  * at read time, so this view shows list and billed side by side and computes neither.
  * Reads still emit nothing and the cross-tenant order flow still does not exist, so
  * meter 4 stays absent and says so.
+ *
+ * Storage (#1524) is the STORED gauge: the scheduled pass samples each scope's database at
+ * most once a day, and only when another phase of that pass already woke it, so this view
+ * reads a directory figure and wakes nothing. It is labelled with what it covers and how old
+ * it is (`gaugeView`), and is never called a total when a scope is unsampled or stale.
  */
 
 export interface MetersProps {
@@ -129,6 +135,19 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
       },
     },
     {
+      header: 'Storage',
+      align: 'right',
+      render: (r) => {
+        const v = gaugeView(r.storage, Date.now());
+        return (
+          <span title={v.detail} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {v.label !== 'total' && v.label !== 'not recorded' && <Badge status="warning">{v.label}</Badge>}
+            <span style={{ fontFamily: 'var(--font-mono)' }}>{v.value}</span>
+          </span>
+        );
+      },
+    },
+    {
       header: 'SKUs',
       align: 'right',
       render: (r) => (
@@ -176,6 +195,7 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
   ];
 
   const scopes = reading?.scopes;
+  const storage = gaugeView(reading?.storage, Date.now());
   const skuTotal = reading?.entitlements.reduce((n, r) => n + r.tenants, 0) ?? 0;
 
   return (
@@ -201,7 +221,7 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
       </div>
 
       {/* Meter 1 — a COUNT over the directory, per §5 "free; ship it as a number". */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
         <Stat
           label="Active tenants"
           value={num(reading?.tenants.active ?? 0)}
@@ -224,6 +244,13 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
           label="Billable grants"
           value={num(skuTotal)}
           meta={`across ${num(reading?.entitlements.length ?? 0)} SKU/tier combinations`}
+        />
+        {/* #1524: the stored gauge, summed. Its label carries coverage and age, so a sum
+            missing a scope or a day is never read as the fleet's storage. */}
+        <Stat
+          label={storage.label === 'total' ? 'Stored (scope databases)' : `Stored (scope databases) · ${storage.label}`}
+          value={storage.value}
+          meta={storage.detail}
         />
       </div>
 
@@ -273,7 +300,7 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
 
       <Card
         title="What meter 3 still cannot count, and why meter 4 is not shown"
-        description="Storage is read per tenant, on demand, not here; API reads and meter 4 are uncomputable, by construction. Writing it here so it stops being re-proposed."
+        description="Storage above is scope databases only; API reads and meter 4 are uncomputable, by construction. Writing it here so it stops being re-proposed."
       >
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
           <li>
@@ -281,11 +308,11 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
             calls fan in because each one is raised as a platform intent and drained here; nothing
             else does. The Tier-2 sink exists: the sweep drains every scope's outbox to the lake, and
             each row carries its tenant and its serialized size in bytes. What is missing is a reader.
-            Nothing aggregates those rows per tenant yet. Storage is read on a tenant's own page, on
-            demand, as the sum of its scope databases (#1524). It is not shown on this fleet view
-            because a fleet-wide reading would wake every scope in the fleet. Attachment files,
-            per-tenant D1 databases and the lake are not in that sum. Reads emit nothing at all, so
-            API volume is unmeterable from the event spine by design, not by omission.
+            Nothing aggregates those rows per tenant yet. Storage is the sum of each scope
+            database's latest daily sample (#1524), and it does not count{' '}
+            {Object.values(EXCLUSION_LABEL).join(', ')}. The samples are kept thirteen months, but
+            nothing prices them as byte-days yet. Reads emit nothing at all, so API volume is
+            unmeterable from the event spine by design, not by omission.
           </li>
           <li>
             <strong>Meter 4 (network transactions).</strong> Needs the cross-tenant order flow, which

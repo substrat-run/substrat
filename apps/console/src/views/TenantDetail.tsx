@@ -352,14 +352,14 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, run
         </Card>
       )}
 
-      {/* #1524: storage, on demand. Its own card because it is read differently. The meters
-          above are directory counts read on every visit, and this one wakes scopes, so it
-          waits for a press. */}
+      {/* #1524: storage. Its own card because it is read two ways: the stored daily figure
+          comes with the meters above, and the live reading wakes scopes, so it waits for a press. */}
       {meter?.perTenant[0] && (
         <StorageCard
           api={api}
           tenantId={tenant.id}
           readableScopes={meter.perTenant[0].scopes.total - meter.perTenant[0].scopes.reaped}
+          stored={meter.perTenant[0].storage}
         />
       )}
 
