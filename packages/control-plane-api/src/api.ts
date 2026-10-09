@@ -157,7 +157,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
-import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies } from './scope-copy-cleanup.js';
+import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
@@ -4877,14 +4877,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const reapScopeStorage = async (c: ReqCtx, scope: Scope): Promise<boolean> => {
     const actor = c.get('actor');
+    // The deployment the scope's vertical resolves to, deleted through; a 501 there is recorded
+    // as stranded storage, as `reapScopeScriptCopies` records its own.
+    const viaDeployment = async (): Promise<boolean> => {
+      const stranded = await deleteScopeStorageOrStrand(await verticalForScope(c, scope), scope.tenantId, scope.id);
+      if (stranded) {
+        await recordStrandedStorage(c.var.admin, actor, scope.tenantId, scope.id, `the deployment its vertical '${scope.vertical}' resolves to`);
+      }
+      return stranded;
+    };
     if (!options.resolveVerticalRef) {
       await assertNoUnreachableScopeCopies(c.var.admin, actor, scope.tenantId, scope.id);
-      return deleteScopeStorageOrStrand(await verticalForScope(c, scope), scope.tenantId, scope.id);
+      return viaDeployment();
     }
     const unrouted = (await routeOf(c, scope)) === null;
     const { storageStranded } = await reapScopeScriptCopies(
       { admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, scope.tenantId, scope.id);
-    const bySlug = unrouted ? await deleteScopeStorageOrStrand(await verticalForScope(c, scope), scope.tenantId, scope.id) : false;
+    const bySlug = unrouted ? await viaDeployment() : false;
     return storageStranded || bySlug;
   };
 

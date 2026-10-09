@@ -719,4 +719,23 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     expect([after.servingRef ?? null, after.verticalVersionId]).toEqual([null, versions.v2]);
     expect(storeOf(refOf.get(versions.v2)!, snap).tables).toEqual(notes('kept'));
   });
+
+  // Review r4: the reap routes' slug fallback records the storage it strands, as the ledger reap does.
+  it('the slug fallback records what it strands, by either reap route', async () => {
+    noDeleteVerb.add(SERVING);
+    try {
+      for (const route of ['delete', 'reap'] as const) {
+        const { sid } = await unrouted(route === 'delete' ? { fork: true } : { archived: true });
+        const res = route === 'delete'
+          ? await bySlug.request(`/tenants/${t}/scopes/${sid}`, { method: 'DELETE', headers: asStaff })
+          : await bySlug.request(`/tenants/${t}/scopes/${sid}/reap`, { method: 'POST', headers: asStaff, body: JSON.stringify({ backup: false }) });
+        expect(res.status, await res.clone().text()).toBe(200);
+        expect(await res.json()).toMatchObject({ storageStranded: true });
+        const stranded = (await host.admin.listOpsFailures(staff, { scopeId: sid })).filter((f) => f.stage === 'storage-stranded');
+        expect(stranded.map((f) => ({ operation: f.operation, status: f.status }))).toEqual([{ operation: 'scope.reap', status: 501 }]);
+      }
+    } finally {
+      noDeleteVerb.delete(SERVING);
+    }
+  });
 });
