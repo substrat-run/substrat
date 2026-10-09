@@ -49,10 +49,11 @@ import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type S
  * - **No race with a live move.** The entry is never pending, so no move's confirmation and no lease
  *   sweep acts on it; a reap claim refuses it, and an erasure that read the inventory first refuses
  *   to finalize on the changed count and is retried.
- * - **Erasures that came first.** Each recorded entry is audited as `backfillScopeCopy`. A subject
- *   whose last erasure in that scope is older than the scope's last backfill row never reached the
- *   recorded copy; every run reports those scopes and subjects, and a real run writes an ops record
- *   for each (`erased-before`). Erasing them again is the operator's call.
+ * - **Erasures that came first.** Each recorded entry is audited as `backfillScopeCopy` with the
+ *   erasure epoch it was written under, and every erasure records its own (`ErasureEpochStamp`). A
+ *   subject whose last erasure did not reach the latest recorded copy (`erasedBeforeBackfill`) is
+ *   reported by every run, and a real run writes an ops record for each scope (`erased-before`).
+ *   Erasing them again is the operator's call.
  */
 
 export const BACKFILL_PAGE_MAX = 200;
