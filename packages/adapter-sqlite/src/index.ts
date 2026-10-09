@@ -4152,9 +4152,8 @@ export class SqliteScopeHost implements ScopeHost {
     if (!scope || scope.tenant_id !== tenantId) {
       throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
-    if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
-    }
+    const refusal = this.scopeWorkRefusal(tenantId, scopeId);
+    if (refusal) throw substratError('conflict', refusal, { reason: SCOPE_GATE_REASONS.notActive });
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     return this.buildStub(tenantId, scopeId, rt, asPrincipal(record.principal), options, record.id);
@@ -4192,9 +4191,8 @@ export class SqliteScopeHost implements ScopeHost {
     if (!scope || scope.tenant_id !== tenantId) {
       throw substratError('not_found', `unknown scope: ${scopeId}`);
     }
-    if (scope.status !== 'active') {
-      throw substratError('conflict', `scope not active (status: ${scope.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
-    }
+    const refusal = this.scopeWorkRefusal(tenantId, scopeId);
+    if (refusal) throw substratError('conflict', refusal, { reason: SCOPE_GATE_REASONS.notActive });
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId }, undefined, undefined, purge);
