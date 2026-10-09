@@ -66,7 +66,7 @@ export type { RouteResolver } from './route-resolver.js';
 export type { ControlPlaneReader, DoCheckerDeps } from './checker.js';
 export { cloudflareClientContext, cloudflareGeo } from './client-context.js';
 export type { CloudflareRequestLike } from './client-context.js';
-// #1978: moving here from the kernel — the hosted connector-call recorder.
+// #1978: moved here from the kernel — the hosted connector-call recorder.
 export {
   analyticsEngineConnectorCallRecorder,
   CONNECTOR_CALL_DATA_POINT_LAYOUT,

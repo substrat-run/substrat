@@ -95,7 +95,7 @@ export {
   type EmailSent,
   type SendEmailDeps,
 } from './email-intent.js';
-// #1978: moving here from the kernel — the drain is its only reader.
+// #1978: moved here from the kernel — the drain is its only reader.
 export {
   isTerminalDispatchFailure,
   isTerminalProviderError,

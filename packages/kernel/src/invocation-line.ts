@@ -61,7 +61,7 @@ export interface InvocationLogLine {
   surface: string | null;
   /** The request's method. `null` on an async line (#1901), which no request carried. */
   method: string | null;
-  /** Path ONLY — see `pathOf`. `null` on an async line (#1901). */
+  /** Path ONLY: the request writer drops the query string. `null` on an async line (#1901). */
   path: string | null;
   /**
    * #1237: the id every event this invocation emitted is stamped with.
@@ -80,7 +80,7 @@ export interface InvocationLogLine {
    * mapped a thrown error to.
    *
    * Hono composes `onError` INSIDE the handler chain, not around it, so a handler that
-   * throws does not reject this middleware's `await next()`: the envelope has already
+   * throws does not reject the request middleware's `await next()`: the envelope has already
    * turned it into a response by the time control comes back, and `c.res` holds the
    * mapped status. That is worth stating because the opposite is the natural guess, and
    * guessing it would have put `null` on every error line — the exact rows a tenant
@@ -195,8 +195,9 @@ export type AsyncOutcome =
 
 /**
  * The fields of an invocation line, before defaults. The ONE place the line's grammar lives
- * (#1901): the request writer (`vertical-host`'s `invocationLog`) and the scope host's async writer both build through
- * {@link invocationLine}, so a field added to one is a field added to both, in one order.
+ * (#1901): the request writer (`vertical-host`'s `invocationLog`) and the scope host's async
+ * writer both build through {@link invocationLine}, so a field added to one is a field added
+ * to both, in one order.
  */
 export interface InvocationLineFields {
   kind?: AsyncInvocationKind;

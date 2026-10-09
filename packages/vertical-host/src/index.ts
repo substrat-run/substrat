@@ -2259,8 +2259,8 @@ export * from './capability-exchange.js';
 export * from './peer-client.js';
 // #1859: the live-read route — the Origin gate and the pure host's 501, once.
 export * from './live.js';
-// #1978: moving here from the kernel — the request log, the router assertion and the
-// platform-call check every deployed vertical mounts.
+// #1978: the request log and the router assertion every deployed vertical mounts, moved
+// here from the kernel, and the platform-call check, which the kernel still defines.
 export * from './invocation-log.js';
 export * from './routed-node.js';
 export * from './rate-limit.js';
