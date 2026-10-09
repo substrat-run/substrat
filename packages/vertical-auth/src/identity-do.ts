@@ -27,7 +27,6 @@ import {
   recordOwnerClaim as recordOwnerClaimRow,
   ownerClaimMatches as ownerClaimMatchesRow,
   claimOwnerByCapability as claimOwnerByCapabilityRow,
-  claimOwner as claimOwnerRow,
   type OwnerClaimLinkRow,
   unbindSubject as unbindSubjectRow,
   unbindPrincipal as unbindPrincipalRow,
@@ -69,7 +68,7 @@ export type { InviteRow, MemberBinding } from './member-directory.js';
  * Two roles, either or both used per deployment:
  *   - `doAuthProvider` (below) exposes Better Auth here as an `AuthProvider` (the
  *     `better-auth-do` config). With an OIDC provider instead, Better Auth stays dormant.
- *   - `setPendingOwner` / `resolvePrincipal` / `claimOwner` are the identity directory —
+ *   - `setPendingOwner` / `resolvePrincipal` / `claimOwnerByCapability` are the identity directory —
  *     used under EVERY provider, since the subject → principal mapping is provider-independent.
  *     The owner seat's rules (the bounded first sign-in, the claim link) are in owner-seat.ts.
  */
@@ -105,8 +104,7 @@ const SCHEMA_STATEMENTS: string[] = [
   // `pending_owner` (claimed and consumed), `owner_of_record` (#332, never consumed: the
   // vertical's own durable memory of the owner, in this per-tenant DO rather than the scope's
   // data DO, so it survives a scope-DO wipe and a reconcile can re-grant from it) and
-  // `owner_claim_capability` (which `become` capability is the current claim link, #1686; the
-  // legacy `owner_claim` hash rows of #925 are redeem-only until they expire). The tables and
+  // `owner_claim_capability` (which `become` capability is the current claim link, #1686). The tables and
   // the rules over them live in `owner-seat.ts` so they are unit-tested without a DO; the
   // methods below delegate there.
   ...OWNER_SEAT_DDL,
@@ -337,14 +335,6 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /**
-   * LEGACY — claim the seat with a link minted before #1686, by its token's hash. Redeem-only;
-   * remove with `claimOwner` in owner-seat.ts (see the date there).
-   */
-  async claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null> {
-    return claimOwnerRow(this.registrySql, scopeId, sub, tokenHash, Date.now());
-  }
-
-  /**
    * Record a member invite: a pre-minted `principal` + `roleKey` the caller has already
    * granted at scope level, claimable by whoever presents the token whose hash is `tokenHash`.
    * The plaintext token never reaches the DO — only its hash, so a DB read can't mint access.
@@ -520,7 +510,6 @@ export type IdentityStub = {
   recordOwnerClaim(scopeId: string, principal: string, link: OwnerClaimLinkRow): Promise<{ previous: string | null } | null>;
   ownerClaimMatches(scopeId: string, tokenHash: string): Promise<boolean>;
   claimOwnerByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
-  claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
   createInvite(
     scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId?: string | null,
   ): Promise<void>;

@@ -21,11 +21,9 @@
  *      only if that capability is still the recorded link and names the pending owner.
  *
  * Every refusal after step 1 is the same 400, so a probe learns nothing about which step said no.
- *
- * LEGACY: a token that is not a capability secret is a link minted before #1686, and is redeemed
- * the old way (`claimOwner`, by hash) until it expires — at most `OWNER_CLAIM_TTL_MS` after the
- * deploy that ships this. REMOVE that branch in the release after the one that ships #1686
- * (written 2026-10-04), with `claimOwner` in owner-seat.ts.
+ * A token that is not a capability secret at all gets it too: the hash-only links #925 minted
+ * before #1686 are no longer redeemed — every one of them expired `OWNER_CLAIM_TTL_MS` after it
+ * was minted, and the release after #1686 has long shipped.
  */
 
 import type { Context, Hono } from 'hono';
@@ -33,12 +31,11 @@ import { HTTPException } from 'hono/http-exception';
 import { z, type CapabilityExchange, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { capabilityTokenHash, plausibleCapabilitySecret } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
-import { sha256Hex } from './owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from './provider.js';
 import { bodyOf } from './request-body.js';
 
 /** The slice of the identity directory the redemption touches. */
-export type OwnerClaimDirectory = Pick<IdentityStub, 'ownerClaimMatches' | 'claimOwnerByCapability' | 'claimOwner'>;
+export type OwnerClaimDirectory = Pick<IdentityStub, 'ownerClaimMatches' | 'claimOwnerByCapability'>;
 
 /** What the redemption needs of the scope host: the exchange, asked for a `become` capability only. */
 export interface OwnerClaimExchangeHost {
@@ -96,10 +93,12 @@ export function mountOwnerClaim<E extends object, N extends { tenantId: TenantId
   deps: OwnerClaimRouteDeps<E, N>,
 ): void {
   /**
-   * The capability path, steps 2–4: refused before the exchange unless the secret is the
-   * scope's current link, so a stale or unrelated secret keeps its use.
+   * Steps 2–4: refused before the exchange unless the secret is the scope's current link, so a
+   * stale or unrelated secret keeps its use, and a token that is no capability secret reaches
+   * neither the directory nor the scope.
    */
   const redeem = async (env: E, node: N, directory: OwnerClaimDirectory, sub: string, secret: string): Promise<string | null> => {
+    if (!plausibleCapabilitySecret(secret)) return null;
     if (!(await directory.ownerClaimMatches(node.scopeId, await capabilityTokenHash(secret)))) return null;
     const exchanged = await deps.host(env).exchangeCapability(node.tenantId, node.scopeId, secret, { mode: 'become' });
     if (exchanged?.kind !== 'principal') return null;
@@ -113,11 +112,7 @@ export function mountOwnerClaim<E extends object, N extends { tenantId: TenantId
       throw new HTTPException(401, { message: `sign in before claiming this ${deps.noun ?? 'workspace'}` });
     }
     const { token } = await bodyOf(c, claimOwnerBody);
-    const directory = deps.directory(c.env, node);
-    const principal = plausibleCapabilitySecret(token)
-      ? await redeem(c.env, node, directory, subject.sub, token)
-      : // LEGACY — a link minted before #1686. Remove with `claimOwner` (see the header).
-        await directory.claimOwner(node.scopeId, subject.sub, await sha256Hex(token));
+    const principal = await redeem(c.env, node, deps.directory(c.env, node), subject.sub, token);
     if (!principal) throw new HTTPException(400, { message: REFUSED });
     await deps.onClaimed?.(c, { node, principal, subject });
     return c.json({ ok: true, principal });

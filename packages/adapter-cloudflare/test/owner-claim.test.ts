@@ -194,32 +194,19 @@ describe('owner claim link as a become capability (#1686)', () => {
     expect(await identity().needsSetup(s)).toBe(true);
   });
 
-  it('a LEGACY link (minted before #1686) still binds while it lives — and not after a capability re-mint', async () => {
+  it('a pre-#1686 hash link is no longer redeemed — the directory keeps no such table — while the capability link binds', async () => {
     const legacy = 'f'.repeat(64);
-    const writeLegacy = async () =>
-      runInDurableObject(identity(), async (_, state) => {
-        state.storage.sql.exec(
-          'INSERT OR REPLACE INTO owner_claim (scope_id, token_hash, expires_at) VALUES (?, ?, ?)',
-          s,
-          await sha256Hex(legacy),
-          Date.now() + OWNER_CLAIM_TTL_MS,
-        );
-      });
-
-    await writeLegacy();
-    await mint();
-    expect((await redeem(legacy)).status).toBe(400);
+    const tables = await runInDurableObject(identity(), async (_, state) =>
+      state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'owner_claim'").toArray(),
+    );
+    expect(tables).toEqual([]);
+    const refused = await redeem(legacy);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({ error: 'this claim link is invalid, expired, or already used' });
     expect(await identity().needsSetup(s)).toBe(true);
-
-    // The twin, on a seat with no capability mint since: the legacy link binds.
-    t = tenantId.parse(ulid());
-    s = scopeId.parse(ulid());
-    await identity().setPendingOwner(s, owner);
-    await writeLegacy();
-    expect(await identity().ownerSeat(s)).toMatchObject({ state: 'unclaimed', claimLink: { expiresAt: expect.any(String) } });
-    const ok = await redeem(legacy);
-    expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ ok: true, principal: owner });
+    // The twin: the seat's capability link binds.
+    const link = (await mint())!;
+    expect((await redeem(secretOf(link.claimUrl))).status).toBe(200);
   });
 
   it('a seat already claimed when the mint lands records nothing and revokes the capability it minted', async () => {
