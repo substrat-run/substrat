@@ -129,6 +129,7 @@ export {
   copyBackfillRefusal,
   type ScopeCopyBackfillResult,
   type CopyBackfillScopeRow,
+  type ErasureEpochStamp,
   COPY_EXPIRED_SQL,
   COPY_MOVE_CONFIRM_SQL,
   COPY_MOVE_LIVE_PREDICATE,

@@ -118,6 +118,14 @@ export const COPY_BACKFILL_SUPERSEDE_SQL = `
 export const COPY_BACKFILL_SCOPE_SQL =
   'SELECT reap_claimed_at, COALESCE(erasure_epoch, 0) AS erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?';
 
+/**
+ * What an erasure's `shredSubject` row records in `before` (#1722): the erasure epoch it ran under
+ * and how it ran. `orchestrated` claimed the scope's copy inventory at that epoch and redacted every
+ * copy in it; `direct` took no claim and redacted only the scope's own store, so it never reaches a
+ * script copy whatever its epoch. The backfill orders erasures against the copies it records by it.
+ */
+export interface ErasureEpochStamp { erasureEpoch: number; path: 'orchestrated' | 'direct' }
+
 /** `COPY_BACKFILL_SCOPE_SQL`'s row. */
 export interface CopyBackfillScopeRow { reap_claimed_at: string | null; erasure_epoch: number }
 

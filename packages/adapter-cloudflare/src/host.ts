@@ -469,7 +469,7 @@ import {
   shapeTopUpBatch,
   type ConnectLinkKeyRow,
 } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import type { PlatformRequestSettle } from '@substrat-run/kernel';
 import {
@@ -8101,6 +8101,9 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
+        // #1722: a direct shred claims nothing; it records the epoch it ran under, as an orchestrated
+        // one records the epoch its claim compared, so the backfill can order every erasure.
+        const stamp: ErasureEpochStamp = { erasureEpoch: await this.cp.scopeErasureEpoch(tenantId, scopeId), path: 'direct' };
         // Redact the live spine FIRST, destroy the key LAST. Both halves are idempotent and
         // a crash between them converges on retry, so the order is decided by which
         // half-done state harms the person: dying after the redaction leaves ciphertext in
@@ -8195,7 +8198,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // BOTH logs, deliberately: the admin log because this is a mutation, the access log
         // because it destroys evidence. An erasure is the one action where "who asked for
         // this to disappear" is itself part of the record.
-        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, stamp, receipt);
         // BOTH counts: the access log's number is "how much evidence this destroyed", and
         // an intent payload is a whole event's worth of it.
         await this.recordAccess(
@@ -8230,7 +8233,8 @@ export class CloudflareScopeHost implements ScopeHost {
           tombstoned: true,
         });
         // The epoch the claim compared (#1722): the backfill orders itself against this erasure by it.
-        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, { erasureEpoch: expected.epoch }, receipt);
+        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId },
+          { erasureEpoch: expected.epoch, path: 'orchestrated' } satisfies ErasureEpochStamp, receipt);
         await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId },
           redactions.reduce((n, r) => n + r.events + r.intents + r.jobRuns + r.idempotencyResults + moduleRowsErased(r.vertical), 0));
         return receipt;

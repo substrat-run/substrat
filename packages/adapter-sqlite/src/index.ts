@@ -706,7 +706,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -10174,10 +10174,15 @@ export class SqliteScopeHost implements ScopeHost {
         );
         return opened;
       },
-      // `before` is the erasure epoch an orchestrated erasure's claim compared (#1722): the backfill
-      // orders itself against an erasure by it. Absent on a direct shred, which claims nothing.
-      shredSubject: async (actor, tenantId, scopeId, subjectId, before: { erasureEpoch: number } | null = null): Promise<SubjectShredReceipt> => {
+      // `stamp` is the erasure epoch an orchestrated erasure's claim compared (#1722). A direct shred
+      // claims nothing and records the epoch it ran under: the backfill orders erasures by them.
+      shredSubject: async (actor, tenantId, scopeId, subjectId, stamp?: ErasureEpochStamp): Promise<SubjectShredReceipt> => {
         this.assertScope(tenantId, scopeId);
+        const before: ErasureEpochStamp = stamp ?? {
+          erasureEpoch: (this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as CopyBackfillScopeRow | undefined)
+            ?.erasure_epoch ?? 0,
+          path: 'direct',
+        };
         // Redact the live spine FIRST. Both halves are idempotent and a crash between them
         // converges on retry, so the order is decided by which half-done state harms the
         // person: dying after this leaves ciphertext in a backup that no key opens; dying
@@ -10296,9 +10301,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
         // The pure adapter has one co-located scope store. Its existing atomic shred is
         // the final local redaction and key destruction, after remote copies confirmed.
-        const shred = this.admin.shredSubject as (...args: [...Parameters<HostAdmin['shredSubject']>, { erasureEpoch: number }]) =>
+        const shred = this.admin.shredSubject as (...args: [...Parameters<HostAdmin['shredSubject']>, ErasureEpochStamp]) =>
           Promise<SubjectShredReceipt>;
-        return shred(actor, tenantId, scopeId, subjectId, { erasureEpoch: expected.epoch });
+        return shred(actor, tenantId, scopeId, subjectId, { erasureEpoch: expected.epoch, path: 'orchestrated' });
       },
 
       // -- impersonation (K-42, #868) ----------------------------------------

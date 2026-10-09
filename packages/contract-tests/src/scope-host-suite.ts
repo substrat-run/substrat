@@ -5905,7 +5905,7 @@ export function scopeHostContractSuite(
         { expectedErasureEpoch: 0, confirmMove: { moveId: move, source: 'eligible' } }), 'precondition_failed');
     });
 
-    it('a backfill and an orchestrated erasure each record the erasure epoch they ran under (#1722)', async () => {
+    it('a backfill and every erasure record the erasure epoch they ran under (#1722)', async () => {
       const s = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t1, scopeId: s });
       const epochs = async (action: 'backfillScopeCopy' | 'shredSubject') =>
@@ -5916,7 +5916,10 @@ export function scopeHostContractSuite(
       await host.admin.finalizeSubjectShred(staff, t1, s, ulid(), redacted, { versionId: null, servingRef: null, epoch: 0, copyCount: 1 });
       expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`)).toBe('recorded');
       expect(await epochs('backfillScopeCopy')).toEqual([{ erasureEpoch: 0 }, { erasureEpoch: 1 }]);
-      expect(await epochs('shredSubject')).toEqual([{ erasureEpoch: 0 }]);
+      expect(await epochs('shredSubject')).toEqual([{ erasureEpoch: 0, path: 'orchestrated' }]);
+      // A direct shred claims nothing, and says so, with the epoch it ran under.
+      await host.admin.shredSubject(staff, t1, s, ulid());
+      expect(await epochs('shredSubject')).toEqual([{ erasureEpoch: 0, path: 'orchestrated' }, { erasureEpoch: 1, path: 'direct' }]);
     });
 
     it('a move that routes onto a backfilled script settles that entry in the confirming write (#1722)', async () => {

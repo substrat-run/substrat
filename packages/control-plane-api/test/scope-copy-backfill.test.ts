@@ -105,6 +105,16 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
    * hour, so the steps it means to order are well apart.
    */
   const tick = async () => { vi.setSystemTime(Date.now() + 60 * 60_000); };
+  /** An erasure as the route runs one over a scope with script copies: claimed on its inventory. */
+  const orchestratedShred = async (sid: ScopeId, subject: string) => {
+    const scope = (await host.admin.getScopeRecord(staff, t, sid))!;
+    const copies = await host.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid });
+    await host.admin.finalizeSubjectShred(staff, t, sid, subject, [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0,
+      intentIds: [], vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }], {
+      versionId: scope.verticalVersionId ?? null, servingRef: scope.servingRef ?? null,
+      epoch: await host.admin.scopeErasureEpoch(staff, t, sid), copyCount: copies.length,
+    });
+  };
   const provision = async () => {
     await tick();
     const sid = scopeId.parse(ulid());
@@ -283,8 +293,29 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     expect(dry.flatMap((p) => p.erasedBefore)).toEqual([{ tenantId: t, scopeId: moved, subjects: ['subject-1'] }]);
     expect((await host.admin.listOpsFailures(staff, { operation: 'scope.copy-backfill', limit: 200 }))
       .some((f) => f.scopeId === moved && f.stage === 'erased-before')).toBe(true);
-    await host.admin.shredSubject(staff, t, moved, 'subject-1'); // the operator erases again
+    // A direct shred never reaches a script copy: still reported.
+    await host.admin.shredSubject(staff, t, moved, 'subject-1');
+    expect((await backfillAll(true, 50)).flatMap((p) => p.erasedBefore)).toEqual([{ tenantId: t, scopeId: moved, subjects: ['subject-1'] }]);
+    // The operator erases again, orchestrated over the ledgered copies, as the route does once the
+    // inventory names them: reached.
+    await orchestratedShred(moved, 'subject-1');
     expect((await backfillAll(true, 50)).flatMap((p) => p.erasedBefore)).toEqual([]);
+  });
+
+  it('an erasure row with no epoch stamp cannot be ordered, so it is reported (#1722 r3)', async () => {
+    const sid = await provision(); // born pinned
+    await host.admin.setScopeServingRef(staff, t, sid, null);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v1!.id);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v2!.id);
+    expect((await backfillAll(false, 50)).flatMap((p) => p.entries).some((e) => e.scopeId === sid && e.outcome === 'recorded')).toBe(true);
+    await orchestratedShred(sid, 'subject-legacy');
+    expect((await backfillAll(true, 50)).flatMap((p) => p.erasedBefore).filter((e) => e.scopeId === sid)).toEqual([]);
+    // The same row as one written before the stamps: no `before`.
+    const raw = new Database(join(dir, '_directory.sqlite'));
+    raw.prepare("UPDATE _substrat_admin_log SET before = NULL WHERE scope_id = ? AND action = 'shredSubject'").run(sid);
+    raw.close();
+    expect((await backfillAll(true, 50)).flatMap((p) => p.erasedBefore).filter((e) => e.scopeId === sid))
+      .toEqual([{ tenantId: t, scopeId: sid, subjects: ['subject-legacy'] }]);
   });
 
   it('a re-run records nothing new and still reports every failure', async () => {
@@ -314,7 +345,7 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     const [shred] = await host.admin.auditLog(staff, { scopeId: sid, action: 'shredSubject' });
     const [recorded] = await host.admin.auditLog(staff, { scopeId: sid, action: 'backfillScopeCopy' });
     expect(shred!.id > recorded!.id).toBe(true); // the row order alone would call it reached
-    expect([shred!.before, recorded!.before]).toEqual([{ erasureEpoch: 0 }, { erasureEpoch: 1 }]);
+    expect([shred!.before, recorded!.before]).toEqual([{ erasureEpoch: 0, path: 'orchestrated' }, { erasureEpoch: 1 }]);
     const pages = await backfillAll(true, 50);
     expect(pages.flatMap((p) => p.erasedBefore).filter((e) => e.scopeId === sid)).toEqual([
       { tenantId: t, scopeId: sid, subjects: ['subject-raced'] },
