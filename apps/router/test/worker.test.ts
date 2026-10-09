@@ -944,7 +944,7 @@ describe('field-coverage sampling (#1923)', () => {
     expect(id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(fsm.seen().headers.get('x-substrat-router')).toBe(SECRET);
     // The provenance a reader joins on: this tenant, this app, this id — written by the router.
-    expect(lines).toEqual([expect.objectContaining({ tenantId: T, vertical: 'fsm', fieldCoverageId: id })]);
+    expect(lines).toEqual([expect.objectContaining({ tenantId: T, vertical: 'fsm', fieldCoverageId: id, fieldCoverageRate: 1 })]);
 
     const again = spyVertical();
     await withRouterLines(() => worker.fetch(get('https://acme.example.com/'), envAt('1', again.binding)));
@@ -956,6 +956,7 @@ describe('field-coverage sampling (#1923)', () => {
     const { lines } = await withRouterLines(() => worker.fetch(get('https://acme.example.com/'), envAt(undefined, fsm.binding)));
     expect(lines).toHaveLength(1);
     expect(lines[0]).not.toHaveProperty('fieldCoverageId');
+    expect(lines[0]).not.toHaveProperty('fieldCoverageRate');
   });
 
   it('arms a request only when it falls inside the rate', async () => {

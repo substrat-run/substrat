@@ -689,6 +689,22 @@ export interface FieldCoverageView {
   operations: number;
 }
 
+export interface FieldReadsView {
+  available: boolean;
+  source: 'vertical-asserted';
+  window?: { since: string; until: string };
+  groups: Array<{
+    sampleRate: number | null;
+    armedRequests: number;
+    refused: number;
+    operations: Array<{ operation: string; responses: number; fields: Array<{
+      field: string; present: number; empty: number; absent: number; eligible: number;
+      sampleRate: number | null; window: { since: string; until: string };
+    }> }>;
+    notObservedReturned: Array<{ operation: string; field: string }>;
+  }>;
+}
+
 export interface AppMigrationsView {
   available: boolean;
   migrations: AppliedMigration[];
@@ -2250,6 +2266,8 @@ export const api = {
 
   appFieldCoverage: (scopeId: string) =>
     call<FieldCoverageView>(`/apps/${encodeURIComponent(scopeId)}/field-coverage`),
+  appFieldReads: (scopeId: string, hours: number) =>
+    call<FieldReadsView>(`/apps/${encodeURIComponent(scopeId)}/field-reads?hours=${hours}`),
 
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),

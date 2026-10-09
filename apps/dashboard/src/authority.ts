@@ -1382,6 +1382,12 @@ export class TenantNarrowedControlPlane {
     }));
   }
 
+  /** One installed app's sampled field counts. The tenant is fixed by this credential. */
+  async tenantFieldCoverage(scopeId: string, versionId: string, hours: number): Promise<unknown> {
+    const q = new URLSearchParams({ scopeId, versionId, hours: String(hours), tenantId: this.tenantId });
+    return this.call<unknown>(`/observability/tenant-field-coverage?${q.toString()}`);
+  }
+
   /**
    * MY traffic through ONE of my installed apps — the tenant grain (observability.md §3
    * view 4), and the answer for an app whose vertical somebody else publishes.

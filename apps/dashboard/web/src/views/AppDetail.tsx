@@ -31,6 +31,7 @@ import { useTenantMetrics } from '../lib/use-tenant-metrics';
 import { useAppSchedules, type SchedulesState } from '../lib/use-app-schedules';
 import { brokenAppLines, sendWithExportBreakAck, type BrokenApp } from '../lib/bind-ack';
 import { AppTraffic } from './AppTraffic';
+import { FieldReads } from './FieldReads';
 
 /**
  * App detail (screens 1i, 1j, 1k, 1l). The header and the Overview tab render REAL
@@ -1191,7 +1192,7 @@ function rolesHolding(reg: PermissionRegistry, key: string): string[] {
  *
  * The claim is about DECLARATIONS and the copy says so: "no operation declares
  * this field in its output" is exactly true from the two artifacts a push
- * carries, where "nobody reads this" would need traffic nobody counts yet
+ * carries, where observed field use belongs to the sampled field counts view
  * (#1331). Matching is by field name across the whole surface, so the list is
  * CONSERVATIVE — a field on it is named nowhere, while one absent from it may
  * still be unreachable. Under-reporting is the safe direction for a list whose
@@ -3069,7 +3070,7 @@ const DATA_SECTIONS = [
  * exactly there). Previews is here because a preview IS a copy of this scope's data
  * with a URL, which makes it a data fact, not a fifth noun.
  */
-function Data({ app, section, onSection }: { app: AppRow; section: string; onSection: (s: string) => void }) {
+export function Data({ app, section, onSection }: { app: AppRow; section: string; onSection: (s: string) => void }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={DATA_SECTIONS} value={section} onChange={onSection} />
@@ -3077,6 +3078,7 @@ function Data({ app, section, onSection }: { app: AppRow; section: string; onSec
       {section === 'schema' && (
         <div style={{ display: 'grid', gap: 16 }}>
           <FieldCoverage app={app} />
+          <FieldReads scopeId={app.app_scope_id} />
           <Model app={app} />
         </div>
       )}

@@ -4,7 +4,8 @@ import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
-import { FIELD_COVERAGE_ID_FIELD } from '@substrat-run/contracts';
+import { FIELD_COVERAGE_ID_FIELD, ROUTER_SCRIPT_NAMES } from '@substrat-run/contracts';
+import { readFieldCoverage } from './field-coverage-read.js';
 import type {
   ObservabilityReader,
   ObservedEgressRow,
@@ -1110,6 +1111,28 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       return queryTenantLogs(input);
     },
 
+    async fieldCoverage(input) {
+      const window = resolveObservabilityWindow(input);
+      const timeframe = { from: Date.parse(window.since), to: Date.parse(window.until) };
+      const reports = await queryAllFieldEvents([
+        { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
+        { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
+        { key: 'vertical', operation: 'eq', type: 'string', value: input.vertical },
+        { key: FIELD_COVERAGE_ID_FIELD, operation: 'regex', type: 'string', value: '^[0-9A-HJKMNP-TV-Z]{26}$' },
+        ...serviceFilter(input.services),
+        ...(input.versionId ? [{ key: 'versionId', operation: 'eq', type: 'string', value: input.versionId } satisfies TelemetryFilter] : []),
+      ], timeframe);
+      const router = (await Promise.all(ROUTER_SCRIPT_NAMES.map((service) => queryAllFieldEvents([
+        { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
+        { key: 'router', operation: 'eq', type: 'string', value: 'request' },
+        { key: 'vertical', operation: 'eq', type: 'string', value: input.vertical },
+        { key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId },
+        { key: FIELD_COVERAGE_ID_FIELD, operation: 'regex', type: 'string', value: '^[0-9A-HJKMNP-TV-Z]{26}$' },
+        { key: '$metadata.service', operation: 'eq', type: 'string', value: service },
+      ], timeframe)))).flat();
+      return readFieldCoverage(reports, router, input, window);
+    },
+
     // #1746/#1877: the request histogram, facet counts and log patterns — computed once,
     // from cubes, by `aggregateReads` over the (cached) telemetry source.
     ...aggregateReads(source),
@@ -1808,6 +1831,25 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     if (json.success === false) throw telemetryFailure(502, text);
     const outer = json.result?.events;
     return (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
+  }
+
+  /** Read a complete sampled span, or refuse it; a truncated page must never mean zero fields. */
+  async function queryAllFieldEvents(
+    filters: TelemetryFilter[],
+    timeframe: { from: number; to: number },
+    depth = 0,
+  ): Promise<Array<Record<string, unknown>>> {
+    const page = await queryRaw(filters, timeframe, 2000);
+    if (page.length < 2000) return page;
+    if (depth >= 12 || timeframe.to - timeframe.from <= 1000) {
+      throw new ControlPlaneError(503, 'field coverage window is too busy — choose a shorter window');
+    }
+    const middle = Math.floor((timeframe.from + timeframe.to) / 2);
+    const [left, right] = await Promise.all([
+      queryAllFieldEvents(filters, { from: timeframe.from, to: middle }, depth + 1),
+      queryAllFieldEvents(filters, { from: middle, to: timeframe.to }, depth + 1),
+    ]);
+    return [...left, ...right];
   }
 
   /** One telemetry query — narrowed to a single service, or to none (the fleet view). */

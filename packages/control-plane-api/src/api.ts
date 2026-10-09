@@ -1300,6 +1300,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/observability\/tenant-metrics$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-metrics-series$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-logs$/, pin: 'query' },
+  { method: 'GET', re: /\/observability\/tenant-field-coverage$/, pin: 'query' },
   // #1746: the request record's histogram, facets and list — same grain, same forced tenant.
   { method: 'GET', re: /\/observability\/tenant-request-volume$/, pin: 'query' },
   { method: 'GET', re: /\/observability\/tenant-request-facets$/, pin: 'query' },
@@ -1567,6 +1568,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/observability\/tenant-metrics$/ },
     { method: 'GET', re: /\/observability\/tenant-metrics-series$/ },
     { method: 'GET', re: /\/observability\/tenant-logs$/ },
+    { method: 'GET', re: /\/observability\/tenant-field-coverage$/ },
     // #1746: the same lines, counted and listed. Tenant-keyed, so no fleet-wide fallback.
     { method: 'GET', re: /\/observability\/tenant-request-volume$/ },
     { method: 'GET', re: /\/observability\/tenant-request-facets$/ },
@@ -7741,6 +7743,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #1877: scoped to the app's own scripts — the scan and trust boundary.
     const services = await appServices(c.get('actor'), input.tenantId, input.scopeId, input.vertical);
     return c.json(await options.observability.tenantLogs({ ...input, services }));
+  });
+
+  // #1331: one app's sampled field reports, joined to the router's own request lines.
+  app.get('/observability/tenant-field-coverage', async (c) => {
+    if (!options.observability?.fieldCoverage) {
+      return c.json({ error: 'field coverage is not configured on this control plane' }, 501);
+    }
+    const tenantId = confinedTenant(c.get('principal')) ?? c.req.query('tenantId');
+    if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
+    const input = z.object({
+      tenantId: tenantIdSchema,
+      scopeId: z.string().min(1).max(64),
+      versionId: z.string().min(1).max(64),
+      hours: z.coerce.number().int().min(1).max(72).default(24),
+      since: z.string().datetime({ offset: true }).optional(),
+      until: z.string().datetime({ offset: true }).optional(),
+    }).parse({ tenantId, scopeId: c.req.query('scopeId'), versionId: c.req.query('versionId'),
+      hours: c.req.query('hours'), since: c.req.query('since') || undefined, until: c.req.query('until') || undefined });
+    try { resolveObservabilityWindow(input); } catch (e) { throw new ControlPlaneError(400, (e as Error).message); }
+    const scopes = await host.admin.listScopes(c.get('actor'), { tenantId: input.tenantId });
+    const installed = scopes.find((s) => s.id === input.scopeId);
+    if (!installed?.vertical) return c.json({ error: 'app not found' }, 404);
+    const services = scriptFamiliesOfScopes(scopes, { scopeId: input.scopeId });
+    const json = await c.var.admin.versionManifest(c.get('actor'), installed.vertical, input.versionId);
+    if (!json) return c.json({ error: 'version not found' }, 404);
+    const outputSurface = storedDeployManifest.parse(JSON.parse(json)).outputSurface ?? [];
+    const declared = Object.fromEntries(outputSurface.map((op) => [op.operationId, op.fields]));
+    return c.json(await options.observability.fieldCoverage({
+      tenantId: input.tenantId, vertical: installed.vertical, scopeId: input.scopeId, services, declared,
+      versionId: input.versionId, hours: input.hours,
+      ...(input.since ? { since: input.since, until: input.until } : {}),
+    }));
   });
 
   // #1746: the per-request record, read at the tenant grain. The three routes take ONE

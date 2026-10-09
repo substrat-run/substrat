@@ -327,6 +327,8 @@ function record(
     invocation: ReturnType<typeof decodeInvocationRecord>;
     /** #1923: the request's field-coverage dispatch id, when it was in the sample. */
     fieldCoverageId: string | null;
+    /** The router's own effective sampling rate for this dispatch. */
+    fieldCoverageRate: number;
   },
 ): void {
   const statusClass = `${Math.floor(m.status / 100)}xx`;
@@ -364,6 +366,7 @@ function record(
       // #1923: the provenance a field-coverage report is joined to — only this line, written
       // by the router, says which tenant and app a dispatch id was minted for.
       ...(m.fieldCoverageId ? { [FIELD_COVERAGE_ID_FIELD]: m.fieldCoverageId } : {}),
+      ...(m.fieldCoverageId ? { fieldCoverageRate: m.fieldCoverageRate } : {}),
     }),
   );
 }
@@ -557,7 +560,8 @@ export default {
     let invocation = decodeInvocationRecord(null);
     // #1923: whether this request is in the field-coverage sample, drawn once, so a retry is
     // the same request in or out of it. Its id rides the assertion and this router's line.
-    const fieldCoverageId = fieldCoverageSampled(fieldCoverageSampleRate(env.FIELD_COVERAGE_SAMPLE_RATE))
+    const fieldCoverageRate = fieldCoverageSampleRate(env.FIELD_COVERAGE_SAMPLE_RATE);
+    const fieldCoverageId = fieldCoverageSampled(fieldCoverageRate)
       ? mintDispatchId()
       : null;
     try {
@@ -605,6 +609,7 @@ export default {
         durationMs: Date.now() - startedAt,
         invocation,
         fieldCoverageId,
+        fieldCoverageRate,
       });
     }
   },
