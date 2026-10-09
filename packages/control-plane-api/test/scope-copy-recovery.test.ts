@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,6 +84,11 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
         return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
       },
       keptCopy: async () => null,
+      // A fork inside one script: the vertical copies the store under the new id.
+      snapshotScope: async (input: { sourceScopeId: string; newScopeId: string }) => {
+        storesOf(ref).set(input.newScopeId, { ...storeOf(ref, input.sourceScopeId), loadStamp: ulid() });
+        return { tables: storeOf(ref, input.sourceScopeId).tables.length };
+      },
       deleteScope: async (input: { scopeId: string }) => {
         storesOf(ref).delete(input.scopeId);
       },
@@ -393,4 +398,92 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
       expect(storeOf(from, sid).tables).toEqual(notes('kept'));
     });
   }
+
+  // A fork writes a copy into a script before anything routes the new scope there: the preview's
+  // restore into the PR version's script, a snapshot's copy inside its source's script. Both are
+  // in the ledger before the write (#1722), so a bind that fails afterwards (or a request that
+  // dies there) leaves a copy that reap and erasure still reach, not an orphan of the source's
+  // data. Each test fails the fork's bind once.
+  const failNextBind = () => vi.spyOn(host.admin, 'bindScopeVersion')
+    .mockRejectedValueOnce(new ControlPlaneError(503, 'directory unavailable'));
+  const forkedPreview = async (tag: string) => {
+    await servingOnce();
+    const prod = await install();
+    // A preview URL derives from its source's hostname.
+    await host.admin.bindHostname(staff, {
+      hostname: `${tag}-acme.global.substrat.run`, tenantId: t, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+    const bind = failNextBind();
+    try {
+      const res = await app.request(`/verticals/${slug}/previews`, {
+        method: 'POST', headers: asStaff, body: JSON.stringify({ tag, versionId: versions.v2, sourceScopeId: prod, ttlHours: null }),
+      });
+      expect(res.status, await res.clone().text()).toBeGreaterThanOrEqual(500);
+    } finally {
+      bind.mockRestore();
+    }
+    const preview = (await host.admin.listScopes(staff, { tenantId: t })).find((sc) => sc.forkedFrom === prod)!;
+    expect(storeOf(refOf.get(versions.v2)!, preview.id).tables).toEqual(notes('kept'));
+    return { prod, preview: preview.id };
+  };
+  const forkedSnapshot = async () => {
+    await servingOnce();
+    const prod = await install();
+    const bind = failNextBind();
+    try {
+      const res = await app.request(`/tenants/${t}/scopes/${prod}/snapshots`, { method: 'POST', headers: asStaff, body: '{}' });
+      expect(res.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      bind.mockRestore();
+    }
+    const snap = (await host.admin.listScopes(staff, { tenantId: t })).find((sc) => sc.forkedFrom === prod)!;
+    expect(storeOf(refOf.get(versions.v1)!, snap.id).tables).toEqual(notes('kept'));
+    return { prod, snap: snap.id };
+  };
+
+  it('a preview fork whose bind failed is still reaped from the script it was restored into', async () => {
+    const { preview } = await forkedPreview('fork-reap');
+    expect((await reap('fork-reap')).status).toBe(200);
+    expect(await host.admin.getScopeRecord(staff, t, preview)).toBeUndefined();
+    expect(storesOf(refOf.get(versions.v2)!).has(preview)).toBe(false);
+  });
+
+  it('a preview fork whose bind failed is still reached by erasure', async () => {
+    const { preview } = await forkedPreview('fork-erase');
+    redacted.length = 0;
+    expect((await shred(preview, ulid())).status).toBe(200);
+    expect(redacted).toContain(`${refOf.get(versions.v2)} ${preview}`);
+  });
+
+  it('a snapshot fork whose bind failed is still reaped from the script it was copied into', async () => {
+    const { snap } = await forkedSnapshot();
+    expect((await app.request(`/tenants/${t}/scopes/${snap}`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
+    expect(await host.admin.getScopeRecord(staff, t, snap)).toBeUndefined();
+    expect(storesOf(refOf.get(versions.v1)!).has(snap)).toBe(false);
+  });
+
+  it('a snapshot fork whose bind failed is still reached by erasure', async () => {
+    const { snap } = await forkedSnapshot();
+    redacted.length = 0;
+    expect((await shred(snap, ulid())).status).toBe(200);
+    expect(redacted).toContain(`${refOf.get(versions.v1)} ${snap}`);
+  });
+
+  it('a fork whose bind lands is confirmed with it, and its entry is done', async () => {
+    await servingOnce();
+    const prod = await install();
+    await host.admin.bindHostname(staff, {
+      hostname: 'fork-ok-acme.global.substrat.run', tenantId: t, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+    const res = await app.request(`/verticals/${slug}/previews`, {
+      method: 'POST', headers: asStaff, body: JSON.stringify({ tag: 'fork-ok', versionId: versions.v2, sourceScopeId: prod, ttlHours: null }),
+    });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { scopeId: preview } = (await res.json()) as { scopeId: ScopeId };
+    expect(await ledgerByRef(preview)).toEqual({ [refOf.get(versions.v2)!]: 'done' });
+    const snap = await app.request(`/tenants/${t}/scopes/${prod}/snapshots`, { method: 'POST', headers: asStaff, body: '{}' });
+    expect(snap.status).toBe(201);
+    const { id: snapId } = (await snap.json()) as { id: ScopeId };
+    expect(await ledgerByRef(snapId)).toEqual({ [refOf.get(versions.v1)!]: 'done' });
+  });
 });
