@@ -805,7 +805,7 @@ const forgeAfterMutating: OperationHandler<{ type: string }, void> = (ctx, input
       // frozen: refused outright
     }
   }
-  emitType(ctx, input);
+  return emitType(ctx, input);
 };
 
 /** Every parent edge of one child, tombstones included, oldest object first. */
