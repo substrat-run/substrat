@@ -464,6 +464,16 @@ operation. The reason must explain why the handler preserves the other fields, s
 reviewer can check the exception against its code. This declaration check cannot inspect
 a handler's SQL or prove that an omitted field is preserved.
 
+The walk is about omission: nothing in the schema may give an omitted field, or a partial
+object, a value the caller did not send. So it refuses defaults, prefaults and `.catch()`
+anywhere in the tree, transforms, preprocessing and codecs, any `.overwrite()` on an object,
+array, record, union or intersection, and a schema kind or check kind it does not know.
+Ordinary normalization of a supplied string is allowed: `.trim()`, `.toLowerCase()`,
+`.toUpperCase()` and `.normalize()` on a string field only rewrite what the caller sent, so
+`z.string().trim().optional()` passes. Those four are recognized precisely; a custom
+`.overwrite()` is arbitrary code and is refused even on a string. Validation checks such as
+`.min()`, `.max()`, formats and `.refine()` are allowed.
+
 ## Composing engines
 
 An engine exports its entity registry and its published row schemas. Import them; never
