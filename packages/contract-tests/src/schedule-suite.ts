@@ -314,6 +314,30 @@ export function scheduleContractSuite(
       expect((await host.runDueSchedules(SCHED_MODULE, t, sibling)).fired).toBe(0);
     });
 
+    it('a retry queued before suspension waits without an attempt, then drains once', async () => {
+      const retryScope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: retryScope, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, retryScope);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, retryScope)).fired).toBe(2);
+      const ran: string[] = [];
+      host.registerExecutor(`suspend-${retryScope}`, 'sched.ticked', async (_admin, event) => {
+        ran.push(event.id);
+      });
+
+      await host.admin.suspendScope(staff, t, retryScope);
+      const held = await host.drainDue(t, retryScope).catch((error: unknown) => {
+        expect(String(error)).toMatch(/scope not active/);
+        return null;
+      });
+      expect(held === null || held.attempted === 0).toBe(true);
+      expect(ran).toEqual([]);
+
+      await host.admin.unsuspendScope(staff, t, retryScope);
+      expect((await host.drainDue(t, retryScope)).delivered).toBe(1);
+      expect(ran).toHaveLength(1);
+      expect((await host.drainDue(t, retryScope)).attempted).toBe(0);
+    });
+
     /**
      * #1288's backfill, on a dump captured before the column: a restore builds the table
      * from the kernel's DDL (#1883) and derives each row's `kind` from its key, by the
