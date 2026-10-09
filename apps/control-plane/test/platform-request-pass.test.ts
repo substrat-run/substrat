@@ -384,21 +384,40 @@ describe('storageReaderFor (#1524)', () => {
     await expect(storageReaderFor(async () => undefined)(scope('todo'))).rejects.toThrow(/no deployment resolves for vertical 'todo'/);
   });
 
-  it('turns a deployment without the route (501 or 404) into the standing condition, and passes other failures on', async () => {
-    const failing = (status: number) =>
+  it('turns a deployment without the route (501, or a plain-text route miss) into the standing condition', async () => {
+    const failing = (status: number, body?: string) =>
       storageReaderFor(async () => ({
         databaseSize: async () => {
-          throw new ControlPlaneError(status, `vertical refused introspection: ${status}`);
+          throw new ControlPlaneError(status, `vertical refused introspection (${status})`, undefined, { body });
         },
       }));
-    for (const status of [501, 404]) {
-      const err = await failing(status)(scope('todo')).catch((e: unknown) => e);
+    for (const [status, body] of [
+      [501, '{"error":"this deployment cannot read a database size (#1524). Redeploy it"}'],
+      [404, '404 Not Found'], // Hono's own miss: no route at all
+    ] as const) {
+      const err = await failing(status, body)(scope('todo')).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(StorageReadUnsupported);
       expect((err as Error).message).toMatch(new RegExp(`vertical 'todo' cannot read a database size \\(${status}\\)`));
     }
-    const other = await failing(503)(scope('todo')).catch((e: unknown) => e);
-    expect(other).toBeInstanceOf(ControlPlaneError);
-    expect(other).not.toBeInstanceOf(StorageReadUnsupported);
+  });
+
+  it("passes a vertical's own enveloped 404, an unread 404 and any other failure on as real failures", async () => {
+    const failing = (status: number, body?: string) =>
+      storageReaderFor(async () => ({
+        databaseSize: async () => {
+          throw new ControlPlaneError(status, 'unknown scope', undefined, { body });
+        },
+      }));
+    // The twin of the route miss: the vertical HAS the route and answered with its envelope.
+    for (const [status, body] of [
+      [404, '{"error":"unknown scope 01J…","code":"not_found"}'],
+      [404, undefined],
+      [503, 'upstream unavailable'],
+    ] as const) {
+      const err = await failing(status, body)(scope('todo')).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ControlPlaneError);
+      expect(err).not.toBeInstanceOf(StorageReadUnsupported);
+    }
   });
 
   it('skips a scope bound to no vertical, without resolving anything', async () => {

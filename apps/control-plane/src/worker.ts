@@ -1266,6 +1266,23 @@ function deploymentForScopeFor(
  * to this host, whose namespace is a module-less placeholder: waking it would create an empty
  * database and record its size as the scope's.
  */
+/**
+ * A 404 the vertical's router answered because it has no such route: its body is NOT the
+ * vertical's JSON error envelope (`{ "error": … }`). vertical-host's `classifyError` and a
+ * vertical's own `mapError` also answer 404, for a scope or row it could not find, and those
+ * come enveloped. Hono's miss is plain text. A 404 whose body could not be read is not
+ * assumed to be a miss.
+ */
+function isRouteMiss(err: ControlPlaneError): boolean {
+  if (err.status !== 404 || err.body === undefined) return false;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: unknown } | null;
+    return !(typeof parsed === 'object' && parsed !== null && 'error' in parsed);
+  } catch {
+    return true;
+  }
+}
+
 export function storageReaderFor(
   resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'databaseSize'> | undefined>,
 ): (scope: Scope) => Promise<number | null> {
@@ -1277,8 +1294,9 @@ export function storageReaderFor(
       return await client.databaseSize(scope.id);
     } catch (err) {
       // A deployment built before the route answers 501 (the route, without the host's read)
-      // or 404 (no route at all). Standing until it is redeployed, so not a digest entry.
-      if (err instanceof ControlPlaneError && (err.status === 501 || err.status === 404)) {
+      // or a ROUTE MISS (no route at all). Standing until it is redeployed, so not a digest
+      // entry. Any other 404 is a real failure that reaches the digest.
+      if (err instanceof ControlPlaneError && (err.status === 501 || isRouteMiss(err))) {
         throw new StorageReadUnsupported(
           `vertical '${scope.vertical}' cannot read a database size (${err.status}); redeploy it`,
         );

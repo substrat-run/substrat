@@ -4,6 +4,7 @@
 '@substrat-run/adapter-sqlite': minor
 '@substrat-run/adapter-cloudflare': minor
 '@substrat-run/contract-tests': patch
+'@substrat-run/control-plane-api': patch
 '@substrat-run/console': patch
 ---
 
@@ -35,3 +36,7 @@ sample is older than two days.
 methods, and the phase is skipped on a host without them, so an adapter built before this
 still satisfies the interface. The meter's `storage` fields are optional for the same reason:
 a host that keeps no gauge reports none, rather than a zero.
+
+`VerticalClient`'s refusals now carry the raw response body (`ControlPlaneError.body`), so a
+caller can tell a vertical's JSON error envelope from a router's plain-text route miss when
+both answer 404.

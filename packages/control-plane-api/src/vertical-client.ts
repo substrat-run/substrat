@@ -1714,10 +1714,13 @@ export class VerticalClient {
    */
   private async refusal(verb: string, res: Response): Promise<ControlPlaneError> {
     const text = await res.text().catch(() => '');
+    // The raw body rides along (#1524), so a caller can tell the vertical's own JSON error
+    // envelope from a router's plain-text miss even where the two share a status.
+    const raw = { body: text, statusText: res.statusText };
     try {
       const parsed = JSON.parse(text) as { error?: unknown };
       if (typeof parsed?.error === 'string' && parsed.error !== '') {
-        return new ControlPlaneError(res.status, parsed.error);
+        return new ControlPlaneError(res.status, parsed.error, undefined, raw);
       }
     } catch {
       // not JSON — fall through to the raw text
@@ -1728,6 +1731,8 @@ export class VerticalClient {
       detail !== ''
         ? `vertical refused ${verb} (${res.status}): ${detail}`
         : `vertical refused ${verb}: ${res.status} ${res.statusText}`,
+      undefined,
+      raw,
     );
   }
 
