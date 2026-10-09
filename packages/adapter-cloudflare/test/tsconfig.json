@@ -1,0 +1,6 @@
+{
+  // The project the type-aware lint reads this suite through (tools/floating-promises.mjs, #2131):
+  // tsgolint types a file by its NEAREST tsconfig.json.
+  "extends": "../tsconfig.test.json",
+  "include": ["**/*"]
+}

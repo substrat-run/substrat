@@ -2368,8 +2368,8 @@ export function permissionContractSuite(
 
       // Only an audited-change intent can be settled: an outcome row's id, or no row, is not_found.
       const outcomeId = (await host.admin.auditLog(staff, { tenantId: t1, action: 'transferOwner', order: 'desc', limit: 1 }))[0]!.id;
-      await expect(host.admin.settleUnrecordedOutcome(staff, { intentId: outcomeId, error: 'x' })).rejects.toThrow(/no audited-change intent/);
-      await expect(host.admin.settleUnrecordedOutcome(staff, { intentId: ulid(), error: 'x' })).rejects.toThrow(/no audited-change intent/);
+      await expect(() => host.admin.settleUnrecordedOutcome(staff, { intentId: outcomeId, error: 'x' })).rejects.toThrow(/no audited-change intent/);
+      await expect(() => host.admin.settleUnrecordedOutcome(staff, { intentId: ulid(), error: 'x' })).rejects.toThrow(/no audited-change intent/);
     });
 
     it('the settle checks the WHOLE operation: the same id answered in another tenant or scope does not settle it (#2064)', async () => {

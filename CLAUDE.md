@@ -643,7 +643,13 @@ merges. The supplied sweeper's firing half is held in workerd on a fixture verti
 (`packages/adapter-cloudflare/supplied-sweeper`), run as the uploader ships it
 (`tools/workerd-as-uploaded.mjs`); the in-repo deployed verticals keep their own sweeper until
 the release carrying #1902 is live),
-`lint:tests`, `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
+`lint:tests`, `lint:floating-promises` (`tools/floating-promises.mjs`, #2131: oxlint's
+type-aware `no-floating-promises` over every workerd suite, found from the vitest configs that
+load `@cloudflare/vitest-plugin`. Its run-time half is `tools/vitest/workerd-rejections.mjs`,
+the setup file those configs share: a rejection still unhandled when a test ends fails it,
+paired by workerd's own `rejectionHandled` so an awaited RPC rejection does not — and it refuses
+`expect(<RPC promise>).rejects`, which vitest asserts on a pipelined call on the result: write
+`expect(() => stub.method()).rejects`), `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
 both directions and the standing grants the door must carry, see the connector rule
 below), and `lint:changelog --check` — which asserts a hand-written digest accounts

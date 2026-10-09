@@ -1415,7 +1415,7 @@ describe('#1674 — the switch record is backfilled from the admin log, once, on
       return { ...t, rows: [...t.rows, bad] };
     });
     const before = await dir.exportDump();
-    await expect(dir.importDump(tables)).rejects.toThrow(/JSON/i);
+    await expect(() => dir.importDump(tables)).rejects.toThrow(/JSON/i);
     expect(await dir.exportDump()).toEqual(before);
   });
 
@@ -2022,7 +2022,7 @@ describe('scope-local permissions — automatic fan-out on write (Phase 2)', () 
     // the table does not EXIST. `deleteAll()` took it, and the refused projection
     // did not bring it back, so the scope's storage stays genuinely destroyed
     // rather than resurrected holding the tenant's roles, tuples and identity links.
-    await expect(rpc.introspectTable('_substrat_roles', 200, 0)).rejects.toThrow(/unknown table/);
+    await expect(() => rpc.introspectTable('_substrat_roles', 200, 0)).rejects.toThrow(/unknown table/);
   });
 
   it('a tenant role fans out to scopes that already existed when it was assigned', async () => {
@@ -3249,7 +3249,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
       extensions: { reason: SYSTEM_DOOR_WAIT },
       message: expect.stringMatching(/without passing the system door/),
     });
-    await expect(raw.systemAttachmentAuthorize('no-such-attachment', SCHED, t, s)).rejects.toThrow(/without passing the system door/);
+    await expect(() => raw.systemAttachmentAuthorize('no-such-attachment', SCHED, t, s)).rejects.toThrow(/without passing the system door/);
     expect(await ticksIn(s)).toBe(0);
     // Twin: pinned to the serving instance, the same call runs.
     const { instance } = await raw.systemDoorState(SCHED);

@@ -1031,7 +1031,7 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
     const good = { role_key: 'ok', permissions: '[]', source: 'vertical' };
     // `permissions` is NOT NULL: this insert throws AFTER the roles were deleted and `ok` inserted.
     const bad = { role_key: 'bad', permissions: null, source: 'vertical' };
-    await expect(stub.applyProjection(t, [good, bad], [])).rejects.toThrow();
+    await expect(() => stub.applyProjection(t, [good, bad], [])).rejects.toThrow();
     expect(await receiptOf(s)).toBeNull();
     expect(await rolesOf()).toEqual(before);
     // The twin: a valid projection commits the receipt and the new roles together.

@@ -307,6 +307,11 @@ jobs:
       # would then agree with the generator rather than with the vertical, and a wrong
       # model would pass its own test. The check existed and ran nowhere (#989).
       - run: pnpm lint:tests
+      # No promise in a workerd suite floats (#2131). A forgotten `await` is a rejection nobody
+      # handles, and the workerd setup file fails a test on one only when the test drives that
+      # path; oxlint's type-aware `no-floating-promises` sees every path. Reads the built
+      # declarations, so it sits after the build like lint:permissions.
+      - run: pnpm lint:floating-promises
       # The `_substrat_*` spine is built independently by each adapter — the pure one in
       # adapter-sqlite, the hosted one across scope-do.ts and control-plane-do.ts. The
       # copies were in step when written and nothing kept them so, which makes a column
