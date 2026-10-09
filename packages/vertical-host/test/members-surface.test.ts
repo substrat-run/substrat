@@ -77,12 +77,15 @@ describe('/internal/members — an installed vertical’s members, managed from 
   const directory = {
     listInvites: async (scope: string) => invites.listInvites(sql, scope),
     getInvite: async (scope: string, p: string) => invites.getInvite(sql, scope, p),
-    createInvite: async (scope: string, p: string, r: string, e: string | null, h: string) => {
+    createInvite: async (scope: string, p: string, r: string, e: string | null, h: string, cap: string | null = null) => {
       await recording?.(p); // a test may hold the row's insert, between the scope grant and the row
-      invites.createInvite(sql, scope, p, r, e, h);
+      invites.createInvite(sql, scope, p, r, e, h, cap);
     },
     revokeInvite: async (scope: string, p: string) => invites.revokeInvite(sql, scope, p),
     claimInvite: async (scope: string, sub: string, h: string) => invites.claimInvite(sql, scope, sub, h),
+    inviteMatches: async (scope: string, h: string) => invites.inviteMatches(sql, scope, h),
+    claimInviteByCapability: async (scope: string, sub: string, cap: string, p: string) =>
+      invites.claimInviteByCapability(sql, scope, sub, cap, p),
     listMemberBindings: async (scope: string) => invites.listMemberBindings(sql, scope),
     unbindPrincipal: async (scope: string, p: string) => unbindPrincipal(sql, scope, p),
   };
@@ -95,6 +98,8 @@ describe('/internal/members — an installed vertical’s members, managed from 
     listScopeRoleHolders: host.listScopeRoleHolders.bind(host),
     changeScopeRoleBounded: host.changeScopeRoleBounded.bind(host),
     revokeScopeRolesBounded: host.revokeScopeRolesBounded.bind(host),
+    mintBecomeCapabilityBounded: host.mintBecomeCapabilityBounded.bind(host),
+    revokeBecomeCapability: host.revokeBecomeCapability.bind(host),
     revokeScopeRole: async (scope: string, p: PrincipalId, roleKey: string) => {
       await host.admin.unassignRole(staff, { principalId: p, roleKey, node: { tenantId: t1, scopeId: scopeId.parse(scope) } });
       return true;
@@ -122,6 +127,9 @@ describe('/internal/members — an installed vertical’s members, managed from 
     requireAdmin: async (c) => ({ principal: principalId.parse(c.req.header('x-caller')) }),
     assignScopeRoleBounded: (_env, _node, caller, assignee, roleKey) => host.assignScopeRoleBounded(t1, s1, caller, assignee, roleKey),
     revokeScopeRolesBounded: (_env, _node, caller, principal) => host.revokeScopeRolesBounded(t1, s1, caller, principal),
+    mintBecomeCapabilityBounded: (_env, _node, caller, input) => host.mintBecomeCapabilityBounded(t1, s1, caller, input),
+    revokeBecomeCapability: (_env, _node, id, by) => host.revokeBecomeCapability(t1, s1, id, by),
+    exchangeCapability: (_env, _node, secret) => host.exchangeCapability(t1, s1, secret, { mode: 'become' }),
     roles: ['lead', 'agent'],
     directory: () => directory,
     revokeScopeRole: async () => undefined,
@@ -158,6 +166,11 @@ describe('/internal/members — an installed vertical’s members, managed from 
     );
   const holds = async (who: PrincipalId, perm = PERM_READ) =>
     (await (await host.getScope(who, t1, s1)).invoke('perm/probe', { permission: perm }) as { allowed: boolean }).allowed;
+  /** The `become` capability that is `who`'s invite link (#1686), as the scope records it. */
+  const linkOf = async (who: string) =>
+    (await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true })).entries.find(
+      (c) => c.mode === 'become' && c.principal === who,
+    );
   const rolesOf = async (who: string) =>
     (await host.listScopeRoleHolders(t1, s1)).filter((h) => h.principal === who).map((h) => h.roleKey).sort();
   /** A member who accepted: minted by the owner at `roleKey`, accepted as `sub`. */
@@ -211,6 +224,11 @@ describe('/internal/members — an installed vertical’s members, managed from 
     expect(after.invites).toEqual([]);
     expect(after.members).toContainEqual({ principal: minted.principal, roles: ['agent'], logins: 1, email: 'kim@example.test', owner: false });
     expect(await holds(minted.principal)).toBe(true);
+    // #1686: the link was a single-use, never-expiring `become` capability the owner minted, now spent.
+    expect(await linkOf(minted.principal)).toMatchObject({
+      mode: 'become', principal: minted.principal, mintedBy: owner, label: 'member invite',
+      expiresAt: null, maxUses: 1, uses: 1, revokedAt: null,
+    });
   });
 
   it('lets an agent invite an agent — the bound is what the caller holds, not a title', async () => {
@@ -347,6 +365,8 @@ describe('/internal/members — an installed vertical’s members, managed from 
     expect(await res.json()).toEqual({ revoked: ['agent'], unbound: 0, inviteWithdrawn: true });
     expect((await accept(minted.acceptUrl, 'late')).status).toBe(400);
     expect(await holds(minted.principal)).toBe(false);
+    // #1686: its link is revoked in the scope by the caller who removed it, its use never spent.
+    expect(await linkOf(minted.principal)).toMatchObject({ uses: 0, revokedBy: owner });
     expect(invites.listMemberBindings(sql, s1).find((b) => b.principal === minted.principal)?.logins ?? 0).toBe(0);
   });
 

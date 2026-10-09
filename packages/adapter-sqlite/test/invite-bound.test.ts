@@ -19,13 +19,13 @@ import { permMod } from '@substrat-run/contract-tests';
 import { mountInviteRoutes, type InviteDirectory } from '@substrat-run/vertical-auth/invite-routes';
 import { SqliteScopeHost } from '../src/index.js';
 
-type Row = { principal: string; roleKey: string; email: string | null; createdAt: number };
+type Row = { principal: string; roleKey: string; email: string | null; createdAt: number; capabilityId: string | null };
 
 /** The identity DO's invite half, in memory — the bound under test is the host's, not the directory's. */
 class MemoryDirectory implements InviteDirectory {
   readonly rows = new Map<string, Row>();
-  async createInvite(_s: string, principal: string, roleKey: string, email: string | null) {
-    this.rows.set(principal, { principal, roleKey, email, createdAt: 0 });
+  async createInvite(_s: string, principal: string, roleKey: string, email: string | null, _h?: string, capabilityId: string | null = null) {
+    this.rows.set(principal, { principal, roleKey, email, createdAt: 0, capabilityId });
   }
   async listInvites() {
     return [...this.rows.values()];
@@ -34,9 +34,17 @@ class MemoryDirectory implements InviteDirectory {
     return this.rows.get(principal) ?? null;
   }
   async revokeInvite(_s: string, principal: string) {
+    const link = this.rows.get(principal)?.capabilityId ?? null;
     this.rows.delete(principal);
+    return link;
   }
   async claimInvite() {
+    return null;
+  }
+  async inviteMatches() {
+    return false;
+  }
+  async claimInviteByCapability() {
     return null;
   }
 }
@@ -120,6 +128,10 @@ describe('invite routes over the SQLite host — the assignment bound (#1931)', 
       },
       revokeScopeRole: (_env, _scope, principal, roleKey) => host.admin.unassignRole(staff, { principalId: principal, roleKey, node }),
       revokeScopeRolesBounded: (_env, _node, caller, principal) => host.revokeScopeRolesBounded(boundTenant, s, caller, principal),
+      // #1686: the invite's link, a `become` capability bounded by what the caller holds.
+      mintBecomeCapabilityBounded: (_env, _node, caller, input) => host.mintBecomeCapabilityBounded(boundTenant, s, caller, input),
+      revokeBecomeCapability: (_env, _node, id, by) => host.revokeBecomeCapability(boundTenant, s, id, by),
+      exchangeCapability: (_env, _node, secret) => host.exchangeCapability(boundTenant, s, secret, { mode: 'become' }),
       authProvider: async () => {
         throw new Error('accept is not exercised here');
       },
@@ -179,10 +191,13 @@ describe('invite routes over the SQLite host — the assignment bound (#1931)', 
     expect(refused.status).toBe(403);
     expect(directory.rows.has(principal)).toBe(true);
     expect(await probe(principal, BILL)).toBe(true);
+    const link = directory.rows.get(principal)!.capabilityId!;
     expect((await revoke(owner, principal)).status).toBe(204);
     expect(directory.rows.has(principal)).toBe(false);
     // The grant goes with the row: a withdrawn invite leaves its principal holding nothing.
     expect(await probe(principal, READ)).toBe(false);
+    // …and its link (#1686) is revoked in the scope by the owner who withdrew it.
+    expect((await host.admin.listCapabilities(staff, t, s, { includeRevoked: true })).entries.find((c) => c.id === link)).toMatchObject({ revokedBy: owner });
   });
 
   /**

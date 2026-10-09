@@ -10,7 +10,7 @@ import {
   type RelationTuple,
   type RoleDefinition,
 } from '@substrat-run/contracts';
-import type { PermissionChecker } from './permission-checker.js';
+import type { Holdings, PermissionChecker } from './permission-checker.js';
 import { capabilityGrantOf, capabilityLive, type CapabilityRow } from './capability.js';
 import { isSwitchableSubjectKind } from './system-switch.js';
 import { walkGrantedEntities, type GrantedEntitiesPage, type GrantWalkRow } from './grant-scoped-read.js';
@@ -557,29 +557,62 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       if (await switchedOff(subject, node, scope)) {
         return { covered: false, missing: [...new Set(required)] as [PermissionKey, ...PermissionKey[]] };
       }
-      const subjects = await subjectsOf(subject, node, now);
-      const getRole = roleReaderFor(node.tenantId);
+      return coverageOf(required, (await holdingsOf(subject, node, now, scope)).held);
+    },
 
-      const held = new Set<string>();
-      for (const nodeObj of nodeObjectsOf(node)) {
-        for (const s of subjects) {
-          const rows = nodeObj.scoped
-            ? scope
-              ? await scope.tuples(s.ref, '')
-              : []
-            : await reader.tenantTuples(node.tenantId, s.ref, '');
-          for (const row of rows) {
-            const grant = heldBy(row, nodeObj.obj, now);
-            if (grant?.role !== undefined) for (const p of (await getRole(grant.role))?.permissions ?? []) held.add(p);
-            else if (grant) held.add(grant.permission);
-          }
-        }
-      }
-      return coverageOf(required, held);
+    /**
+     * `covers`'s held set, plus the entity-narrowed grants it deliberately leaves out (#1686).
+     * A capability or a switched-off subject holds nothing here, as `covers` says.
+     */
+    async holdings(subject: CheckSubject, node: Node): Promise<Holdings> {
+      if (subject.kind === 'capability') return { permissions: [], narrowed: [] };
+      const now = reader.now();
+      const scope = reader.scopeFor(node);
+      if (await switchedOff(subject, node, scope)) return { permissions: [], narrowed: [] };
+      const { held, narrowed } = await holdingsOf(subject, node, now, scope);
+      return { permissions: [...held] as PermissionKey[], narrowed };
     },
 
     check,
   });
+
+  /**
+   * One pass over the subject's tuples at each node object — two reads per (subject, level) —
+   * collecting the node-level set `covers` compares against. The scope-level rows also carry
+   * the subject's entity-narrowed grants (an `entityType:entityId` object, which matches no
+   * node object), collected beside it for `holdings`.
+   */
+  async function holdingsOf(
+    subject: CheckSubject,
+    node: Node,
+    now: string,
+    scope: ScopeTupleReader | undefined,
+  ): Promise<{ held: Set<string>; narrowed: Holdings['narrowed'] }> {
+    const subjects = await subjectsOf(subject, node, now);
+    const getRole = roleReaderFor(node.tenantId);
+    const nodeObjs = nodeObjectsOf(node);
+    const held = new Set<string>();
+    const narrowed = new Map<string, Holdings['narrowed'][number]>();
+    for (const nodeObj of nodeObjs) {
+      for (const s of subjects) {
+        const rows = nodeObj.scoped
+          ? scope
+            ? await scope.tuples(s.ref, '')
+            : []
+          : await reader.tenantTuples(node.tenantId, s.ref, '');
+        for (const row of rows) {
+          const grant = heldBy(row, nodeObj.obj, now);
+          if (grant?.role !== undefined) for (const p of (await getRole(grant.role))?.permissions ?? []) held.add(p);
+          else if (grant) held.add(grant.permission);
+          else if (nodeObj.scoped) {
+            const entity = narrowedBy(row, nodeObjs, now);
+            if (entity) narrowed.set(`${entity.permission}\n${row.object}`, entity);
+          }
+        }
+      }
+    }
+    return { held, narrowed: [...narrowed.values()] };
+  }
 
 }
 
@@ -716,6 +749,25 @@ function heldBy(
   if (row.relation.startsWith('role:')) return { role: row.relation.slice('role:'.length) };
   if (row.relation.startsWith('granted:')) return { permission: row.relation.slice('granted:'.length) };
   return undefined;
+}
+
+/**
+ * The entity-narrowed grant a scope-level row is, if it is one: a live `granted:` tuple whose
+ * object is an entity rather than one of the node's objects (§4.2 rule 3).
+ */
+function narrowedBy(
+  row: PermissionTupleRow,
+  nodeObjs: readonly { obj: string }[],
+  now: string,
+): { permission: PermissionKey; entity: EntityRef } | undefined {
+  if (!row.relation.startsWith('granted:') || !live(row, now)) return undefined;
+  if (nodeObjs.some((n) => n.obj === row.object)) return undefined;
+  const sep = row.object.indexOf(':');
+  if (sep <= 0 || sep === row.object.length - 1) return undefined;
+  return {
+    permission: row.relation.slice('granted:'.length) as PermissionKey,
+    entity: { entityType: row.object.slice(0, sep), entityId: row.object.slice(sep + 1) },
+  };
 }
 
 /**

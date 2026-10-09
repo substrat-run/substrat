@@ -78,6 +78,10 @@ import {
   platformRequestFilter,
   denialFilter,
   capabilityFilterQuery,
+  capabilityId,
+  type BoundedBecomeMint,
+  type CapabilityId,
+  type PrincipalBecomeCapabilityInput,
   type CapabilityFilter,
   type CapabilityPage,
   type DenialFilter,
@@ -512,6 +516,14 @@ export interface VerticalScopeHost {
   revokeScopeRolesBounded?(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
+  /**
+   * A member invite's link (#1686): a principal's bounded `become` mint, and its revoke. The
+   * member routes need both, so a host without them answers 501 there, as for the verbs above.
+   */
+  mintBecomeCapabilityBounded?(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBecomeCapabilityInput,
+  ): Promise<BoundedBecomeMint>;
+  revokeBecomeCapability?(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<boolean>;
 }
 
 /**
@@ -522,8 +534,11 @@ export interface MemberDirectory {
   listMemberBindings(scopeId: string): Promise<{ principal: string; logins: number; email: string | null }[]>;
   listInvites(scopeId: string): Promise<{ principal: string; roleKey: string; email: string | null; createdAt: number }[]>;
   getInvite(scopeId: string, principal: string): Promise<{ roleKey: string } | null>;
-  createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;
-  revokeInvite(scopeId: string, principal: string): Promise<void>;
+  createInvite(
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string | null,
+  ): Promise<void>;
+  /** Withdraw an open invite; answers the `become` capability its link is (#1686), or null. */
+  revokeInvite(scopeId: string, principal: string): Promise<string | null>;
   unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;
 }
 
@@ -541,7 +556,9 @@ export interface MembersHook<Env> {
   mint: (
     steps: {
       grant: (assignee: PrincipalId) => Promise<Coverage>;
-      record: (principal: PrincipalId, tokenHash: string) => Promise<void>;
+      mint: (input: PrincipalBecomeCapabilityInput) => Promise<BoundedBecomeMint>;
+      record: (principal: PrincipalId, tokenHash: string, capabilityId: CapabilityId) => Promise<void>;
+      revokeCapability: (capabilityId: CapabilityId) => Promise<unknown>;
       rollback: (principal: PrincipalId) => Promise<unknown>;
     },
     input: { roleKey: string; email: string | null; origin: string },
@@ -2027,7 +2044,8 @@ export function mountPlatformSurface<Env extends object>(
   /** The member verbs every member route calls, required. */
   type MemberVerbs = Required<Pick<
     VerticalScopeHost,
-    'assignScopeRoleBounded' | 'listScopeRoleHolders' | 'changeScopeRoleBounded' | 'revokeScopeRolesBounded' | 'revokeScopeRole'
+    | 'assignScopeRoleBounded' | 'listScopeRoleHolders' | 'changeScopeRoleBounded' | 'revokeScopeRolesBounded' | 'revokeScopeRole'
+    | 'mintBecomeCapabilityBounded' | 'revokeBecomeCapability'
   >>;
 
   /** The hook, the host's member verbs and the vertical's directory every member route needs, or a 501. */
@@ -2037,6 +2055,7 @@ export function mountPlatformSurface<Env extends object>(
     const host = deps.hostFor(env);
     const verbs: (keyof MemberVerbs)[] = [
       'assignScopeRoleBounded', 'listScopeRoleHolders', 'changeScopeRoleBounded', 'revokeScopeRolesBounded', 'revokeScopeRole',
+      'mintBecomeCapabilityBounded', 'revokeBecomeCapability',
     ];
     if (verbs.some((v) => typeof host[v] !== 'function')) {
       throw new HTTPException(501, { message: 'this deployment’s scope host predates member management — update @substrat-run/adapter-cloudflare' });
@@ -2125,8 +2144,10 @@ export function mountPlatformSurface<Env extends object>(
       {
         grant: (assignee) =>
           surface.host.assignScopeRoleBounded(body.tenantId, body.scopeId, body.caller, assignee, body.roleKey),
-        record: (principal, tokenHash) =>
-          surface.directory.createInvite(body.scopeId, principal, body.roleKey, body.email, tokenHash),
+        mint: (link) => surface.host.mintBecomeCapabilityBounded(body.tenantId, body.scopeId, body.caller, link),
+        record: (principal, tokenHash, link) =>
+          surface.directory.createInvite(body.scopeId, principal, body.roleKey, body.email, tokenHash, link),
+        revokeCapability: (link) => surface.host.revokeBecomeCapability(body.tenantId, body.scopeId, link, body.caller),
         rollback: (principal) => surface.host.revokeScopeRole(body.scopeId, principal, body.roleKey),
       },
       { roleKey: body.roleKey, email: body.email, origin: body.origin },
@@ -2185,7 +2206,12 @@ export function mountPlatformSurface<Env extends object>(
     }
     const taken = await surface.host.revokeScopeRolesBounded(body.tenantId, body.scopeId, body.caller, body.principal);
     assertCovered(taken.coverage, body.principal, 'remove the member');
-    if (invite) await surface.directory.revokeInvite(body.scopeId, body.principal);
+    if (invite) {
+      // The row first — that stops an accept — then its link in the scope (#1686), as
+      // vertical-auth's `withdrawMemberInvite` orders it.
+      const link = await surface.directory.revokeInvite(body.scopeId, body.principal);
+      if (link) await surface.host.revokeBecomeCapability(body.tenantId, body.scopeId, capabilityId.parse(link), body.caller);
+    }
     const unbound = await surface.directory.unbindPrincipal(body.scopeId, body.principal);
     const [bindings, open] = await Promise.all([
       surface.directory.listMemberBindings(body.scopeId),

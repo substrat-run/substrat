@@ -19,6 +19,7 @@ import {
   capabilityAttachmentContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
+  becomeMintContractSuite,
   capabilityExpiryContractSuite,
   connectorTestFetch,
   permissionContractSuite,
@@ -385,6 +386,23 @@ capabilityContractSuite('adapter-sqlite', async () => {
   });
   return {
     host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1686: a principal's `become` capability — the bounded mint and revoke a member invite runs.
+becomeMintContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-become-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    verbs: host,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

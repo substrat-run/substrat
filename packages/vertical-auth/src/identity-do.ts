@@ -47,6 +47,9 @@ import {
   inviteExists as inviteExistsRow,
   revokeInvite as revokeInviteRow,
   claimInvite as claimInviteRow,
+  claimInviteByCapability as claimInviteByCapabilityRow,
+  inviteMatches as inviteMatchesRow,
+  migrateInvites,
   listMemberBindings as listMemberBindingRows,
   type InviteRow,
   type MemberBinding,
@@ -137,8 +140,10 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
-      // Columns the DDL cannot add to a table that already exists (#925's `claim_until`).
+      // Columns the DDL cannot add to a table that already exists (#925's `claim_until`,
+      // #1686's `invite.capability_id`).
       migrateOwnerSeat(ctx.storage.sql as unknown as RegistrySql);
+      migrateInvites(ctx.storage.sql as unknown as RegistrySql);
       // Load-or-generate this tenant's OWN signing secret. Each IdentityDO mints its own on
       // first init and persists it here, so the secret is per-tenant, never leaves the DO,
       // and needs no `wrangler secret put` (which would be one value shared across every
@@ -344,8 +349,10 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * granted at scope level, claimable by whoever presents the token whose hash is `tokenHash`.
    * The plaintext token never reaches the DO — only its hash, so a DB read can't mint access.
    */
-  async createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void> {
-    createInviteRow(this.registrySql, scopeId, principal, roleKey, email, tokenHash);
+  async createInvite(
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string | null = null,
+  ): Promise<void> {
+    createInviteRow(this.registrySql, scopeId, principal, roleKey, email, tokenHash, capabilityId);
   }
 
   /** The scope's outstanding (unclaimed) invites — for the admin's pending-invites list. No token. */
@@ -367,8 +374,8 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /** Withdraw an unclaimed invite by its (pre-minted) principal — the id the admin sees. */
-  async revokeInvite(scopeId: string, principal: string): Promise<void> {
-    revokeInviteRow(this.registrySql, scopeId, principal);
+  async revokeInvite(scopeId: string, principal: string): Promise<string | null> {
+    return revokeInviteRow(this.registrySql, scopeId, principal);
   }
 
   /**
@@ -379,6 +386,16 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    */
   async claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null> {
     return claimInviteRow(this.registrySql, scopeId, sub, tokenHash);
+  }
+
+  /** Is this hash an open capability-era invite (#1686)? Asked before the scope spends its use. */
+  async inviteMatches(scopeId: string, tokenHash: string): Promise<boolean> {
+    return inviteMatchesRow(this.registrySql, scopeId, tokenHash);
+  }
+
+  /** Accept an invite with an exchanged `become` capability (#1686) — `claimInviteByCapability`. */
+  async claimInviteByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null> {
+    return claimInviteByCapabilityRow(this.registrySql, scopeId, sub, capabilityId, principal);
   }
 
   /**
@@ -504,12 +521,16 @@ export type IdentityStub = {
   ownerClaimMatches(scopeId: string, tokenHash: string): Promise<boolean>;
   claimOwnerByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
   claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
-  createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;
+  createInvite(
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId?: string | null,
+  ): Promise<void>;
   listInvites(scopeId: string): Promise<InviteRow[]>;
   getInvite(scopeId: string, principal: string): Promise<InviteRow | null>;
   inviteExists(scopeId: string, tokenHash: string): Promise<boolean>;
-  revokeInvite(scopeId: string, principal: string): Promise<void>;
+  revokeInvite(scopeId: string, principal: string): Promise<string | null>;
   claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
+  inviteMatches(scopeId: string, tokenHash: string): Promise<boolean>;
+  claimInviteByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
   unbind(scopeId: string, sub: string): Promise<boolean>;
   unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;
   subjectsOf(scopeId: string, limit: number): Promise<string[]>;

@@ -196,31 +196,41 @@ including the two OIDC ones where Better Auth stays dormant:
   an abandon the original `from` keeps any owner seat it still holds, until the next owner
   removes it in the app.
   Wire both as vertical-host's hooks of the same names, which seat and revoke between them.
-- `createInvite` / `listInvites` / `getInvite` / `revokeInvite` / `claimInvite` — member invites, the
-  post-setup join path. An invite pre-mints a member principal, grants it a role at scope
-  level, and records the token's hash; accepting binds the invitee's verified `sub` to that
-  principal. The four HTTP routes over these — `GET`/`POST /api/invites`,
+- `createInvite` / `listInvites` / `getInvite` / `revokeInvite` / `inviteMatches` /
+  `claimInviteByCapability` — member invites, the post-setup join path. An invite pre-mints a
+  member principal, grants it a role at scope level, and mints its link: a `become` capability
+  in the scope's own storage, minted by the member who invites. It works once, has no expiry
+  (an invite never had one), can be revoked, and its mint and its use are on the scope's event
+  log (`capability.become-minted`, `capability.exercised`). The inviter may mint it only while
+  they hold everything the invited principal holds at the scope, entity-narrowed grants
+  included. The directory records the secret's hash and which capability the invite is;
+  accepting checks the secret is an open invite, exchanges it in the scope, and binds the
+  invitee's verified `sub` to that principal. The inviter is not re-checked at accept: the
+  role was bounded when it was granted, and withdrawing the invite revokes the link. An invite
+  minted before this (a hash-only row) is still accepted by its hash through `claimInvite`. The four HTTP routes over these — `GET`/`POST /api/invites`,
   `POST /api/invites/:principal/revoke`, `POST /api/accept-invite` — are written once as
   `mountInviteRoutes(app, deps)` from `@substrat-run/vertical-auth/invite-routes` — a
   subpath, because it is the one module here that imports `hono` at runtime, and the root
   import must stay free of it for a consumer that wants only an `AuthProvider`. A vertical
   supplies only what is its own: how a request resolves to a scope, what "admin" means (its
   `requireAdmin` returns the `{ principal }` it admitted), which roles a teammate may be
-  invited at, its directory, the host's `assignScopeRoleBounded`, `revokeScopeRole` and
-  `revokeScopeRolesBounded`, and its auth provider. The admin gate runs before the body is
+  invited at, its directory, the host's `assignScopeRoleBounded`, `revokeScopeRole`,
+  `revokeScopeRolesBounded`, `mintBecomeCapabilityBounded`, `revokeBecomeCapability` and
+  `exchangeCapability`, and its auth provider. The admin gate runs before the body is
   read; after it, creating an invite and revoking one both apply the assignment bound and
   refuse `403` naming what is missing, with nothing granted, recorded or removed. Creating is
   bounded by the role it confers. Revoking is bounded by the roles the invite's principal
   **holds now**, asked in the scope task that takes them back, and never by the role the row
   recorded when it was minted, which a later role move can leave stale. The grant goes with
-  the row. A mount without the bounded revoke, or a gate that names no caller, refuses both
-  routes rather than running them unbounded. Every error the mount raises itself is an
+  the row, and so does the link, revoked in the scope. A mount without the bounded revoke, the
+  capability verbs, or a gate that names no caller refuses both routes rather than running
+  them unbounded. Every error the mount raises itself is an
   `HTTPException` — a body that is not JSON or does not fit the route's schema is a 400
   naming the problem, never a bare `SyntaxError` or `ZodError` — so the vertical's own
   `onError` renders them with no branch for this mount; what its own deps throw passes
   through untouched. The grant and the invite row live in two Durable Objects, so when the
-  row cannot be written after the role was granted the mount revokes the grant before
-  reporting the failure, which is what `revokeScopeRole` is for.
+  row cannot be written after the role was granted the mount revokes the link and the grant
+  before reporting the failure, which is what `revokeScopeRole` is for.
 - `membersHook({ roles, directory })`, from the same subpath, is what a vertical hands
   [`vertical-host`](/reference/vertical-host)'s `members` to let the dashboard manage its
   members. `roles` is the list it gives `mountInviteRoutes`. Both doors mint an invite with

@@ -207,7 +207,7 @@ export {
   UNSAFE_allowAllChecker,
 } from './permission-checker.js';
 export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
-export type { PermissionChecker } from './permission-checker.js';
+export type { Holdings, PermissionChecker } from './permission-checker.js';
 export {
   ancestorsWithin,
   createTupleEvaluator,
@@ -257,6 +257,10 @@ export {
   redactSecretText,
   resolveCapabilitySession,
   revokeCapabilityAsPlatform,
+  CAPABILITY_BECOME_MINT_OPERATION,
+  becomeMintBound,
+  mintBecomeCapabilityAsPrincipal,
+  revokeBecomeCapabilityAsPrincipal,
 } from './capability.js';
 export type {
   CapabilityGrantView,

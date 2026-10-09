@@ -76,6 +76,23 @@ export interface PermissionChecker {
     required: readonly PermissionKey[],
     node: Node,
   ): Promise<Coverage>;
+  /**
+   * What `subject` holds at `node` (#1686): every permission it holds at the node itself — the
+   * set `covers` compares against — and every live entity-narrowed grant it holds in the scope,
+   * each through the same subject expansion (its orgs included). What the bound on minting a
+   * `become` capability reads about the principal being become.
+   *
+   * Optional for a pluggable checker; an absent implementation makes that bound refuse.
+   */
+  holdings?(subject: CheckSubject, node: Node): Promise<Holdings>;
+}
+
+/** What `PermissionChecker.holdings` answers. */
+export interface Holdings {
+  /** Held at the node (scope or tenant level), deduplicated. */
+  permissions: PermissionKey[];
+  /** Live entity-narrowed grants, one per (permission, entity). */
+  narrowed: { permission: PermissionKey; entity: EntityRef }[];
 }
 
 /**

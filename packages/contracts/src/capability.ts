@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { entityRef } from './events.js';
 import { capabilityId, instant, permissionKey, platformActorId, principalId } from './ids.js';
+import { coverage } from './permission.js';
 
 /**
  * Capabilities (#1672) — authority carried by a SECRET rather than held by a principal.
@@ -88,11 +89,11 @@ export type CapabilityMintInput = z.infer<typeof capabilityMintInput>;
  * exchanging it yields a principal instead of a session, the shape an owner claim link and
  * a member invite are ("whoever opens this becomes that seat").
  *
- * Platform-only in this first cut, deliberately. `become` is impersonation by another name
- * — the holder acquires everything the principal holds — so the bound on who may mint one
- * from module code is designed with the invite and claim migrations, not guessed here.
- * Expiry and a use limit are REQUIRED for the same reason: an unbounded `become` is a
- * standing credential for a person.
+ * `become` is impersonation by another name — the holder acquires everything the principal
+ * holds — so module code never mints one. The platform mints this shape (an owner claim link);
+ * a PRINCIPAL mints one only through a host's bounded verb (a member invite,
+ * `principalBecomeCapabilityInput`, #1686). Expiry and a use limit are REQUIRED here: an
+ * unbounded platform `become` is a standing credential for a person.
  */
 export const becomeCapabilityInput = z.object({
   principal: principalId,
@@ -101,6 +102,28 @@ export const becomeCapabilityInput = z.object({
   label: capabilityLabel.optional(),
 });
 export type BecomeCapabilityInput = z.infer<typeof becomeCapabilityInput>;
+
+/**
+ * What a PRINCIPAL may mint through a host's bounded verb (#1686) — a `become` capability
+ * whose minter is a person rather than the platform: the shape a member invite is.
+ *
+ * The bound is the host's, checked in the same scope task as the write: the minter must hold,
+ * at this node, every permission the target principal holds there, and every entity-narrowed
+ * grant the target holds must be one the minter can exercise on that entity too. Otherwise
+ * minting a `become` would hand someone more than the minter has — impersonation upward.
+ *
+ * `expiresAt` absent means no expiry, because a member invite has never had one; the use
+ * limit is still required, as on every `become`. The minter is not re-checked when the secret
+ * is exchanged: the target's authority was bounded when it was conferred and when this was
+ * minted, and withdrawing the invite (revoking this) is the lever.
+ */
+export const principalBecomeCapabilityInput = z.object({
+  principal: principalId,
+  expiresAt: instant.optional(),
+  maxUses: z.number().int().positive(),
+  label: capabilityLabel.optional(),
+});
+export type PrincipalBecomeCapabilityInput = z.infer<typeof principalBecomeCapabilityInput>;
 
 /**
  * Who minted or revoked a capability: the principal whose operation did it, or a platform
@@ -161,6 +184,16 @@ export const mintedCapability = z.object({
   expiresAt: instant.nullable(),
 });
 export type MintedCapability = z.infer<typeof mintedCapability>;
+
+/**
+ * What a host's bounded `become` mint answers (#1686): the minted capability, or the coverage
+ * that refused it — naming what the minter lacks — with nothing written.
+ */
+export const boundedBecomeMint = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), minted: mintedCapability }),
+  z.object({ ok: z.literal(false), coverage }),
+]);
+export type BoundedBecomeMint = z.infer<typeof boundedBecomeMint>;
 
 /**
  * What an exchange yields: a session to act as the capability (`act`), or the principal
@@ -307,6 +340,13 @@ export const CAPABILITY_REVOKED = 'capability.revoked';
  * capability itself (`capability:<id>`) for `become`; actor: `{ capability }`.
  */
 export const CAPABILITY_EXERCISED = 'capability.exercised';
+/**
+ * A principal minted a `become` capability through a host's bounded verb (#1686) — a member
+ * invite. Entity: the capability itself (`capability:<id>`), as on a `become`'s
+ * `capability.exercised`; actor: the minter. Its own type rather than `capability.minted`,
+ * whose payload is an `act` capability's (an entity and its keys) and is frozen.
+ */
+export const CAPABILITY_BECOME_MINTED = 'capability.become-minted';
 
 export const capabilityMintedPayload = z.object({
   capabilityId,
@@ -319,6 +359,17 @@ export const capabilityMintedPayload = z.object({
   mintedBy: principalId,
 });
 export type CapabilityMintedPayload = z.infer<typeof capabilityMintedPayload>;
+
+export const capabilityBecomeMintedPayload = z.object({
+  capabilityId,
+  /** The principal whoever exchanges the secret becomes. */
+  principal: principalId,
+  expiresAt: instant.nullable(),
+  maxUses: z.number().int().positive(),
+  label: capabilityLabel.nullable(),
+  mintedBy: principalId,
+});
+export type CapabilityBecomeMintedPayload = z.infer<typeof capabilityBecomeMintedPayload>;
 
 export const capabilityRevokedPayload = z.object({
   capabilityId,

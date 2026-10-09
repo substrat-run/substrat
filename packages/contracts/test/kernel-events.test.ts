@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ATTACHMENT_ADDED, ATTACHMENT_REMOVED } from '../src/attachments.js';
-import { CAPABILITY_EXERCISED, CAPABILITY_MINTED, CAPABILITY_REVOKED } from '../src/capability.js';
+import { CAPABILITY_BECOME_MINTED, CAPABILITY_EXERCISED, CAPABILITY_MINTED, CAPABILITY_REVOKED } from '../src/capability.js';
 import { EMAIL_DEAD_LETTERED, EMAIL_REFUSED, EMAIL_SENT } from '../src/email-intent.js';
 import { errorCodeOf } from '../src/errors.js';
 import {
@@ -27,7 +27,7 @@ const codeOf = (fn: () => void): string | undefined => {
 };
 
 describe('kernel-authored event types (#1864)', () => {
-  it('is exactly the sixteen types the kernel writes', () => {
+  it('is exactly the seventeen types the kernel writes', () => {
     expect([...KERNEL_AUTHORED_EVENT_TYPES].sort()).toEqual(
       [
         ATTACHMENT_ADDED,
@@ -50,6 +50,8 @@ describe('kernel-authored event types (#1864)', () => {
         EMAIL_SENT,
         EMAIL_REFUSED,
         EMAIL_DEAD_LETTERED,
+        // #1686: a principal's `become` mint — a member invite — is on the spine as the kernel wrote it.
+        CAPABILITY_BECOME_MINTED,
       ].sort(),
     );
   });

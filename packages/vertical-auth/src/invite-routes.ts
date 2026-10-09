@@ -17,6 +17,14 @@
  * and the directory then resolves them as that member. Revoking takes the principal's scope
  * roles back and then removes the invite row.
  *
+ * Since #1686 the token is the secret of a `become` capability in the scope's own Durable
+ * Object, minted by the inviter under a bound (they must hold everything the invited
+ * principal holds): single use, revocable, and on the spine — its mint as
+ * `capability.become-minted` with the inviter as actor, its accept as `capability.exercised`.
+ * It has no expiry, as an invite never had, and the inviter is not re-checked at accept:
+ * the role was bounded when it was granted, and withdrawing the invite is the lever. An
+ * invite minted before #1686 is redeemed the old way, by hash (`claimInvite`).
+ *
  * Who may invite, and at which role, are two questions (#1931). The vertical's admin gate
  * answers the first — may this caller manage members at all. The second is the kernel's
  * assignment bound (`ctx.canAssign`): a caller may confer a role only if they already hold
@@ -34,15 +42,37 @@
 
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { coverage, coverageRefusal, principalId, z, type Coverage, type MemberInviteLink, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import {
+  boundedBecomeMint,
+  capabilityId,
+  coverage,
+  coverageRefusal,
+  principalId,
+  z,
+  type BoundedBecomeMint,
+  type CapabilityExchange,
+  type CapabilityId,
+  type Coverage,
+  type MemberInviteLink,
+  type PrincipalBecomeCapabilityInput,
+  type PrincipalId,
+  type ScopeId,
+  type TenantId,
+} from '@substrat-run/contracts';
+import { capabilityTokenHash, plausibleCapabilitySecret, ulid } from '@substrat-run/kernel';
 import type { IdentityStub } from './identity-do.js';
-import { claimToken, invitePath, sha256Hex } from './owner-claim-link.js';
+import { invitePath, sha256Hex } from './owner-claim-link.js';
 import { bodyOf } from './request-body.js';
 import type { AuthProvider } from './provider.js';
 
 /** The slice of the identity directory the invite routes touch. */
-export type InviteDirectory = Pick<IdentityStub, 'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite'>;
+export type InviteDirectory = Pick<
+  IdentityStub,
+  'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'
+>;
+
+/** The label every member invite's capability carries — what an operator's capability read shows. */
+export const MEMBER_INVITE_LABEL = 'member invite';
 
 const inviteCaller = z.object({ principal: principalId });
 
@@ -97,6 +127,21 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
    * where it was, rather than leaving a principal nobody can ever bind to holding a role.
    */
   revokeScopeRole: (env: E, scopeId: N['scopeId'], principal: PrincipalId, roleKey: string) => Promise<unknown>;
+  /**
+   * Mint the invite's link (#1686) — the host's `mintBecomeCapabilityBounded`: a `become`
+   * capability for the pre-minted principal, minted by `caller` and bounded by what `caller`
+   * holds, check and write in one scope task. Required: a mount without it refuses create.
+   */
+  mintBecomeCapabilityBounded: (
+    env: E, node: N, caller: PrincipalId, input: PrincipalBecomeCapabilityInput,
+  ) => Promise<BoundedBecomeMint>;
+  /**
+   * Revoke an invite's link (#1686) — the host's `revokeBecomeCapability`, recording `by`. What a
+   * withdrawal does to the capability once the row is gone, and what a failed create undoes.
+   */
+  revokeBecomeCapability: (env: E, node: N, capabilityId: CapabilityId, by: PrincipalId) => Promise<boolean>;
+  /** Exchange an invite's secret in the scope (#1686) — the host's `exchangeCapability`, `become` only. */
+  exchangeCapability: (env: E, node: N, secret: string) => Promise<CapabilityExchange | null>;
   /** The configured `AuthProvider` — who is accepting. Resolved per request, as the vertical does. */
   authProvider: (env: E, req: Request) => Promise<AuthProvider>;
   /**
@@ -117,39 +162,101 @@ export const uncovered = (missing: readonly string[], roleKey: string, act: stri
  * own `POST /api/invites` and the platform's `/internal/members/invite` (vertical-host), so the
  * two doors cannot drift on the token, the hash, or the order.
  *
- * Pre-mint a principal; grant it the role through `grant`, which MUST be the bounded grant
- * (check and write in one scope task) — a refusal returns its coverage and nothing else is
- * written; then record the invite under the token's SHA-256. The grant comes first: a row whose
- * principal holds nothing is a link to no access, while a grant with no row is inert — nobody
- * can bind to it. The two writes are two Durable Objects with no transaction between them, so a
- * failed record takes the grant back (`rollback`) before the failure is rethrown: inert is not
- * harmless when every retry would mint another orphan. If the rollback fails too, the ORIGINAL
- * failure is what the caller hears.
+ * Pre-mint a principal, then three writes, each failing closed:
+ *   1. grant it the role through `grant`, which MUST be the bounded grant (check and write in one
+ *      scope task) — a refusal returns its coverage and nothing else is written;
+ *   2. mint its link (#1686): a `become` capability for that principal, single use and with no
+ *      expiry (an invite has never had one), bounded by what the inviter holds — the scope's own
+ *      record, on the spine as `capability.become-minted`. A refusal takes the grant back;
+ *   3. record the invite under the secret's hash, naming the capability.
+ * The grant comes first: a row whose principal holds nothing is a link to no access, while a
+ * grant with no row is inert — nobody can bind to it, and a capability with no row is refused
+ * before its exchange. The writes are two Durable Objects with no transaction between them, so a
+ * failed record revokes the capability and takes the grant back (`rollback`) before the failure
+ * is rethrown: inert is not harmless when every retry would mint another orphan. If a rollback
+ * step fails too, the ORIGINAL failure is what the caller hears.
  */
 export async function mintMemberInvite(
   steps: {
     grant: (assignee: PrincipalId) => Promise<Coverage>;
-    record: (principal: PrincipalId, tokenHash: string) => Promise<void>;
+    mint: (input: PrincipalBecomeCapabilityInput) => Promise<BoundedBecomeMint>;
+    record: (principal: PrincipalId, tokenHash: string, capabilityId: CapabilityId) => Promise<void>;
+    revokeCapability: (capabilityId: CapabilityId) => Promise<unknown>;
     rollback: (principal: PrincipalId) => Promise<unknown>;
   },
   input: { roleKey: string; email: string | null; origin: string },
 ): Promise<{ ok: true; invite: MemberInviteLink } | { ok: false; coverage: Coverage }> {
   const principal = principalId.parse(ulid());
-  // A long, URL-safe token; only its hash is stored. Two UUIDs = 256 bits of entropy.
-  const token = claimToken();
   const bound = coverage.safeParse(await steps.grant(principal));
   if (!bound.success) {
     throw new HTTPException(500, { message: 'the canAssign bound did not answer with a coverage — refusing' });
   }
   if (!bound.data.covered) return { ok: false, coverage: bound.data };
+  let minted: BoundedBecomeMint;
   try {
-    await steps.record(principal, await sha256Hex(token));
+    minted = boundedBecomeMint.parse(await steps.mint({ principal, maxUses: 1, label: MEMBER_INVITE_LABEL }));
   } catch (err) {
     await steps.rollback(principal).catch(() => undefined);
     throw err;
   }
+  if (!minted.ok) {
+    await steps.rollback(principal).catch(() => undefined);
+    return { ok: false, coverage: minted.coverage };
+  }
+  const link = minted.minted;
+  try {
+    await steps.record(principal, await capabilityTokenHash(link.secret), link.id);
+  } catch (err) {
+    await steps.revokeCapability(link.id).catch(() => undefined);
+    await steps.rollback(principal).catch(() => undefined);
+    throw err;
+  }
   const origin = input.origin.replace(/\/$/, '');
-  return { ok: true, invite: { principal, roleKey: input.roleKey, email: input.email, acceptUrl: `${origin}${invitePath(token)}` } };
+  return { ok: true, invite: { principal, roleKey: input.roleKey, email: input.email, acceptUrl: `${origin}${invitePath(link.secret)}` } };
+}
+
+/**
+ * Accept an invite (#1150, #1686) — the one copy both the vertical's `/api/accept-invite` and any
+ * other accept door run. A capability-era secret is checked against the directory BEFORE the
+ * scope exchanges it (a withdrawn, accepted or unrelated secret keeps its use), then exchanged in
+ * the scope (single use, on the spine as `capability.exercised`), then bound — only while the row
+ * still names that capability and principal. A token that is not a capability secret is a LEGACY
+ * invite, redeemed by hash (`claimInvite`). Null for every refusal, one answer.
+ */
+export async function acceptMemberInvite(
+  deps: {
+    directory: Pick<InviteDirectory, 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'>;
+    exchange: (secret: string) => Promise<CapabilityExchange | null>;
+  },
+  scopeId: string,
+  sub: string,
+  token: string,
+): Promise<string | null> {
+  if (!plausibleCapabilitySecret(token)) {
+    // LEGACY — an invite minted before #1686 (see `claimInvite`).
+    return deps.directory.claimInvite(scopeId, sub, await sha256Hex(token));
+  }
+  if (!(await deps.directory.inviteMatches(scopeId, await capabilityTokenHash(token)))) return null;
+  const exchanged = await deps.exchange(token);
+  if (exchanged?.kind !== 'principal') return null;
+  return deps.directory.claimInviteByCapability(scopeId, sub, exchanged.capabilityId, exchanged.principal);
+}
+
+/**
+ * Withdraw an invite's row and then its link (#1686), once the caller's bound has taken the
+ * roles. The row goes first — that is what stops an accept — and the capability it named is then
+ * revoked in the scope, so the scope's own record agrees and an operator sees it revoked.
+ */
+export async function withdrawMemberInvite(
+  steps: {
+    directory: Pick<InviteDirectory, 'revokeInvite'>;
+    revokeCapability: (capabilityId: CapabilityId) => Promise<unknown>;
+  },
+  scopeId: string,
+  principal: string,
+): Promise<void> {
+  const link = await steps.directory.revokeInvite(scopeId, principal);
+  if (link) await steps.revokeCapability(capabilityId.parse(link));
 }
 
 /**
@@ -180,6 +287,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     }
     if (typeof deps.assignScopeRoleBounded !== 'function') {
       throw new HTTPException(500, { message: 'invites are mounted without the bounded grant — refusing to confer an unbounded role' });
+    }
+    if (typeof deps.mintBecomeCapabilityBounded !== 'function' || typeof deps.revokeBecomeCapability !== 'function') {
+      throw new HTTPException(500, { message: 'invites are mounted without the capability verbs — refusing to mint a link nothing can revoke' });
     }
     const parsed = inviteCaller.safeParse(caller);
     if (!parsed.success) {
@@ -212,8 +322,10 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     const minted = await mintMemberInvite(
       {
         grant: (assignee) => deps.assignScopeRoleBounded(c.env, node, caller.principal, assignee, roleKey),
-        record: (principal, tokenHash) =>
-          deps.directory(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, tokenHash),
+        mint: (link) => deps.mintBecomeCapabilityBounded(c.env, node, caller.principal, link),
+        record: (principal, tokenHash, link) =>
+          deps.directory(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, tokenHash, link),
+        revokeCapability: (link) => deps.revokeBecomeCapability(c.env, node, link, caller.principal),
         rollback: (principal) => deps.revokeScopeRole(c.env, node.scopeId, principal, roleKey),
       },
       { roleKey, email: email ?? null, origin: originOf(c.req.raw) },
@@ -240,7 +352,11 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
       // principal holding nothing.
       const taken = await deps.revokeScopeRolesBounded(c.env, node, caller.principal, principal.data);
       assertCoverage(taken.coverage, principal.data, 'withdraw the invite of');
-      await directory.revokeInvite(node.scopeId, principal.data);
+      await withdrawMemberInvite(
+        { directory, revokeCapability: (link) => deps.revokeBecomeCapability(c.env, node, link, caller.principal) },
+        node.scopeId,
+        principal.data,
+      );
     }
     return c.body(null, 204);
   });
@@ -256,7 +372,12 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     const subject = await (await deps.authProvider(c.env, c.req.raw)).resolve(c.req.raw.headers);
     if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
     const { token } = await bodyOf(c, acceptInviteBody);
-    const principal = await deps.directory(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));
+    const principal = await acceptMemberInvite(
+      { directory: deps.directory(c.env, node), exchange: (secret) => deps.exchangeCapability(c.env, node, secret) },
+      node.scopeId,
+      subject.sub,
+      token,
+    );
     if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
     return c.json({ ok: true, principal });
   });

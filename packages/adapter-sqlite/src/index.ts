@@ -109,6 +109,9 @@ import {
   type AccessLogEntry,
   type CheckSubject,
   type BecomeCapabilityInput,
+  type BoundedBecomeMint,
+  type PrincipalBecomeCapabilityInput,
+  principalBecomeCapabilityInput,
   type Instant,
   type CapabilityExchange,
   type CapabilityFilter,
@@ -236,6 +239,10 @@ import {
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
+  CAPABILITY_BECOME_MINT_OPERATION,
+  becomeMintBound,
+  mintBecomeCapabilityAsPrincipal,
+  revokeBecomeCapabilityAsPrincipal,
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
   createCapabilityVerbs,
@@ -4746,6 +4753,70 @@ export class SqliteScopeHost implements ScopeHost {
         switchSqlOf(rt.db), scopeId, principalId.parse(principal), this.clock(), this.roleBound(caller, tenantId, scopeId),
         (run) => rt.db.transaction(run)(),
       ),
+    );
+  }
+
+  /**
+   * A principal's `become` mint (#1686) — a member invite's link. The kernel's `becomeMintBound`
+   * and the write in ONE scope turn and one transaction, so nothing the target or the caller
+   * holds can move between the check and the mint; a refusal writes nothing. The mint is on the
+   * spine as `capability.become-minted`, the caller its actor.
+   */
+  async mintBecomeCapabilityBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    input: PrincipalBecomeCapabilityInput,
+  ): Promise<BoundedBecomeMint> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const minter = principalId.parse(caller);
+    const parsed = principalBecomeCapabilityInput.parse(input);
+    const outcome = await rt.actor.turn(async (): Promise<BoundedBecomeMint> => {
+      const coverage = await becomeMintBound(this.checker, minter, parsed.principal, { tenantId, scopeId });
+      if (!coverage.covered) return { ok: false, coverage };
+      const now = this.clock();
+      rt.db.exec('BEGIN IMMEDIATE');
+      try {
+        const minted = await mintBecomeCapabilityAsPrincipal(
+          {
+            sql: spineSql(rt.db),
+            now,
+            emit: (event) =>
+              kernelEmit(this.operationContext(
+                rt, asPrincipal(minter), undefined, undefined, undefined, CAPABILITY_BECOME_MINT_OPERATION, [], now,
+              ), event),
+          },
+          minter,
+          parsed,
+        );
+        rt.db.exec('COMMIT');
+        return { ok: true, minted };
+      } catch (err) {
+        rt.db.exec('ROLLBACK');
+        throw err;
+      }
+    });
+    if (outcome.ok) {
+      await this.dispatch(rt, null);
+      await this.dispatchExecutors(rt, null);
+    }
+    return outcome;
+  }
+
+  /**
+   * Revoke a `become` capability a principal minted (#1686) — withdrawing a member invite's
+   * link, recorded with `by` as the revoker. False for anything else: a platform-minted or an
+   * `act` capability is not this verb's. The withdrawal's bound is the caller's, checked before.
+   */
+  async revokeBecomeCapability(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    capabilityId: CapabilityId,
+    by: PrincipalId,
+  ): Promise<boolean> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.turn(() =>
+      revokeBecomeCapabilityAsPrincipal(spineSql(rt.db), capabilityId, principalId.parse(by), this.clock()),
     );
   }
 

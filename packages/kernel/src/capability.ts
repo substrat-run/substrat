@@ -1,4 +1,5 @@
 import {
+  CAPABILITY_BECOME_MINTED,
   CAPABILITY_EXERCISED,
   CAPABILITY_MINTED,
   CAPABILITY_REVOKED,
@@ -12,11 +13,13 @@ import {
   capabilityMintInput,
   capabilityRecord,
   permissionKey,
+  principalBecomeCapabilityInput,
   principalId as principalIdSchema,
   substratError,
   entityObjectRef,
   type BecomeCapabilityInput,
   type CapabilityAuthor,
+  type CapabilityBecomeMintedPayload,
   type CapabilityExchange,
   type CapabilityExercisedPayload,
   type CapabilityFilter,
@@ -27,6 +30,7 @@ import {
   type CapabilityRecord,
   type CapabilityRevokedPayload,
   type CheckSubject,
+  type Coverage,
   type Decision,
   type DomainEventInput,
   type EntityRef,
@@ -35,10 +39,11 @@ import {
   type Node,
   type PermissionKey,
   type PlatformActorId,
+  type PrincipalBecomeCapabilityInput,
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { toBase64url } from './base64url.js';
-import { PermissionDenied } from './permission-checker.js';
+import { PermissionDenied, type PermissionChecker } from './permission-checker.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
 
@@ -630,9 +635,11 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
       if (!row) throw substratError('not_found', `no capability ${id} in this scope`);
       const grant = capabilityGrantOf(row);
       if (!grant) {
+        // A `become` row: the platform's (HostAdmin) or a member invite's (the host's
+        // principal revoke, #1686) — never module code's.
         throw substratError(
           'forbidden',
-          `capability ${id} was minted by the platform and is revoked through HostAdmin`,
+          `capability ${id} is a become capability and is revoked by the host that minted it, not ctx.capabilities`,
           { reason: 'capability_platform_minted' },
         );
       }
@@ -940,4 +947,117 @@ export function revokeCapabilityAsPlatform(
     [now, JSON.stringify(author), id],
   );
   return capabilityRecordOf(row);
+}
+
+// ---------------------------------------------------------------------------
+// A principal's `become` (#1686): the bound, the mint, and the revoke a member invite runs.
+// ---------------------------------------------------------------------------
+
+/** The pseudo-operation a principal's `become` mint names on its spine event. */
+export const CAPABILITY_BECOME_MINT_OPERATION = 'capabilities.mint-become';
+
+/**
+ * May `caller` mint a `become` capability for `target` at `node`? (#1686) Becoming someone
+ * acquires everything they hold, so the bound is the assignment bound (K-21) applied to the
+ * whole of it: the caller must already hold, at the node, every permission the target holds
+ * there, and must be able to exercise every entity-narrowed grant the target holds on that same
+ * entity. Anything less mints impersonation upward — a lead inviting a stranger in as the owner.
+ *
+ * The answer is a `Coverage` naming what the caller lacks, as `canAssign`'s is. A checker with
+ * no `holdings` cannot say what the target holds, so the bound refuses rather than guess.
+ */
+export async function becomeMintBound(
+  checker: Pick<PermissionChecker, 'check' | 'covers' | 'holdings'>,
+  caller: PrincipalId,
+  target: PrincipalId,
+  node: Node,
+): Promise<Coverage> {
+  if (!checker.holdings) {
+    throw substratError('unavailable', 'this permission checker cannot read what a principal holds — refusing to mint a become capability');
+  }
+  const held = await checker.holdings({ kind: 'principal', id: target }, node);
+  const nodeLevel = await checker.covers({ kind: 'principal', id: caller }, held.permissions, node);
+  const missing = new Set<PermissionKey>(nodeLevel.covered ? [] : nodeLevel.missing);
+  for (const { permission, entity } of held.narrowed) {
+    if (missing.has(permission)) continue;
+    if (!(await checker.check({ kind: 'principal', id: caller }, permission, node, entity)).allowed) missing.add(permission);
+  }
+  return missing.size === 0 ? { covered: true, missing: [] } : { covered: false, missing: [...missing] as [PermissionKey, ...PermissionKey[]] };
+}
+
+/**
+ * A principal's `become` mint (#1686) — the write a member invite makes once `becomeMintBound`
+ * has said yes, in the same scope task. Recorded with the principal as its minter, and on the
+ * spine as `capability.become-minted` through `emit`, whose actor the host stamps as `minter`.
+ * No expiry unless one is given, as an invite has never had one; the use limit is required.
+ */
+export async function mintBecomeCapabilityAsPrincipal(
+  deps: { sql: ScopedSql; now: Instant; emit: (event: DomainEventInput) => void },
+  minter: PrincipalId,
+  raw: PrincipalBecomeCapabilityInput,
+): Promise<MintedCapability> {
+  const input = principalBecomeCapabilityInput.parse(raw);
+  if (input.expiresAt !== undefined && input.expiresAt <= deps.now) {
+    throw substratError('validation_failed', `mintBecomeCapability: expiresAt ${input.expiresAt} is not in the future`);
+  }
+  const id = capabilityIdSchema.parse(ulid());
+  const secret = mintCapabilitySecret();
+  deps.sql.exec(
+    `INSERT INTO _substrat_capabilities
+       (id, token_hash, mode, label, entity_type, entity_id, permissions, operations, attachments,
+        principal, minted_by, minted_at, expires_at, max_uses, uses)
+     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0)`,
+    [
+      id,
+      await capabilityTokenHash(secret),
+      input.label ?? null,
+      input.principal,
+      JSON.stringify(minter satisfies CapabilityAuthor),
+      deps.now,
+      input.expiresAt ?? null,
+      input.maxUses,
+    ],
+  );
+  const payload: CapabilityBecomeMintedPayload = {
+    capabilityId: id,
+    principal: input.principal,
+    expiresAt: input.expiresAt ?? null,
+    maxUses: input.maxUses,
+    label: input.label ?? null,
+    mintedBy: minter,
+  };
+  deps.emit({
+    type: CAPABILITY_BECOME_MINTED,
+    schemaVersion: 1,
+    entity: { entityType: 'capability', entityId: id },
+    piiClass: 'none',
+    payload,
+  });
+  return { id, secret, expiresAt: input.expiresAt ?? null };
+}
+
+/**
+ * Revoke a `become` capability a PRINCIPAL minted (#1686) — what withdrawing a member invite
+ * does to its link, recorded with `by` as the revoker. Only such a row: a platform-minted one
+ * (an owner claim link) is the platform's to revoke, and an `act` one is `ctx.capabilities`'.
+ * True when this call revoked it; false when it was already revoked or is not such a row.
+ * Who may withdraw the invite is the caller's bound to check, before this.
+ */
+export function revokeBecomeCapabilityAsPrincipal(
+  sql: ScopedSql,
+  rawId: string,
+  by: PrincipalId,
+  now: Instant,
+): boolean {
+  const id = capabilityIdSchema.parse(rawId);
+  const q = capabilityByIdQuery(id);
+  const row = sql.query<CapabilityRow>(q.sql, q.params)[0];
+  if (!row || row.mode !== 'become' || typeof JSON.parse(row.minted_by) !== 'string') return false;
+  return (
+    sql.exec(
+      `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
+       WHERE id = ? AND revoked_at IS NULL`,
+      [now, JSON.stringify(by satisfies CapabilityAuthor), id],
+    ).changes === 1
+  );
 }

@@ -4,6 +4,7 @@ export { permissionContractSuite } from './permission-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
 export { impersonationContractSuite } from './impersonation-suite.js';
 export { capabilityContractSuite } from './capability-suite.js';
+export { becomeMintContractSuite, type BecomeMintVerbs } from './become-mint-suite.js';
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
 export { attachmentTextContractSuite } from './attachment-text-suite.js';
 export type { AttachmentTextHostFixture, AttachmentTextHostOptions } from './attachment-text-suite.js';
