@@ -1,5 +1,19 @@
 # @substrat-run/contract-tests
 
+## 0.141.0
+
+### Patch Changes
+
+- 48be1e6: Add a separate `attachments: 'read'` capability mint field for attachment list, open and search. Existing operation allowlists retain their meaning. Existing capability rows read the nullable attachment opt-in as absent after the additive spine upgrade; no rows are backfilled. Attachment reads still check the target's read key as the capability.
+- 018fdec: The contract suites now accept vitest 4 and 5 as well as 3, and `defineScopeDO`'s return type now carries its env (`DurableObject<ScopeDoEnv>`). A new scaffold installs vitest 5, and `pnpm test:ui` is opened at the tokenised URL vitest prints rather than redirected to.
+- 6a05977: Track per-script scope copies in a directory ledger before any are written, through confirmed carries, adopts and rebinds; retry fenced cleanup, and drain recorded copies during reap. Coordinate subject redaction across recorded copies before destroying its key. A copy move whose request died is settled by the scheduled sweep once its lease runs out, so it no longer blocks erasure or reap. A destination restore carries the move's lease and refuses itself once it has run out. After a confirmed adopt-serving or cross-lineage rebind, the copy left in the old script is deleted by the sweep, under the same fence as a carry's source; take a snapshot first to keep a way back.
+- a7c6652: Hold schedule cadence, freshness checks, executor retries, jobs, and connector dispatch while a scope or its tenant is suspended. Due work resumes after reactivation.
+- Updated dependencies [48be1e6]
+- Updated dependencies [51bb25b]
+- Updated dependencies [6a05977]
+  - @substrat-run/contracts@0.141.0
+  - @substrat-run/kernel@0.141.0
+
 ## 0.140.0
 
 ### Minor Changes
@@ -5548,7 +5562,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

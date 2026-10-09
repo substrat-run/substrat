@@ -1,5 +1,13 @@
 # @substrat-run/boundary-lint
 
+## 0.6.2
+
+### Patch Changes
+
+- d4fc0fc: Add email account invitations with BankID linking or password and Twilio Verify SMS enrollment. Applications can require BankID or password plus SMS, enforced when issuing an authorization code. Configure the Twilio account SID, auth token, and Verify service SID to enable SMS.
+
+  Recognize the invitation and phone-factor plugins and Twilio transport as server auth wiring in the boundary linter.
+
 ## 0.6.1
 
 ### Patch Changes
