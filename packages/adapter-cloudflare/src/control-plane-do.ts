@@ -3223,7 +3223,9 @@ export class ControlPlaneDO extends DurableObject {
        ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
       scriptRef, moveId, tenantId, scopeId,
     );
-    if (written.rowsWritten === 0) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+    if (written.rowsWritten === 0 && !this.sql.exec(
+      'SELECT 1 FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId,
+    ).toArray().length) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
   }
 
   settleScopeScriptCopy(

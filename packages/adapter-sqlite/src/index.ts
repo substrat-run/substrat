@@ -8890,7 +8890,9 @@ export class SqliteScopeHost implements ScopeHost {
            WHERE tenant_id = ? AND scope_id = ?
            ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
         ).run(scriptRef, moveId, tenantId, scopeId);
-        if (result.changes === 0) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        if (result.changes === 0 && !this.directory.prepare(
+          'SELECT 1 FROM scopes WHERE tenant_id = ? AND scope_id = ?',
+        ).get(tenantId, scopeId)) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
         this.directory.prepare(

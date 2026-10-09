@@ -5747,12 +5747,18 @@ export function scopeHostContractSuite(
       const first = ulid();
       const next = ulid();
       await host.admin.recordScopeScriptCopy(staff, t1, s, ref, first);
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, first); // retry keeps its state
       await expect(host.admin.recordScopeScriptCopy(staff, t2, s, ref, next)).rejects.toThrow();
       expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t2, scopeId: s })).toEqual([]);
       expect(await host.admin.settleScopeScriptCopy(staff, t2, s, ref, first, 'done')).toBe(false);
+      const other = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: other });
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, other, ref, first, 'done')).toBe(false);
       expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'eligible',
         { loadStamp: 'stamp', revision: '2' })).toBe(true);
       await host.admin.recordScopeScriptCopy(staff, t1, s, ref, next);
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, first);
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, state: 'eligible' })).toHaveLength(1);
       expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'done')).toBe(true);
       expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).toMatchObject([
         { tenantId: t1, scopeId: s, scriptRef: ref, moveId: first, state: 'done' },
