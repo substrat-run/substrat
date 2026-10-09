@@ -148,7 +148,8 @@ overrides:
 
 patchedDependencies:
   # The pool rewrapped its RPC prototype for every new DO, building an unbounded
-  # proxy chain during large contract runs (#2121). Remove when upstream fixes it.
+  # proxy chain during large contract runs (#2121). Fixed only in the renamed
+  # @cloudflare/vitest-plugin >= 1.2.0, which needs vitest 4: the vitest 4 migration removes it.
   '@cloudflare/vitest-pool-workers@0.12.21': patches/@cloudflare__vitest-pool-workers@0.12.21.patch
 
 peerDependencyRules:

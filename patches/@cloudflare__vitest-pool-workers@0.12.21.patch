@@ -1,3 +1,9 @@
+#2121: install the prototype proxy once, when the class is created, instead of re-wrapping it
+in every Durable Object construction (property lookups recursed through one proxy per instance).
+Fixed upstream in @cloudflare/vitest-plugin >= 1.2.0, the renamed package, which needs vitest 4.
+@cloudflare/vitest-pool-workers is deprecated and still has the bug at 0.23.0. The vitest 4 /
+vitest-plugin migration (follow-up) removes this patch.
+
 diff --git a/dist/worker/lib/cloudflare/test-internal.mjs b/dist/worker/lib/cloudflare/test-internal.mjs
 index f5fde62e0edfc9d8e8c1466846aba46bd5c056d4..3b4bcc96714c94638b999a234ac94750018b0090 100644
 --- a/dist/worker/lib/cloudflare/test-internal.mjs
