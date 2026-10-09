@@ -30,7 +30,7 @@
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "hono": "^4.13.12",
+    "hono": "^4.13.13",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -45,7 +45,7 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
     "@vitest/ui": "catalog:",
-    "ai": "7.0.127",
+    "ai": "7.0.128",
     "better-sqlite3": "^13.0.3",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",

@@ -27,7 +27,7 @@
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
-    "hono": "^4.13.12",
+    "hono": "^4.13.13",
     "tweetnacl": "^1.0.3",
     "zod": "catalog:"
   },
