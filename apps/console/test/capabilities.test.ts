@@ -60,6 +60,16 @@ describe('the console Capabilities card (#1686)', () => {
     expect(operationsLine(become())).toBe('—');
   });
 
+  it('shows a narrowed link’s attachment opt-in beside its operations', () => {
+    const narrowed = { operations: ['cap/read'] } as Partial<CapabilityRecord>;
+    expect(operationsLine(act({ ...narrowed, attachments: 'read' } as Partial<CapabilityRecord>))).toBe(
+      'cap/read + attachments: read',
+    );
+    expect(operationsLine(act({ ...narrowed, attachments: null } as Partial<CapabilityRecord>))).toBe('cap/read');
+    expect(operationsLine(act(narrowed))).toBe('cap/read');
+    expect(operationsLine(act({ attachments: 'read' } as Partial<CapabilityRecord>))).toBe('any the keys allow');
+  });
+
   it('two links on one entity with different key sets read differently — the keys are the authority', () => {
     const a = act({ permissions: ['doc:read', 'doc:write'] } as Partial<CapabilityRecord>);
     const b = act({ permissions: ['doc:read', 'doc:delete'] } as Partial<CapabilityRecord>);

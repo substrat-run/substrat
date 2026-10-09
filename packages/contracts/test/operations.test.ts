@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { defineEntities } from '../src/model.js';
 import {
+  defineEngineRoutes,
   defineOperations,
   eventsEmittedBy,
   operationInputsOf,
@@ -252,6 +253,193 @@ ops({
     output: z.object({ id: z.string() }),
     http: { method: 'PUT', path: '/customers/{id}' },
   },
+});
+
+describe('PATCH input declarations', () => {
+  const update = (input: z.ZodObject<z.ZodRawShape>, patchException?: string) =>
+    ops({
+      'customer/update': {
+        summary: 'Update a customer',
+        permission: 'customer:manage',
+        input,
+        output: entities.customer.fields,
+        http: { method: 'PATCH', path: '/customers/{id}' },
+        ...(patchException === undefined ? {} : { patchException }),
+      },
+    });
+
+  it('accepts optional, default-free body fields and a required path key', () => {
+    expect(() => update(z.object({ id: z.string(), name: z.string().nullable().optional() }))).not.toThrow();
+  });
+
+  it('refuses a full replacement behind PATCH and names the remedy', () => {
+    expect(() => update(z.object({ id: z.string(), name: z.string(), status: z.string().default('lead') })))
+      .toThrow(/customer\/update.*name.*route it as PUT, make the field optional without a default, or declare patchException with a reason/);
+  });
+
+  it('refuses defaults and prefaults even inside optional wrappers', () => {
+    expect(() => update(z.object({ id: z.string(), name: z.string().default('new').optional() })))
+      .toThrow(/customer\/update.*name.*default/);
+    expect(() => update(z.object({ id: z.string(), name: z.string().prefault('new').nullable().optional() })))
+      .toThrow(/customer\/update.*name.*default/);
+    let deeplyWrapped: z.ZodType = z.string().default('new');
+    for (let i = 0; i < 20; i++) deeplyWrapped = deeplyWrapped.optional();
+    expect(() => update(z.object({ id: z.string(), name: deeplyWrapped })))
+      .toThrow(/customer\/update.*name.*default/);
+  });
+
+  it('finds and refuses defaults inside lazy schemas', () => {
+    const name = z.lazy(() => z.string().default('x')).optional();
+    expect(name.parse(undefined)).toBe('x');
+    expect(() => update(z.object({ id: z.string(), name }))).toThrow(/customer\/update.*name.*default/);
+  });
+
+  it('finds and refuses defaults in nested object shapes', () => {
+    const details = z.object({ child: z.string().default('x') }).optional();
+    expect(details.parse({})).toEqual({ child: 'x' });
+    expect(() => update(z.object({ id: z.string(), details }))).toThrow(/customer\/update.*details.*default/);
+  });
+
+  it('finds and refuses defaults in array elements', () => {
+    const values = z.array(z.string().default('x')).optional();
+    expect(values.parse([undefined])).toEqual(['x']);
+    expect(() => update(z.object({ id: z.string(), values }))).toThrow(/customer\/update.*values.*default/);
+  });
+
+  it('finds and refuses defaults in record values', () => {
+    const values = z.record(z.string(), z.string().default('x')).optional();
+    expect(values.parse({ key: undefined })).toEqual({ key: 'x' });
+    expect(() => update(z.object({ id: z.string(), values }))).toThrow(/customer\/update.*values.*default/);
+  });
+
+  it('finds and refuses defaults in union options', () => {
+    const choice = z.union([
+      z.object({ kind: z.literal('a'), child: z.string().default('x') }),
+      z.object({ kind: z.literal('b') }),
+    ]).optional();
+    expect(choice.parse({ kind: 'a' })).toEqual({ kind: 'a', child: 'x' });
+    expect(() => update(z.object({ id: z.string(), choice }))).toThrow(/customer\/update.*choice.*default/);
+  });
+
+  it('finds and refuses defaults in discriminated union options', () => {
+    const choice = z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('a'), child: z.string().default('x') }),
+      z.object({ kind: z.literal('b') }),
+    ]).optional();
+    expect(choice.parse({ kind: 'a' })).toEqual({ kind: 'a', child: 'x' });
+    expect(() => update(z.object({ id: z.string(), choice }))).toThrow(/customer\/update.*choice.*default/);
+  });
+
+  it('refuses schema kinds it cannot inspect', () => {
+    const opaque = { _zod: { def: { type: 'future_schema_kind' } } } as unknown as z.ZodType;
+    expect(() => update(z.object({ id: z.string(), opaque })))
+      .toThrow(/customer\/update.*opaque.*uninspectable Zod schema kind 'future_schema_kind'/);
+  });
+
+  it('refuses codecs that can produce a value for an omitted field', () => {
+    const value = z.codec(z.object({}), z.object({ value: z.string().default('x') }), {
+      decode: () => ({ value: 'x' }),
+      encode: () => ({}),
+    }).optional();
+    expect(value.parse({})).toEqual({ value: 'x' });
+    expect(() => update(z.object({ id: z.string(), value })))
+      .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'pipe transform'/);
+  });
+
+  it('refuses overwrite checks that add a value to a parsed object', () => {
+    const value = z.object({ value: z.string().optional() })
+      .overwrite((input) => ({ ...input, value: 'x' }))
+      .optional();
+    expect(value.parse({})).toEqual({ value: 'x' });
+    expect(() => update(z.object({ id: z.string(), value })))
+      .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'overwrite'/);
+  });
+
+  it('refuses an overwrite on the input object itself, which can fill an omitted field', () => {
+    const input = z.object({ id: z.string(), name: z.string().optional() })
+      .overwrite((value) => ({ ...value, name: value.name ?? 'x' }));
+    expect(input.parse({ id: '1' })).toEqual({ id: '1', name: 'x' });
+    expect(() => update(input))
+      .toThrow(/customer\/update.*input object.*uninspectable Zod schema kind 'overwrite'/);
+  });
+
+  it('refuses an input that is not a plain object, such as a transformed one', () => {
+    const input = z.object({ id: z.string(), name: z.string().optional() })
+      .transform((value) => ({ ...value, name: value.name ?? 'x' }));
+    expect(input.parse({ id: '1' })).toEqual({ id: '1', name: 'x' });
+    expect(() => update(input as never))
+      .toThrow(/customer\/update.*input object.*uninspectable Zod schema kind 'pipe'/);
+  });
+
+  it('accepts validation on the input object, and cannot see a refine callback that mutates', () => {
+    const validated = z.object({ id: z.string(), name: z.string().optional() }).strict()
+      .refine((value) => value.name !== '', 'name must not be empty');
+    expect(() => update(validated)).not.toThrow();
+    // The documented limit: a refine callback gets the parsed object by reference, so it can
+    // mutate it, and no declaration check can tell that from a validator. Unsupported.
+    const mutating = z.object({ id: z.string(), name: z.string().optional() })
+      .superRefine((value) => { value.name ??= 'x'; });
+    expect(mutating.parse({ id: '1' })).toEqual({ id: '1', name: 'x' });
+    expect(() => update(mutating)).not.toThrow();
+  });
+
+  it('accepts the named string normalizers, which only rewrite a supplied string', () => {
+    const name = z.string().trim().toLowerCase().toUpperCase().normalize('NFC').min(1).optional();
+    expect(z.object({ name }).parse({})).toEqual({});
+    expect(() => update(z.object({ id: z.string(), name }))).not.toThrow();
+    expect(() => update(z.object({ id: z.string(), name: z.email().trim().optional() }))).not.toThrow();
+  });
+
+  it('refuses a custom overwrite on a string, which is arbitrary code', () => {
+    const name = z.string().overwrite((input) => input || 'x').optional();
+    expect(z.object({ name }).parse({ name: '' })).toEqual({ name: 'x' });
+    expect(() => update(z.object({ id: z.string(), name })))
+      .toThrow(/customer\/update.*name.*uninspectable Zod schema kind 'overwrite'/);
+  });
+
+  it('refuses a normalizer-shaped overwrite on anything but a string leaf', () => {
+    // The trim closure itself, on an object: only a string leaf may carry it.
+    const trim = z.string().trim()._zod.def.checks![0]! as unknown as z.core.$ZodCheck<{ value?: string }>;
+    const value = z.object({ value: z.string().optional() }).check(trim).optional();
+    expect(() => update(z.object({ id: z.string(), value })))
+      .toThrow(/customer\/update.*value.*uninspectable Zod schema kind 'overwrite'/);
+  });
+
+  it('accepts a reasoned exception, but not an empty reason', () => {
+    expect(() => update(z.object({ id: z.string(), name: z.string() }), 'The handler writes only name.'))
+      .not.toThrow();
+    expect(() => update(z.object({ id: z.string(), name: z.string() }), '  '))
+      .toThrow(/customer\/update.*patchException without a reason/);
+  });
+
+  it('allows full replacement through PUT', () => {
+    expect(() => ops({
+      'customer/update': {
+        summary: 'Replace a customer',
+        permission: 'customer:manage',
+        input: z.object({ id: z.string(), name: z.string(), status: z.string().default('lead') }),
+        output: entities.customer.fields,
+        http: { method: 'PUT', path: '/customers/{id}' },
+      },
+    })).not.toThrow();
+  });
+
+  it('checks an engine operation when its route is bound to PATCH', () => {
+    const engine = ops({
+      'customer/update': {
+        summary: 'Update a customer',
+        permission: 'customer:manage',
+        input: z.object({ id: z.string(), name: z.string() }),
+        output: entities.customer.fields,
+      },
+    });
+    expect(() => defineEngineRoutes(engine)({
+      'customer/update': { method: 'PATCH', path: '/customers/{id}' },
+    })).toThrow(/customer\/update.*name.*route it as PUT/);
+    expect(() => defineEngineRoutes(engine)({
+      'customer/update': { method: 'PUT', path: '/customers/{id}' },
+    })).not.toThrow();
+  });
 });
 
 // --- events: entityIdFrom names an OUTPUT field (the #695 defect) -----------

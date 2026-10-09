@@ -63,6 +63,8 @@ export const capabilityAuthority = z.object({
   entity: entityRef,
   permissions: z.array(permissionKey).min(1).max(CAPABILITY_PERMISSIONS_MAX),
   operations: z.array(z.string().min(1)).min(1).max(CAPABILITY_OPERATIONS_MAX).optional(),
+  /** Explicitly allow attachment reads; this never widens permissions or operations. */
+  attachments: z.literal('read').optional(),
 });
 export type CapabilityAuthority = z.infer<typeof capabilityAuthority>;
 
@@ -138,6 +140,8 @@ export const capabilityRecord = z.discriminatedUnion('mode', [
     permissions: z.array(permissionKey).min(1),
     /** Null = any operation the keys allow. */
     operations: z.array(z.string().min(1)).nullable(),
+    /** Absent/null = attachment readers remain refused when `operations` is narrowed. */
+    attachments: z.literal('read').nullable().optional(),
   }),
   z.object({
     mode: z.literal('become'),

@@ -105,7 +105,7 @@ describe('connector calls into the recorder (#1691)', () => {
       return result;
     };
     const health = async () => (await host.admin.listConnections(staff, { tenantId: t }))[0]!;
-    return { host, t, id, call, health };
+    return { host, staff, t, s, id, call, health };
   };
 
   const capture = () => {
@@ -113,6 +113,20 @@ describe('connector calls into the recorder (#1691)', () => {
     const recorder = analyticsEngineConnectorCallRecorder({ writeDataPoint: (p) => void points.push(p) });
     return { points, recorder };
   };
+
+  it('dispatches for provisioning while the tenant is active, then holds a suspended tenant', async () => {
+    const w = await world(); // The scope remains provisioning throughout this test.
+    expect(await w.call('/ok')).toBe('resolved');
+    await w.host.admin.setTenantStatus(w.staff, w.t, 'suspended');
+    let called = false;
+    await expect(w.host.dispatchConnector(
+      w.t,
+      w.s,
+      async () => { called = true; },
+      { id: ulid(), type: 'doc.send-requested', payload: {} } as unknown as DomainEvent,
+    )).rejects.toThrow(/tenant not active \(status: suspended\)/);
+    expect(called).toBe(false);
+  });
 
   describe('no field can carry a secret or a payload', () => {
     it('ok, 5xx, thrown and timed-out calls each write one point, and none holds what the call carried', async () => {

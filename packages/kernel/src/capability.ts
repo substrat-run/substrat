@@ -93,7 +93,7 @@ export const CAPABILITY_DDL = `
     -- the kernel once, in the mint's return value, and a lookup is this indexed equality.
     token_hash TEXT NOT NULL UNIQUE,
     -- 'act': the holder acts AS the capability ({ capability } on the spine), bounded by
-    -- entity + permissions (+ operations). 'become': exchanging it yields \`principal\`.
+    -- entity + permissions (+ operations + attachments). 'become': exchanging it yields \`principal\`.
     mode TEXT NOT NULL,
     label TEXT,
     entity_type TEXT,
@@ -103,6 +103,8 @@ export const CAPABILITY_DDL = `
     permissions TEXT,
     -- JSON array of operation names, or NULL = any operation the keys allow (act).
     operations TEXT,
+    -- NULL = no attachment read opt-in; 'read' explicitly allows attachment readers.
+    attachments TEXT,
     principal TEXT,
     -- JSON capabilityAuthor: a principal id (a module minted it, and its authority is
     -- re-checked on every use) or {"platform": …} (HostAdmin minted it).
@@ -149,6 +151,7 @@ export interface CapabilityRow {
   entity_id: string | null;
   permissions: string | null;
   operations: string | null;
+  attachments: string | null;
   principal: string | null;
   minted_by: string;
   minted_at: string;
@@ -162,7 +165,7 @@ export interface CapabilityRow {
 
 /** Every column a read returns — everything but `token_hash`, which no reader has a use for. */
 export const CAPABILITY_COLUMNS =
-  'id, mode, label, entity_type, entity_id, permissions, operations, principal, minted_by, ' +
+  'id, mode, label, entity_type, entity_id, permissions, operations, attachments, principal, minted_by, ' +
   'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by';
 
 /** The row the permission checker reads for a capability subject (`ScopeTupleReader.capability`). */
@@ -314,6 +317,7 @@ export function capabilityRecordOf(row: CapabilityRow): CapabilityRecord {
           entity: { entityType: row.entity_type, entityId: row.entity_id },
           permissions: JSON.parse(row.permissions ?? '[]'),
           operations: row.operations === null ? null : JSON.parse(row.operations),
+          attachments: row.attachments === null ? null : 'read',
         },
   );
 }
@@ -546,6 +550,7 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
       const root = entityObjectRef(input.entity, 'ctx.capabilities.mint');
       const permissions = [...new Set(input.permissions)];
       const operations = input.operations ? [...new Set(input.operations)] : null;
+      const attachments = input.attachments ?? null;
       for (const op of operations ?? []) {
         if (!deps.isOperation(op)) {
           throw substratError(
@@ -578,9 +583,9 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
       const tokenHash = await capabilityTokenHash(secret);
       deps.sql.exec(
         `INSERT INTO _substrat_capabilities
-           (id, token_hash, mode, label, entity_type, entity_id, permissions, operations,
+           (id, token_hash, mode, label, entity_type, entity_id, permissions, operations, attachments,
             principal, minted_by, minted_at, expires_at, max_uses, uses)
-         VALUES (?, ?, 'act', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 0)`,
+         VALUES (?, ?, 'act', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 0)`,
         [
           id,
           tokenHash,
@@ -589,6 +594,7 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
           input.entity.entityId,
           JSON.stringify(permissions),
           operations === null ? null : JSON.stringify(operations),
+          attachments,
           JSON.stringify(minter),
           deps.now,
           input.expiresAt ?? null,
@@ -669,6 +675,7 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
 
 /** The pseudo-operation an exchange's spine event names, on `attachments.upload`'s pattern. */
 export const CAPABILITY_EXCHANGE_OPERATION = 'capabilities.exchange';
+const CAPABILITY_ATTACHMENT_READ_OPERATIONS = new Set(['attachments.list', 'attachments.open', 'attachments.search']);
 
 /**
  * Trade a secret for what it grants — ONE counted use. Runs inside the scope's
@@ -784,12 +791,15 @@ export async function exchangeCapability(
  * remedy — and an operation outside the capability's allowlist as `forbidden`. None of
  * these is a K-35 denial: no permission key was checked, and the denial log records
  * enforced checks. The handler's own checks, once it runs, are.
+ * `attachmentRead` is true only at the dedicated attachment reader boundary; ordinary
+ * operation resolution leaves the independent attachment field out of its decision.
  */
 export function resolveCapabilitySession(
   sql: ScopedSql,
   sessionHash: string,
   now: Instant,
   operation: string,
+  attachmentRead = false,
 ): CapabilityId {
   const session = sql.query<{ capability_id: string; expires_at: string }>(
     `SELECT capability_id, expires_at FROM _substrat_capability_sessions WHERE token_hash = ?`,
@@ -805,7 +815,9 @@ export function resolveCapabilitySession(
   }
   if (row.operations !== null) {
     const allowed = JSON.parse(row.operations) as string[];
-    if (!allowed.includes(operation)) {
+    const optedIntoAttachmentRead =
+      attachmentRead && row.attachments === 'read' && CAPABILITY_ATTACHMENT_READ_OPERATIONS.has(operation);
+    if (!allowed.includes(operation) && !optedIntoAttachmentRead) {
       throw substratError(
         'forbidden',
         `capability ${row.id} may not invoke '${operation}' — it is not on the capability's ` +
@@ -889,9 +901,9 @@ export async function mintBecomeCapability(
   const author: CapabilityAuthor = { platform: actor };
   sql.exec(
     `INSERT INTO _substrat_capabilities
-       (id, token_hash, mode, label, entity_type, entity_id, permissions, operations,
+       (id, token_hash, mode, label, entity_type, entity_id, permissions, operations, attachments,
         principal, minted_by, minted_at, expires_at, max_uses, uses)
-     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0)`,
+     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0)`,
     [
       id,
       await capabilityTokenHash(secret),

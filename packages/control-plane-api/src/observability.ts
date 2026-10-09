@@ -432,6 +432,19 @@ export const LOG_PATTERN_TOP = 50;
 export interface ObservabilityReader {
   /** Opt-in: tenant metrics honor explicit absolute windows rather than ignoring them. */
   absoluteTenantWindows?: boolean;
+  /** Sampled, vertical-asserted output-field counts, joined to router-owned dispatches. */
+  fieldCoverage?(input: {
+    tenantId: string;
+    vertical: string;
+    /** The one installed app; only router lines dispatched to it vouch for a report. */
+    scopeId: string;
+    services: readonly string[];
+    declared?: Readonly<Record<string, readonly string[]>>;
+    versionId?: string;
+    hours: number;
+    since?: string;
+    until?: string;
+  }): Promise<import('./field-coverage-read.js').FieldCoverageRead>;
   /** Per-service invocation metrics for the trailing window (fleet + builder views). */
   serviceMetrics(input: { hours: number }): Promise<ServiceMetricsRow[]>;
 

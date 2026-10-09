@@ -2611,6 +2611,18 @@ export const capMod: ModuleRegistration = {
       assertAllowed(decision);
       return { read: entity, proof: decision.proof };
     }) as OperationHandler<never, unknown>,
+    // Collision fixtures: these are ordinary module operation names, independently of
+    // the attachment reader verbs that share their spelling.
+    'attachments.list': (async (ctx, input) => {
+      const entity = (input as { entity: EntityRef }).entity;
+      assertAllowed(await ctx.check(CAP_READ, entity));
+      return { read: entity };
+    }) as OperationHandler<never, unknown>,
+    'attachments.read': (async (ctx, input) => {
+      const entity = (input as { entity: EntityRef }).entity;
+      assertAllowed(await ctx.check(CAP_READ, entity));
+      return { read: entity };
+    }) as OperationHandler<never, unknown>,
     'cap/granted-entities': ((ctx) => ctx.grantedEntities(CAP_READ, 'doc')) as OperationHandler<never, unknown>,
     // A node-level read: a capability holds no node-level authority, so this refuses it.
     'cap/read-all': (async (ctx) => {
