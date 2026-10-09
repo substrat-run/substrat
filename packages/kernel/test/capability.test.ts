@@ -393,7 +393,10 @@ describe('readBecomeLinkStates', () => {
   const become = (over: Partial<CapabilityRow> = {}): CapabilityRow =>
     capRow({ mode: 'become', entity_type: null, entity_id: null, permissions: null, principal: ALICE, max_uses: 1, ...over });
   const sqlOf = (rows: Record<string, CapabilityRow>): ScopedSql => ({
-    query: <T,>(_sql: string, params?: unknown[]) => (rows[String(params?.[0])] ? [rows[String(params[0])]] : []) as unknown as T[],
+    query: <T,>(_sql: string, params?: readonly unknown[]) => {
+      const row = rows[String(params?.[0])];
+      return (row ? [row] : []) as unknown as T[];
+    },
     exec: () => ({ changes: 0 }),
   });
   const ids = ['01JZ00000000000000000000C1', '01JZ00000000000000000000C2', '01JZ00000000000000000000C3',
