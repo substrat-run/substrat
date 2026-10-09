@@ -5740,6 +5740,27 @@ export function scopeHostContractSuite(
       expect((await host.admin.getScopeRecord(staff, t1, s))!.verticalVersionId).toBe(v1);
     });
 
+    it('copy ledger is additive, scoped by tenant and scope, and fences old move receipts (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const ref = `version-${ulid().toLowerCase()}`;
+      const first = ulid();
+      const next = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, first);
+      await expect(host.admin.recordScopeScriptCopy(staff, t2, s, ref, next)).rejects.toThrow();
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t2, scopeId: s })).toEqual([]);
+      expect(await host.admin.settleScopeScriptCopy(staff, t2, s, ref, first, 'done')).toBe(false);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'eligible',
+        { loadStamp: 'stamp', revision: '2' })).toBe(true);
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, next);
+      expect(await host.admin.settleScopeScriptCopy(staff, t1, s, ref, first, 'done')).toBe(true);
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).toMatchObject([
+        { tenantId: t1, scopeId: s, scriptRef: ref, moveId: first, state: 'done' },
+        { tenantId: t1, scopeId: s, scriptRef: ref, moveId: next, state: 'pending' },
+      ]);
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.tenantId).toBe(t1);
+    });
+
     // #1722 (Codex #2008 r7): the admin-log record of a staff resolution of a kept copy. The
     // resolution itself runs in the vertical's store; the directory only records it, in full.
     it('records a kept-copy resolution in the admin log, before and after, and refuses an unknown scope', async () => {

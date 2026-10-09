@@ -5,6 +5,7 @@ import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, WRITE_REVISION_KEY, dumpMetaValue, ul
 import {
   ControlPlaneError,
   createControlPlaneApi,
+  retryScopeScriptCopies,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   stableDeploymentRefFor,
@@ -166,6 +167,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       snapshotScope: (input: { sourceScopeId: ScopeId; newScopeId: ScopeId }) =>
         relay(() => host.snapshotScopeLocal(input.sourceScopeId, input.newScopeId)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
+      redactSubject: (sid: ScopeId, subject: string) => relay(() => host.redactSubjectLocal(sid, subject)),
       clearCopyMark: (sid: ScopeId, lineage: ScopeLineage, opts: { expect?: { loadStamp: string | null; revision: string | null } } = {}) =>
         relay(() => host.clearCopyMarkLocal(sid, lineage, ...(opts.expect ? [opts.expect] : []))),
     } as unknown as VerticalClient;
@@ -496,7 +498,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         { bodies: ['from v1', 'from v2'], wiped: false },
       ]);
     });
-    it('records a failed source wipe, but a later preview reap currently leaves that copy behind', async () => {
+    it('records a failed source wipe and reaps its copy before deleting the preview row', async () => {
       const p = await fresh('failed-wipe-reap', 'copied data');
       hooks.wipe = async (ref, sid) => {
         if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('source wipe unavailable');
@@ -507,10 +509,31 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['copied data']);
       expect((await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId })).some((f) => f.stage === 'source-copy')).toBe(true);
 
+      const pending = await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId });
+      expect(pending).toMatchObject([{ scriptRef: refOf.get(version.v1), state: 'eligible' }]);
+
       const reaped = await api.request('/verticals/carry-vert/previews/failed-wipe-reap', { method: 'DELETE', headers: auth });
       expect(reaped.status).toBe(200);
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
-      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['copied data']);
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
+      expect(await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId })).toMatchObject([
+        { scriptRef: refOf.get(version.v1), state: 'done' },
+      ]);
+    });
+    it('retries a failed source wipe from the ledger', async () => {
+      const p = await fresh('retry-wipe', 'kept until retry');
+      hooks.wipe = async (ref, sid) => {
+        if (ref === refOf.get(version.v1) && sid === p.scopeId) throw new Error('temporary wipe failure');
+      };
+      expect((await push('retry-wipe', 'v2')).status).toBe(200);
+      delete hooks.wipe;
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['kept until retry']);
+      const report = await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
+      expect(report.done).toBeGreaterThan(0);
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+      expect(await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId })).toMatchObject([
+        { scriptRef: refOf.get(version.v1), state: 'done' },
+      ]);
     });
     afterEach(() => {
       for (const k of Object.keys(hooks) as (keyof typeof hooks)[]) delete hooks[k];
