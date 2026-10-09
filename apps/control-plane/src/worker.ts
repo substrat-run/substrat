@@ -1259,14 +1259,6 @@ function deploymentForScopeFor(
 }
 
 /**
- * The storage-gauge phase's reader (#1524): one scope's database size, read through the
- * deployment that holds its DO, the same `/internal/database-size` the console's on-demand
- * reading uses. A scope bound to no vertical has no database on this plane, so it is skipped
- * (`null`). A vertical scope whose deployment does not resolve FAILS rather than falling back
- * to this host, whose namespace is a module-less placeholder: waking it would create an empty
- * database and record its size as the scope's.
- */
-/**
  * A 404 the vertical's router answered because it has no such route: a non-empty body that is
  * not JSON (Hono's miss is plain text). vertical-host's `classifyError` and a vertical's own
  * `mapError` also answer 404, for a scope or row it could not find, and those come as the JSON
@@ -1282,6 +1274,14 @@ function isRouteMiss(err: ControlPlaneError): boolean {
   }
 }
 
+/**
+ * The storage-gauge phase's reader (#1524): one scope's database size, read through the
+ * deployment that holds its DO, the same `/internal/database-size` the console's on-demand
+ * reading uses. A scope bound to no vertical has no database on this plane, so it is skipped
+ * (`null`). A vertical scope whose deployment does not resolve FAILS rather than falling back
+ * to this host, whose namespace is a module-less placeholder: waking it would create an empty
+ * database and record its size as the scope's.
+ */
 export function storageReaderFor(
   resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'databaseSize'> | undefined>,
 ): (scope: Scope) => Promise<number | null> {
