@@ -514,4 +514,23 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     expect(await ledgerOf(sid)).toEqual({ v1: 'done', v2: 'done' });
     expect(wiped(from, sid)).toBe(true);
   });
+
+  // Review r1: every reap drains the ledger when the platform can resolve scripts by ref, even
+  // for a scope nothing routes (a fork whose bind never landed), as the preview and GC reaps do.
+  it('the scope reap route drains a copy the ledger names though the scope has no route', async () => {
+    const prod = await install();
+    const fork = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: fork, vertical: slug, forkedFrom: prod, kind: 'archive' });
+    await host.admin.setScopeServingRef(staff, t, fork, null);
+    const ref = refOf.get(versions.v1)!;
+    const move = ulid();
+    await host.admin.recordScopeScriptCopy(staff, t, fork, ref, move, { role: 'destination' });
+    await host.admin.settleScopeScriptCopy(staff, t, fork, ref, move, 'retained');
+    storesOf(ref).set(fork, { tables: notes('forked'), loadStamp: ulid(), revision: '1' });
+    const record = (await host.admin.getScopeRecord(staff, t, fork))!;
+    expect([record.servingRef ?? null, record.verticalVersionId ?? null]).toEqual([null, null]);
+    expect((await app.request(`/tenants/${t}/scopes/${fork}`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
+    expect(await host.admin.getScopeRecord(staff, t, fork)).toBeUndefined();
+    expect(storesOf(ref).has(fork)).toBe(false);
+  });
 });

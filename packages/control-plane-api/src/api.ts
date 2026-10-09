@@ -4852,9 +4852,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // local/placeholder wipe, hostnames + directory row, audit) — the same
       // storage-before-row ordering deleteSnapshot itself keeps, so a crash
       // between the two converges on retry.
-      const named = await routeOf(c, scope);
+      // #1722: with per-script resolution every reap drains the ledger, routed or not (a fork
+      // whose bind failed has no route but may hold a copy), as the preview and GC reaps do.
       if (!options.resolveVerticalRef) await assertNoUnreachableScopeCopies(c.var.admin, actor, tenantId, scopeId);
-      const storageStranded = named && options.resolveVerticalRef
+      const storageStranded = options.resolveVerticalRef
         ? (await reapScopeScriptCopies({ admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, tenantId, scopeId), false)
         : await deleteScopeStorageOrStrand(await verticalForScope(c, scope), tenantId, scopeId);
       await c.var.host.deleteSnapshot(actor, tenantId, scopeId);
@@ -5500,9 +5501,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       // By this point the backup contract has resolved (a copy landed, or the caller
       // explicitly declined one), so stranding is a bookkeeping fact, not data loss.
-      const named = await routeOf(c, scope);
+      // #1722: with per-script resolution every reap drains the ledger, routed or not (a fork
+      // whose bind failed has no route but may hold a copy), as the preview and GC reaps do.
       if (!options.resolveVerticalRef) await assertNoUnreachableScopeCopies(c.var.admin, actor, tenantId, scopeId);
-      const storageStranded = named && options.resolveVerticalRef
+      const storageStranded = options.resolveVerticalRef
         ? (await reapScopeScriptCopies({ admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, tenantId, scopeId), false)
         : await deleteScopeStorageOrStrand(await verticalForScope(c, scope), tenantId, scopeId);
       await c.var.admin.reapScope(actor, tenantId, scopeId, {
