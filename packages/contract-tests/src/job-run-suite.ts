@@ -309,7 +309,7 @@ export function jobRunContractSuite(
           return { done: true };
         },
         { maxAttempts: 3, baseDelayMs: 0 },
-        { leaseMs: 1_000 },
+        { leaseMs: BRIEF_LEASE_MS },
       );
       host.registerJob(
         JOBS_MODULE,
@@ -474,7 +474,7 @@ export function jobRunContractSuite(
           await sleep(20);
         }
         expect(await pass).toMatchObject({ attempted: 1, completed: 1, superseded: 0 });
-        expect(Date.now() - began).toBeGreaterThan(1_000);
+        expect(Date.now() - began).toBeGreaterThan(BRIEF_LEASE_MS);
         expect(rivals.every((n) => n === 0)).toBe(true);
         expect(stepBodies).toEqual(['s0', 's1', 's2', 's3']);
         expect(await runOf(s, run.id)).toMatchObject({ status: 'done' });
