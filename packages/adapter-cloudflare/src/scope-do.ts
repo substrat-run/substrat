@@ -1174,7 +1174,7 @@ interface SystemDoorPass {
 export function defineScopeDO(
   modules: ModuleRegistration[],
   bareOps: Record<string, OperationHandler<never, unknown>>,
-): new (ctx: DurableObjectState, env: ScopeDoEnv) => DurableObject {
+): new (ctx: DurableObjectState, env: ScopeDoEnv) => DurableObject<ScopeDoEnv> {
   return class ScopeDO extends DurableObject<ScopeDoEnv> {
     private readonly sql: SqlStorage;
     private continuationOrder = 0;

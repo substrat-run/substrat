@@ -52,3 +52,11 @@ export default defineConfig({
   },
 });
 `;
+
+/**
+ * The test runner a scaffold installs. Here rather than inline in `index.js`'s `packageJson()`
+ * so `tools/template-sync.mjs` can hold it to the vitest the workspace runs the template on
+ * (#2129): `packages/template-check` tests the template on the catalog's vitest, and a scaffold
+ * on a different major is a project nothing on a PR has ever run.
+ */
+export const TEST_RUNNER = { vitest: '^5.0.0', '@vitest/ui': '^5.0.0' };

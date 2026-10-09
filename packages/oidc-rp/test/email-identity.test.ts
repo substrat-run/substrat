@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 /**
  * `identifyEmail` (#1359): whether a session's address may be used as WHO someone is. One
@@ -18,7 +18,7 @@ const EMAIL = 'staff@acme.test';
 const ON = { OIDC_ALLOW_UNVERIFIED_EMAIL: 'true' };
 
 let mod: typeof import('../src/email-identity.js');
-let warn: ReturnType<typeof vi.spyOn>;
+let warn: MockInstance<typeof console.warn>;
 
 beforeEach(async () => {
   vi.resetModules();

@@ -1,11 +1,15 @@
 /**
  * How large a deploy manifest the control plane can actually store (#1677), on workerd.
  *
- * A version's manifest is one row in the control-plane Durable Object, and a DO's SQLite
- * refuses a string or row over 2 MB. Node's SQLite allows about a gigabyte, so the SQLite
+ * A version's manifest is one row in the control-plane Durable Object, and the platform's DO
+ * SQLite refuses a string or row over 2 MB. Node's SQLite allows about a gigabyte, so the SQLite
  * adapter can never show this (the #1655 class). `substrat push` leaves the SQL migrations off
  * a manifest that would pass `DEPLOY_MANIFEST_BYTES_SAFE`; these pin that the bound stores,
- * and that what the first cap (2 MiB of SQL) let through would not have.
+ * and that OUR cap keeps anything past 2 MB out of storage.
+ *
+ * The 2 MB is held by that cap, not by a local probe: local workerd 1.20261006 (the one
+ * `@cloudflare/vitest-plugin` 1.4.0 runs, #2121) no longer enforces it. What it does enforce is
+ * pinned below as a tripwire (about 8 MiB a row) — a local emulator fact, not the production limit.
  */
 import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -116,7 +120,7 @@ describe('the stored manifest size bound (#1677)', () => {
     expect(JSON.parse((await host.admin.versionManifest(staff, vertical, id))!)).not.toHaveProperty('migrations');
   });
 
-  it('a migration row over the DO limit is refused, which is why the cap bounds every row', async () => {
+  it('a migration row at the cap stores', async () => {
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane'));
     await runInDurableObject(stub, (_instance, state) => {
       const insert = (versionId: string, sql: string) =>
@@ -125,7 +129,25 @@ describe('the stored manifest size bound (#1677)', () => {
           versionId, 'helpdesk', '0001', sql,
         );
       expect(() => insert(ulid(), 'x'.repeat(DECLARED_MIGRATIONS_SQL_BYTES_MAX))).not.toThrow();
-      expect(() => insert(ulid(), 'x'.repeat(2.2 * 1024 * 1024))).toThrow(/too big|TOOBIG/);
+    });
+  });
+
+  /**
+   * A tripwire on the LOCAL emulator, not the production limit. Earlier workerd refused a 2.2 MB
+   * row here, which matched production's 2 MB; 1.20261006 refuses a record past about 8 MiB
+   * (measured: a lone 8 388 637-byte value is the most one row of one column holds). If this goes
+   * red, workerd moved again: re-measure, and re-check what the production limit is.
+   */
+  it('local workerd: a row just under 8 MiB stores and one just over is refused (an emulator fact, not the production limit)', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane'));
+    await runInDurableObject(stub, (_instance, state) => {
+      const insert = (versionId: string, sql: string) =>
+        state.storage.sql.exec(
+          'INSERT INTO vertical_version_migrations (version_id, ordinal, module_id, version, sql) VALUES (?, 0, ?, ?, ?)',
+          versionId, 'helpdesk', '0001', sql,
+        );
+      expect(() => insert(ulid(), 'x'.repeat(8 * 1024 * 1024 - 1024))).not.toThrow();
+      expect(() => insert(ulid(), 'x'.repeat(8 * 1024 * 1024 + 1024))).toThrow(/too big|TOOBIG/);
     });
   });
 

@@ -16,8 +16,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
+import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { asUploaded } from '../../tools/workerd-as-uploaded.mjs';
+import { defineConfig } from 'vitest/config';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = join(here, 'supplied-sweeper', 'fixture');
@@ -40,17 +41,17 @@ writeFileSync(
   }),
 );
 
-export default defineWorkersConfig({
+export default defineConfig({
+  // One deployment walked through provision → pass → delete: storage carries across `it`s.
+  plugins: [cloudflareTest({ wrangler: { configPath: config } })],
   test: {
     include: ['supplied-sweeper/**/*.test.ts'],
     testTimeout: 30_000,
-    poolOptions: {
-      workers: {
-        // One deployment walked through provision → pass → delete: storage carries across `it`s.
-        isolatedStorage: false,
-        singleWorker: true,
-        wrangler: { configPath: config },
-      },
-    },
+    // One file at a time, as the old pool's `singleWorker` ran them.
+    fileParallelism: false,
+    // workerd reports a Durable Object RPC rejection as "Uncaught (in promise)" on the server side
+    // even when the caller awaits it and asserts `.rejects`; the plugin's node-compat `process`
+    // events now hand those reports to vitest. Printed, not failed: parity with the old pool (#2131).
+    dangerouslyIgnoreUnhandledErrors: true,
   },
 });

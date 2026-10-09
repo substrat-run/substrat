@@ -36,6 +36,7 @@
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/demo-meridian": "workspace:^",
     "@substrat-run/engine-absence": "workspace:^",
+    "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

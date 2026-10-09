@@ -16,8 +16,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
+import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { resolveWranglerConfig } from '@substrat-run/cli/dist/push.js';
+import { defineConfig } from 'vitest/config';
 
 const here = dirname(fileURLToPath(import.meta.url));
 execFileSync(process.execPath, [join(here, 'scripts/gen-assets.mjs')], { stdio: 'ignore' });
@@ -36,16 +37,16 @@ writeFileSync(
   }),
 );
 
-export default defineWorkersConfig({
+export default defineConfig({
+  plugins: [cloudflareTest({ wrangler: { configPath: config } })],
   test: {
     include: ['test/workerd/**/*.test.ts'],
     testTimeout: 30_000,
-    poolOptions: {
-      workers: {
-        isolatedStorage: false,
-        singleWorker: true,
-        wrangler: { configPath: config },
-      },
-    },
+    // One file at a time, as the old pool's `singleWorker` ran them.
+    fileParallelism: false,
+    // workerd reports a Durable Object RPC rejection as "Uncaught (in promise)" on the server side
+    // even when the caller awaits it and asserts `.rejects`; the plugin's node-compat `process`
+    // events now hand those reports to vitest. Printed, not failed: parity with the old pool (#2131).
+    dangerouslyIgnoreUnhandledErrors: true,
   },
 });

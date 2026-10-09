@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"]
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
   },
   "include": ["src", "test", "supplied-sweeper", "vitest.config.ts", "vitest.supplied-sweeper.config.ts"]
 }

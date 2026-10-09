@@ -4,8 +4,8 @@
  *
  * workerd checks the receiver: `const o = { fetch: globalThis.fetch }; o.fetch(url)`
  * throws `TypeError: Illegal invocation` before a byte leaves the runtime. Node's
- * fetch accepts any `this`, and so does the wrapper `@cloudflare/vitest-pool-workers`
- * installs — so NO suite in this repo can reproduce the refusal; only a real worker
+ * fetch accepts any `this`, and the repo's workerd suites have never reproduced the
+ * refusal either — so no suite here is the place to catch it; only a real worker
  * can. A connector is free to call the fetch it was handed as a method (`input.fetch(…)`,
  * `options.fetch(…)`), which is how the dashboard's Fortnox consent callback shipped
  * green and failed every hosted round: the code exchange never left the worker, the

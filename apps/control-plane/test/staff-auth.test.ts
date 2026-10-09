@@ -1,5 +1,5 @@
 import { SELF, env } from 'cloudflare:test';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { mintSession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { ulid } from '@substrat-run/kernel';
 import { oidcStaffBearerReader, oidcStaffSessionReader, staffRefusalOf, type StaffAuthEnv } from '../src/staff-auth.js';
@@ -33,7 +33,7 @@ const READERS = [
   ['bearer', oidcStaffBearerReader, bearer],
 ] as const;
 
-let warn: ReturnType<typeof vi.spyOn>;
+let warn: MockInstance<typeof console.warn>;
 beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });

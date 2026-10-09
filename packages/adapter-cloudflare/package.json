@@ -38,7 +38,7 @@
     "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/attachment-extractors": "workspace:^",
     "@substrat-run/cli": "workspace:^",

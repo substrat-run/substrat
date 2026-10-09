@@ -1,6 +1,6 @@
 // Type the bindings the contract tests reach through `cloudflare:test`'s `env`.
-declare module 'cloudflare:test' {
-  interface ProvidedEnv {
+declare namespace Cloudflare {
+  interface Env {
     SCOPE: DurableObjectNamespace;
     /** #1686: vertical-auth's identity directory — owner-claim.test.ts. */
     AUTH: DurableObjectNamespace<import('@substrat-run/vertical-auth').IdentityDO>;

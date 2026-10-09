@@ -168,6 +168,10 @@ still be mandatory on your machine, where no such delivery exists.
 - **An entry declares a port, not a URL.** The Browser pane opens that server's bare
   origin, and nothing in the file can deep-link a path or a query under it — so a page
   that is not the app's root is somewhere Claude navigates *after* the preview comes up.
+  The `tests` entry (`test:ui`) is the strict case: the vitest dashboard serves only the
+  tokenised URL it prints when it starts (`UI started at …/__vitest__/?token=…`) and
+  answers anything else with a 403 or a 404. The token guards an API that can write files
+  and run code, so nothing redirects to it; open the printed URL.
   The one worth navigating to by default is **`/api/docs`**, which
   [`demos/meridian`](https://github.com/substrat-run/substrat/blob/main/demos/meridian/src/docs.ts)
   and `demos/manyfold` serve: Scalar's API reference over that vertical's own

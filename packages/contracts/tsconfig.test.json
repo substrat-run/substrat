@@ -2,7 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "rootDir": "."
+    "rootDir": ".",
+    // The same DOM lib the build uses for `src`, plus node for the tests themselves (`node:fs`).
+    // Nothing else lends these: TypeScript includes no `@types` package it is not told to.
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"]
   },
   "include": ["src", "test"]
 }

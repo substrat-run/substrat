@@ -4,7 +4,7 @@
  * be looked up, by default, with nothing configured. The roster here is a stub that
  * lists one address and records whether it was asked at all.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { SessionUser } from '@substrat-run/oidc-rp';
 import { deniedDetail, staffAccessOf, type StaffEnv } from '../src/staff.js';
 
@@ -27,7 +27,7 @@ function rosterOf(...emails: string[]): StaffEnv & { asked: string[] } {
 
 const session = (emailVerified: boolean | undefined): SessionUser => ({ id: 'sub-1', email: ROSTERED, emailVerified });
 
-let warn: ReturnType<typeof vi.spyOn>;
+let warn: MockInstance<typeof console.warn>;
 beforeEach(() => {
 	warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });

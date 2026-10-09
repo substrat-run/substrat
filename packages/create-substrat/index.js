@@ -17,7 +17,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEV_SERVERS } from './dev-servers.js';
-import { TSCONFIG, VITEST_CONFIG } from './project-files.js';
+import { TEST_RUNNER, TSCONFIG, VITEST_CONFIG } from './project-files.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = join(HERE, 'template');
@@ -114,8 +114,8 @@ function packageJson(name) {
         issuer: 'substrat-dev-issuer --personas src/personas.ts',
         server: 'tsx src/server.ts',
         test: 'vitest run',
-        // The live test dashboard in the Browser pane: the `tests` entry of
-        // .claude/launch.json. `--watch` is explicit, since vitest runs once and exits without a TTY.
+        // The live test dashboard: the `tests` entry of .claude/launch.json, opened at the
+        // tokenised URL vitest prints. `--watch` is explicit, since vitest runs once and exits without a TTY.
         'test:ui': 'vitest --watch --ui --open=false -c vitest.ui.config.ts',
         typecheck: 'tsc --noEmit && tsc -p tsconfig.worker.json --noEmit',
         'lint:boundaries': 'substrat-boundary-lint',
@@ -144,8 +144,7 @@ function packageJson(name) {
         concurrently: '^9.0.0',
         tsx: '^4.19.0',
         typescript: '^5.6.0',
-        vitest: '^3.0.0',
-        '@vitest/ui': '^3.0.0',
+        ...TEST_RUNNER,
       },
       // Do NOT add `zod` here — import `z` from `@substrat-run/contracts` (AGENTS.md, rule 10).
       // better-sqlite3 >=13 ships prebuilt binaries for every supported platform and

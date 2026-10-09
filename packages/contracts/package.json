@@ -36,6 +36,7 @@
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "devDependencies": {
+    "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "zod": "catalog:"

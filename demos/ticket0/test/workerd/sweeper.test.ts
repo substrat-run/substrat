@@ -38,8 +38,8 @@
  * business-hours describe after #1648's (also #1648): the zone data `Intl` reads is the
  * runtime's own, so the DST answers are proven where a hosted desk computes them.
  */
-import { SELF, env, fetchMock, runInDurableObject } from 'cloudflare:test';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { SELF, env, runInDurableObject } from 'cloudflare:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   moduleId,
   permissionKey,
@@ -599,6 +599,30 @@ describe('ticket0 on workerd — business hours run on the runtime\'s own zone d
 });
 
 /**
+ * The issuer, as a suite answers it: each expected request is answered once (or every time,
+ * `persist`), and any other egress throws — net-connect disabled. The worker runs in the test's
+ * isolate, so stubbing the global is stubbing its egress.
+ */
+function stubIssuer() {
+  type Reply = (request: Request) => Response | Promise<Response>;
+  const routes: { method: string; url: string; reply: Reply; persist: boolean }[] = [];
+  const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = new Request(input, init);
+    const at = routes.findIndex((r) => r.method === request.method && r.url === request.url);
+    if (at < 0) throw new Error(`unexpected egress: ${request.method} ${request.url}`);
+    const route = routes[at]!;
+    if (!route.persist) routes.splice(at, 1);
+    return route.reply(request);
+  });
+  return {
+    expect: (method: string, url: string, reply: Reply, persist = false) => routes.push({ method, url, reply, persist }),
+    /** The once-only requests not yet made. */
+    pending: () => routes.filter((r) => !r.persist).map((r) => `${r.method} ${r.url}`),
+    restore: () => spy.mockRestore(),
+  };
+}
+
+/**
  * #1670 on the runtime a hosted desk runs: the platform's reconcile repairs the desk's entries
  * in a login's PLACES at the identity pool it signs in with. `onProvision` runs on
  * `/internal/reconcile`, and it sends the WHOLE set of subjects bound in the desk's directory
@@ -606,7 +630,7 @@ describe('ticket0 on workerd — business hours run on the runtime\'s own zone d
  * again after the next promote. The pool's half — what it keeps of such a report and why no one
  * else's list can be written — is pinned in `demos/auth-server/test/workerd/reconcile.test.ts`.
  *
- * The issuer is `fetchMock`: it answers where to report, and records the report.
+ * The issuer is `stubIssuer`: it answers where to report, and records the report.
  */
 describe("ticket0 on workerd — a reconcile repairs the desk's places at its identity pool (#1670)", () => {
   const tenant = tenantId.parse(ulid());
@@ -614,26 +638,19 @@ describe("ticket0 on workerd — a reconcile repairs the desk's places at its id
   const ISSUER = 'https://auth.places.test';
   const directory = () => env.AUTH.get(env.AUTH.idFromName(tenant));
 
+  let issuer: ReturnType<typeof stubIssuer>;
   beforeAll(() => {
-    fetchMock.activate();
-    fetchMock.disableNetConnect();
+    issuer = stubIssuer();
   });
-  afterAll(() => fetchMock.deactivate());
+  afterAll(() => issuer.restore());
 
   /** The next report the issuer receives, captured. */
   function nextReport(): { body: () => unknown } {
     let captured: unknown;
-    fetchMock
-      .get(ISSUER)
-      .intercept({
-        method: 'POST',
-        path: '/api/places/report',
-        body: (raw: string) => {
-          captured = JSON.parse(raw);
-          return true;
-        },
-      })
-      .reply(204);
+    issuer.expect('POST', `${ISSUER}/api/places/report`, async (request) => {
+      captured = await request.json();
+      return new Response(null, { status: 204 });
+    });
     return { body: () => captured };
   }
 
@@ -662,14 +679,13 @@ describe("ticket0 on workerd — a reconcile repairs the desk's places at its id
     await directory().createInvite(desk, member, 'agent', null, 'invite-hash');
     expect(await directory().claimInvite(desk, 'sub-ann', 'invite-hash')).toBe(member);
 
-    fetchMock
-      .get(ISSUER)
-      .intercept({ method: 'GET', path: '/.well-known/substrat-places' })
-      .reply(200, { report_endpoint: `${ISSUER}/api/places/report` });
+    issuer.expect('GET', `${ISSUER}/.well-known/substrat-places`, () =>
+      Response.json({ report_endpoint: `${ISSUER}/api/places/report` }),
+    );
     const first = nextReport();
     const { owner: _owner, ...reconcile } = install;
     expect((await platform('/internal/reconcile', reconcile)).status).toBe(200);
-    fetchMock.assertNoPendingInterceptors();
+    expect(issuer.pending()).toEqual([]);
     expect(first.body()).toEqual({
       client_id: 'desk-client',
       client_secret: 'desk-secret',
@@ -682,7 +698,7 @@ describe("ticket0 on workerd — a reconcile repairs the desk's places at its id
     expect(await directory().unbind(desk, 'sub-ann')).toBe(true);
     const second = nextReport();
     expect((await platform('/internal/reconcile', reconcile)).status).toBe(200);
-    fetchMock.assertNoPendingInterceptors();
+    expect(issuer.pending()).toEqual([]);
     expect(second.body()).toMatchObject({ op: 'replace', subs: ['sub-owner'] });
 
     expect((await platform('/internal/delete-scope', { scopeId: desk })).status).toBe(200);
@@ -704,7 +720,7 @@ describe("ticket0 on workerd — a reconcile repairs the desk's places at its id
  *   - a handshake from another origin is refused before anything is subscribed, and the
  *     same request from the desk's own origin is not.
  *
- * Signed in with a bearer the test signs itself, against a `fetchMock` issuer: the route
+ * Signed in with a bearer the test signs itself, against a `stubIssuer` issuer: the route
  * resolves a caller exactly as every other `/api` route does, and the bearer path is the
  * one of those a test can drive without a browser's cookie jar.
  */
@@ -716,6 +732,7 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
   const ORIGIN = 'https://desk.ticket0.test';
   const directory = () => env.AUTH.get(env.AUTH.idFromName(tenant));
   let signingKey: CryptoKey;
+  let issuer: ReturnType<typeof stubIssuer>;
 
   const b64url = (bytes: ArrayBuffer | Uint8Array): string =>
     btoa(String.fromCharCode(...new Uint8Array(bytes)))
@@ -838,18 +855,14 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     signingKey = pair.privateKey;
     const jwk = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey;
 
-    fetchMock.activate();
-    fetchMock.disableNetConnect();
-    fetchMock
-      .get(ISSUER)
-      .intercept({ method: 'GET', path: '/.well-known/openid-configuration' })
-      .reply(200, { issuer: ISSUER, jwks_uri: `${ISSUER}/jwks`, authorization_endpoint: `${ISSUER}/authorize` })
-      .persist();
-    fetchMock
-      .get(ISSUER)
-      .intercept({ method: 'GET', path: '/jwks' })
-      .reply(200, { keys: [{ ...jwk, alg: 'RS256', kid: 'live-1', use: 'sig' }] })
-      .persist();
+    issuer = stubIssuer();
+    issuer.expect(
+      'GET',
+      `${ISSUER}/.well-known/openid-configuration`,
+      () => Response.json({ issuer: ISSUER, jwks_uri: `${ISSUER}/jwks`, authorization_endpoint: `${ISSUER}/authorize` }),
+      true,
+    );
+    issuer.expect('GET', `${ISSUER}/jwks`, () => Response.json({ keys: [{ ...jwk, alg: 'RS256', kid: 'live-1', use: 'sig' }] }), true);
 
     const install = { tenantId: tenant, scopeId: desk, owner: deskOwner, entitlements };
     expect((await platform('/internal/provision', install)).status).toBe(201);
@@ -870,7 +883,7 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
     // The owner's first sign-in, inside the window, claims the seat.
     expect(await directory().resolvePrincipal(desk, 'sub-owner')).toBe(deskOwner);
   });
-  afterAll(() => fetchMock.deactivate());
+  afterAll(() => issuer.restore());
 
   it("sends an agent the note on a customer's thread, and sends the customer nothing", async () => {
     await member('sub-agent', 'agent');
