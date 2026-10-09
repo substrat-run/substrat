@@ -30,7 +30,8 @@ import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type S
  * What cannot be derived is a **failure**: reported in every response, written as an ops record on
  * a real run (`scope.copy-backfill`), never marked clean, and reported again on a re-run. That is a
  * row naming no version, a version the registry no longer holds or that names no script, a scope
- * or fork source whose directory row is gone, a scope with no `provisionScope` row, a slug with no `prod` version at the time or one that changed within
+ * or fork source whose directory row is gone, a scope with no `provisionScope` row (its other rows
+ * are still derived), a slug with no `prod` version at the time or one that changed within
  * `BIRTH_WINDOW_MS` before the birth row (the install path writes that row after the store is born,
  * so the order is unknown), a script no deployment answers for, and a store that cannot be read.
  *
@@ -128,6 +129,8 @@ interface Timeline {
   /** The directory row now, absent once the scope was deleted. */
   exists: boolean;
   servingRefNow: string | null;
+  /** The vertical its birth row names, else the directory's. */
+  vertical: string | null;
   route: string | null;
   rows: AdminLogEntry[];
   provision: AdminLogEntry | undefined;
@@ -175,13 +178,15 @@ class Deriver {
       allRows(admin, actor, { tenantId, scopeId, action: TIMELINE }),
       listAllScopeScriptCopies(admin, actor, tenantId, scopeId),
     ]);
+    const provision = rows.find((r) => r.action === 'provisionScope');
     return {
       tenantId, scopeId,
       exists: Boolean(scope),
       servingRefNow: scope?.servingRef ?? null,
       route: scope ? await routeOfScope(this.input, scope, (id, vertical) => this.versionOf(id, vertical)) : null,
       rows,
-      provision: rows.find((r) => r.action === 'provisionScope'),
+      provision,
+      vertical: (provision ? stringOf(objectOf(provision.after)?.vertical) ?? provision.vertical : null) ?? scope?.vertical ?? null,
       known: new Set(copies.map((c) => c.scriptRef)),
       backfilled: new Set(copies.filter((c) => c.moveId === BACKFILL_MOVE_ID && c.state !== 'done').map((c) => c.scriptRef)),
     };
@@ -246,9 +251,8 @@ class Deriver {
       if (!versionId || !vertical) return { failure: `bind row ${bind.id} names no version or vertical` };
       return this.scriptOf(versionId, vertical);
     }
-    const vertical = tl.provision ? stringOf(objectOf(tl.provision.after)?.vertical) ?? tl.provision.vertical : null;
-    if (!vertical) return { failure: 'its vertical is not in the log' };
-    return this.slugAt(vertical, at);
+    if (!tl.vertical) return { failure: 'its vertical is not in the log or the directory' };
+    return this.slugAt(tl.vertical, at);
   }
 
   /** The script one timeline row names as a home of its scope, or why it cannot be derived. */
@@ -299,6 +303,7 @@ export async function backfillScopeScriptCopies(
   const derive = new Deriver(input);
   const entries: CopyBackfillEntry[] = [];
   const seen = new Map<string, Timeline>();
+  const unborn = new Set<string>();
   for (const row of rows) {
     const tenantId = row.tenantId as TenantId | null;
     const scopeId = row.scopeId as ScopeId | null;
@@ -308,7 +313,11 @@ export async function backfillScopeScriptCopies(
     const tl = await derive.timeline(tenantId, scopeId);
     seen.set(`${tenantId}/${scopeId}`, tl);
     if (!tl.exists) { failure(null, 'the scope has no directory row; a copy it left has no ledger anchor'); continue; }
-    if (!tl.provision) { failure(null, 'the scope has no provisionScope row; the script it was born in is not in the log'); continue; }
+    // No birth row: the birth is a failure, once per scope on the page; its binds and pins still count.
+    if (!tl.provision && !unborn.has(`${tenantId}/${scopeId}`)) {
+      unborn.add(`${tenantId}/${scopeId}`);
+      failure(null, 'the scope has no provisionScope row; the script it was born in is not in the log');
+    }
     for (const c of await derive.candidatesOf(tl, row)) {
       if ('failure' in c) { failure(null, c.failure); continue; }
       const scriptRef = c.scriptRef;

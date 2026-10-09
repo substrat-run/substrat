@@ -394,6 +394,22 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     expect(outcomesOf(pages, pinnedFork)).toEqual([`${refOf('v2')} would-record`]);
   });
 
+  it('a scope with no provisionScope row still records its binds and pins, and reports only its birth', async () => {
+    await tick();
+    const sid = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: sid, vertical: slug }); // born pinned
+    await host.admin.setScopeServingRef(staff, t, sid, null);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v1!.id);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v2!.id);
+    const raw = new Database(join(dir, '_directory.sqlite'));
+    raw.prepare("DELETE FROM _substrat_admin_log WHERE scope_id = ? AND action = 'provisionScope'").run(sid);
+    raw.close();
+    const pages = await backfillAll(false, 50);
+    const failures = entriesOf(pages, sid).filter((e) => e.outcome === 'failure');
+    expect(failures).toEqual([expect.objectContaining({ reason: expect.stringContaining('no provisionScope row') })]);
+    expect(await ledgerOf(sid)).toEqual(retained(refOf('v1'), serving));
+  });
+
   it('a recorded copy is reached by the reap, which drains it', async () => {
     await reapScopeScriptCopies({ admin: host.admin, actor: staff, resolveRef: async (ref) => deployment(ref) }, t, moved);
     expect(writes).toEqual(expect.arrayContaining([`delete ${refOf('v1')}`, `delete ${refOf('v2')}`]));
