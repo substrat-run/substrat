@@ -777,6 +777,25 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await moving).status).toBe(412);
       expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
     }, 20_000);
+    // Review r1: the bind confirms the carry's source `retained`, and only the tail promotes it,
+    // after checking the destination was not overtaken. A sweep in between must not wipe it.
+    it('a sweep between the bind and the overtaken-destination check leaves the source alone', async () => {
+      const p = await fresh('sweep-before-check', 'kept');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.read = held.hook;
+      const moving = push('sweep-before-check', 'v2');
+      await held.reached;
+      const source = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .find((copy) => copy.scriptRef === refOf.get(version.v1))!;
+      expect(source.state).toBe('retained');
+      await retryScopeScriptCopies({ admin: dir.admin, actor: staff, resolveRef: async (ref) => clientFor(ref) });
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+      expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['kept']);
+      held.release();
+      expect((await moving).status).toBe(200);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['kept'] });
+      expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
+    });
     it('erasure retries when a bind moves the route after its script inventory was read', async () => {
       const p = await fresh('erase-route-race');
       const subject = ulid();

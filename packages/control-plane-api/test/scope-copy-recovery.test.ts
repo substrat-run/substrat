@@ -38,7 +38,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
 
   type Store = { tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null };
   type Hook = (ref: string, sid: string) => Promise<void>;
-  const hooks: { restore?: Hook; marker?: Hook } = {};
+  const hooks: { restore?: Hook; marker?: Hook; read?: Hook } = {};
   let failRestoreInto: string | null = null;
   const scripts = new Map<string, Map<string, Store>>();
   const redacted: string[] = [];
@@ -80,6 +80,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
         return { wiped: true };
       },
       readScopeTable: async (sid: string) => {
+        await hooks.read?.(ref, sid);
         const meta = storeOf(ref, sid).tables.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
       },
@@ -178,6 +179,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
   afterEach(() => {
     delete hooks.restore;
     delete hooks.marker;
+    delete hooks.read;
   });
 
   afterAll(async () => {
@@ -485,5 +487,31 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     expect(snap.status).toBe(201);
     const { id: snapId } = (await snap.json()) as { id: ScopeId };
     expect(await ledgerByRef(snapId)).toEqual({ [refOf.get(versions.v1)!]: 'done' });
+  });
+
+  // Review r1: the carry's bind confirms its source `retained`; the tail promotes it to
+  // `eligible` only after checking the destination was not overtaken, so a sweep in between
+  // cannot wipe the one copy a re-carry would need.
+  it('a sweep between the bind and the overtaken-destination check leaves the source alone', async () => {
+    const sid = await fresh('sweep-before-check');
+    const from = refOf.get(versions.v1)!;
+    let reached!: () => void;
+    const at = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    hooks.read = async (ref, s) => {
+      if (ref !== refOf.get(versions.v2) || s !== sid) return;
+      reached();
+      await held;
+    };
+    const moving = push('sweep-before-check', 'v2');
+    await at;
+    expect((await ledgerOf(sid)).v1).toBe('retained');
+    await sweepScopeScriptCopies(cleanup());
+    expect(storeOf(from, sid).tables).toEqual(notes('kept'));
+    release();
+    expect((await moving).status).toBe(200);
+    expect(await ledgerOf(sid)).toEqual({ v1: 'done', v2: 'done' });
+    expect(wiped(from, sid)).toBe(true);
   });
 });

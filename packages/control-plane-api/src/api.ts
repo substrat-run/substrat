@@ -3391,9 +3391,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // #1722: the write that moves the route confirms the move, while its lease is live. That is the
     // bind itself, unless a pin still routes the scope to the source until it is cleared below.
+    // The source is confirmed `retained`, not `eligible`: `settleCarriedSource` may still have to
+    // carry it again (an overtaken destination), and promotes it only once that is ruled out, so
+    // no sweep can wipe it first. A request that dies in between leaves it kept, not swept.
     const unpins = Boolean(opts.clearServingRef && scope.servingRef);
     const confirmMove = carried
-      ? { confirmMove: { moveId: carried.moveId, source: 'eligible' as const,
+      ? { confirmMove: { moveId: carried.moveId, source: 'retained' as const,
           sourceMarker: { loadStamp: carried.sourceStamp, revision: carried.sourceRevision } } }
       : {};
     try {
@@ -3609,14 +3612,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await dropUnboundCopy(c, scope, versionId, carried);
         return;
       }
-      const eligible = await c.var.admin.settleScopeScriptCopy(
-        actor, scope.tenantId, scope.id, carried.from, carried.moveId, 'eligible',
-        { loadStamp: carried.sourceStamp, revision: carried.sourceRevision },
-      );
-      if (!eligible) {
-        await finishDestination(); // a later move through this script superseded this carry
-        return;
-      }
       // The store this carry landed in is live; a kept marker another carry set while racing it
       // does not belong on it (#1722 r8).
       await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
@@ -3628,16 +3623,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
           throw new ControlPlaneError(500, `both copies of scope ${scope.id} hold the carried_away tombstone; nothing was wiped`);
         }
-        await restoreCarryingSwitches(actor, carried.dest, scope.tenantId, scope.id, dump, {
-          scopeId: scope.id,
-          exact: true,
-          loadStamp: ulid(),
-        });
+        // The re-carry is a copy move of its own (#1722): in the ledger and leased before it
+        // writes, and fenced, so it cannot land after a reap or an erasure has settled the scope.
+        const recarryId = ulid();
+        const restoredStamp = ulid();
+        const recordedAt = Date.now();
+        await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, carried.to, recarryId,
+          { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
+        try {
+          const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
+          await restoreCarryingSwitches(actor, carried.dest, scope.tenantId, scope.id, dump, {
+            scopeId: scope.id,
+            exact: true,
+            loadStamp: restoredStamp,
+            fence: copyRestoreFence(recarryId, recordedAt, copyLeaseMs, erasureEpoch),
+          });
+        } finally {
+          // The scope routes to this store, so the route reaches whatever landed in it.
+          await c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, carried.to, recarryId, 'done');
+        }
         if (await isCarriedAway(carried.dest, scope)) {
           throw new ControlPlaneError(500, `scope ${scope.id}'s store in '${carried.to}' was wiped again; its source copy stays`);
         }
         // Re-carried, so the fence expects what the re-export read.
         sourceMarker = { loadStamp: stamp, revision };
+      }
+      // Only now may the sweep wipe the source: the destination holds the data.
+      const eligible = await c.var.admin.settleScopeScriptCopy(
+        actor, scope.tenantId, scope.id, carried.from, carried.moveId, 'eligible', sourceMarker,
+      );
+      if (!eligible) {
+        await finishDestination(); // a later move through this script superseded this carry
+        return;
       }
       await keepOrWipeSource(c, scope, versionId, carried, sourceMarker);
       await finishDestination();
