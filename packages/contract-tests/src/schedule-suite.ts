@@ -38,6 +38,8 @@ export function scheduleContractSuite(
   adapterName: string,
   makeFixture: () => Promise<ScopeHostFixture>,
   suspendAtSystemDoor: (host: ScopeHost, suspend: () => Promise<void>, resumeBeforeCatch?: () => Promise<void>) => () => void,
+  /** Interpose after the pass's first fire has run and before its next schedule is read. */
+  suspendAfterFirstFire: (host: ScopeHost, suspend: () => Promise<void>) => () => void,
 ): void {
   describe(`schedule contract (#383): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
@@ -375,6 +377,29 @@ export function scheduleContractSuite(
         expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(1);
         expect((await (await host.getScope(reader, t, racing)).invoke('sched/count'))).toBe(2);
         expect((await host.runDueSchedules(SCHED_MODULE, t, racing)).fired).toBe(0);
+      } finally {
+        restore();
+        vi.useRealTimers();
+      }
+    });
+
+    it('a suspension between two fires of one pass holds the later schedule', async () => {
+      const between = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: between, vertical: 'sched-vertical' });
+      await host.admin.activateScope(staff, t, between);
+      expect((await host.runDueSchedules(SCHED_MODULE, t, between)).fired).toBe(2);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const restore = suspendAfterFirstFire(host, () => host.admin.suspendScope(staff, t, between).then(() => {}));
+      try {
+        vi.setSystemTime(Date.now() + 2 * 3_600_000);
+        // The first fire ran while the scope was live; the second meets the suspension and is
+        // held, never run on the lifecycle read the first fire made.
+        expect(await host.runDueSchedules(SCHED_MODULE, t, between)).toMatchObject({ fired: 1, failed: 0, skipped: 1, lifecycleHeld: true });
+        restore();
+        expect((await host.runDueSchedules(SCHED_MODULE, t, between)).fired).toBe(0);
+        await host.admin.unsuspendScope(staff, t, between);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, between)).fired).toBe(1);
+        expect((await host.runDueSchedules(SCHED_MODULE, t, between)).fired).toBe(0);
       } finally {
         restore();
         vi.useRealTimers();

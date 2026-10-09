@@ -388,6 +388,17 @@ scheduleContractSuite('adapter-cloudflare', async () => {
     }
   };
   return () => { target.openSystemDoor = original; };
+}, (host, suspend) => {
+  // Every fire's invoke drains its executors in its tail: the first drain is after the first fire.
+  const target = host as unknown as { drainExecutors: (...args: unknown[]) => Promise<unknown> };
+  const original = target.drainExecutors.bind(host);
+  target.drainExecutors = async (...args) => {
+    target.drainExecutors = original;
+    const drained = await original(...args);
+    await suspend();
+    return drained;
+  };
+  return () => { target.drainExecutors = original; };
 });
 
 // #1654: a composed engine's own schedule runs without the engine's SKU, and nothing else
