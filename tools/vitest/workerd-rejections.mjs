@@ -16,6 +16,14 @@
  * Registering a listener here also stops vitest's own from reporting each event as it comes
  * (vitest steps aside when the process has another `unhandledRejection` listener), which is what
  * turned every awaited RPC rejection into an unhandled error.
+ *
+ * What it catches: every unhandled rejection that settles while the file is running — in the
+ * test that caused it or a later one — and one the last test left settled or due on the next
+ * turn, which `afterAll` waits one macrotask for. What it does NOT catch: a rejection that
+ * settles after that, such as an RPC call the last test left running un-awaited. Each file runs
+ * in its own worker, which is gone by then, so nothing reports it. An un-awaited call is what
+ * `pnpm lint:floating-promises` refuses statically; only one marked `void` reaches this gap.
+ * `tools/vitest/workerd-rejections.test.mjs` holds each case.
  */
 import { afterAll, afterEach, beforeAll, chai, expect } from 'vitest';
 
@@ -90,7 +98,10 @@ afterEach(() => {
   const errors = takePending();
   if (errors.length > 0) throw errors.length === 1 ? errors[0] : new AggregateError(errors, `${errors.length} rejections nobody handled`);
 });
-afterAll(() => {
+afterAll(async () => {
+  // One macrotask, so a rejection already settled — a timer the last test left due, or the
+  // reactions it queued — is reported before the last look. Microtasks drain before it runs.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   process.off('unhandledRejection', onUnhandled);
   process.off('rejectionHandled', onHandled);
   takePending();

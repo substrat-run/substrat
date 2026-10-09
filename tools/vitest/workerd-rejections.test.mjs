@@ -53,3 +53,7 @@ test('twin: rejections every caller observes fail nothing', () => {
 test('a rejection that lands in a later test fails the file, though a retry passes that test', () => {
   failedAsAFile('cross-test.fixture.ts', /a rejection nobody handled, landed during "b: .*": cross-test/);
 });
+
+test('a rejection the last test left due on the next turn fails the file', () => {
+  failedAsAFile('late-timer.fixture.ts', /late-timer: raised after the last test/);
+});
