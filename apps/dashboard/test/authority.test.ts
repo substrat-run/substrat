@@ -394,6 +394,15 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(await harness(404, { error: `unknown scope ${S} in tenant ${T}` }).cp.bindingImpact(S, '01JVERSION')).toEqual([]);
   });
 
+  it('unbindHostname refuses a hostname outside the pinned tenant\'s scope as a not_found, sending no DELETE (#113)', async () => {
+    const { cp, calls } = harness(200, []);
+    await expect(cp.unbindHostname(S, 'foreign.example.com')).rejects.toMatchObject({
+      code: 'not_found',
+      message: "hostname 'foreign.example.com' is not bound to this app",
+    });
+    expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
+  });
+
   it('createPreview posts to the vertical previews route with the version + pin/empty flags (#509)', async () => {
     const { cp, calls } = harness(201, { scopeId: '01JPREVIEW', hostname: 'crm--test.example', url: 'https://crm--test.example', versionId: '01JVERSION', reused: false });
     const out = await cp.createPreview('crm', { tag: 'test', versionId: '01JVERSION', ttlHours: null, empty: true });
