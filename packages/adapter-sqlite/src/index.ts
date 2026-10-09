@@ -703,7 +703,7 @@ import {
   type AuditedOperationSqlRow,
   type SettleIntentRow,
 } from '@substrat-run/kernel';
-import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScopeRow, SCOPE_REAP_CLAIM_REF } from '@substrat-run/kernel';
 import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -8881,16 +8881,46 @@ export class SqliteScopeHost implements ScopeHost {
         });
       },
       recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
-        if (!scriptRef || !moveId) throw substratError('conflict', 'copy script and move must be nonempty');
+        if (!scriptRef || scriptRef === SCOPE_REAP_CLAIM_REF || !moveId) {
+          throw substratError('conflict', 'copy script and move must name a real script');
+        }
         const result = this.directory.prepare(
           `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
            SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
            WHERE tenant_id = ? AND scope_id = ?
+             AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS claim
+               WHERE claim.tenant_id = scopes.tenant_id AND claim.scope_id = scopes.scope_id
+                 AND claim.script_ref = ?)
            ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
-        ).run(scriptRef, moveId, tenantId, scopeId);
-        if (result.changes === 0 && !this.directory.prepare(
+        ).run(scriptRef, moveId, tenantId, scopeId, SCOPE_REAP_CLAIM_REF);
+        if (result.changes > 0) return;
+        if (!this.directory.prepare(
           'SELECT 1 FROM scopes WHERE tenant_id = ? AND scope_id = ?',
         ).get(tenantId, scopeId)) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        if (this.directory.prepare(
+          'SELECT 1 FROM scope_script_copies WHERE tenant_id = ? AND scope_id = ? AND script_ref = ?',
+        ).get(tenantId, scopeId, SCOPE_REAP_CLAIM_REF)) {
+          throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
+        }
+      },
+      beginScopeScriptReap: async (_actor, tenantId, scopeId) => {
+        const result = this.directory.prepare(
+          `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
+           SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
+           WHERE tenant_id = ? AND scope_id = ?
+             AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
+               WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
+                 AND move.script_ref <> ? AND move.state = 'pending')
+           ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
+        ).run(SCOPE_REAP_CLAIM_REF, SCOPE_REAP_CLAIM_REF, tenantId, scopeId, SCOPE_REAP_CLAIM_REF);
+        if (result.changes > 0) return;
+        if (this.directory.prepare(
+          'SELECT 1 FROM scope_script_copies WHERE tenant_id = ? AND scope_id = ? AND script_ref = ?',
+        ).get(tenantId, scopeId, SCOPE_REAP_CLAIM_REF)) return;
+        if (!this.directory.prepare(
+          'SELECT 1 FROM scopes WHERE tenant_id = ? AND scope_id = ?',
+        ).get(tenantId, scopeId)) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
         this.directory.prepare(
@@ -8906,15 +8936,21 @@ export class SqliteScopeHost implements ScopeHost {
         ).run(tenantId, scopeId, scriptRef, moveId);
       },
       listScopeScriptCopies: async (_actor, filter) => {
-        const where: string[] = [];
-        const args: (string | number)[] = [];
+        const where: string[] = ['script_ref <> ?'];
+        const args: (string | number)[] = [SCOPE_REAP_CLAIM_REF];
         if (filter.tenantId) { where.push('tenant_id = ?'); args.push(filter.tenantId); }
         if (filter.scopeId) { where.push('scope_id = ?'); args.push(filter.scopeId); }
         if (filter.state) { where.push('state = ?'); args.push(filter.state); }
+        if (filter.after) {
+          if (!filter.tenantId || !filter.scopeId) throw substratError('validation_failed', 'copy cursor requires tenant and scope');
+          where.push('(script_ref > ? OR (script_ref = ? AND move_id > ?))');
+          args.push(filter.after.scriptRef, filter.after.scriptRef, filter.after.moveId);
+        }
         const limit = assertRowLimit('limit', filter.limit ?? 100);
+        const order = filter.scopeId ? 'script_ref, move_id' : 'last_attempt_at, tenant_id, scope_id, script_ref';
         const rows = this.directory.prepare(
           `SELECT * FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-           ORDER BY last_attempt_at, tenant_id, scope_id, script_ref LIMIT ?`,
+           ORDER BY ${order} LIMIT ?`,
         ).all(...args, limit) as {
           tenant_id: string; scope_id: string; script_ref: string; move_id: string;
           state: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; load_stamp: string | null; revision: string | null;
@@ -10200,9 +10236,11 @@ export class SqliteScopeHost implements ScopeHost {
              AND serving_ref IS ? AND erasure_epoch = ?
              AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
                WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
-                 AND copy.state = 'pending')`,
-        ).run(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch);
-        if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route changed or a copy move is pending during subject erasure; retry after it settles');
+                 AND copy.state = 'pending')
+             AND (SELECT COUNT(*) FROM scope_script_copies AS copy
+               WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?`,
+        ).run(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch, expected.copyCount);
+        if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
         // The pure adapter has one co-located scope store. Its existing atomic shred is
         // the final local redaction and key destruction, after remote copies confirmed.
         return this.admin.shredSubject(actor, tenantId, scopeId, subjectId);

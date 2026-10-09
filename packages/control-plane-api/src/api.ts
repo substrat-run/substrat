@@ -156,7 +156,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
-import { assertNoUnreachableScopeCopies, reapScopeScriptCopies } from './scope-copy-cleanup.js';
+import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies } from './scope-copy-cleanup.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
@@ -3172,10 +3172,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     } catch (error) {
       // Neither script can be discarded based on this unconfirmed move. A retry or reap
       // can still reach both. A crash leaves them pending and blocks key finalization.
-      await Promise.all([
+      const settled = await Promise.allSettled([
         c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, from, moveId, 'retained'),
         c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId, 'retained'),
       ]);
+      for (const result of settled) {
+        if (result.status === 'rejected') recordCarryCleanup(c, scope, versionId, 'copy-ledger', result.reason);
+      }
       throw error;
     }
   };
@@ -3332,8 +3335,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw e;
     }
     if (opts.clearServingRef && scope.servingRef) {
-      await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null,
-        carried ? { expectedErasureEpoch: carried.erasureEpoch } : undefined).catch(relayHostRefusal);
+      try {
+        await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null,
+          carried ? { expectedErasureEpoch: carried.erasureEpoch } : undefined).catch(relayHostRefusal);
+      } catch (e) {
+        if (carried) await dropUnboundCopy(c, scope, versionId, carried);
+        throw e;
+      }
     }
     try {
       await c.var.admin.reassertSystemSwitches(
@@ -3526,8 +3534,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       // The store this carry landed in is live; a kept marker another carry set while racing it
       // does not belong on it (#1722 r8).
-      if (route === carried.to) await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
-      if (route === carried.to && (await isCarriedAway(carried.dest, scope))) {
+      await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
+      if (await isCarriedAway(carried.dest, scope)) {
         const { tables: dump, loadStamp: stamp, revision } = await retryTransient(() =>
           carried.source.exportScopeStamped(scope.id),
         );
@@ -4848,12 +4856,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const subjectId = dataSubjectIdSchema.parse(c.req.param('subjectId'));
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const copies = await c.var.admin.listScopeScriptCopies(c.get('actor'), { tenantId, scopeId, limit: 1001 });
-    if (copies.length === 1001) throw new ControlPlaneError(409, `scope ${scopeId} has more copies than one erasure batch can verify`);
+    const copies = await listAllScopeScriptCopies(c.var.admin, c.get('actor'), tenantId, scopeId);
     const erasureEpoch = await c.var.admin.scopeErasureEpoch(c.get('actor'), tenantId, scopeId);
     const currentRef = await routeOf(c, scope);
     if (!options.resolveVerticalRef) {
-      if (copies.some((copy) => copy.state !== 'done')) {
+      if (currentRef || copies.some((copy) => copy.state !== 'done')) {
         throw new ControlPlaneError(502, `scope ${scopeId} has script copies, but this control plane cannot reach their deployments`);
       }
       return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
@@ -4871,6 +4878,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
       versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
+      copyCount: copies.length,
     }).catch(relayHostRefusal));
   });
 

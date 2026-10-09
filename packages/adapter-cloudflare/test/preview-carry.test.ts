@@ -513,9 +513,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await dir.admin.listOpsFailures(staff, { scopeId: p.scopeId })).some((f) => f.stage === 'source-copy')).toBe(true);
 
       const pending = await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId });
-      expect(pending).toMatchObject([{ scriptRef: refOf.get(version.v1), state: 'eligible' }]);
-      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, pending[0]!.scriptRef,
-        pending[0]!.moveId, 'retained')).toBe(true);
+      const source = pending.find((copy) => copy.scriptRef === refOf.get(version.v1))!;
+      expect(source.state).toBe('eligible');
+      expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, source.scriptRef,
+        source.moveId, 'retained')).toBe(true);
       await dir.admin.recordScopeScriptCopy(staff, t, p.scopeId, refOf.get(version.v1)!, ulid());
 
       const reaped = await api.request('/verticals/carry-vert/previews/failed-wipe-reap', { method: 'DELETE', headers: auth });
@@ -523,7 +524,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
       expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
-        .map((copy) => copy.state)).toEqual(['done', 'done']);
+        .every((copy) => copy.state === 'done')).toBe(true);
     }, 20_000);
     it('retries a failed source wipe from the ledger', async () => {
       const p = await fresh('retry-wipe', 'kept until retry');
@@ -538,9 +539,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(report.done).toBeGreaterThan(0);
       expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(neighbor.scopeId))).toEqual(['must survive']);
-      expect(await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId })).toMatchObject([
-        { scriptRef: refOf.get(version.v1), state: 'done' },
-      ]);
+      expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .find((copy) => copy.scriptRef === refOf.get(version.v1))?.state).toBe('done');
     }, 20_000);
     it('does not destroy the subject key until every script copy confirms redaction', async () => {
       const p = await fresh('erase-pending', 'copy before erasure');
@@ -559,7 +559,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await api.request(path, { method: 'POST', headers: auth })).status).toBeGreaterThanOrEqual(500);
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual(['private']);
       delete hooks.redact;
-      const [eligible] = await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId });
+      const eligible = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
+        .find((copy) => copy.state === 'eligible');
       expect(await dir.admin.settleScopeScriptCopy(staff, t, p.scopeId, eligible!.scriptRef,
         eligible!.moveId, 'retained')).toBe(true);
       const pendingMove = ulid();
@@ -576,7 +577,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
     }, 20_000);
-    it('a carry held after its source recheck cannot resurrect a shredded subject', async () => {
+    it('erasure waits for a carry held after its source recheck', async () => {
       const p = await fresh('erase-race');
       const subject = ulid();
       const v1 = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(p.scopeId)) as unknown as {
@@ -590,17 +591,16 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const shredded = await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
         method: 'POST', headers: auth,
       });
-      expect(shredded.status).toBe(200);
+      expect(shredded.status).toBe(412);
       held.release();
-      expect((await moving).status).toBe(412);
-      expect((await served(p.hostname)).ref).toBe(refOf.get(version.v1));
-      const v1outbox = (await hostFor('v1').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
-      const redacted = v1outbox.rows.find((r) => r[v1outbox.columns.indexOf('id')] === eventId);
-      expect(redacted?.[v1outbox.columns.indexOf('payload')]).toBeNull();
-      expect((await push('erase-race', 'v2')).status).toBe(200);
+      expect((await moving).status).toBe(200);
+      expect((await served(p.hostname)).ref).toBe(refOf.get(version.v2));
+      expect((await api.request(`/tenants/${t}/scopes/${p.scopeId}/subjects/${subject}/shred`, {
+        method: 'POST', headers: auth,
+      })).status).toBe(200);
       const v2outbox = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
       const landed = v2outbox.rows.find((r) => r[v2outbox.columns.indexOf('id')] === eventId);
-      expect(landed?.[v2outbox.columns.indexOf('payload')]).toBeNull();
+      expect(landed?.[v2outbox.columns.indexOf('payload')]).toBeFalsy();
     });
     it('does not finalize erasure while a carry can still restore an unbound copy', async () => {
       const p = await fresh('erase-unbound-race');
@@ -642,6 +642,28 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const redacted = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
       expect(redacted.rows.find((r) => r[redacted.columns.indexOf('id')] === eventId)?.[redacted.columns.indexOf('payload')])
         .toBeFalsy();
+    }, 20_000);
+    it('does not reap a preview while a carry can still restore its destination', async () => {
+      const p = await fresh('reap-unbound-race', 'keep until move settles');
+      const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
+      hooks.restore = held.hook;
+      const moving = push('reap-unbound-race', 'v2');
+      await held.reached;
+      try {
+        const reaped = await api.request('/verticals/carry-vert/previews/reap-unbound-race', {
+          method: 'DELETE', headers: auth,
+        });
+        expect(reaped.status).toBeGreaterThanOrEqual(400);
+        expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeDefined();
+      } finally {
+        held.release();
+        await moving;
+      }
+      const reaped = await api.request('/verticals/carry-vert/previews/reap-unbound-race', {
+        method: 'DELETE', headers: auth,
+      });
+      expect(reaped.status).toBe(200);
+      expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
     }, 20_000);
     it('erasure retries when a bind moves the route after its script inventory was read', async () => {
       const p = await fresh('erase-route-race');

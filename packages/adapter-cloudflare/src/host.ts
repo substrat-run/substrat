@@ -779,11 +779,13 @@ interface ControlPlaneStub {
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number): Promise<void>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
-  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number): Promise<boolean>;
-  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
+  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
+  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
+  beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null): Promise<boolean>;
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
-  listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number }): Promise<{
+  listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
+    after?: { scriptRef: string; moveId: string } }): Promise<{
     tenant_id: string; scope_id: string; script_ref: string; move_id: string;
     state: string; load_stamp: string | null; revision: string | null;
   }[]>;
@@ -7202,8 +7204,15 @@ export class CloudflareScopeHost implements ScopeHost {
         });
       },
       recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
-        if (!scriptRef || !moveId) throw substratError('conflict', 'copy script and move must be nonempty');
-        await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId);
+        const result = await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId);
+        if (result === 'invalid') throw substratError('conflict', 'copy script and move must name a real script');
+        if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        if (result === 'reaping') throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
+      },
+      beginScopeScriptReap: async (_actor, tenantId, scopeId) => {
+        const result = await this.cp.beginScopeScriptReap(tenantId, scopeId);
+        if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+        if (result === 'pending') throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker) =>
         this.cp.settleScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, state, marker?.loadStamp ?? null, marker?.revision ?? null),
@@ -8177,8 +8186,9 @@ export class CloudflareScopeHost implements ScopeHost {
       finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
-        if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch)) {
-          throw substratError('precondition_failed', 'scope route changed or a copy move is pending during subject erasure; retry after it settles');
+        if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef,
+          expected.epoch, expected.copyCount)) {
+          throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
         }
         const intentIds = [...new Set(redactions.flatMap((r) => r.intentIds))];
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });

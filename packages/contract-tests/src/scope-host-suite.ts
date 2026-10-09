@@ -5765,7 +5765,43 @@ export function scopeHostContractSuite(
         .map(({ moveId, state }) => ({ moveId, state })).sort((a, b) => a.moveId.localeCompare(b.moveId)))
         .toEqual([{ moveId: first, state: 'done' }, { moveId: next, state: 'pending' }]
           .sort((a, b) => a.moveId.localeCompare(b.moveId)));
+      const [pageOne] = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, limit: 1 });
+      const pageTwo = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, limit: 1,
+        after: { scriptRef: pageOne!.scriptRef, moveId: pageOne!.moveId } });
+      expect(pageTwo).toHaveLength(1);
+      expect(pageTwo[0]!.moveId).not.toBe(pageOne!.moveId);
       expect((await host.admin.getScopeRecord(staff, t1, s))?.tenantId).toBe(t1);
+      await expectRefusal(host.admin.beginScopeScriptReap(staff, t1, s), 'precondition_failed');
+      await host.admin.settleScopeScriptCopy(staff, t1, s, ref, next, 'retained');
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      await host.admin.beginScopeScriptReap(staff, t1, s); // retry the same claim
+      await expectRefusal(host.admin.recordScopeScriptCopy(staff, t1, s, ref, ulid()), 'precondition_failed');
+      await host.admin.recordScopeScriptCopy(staff, t1, other, ref, ulid());
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).toHaveLength(2);
+    });
+
+    it('subject keys survive a pending copy move until every copy can be reached (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      const subject = ulid();
+      const move = ulid();
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [sealed] = await host.admin.sealSubjectPayloads(staff, t1, s, [{ subjectId: subject, plaintext: 'private' }]);
+      await host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, move);
+      const [copy] = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+        vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+      const expected = { versionId: null, servingRef: null, epoch: 0, copyCount: 1 };
+      await expectRefusal(host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted, expected), 'precondition_failed');
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual(['private']);
+      await host.admin.settleScopeScriptCopy(staff, t1, s, copy!.scriptRef, move, 'retained');
+      await expectRefusal(host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted,
+        { ...expected, copyCount: 0 }), 'precondition_failed');
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual(['private']);
+      expect((await host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted, expected)).keyDestroyed).toBe(true);
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual([null]);
     });
 
     // #1722 (Codex #2008 r7): the admin-log record of a staff resolution of a kept copy. The

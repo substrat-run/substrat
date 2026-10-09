@@ -109,7 +109,7 @@ import {
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
-import { blankSqlComments, executableSqlStatements } from '@substrat-run/kernel';
+import { blankSqlComments, executableSqlStatements, SCOPE_REAP_CLAIM_REF } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -3206,29 +3206,65 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null,
-    expectedServingRef: string | null, expectedEpoch: number): boolean {
+    expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): boolean {
     return this.sql.exec(
       `UPDATE scopes SET erasure_epoch = erasure_epoch + 1
        WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
          AND serving_ref IS ? AND erasure_epoch = ?
          AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
            WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
-             AND copy.state = 'pending')`,
-      tenantId, scopeId, expectedVersionId, expectedServingRef, expectedEpoch,
+             AND copy.state = 'pending')
+         AND (SELECT COUNT(*) FROM scope_script_copies AS copy
+           WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?`,
+      tenantId, scopeId, expectedVersionId, expectedServingRef, expectedEpoch, expectedCopyCount,
     ).rowsWritten > 0;
   }
 
-  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): void {
+  recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): 'recorded' | 'reaping' | 'missing' | 'invalid' {
+    if (!scriptRef || scriptRef === SCOPE_REAP_CLAIM_REF || !moveId) {
+      return 'invalid';
+    }
     const written = this.sql.exec(
       `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
        SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
        WHERE tenant_id = ? AND scope_id = ?
+         AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS claim
+           WHERE claim.tenant_id = scopes.tenant_id AND claim.scope_id = scopes.scope_id
+             AND claim.script_ref = ?)
        ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
-      scriptRef, moveId, tenantId, scopeId,
+      scriptRef, moveId, tenantId, scopeId, SCOPE_REAP_CLAIM_REF,
     );
-    if (written.rowsWritten === 0 && !this.sql.exec(
+    if (written.rowsWritten > 0) return 'recorded';
+    if (!this.sql.exec(
       'SELECT 1 FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId,
-    ).toArray().length) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+    ).toArray().length) return 'missing';
+    if (this.sql.exec(
+      'SELECT 1 FROM scope_script_copies WHERE tenant_id = ? AND scope_id = ? AND script_ref = ?',
+      tenantId, scopeId, SCOPE_REAP_CLAIM_REF,
+    ).toArray().length) return 'reaping';
+    return 'recorded'; // idempotent retry of this move
+  }
+
+  beginScopeScriptReap(tenantId: string, scopeId: string): 'claimed' | 'pending' | 'missing' {
+    const written = this.sql.exec(
+      `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state)
+       SELECT tenant_id, scope_id, ?, ?, 'pending' FROM scopes
+       WHERE tenant_id = ? AND scope_id = ?
+         AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
+           WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
+             AND move.script_ref <> ? AND move.state = 'pending')
+       ON CONFLICT (tenant_id, scope_id, script_ref, move_id) DO NOTHING`,
+      SCOPE_REAP_CLAIM_REF, SCOPE_REAP_CLAIM_REF, tenantId, scopeId, SCOPE_REAP_CLAIM_REF,
+    );
+    if (written.rowsWritten > 0) return 'claimed';
+    if (this.sql.exec(
+      'SELECT 1 FROM scope_script_copies WHERE tenant_id = ? AND scope_id = ? AND script_ref = ?',
+      tenantId, scopeId, SCOPE_REAP_CLAIM_REF,
+    ).toArray().length) return 'claimed'; // a reaper resumes its earlier claim
+    if (!this.sql.exec(
+      'SELECT 1 FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId,
+    ).toArray().length) return 'missing';
+    return 'pending';
   }
 
   settleScopeScriptCopy(
@@ -3252,19 +3288,26 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number }): {
+  listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
+    after?: { scriptRef: string; moveId: string } }): {
     tenant_id: string; scope_id: string; script_ref: string; move_id: string;
     state: string; load_stamp: string | null; revision: string | null;
   }[] {
-    const where: string[] = [];
-    const args: (string | number)[] = [];
+    const where: string[] = ['script_ref <> ?'];
+    const args: (string | number)[] = [SCOPE_REAP_CLAIM_REF];
     if (filter.tenantId) { where.push('tenant_id = ?'); args.push(filter.tenantId); }
     if (filter.scopeId) { where.push('scope_id = ?'); args.push(filter.scopeId); }
     if (filter.state) { where.push('state = ?'); args.push(filter.state); }
+    if (filter.after) {
+      if (!filter.tenantId || !filter.scopeId) throw substratError('validation_failed', 'copy cursor requires tenant and scope');
+      where.push('(script_ref > ? OR (script_ref = ? AND move_id > ?))');
+      args.push(filter.after.scriptRef, filter.after.scriptRef, filter.after.moveId);
+    }
     const limit = assertRowLimit('limit', filter.limit ?? 100);
+    const order = filter.scopeId ? 'script_ref, move_id' : 'last_attempt_at, tenant_id, scope_id, script_ref';
     return this.sql.exec(
       `SELECT * FROM scope_script_copies ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-       ORDER BY last_attempt_at, tenant_id, scope_id, script_ref LIMIT ?`, ...args, limit,
+       ORDER BY ${order} LIMIT ?`, ...args, limit,
     ).toArray() as never;
   }
 

@@ -19,6 +19,22 @@ export async function assertNoUnreachableScopeCopies(
   }
 }
 
+/** Stable keyset walk for a scope. Reap holds a claim; erasure checks the final
+ * row count atomically, so a move recorded during this walk forces a retry. */
+export async function listAllScopeScriptCopies(
+  admin: HostAdmin, actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
+): Promise<ScopeScriptCopy[]> {
+  const copies: ScopeScriptCopy[] = [];
+  let after: { scriptRef: string; moveId: string } | undefined;
+  for (;;) {
+    const page = await admin.listScopeScriptCopies(actor, { tenantId, scopeId, limit: 100, ...(after ? { after } : {}) });
+    copies.push(...page);
+    if (page.length < 100) return copies;
+    const last = page[page.length - 1]!;
+    after = { scriptRef: last.scriptRef, moveId: last.moveId };
+  }
+}
+
 /** The directory's current routing decision, with no fallback to a different script. */
 async function routeOf(input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId): Promise<string | null> {
   const scope = await input.admin.getScopeRecord(input.actor, tenantId, scopeId);
@@ -80,8 +96,11 @@ export async function retryScopeScriptCopies(input: ScopeCopyCleanup, limit = 10
 
 /** A destructive reap reaches every named script before the directory forgets the scope. */
 export async function reapScopeScriptCopies(input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId): Promise<void> {
-  const copies = await input.admin.listScopeScriptCopies(input.actor, { tenantId, scopeId, limit: 1001 });
-  if (copies.length === 1001) throw new Error(`scope ${scopeId} has more copies than one reap batch can verify`);
+  // The directory claim and new move records serialize on one store. A carry that
+  // already began keeps this reap retryable; one starting later cannot restore bytes
+  // after the scripts have been drained and the row removed.
+  await input.admin.beginScopeScriptReap(input.actor, tenantId, scopeId);
+  const copies = await listAllScopeScriptCopies(input.admin, input.actor, tenantId, scopeId);
   const current = await routeOf(input, tenantId, scopeId);
   const refs = new Set(copies.filter((c) => c.state !== 'done').map((c) => c.scriptRef));
   if (current) refs.add(current);

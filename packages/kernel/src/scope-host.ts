@@ -2694,6 +2694,9 @@ export interface HostAdmin {
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     scriptRef: string, moveId: string,
   ): Promise<void>;
+  /** Reserve a scope for script cleanup only when no copy move is in flight. The
+   * reservation rejects new moves until the directory row has been reaped. */
+  beginScopeScriptReap(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /** Only a confirmed move makes a source eligible for a nonterminal wipe. */
   settleScopeScriptCopy(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
@@ -2705,7 +2708,8 @@ export interface HostAdmin {
   touchScopeScriptCopy(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string, moveId: string): Promise<void>;
   listScopeScriptCopies(
     actor: PlatformActorId,
-    filter: { tenantId?: TenantId; scopeId?: ScopeId; state?: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; limit?: number },
+    filter: { tenantId?: TenantId; scopeId?: ScopeId; state?: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'; limit?: number;
+      after?: { scriptRef: string; moveId: string } },
   ): Promise<ScopeScriptCopy[]>;
 
   /**
@@ -3598,11 +3602,12 @@ export interface HostAdmin {
   /** Monotone directory fence against a carry from before subject erasure. */
   scopeErasureEpoch(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /** Finish an orchestrated erasure only after every script holding a copy has redacted it.
-   * The separate call prevents an unreachable old script from being hidden by an early key shred. */
+   * The copy count fences a move that was recorded after the coordinator listed scripts;
+   * ledger rows are append-only, so a changed count means that inventory is stale. */
   finalizeSubjectShred(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     subjectId: string, redactions: readonly SubjectRedactionCounts[],
-    expected: { versionId: string | null; servingRef: string | null; epoch: number },
+    expected: { versionId: string | null; servingRef: string | null; epoch: number; copyCount: number },
   ): Promise<SubjectShredReceipt>;
 
   // -- impersonation (K-42, #868) --------------------------------------------
@@ -4902,6 +4907,8 @@ export interface OpsFailureInput {
 }
 
 /** Directory inventory of one script's copy of a scope (#1722). */
+export const SCOPE_REAP_CLAIM_REF = '__substrat_scope_reap__';
+
 export interface ScopeScriptCopy {
   tenantId: TenantId;
   scopeId: ScopeId;
