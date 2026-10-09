@@ -24,9 +24,9 @@
  *    refused with the same answer.
  * 5. **A download is not a use.** `uses` counts exchanges; opening and listing leave it
  *    where the exchange put it.
- * 6. **The door's other refusals.** An operation allowlist names no attachment verb, so it
- *    refuses them all (`forbidden`), next to the listed operation working; a token that is
- *    not a session is `unauthenticated`.
+ * 6. **The door's other refusals.** An operation allowlist without `attachments.read`
+ *    refuses attachment reads (`forbidden`), next to the listed operation working; a
+ *    token that is not a session is `unauthenticated`.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -228,6 +228,19 @@ export function capabilityAttachmentContractSuite(
         );
         const owner = await host.attachments(alice, t1, s1);
         expect((await owner.search('capybara')).map((r) => r.id)).toEqual([inG.id, inF.id]);
+      });
+
+      it('an operations-narrowed link searches only when explicitly opted in', async () => {
+        const spec = { entity: folder('F'), permissions: [CAP_READ] };
+        const closed = await filesOf(await sessionOf((await share(alice, {
+          ...spec, operations: ['cap/read'],
+        })).secret));
+        expect(errorCodeOf(await refusal(closed.search('capybara')))).toBe('forbidden');
+
+        const open = await filesOf(await sessionOf((await share(alice, {
+          ...spec, operations: [CAPABILITY_ATTACHMENTS_READ],
+        })).secret));
+        expect((await open.search('capybara')).map((r) => r.id)).toEqual([inF.id]);
       });
     });
 
