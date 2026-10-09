@@ -2553,7 +2553,7 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     versionId: string,
-    opts?: { snapshot?: boolean; acknowledge?: BindAcknowledgement; expectedVersionId?: string | null },
+    opts?: { snapshot?: boolean; acknowledge?: BindAcknowledgement; expectedVersionId?: string | null; expectedErasureEpoch?: number },
   ): Promise<void>;
   /**
    * Which apps in the scope's tenant binding `versionId` would break (#1756): the answer
@@ -2657,7 +2657,7 @@ export interface HostAdmin {
     tenantId: TenantId,
     scopeId: ScopeId,
     servingRef: string | null,
-    opts?: { acknowledge?: BindAcknowledgement },
+    opts?: { acknowledge?: BindAcknowledgement; expectedErasureEpoch?: number },
   ): Promise<void>;
 
   /**
@@ -3595,11 +3595,14 @@ export interface HostAdmin {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<SubjectShredReceipt>;
+  /** Monotone directory fence against a carry from before subject erasure. */
+  scopeErasureEpoch(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /** Finish an orchestrated erasure only after every script holding a copy has redacted it.
    * The separate call prevents an unreachable old script from being hidden by an early key shred. */
   finalizeSubjectShred(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     subjectId: string, redactions: readonly SubjectRedactionCounts[],
+    expected: { versionId: string | null; servingRef: string | null; epoch: number },
   ): Promise<SubjectShredReceipt>;
 
   // -- impersonation (K-42, #868) --------------------------------------------

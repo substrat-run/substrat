@@ -777,7 +777,9 @@ interface ControlPlaneStub {
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null): Promise<void>;
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number): Promise<void>;
+  scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
+  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null): Promise<boolean>;
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
@@ -790,7 +792,7 @@ interface ControlPlaneStub {
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
   ): Promise<void>;
-  setScopeServingRef(scopeId: string, servingRef: string | null): Promise<void>;
+  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number): Promise<void>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
@@ -7174,6 +7176,9 @@ export class CloudflareScopeHost implements ScopeHost {
         if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
           throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
+        if (opts?.expectedErasureEpoch !== undefined && await this.cp.scopeErasureEpoch(tenantId, scopeId) !== opts.expectedErasureEpoch) {
+          throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
+        }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
@@ -7189,7 +7194,7 @@ export class CloudflareScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId);
+        await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch);
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,
           ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
@@ -7291,7 +7296,7 @@ export class CloudflareScopeHost implements ScopeHost {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
-        await this.cp.setScopeServingRef(scopeId, servingRef);
+        await this.cp.setScopeServingRef(scopeId, servingRef, opts?.expectedErasureEpoch);
         await this.recordAdmin(
           actor,
           'setScopeServingRef',
@@ -8168,9 +8173,13 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         return receipt;
       },
-      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions): Promise<SubjectShredReceipt> => {
+      scopeErasureEpoch: async (_actor, tenantId, scopeId) => this.cp.scopeErasureEpoch(tenantId, scopeId),
+      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
+        if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch)) {
+          throw substratError('precondition_failed', 'scope route changed during subject erasure; retry against its new script');
+        }
         const intentIds = [...new Set(redactions.flatMap((r) => r.intentIds))];
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, new Date().toISOString());

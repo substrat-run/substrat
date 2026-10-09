@@ -2803,12 +2803,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const sourceRef = await routeOf(c, scope);
     const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
     if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId);
+    const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
     const dump = await source.exportScope(scopeId);
     // #1742: the recorded OFF positions ride the restore, applied in the replay's own event.
     const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true });
     // Data landed — only now flip routing and move the version pointer.
     await c.var.admin
-      .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge })
+      .setScopeServingRef(actor, tenantId, scopeId, serving.ref, { acknowledge: opts.acknowledge, expectedErasureEpoch: erasureEpoch })
       .catch(relayHostRefusal);
     if (moveId && (await routeOf(c, (await c.var.admin.getScopeRecord(actor, tenantId, scopeId))!)) === serving.ref) {
       await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId, 'retained');
@@ -2975,13 +2976,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const sourceRef = await routeOf(c, scope);
     const moveId = sourceRef && sourceRef !== serving.ref ? ulid() : null;
     if (moveId) await c.var.admin.recordScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId);
+    const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
     const dump = await source.exportScope(scopeId);
     const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, { scopeId, exact: true }); // #1742, as adopt
     // Data landed on the target script — only now flip routing and cross the pointer.
     // `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited. No
     // extra snapshot here (adopt-serving's precedent): the source script's copy is the
     // pre-migration state, and it is never deleted — that copy is the backout.
-    await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref, move).catch(relayHostRefusal);
+    await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, serving.ref,
+      { ...move, expectedErasureEpoch: erasureEpoch }).catch(relayHostRefusal);
     if (moveId && (await routeOf(c, (await c.var.admin.getScopeRecord(actor, tenantId, scopeId))!)) === serving.ref) {
       await c.var.admin.settleScopeScriptCopy(actor, tenantId, scopeId, sourceRef!, moveId, 'retained');
     }
@@ -3004,6 +3007,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /** A carry that landed (#1710): where the data went, and what `bindAfterCarry` settles with (#1722). */
   type Carried = {
     moveId: string;
+    erasureEpoch: number;
     from: string;
     to: string;
     tables: number;
@@ -3111,6 +3115,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A failed carry leaves this pending; it still names the source for reap and erasure.
     const moveId = ulid();
     await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, from, moveId);
+    const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
     const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
       source.exportScopeStamped(scope.id),
     );
@@ -3149,6 +3154,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     return {
       moveId,
+      erasureEpoch,
       from,
       to,
       tables: restored.tables,
@@ -3305,6 +3311,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           acknowledge: opts.acknowledge,
           ...(opts.snapshot ? { snapshot: true } : {}),
           expectedVersionId: scope.verticalVersionId ?? null,
+          ...(carried ? { expectedErasureEpoch: carried.erasureEpoch } : {}),
         })
         .catch(relayHostRefusal);
     } catch (e) {
@@ -3312,7 +3319,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw e;
     }
     if (opts.clearServingRef && scope.servingRef) {
-      await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null).catch(relayHostRefusal);
+      await c.var.admin.setScopeServingRef(actor, scope.tenantId, scope.id, null,
+        carried ? { expectedErasureEpoch: carried.erasureEpoch } : undefined).catch(relayHostRefusal);
     }
     try {
       await c.var.admin.reassertSystemSwitches(
@@ -4799,6 +4807,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const copies = await c.var.admin.listScopeScriptCopies(c.get('actor'), { tenantId, scopeId, limit: 1001 });
     if (copies.length === 1001) throw new ControlPlaneError(409, `scope ${scopeId} has more copies than one erasure batch can verify`);
+    const erasureEpoch = await c.var.admin.scopeErasureEpoch(c.get('actor'), tenantId, scopeId);
     const currentRef = await routeOf(c, scope);
     if (!options.resolveVerticalRef) {
       if (copies.some((copy) => copy.state !== 'done')) {
@@ -4817,7 +4826,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (!script) throw new ControlPlaneError(502, `scope ${scopeId}'s copy in '${ref}' cannot be reached for erasure`);
       redactions.push(await script.redactSubject(scopeId, subjectId));
     }
-    return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions));
+    return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
+      versionId: scope.verticalVersionId, servingRef: scope.servingRef, epoch: erasureEpoch,
+    }));
   });
 
   // -- directory backups (#40) -----------------------------------------------
