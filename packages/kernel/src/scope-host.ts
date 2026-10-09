@@ -5396,9 +5396,10 @@ export interface ScopeHost {
    * NOW. So a capability reads no attachment its minter could not read at this moment, and
    * none outside its subtree. The session is re-resolved on EVERY call, as on the invoke
    * door: a revoked or expired capability, or an expired session, refuses `unauthenticated`
-   * before any key is checked; a capability carrying an operation allowlist refuses
-   * `forbidden`, since no attachment verb is an operation it could have named. A read never
-   * takes a use — a use is an exchange.
+   * before any key is checked. An operations-narrowed capability refuses reads by default;
+   * its mint may explicitly opt it into attachment reads, including search. That opt-in does
+   * not replace the `readPermission` check above. A read never takes a use — a use is an
+   * exchange.
    *
    * **Writes are refused.** `upload` and `remove` throw `capabilityAttachmentWriteRefused`
    * whatever keys the capability carries, recorded in the denial log against
