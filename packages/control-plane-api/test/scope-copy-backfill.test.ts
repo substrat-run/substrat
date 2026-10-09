@@ -318,6 +318,28 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
       .toEqual([{ tenantId: t, scopeId: sid, subjects: ['subject-legacy'] }]);
   });
 
+  it('erasures are ordered against the highest backfill epoch, not the last backfill row (#1722 r3)', async () => {
+    // Two overlapping runs: A records at epoch 0, an erasure claims (0 → 1), B records at 1, and A's
+    // audit row lands last. The erasure reached A's copy but not B's.
+    const sid = await provision();
+    await host.admin.setScopeServingRef(staff, t, sid, null);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v1!.id);
+    await host.admin.bindScopeVersion(staff, t, sid, versions.v2!.id);
+    await host.admin.backfillScopeScriptCopy(staff, t, sid, refOf('v1'));
+    await orchestratedShred(sid, 'subject-overlap');
+    await host.admin.backfillScopeScriptCopy(staff, t, sid, serving);
+    const rows = await host.admin.auditLog(staff, { scopeId: sid, action: 'backfillScopeCopy' });
+    expect(rows.map((r) => r.before)).toEqual([{ erasureEpoch: 0 }, { erasureEpoch: 1 }]);
+    // A's row landing last: the rows keep their ids and trade what they recorded.
+    const raw = new Database(join(dir, '_directory.sqlite'));
+    const swap = raw.prepare('UPDATE _substrat_admin_log SET before = ? WHERE id = ?');
+    swap.run(JSON.stringify({ erasureEpoch: 1 }), rows[0]!.id);
+    swap.run(JSON.stringify({ erasureEpoch: 0 }), rows[1]!.id);
+    raw.close();
+    expect((await backfillAll(true, 50)).flatMap((p) => p.erasedBefore).filter((e) => e.scopeId === sid))
+      .toEqual([{ tenantId: t, scopeId: sid, subjects: ['subject-overlap'] }]);
+  });
+
   it('a re-run records nothing new and still reports every failure', async () => {
     const before = await Promise.all([moved, neverBound, fork, wiped, orphan].map(ledgerOf));
     const pages = await backfillAll(false, 50);

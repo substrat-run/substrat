@@ -401,7 +401,7 @@ export async function backfillScopeScriptCopies(
 }
 
 /**
- * The subjects whose last erasure in the scope never reached its last backfilled copy. Every row
+ * The subjects whose last erasure in the scope never reached its latest backfilled copy. Every row
  * carries the erasure epoch it ran under (`before.erasureEpoch`): the backfill the epoch read in its
  * insert's own transaction, an erasure an `ErasureEpochStamp`.
  * - An **orchestrated** erasure claimed the copy inventory at its epoch. A claim that came first
@@ -416,9 +416,9 @@ export async function backfillScopeScriptCopies(
  */
 async function erasedBeforeBackfill(admin: HostAdmin, actor: PlatformActorId, tl: Timeline): Promise<string[]> {
   const filter = { tenantId: tl.tenantId, scopeId: tl.scopeId };
-  const [shreds, [backfill]] = await Promise.all([
+  const [shreds, backfills] = await Promise.all([
     allRows(admin, actor, { ...filter, action: 'shredSubject' }),
-    admin.auditLog(actor, { ...filter, action: 'backfillScopeCopy', order: 'desc', limit: 1 }),
+    allRows(admin, actor, { ...filter, action: 'backfillScopeCopy' }),
   ]);
   const before = (r: AdminLogEntry) => objectOf(r.before);
   const epochOf = (r: AdminLogEntry): number | null => {
@@ -430,8 +430,12 @@ async function erasedBeforeBackfill(admin: HostAdmin, actor: PlatformActorId, tl
     const subject = stringOf(objectOf(r.after)?.subjectId);
     if (subject) last.set(subject, r);
   }
+  // The latest copy is the one recorded at the highest epoch, not the last row by id: two runs that
+  // overlap can land their rows out of epoch order (on Cloudflare the row follows the insert).
+  const epochs = backfills.map(epochOf).filter((e): e is number => e !== null);
+  const theirs = epochs.length ? Math.max(...epochs) : null;
   const missed = (r: AdminLogEntry): boolean => {
-    const [mine, theirs] = [epochOf(r), backfill ? epochOf(backfill) : null];
+    const mine = epochOf(r);
     if (mine === null || theirs === null || before(r)?.path !== 'orchestrated') return true;
     return mine < theirs;
   };
