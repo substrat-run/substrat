@@ -120,6 +120,36 @@ describe('classifyError announces a status it read from a sentence', () => {
     expect(announcements()).toHaveLength(100);
   });
 
+  it('retains and logs a bounded prefix of a huge sentence, so its size cannot pin memory', async () => {
+    // The isolate serves every tenant. A count cap alone let a hundred megabyte-long sentences
+    // pin a hundred megabytes; the key and the log line are cut to 120 characters instead.
+    vi.resetModules();
+    const isolate = await import('../src/errors.js');
+    const huge = (i: number) => `order not found: ${i} ${'x'.repeat(1_000_000)}`;
+    for (let i = 0; i < 3; i++) expect(isolate.classifyError(new Error(huge(i)))?.status).toBe(404);
+
+    const keys = isolate.announcedKeys();
+    expect(keys).toHaveLength(3);
+    for (const key of keys) expect(key.length).toBeLessThanOrEqual('not_found:'.length + 120);
+
+    const logged = announcements().map(([, line]) => (line as { message: string }).message);
+    expect(logged).toEqual([0, 1, 2].map((i) => `${huge(i).slice(0, 120)}… (truncated)`));
+
+    // The prefix is the identity: a different tail past the bound is the same sentence.
+    isolate.classifyError(new Error(`${huge(0)}y`));
+    expect(announcements()).toHaveLength(3);
+  });
+
+  it('logs a sentence at the bound whole, unmarked', async () => {
+    vi.resetModules();
+    const isolate = await import('../src/errors.js');
+    const atTheBound = `order not found: ${'x'.repeat(120 - 'order not found: '.length)}`;
+    expect(atTheBound).toHaveLength(120);
+    isolate.classifyError(new Error(atTheBound));
+    expect(announcements().map(([, line]) => (line as { message: string }).message)).toEqual([atTheBound]);
+    expect(isolate.announcedKeys()).toEqual([`not_found:${atTheBound}`]);
+  });
+
   it('is silent for a throw that declared its code, however it is worded', () => {
     // The same sentences, typed: the code decides before any wording is read, so nothing
     // is guessed and nothing is announced.

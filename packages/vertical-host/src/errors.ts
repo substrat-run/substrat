@@ -93,18 +93,36 @@ const SENTENCE_GUESSES: readonly { pattern: RegExp; code: ErrorCode }[] = [
   { pattern: /invalid transition|immutable/i, code: 'conflict' },
 ];
 
-/** Sentences already announced in this isolate — bounded, so a stream of distinct ones cannot grow it. */
+/**
+ * What this isolate has already announced, keyed by the code and the sentence's first
+ * `ANNOUNCED_PREFIX` characters. Both dimensions are bounded, and both have to be: the
+ * isolate serves every tenant of the vertical, and a sentence carries whatever the
+ * vertical put in it, so a count cap alone would let a hundred megabyte-long sentences
+ * pin a hundred megabytes. A longer sentence is logged cut to the same bound.
+ */
 const announced = new Set<string>();
 const ANNOUNCED_MAX = 100;
+const ANNOUNCED_PREFIX = 120;
+
+/** A sentence cut to the logged bound, marked when it was cut. */
+function bounded(message: string): string {
+  return message.length > ANNOUNCED_PREFIX ? `${message.slice(0, ANNOUNCED_PREFIX)}… (truncated)` : message;
+}
+
+/** The keys `announced` holds — for a test that the set stays bounded, not part of the package. */
+export function announcedKeys(): readonly string[] {
+  return [...announced];
+}
 
 function guessFromSentence(message: string): ErrorCode | undefined {
   const guess = SENTENCE_GUESSES.find((g) => g.pattern.test(message));
   if (!guess) return undefined;
-  if (!announced.has(message) && announced.size < ANNOUNCED_MAX) {
-    announced.add(message);
+  const key = `${guess.code}:${message.slice(0, ANNOUNCED_PREFIX)}`;
+  if (!announced.has(key) && announced.size < ANNOUNCED_MAX) {
+    announced.add(key);
     console.warn('vertical-host.untyped-refusal', {
       status: PROBLEM_CATALOG[guess.code].status,
-      message,
+      message: bounded(message),
       deprecated: `this status was read from the sentence, which a later release stops doing; throw substratError('${guess.code}', …) to keep it`,
     });
   }
