@@ -614,6 +614,24 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
   /** A reasoned exception when a PATCH input cannot be an optional, default-free field bag. */
   readonly patchException?: string;
   /**
+   * The PLATFORM writes this operation's handler (#1773) — see `DerivedKind` for the four shapes
+   * and what each one does.
+   *
+   * A declaration whose shape the platform can derive says either this or `authored`, and
+   * `defineOperations` refuses one that says neither: a hand-written `get` restates its
+   * declaration, and each restatement drifts a little differently. `derive` on a shape that does
+   * not match refuses too, naming the clause that fails. A derived operation takes no handler —
+   * `operationsFor` leaves it out of the map it requires, and supplies it.
+   */
+  readonly derive?: DerivedKind;
+  /**
+   * Why this operation's handler is written by hand although the platform could derive it
+   * (#1773). The reason is the review artifact: it names what the derived handler would get
+   * wrong here — a parent-existence check, a projection, a child table. Refused on an operation
+   * that is not derivable, where every handler is authored and the line would only be noise.
+   */
+  readonly authored?: string;
+  /**
    * This operation's MCP rendering (#112) — the ONE knob, and it is optional.
    *
    * An operation that declares `http` is a tool, because `http` already says it faces
@@ -779,7 +797,8 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * still gets the row, without the fields they may not see.
    */
   readonly gates?: { readonly [F in OutputKeys<O>]?: PermKey };
-} & OpAuthority<O, Entities, Engines, PermKey>;
+} & OpAuthority<O, Entities, Engines, PermKey> &
+  (O extends { derive: unknown } ? { readonly authored?: never } : unknown);
 
 // ---------------------------------------------------------------------------
 // The composer.
@@ -826,6 +845,7 @@ export function defineOperations<
     assertFieldBagsDeclareConcurrency(operations, entities, engines ?? []);
     assertPatchInputs(operations);
     assertTrashedDeclarations(operations, entities);
+    assertHandlersDeclared(operations, entities);
     return operations;
   };
 }
@@ -1279,6 +1299,461 @@ function assertPatchInputs(operations: Record<string, unknown>): void {
         );
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Handlers the platform derives, and the exception that writes one by hand (#1773).
+// ---------------------------------------------------------------------------
+
+/**
+ * The shapes the model already describes completely, so the platform writes the handler.
+ *
+ * Each is matched EXACTLY — every clause below is something the derived handler relies on, and a
+ * declaration that misses one is a command with its own body, not a near-miss to be stretched:
+ *
+ * - `get` — one row by its id. Input is the id alone, the output IS the entity's `fields`, and
+ *   nothing is emitted. The check is a scope key, or narrowed to that same row.
+ * - `list` — a kernel-composed page (`paged.over`) of the entity's own rows, the output IS its
+ *   `fields`. Every input field is one of its declared `filterable` columns; a check narrowed to a
+ *   PARENT scopes the page to that parent's rows through the parent's id column.
+ * - `update` — the partial `PATCH`. Absent fields are left as they are and `null` clears a
+ *   nullable column; `concurrency` over the row is required, so the field bag cannot lose an
+ *   update. Emits about the row, and answers with it.
+ * - `delete` — removes one row with no child entity (a cascade is authored), emits, and answers
+ *   `{ id, deleted: true }`.
+ *
+ * A derived handler checks the declared permission first, reads and writes only the entity's
+ * declared columns through `ctx.sql`, and answers `not_found` for a missing row — the same steps
+ * a hand-written one takes, written once.
+ *
+ * `create` is not here yet: the id, the timestamps and the parent link it would write are not all
+ * declared. Neither are hooks around a derived handler.
+ */
+export type DerivedKind = 'get' | 'list' | 'update' | 'delete';
+
+const DERIVED_KINDS: readonly DerivedKind[] = ['get', 'list', 'update', 'delete'];
+
+/** The keys of the operations whose handler the platform writes. */
+export type DerivedKeys<Ops> = {
+  [K in keyof Ops]: Ops[K] extends { derive: DerivedKind } ? K : never;
+}[keyof Ops];
+
+/** The event a derived write emits, read off the operation's own `emits`. */
+export interface DerivedEmit {
+  readonly type: string;
+  readonly schemaVersion: number;
+  readonly piiClass: 'none' | 'pseudonymous' | 'direct';
+  /** The OUTPUT field carrying the data subject, for a classified event. */
+  readonly subjectId?: string;
+  /** The OUTPUT fields the payload carries, in declared order. */
+  readonly payload: readonly string[];
+}
+
+/**
+ * Everything a derived handler needs, resolved from the declaration once, at module load. The
+ * kernel builds the handler from this and nothing else, so the handler cannot read a field the
+ * declaration did not name.
+ */
+export type DerivationPlan = {
+  readonly entity: string;
+  readonly table: string;
+  /** The single primary-key column. */
+  readonly primaryKey: string;
+  /** Every declared column, in declared order — what a derived read names instead of `*`. */
+  readonly columns: readonly string[];
+  /** The leading check: a scope key, or narrowed to `entity` by the id in input field `idFrom`. */
+  readonly permission: { readonly key: string; readonly entity?: string; readonly idFrom?: string };
+} & (
+  | { readonly kind: 'get'; readonly idFrom: string }
+  | {
+      readonly kind: 'list';
+      /** input field → the column it filters, the parent's id field included. */
+      readonly filters: readonly { readonly field: string; readonly column: string }[];
+      readonly total: boolean;
+    }
+  | {
+      readonly kind: 'update';
+      readonly idFrom: string;
+      /** input field → the column it writes. */
+      readonly fields: readonly { readonly field: string; readonly column: string }[];
+      readonly emit: DerivedEmit;
+    }
+  | { readonly kind: 'delete'; readonly idFrom: string; readonly emit: DerivedEmit }
+);
+
+/**
+ * Every derived declaration's plan, keyed by the declaration object itself. Keyed per operation
+ * rather than per map so a module that spreads its operations into a larger map still reaches
+ * them, and module-private so nothing but `defineOperations` can say what a handler does.
+ */
+const DERIVATION_PLANS = new WeakMap<object, DerivationPlan>();
+
+/**
+ * The plan `defineOperations` recorded for a `derive` declaration — `undefined` for anything else,
+ * including a declaration that never passed through `defineOperations`.
+ */
+export function derivationPlanOf(operation: object): DerivationPlan | undefined {
+  return DERIVATION_PLANS.get(operation);
+}
+
+type DeclarationRead = {
+  input?: z.ZodObject<z.ZodRawShape>;
+  inputOptional?: unknown;
+  output?: unknown;
+  http?: { method?: string };
+  permission?: unknown;
+  narrows?: unknown;
+  emits?: {
+    entity?: unknown;
+    entityIdFrom?: unknown;
+    type?: unknown;
+    schemaVersion?: unknown;
+    piiClass?: unknown;
+    subjectId?: unknown;
+    payload?: readonly string[];
+  };
+  paged?: { over?: { entity?: unknown; filterable?: readonly string[] }; total?: unknown };
+  concurrency?: { over?: unknown; idFrom?: unknown };
+  gates?: unknown;
+  trashed?: unknown;
+  patchException?: unknown;
+  derive?: unknown;
+  authored?: unknown;
+};
+
+/** The zod def a structural read sees, through the wrappers that only change optionality. */
+function baseDefOf(schema: unknown): { type?: string } | undefined {
+  let current = schema;
+  for (let depth = 0; depth < 8; depth++) {
+    const def = (current as { _zod?: { def?: unknown } })?._zod?.def as
+      | { type?: string; innerType?: unknown }
+      | undefined;
+    if (!def) return undefined;
+    if (def.type === 'optional' || def.type === 'nullable' || def.type === 'nullish' || def.type === 'readonly') {
+      current = def.innerType;
+      continue;
+    }
+    return def;
+  }
+  return undefined;
+}
+
+/** Does this schema admit `null`, through the wrappers that do not change that answer? */
+function acceptsNull(schema: unknown): boolean {
+  let current = schema;
+  for (let depth = 0; depth < 8; depth++) {
+    const def = (current as { _zod?: { def?: unknown } })?._zod?.def as
+      | { type?: string; innerType?: unknown }
+      | undefined;
+    if (def?.type === 'nullable' || def?.type === 'nullish') return true;
+    if (def?.type !== 'optional' && def?.type !== 'readonly') return false;
+    current = def.innerType;
+  }
+  return false;
+}
+
+/** The column kinds a derived write binds as they arrive: a JSON or boolean column needs encoding. */
+const DERIVED_WRITE_KINDS = new Set(['string', 'number', 'literal']);
+
+/** This module's entity whose `fields` the output IS, by identity — a projection is not the row. */
+function entityOfOutput(output: unknown, entities: Record<string, EntityDef>): string | undefined {
+  return Object.keys(entities).find((name) => entities[name]?.fields === output);
+}
+
+/** A plan's common half, or the clause the entity fails. */
+function derivableEntity(
+  entityName: string,
+  entities: Record<string, EntityDef>,
+): { entity: EntityDef; primaryKey: string; columns: string[] } | string {
+  const entity = entities[entityName];
+  if (!entity) return `'${entityName}' is not this module's entity — a composed engine's table is the engine's to read`;
+  const primaryKey = primaryKeyOf(entity);
+  if (primaryKey.length !== 1) return `'${entityName}' has a composite primary key, so no one id addresses a row`;
+  return { entity, primaryKey: primaryKey[0] as string, columns: Object.keys(entity.fields.shape) };
+}
+
+/** The leading check, read back: a scope key, `{ key, entity, idFrom }`, or the clause it fails. */
+function plainPermission(
+  permission: unknown,
+): { key: string; entity?: string; idFrom?: string } | string {
+  if (typeof permission === 'string') return { key: permission };
+  const p = permission as { key?: unknown; entity?: unknown; idFrom?: unknown } | undefined;
+  if (typeof p?.key === 'string' && typeof p.entity === 'string' && typeof p.idFrom === 'string') {
+    return { key: p.key, entity: p.entity, idFrom: p.idFrom };
+  }
+  return 'its permission is resolved, carried in a ref, or narrowed per row — the derived check is a scope key or `{ key, entity, idFrom }`';
+}
+
+function emitOf(decl: DeclarationRead): DerivedEmit {
+  const e = decl.emits ?? {};
+  return {
+    type: e.type as string,
+    schemaVersion: e.schemaVersion as number,
+    piiClass: e.piiClass as DerivedEmit['piiClass'],
+    ...(typeof e.subjectId === 'string' ? { subjectId: e.subjectId } : {}),
+    payload: [...(e.payload ?? [])],
+  };
+}
+
+/** The input's fields, split by whether a caller may omit them. */
+function inputFields(decl: DeclarationRead): { required: string[]; optional: string[] } {
+  const required: string[] = [];
+  const optional: string[] = [];
+  for (const [field, schema] of Object.entries(decl.input?.shape ?? {})) {
+    (isOptionalSchema(schema) ? optional : required).push(field);
+  }
+  return { required, optional };
+}
+
+/** Clauses every derived shape shares: no per-row walk, no per-field projection, no bin access. */
+function commonClause(decl: DeclarationRead, kind: DerivedKind): string | null {
+  if (decl.narrows !== undefined) return 'it narrows per row (`narrows`), which is a walk the handler composes';
+  if (decl.gates !== undefined) return 'it gates fields (`gates`), a projection the handler applies';
+  if (decl.inputOptional !== undefined) return 'it declares `inputOptional`';
+  if (decl.trashed !== undefined && !(kind === 'delete' && decl.trashed === 'purges')) {
+    return `it declares \`trashed: '${String(decl.trashed)}'\` — reaching the bin is authored`;
+  }
+  return null;
+}
+
+function getPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
+  const common = commonClause(decl, 'get');
+  if (common) return common;
+  if (decl.paged !== undefined) return 'it is paged — a page is a `list`';
+  if (decl.emits !== undefined) return 'it emits, and a read announces nothing';
+  if (decl.http?.method !== undefined && decl.http.method !== 'GET') return `it is served as ${decl.http.method}, not GET`;
+  const name = entityOfOutput(decl.output, entities);
+  if (name === undefined) return "its output is not one of this module's entities' own `fields`";
+  const base = derivableEntity(name, entities);
+  if (typeof base === 'string') return base;
+  const { required, optional } = inputFields(decl);
+  if (required.length !== 1 || optional.length !== 0) return 'its input is not the id alone';
+  const idFrom = required[0] as string;
+  const permission = plainPermission(decl.permission);
+  if (typeof permission === 'string') return permission;
+  if (permission.entity !== undefined && (permission.entity !== name || permission.idFrom !== idFrom)) {
+    return `its check narrows to '${permission.entity}' by '${String(permission.idFrom)}', not to the row it reads`;
+  }
+  if (permission.entity === undefined && base.entity.trash !== undefined) {
+    return `'${name}' declares \`trash\`, and only a check narrowed to the row lets the host refuse a binned one`;
+  }
+  return { kind: 'get', entity: name, table: base.entity.table, primaryKey: base.primaryKey, columns: base.columns, permission, idFrom };
+}
+
+function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
+  const common = commonClause(decl, 'list');
+  if (common) return common;
+  const over = decl.paged?.over;
+  if (over === undefined) return 'it is not a kernel-composed page (`paged.over`)';
+  const name = over.entity as string;
+  if (decl.output !== entities[name]?.fields) return `its output is not '${name}'s own \`fields\``;
+  const base = derivableEntity(name, entities);
+  if (typeof base === 'string') return base;
+  const permission = plainPermission(decl.permission);
+  if (typeof permission === 'string') return permission;
+  const filterable = new Set(over.filterable ?? []);
+  const filters: { field: string; column: string }[] = [];
+  const { required, optional } = inputFields(decl);
+  if (permission.entity !== undefined) {
+    if (!(base.entity.parents ?? []).includes(permission.entity)) {
+      return `its check narrows to '${permission.entity}', which is not a parent of '${name}'`;
+    }
+    const idFrom = permission.idFrom as string;
+    const column = snakeCaseField(idFrom);
+    if (!required.includes(idFrom) || !filterable.has(column)) {
+      return `the parent's id '${idFrom}' is not a required input filtering the declared \`filterable\` column '${column}'`;
+    }
+    filters.push({ field: idFrom, column });
+  }
+  for (const field of required) {
+    if (field !== permission.idFrom) return `input field '${field}' is required, and only the parent's id may be`;
+  }
+  for (const field of optional) {
+    const column = snakeCaseField(field);
+    if (!filterable.has(column)) return `input field '${field}' is not a declared \`filterable\` column`;
+    if (inputDefaultIssue(decl.input?.shape[field]) !== null) return `input field '${field}' has a default`;
+    filters.push({ field, column });
+  }
+  return {
+    kind: 'list',
+    entity: name,
+    table: base.entity.table,
+    primaryKey: base.primaryKey,
+    columns: base.columns,
+    permission,
+    filters,
+    total: decl.paged?.total === true,
+  };
+}
+
+/** The clauses a derived write shares: narrowed to the row it writes, announcing it, by that row's id. */
+function writeTarget(
+  decl: DeclarationRead,
+  entities: Record<string, EntityDef>,
+): { name: string; base: Exclude<ReturnType<typeof derivableEntity>, string>; idFrom: string; key: string } | string {
+  const permission = plainPermission(decl.permission);
+  if (typeof permission === 'string') return permission;
+  if (permission.entity === undefined) return 'its check is scope-wide, and a derived write is narrowed to the row it writes';
+  const name = permission.entity;
+  const base = derivableEntity(name, entities);
+  if (typeof base === 'string') return base;
+  if (decl.emits?.entity !== name) return `it does not emit about '${name}', the row it writes`;
+  if (decl.emits.entityIdFrom !== base.primaryKey) {
+    return `its event takes its subject from '${String(decl.emits.entityIdFrom)}', not the row's id '${base.primaryKey}'`;
+  }
+  return { name, base, idFrom: permission.idFrom as string, key: permission.key };
+}
+
+function updatePlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
+  const common = commonClause(decl, 'update');
+  if (common) return common;
+  if (decl.http?.method !== 'PATCH') return 'it is not served as PATCH, the method whose absent fields stay untouched';
+  if (decl.patchException !== undefined) return 'it declares `patchException`, so its body is not a field bag';
+  if (decl.paged !== undefined) return 'it is paged';
+  const target = writeTarget(decl, entities);
+  if (typeof target === 'string') return target;
+  const { name, base, idFrom } = target;
+  if (decl.output !== base.entity.fields) return `its output is not '${name}'s own \`fields\``;
+  if (decl.concurrency?.over !== name || decl.concurrency.idFrom !== idFrom) {
+    return `it declares no \`concurrency: { over: '${name}', idFrom: '${idFrom}' }\`, and a field bag without one loses updates`;
+  }
+  const { required, optional } = inputFields(decl);
+  if (required.length !== 1 || required[0] !== idFrom) return `its input requires more than the id '${idFrom}'`;
+  if (optional.length === 0) return 'its input has no field to write';
+  const columnShape = base.entity.fields.shape;
+  const fields: { field: string; column: string }[] = [];
+  for (const field of optional) {
+    const column = snakeCaseField(field);
+    const columnSchema = columnShape[column];
+    if (columnSchema === undefined) return `body field '${field}' is not a column of '${name}'`;
+    if (column === base.primaryKey) return `body field '${field}' would rewrite the row's id`;
+    const fieldSchema = decl.input?.shape[field];
+    const kind = baseDefOf(columnSchema)?.type;
+    if (kind === 'enum') {
+      return `column '${column}' is an enum — a change of state is a lifecycle edge with its own operation`;
+    }
+    if (!kind || !DERIVED_WRITE_KINDS.has(kind)) return `column '${column}' is not a string or number column`;
+    if (baseDefOf(fieldSchema)?.type !== kind) return `body field '${field}' is not the same type as column '${column}'`;
+    if (acceptsNull(fieldSchema) && !acceptsNull(columnSchema)) {
+      return `body field '${field}' accepts null, and column '${column}' cannot be cleared`;
+    }
+    fields.push({ field, column });
+  }
+  return {
+    kind: 'update',
+    entity: name,
+    table: base.entity.table,
+    primaryKey: base.primaryKey,
+    columns: base.columns,
+    permission: { key: target.key, entity: name, idFrom },
+    idFrom,
+    fields,
+    emit: emitOf(decl),
+  };
+}
+
+function deletePlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
+  const common = commonClause(decl, 'delete');
+  if (common) return common;
+  if (decl.http?.method !== undefined && decl.http.method !== 'DELETE') return `it is served as ${decl.http.method}, not DELETE`;
+  if (decl.paged !== undefined) return 'it is paged';
+  const target = writeTarget(decl, entities);
+  if (typeof target === 'string') return target;
+  const { name, base, idFrom } = target;
+  const outputKeys = Object.keys((decl.output as z.ZodObject<z.ZodRawShape> | undefined)?.shape ?? {}).sort();
+  if (outputKeys.join() !== 'deleted,id') return 'its output is not `{ id, deleted }`';
+  const { required, optional } = inputFields(decl);
+  if (required.length !== 1 || required[0] !== idFrom || optional.length !== 0) return `its input is not the id '${idFrom}' alone`;
+  const children = Object.keys(entities).filter((child) => (entities[child]?.parents ?? []).includes(name));
+  if (children.length > 0) {
+    return `${children.map((c) => `'${c}'`).join(', ')} declare${children.length === 1 ? 's' : ''} '${name}' as parent, so a delete would orphan them — a cascade is authored`;
+  }
+  return {
+    kind: 'delete',
+    entity: name,
+    table: base.entity.table,
+    primaryKey: base.primaryKey,
+    columns: base.columns,
+    permission: { key: target.key, entity: name, idFrom },
+    idFrom,
+    emit: emitOf(decl),
+  };
+}
+
+const PLANNERS: Record<DerivedKind, typeof getPlan> = {
+  get: getPlan,
+  list: listPlan,
+  update: updatePlan,
+  delete: deletePlan,
+};
+
+/**
+ * Which shape the platform could derive this declaration as, if any — read off the declaration
+ * alone. At most one matches: a `get` is not paged and emits nothing, a `list` is paged, an
+ * `update` is a PATCH that emits, a `delete` answers `{ id, deleted }`.
+ */
+function derivablePlanOf(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | undefined {
+  for (const kind of DERIVED_KINDS) {
+    const plan = PLANNERS[kind](decl, entities);
+    if (typeof plan !== 'string') return plan;
+  }
+  return undefined;
+}
+
+/**
+ * A handler the platform could write is either written by it or excused, by name (#1773).
+ *
+ * Runs at module load, beside the PATCH and paged gates, and for their reason: it fires in every
+ * build, test, dev server and `lint:model --check`, so it cannot be true only of the modules a
+ * tool knew about. A derivable operation declaring neither `derive` nor `authored` is refused;
+ * so are a `derive` whose shape does not match (with the clause that fails), an `authored` on
+ * an operation nothing could derive, and the two together.
+ */
+function assertHandlersDeclared(operations: Record<string, unknown>, entities: Record<string, EntityDef>): void {
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as DeclarationRead;
+    const { derive, authored } = decl;
+    if (derive !== undefined && authored !== undefined) {
+      throw new Error(
+        `model: '${name}' declares both \`derive\` and \`authored\` — a handler is written by the platform or by you, not both`,
+      );
+    }
+    if (authored !== undefined && (typeof authored !== 'string' || authored.trim() === '')) {
+      throw new Error(`model: '${name}' declares authored without a reason`);
+    }
+    if (derive !== undefined) {
+      if (!DERIVED_KINDS.includes(derive as DerivedKind)) {
+        throw new Error(`model: '${name}' declares \`derive: '${String(derive)}'\` — the derivable shapes are ${DERIVED_KINDS.join(', ')}`);
+      }
+      const plan = PLANNERS[derive as DerivedKind](decl, entities);
+      if (typeof plan === 'string') {
+        throw new Error(
+          `model: '${name}' declares \`derive: '${String(derive)}'\`, but ${plan}.\n` +
+            '  Remedy: make the declaration the shape it derives, or drop `derive` and write the handler.',
+        );
+      }
+      DERIVATION_PLANS.set(op as object, plan);
+      continue;
+    }
+    const plan = derivablePlanOf(decl, entities);
+    if (plan === undefined) {
+      if (authored !== undefined) {
+        throw new Error(
+          `model: '${name}' declares \`authored\`, but nothing about it is derivable — it matches none of ` +
+            `${DERIVED_KINDS.join(', ')}, so every handler for it is authored already. Remove \`authored\`.`,
+        );
+      }
+      continue;
+    }
+    if (authored !== undefined) continue;
+    throw new Error(
+      `model: '${name}' is derivable from the model as \`${plan.kind}\` over '${plan.entity}', and declares neither ` +
+        '`derive` nor `authored`.\n' +
+        `  A hand-written ${plan.kind} restates its declaration, and each restatement drifts (#1773).\n` +
+        `  Remedy: declare \`derive: '${plan.kind}'\` and delete its handler, or declare ` +
+        `\`authored: '<why the derived ${plan.kind} is wrong here>'\`.`,
+    );
   }
 }
 
@@ -1833,7 +2308,8 @@ export function listsDeclaredBy(
  * the kernel and must not import it. The vertical supplies it.
  */
 export type OperationImpl<Ops, Ctx> = {
-  [K in keyof Ops]: Ops[K] extends { output: infer O }
+  // A derived operation has no handler to write (#1773): the platform supplies it.
+  [K in keyof Ops as Ops[K] extends { derive: DerivedKind } ? never : K]: Ops[K] extends { output: infer O }
     ? O extends z.ZodType
       ? (
           ctx: Ctx,
