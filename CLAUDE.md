@@ -448,22 +448,24 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   `TextEncoder`/`TextDecoder`, URLs are `URL`. Never hand-roll a hash to dodge an
   import ban. (Harness code may use `node:fs` etc. for genuinely node-only needs.)
 - Parse, don't trust: operation inputs go through Zod schemas at the boundary — and the
-  **host** is what applies them. A module binds its handlers with
-  `...operationsFor(ops)({ … })`, which hands the host the handler map AND the schemas
-  (`operationInputsOf(ops)`), the concurrency and the idempotency opt-outs of the same
-  declaration, so every invocation is parsed before the guards and the handler, on every
-  path in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared input that
-  nobody parses is no longer possible rather than merely discouraged, and "possible" is
-  carried by a **type** (#1835): `ModuleRegistration.operations` is a `BoundOperations`,
-  which only the binder produces, so a hand-written map does not compile, and the binder
-  refuses a missing, extra, mistyped or cast handler at the exact entry. A module with no
-  declared surface (the dashboard, a test fixture) says so with
-  `undeclaredOperations(reason, handlers)` — `testOperations` in contract-tests for
-  fixtures. The one spelling no type can see, a cast of the WHOLE map, is boundary-lint
-  **R11**, with the reviewable `boundary-lint-allow R11` … `boundary-lint-end R11` hatch.
-  It used to be prose plus a text rule (`lint:module-inputs`, #953/#959), and the optional
-  field let nine modules — both reference demos and the scaffold among them — parse nothing
-  while everything stayed green.
+  **host** is what applies them. A module binds its handlers with `...operationsFor(ops)({
+  … })`, which hands the host the handler map AND the schemas (`operationInputsOf(ops)`),
+  the concurrency and the idempotency opt-outs of the same declaration, so every
+  invocation is parsed before the guards and the handler, on every path in (HTTP, test,
+  seed, schedule). Handlers do not hand-parse; a declared input that nobody parses is no
+  longer possible rather than merely discouraged, and "possible" is carried by a **type**
+  (#1835): `ModuleRegistration.operations` is a `BoundOperations` — the handlers and their
+  derived maps in one value, with no separate `operationInputs` field to forget — which
+  only the binder produces, so a hand-written map does not compile, and the binder refuses
+  a missing, extra, mistyped or cast handler at the exact entry. A module with no declared
+  surface (the dashboard, a test fixture) says so with `undeclaredOperations(reason,
+  handlers)` — `testOperations` in contract-tests for fixtures, which is also the one test
+  seam that may hand the host raw derived maps. The one spelling no type can see, a cast
+  of the WHOLE map, is boundary-lint **R11**, with the reviewable `boundary-lint-allow
+  R11` … `boundary-lint-end R11` hatch. It used to be prose plus a text rule
+  (`lint:module-inputs`, #953/#959), and the optional field let nine modules — both
+  reference demos and the scaffold among them — parse nothing while everything stayed
+  green.
 
 ## Two human checkpoints (agents never self-approve)
 
