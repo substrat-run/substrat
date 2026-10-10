@@ -97,19 +97,18 @@ const SENTENCE_GUESSES: readonly { pattern: RegExp; code: ErrorCode }[] = [
 const announced = new Set<string>();
 const ANNOUNCED_MAX = 100;
 
-function guessFromSentence(message: string): ErrorClassification | undefined {
+function guessFromSentence(message: string): ErrorCode | undefined {
   const guess = SENTENCE_GUESSES.find((g) => g.pattern.test(message));
   if (!guess) return undefined;
-  const status = PROBLEM_CATALOG[guess.code].status as ContentfulStatusCode;
   if (!announced.has(message) && announced.size < ANNOUNCED_MAX) {
     announced.add(message);
     console.warn('vertical-host.untyped-refusal', {
-      status,
+      status: PROBLEM_CATALOG[guess.code].status,
       message,
       deprecated: `this status was read from the sentence, which a later release stops doing; throw substratError('${guess.code}', …) to keep it`,
     });
   }
-  return { status, message };
+  return guess.code;
 }
 
 /**
@@ -124,7 +123,7 @@ function guessFromSentence(message: string): ErrorClassification | undefined {
  *
  * An explicit `HTTPException` status is authoritative EXCEPT for 400: that is
  * the status a generic throw acquires on the way here, so it stays open to the
- * patterns below. A route that means "400, final" gets 400 either way.
+ * code and the sentence guess. A route that means "400, final" gets 400 either way.
  */
 export function classifyError(thrown: unknown): ErrorClassification | undefined {
   const err = atTheEdge(thrown);
@@ -133,17 +132,16 @@ export function classifyError(thrown: unknown): ErrorClassification | undefined 
   if (explicit !== undefined && explicit !== 400) return { status: explicit, message };
   if (isPlatformFault(err, message)) return { status: 502, message, platformFault: true };
 
-  // The taxonomy first (#113): a throw that declared what it is outranks every guess
-  // below it. This reads the code by SHAPE — the live property in-process, the `name`
+  // The taxonomy first (#113): a throw that declared what it is outranks the guesses
+  // after it. This reads the code by SHAPE — the live property in-process, the `name`
   // once it has crossed the ScopeDO hop — so it is the same answer on both paths,
-  // which is exactly what the message patterns underneath could never manage.
-  const code = errorCodeOf(err);
+  // which is exactly what a sentence pattern could never manage.
+  const code =
+    errorCodeOf(err) ?? (isParseFailure(err) ? 'validation_failed' : guessFromSentence(message));
   if (code !== undefined) {
     return { status: PROBLEM_CATALOG[code].status as ContentfulStatusCode, message };
   }
-
-  if (isParseFailure(err)) return { status: 400, message };
-  return guessFromSentence(message) ?? (explicit === undefined ? undefined : { status: explicit, message });
+  return explicit === undefined ? undefined : { status: explicit, message };
 }
 
 /**

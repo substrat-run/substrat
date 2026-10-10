@@ -147,7 +147,8 @@ vocabulary to a status (`PermissionDenied → 403`, a `ZodError` → `400`, a ru
 shape. A throw that declared no code but whose sentence says "not found", "permission
 denied" or "invalid transition" still gets 404, 403 or 409 for now; that reading is
 deprecated and announced in the log
-([API design](/concepts/api-design#_5-failures-are-data)), so declare the code instead. Two declarations that would dispatch identically fail at mount, naming both. The
+([API design](/concepts/api-design#_5-failures-are-data)), so declare the code instead.
+Two declarations that would dispatch identically fail at mount, naming both. The
 headers and their semantics are specified in API design —
 [§7 writes are safe to retry](/concepts/api-design#_7-writes-are-safe-to-retry) and
 [§7b a read-modify-write says what it is writing over](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over).

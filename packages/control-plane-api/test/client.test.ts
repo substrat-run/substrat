@@ -64,9 +64,10 @@ describe('ControlPlaneClient — the connect seam', () => {
     // The console suspends the scope on the control plane → the vertical's gate
     // now fails closed, across the HTTP boundary.
     await host.admin.suspendScope(actor, T, S);
-    await expect(client.assertScopeActive(T, S)).rejects.toThrow(/scope not active/);
     // Its twin declares nothing: a suspended scope is not a missing one.
-    expect(errorCodeOf(await client.assertScopeActive(T, S).catch((e: unknown) => e))).toBeUndefined();
+    const suspended = await client.assertScopeActive(T, S).then(() => undefined, (e: unknown) => e);
+    expect((suspended as Error).message).toMatch(/scope not active/);
+    expect(errorCodeOf(suspended)).toBeUndefined();
 
     // Unsuspend → passes again. Suspend the TENANT → the cascade fails closed
     // too, which a scope-status-only check would miss.

@@ -142,7 +142,6 @@ describe('classifyError announces a status it read from a sentence', () => {
     expect(classifyError(new Error(fresh('the club is closed on 2026-08-25')))).toBeUndefined();
     expect(announcements()).toEqual([]);
   });
-
 });
 
 /**
