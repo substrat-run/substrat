@@ -2816,6 +2816,84 @@ describe('control-plane API', () => {
       status: 502,
       reference: '9tsvbrr50lrn5b6qeieuk2kh',
     });
+    // Once: the 5xx backstop sees the restore site already recorded this throw.
+    expect(failures.filter((f) => f.reference === '9tsvbrr50lrn5b6qeieuk2kh')).toHaveLength(1);
+  });
+
+  it('a 5xx from a step that records nothing still lands one ops-failure row (the 5xx backstop)', async () => {
+    // The previews route answers a ControlPlaneError itself, so `onError` never sees it, and only
+    // some of its steps record their own failure. A fault in one that does not (here: the source
+    // export, ahead of the restore) used to answer 502 with a Cloudflare reference and leave no
+    // row, so the reference the CLI printed found nothing in the console.
+    const tF = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tF, slug: 'quiet-co', name: 'Quiet Co' });
+    await host.admin.registerVertical(staff, {
+      slug: 'quiet-vert', name: 'Quiet Vert', source: 'cli', ownerTenant: tF,
+    });
+    const vId = ulid();
+    await host.admin.publishVersion(staff, {
+      id: vId, verticalSlug: 'quiet-vert', version: '1.0.0',
+      manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+    });
+    await host.admin.admitVersion(staff, vId);
+    const prod = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tF, scopeId: prod, vertical: 'quiet-vert' });
+    await host.admin.activateScope(staff, tF, prod);
+    await host.admin.bindScopeVersion(staff, tF, prod, vId);
+    await host.admin.bindHostname(staff, {
+      hostname: 'quiet-acme.global.substrat.run',
+      tenantId: tF, scopeId: prod, surface: 'app', region: null, canonical: true,
+    });
+
+    const fakeVertical = {
+      exportScope: async (): Promise<ScopeDumpTable[]> => {
+        throw new ControlPlaneError(502, 'internal error; reference = q01etq01etq01etq01etq01e');
+      },
+      restoreScope: async () => ({ tables: 0 }),
+      deleteScope: async () => {},
+    } as unknown as VerticalClient;
+    const dapp = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'quiet-vert': fakeVertical },
+      platformBaseDomains: ['global.substrat.run'],
+      provisionRetryDelaysMs: [1],
+    });
+
+    const res = await dapp.request('/verticals/quiet-vert/previews', {
+      method: 'POST', headers: auth, body: JSON.stringify({ tag: 'pr-3', versionId: vId }),
+    });
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain('reference = q01etq01etq01etq01etq01e');
+
+    await new Promise((r) => setTimeout(r, 20));
+    const rows = (await host.admin.listOpsFailures(staff, { reference: 'q01etq01etq01etq01etq01e' }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      operation: 'POST /verticals/:slug/previews',
+      vertical: 'quiet-vert',
+      // The route names no tenant; the vertical's owner is whose failure it is, which is what
+      // puts the row in that tenant's dashboard view.
+      tenantId: tF,
+      status: 502,
+      reference: 'q01etq01etq01etq01etq01e',
+    });
+  });
+
+  it('a literal 5xx answered with no error object lands a row carrying its body (the 5xx backstop)', async () => {
+    // Nothing threw and nothing was marked: the backstop reads the answer's own JSON.
+    const dapp = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+    dapp.get('/__literal-5xx', (c) => c.json({ error: 'reconcile failed', detail: 'reference = l1t3ra1l1t3ra1' }, 500));
+    const res = await dapp.request('/__literal-5xx', { headers: auth });
+    expect(res.status).toBe(500);
+    await new Promise((r) => setTimeout(r, 20));
+    const rows = await host.admin.listOpsFailures(staff, { reference: 'l1t3ra1l1t3ra1' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      operation: 'GET /__literal-5xx',
+      status: 500,
+      message: 'reconcile failed: reference = l1t3ra1l1t3ra1',
+    });
   });
 
   it('lets a LISTED vertical owner preview a PENDING version into their own scope (#509 (d))', async () => {
