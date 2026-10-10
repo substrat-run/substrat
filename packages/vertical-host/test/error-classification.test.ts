@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import v8 from 'node:v8';
+import { runInNewContext } from 'node:vm';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { HTTPException } from 'hono/http-exception';
 import {
   fromWireFailure,
@@ -59,6 +61,152 @@ describe('classifyError reads the taxonomy first', () => {
     // "No opinion" is load-bearing: `mountOperations` rethrows so a vertical's own
     // `onError` still gets to map its own domain errors.
     expect(classifyError(new Error('something a vertical understands'))).toBeUndefined();
+  });
+});
+
+/**
+ * The sentence fallbacks, deprecated (#113). A throw that declared nothing still gets the
+ * status its wording used to earn, for one more release — and says so in the vertical's
+ * own logs (once per code and sentence prefix, at most a hundred times per isolate), so
+ * the author learns before the status moves.
+ *
+ * The dedupe is per isolate and these tests share one, so each case throws a sentence of
+ * its own (`fresh`), never one another case has already announced.
+ */
+describe('classifyError announces a status it read from a sentence', () => {
+  let n = 0;
+  const fresh = (sentence: string): string => `${sentence} #${++n}-${Math.random()}`;
+  let warn: MockInstance<typeof console.warn>;
+  const announcements = () => warn.mock.calls.filter(([tag]) => tag === 'vertical-host.untyped-refusal');
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  it.each([
+    ['permission denied: invoice:void', 403, 'permission_denied'],
+    ['customer not found: c1', 404, 'not_found'],
+    ['unknown scope for tenant: (t, s)', 404, 'not_found'],
+    ["invalid transition: order is 'closed'", 409, 'conflict'],
+    ['an exported underlag is immutable', 409, 'conflict'],
+  ])('keeps %j at %i for now, and names the code that would keep it', (sentence, status, code) => {
+    const message = fresh(sentence);
+    expect(classifyError(new Error(message))).toEqual({ status, message });
+    expect(announcements()).toEqual([
+      [
+        'vertical-host.untyped-refusal',
+        {
+          status,
+          message,
+          deprecated: `this status was read from the sentence, which a later release stops doing; throw substratError('${code}', …) to keep it`,
+        },
+      ],
+    ]);
+  });
+
+  it('announces a sentence once, and a different one again', () => {
+    const first = fresh('bike not found: b1');
+    classifyError(new Error(first));
+    classifyError(new Error(first));
+    classifyError(new HTTPException(400, { message: first }));
+    expect(announcements()).toHaveLength(1);
+
+    classifyError(new Error(fresh('bike not found: b2')));
+    expect(announcements()).toHaveLength(2);
+  });
+
+  it('remembers at most a hundred sentences, so a stream of distinct ones cannot grow it', async () => {
+    // A fresh module, so the count starts at zero whatever the cases above announced.
+    vi.resetModules();
+    const fresh100 = await import('../src/errors.js');
+    for (let i = 0; i < 100; i++) fresh100.classifyError(new Error(`cart not found: ${i}`));
+    expect(announcements()).toHaveLength(100);
+    // Past the cap a new sentence still gets its status; it is only no longer remembered.
+    expect(fresh100.classifyError(new Error('cart not found: 100'))?.status).toBe(404);
+    expect(announcements()).toHaveLength(100);
+  });
+
+  it('retains and logs a bounded prefix of a huge sentence, so its size cannot pin memory', async () => {
+    // The isolate serves every tenant. A count cap alone let a hundred megabyte-long sentences
+    // pin a hundred megabytes; the key and the log line are cut to 120 characters instead.
+    vi.resetModules();
+    const isolate = await import('../src/errors.js');
+    const huge = (i: number) => `order not found: ${i} ${'x'.repeat(1_000_000)}`;
+    for (let i = 0; i < 3; i++) expect(isolate.classifyError(new Error(huge(i)))?.status).toBe(404);
+
+    const keys = isolate.announcedKeys();
+    expect(keys).toHaveLength(3);
+    for (const key of keys) expect(key.length).toBeLessThanOrEqual('not_found:'.length + 120);
+
+    const logged = announcements().map(([, line]) => (line as { message: string }).message);
+    expect(logged).toEqual([0, 1, 2].map((i) => `${huge(i).slice(0, 120)}… (truncated)`));
+
+    // The prefix is the identity: a different tail past the bound is the same sentence.
+    isolate.classifyError(new Error(`${huge(0)}y`));
+    expect(announcements()).toHaveLength(3);
+  });
+
+  it('retains the bound, not the sentence: a hundred megabyte sentences pin no megabytes', async () => {
+    // A key's LENGTH proves nothing about what it keeps alive: V8 can answer `slice` with a
+    // view onto the whole parent string. So this measures the heap once the sentences are
+    // unreachable from everything but the dedupe set.
+    v8.setFlagsFromString('--expose_gc');
+    const gc = runInNewContext('gc') as () => void;
+    vi.resetModules();
+    const isolate = await import('../src/errors.js');
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < 100; i++) {
+      isolate.classifyError(new Error(`order not found: ${i} ${'x'.repeat(1_000_000)}${i}`));
+    }
+    gc();
+    const retained = process.memoryUsage().heapUsed - before;
+    expect(isolate.announcedKeys()).toHaveLength(100);
+    expect(retained).toBeLessThan(10_000_000); // ~100 MB when each key pins its sentence
+  });
+
+  it('logs a sentence at the bound whole, unmarked', async () => {
+    vi.resetModules();
+    const isolate = await import('../src/errors.js');
+    const atTheBound = `order not found: ${'x'.repeat(120 - 'order not found: '.length)}`;
+    expect(atTheBound).toHaveLength(120);
+    isolate.classifyError(new Error(atTheBound));
+    expect(announcements().map(([, line]) => (line as { message: string }).message)).toEqual([atTheBound]);
+    expect(isolate.announcedKeys()).toEqual([`not_found:${atTheBound}`]);
+  });
+
+  it("keeps main's order around a parse failure that lost its name", () => {
+    // An `issues[]` with no code is a parse failure (400) — but a denial's sentence was always
+    // read before it, and the state sentences after it. Neither moves in this release.
+    const parse = (message: string) => Object.assign(new Error(message), { issues: [] });
+    expect(classifyError(parse(fresh('permission denied: x')))?.status).toBe(403);
+    expect(announcements()).toHaveLength(1);
+    expect(classifyError(parse(fresh('customer not found: c1')))?.status).toBe(400);
+    expect(classifyError(parse(fresh('invalid transition: y')))?.status).toBe(400);
+    expect(announcements()).toHaveLength(1);
+  });
+
+  it('is silent for a throw that declared its code, however it is worded', () => {
+    // The same sentences, typed: the code decides before any wording is read, so nothing
+    // is guessed and nothing is announced.
+    expect(classifyError(substratError('not_found', fresh('customer not found: c1')))?.status).toBe(404);
+    expect(classifyError(new PermissionDenied(fresh('permission denied: x')))?.status).toBe(403);
+    expect(classifyError(substratError('conflict', fresh('invalid transition: y')))?.status).toBe(409);
+    expect(announcements()).toEqual([]);
+  });
+
+  it('reads a permission denial that kept only its class name, without the sentence', () => {
+    // The structured clone of a `PermissionDenied`: no prototype, no `code`, only the name
+    // — and a sentence that matches no pattern. `errorCodeOf` reads the name, which is why
+    // the classifier needs no `PermissionDenied` check of its own.
+    const cloned = Object.assign(new Error(fresh('nope')), { name: 'PermissionDenied' });
+    expect(classifyError(cloned)?.status).toBe(403);
+    expect(announcements()).toEqual([]);
+  });
+
+  it('is silent, and has no opinion, for a sentence that matches nothing', () => {
+    expect(classifyError(new Error(fresh('the club is closed on 2026-08-25')))).toBeUndefined();
+    expect(announcements()).toEqual([]);
   });
 });
 

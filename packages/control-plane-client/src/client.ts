@@ -225,7 +225,12 @@ export class ControlPlaneClient extends ControlPlaneTransport {
     if (tenant.status !== 'active') {
       throw new ControlPlaneError(403, `tenant not active (status: ${tenant.status}): ${tenantId}`);
     }
-    if (!scope) throw new ControlPlaneError(403, `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    // `not_found` (#113): what a vertical answers for it, which until now its sentence decided.
+    if (!scope) {
+      throw new ControlPlaneError(403, `unknown scope for tenant: (${tenantId}, ${scopeId})`, undefined, {
+        code: 'not_found',
+      });
+    }
     if (scope.status !== 'active') {
       throw new ControlPlaneError(403, `scope not active (status: ${scope.status}): ${scopeId}`);
     }

@@ -240,6 +240,16 @@ mechanical, lower traffic.
      What is left of the control plane's table is 23 patterns over untyped `HostAdmin`
      throws, and it names a **code** per row now rather than a status, so the entry says
      what the failure IS and the status follows from the catalog.
+   - **`vertical-host`'s own sentence patterns are deprecated, then deleted** (#113).
+     `classifyError` still read "permission denied", "not found|unknown scope" and
+     "invalid transition|immutable" off a throw that declared nothing. Every platform
+     producer of those sentences is typed, and so are the scaffold template's two and the
+     control-plane client's unknown-scope gate. What is left is a vertical's own untyped
+     throw, whose status would move silently to 400, so the patterns stay one release and
+     each match logs `vertical-host.untyped-refusal`, naming the code to declare: once
+     per code and first 120 characters of the sentence (logged cut to those 120), and at
+     most 100 lines per isolate, so neither the count nor the size of what an isolate
+     every tenant shares retains can grow. The release after that deletes them.
    - **`about:blank` had to exist first** (§1a) — otherwise the phase's own fallback would
      have had to fabricate a code.
    - **One refusal is deliberately still hand-answered.** `engine-booking` publishes

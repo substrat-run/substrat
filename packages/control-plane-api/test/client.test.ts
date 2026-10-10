@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import {
   ControlPlaneClient,
@@ -41,6 +41,15 @@ describe('ControlPlaneClient — the connect seam', () => {
     // The vertical registers itself.
     await client.createTenant({ id: T, slug: 'acme', name: 'Acme' });
     await client.grantEntitlement(T, 'notes');
+
+    // An active tenant and a scope the plane has never heard of: the gate's one refusal that
+    // declares a code (#113). A direct caller still reads its 403; a vertical rethrowing it
+    // answers the `not_found` it declared rather than whatever its sentence matched.
+    const unknown = await client.assertScopeActive(T, S).then(() => undefined, (e: unknown) => e);
+    expect(unknown).toBeInstanceOf(ControlPlaneError);
+    expect((unknown as ControlPlaneError).status).toBe(403);
+    expect((unknown as Error).message).toBe(`unknown scope for tenant: (${T}, ${S})`);
+    expect(errorCodeOf(unknown)).toBe('not_found');
     // `global` is the only provisionable jurisdiction over HTTP until enforcement
     // exists (K-32); `eu`/`us` are gated at the boundary.
     await client.provisionScope({ tenantId: T, scopeId: S, slug: 'main', vertical: 'demo', jurisdiction: 'global' });
@@ -55,7 +64,10 @@ describe('ControlPlaneClient — the connect seam', () => {
     // The console suspends the scope on the control plane → the vertical's gate
     // now fails closed, across the HTTP boundary.
     await host.admin.suspendScope(actor, T, S);
-    await expect(client.assertScopeActive(T, S)).rejects.toThrow(/scope not active/);
+    // Its twin declares nothing: a suspended scope is not a missing one.
+    const suspended = await client.assertScopeActive(T, S).then(() => undefined, (e: unknown) => e);
+    expect((suspended as Error).message).toMatch(/scope not active/);
+    expect(errorCodeOf(suspended)).toBeUndefined();
 
     // Unsuspend → passes again. Suspend the TENANT → the cascade fails closed
     // too, which a scope-status-only check would miss.

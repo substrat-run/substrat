@@ -73,6 +73,12 @@ export interface ControlPlaneErrorDetail {
   malformed?: true;
   /** The underlying failure, for a transport error (`status` 0): the error `fetch` threw. */
   cause?: unknown;
+  /**
+   * The taxonomy code of a refusal raised on THIS side, which declared what it is (#113) —
+   * never set for an answer the plane sent, whose code is `problemCode`. It becomes the
+   * error's `code`, so `errorCodeOf` classifies it wherever it is rethrown.
+   */
+  code?: ErrorCode;
 }
 
 /** The `code` a refusal's body declared, when it is JSON naming one from the closed taxonomy. */
@@ -108,7 +114,11 @@ export class ControlPlaneError extends Error {
     this.url = detail.url;
     this.malformed = detail.malformed === true;
     this.problemCode = problemCodeOf(detail.body);
+    if (detail.code !== undefined) this.code = detail.code;
   }
+
+  /** The code a refusal raised on this side declared (`ControlPlaneErrorDetail.code`); absent otherwise. */
+  readonly code?: ErrorCode;
 
   /** The refusal's raw body text; `undefined` for an error the transport did not read off a response. */
   readonly body: string | undefined;
@@ -123,8 +133,8 @@ export class ControlPlaneError extends Error {
    * body that named none: an `about:blank` relay, a route the plane does not have (Hono's
    * plain-text 404), a transport error, or an error raised on this side.
    *
-   * Deliberately not called `code`: `errorCodeOf` reads a `code` property, and this error is
-   * the plane's answer relayed, not a throw that declared itself here.
+   * Deliberately not `code`: `errorCodeOf` reads a `code` property, and this error is the
+   * plane's answer relayed, not a throw that declared itself here. `code` is for the one that did.
    */
   readonly problemCode: ErrorCode | undefined;
 }
