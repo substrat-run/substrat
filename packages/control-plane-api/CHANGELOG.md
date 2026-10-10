@@ -1,5 +1,72 @@
 # @substrat-run/control-plane-api
 
+## 0.142.0
+
+### Minor Changes
+
+- c78098a: **Breaking:** the kernel no longer exports the host-side code it deprecated in 0.136.0 (part of #1978). The code now lives in its new homes. If you still import one of these names from `@substrat-run/kernel`, import it from the package below; it is the same function.
+
+  - **`@substrat-run/vertical-host`**: `invocationLog`, `withInvocationLog`, `invocationStampOf`, `fieldCoverageArmed`, `INVOCATION_RECORD_KEY`, `readRoutedNode`, `RouterAssertionError`, `kickFlags`, `assertPlatformCall`, `PlatformCallError`, and the types `InvocationLogContext`, `InvocationRecord`, `InvocationStamp`, `ModuleWorker`, `IncomingRequest`, `RoutedNode`, `HeaderReader` and `ReadRoutedNodeOptions`.
+  - **`@substrat-run/adapter-cloudflare`**: `analyticsEngineConnectorCallRecorder`, `CONNECTOR_CALL_DATA_POINT_LAYOUT`, `connectorCallDataPoint` and `AnalyticsEngineDatasetLike`.
+  - **`@substrat-run/control-plane-api`**: `isTerminalDispatchFailure`, `isTerminalProviderError`, `providerErrorStatus` and `RETRYABLE_CLIENT_STATUSES`.
+  - **`@substrat-run/contracts/wire-auth`**, a new subpath: `assertPlatformCall` and `PlatformCallError`, defined here now because the control plane and the social relay check platform calls too. `@substrat-run/vertical-host` re-exports both, so a vertical's import is unchanged. The subpath also exports `secretMatches`, the constant-time compare behind both platform-call and router-assertion checks. It now compares in time independent of the presented value, with the same results as before.
+  - **`@substrat-run/contracts`**: `invocationLevelOf`, `InvocationLevel`, `LIVE_MODE_HEADER`, `LiveRefusal`, `PLATFORM_SECRET_HEADER`, `PLATFORM_REQUEST_HEADER`, `EXPORTED_EVENTS_HEADER` and `CONNECTOR_ATTACHMENT_RECORD_HEADER`.
+
+  Two deprecations are withdrawn, and these names stay in the kernel:
+
+  - **The invocation line's shape** (`InvocationLogLine`, `OutputFieldsReport`) stays, beside `invocationLine`, because the scope host writes the consumer and schedule lines with it. `@substrat-run/vertical-host` still re-exports both types. The kernel also gains two subpaths that import nothing at run time, for code bundled in front of every vertical: `@substrat-run/kernel/invocation-line` and `@substrat-run/kernel/ulid`.
+  - **`isUpgradeRequest`** stays beside the `LiveReadSurface` contract, because the hosted adapter's live-read door uses it too. `@substrat-run/vertical-host` still re-exports it.
+
+  Nothing a deployed vertical sends, reads or logs changes. The entry module the platform uploads in front of every vertical is now built from `@substrat-run/vertical-host`, and its code is the same.
+
+### Patch Changes
+
+- 6a81de3: Backfill the copy ledger with the per-script scope copies made before it existed. A staff route (`POST /scope-copies/backfill`) walks the admin log page by page, a dry run unless told otherwise. It derives where each scope's data lived from that scope's own rows: the serving scripts it was pinned to, the versions it was bound to while unpinned, the `prod` version its slug was born into, and, for a fork, its source's route at that moment. Each such script the ledger does not yet name is recorded as `retained` and audited as `backfillScopeCopy`, so reap and erasure reach it. A dry run reads no store; a real run reads only a derived home's metadata, and nothing wipes or deletes. What cannot be derived (including a birth whose slug changed in the 15 minutes before its directory row was written), or a script no deployment answers for, is reported as a failure and recorded in the ops log, and is never marked clean. Subjects erased in a scope before its copies were recorded are reported on every run. Once a move's own ledger entry for the same script settles, the backfilled entry settles with it.
+- c56bb34: A tenant's storage is now a stored gauge: `GET /meters` carries a storage figure per tenant and for the fleet, and serving it wakes no scope.
+
+  The scheduled pass samples scope database sizes in a new storage phase, configured with
+  `storageGauge: { read }` on `runPlatformSweep`. It measures every scope that holds a store
+  (active, suspended, archiving, archived; never provisioning or reaped). An active scope is read
+  only when an earlier phase of the same pass already reached it (the platform-intent drain, or
+  the executor drain on a host without one), so the serving fleet gains no wake. A non-serving
+  scope, which no drain reaches, is read anyway, once a day — unless it was archived straight
+  from `provisioning` and so never held data: the new `scopes.archived_from_status` column
+  (`Scope.archivedFromStatus`) records the status an archive left, and such a scope is neither
+  read nor counted. A scope is due once a day, at most 100 per pass,
+  never-tried first and then the longest since a try. A failed read keeps the last stored value
+  and is retried a day later, not on every pass. A vertical deployed before
+  `/internal/database-size` is a standing condition: its scopes show as failing on `/meters`,
+  with the reason, but stay out of the failure digest.
+
+  Samples are kept in the directory's new `_substrat_scope_storage` table, one row per scope per
+  UTC day (a later same-day reading replaces an earlier one), for thirteen months, and each
+  scope's latest try in `_substrat_scope_storage_attempts`. A reaped scope's rows are deleted
+  at reap. The meter's `storage` field (`storageGauge`) says what it
+  sums (scope databases only, with attachments, per-tenant D1 databases and the lake named as
+  excluded), how many scopes it covers (`sampled` of `total`) and the `oldestReadAt` it is as
+  of, plus how many scopes' last read FAILED (`failing`, `lastFailedAt`), so a scope that keeps
+  failing is named rather than silently missing. The console shows it on the Meters view and the
+  tenant page, and calls it a total only when every scope is sampled, none is failing and no
+  sample is older than two days.
+
+  `HostAdmin.recordScopeStorage`, `listScopeStorage`, `listScopeStorageAttempts` and `pruneScopeStorage` are new OPTIONAL
+  methods, and the phase is skipped on a host without them, so an adapter built before this
+  still satisfies the interface. The meter's `storage` fields are optional for the same reason:
+  a host that keeps no gauge reports none, rather than a zero.
+
+  `VerticalClient`'s refusals now carry the raw response body (`ControlPlaneError.body`), so a
+  caller can tell a vertical's JSON error envelope from a router's plain-text route miss when
+  both answer 404.
+
+- Updated dependencies [6a81de3]
+- Updated dependencies [6a00cfc]
+- Updated dependencies [c78098a]
+- Updated dependencies [65305a1]
+- Updated dependencies [c56bb34]
+  - @substrat-run/contracts@0.142.0
+  - @substrat-run/kernel@0.142.0
+  - @substrat-run/control-plane-client@0.1.7
+
 ## 0.141.0
 
 ### Minor Changes
