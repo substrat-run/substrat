@@ -706,7 +706,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import {
-  COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -8928,6 +8928,18 @@ export class SqliteScopeHost implements ScopeHost {
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (scope.reap_claimed_at !== null) throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
       },
+      backfillScopeScriptCopy: async (actor, tenantId, scopeId, scriptRef, opts) => {
+        if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
+        // The audit row commits with the entry, stamped with the erasure epoch read in the same unit.
+        return this.directory.transaction((): ScopeCopyBackfillResult => {
+          const written = this.directory.prepare(COPY_BACKFILL_SQL).run(...copyBackfillParams(tenantId, scopeId, scriptRef)).changes > 0;
+          const scope = this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as CopyBackfillScopeRow | undefined;
+          if (!written) return copyBackfillRefusal(scope);
+          this.recordAdmin(actor, 'backfillScopeCopy', { tenantId, scopeId }, { erasureEpoch: scope!.erasure_epoch },
+            { scriptRef, fromLogId: opts?.fromLogId ?? null });
+          return 'recorded';
+        })();
+      },
       claimExpiredScopeScriptCopies: async (_actor, input) => {
         const limit = assertRowLimit('limit', input.limit);
         return this.directory.transaction(() => {
@@ -8961,14 +8973,18 @@ export class SqliteScopeHost implements ScopeHost {
         throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker, opts) =>
-        this.directory.prepare(
-          `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
-             last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-           WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
-             AND (state <> 'done' OR ? = 'done')
-             ${opts?.claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
-        ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state,
-          ...(opts?.claimedBy === undefined ? [] : [opts.claimedBy])).changes > 0,
+        this.directory.transaction(() => {
+          const settled = this.directory.prepare(
+            `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
+               last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
+               AND (state <> 'done' OR ? = 'done')
+               ${opts?.claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
+          ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state,
+            ...(opts?.claimedBy === undefined ? [] : [opts.claimedBy])).changes > 0;
+          if (settled && state === 'done') this.directory.prepare(COPY_BACKFILL_SUPERSEDE_SQL).run(tenantId, scopeId);
+          return settled;
+        })(),
       touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
         this.directory.prepare(
           `UPDATE scope_script_copies SET last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -10159,8 +10175,15 @@ export class SqliteScopeHost implements ScopeHost {
         );
         return opened;
       },
-      shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
+      // `stamp` is the erasure epoch an orchestrated erasure's claim compared (#1722). A direct shred
+      // claims nothing and records the epoch it ran under: the backfill orders erasures by them.
+      shredSubject: async (actor, tenantId, scopeId, subjectId, stamp?: ErasureEpochStamp): Promise<SubjectShredReceipt> => {
         this.assertScope(tenantId, scopeId);
+        const before: ErasureEpochStamp = stamp ?? {
+          erasureEpoch: (this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as CopyBackfillScopeRow | undefined)
+            ?.erasure_epoch ?? 0,
+          path: 'direct',
+        };
         // Redact the live spine FIRST. Both halves are idempotent and a crash between them
         // converges on retry, so the order is decided by which half-done state harms the
         // person: dying after this leaves ciphertext in a backup that no key opens; dying
@@ -10245,7 +10268,7 @@ export class SqliteScopeHost implements ScopeHost {
         // BOTH logs, which is unusual and deliberate: the admin log because this is a
         // mutation, the access log because it destroys evidence. An erasure is the one
         // action where "who asked for this to disappear" is itself the record.
-        this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, before, receipt);
         // BOTH counts: the access log's number is "how much evidence this destroyed", and
         // an intent payload is a whole event's worth of it.
         this.recordAccess(
@@ -10279,7 +10302,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
         // The pure adapter has one co-located scope store. Its existing atomic shred is
         // the final local redaction and key destruction, after remote copies confirmed.
-        return this.admin.shredSubject(actor, tenantId, scopeId, subjectId);
+        const shred = this.admin.shredSubject as (...args: [...Parameters<HostAdmin['shredSubject']>, ErasureEpochStamp]) =>
+          Promise<SubjectShredReceipt>;
+        return shred(actor, tenantId, scopeId, subjectId, { erasureEpoch: expected.epoch, path: 'orchestrated' });
       },
 
       // -- impersonation (K-42, #868) ----------------------------------------
@@ -11731,6 +11756,7 @@ export class SqliteScopeHost implements ScopeHost {
       if (moved.changes === 0) return false;
       if (cond?.confirmMove) {
         this.directory.prepare(COPY_MOVE_CONFIRM_SQL).run(...copyMoveConfirmParams(cond.confirmMove, tenantId, scopeId, now));
+        this.directory.prepare(COPY_BACKFILL_SUPERSEDE_SQL).run(tenantId, scopeId);
       }
       return true;
     })();

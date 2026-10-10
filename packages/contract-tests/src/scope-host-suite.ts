@@ -42,6 +42,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
+  BACKFILL_MOVE_ID,
   SCOPE_COPY_LEASE_MS,
   isSearchIndexTable,
   platformIntentFailureMessage,
@@ -5791,6 +5792,49 @@ export function scopeHostContractSuite(
       expect(beforeClaim.map((copy) => copy.moveId).sort()).toEqual([first, next].sort());
     });
 
+    it('a backfilled copy is retained, once per script, never over a ledgered one, and never under a reap claim (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [historic, tracked] = [`version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`];
+      const from = ulid();
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, historic, { fromLogId: from })).toBe('recorded');
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, historic)).toBe('ledgered'); // a re-run writes nothing
+      // Audited once, naming the script and the log row it was read from.
+      expect((await host.admin.auditLog(staff, { scopeId: s, action: 'backfillScopeCopy' })).map((r) => r.after))
+        .toEqual([{ scriptRef: historic, fromLogId: from }]);
+      const [entry] = await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s });
+      expect(entry).toMatchObject({ scriptRef: historic, moveId: BACKFILL_MOVE_ID, state: 'retained', role: null, leaseUntil: null });
+      // Never pending, so no lease sweep ever claims it, and a reap is not held off by it.
+      expect((await host.admin.claimExpiredScopeScriptCopies(staff, {
+        now: new Date(Date.now() + 365 * 86_400_000).toISOString(), leaseUntil: new Date().toISOString(), owner: 'sweep:test', limit: 1000,
+      })).filter((c) => c.scopeId === s)).toEqual([]);
+      // A script the ledger already names for this scope, in ANY state, is not backfilled again.
+      const move = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, tracked, move, { role: 'source' });
+      await host.admin.settleScopeScriptCopy(staff, t1, s, tracked, move, 'done');
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, tracked)).toBe('ledgered');
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).map((c) => c.moveId).sort())
+        .toEqual([BACKFILL_MOVE_ID, move].sort());
+      // A move that later carries the store out of the historic script takes it over: while its
+      // own entry is live the backfilled one stays, and once that entry is done (wiped, or the
+      // route) the backfilled one settles with it, so no reap or erasure is sent there again.
+      const carry = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, historic, carry, { role: 'source' });
+      await host.admin.settleScopeScriptCopy(staff, t1, s, historic, carry, 'eligible', { loadStamp: 'st', revision: '1' });
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, state: 'retained' })).map((c) => c.scriptRef))
+        .toEqual([historic]);
+      await host.admin.settleScopeScriptCopy(staff, t1, s, historic, carry, 'done');
+      expect(await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, state: 'retained' })).toEqual([]);
+      // Scoped by tenant: the same scope id under another tenant is unknown.
+      expect(await host.admin.backfillScopeScriptCopy(staff, t2, s, `version-${ulid().toLowerCase()}`)).toBe('missing');
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, scopeId.parse(ulid()), historic)).toBe('missing');
+      // Under a reap claim nothing new enters the ledger, so the reap's own listing stays whole.
+      await host.admin.beginScopeScriptReap(staff, t1, s);
+      const late = `version-${ulid().toLowerCase()}`;
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, late)).toBe('reaping');
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s })).some((c) => c.scriptRef === late)).toBe(false);
+    });
+
     it('a pending copy entry is claimed only once its lease ran out, and only once (#1722)', async () => {
       const s = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t1, scopeId: s });
@@ -5859,6 +5903,41 @@ export function scopeHostContractSuite(
       // And it confirms once: the same confirmation again refuses.
       await expectRefusal(host.admin.setScopeServingRef(staff, t1, s, from,
         { expectedErasureEpoch: 0, confirmMove: { moveId: move, source: 'eligible' } }), 'precondition_failed');
+    });
+
+    it('a backfill and every erasure record the erasure epoch they ran under (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const epochs = async (action: 'backfillScopeCopy' | 'shredSubject') =>
+        (await host.admin.auditLog(staff, { scopeId: s, action })).map((r) => r.before);
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`)).toBe('recorded');
+      const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+        vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+      await host.admin.finalizeSubjectShred(staff, t1, s, ulid(), redacted, { versionId: null, servingRef: null, epoch: 0, copyCount: 1 });
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`)).toBe('recorded');
+      expect(await epochs('backfillScopeCopy')).toEqual([{ erasureEpoch: 0 }, { erasureEpoch: 1 }]);
+      expect(await epochs('shredSubject')).toEqual([{ erasureEpoch: 0, path: 'orchestrated' }]);
+      // A direct shred claims nothing, and says so, with the epoch it ran under.
+      await host.admin.shredSubject(staff, t1, s, ulid());
+      expect(await epochs('shredSubject')).toEqual([{ erasureEpoch: 0, path: 'orchestrated' }, { erasureEpoch: 1, path: 'direct' }]);
+    });
+
+    it('a move that routes onto a backfilled script settles that entry in the confirming write (#1722)', async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s });
+      const [from, to, other] = [`version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`, `version-${ulid().toLowerCase()}`];
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, to)).toBe('recorded');
+      expect(await host.admin.backfillScopeScriptCopy(staff, t1, s, other)).toBe('recorded');
+      const move = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, from, move, { role: 'source' });
+      await host.admin.recordScopeScriptCopy(staff, t1, s, to, move, { role: 'destination', loadStamp: 'restore-stamp' });
+      // Until it confirms, the move's own entry is pending: the backfilled one still stands.
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s, state: 'retained' })).map((c) => c.scriptRef).sort())
+        .toEqual([other, to].sort());
+      await host.admin.setScopeServingRef(staff, t1, s, to, { expectedErasureEpoch: 0, confirmMove: { moveId: move, source: 'retained' } });
+      const byRef = Object.fromEntries((await host.admin.listScopeScriptCopies(staff, { tenantId: t1, scopeId: s }))
+        .filter((c) => c.moveId === BACKFILL_MOVE_ID).map((c) => [c.scriptRef, c.state]));
+      expect(byRef).toEqual({ [to]: 'done', [other]: 'retained' });
     });
 
     it('a reap claim refuses a conditional bind until the scope row is deleted (#1722)', async () => {

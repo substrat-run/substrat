@@ -1,6 +1,7 @@
 import type { ModuleLog } from './module-log.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
+import type { ScopeCopyBackfillResult } from './scope-copy-ledger.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -2725,6 +2726,19 @@ export interface HostAdmin {
     /** A sweep's own claim: the entry settles only while it is still pending under that owner. */
     opts?: { claimedBy?: string },
   ): Promise<boolean>;
+  /**
+   * Record a copy made before this ledger existed (#1722's backfill) as `retained`: reached by reap
+   * and erasure, never wiped by the sweep. One entry per (scope, script), under `BACKFILL_MOVE_ID`.
+   * Answers `ledgered`, writing nothing, when the ledger already names the script for the scope in
+   * any state; `reaping` under a reap claim; `missing` for an unknown scope. Never throws for those,
+   * so a backfill page reports each one instead of stopping. A recorded entry is audited as
+   * `backfillScopeCopy`.
+   */
+  backfillScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string,
+    /** The admin-log row the script was read from, named in the `backfillScopeCopy` row a recorded entry writes. */
+    opts?: { fromLogId?: string },
+  ): Promise<ScopeCopyBackfillResult>;
   /** Move a failed retry to the back of the due queue without changing its state. */
   touchScopeScriptCopy(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string, moveId: string): Promise<void>;
   listScopeScriptCopies(

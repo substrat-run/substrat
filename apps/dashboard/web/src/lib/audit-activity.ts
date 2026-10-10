@@ -16,7 +16,7 @@ import { shortId } from './format';
 // derived: the enum is closed, and a suffix rule gets the irregular and doubled forms
 // wrong ("admited", "begined"). A test holds this map to the enum.
 const PAST: Record<string, string> = {
-  activate: 'activated', add: 'added', admit: 'admitted', archive: 'archived', assign: 'assigned',
+  activate: 'activated', add: 'added', admit: 'admitted', archive: 'archived', assign: 'assigned', backfill: 'backfilled',
   begin: 'began', bind: 'bound', clear: 'cleared', consume: 'consumed', create: 'created', define: 'defined', delete: 'deleted',
   drain: 'drained', end: 'ended', grant: 'granted', import: 'imported', link: 'linked',
   manage: 'managed', mark: 'marked', mint: 'minted', move: 'moved', promote: 'promoted', provision: 'provisioned',
