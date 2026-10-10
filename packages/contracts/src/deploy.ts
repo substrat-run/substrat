@@ -559,7 +559,8 @@ export const entityGrantShape = z.object({
    * For those two, a person counts only when they also hold a row, live or tombstoned, for some
    * key of the shape on that entity: evidence they were given it. Evidence that lands while the
    * backfill is running, behind the point it has read to, is not counted, as none after it ends
-   * is (#2154). The backfill reads the table in `idColumn` order a window per pass, which is
+   * is (#2154). The backfill reads the table in `idColumn` order a window per pass (then by each
+   * row's own identity, so neither a repeated id nor a NULL principal makes it skip a row), which is
    * bounded only when `idColumn` leads an index (the primary key does); otherwise each pass sorts
    * the whole table, and the scope writes a `shape-backfill-unbounded` warn line saying so.
    *

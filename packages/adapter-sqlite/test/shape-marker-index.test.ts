@@ -18,7 +18,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox, type SwitchSql } from '@substrat-run/kernel';
-import { permMod, shapeReconcilePlans } from '@substrat-run/contract-tests';
+import { permMod, shapeBackfillTies, shapeReconcilePlans } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
 const INDEX = '_substrat_tuples_shape_marker';
@@ -112,5 +112,20 @@ describe('the shape reconcile reads markers on their own index (#2083)', () => {
       expect(indexed(db)).toBeDefined();
       expectOnIndexes(db, { tenantId: t1, scopeId: s1 });
     });
+  });
+});
+
+/**
+ * #2159 review: a table holder's rows that share an id are all read, whichever row a window ends on,
+ * and so are those after a NULL principal or in a WITHOUT ROWID table. The workerd half is
+ * adapter-cloudflare's `shape-marker-index.test.ts`.
+ */
+describe('the shape backfill reads every row of a table holder, ties included (#2154)', () => {
+  it('a duplicate id, a NULL principal at a window edge and a WITHOUT ROWID table each mark every holder', async () => {
+    const { host, file, t1, s1 } = await provisioned();
+    await host.close();
+    const cases = withFile(file, (db) => shapeBackfillTies(raw(db), { tenantId: t1, scopeId: s1 }));
+    expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid']);
+    for (const c of cases) expect([c.name, c.marked, c.recorded]).toEqual([c.name, c.expected, true]);
   });
 });

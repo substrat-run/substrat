@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
 import { entityGrantShape } from '@substrat-run/contracts';
-import { shapeReconcilePlans } from '@substrat-run/contract-tests';
+import { shapeBackfillTies, shapeReconcilePlans } from '@substrat-run/contract-tests';
 import { topUpEntityGrantShapes, ulid, type ShapeCursor } from '@substrat-run/kernel';
 import { switchSqlOver } from '../src/scope-do.js';
 
@@ -157,6 +157,18 @@ describe('#2154: the shape backfill reads a bounded window per pass, on workerd'
       expect(large).toBeLessThanOrEqual(small * 1.25);
     },
   );
+
+  /**
+   * #2159 review: rows sharing an id are all read whichever row a window ends on, after a NULL
+   * principal too, and in a WITHOUT ROWID table, whose key is read with `pragma_table_info`.
+   */
+  it('a duplicate id, a NULL principal at a window edge and a WITHOUT ROWID table each mark every holder', async () => {
+    const cases = await runInDurableObject(stubOf(`shape-backfill-ties-${ulid()}`), (_instance, state) =>
+      shapeBackfillTies(switchSqlOver(state.storage.sql), { tenantId: ulid(), scopeId: ulid() }),
+    );
+    expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid']);
+    for (const c of cases) expect([c.name, c.marked, c.recorded]).toEqual([c.name, c.expected, true]);
+  });
 
   /** The holder table's schema is the vertical's: the first window plans its read and says so if it sorts. */
   const warnings = (ddl: string) =>

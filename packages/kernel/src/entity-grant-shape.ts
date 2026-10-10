@@ -64,7 +64,9 @@ declare const console: { warn(message: string): void };
  *   order, marks at most its write budget, and hands back the last row it read as the cursor's
  *   `row`, so the next pass seeks past it rather than re-reading from the start. A record tuple
  *   (`shape:<type>`, `shape-backfilled`, `scope:<id>`) ends it once a read reaches the end of the
- *   range, and never before.
+ *   range, and never before. A table holder's read is keyed on `idColumn` and then the row's own
+ *   identity (its `rowid`, or a `WITHOUT ROWID` table's primary key), because nothing makes
+ *   `idColumn` unique or the principal non-NULL, and a key that ties lets a window's edge skip a row.
  *
  *   The cut-off is the cursor. Evidence that lands behind it while the backfill runs (a direct
  *   grant of a shape key to the person on their own record, for `'self'` or a table holder) is not
@@ -198,7 +200,8 @@ export interface ShapeCursor {
   marker: { object: string; subject: string } | null;
   /**
    * The backfill only (#2154): the sort key of the last row its read reached, `[object, relation,
-   * subject]` of a tuple for a `'self'` or `'grantee'` holder, `[id]` for a table holder. Absent
+   * subject]` of a tuple for a `'self'` or `'grantee'` holder, `[id, rowid]` for a table holder
+   * (`[id, …primary key]` for a `WITHOUT ROWID` table). Absent
    * or `null` reads the backfill from its start, which is always safe: a pair it already marked
    * is no longer a candidate, so a cursor from before this field (or one a rollback ignores) only
    * costs a re-read.
@@ -620,22 +623,26 @@ function backfill(
     }
     // The vertical's table may not exist yet on this scope (a module not migrated): nothing to
     // mark, and the backfill stays open for the next reconcile rather than being recorded done.
-    if (db.all(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, table).length === 0) return { done: true, at: null };
+    const ddl = db.all(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table)[0];
+    if (!ddl) return { done: true, at: null };
     const subject = `'${PRINCIPAL}' || e."${principalColumn}"`;
     const object = `? || e."${idColumn}"`;
-    // The table in `idColumn` order, the cursor a seek on it: the raw id, so it compares as the
-    // column does. Bounded only where `idColumn` leads an index (an entity id is the primary key);
+    // The table in `idColumn` order, the cursor a seek on it: the raw values, so they compare as the
+    // columns do. Nothing makes `idColumn` unique, and the principal may be NULL, so the key goes on
+    // to the row's own identity (#2159 review): rows sharing an id are never skipped at a window's
+    // edge. Bounded only where `idColumn` leads an index (an entity id is the primary key);
     // otherwise every window sorts the whole table, which `warnUnboundedRead` reports.
-    const sql = `SELECT e."${idColumn}" AS id, ${subject} AS subject, ${object} AS object,
+    const key = [`e."${idColumn}"`, ...rowIdentity(db, table, idColumn, String(ddl['sql'] ?? ''))];
+    const sql = `SELECT ${key.map((k, i) => `${k} AS k${i}`).join(', ')}, ${subject} AS subject, ${object} AS object,
                         (e."${principalColumn}" IS NOT NULL AND ${heldThere(subject, object)} AND ${unmarked(subject, object)}) AS hit
                    FROM "${table}" e
-                  WHERE e."${idColumn}" ${after ? '> ?' : 'IS NOT NULL'}
-                  ORDER BY e."${idColumn}"
+                  WHERE ${after ? `(${key.join(', ')}) > (${key.map(() => '?').join(', ')})` : `e."${idColumn}" IS NOT NULL`}
+                  ORDER BY ${key.join(', ')}
                   LIMIT ?`;
-    const params = [prefix, prefix, json, prefix, ...(after ? [after[0]!] : []), window];
+    const params = [prefix, prefix, json, prefix, ...(after ?? []), window];
     if (!after) warnUnboundedRead(db, pass, shape.entityType, { table, idColumn }, sql, params);
     rows = db.all(sql, ...params) as WindowRow[];
-    keyOf = (r) => [(r as WindowRow & { id: string | number }).id];
+    keyOf = (r) => key.map((_, i) => (r as unknown as Record<string, string | number>)[`k${i}`]!);
   }
   const { found, done, last } = takeWindow(rows, window, room);
   for (const c of found) {
@@ -646,12 +653,32 @@ function backfill(
 }
 
 /**
+ * What tells apart two rows of a holder table that share an `idColumn`, after it in the read's key:
+ * the `rowid`, unique, never NULL, and already the last column of every index on a rowid table, so
+ * an index leading with `idColumn` serves the whole key with no sort. A `WITHOUT ROWID` table has
+ * none; its primary key columns are NOT NULL, unique, and end each of its indexes the same way, so
+ * they stand in, read in key order (those already `idColumn`'s left out: a key of `idColumn`
+ * alone is unique, and needs nothing after it).
+ */
+function rowIdentity(db: SwitchSql, table: string, idColumn: string, ddl: string): string[] {
+  if (!/\bWITHOUT\s+ROWID\s*;?\s*$/i.test(ddl)) return ['e.rowid'];
+  return db
+    .all('SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk', table)
+    .map((r) => String(r['name']))
+    .filter((c) => c !== idColumn)
+    .map((c) => `e."${c.replaceAll('"', '""')}"`);
+}
+
+/**
  * A table holder's backfill is bounded only where SQLite reads the table in `idColumn` order off
  * an index; where it must sort instead (`idColumn` leads no index), every window reads the whole
  * table. The schema is the vertical's, known only on the scope, so the backfill's first window
  * asks SQLite for the plan of the read it is about to send and writes one structured warn line
- * when the plan sorts, its keys a contract as the log lines' are. The read still runs: the backfill
- * is correct, only unbounded.
+ * when the plan sorts the whole table (`USE TEMP B-TREE FOR ORDER BY`), its keys a contract as the
+ * log lines' are. The read still runs: the backfill is correct, only unbounded. A sort of only the
+ * key's LAST TERM is not reported: an index on `(idColumn, principalColumn)` serves `idColumn` but
+ * not the row identity after it, so SQLite sorts the rows of one id at a time, which is bounded by
+ * the rows sharing an id, not by the table.
  */
 function warnUnboundedRead(
   db: SwitchSql,
