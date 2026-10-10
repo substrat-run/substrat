@@ -2896,6 +2896,19 @@ describe('control-plane API', () => {
     });
   });
 
+  it('a 5xx on a slug carrying an encoded % is still recorded (the backstop decodes nothing twice)', async () => {
+    // Hono hands `slug` over decoded, so `a%25b` arrives as `a%b`. Decoding it again throws,
+    // and a throw in the backstop would swap the 5xx for onError's answer before any row lands.
+    const dapp = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+    dapp.get('/__pct/:slug', (c) => c.json({ error: 'reference = pctpctpctpct01' }, 502));
+    const res = await dapp.request('/__pct/a%25b', { headers: auth });
+    expect(res.status).toBe(502);
+    await new Promise((r) => setTimeout(r, 20));
+    const rows = await host.admin.listOpsFailures(staff, { reference: 'pctpctpctpct01' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ operation: 'GET /__pct/:slug', vertical: 'a%b', status: 502 });
+  });
+
   it('lets a LISTED vertical owner preview a PENDING version into their own scope (#509 (d))', async () => {
     // Publishing widens who may INSTALL, not who may preview their own code. A listed
     // vertical's owner still forks their own prod scope and runs their (not-yet-admitted)

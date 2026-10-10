@@ -1739,14 +1739,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const failureSubject = async (
     c: Context<{ Variables: Vars }>,
   ): Promise<{ vertical: string | null; tenantId: OpsFailureInput['tenantId'] }> => {
-    const raw = c.req.param('slug') ? decodeURIComponent(c.req.param('slug')!) : null;
+    // Already decoded by Hono, and handed on as-is the way the routes hand it to
+    // `resolveVerticalId`. Decoding again would throw on a slug carrying `%25`, and a throw here
+    // replaces the 5xx being recorded with onError's answer.
+    const raw = c.req.param('slug') ?? null;
     const pathTenant = (c.req.param('tenantId') as OpsFailureInput['tenantId']) ?? null;
     const principal = c.get('principal');
     const confined = principal ? confinedTenant(principal) : null;
     if (!raw) return { vertical: null, tenantId: pathTenant ?? confined };
     try {
       const vertical = await resolveVerticalId(c, raw);
-      const owner = pathTenant ?? confined ? null : ((await verticalOf(c.get('actor'), vertical))?.ownerTenant ?? null);
+      const owner = (pathTenant ?? confined)
+        ? null
+        : ((await verticalOf(c.get('actor'), vertical))?.ownerTenant ?? null);
       return { vertical, tenantId: pathTenant ?? confined ?? owner };
     } catch {
       return { vertical: raw, tenantId: pathTenant ?? confined };
