@@ -198,13 +198,19 @@ it:
   forgets scopes on provision, reconcile and delete-scope when the upload set
   `SUBSTRAT_SCOPE_SWEEPER` (the platform's var, reserved by the `SUBSTRAT_` prefix). The roster
   stays platform-fed, so forks stay off it as before.
-- **When.** From the push's DECLARATION, never the bundle's bytes: the CLI reads the entry's
-  exported sweeper classes from source and sends them as `sweeperClasses`. `[]` gets the
-  platform's; a name keeps the vertical's own (refused, 422, if no binding names it); and the
-  platform's names bound to something else are refused rather than clobbered. A push from a
-  CLI that predates the field falls back to the convention — `SWEEPER` bound to `SweeperDO` is
-  the vertical's own, neither bound means none — and refuses the half-matches it cannot tell
-  apart. The decision is made ONCE, by the push route before anything is uploaded, and
+- **When.** Which class is a sweeper comes from the push's DECLARATION, never the bundle's
+  bytes: the CLI reads the entry's exported sweeper classes from source and sends them as
+  `sweeperClasses`. `[]` gets the platform's; a name keeps the vertical's own (refused, 422, if
+  no binding names it); and the platform's names bound to something else are refused rather
+  than clobbered. A push from a CLI that predates the field falls back to the convention —
+  `SWEEPER` bound to `SweeperDO` is the vertical's own, neither bound means none — and refuses
+  the half-matches it cannot tell apart. The bytes answer one other question, which is about
+  registration, not identity: before it supplies one, the push route refuses (422) a bundle
+  whose own script modules never carry the scope-host registry key (`PLATFORM_SWEEP_HOST_KEY`,
+  #1646). vertical-host evaluates the key only inside the functions that register and read the
+  host, so a bundler keeps it exactly when `mountPlatformSurface` is reachable. A bundle with
+  no key has an older vertical-host or no mounted surface, so it would never fill the roster,
+  and a supplied sweeper would never arm and never log. The decision is made ONCE, by the push route before anything is uploaded, and
   recorded with the version (the stored manifest's `platformSweeper`); promote, re-serve and
   backout carry out the record and never re-decide, so none of them can refuse a version that
   was accepted, and a version pushed before the record existed keeps what it had — no
