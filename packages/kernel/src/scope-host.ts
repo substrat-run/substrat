@@ -2222,14 +2222,13 @@ export interface HostAdmin {
 
   /**
    * Mint a `become` capability on a scope (#1672): whoever exchanges its secret yields
-   * `input.principal` rather than a session — the shape an owner claim link and a member
-   * invite are, so both can move onto this primitive later. The secret is returned once;
-   * the scope keeps its hash. Expiry and a use limit are required.
+   * `input.principal` rather than a session — the shape an owner claim link is. The secret is
+   * returned once; the scope keeps its hash. Expiry and a use limit are required.
    *
-   * Platform-only in this first cut, deliberately: `become` is impersonation by another
-   * name, and the bound on who may mint one from module code is designed with the claim
-   * and invite migrations. Audited in the admin log (never the secret, never its hash).
-   * Refuses an unknown or inactive scope, as `getScope` does.
+   * `become` is impersonation by another name, so module code never mints one. This is the
+   * platform's mint; a principal mints one only through an adapter's bounded host verb (a
+   * member invite, `becomeMintCheck`, #1686). Audited in the admin log (never the secret, never
+   * its hash). Refuses an unknown or inactive scope, as `getScope` does.
    */
   mintCapability(
     actor: PlatformActorId,

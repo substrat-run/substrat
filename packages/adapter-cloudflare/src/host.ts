@@ -68,6 +68,10 @@ import {
   connection,
   capabilityExchange,
   mintedCapability,
+  boundedBecomeMint,
+  boundedBecomeRevoke,
+  becomeLinkState,
+  principalBecomeCapabilityInput,
   capabilityGrant,
   principalId,
   connectionGrant,
@@ -180,6 +184,10 @@ import {
   type PlatformActorId,
   type OnBehalfOf,
   type BecomeCapabilityInput,
+  type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
+  type BecomeLinkState,
+  type PrincipalBecomeCapabilityInput,
   type CapabilityExchange,
   type CapabilityId,
   type CapabilityFilter,
@@ -278,6 +286,7 @@ import {
   KEPT_COPY_REFUSAL,
   capabilityTokenHash,
   checkBecomeInput,
+  assertBecomeLinkStateIds,
   plausibleSessionToken,
   type AccessLogFilter,
   type AuditLogFilter,
@@ -1311,6 +1320,17 @@ interface ScopeStubRpc {
   mintBecomeCapability(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
   /** The platform's revoke (#1672) — the record as it stood before, or null. */
   revokeCapabilityAsPlatform(id: string, actor: PlatformActorId): Promise<CapabilityRecord | null>;
+  /** A principal's bounded `become` mint (#1686) — a member invite's link. */
+  mintBecomeCapabilityBoundedFor(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    input: PrincipalBecomeCapabilityInput,
+  ): Promise<BoundedBecomeMint>;
+  /** Revoke a `become` a principal minted (#1686); false for any other capability. */
+  revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke>;
+  /** Where each named `become` link stands (#1686). */
+  becomeLinkStatesFor(tenantId: TenantId, scopeId: ScopeId, ids: string[]): Promise<BecomeLinkState[]>;
   /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
   listCapabilities(filter?: CapabilityFilter): Promise<CapabilityPage>;
   /** #1834: the system door's state read — where a module's schedules stand on this scope
@@ -4948,6 +4968,50 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId, scopeId, principalId.parse(caller), principalId.parse(principal),
     );
     return { coverage: coverage.parse(result.coverage), revoked: result.revoked };
+  }
+
+  /**
+   * A principal's `become` mint (#1686) — a member invite's link, minted by the member who
+   * invites. The bound (`becomeMintCheck`: the caller holds everything the target holds here)
+   * and the write are one ScopeDO task; a refusal is `{ ok: false, coverage }` and writes
+   * nothing. Same gate as the scope-role verbs, which the invite grants with beside it.
+   */
+  async mintBecomeCapabilityBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBecomeCapabilityInput,
+  ): Promise<BoundedBecomeMint> {
+    await this.scopeRoleGate(tenantId, scopeId, 'mintBecomeCapabilityBounded');
+    return boundedBecomeMint.parse(
+      await this.scopeStub(scopeId).mintBecomeCapabilityBoundedFor(
+        tenantId, scopeId, principalId.parse(caller), principalBecomeCapabilityInput.parse(input),
+      ),
+    );
+  }
+
+  /**
+   * Revoke a `become` capability a principal minted (#1686) — what withdrawing a member invite
+   * does to its link. `revoked` is false when it was already revoked or is not such a capability
+   * (a platform-minted claim link, an `act` share). The kernel bounds `by` in the same ScopeDO
+   * task: the link's minter, or someone holding everything its principal holds now.
+   */
+  async revokeBecomeCapability(
+    tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId,
+  ): Promise<BoundedBecomeRevoke> {
+    await this.scopeRoleGate(tenantId, scopeId, 'revokeBecomeCapability');
+    return boundedBecomeRevoke.parse(
+      await this.scopeStub(scopeId).revokeBecomeCapabilityFor(tenantId, scopeId, capabilityId, principalId.parse(by)),
+    );
+  }
+
+  /**
+   * Where each named `become` link stands (#1686) — what a pending-invite list shows beside each
+   * invite, so a link the kernel revoked or that expired is never shown as open.
+   */
+  async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
+    // Refused here, on the near side, where the typed refusal reaches the caller as one.
+    assertBecomeLinkStateIds(ids);
+    await this.scopeRoleGate(tenantId, scopeId, 'becomeLinkStates');
+    if (ids.length === 0) return [];
+    return (await this.scopeStub(scopeId).becomeLinkStatesFor(tenantId, scopeId, [...ids])).map((state) => becomeLinkState.parse(state));
   }
 
   /** The (tenant, scope) gate the scope-role verbs share — `assignScopeRoleBounded`'s two checks. */

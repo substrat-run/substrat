@@ -27,7 +27,6 @@ import {
   recordOwnerClaim as recordOwnerClaimRow,
   ownerClaimMatches as ownerClaimMatchesRow,
   claimOwnerByCapability as claimOwnerByCapabilityRow,
-  claimOwner as claimOwnerRow,
   type OwnerClaimLinkRow,
   unbindSubject as unbindSubjectRow,
   unbindPrincipal as unbindPrincipalRow,
@@ -47,6 +46,10 @@ import {
   inviteExists as inviteExistsRow,
   revokeInvite as revokeInviteRow,
   claimInvite as claimInviteRow,
+  claimInviteByCapability as claimInviteByCapabilityRow,
+  inviteMatches as inviteMatchesRow,
+  inviteLink as inviteLinkRow,
+  migrateInvites,
   listMemberBindings as listMemberBindingRows,
   type InviteRow,
   type MemberBinding,
@@ -66,7 +69,7 @@ export type { InviteRow, MemberBinding } from './member-directory.js';
  * Two roles, either or both used per deployment:
  *   - `doAuthProvider` (below) exposes Better Auth here as an `AuthProvider` (the
  *     `better-auth-do` config). With an OIDC provider instead, Better Auth stays dormant.
- *   - `setPendingOwner` / `resolvePrincipal` / `claimOwner` are the identity directory —
+ *   - `setPendingOwner` / `resolvePrincipal` / `claimOwnerByCapability` are the identity directory —
  *     used under EVERY provider, since the subject → principal mapping is provider-independent.
  *     The owner seat's rules (the bounded first sign-in, the claim link) are in owner-seat.ts.
  */
@@ -102,8 +105,7 @@ const SCHEMA_STATEMENTS: string[] = [
   // `pending_owner` (claimed and consumed), `owner_of_record` (#332, never consumed: the
   // vertical's own durable memory of the owner, in this per-tenant DO rather than the scope's
   // data DO, so it survives a scope-DO wipe and a reconcile can re-grant from it) and
-  // `owner_claim_capability` (which `become` capability is the current claim link, #1686; the
-  // legacy `owner_claim` hash rows of #925 are redeem-only until they expire). The tables and
+  // `owner_claim_capability` (which `become` capability is the current claim link, #1686). The tables and
   // the rules over them live in `owner-seat.ts` so they are unit-tested without a DO; the
   // methods below delegate there.
   ...OWNER_SEAT_DDL,
@@ -137,8 +139,10 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
-      // Columns the DDL cannot add to a table that already exists (#925's `claim_until`).
+      // Columns the DDL cannot add to a table that already exists (#925's `claim_until`,
+      // #1686's `invite.capability_id`).
       migrateOwnerSeat(ctx.storage.sql as unknown as RegistrySql);
+      migrateInvites(ctx.storage.sql as unknown as RegistrySql);
       // Load-or-generate this tenant's OWN signing secret. Each IdentityDO mints its own on
       // first init and persists it here, so the secret is per-tenant, never leaves the DO,
       // and needs no `wrangler secret put` (which would be one value shared across every
@@ -332,20 +336,14 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /**
-   * LEGACY — claim the seat with a link minted before #1686, by its token's hash. Redeem-only;
-   * remove with `claimOwner` in owner-seat.ts (see the date there).
-   */
-  async claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null> {
-    return claimOwnerRow(this.registrySql, scopeId, sub, tokenHash, Date.now());
-  }
-
-  /**
    * Record a member invite: a pre-minted `principal` + `roleKey` the caller has already
    * granted at scope level, claimable by whoever presents the token whose hash is `tokenHash`.
    * The plaintext token never reaches the DO — only its hash, so a DB read can't mint access.
    */
-  async createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void> {
-    createInviteRow(this.registrySql, scopeId, principal, roleKey, email, tokenHash);
+  async createInvite(
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string | null = null,
+  ): Promise<void> {
+    createInviteRow(this.registrySql, scopeId, principal, roleKey, email, tokenHash, capabilityId);
   }
 
   /** The scope's outstanding (unclaimed) invites — for the admin's pending-invites list. No token. */
@@ -367,8 +365,8 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /** Withdraw an unclaimed invite by its (pre-minted) principal — the id the admin sees. */
-  async revokeInvite(scopeId: string, principal: string): Promise<void> {
-    revokeInviteRow(this.registrySql, scopeId, principal);
+  async revokeInvite(scopeId: string, principal: string): Promise<string | null> {
+    return revokeInviteRow(this.registrySql, scopeId, principal);
   }
 
   /**
@@ -379,6 +377,21 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    */
   async claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null> {
     return claimInviteRow(this.registrySql, scopeId, sub, tokenHash);
+  }
+
+  /** The `become` capability an open invite's link is (#1686), or null — what a withdrawal revokes first. */
+  async inviteLink(scopeId: string, principal: string): Promise<string | null> {
+    return inviteLinkRow(this.registrySql, scopeId, principal);
+  }
+
+  /** Is this hash an open capability-era invite (#1686)? Asked before the scope spends its use. */
+  async inviteMatches(scopeId: string, tokenHash: string): Promise<boolean> {
+    return inviteMatchesRow(this.registrySql, scopeId, tokenHash);
+  }
+
+  /** Accept an invite with an exchanged `become` capability (#1686) — `claimInviteByCapability`. */
+  async claimInviteByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null> {
+    return claimInviteByCapabilityRow(this.registrySql, scopeId, sub, capabilityId, principal);
   }
 
   /**
@@ -503,13 +516,17 @@ export type IdentityStub = {
   recordOwnerClaim(scopeId: string, principal: string, link: OwnerClaimLinkRow): Promise<{ previous: string | null } | null>;
   ownerClaimMatches(scopeId: string, tokenHash: string): Promise<boolean>;
   claimOwnerByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
-  claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
-  createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;
+  createInvite(
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId?: string | null,
+  ): Promise<void>;
   listInvites(scopeId: string): Promise<InviteRow[]>;
   getInvite(scopeId: string, principal: string): Promise<InviteRow | null>;
   inviteExists(scopeId: string, tokenHash: string): Promise<boolean>;
-  revokeInvite(scopeId: string, principal: string): Promise<void>;
+  revokeInvite(scopeId: string, principal: string): Promise<string | null>;
   claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
+  inviteMatches(scopeId: string, tokenHash: string): Promise<boolean>;
+  inviteLink(scopeId: string, principal: string): Promise<string | null>;
+  claimInviteByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
   unbind(scopeId: string, sub: string): Promise<boolean>;
   unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;
   subjectsOf(scopeId: string, limit: number): Promise<string[]>;

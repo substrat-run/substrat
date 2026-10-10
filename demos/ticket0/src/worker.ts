@@ -640,7 +640,11 @@ mountInvites(app, {
           })),
         create: ({ principal, roleKey, email, tokenHash }) =>
           directory.createInvite(node.scopeId, principal, roleKey, email, tokenHash),
-        revoke: (principal) => directory.revokeInvite(node.scopeId, principal),
+        // The desk's invites are hash-only rows (its own flow, not vertical-auth's capability
+        // links, #1686), so there is never a link to revoke beside the row.
+        revoke: async (principal) => {
+          await directory.revokeInvite(node.scopeId, principal);
+        },
         /**
          * The role is read BEFORE the claim consumes the invite — afterwards the row
          * is gone and nothing can still say whether this person works the desk. The

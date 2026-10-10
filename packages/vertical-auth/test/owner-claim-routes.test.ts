@@ -29,10 +29,6 @@ function harness(opts: { matches?: boolean; exchange?: CapabilityExchange | null
       calls.push(`bind:${sub}:${id}:${principal}`);
       return principal;
     },
-    claimOwner: async (_s, sub, hash) => {
-      calls.push(`legacy:${sub}:${hash === (await sha256Hex(LEGACY)) ? 'legacy' : 'other'}`);
-      return OWNER;
-    },
   };
   const app = new Hono<{ Bindings: object }>();
   mountOwnerClaim(app, {
@@ -92,11 +88,12 @@ describe('mountOwnerClaim (#1686)', () => {
     expect(calls).toEqual(['matches:secret', `exchange:${SECRET}:become`]);
   });
 
-  it('a token that is not a capability secret takes the LEGACY path, and never reaches the scope', async () => {
+  it('a token that is not a capability secret — a pre-#1686 hash link — gets the one refusal, asking nobody', async () => {
     const { calls, post } = harness();
     const res = await post(JSON.stringify({ token: LEGACY }));
-    expect(res.status).toBe(200);
-    expect(calls).toEqual(['legacy:sub-1:legacy']);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'this claim link is invalid, expired, or already used' });
+    expect(calls).toEqual([]);
   });
 
   it('a body that is not JSON, or has no token, is a 400 — not an unshaped throw', async () => {

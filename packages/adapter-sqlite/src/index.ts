@@ -109,6 +109,11 @@ import {
   type AccessLogEntry,
   type CheckSubject,
   type BecomeCapabilityInput,
+  type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
+  type BecomeLinkState,
+  type PrincipalBecomeCapabilityInput,
+  principalBecomeCapabilityInput,
   type Instant,
   type CapabilityExchange,
   type CapabilityFilter,
@@ -236,6 +241,11 @@ import {
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
+  CAPABILITY_BECOME_MINT_OPERATION,
+  becomeMintCheck,
+  mintBecomeCapabilityAsPrincipal,
+  revokeBecomeCapabilityAsPrincipal,
+  readBecomeLinkStates,
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
   createCapabilityVerbs,
@@ -527,6 +537,7 @@ import {
   type OperationContext,
   type OperationHandler,
   PermissionDenied,
+  type Holdings,
   type PermissionChecker,
   type ProvisionScopeInput,
   type RoleFilter,
@@ -4581,6 +4592,7 @@ export class SqliteScopeHost implements ScopeHost {
                 [],
                 now,
               ), event),
+            holdings: this.holdingsAt(tenantId, scopeId),
           },
           secret,
           options?.mode,
@@ -4747,6 +4759,91 @@ export class SqliteScopeHost implements ScopeHost {
         (run) => rt.db.transaction(run)(),
       ),
     );
+  }
+
+  /**
+   * A principal's `become` mint (#1686) — a member invite's link. The kernel's `becomeMintCheck`
+   * and the write in ONE scope turn and one transaction, so nothing the target or the caller
+   * holds can move between the check and the mint; a refusal writes nothing. The mint is on the
+   * spine as `capability.become-minted`, the caller its actor.
+   */
+  async mintBecomeCapabilityBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    input: PrincipalBecomeCapabilityInput,
+  ): Promise<BoundedBecomeMint> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const minter = principalId.parse(caller);
+    const parsed = principalBecomeCapabilityInput.parse(input);
+    const outcome = await rt.actor.turn(async (): Promise<BoundedBecomeMint> => {
+      const checked = await becomeMintCheck({ sql: spineSql(rt.db), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
+      if (!checked.ok) return checked;
+      const now = this.clock();
+      rt.db.exec('BEGIN IMMEDIATE');
+      try {
+        const minted = await mintBecomeCapabilityAsPrincipal(
+          {
+            sql: spineSql(rt.db),
+            now,
+            emit: (event) =>
+              kernelEmit(this.operationContext(
+                rt, asPrincipal(minter), undefined, undefined, undefined, CAPABILITY_BECOME_MINT_OPERATION, [], now,
+              ), event),
+          },
+          minter,
+          parsed,
+          checked.targetDigest,
+        );
+        rt.db.exec('COMMIT');
+        return { ok: true, minted };
+      } catch (err) {
+        rt.db.exec('ROLLBACK');
+        throw err;
+      }
+    });
+    if (outcome.ok) {
+      await this.dispatch(rt, null);
+      await this.dispatchExecutors(rt, null);
+    }
+    return outcome;
+  }
+
+  /**
+   * Revoke a `become` capability a principal minted (#1686) — withdrawing a member invite's
+   * link, recorded with `by` as the revoker. `revoked` is false for anything else: a platform-minted
+   * or an `act` capability is not this verb's. The kernel bounds `by` in the same turn: the link's
+   * minter, or someone holding everything its principal holds now.
+   */
+  async revokeBecomeCapability(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    capabilityId: CapabilityId,
+    by: PrincipalId,
+  ): Promise<BoundedBecomeRevoke> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.turn(() =>
+      revokeBecomeCapabilityAsPrincipal(
+        { sql: spineSql(rt.db), checker: this.checker, node: { tenantId, scopeId }, now: this.clock() },
+        capabilityId,
+        principalId.parse(by),
+      ),
+    );
+  }
+
+  /**
+   * Where each named `become` link stands (#1686) — what a pending-invite list shows, so a link the
+   * kernel revoked or that expired is never shown as open. A read in the scope's task.
+   */
+  async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.enqueue(() => readBecomeLinkStates(spineSql(rt.db), ids, this.clock(), this.holdingsAt(tenantId, scopeId)));
+  }
+
+  /** What a principal holds at this scope, for a `become` exchange (#1686); absent with a checker that cannot say. */
+  private holdingsAt(tenantId: TenantId, scopeId: ScopeId): ((principal: PrincipalId) => Promise<Holdings>) | undefined {
+    const checker = this.checker;
+    return checker.holdings ? (principal) => checker.holdings!(asPrincipal(principal), { tenantId, scopeId }) : undefined;
   }
 
   /** The caller's bound per role at the scope, `null` for a role this tenant does not define (#1150). */
@@ -12951,6 +13048,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
     // #2126: NULL keeps every existing capability's attachment behavior unchanged.
     this.ensureColumn(db, '_substrat_capabilities', 'attachments', 'attachments TEXT');
+    // #1686: NULL on every row already there — none is a principal-minted become.
+    this.ensureColumn(db, '_substrat_capabilities', 'target_digest', 'target_digest TEXT');
+    this.ensureColumn(db, '_substrat_capabilities', 'revoked_reason', 'revoked_reason TEXT');
     db.exec(GRANT_CHILDREN_INDEX_DDL);
     // Executor retry state (#100), same reasoning: scopes provisioned before it
     // already have the table. Defaults read as "terminal", which is exactly right

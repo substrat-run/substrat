@@ -40,7 +40,7 @@ import {
   type ReadScopeTableInput,
 } from './introspection.js';
 import type { DenialFilter } from './denial.js';
-import type { CapabilityFilter } from './capability.js';
+import { becomeLinkState, type CapabilityFilter } from './capability.js';
 import type { LifecycleFlowInput } from './lifecycle-flow.js';
 import type { OperationSeriesInput } from './operation-series.js';
 import { errorCode } from './errors.js';
@@ -487,6 +487,12 @@ export const scopeMemberInvite = z.object({
   roles: z.array(z.string()),
   email: z.string().nullable(),
   createdAt: z.number(),
+  /**
+   * Where the invite's link stands (#1686) — so a link the scope revoked or that expired is
+   * never shown as open. Null for an invite minted before links were capabilities; absent from a
+   * vertical that predates it.
+   */
+  link: becomeLinkState.nullable().optional(),
 });
 export const scopeMembers = z.object({
   roles: z.array(z.string()),

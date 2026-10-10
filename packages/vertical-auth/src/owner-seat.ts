@@ -59,11 +59,6 @@ export const OWNER_SEAT_DDL: readonly string[] = [
   // is gone the moment the owner claims, so it can't answer "who owns this scope" after that.
   // This can — it survives a scope-DO storage wipe, and the reconcile path re-grants from it.
   `CREATE TABLE IF NOT EXISTS owner_of_record (scope_id TEXT PRIMARY KEY, principal TEXT NOT NULL)`,
-  // LEGACY (#925, redeem-only since #1686): a claim link minted before links became `become`
-  // capabilities — the hash of its token and when it stops working. Nothing writes a row here
-  // any more; a row an older deployment wrote is still redeemed until it expires (at most
-  // `OWNER_CLAIM_TTL_MS` after the deploy), and a capability mint deletes it.
-  `CREATE TABLE IF NOT EXISTS owner_claim (scope_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, expires_at INTEGER NOT NULL)`,
   // The scope's CURRENT claim link (#1686): a `become` capability in the scope's own DO, which
   // holds its secret's hash, expiry, single use and revocation. This row says which capability
   // is the live link — so a re-mint, which replaces it, retires the previous one here even if
@@ -79,15 +74,18 @@ export const OWNER_SEAT_DDL: readonly string[] = [
 ];
 
 /**
- * Bring a `pending_owner` table from before `claim_until` up to date. `CREATE TABLE IF NOT
- * EXISTS` leaves an existing table alone, so a DO whose storage predates the column needs the
- * one `ALTER`. Idempotent — run it after the DDL on every construction.
+ * Bring an owner seat from before today's DDL up to date. `CREATE TABLE IF NOT EXISTS` leaves an
+ * existing table alone, so a DO whose storage predates `claim_until` needs the one `ALTER`; and
+ * one that still carries #925's hash-only `owner_claim` table drops it — nothing has redeemed a
+ * row there since the release after #1686, and every row in it expired `OWNER_CLAIM_TTL_MS` after
+ * it was minted. Idempotent — run it after the DDL on every construction.
  */
 export function migrateOwnerSeat(sql: RegistrySql): void {
   const columns = [...sql.exec('PRAGMA table_info(pending_owner)')].map((r) => r.name as string);
   if (!columns.includes('claim_until')) {
     sql.exec('ALTER TABLE pending_owner ADD COLUMN claim_until INTEGER');
   }
+  sql.exec('DROP TABLE IF EXISTS owner_claim');
 }
 
 /** What the platform (and the vertical's own first-run screen) can see of the seat. */
@@ -167,7 +165,7 @@ export type OwnerTransferAbandon = z.infer<typeof ownerTransferAbandon>;
  * - the seat is still UNCLAIMED (`unclaimed`). `pending_owner` names the principal a claim binds
  *   to, so moving the record under it would leave a claim link that seats a stranger as a
  *   principal that is no longer the owner. Claim the seat first. A claimed seat stays claimed:
- *   this never writes `pending_owner` or `owner_claim`.
+ *   this never writes `pending_owner` or `owner_claim_capability`.
  * - `from` is not the current record (`not-owner`) — a caller working from a stale view, or one
  *   naming a `from` other than the one this scope's record was handed over from;
  * - ANOTHER hand-over is still open (`in-flight`): its seat and revoke have not both run, and
@@ -293,23 +291,15 @@ function pendingRow(sql: RegistrySql, scopeId: string): { principal: string; cla
     | undefined;
 }
 
-function liveClaim(sql: RegistrySql, scopeId: string, now: number): { token_hash: string; expires_at: number } | undefined {
-  const row = [...sql.exec('SELECT token_hash, expires_at FROM owner_claim WHERE scope_id = ?', scopeId)][0] as
-    | { token_hash: string; expires_at: number }
-    | undefined;
-  return row && row.expires_at > now ? row : undefined;
-}
-
 /** Bind a subject to the pending seat and consume it — the one write every claim path shares. */
 function bindSeat(sql: RegistrySql, scopeId: string, sub: string, principal: string): string {
   sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, principal);
   sql.exec('DELETE FROM pending_owner WHERE scope_id = ?', scopeId);
-  sql.exec('DELETE FROM owner_claim WHERE scope_id = ?', scopeId);
   sql.exec('DELETE FROM owner_claim_capability WHERE scope_id = ?', scopeId);
   return principal;
 }
 
-/** The capability-era link (#1686), while it lives. */
+/** The scope's claim link (#1686), while it lives. */
 function liveCapabilityClaim(
   sql: RegistrySql,
   scopeId: string,
@@ -327,7 +317,7 @@ export function ownerSeat(sql: RegistrySql, scopeId: string, now: number): Owner
   if (!owner) return { state: 'unknown', owner: null, firstSignIn: null, claimLink: null };
   const pending = pendingRow(sql, scopeId);
   if (!pending) return { state: 'claimed', owner, firstSignIn: null, claimLink: null };
-  const claim = liveCapabilityClaim(sql, scopeId, now) ?? liveClaim(sql, scopeId, now);
+  const claim = liveCapabilityClaim(sql, scopeId, now);
   return {
     state: 'unclaimed',
     owner,
@@ -415,7 +405,7 @@ export interface OwnerClaimLinkRow {
 
 /**
  * Record a freshly minted `become` capability as the scope's ONE claim link (#1686), replacing
- * whatever link was current — a capability one or a legacy hash row alike. Returns the previous
+ * whatever link was current. Returns the previous
  * capability id, which the caller revokes in the scope DO: "a new mint retires the old link"
  * holds here first, since a redemption must name the recorded capability, and the revoke makes it
  * hold in the scope's directory too.
@@ -433,7 +423,6 @@ export function recordOwnerClaim(
   const prior = [...sql.exec('SELECT capability_id FROM owner_claim_capability WHERE scope_id = ?', scopeId)][0] as
     | { capability_id: string }
     | undefined;
-  sql.exec('DELETE FROM owner_claim WHERE scope_id = ?', scopeId);
   sql.exec(
     'INSERT OR REPLACE INTO owner_claim_capability (scope_id, capability_id, token_hash, expires_at) VALUES (?, ?, ?, ?)',
     scopeId,
@@ -459,7 +448,8 @@ export function ownerClaimMatches(sql: RegistrySql, scopeId: string, tokenHash: 
  * Claim the seat with an exchanged `become` capability (#1686): the scope's directory has taken
  * the capability's one use and answered the principal it becomes. Binds the subject when the seat
  * is still pending, the capability is the recorded live link, and it names the pending principal.
- * Consumes the seat and the link. Null otherwise — one answer, as `claimOwner`.
+ * Consumes the seat and the link. Null otherwise — one answer for every refusal, so a probe
+ * learns nothing.
  */
 export function claimOwnerByCapability(
   sql: RegistrySql,
@@ -472,23 +462,5 @@ export function claimOwnerByCapability(
   const pending = pendingRow(sql, scopeId);
   if (!pending || pending.principal !== principal) return null;
   if (liveCapabilityClaim(sql, scopeId, now)?.capability_id !== capabilityId) return null;
-  return bindSeat(sql, scopeId, sub, pending.principal);
-}
-
-/**
- * LEGACY — claim the seat with a link minted before #1686, by its token's hash. Nothing mints
- * such a link any more, so this serves only rows an older deployment wrote, each of which dies
- * `OWNER_CLAIM_TTL_MS` after it was minted, and any capability-era mint deletes it first.
- * REMOVE in the release after the one that ships #1686 (written 2026-10-04): by then every
- * deployment has run the new code for longer than a legacy link can live.
- *
- * Binds the subject, consumes the seat and the link. Null ⇒ invalid, expired, already used, or
- * nothing to claim — one answer, so a probe learns nothing.
- */
-export function claimOwner(sql: RegistrySql, scopeId: string, sub: string, tokenHash: string, now: number): string | null {
-  const pending = pendingRow(sql, scopeId);
-  if (!pending) return null;
-  const claim = liveClaim(sql, scopeId, now);
-  if (!claim || claim.token_hash !== tokenHash) return null;
   return bindSeat(sql, scopeId, sub, pending.principal);
 }

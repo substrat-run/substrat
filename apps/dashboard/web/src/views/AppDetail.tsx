@@ -3283,6 +3283,13 @@ export function AppMembers({ app }: { app: AppRow }) {
           {view.invites.map((i) => (
             <div key={i.principal} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', borderTop: '1px solid var(--border-subtle)', fontSize: 13 }}>
               <span style={{ flex: 1 }}>{i.email ?? 'Link with no email'}</span>
+              {i.link && i.link.state !== 'open' && (
+                <span style={{ fontSize: 12, color: 'var(--text-danger, var(--text-secondary))' }} title="This invite's link no longer works. Withdraw it and invite again.">
+                  {i.link.state === 'revoked' && i.link.reason === 'holdings-changed'
+                    ? 'Link revoked: access changed since it was sent'
+                    : `Link ${i.link.state}`}
+                </span>
+              )}
               <span style={{ ...mono, color: 'var(--text-secondary)' }} title={`invited as ${i.roleKey}`}>
                 {i.roles.length > 0 ? i.roles.join(', ') : 'holds no role'}
               </span>

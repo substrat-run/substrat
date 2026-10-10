@@ -428,6 +428,14 @@ mountInviteRoutes(app, {
   revokeScopeRole: (env, scope, principal, roleKey) => hostFor(env).revokeScopeRole(scope, principal, roleKey),
   revokeScopeRolesBounded: (env, node, caller, principal) =>
     hostFor(env).revokeScopeRolesBounded(node.tenantId, node.scopeId, caller, principal),
+  // The invite's link is a `become` capability in the scope (#1686).
+  mintBecomeCapabilityBounded: (env, node, caller, input) =>
+    hostFor(env).mintBecomeCapabilityBounded(node.tenantId, node.scopeId, caller, input),
+  revokeBecomeCapability: (env, node, capabilityId, by) =>
+    hostFor(env).revokeBecomeCapability(node.tenantId, node.scopeId, capabilityId, by),
+  exchangeCapability: (env, node, secret) =>
+    hostFor(env).exchangeCapability(node.tenantId, node.scopeId, secret, { mode: 'become' }),
+  becomeLinkStates: (env, node, ids) => hostFor(env).becomeLinkStates(node.tenantId, node.scopeId, ids),
   authProvider: authProviderFor,
 });
 
