@@ -26,7 +26,6 @@ import {
   mapPage,
   moduleManifest,
   nameRefusedRecord,
-  operationInputsOf,
   pageOf,
   permissionKey,
   sealedCell,
@@ -37,7 +36,6 @@ import {
   type Page,
   type SealedCell,
   substratError,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 import type { PageParams } from '@substrat-run/kernel';
 
@@ -230,6 +228,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -2187,11 +2186,9 @@ export const protocolModule: ModuleRegistration = {
   predicates: {
     'protocol/all-signed': allSignedPredicate,
   },
-  // The host parses every invocation against the same declaration the manifest
-  // and the routes come from, so "parse, don't trust" holds on every path in
-  // rather than in the handlers that remembered (#953).
-  operationInputs: operationInputsOf(protocolOperations),
-  operations: {
+  // The handlers are bound to the declaration, and the host parses every invocation
+  // against it, from one object — so neither can drift from the other (#953, #1835).
+  ...operationsFor(protocolOperations)({
     'protocol/define-template': defineTemplateOp,
     'protocol/list-templates': listTemplatesOp,
     'protocol/instantiate': instantiateOp,
@@ -2206,5 +2203,5 @@ export const protocolModule: ModuleRegistration = {
     'protocol/void': voidOp,
     'protocol/get': getOp,
     'protocol/list-for-entity': listForEntityOp,
-  } satisfies OperationImpl<typeof protocolOperations, OperationContext>,
+  }),
 };

@@ -31,13 +31,11 @@ import {
   money,
   moduleManifest,
   moneyOf,
-  operationInputsOf,
   permissionKey,
   transitionFor,
   type EntityRow,
   type Money,
   substratError,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 import type { PageParams } from '@substrat-run/kernel';
 
@@ -97,6 +95,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -771,7 +770,7 @@ const OPERATIONS = {
   'invoicing/list': listOp,
   'invoicing/get': getOp,
   'invoicing/export': exportOp,
-} satisfies OperationImpl<typeof invoicingOperations, OperationContext>;
+};
 
 /**
  * The underlag's state machine, declared (#844).
@@ -803,11 +802,9 @@ export const invoicingLifecycles = defineLifecycles(
 export const invoicingModule: ModuleRegistration = {
   manifest: invoicingManifest,
   migrations: invoicingMigrations,
-  // The host parses every invocation against the same declaration the manifest
-  // and the routes come from, so "parse, don't trust" holds on every path in
-  // rather than in the handlers that remembered (#953).
-  operationInputs: operationInputsOf(invoicingOperations),
-  operations: OPERATIONS,
+  // The handlers are bound to the declaration, and the host parses every invocation
+  // against it, from one object — so neither can drift from the other (#953, #1835).
+  ...operationsFor(invoicingOperations)(OPERATIONS),
   consumers: {
     'workorder.completed': onWorkOrderCompleted,
     'commerce.order-placed': onCommerceOrderPlaced,

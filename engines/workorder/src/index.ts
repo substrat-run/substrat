@@ -29,7 +29,6 @@ import {
   mapPage,
   moduleManifest,
   moneyOf,
-  operationInputsOf,
   permissionKey,
   listsDeclaredBy,
   type EntityRef,
@@ -37,7 +36,6 @@ import {
   type EntityRow,
   type Money,
   substratError,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 import type { PageParams } from '@substrat-run/kernel';
 
@@ -117,6 +115,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -687,11 +686,9 @@ const closeOp: OperationHandler<{ orderId: string }, WorkOrder> = async (ctx, in
 export const workorderModule: ModuleRegistration = {
   manifest: workorderManifest,
   migrations: workorderMigrations,
-  // The host parses every invocation against the same declaration the manifest
-  // and the routes come from, so "parse, don't trust" holds on every path in
-  // rather than in the handlers that remembered (#953).
-  operationInputs: operationInputsOf(workorderOperations),
-  operations: {
+  // The handlers are bound to the declaration, and the host parses every invocation
+  // against it, from one object — so neither can drift from the other (#953, #1835).
+  ...operationsFor(workorderOperations)({
     'workorder/get': getOp,
     'workorder/list': listOp,
     'workorder/assign': assignOp,
@@ -700,5 +697,5 @@ export const workorderModule: ModuleRegistration = {
     'workorder/report-material': reportMaterialOp,
     'workorder/complete': completeOp,
     'workorder/close': closeOp,
-  } satisfies OperationImpl<typeof workorderOperations, OperationContext>,
+  }),
 };

@@ -19,7 +19,6 @@ import {
   entityRef,
   listLimitOf,
   moduleManifest,
-  operationInputsOf,
   pageOf,
   pageOverFold,
   permissionKey,
@@ -27,7 +26,6 @@ import {
   type ListPage,
   type Page,
   substratError,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -114,6 +112,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -999,11 +998,9 @@ const listEntriesOp: OperationHandler<
 export const absenceModule: ModuleRegistration = {
   manifest: absenceManifest,
   migrations: absenceMigrations,
-  // The host parses every invocation against the same declaration the manifest
-  // and the routes come from, so "parse, don't trust" holds on every path in
-  // rather than in the handlers that remembered (#953).
-  operationInputs: operationInputsOf(absenceOperations),
-  operations: {
+  // The handlers are bound to the declaration, and the host parses every invocation
+  // against it, from one object — so neither can drift from the other (#953, #1835).
+  ...operationsFor(absenceOperations)({
     'absence/configure-leave-type': configureLeaveTypeOp,
     'absence/list-leave-types': listLeaveTypesOp,
     'absence/record-entry': recordEntryOp,
@@ -1015,5 +1012,5 @@ export const absenceModule: ModuleRegistration = {
     'absence/availability': availabilityOp,
     'absence/list-requests': listRequestsOp,
     'absence/list-entries': listEntriesOp,
-  } satisfies OperationImpl<typeof absenceOperations, OperationContext>,
+  }),
 };
