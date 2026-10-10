@@ -1,4 +1,4 @@
-import { defineEntities, emitModel } from '@substrat-run/contracts';
+import { defineEntities } from '@substrat-run/contracts';
 import { z } from 'zod';
 
 /**
@@ -52,5 +52,3 @@ export const meridianEntities = defineEntities({
     erasable: ['monthly_salary'],
   },
 });
-
-export const meridianModel = emitModel(meridianEntities);

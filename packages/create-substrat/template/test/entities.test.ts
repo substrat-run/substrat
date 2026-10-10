@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { bikeShopEntities, bikeShopModel } from '../src/entities.js';
+import { bikeShopEntities } from '../src/entities.js';
+import { bikeShopModel } from '../src/model.js';
 import { bikeShopMigrations } from '../src/migrations.js';
 import { bikeShopManifest } from '../src/manifest.js';
 

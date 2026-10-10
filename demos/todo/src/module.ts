@@ -7,7 +7,7 @@
  * is what only a person could decide — what it MEANS to share a list, and who
  * may do what to one.
  *
- * `satisfies OperationImpl<…>` is the join: a handler whose input or return
+ * `operationsFor(todoOperations)` is the join: a handler whose input or return
  * disagrees with the declared operation, one declared and not implemented, or
  * one implemented and not declared, is a compile error naming the exact method.
  */
@@ -16,10 +16,7 @@ import {
   pageVisible,
   dataSubjectId,
   LIST_PAGE_DEFAULT,
-  operationInputsOf,
   substratError,
-  type HandlerInput,
-  type HandlerOutput,
   z,
   type EntityRow,
   type PrincipalId,
@@ -31,7 +28,7 @@ import {
   ulid,
   type ModuleRegistration,
   type OperationContext,
-  type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 import { SEARCH_OVERFETCH, todoEntities, todoOperations } from '../spec/model.js';
 import { TODO_PERM, todoManifest } from './manifest.js';
@@ -92,7 +89,7 @@ function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; li
   return { item, list: liveListOrThrow(ctx, item.list_id) };
 }
 
-const operations = {
+const bound = operationsFor(todoOperations)({
   'todo/join': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listCreate));
     const existing = ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE id = ?', [
@@ -467,22 +464,12 @@ const operations = {
     });
     return { id: share.id, revoked: true };
   },
-} satisfies {
-  // Derived by the platform, not restated here — `HandlerOutput` is what knows that a
-  // `paged` declaration means the handler returns a Page of the declared entry.
-  [K in keyof typeof todoOperations]: OperationHandler<
-    HandlerInput<(typeof todoOperations)[K]>,
-    HandlerOutput<(typeof todoOperations)[K]>
-  >;
-};
+});
 
 export const todoModule: ModuleRegistration = {
   manifest: todoManifest,
   migrations: todoMigrations,
-  // The host parses every invocation against the same declaration the routes and
-  // the document come from, so "parse, don't trust" holds on every path in — HTTP,
-  // test, seed — rather than in the handlers that remembered (#953). It also derives
-  // from it which list each operation addresses, so it refuses a binned one itself (#119).
-  operationInputs: operationInputsOf(todoOperations),
-  operations: operations as ModuleRegistration['operations'],
+  // The handlers above are bound to the declaration, and the host parses every
+  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
+  ...bound,
 };

@@ -9,6 +9,7 @@ import {
   ulid,
   type ModuleRegistration,
   type OperationHandler,
+  undeclaredOperations
 } from '@substrat-run/kernel';
 import {
   capabilityRecord,
@@ -64,7 +65,7 @@ const shareModule: ModuleRegistration = {
     entitlementKey: 'share',
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE shares (id TEXT PRIMARY KEY)' }],
-  operations: {
+  ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
     'doc/share': (async (ctx, input) => {
       assertAllowed(await ctx.check(READ));
       return ctx.capabilities.mint(input as Parameters<typeof ctx.capabilities.mint>[0]);
@@ -73,7 +74,7 @@ const shareModule: ModuleRegistration = {
       assertAllowed(await ctx.check(READ));
       await ctx.capabilities.revoke((input as { id: never }).id);
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 const HEX64 = /\b[0-9a-f]{64}\b/i;

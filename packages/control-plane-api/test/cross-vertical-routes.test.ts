@@ -9,6 +9,7 @@ import {
   ulid,
   type ModuleRegistration,
   type OperationHandler,
+  undeclaredOperations
 } from '@substrat-run/kernel';
 import {
   REPLAY_EFFECT,
@@ -68,7 +69,7 @@ const ledger: ModuleRegistration = {
     entitlementKey: 'ledger',
   }),
   migrations: [],
-  operations: {
+  ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
     'ledger/make': (async (ctx) => {
       assertAllowed(await ctx.check(key('ledger:write')));
       const id = ulid();
@@ -81,7 +82,7 @@ const ledger: ModuleRegistration = {
       });
       return { id };
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 const desk: ModuleRegistration = {
@@ -97,7 +98,7 @@ const desk: ModuleRegistration = {
     entitlementKey: 'desk',
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE desk_entries (id TEXT PRIMARY KEY)' }],
-  operations: {},
+  ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {}),
   imports: {
     [PRODUCER]: {
       'ledger.entry-made': async (ctx, event) => {

@@ -16,6 +16,7 @@ import {
   webCryptoSecretBox,
   type ModuleRegistration,
   type OperationHandler,
+  undeclaredOperations
 } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import {
@@ -73,7 +74,7 @@ describe('fortnox connector — inbound sync', () => {
       attachmentTargets: [],
       entitlementKey: 'ledger',
     }),
-    operations: {
+    ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
       [OPERATION]: (async (ctx, input: FortnoxLedgerPage) => {
         assertAllowed(await ctx.check(LEDGER_RECORD));
         landed.push(input);
@@ -86,7 +87,7 @@ describe('fortnox connector — inbound sync', () => {
         assertAllowed(await ctx.check(LEDGER_RECORD));
         throw new Error('ledger closed for the period');
       }) as OperationHandler<never, unknown>,
-    },
+    }),
   };
 
   const world = async (opts: { grant?: boolean } = {}) => {

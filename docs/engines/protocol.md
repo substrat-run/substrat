@@ -247,7 +247,7 @@ guards: [{
 export const protocolModule: ModuleRegistration = {
   manifest: protocolManifest,
   predicates: { 'protocol/all-signed': allSignedPredicate },
-  operations: { … },
+  ...operationsFor(protocolOperations)({ … }),
 };
 
 // kernel contract

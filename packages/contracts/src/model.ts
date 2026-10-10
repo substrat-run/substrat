@@ -359,7 +359,53 @@ export interface EmittedModel {
    * already parsing that version breaks on it (K-39).
    */
   readonly exports?: Record<string, EmittedExport>;
+  /**
+   * Who writes each handler, for the operations whose declaration says (#1773): `derive` when the
+   * platform does, `authored` with the reason when a derivable one is written by hand. Keyed by
+   * operation and absent when no operation says either, so a reviewer sees a handler change
+   * hands — and an exception's reason — in the diff of this file.
+   */
+  readonly handlers?: Record<string, EmittedHandler>;
 }
+
+/**
+ * The handler shapes the platform derives (#1773), in the order a declaration is classified.
+ * Here rather than beside `defineOperations` because the artifact's schema reads them too.
+ */
+export const DERIVED_KINDS = ['get', 'list', 'update', 'delete'] as const;
+
+/**
+ * The shapes the model already describes completely, so the platform writes the handler.
+ *
+ * Each is matched EXACTLY — every clause below is something the derived handler relies on, and a
+ * declaration that misses one is a command with its own body, not a near-miss to be stretched:
+ *
+ * - `get` — one row by its id. Input is the id alone, the output IS the entity's `fields`, and
+ *   nothing is emitted. The check is a scope key, or narrowed to that same row.
+ * - `list` — a kernel-composed page (`paged.over`) of the entity's own rows, the output IS its
+ *   `fields`. Every input field is one of its declared `filterable` columns; a check narrowed to a
+ *   PARENT scopes the page to that parent's rows through the link column `<parent>_id`, so the
+ *   filter is the link and not merely a column of the same name as the id input. Served as GET,
+ *   and emits nothing: a paged command is not a read.
+ * - `update` — the partial `PATCH`. Absent fields are left as they are and `null` clears a
+ *   nullable column; `concurrency` over the row is required, so the field bag cannot lose an
+ *   update. Emits about the row, and answers with it.
+ * - `delete` — removes one row with no child entity (a cascade is authored), emits, and answers
+ *   `{ id, deleted: true }`.
+ *
+ * A derived handler checks the declared permission first, reads and writes only the entity's
+ * declared columns through `ctx.sql`, and answers `not_found` for a missing row — the same steps
+ * a hand-written one takes, written once.
+ *
+ * `create` is not here yet: the id, the timestamps and the parent link it would write are not all
+ * declared. Neither are hooks around a derived handler.
+ */
+export type DerivedKind = (typeof DERIVED_KINDS)[number];
+
+/** Who writes one operation's handler (#1773). */
+export type EmittedHandler =
+  | { readonly derive: DerivedKind }
+  | { readonly authored: string };
 
 /** One exported event type in the model (#1705 PR 3). */
 export interface EmittedExport {
@@ -414,11 +460,18 @@ export const emittedExport = z.object({
   payload: z.record(z.string(), z.unknown()),
 });
 
+/** Who writes an operation's handler, for the operations whose declaration says (#1773). */
+export const emittedHandler = z.union([
+  z.object({ derive: z.enum(DERIVED_KINDS) }).strict(),
+  z.object({ authored: z.string().min(1) }).strict(),
+]);
+
 export const emittedModel = z.object({
   version: z.string().min(1).optional(),
   entities: z.record(z.string(), emittedEntity),
   lifecycles: z.record(z.string(), emittedLifecycle).optional(),
   exports: z.record(z.string(), emittedExport).optional(),
+  handlers: z.record(z.string(), emittedHandler).optional(),
 });
 
 /**
@@ -444,6 +497,13 @@ export function emitModel<T extends Record<string, EntityDef>>(
      * and omitted when empty.
      */
     readonly exports?: readonly ({ type: string } & EmittedExport)[];
+    /**
+     * The module's operation declarations (#1773). Each one that declares `derive` or
+     * `authored` is rendered under `handlers`, sorted, so a handler the platform takes over —
+     * or one a module keeps writing by hand, with its reason — appears in the reviewed diff.
+     * Read structurally; omitted when no operation says either.
+     */
+    readonly operations?: Readonly<Record<string, object>>;
   } = {},
 ): EmittedModel {
   if (options.version !== undefined && options.version.length === 0) {
@@ -500,12 +560,19 @@ export function emitModel<T extends Record<string, EntityDef>>(
     if (e.type in exports) throw new Error(`model: '${e.type}' is exported twice`);
     exports[e.type] = { schemaVersion: e.schemaVersion, readPermission: e.readPermission, payload: e.payload };
   }
+  const handlers: Record<string, EmittedHandler> = {};
+  for (const name of Object.keys(options.operations ?? {}).sort()) {
+    const { derive, authored } = (options.operations?.[name] ?? {}) as { derive?: unknown; authored?: unknown };
+    if (derive !== undefined) handlers[name] = emittedHandler.parse({ derive });
+    else if (authored !== undefined) handlers[name] = emittedHandler.parse({ authored });
+  }
   return {
     // First, so a reader of the checked-in artifact meets it before the entities.
     ...(options.version !== undefined ? { version: options.version } : {}),
     entities: out,
     ...(lifecycles && Object.keys(lifecycles).length ? { lifecycles } : {}),
     ...(Object.keys(exports).length ? { exports } : {}),
+    ...(Object.keys(handlers).length ? { handlers } : {}),
   };
 }
 

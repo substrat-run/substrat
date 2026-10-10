@@ -213,7 +213,7 @@ export const API: ApiCatalog = {
 // (or a documented ghost). This is what makes "every operation appears in the
 // PR diff" structural rather than diligent.
 {
-  const registered = Object.keys(meridianModule.operations ?? {});
+  const registered = Object.keys(meridianModule.operations?.handlers ?? {});
   const documented = new Set(Object.keys(API));
   const missing = registered.filter((op) => !documented.has(op));
   const ghosts = [...documented].filter((op) => !registered.includes(op));

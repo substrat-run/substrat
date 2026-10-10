@@ -362,9 +362,9 @@ it)?
 
 Operation inputs go through Zod schemas at the boundary, and **the host applies them**.
 
-A module passes `operationInputs: operationInputsOf(ops)` beside its `operations`, and
-every invocation is parsed before the guards and before the handler, on every path in —
-HTTP, test, seed, schedule. Handlers do not hand-parse.
+A module binds its handlers with `operationsFor(ops)(…)`, which hands the host the declared
+schemas with them, and every invocation is parsed before the guards and before the handler,
+on every path in — HTTP, test, seed, schedule. Handlers do not hand-parse.
 
 The distinction is not stylistic. If parsing were the handler's job, a declared input that
 nobody validated would be an ordinary oversight. Because it is the host's job, it is not

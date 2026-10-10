@@ -24,6 +24,7 @@ import {
   type OperationContext,
   type OperationHandler,
   type ScopeStub,
+  undeclaredOperations,
 } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 
@@ -116,7 +117,12 @@ const buildProbeModule = (
 ): ModuleRegistration => ({
   manifest: buildProbeManifest(entityRelations),
   migrations: [],
-  operations: { 'probe/emit': emitOp as never, 'probe/run': runOp as never },
+  // The probe exists to reach an engine's in-scope functions from inside a real operation, so it
+  // has no declared surface of its own to bind to.
+  ...undeclaredOperations('the engine-test-kit probe, which runs caller-supplied functions inside an operation', {
+    'probe/emit': emitOp,
+    'probe/run': runOp,
+  }),
 });
 
 // ---------------------------------------------------------------------------

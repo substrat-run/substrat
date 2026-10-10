@@ -1,4 +1,4 @@
-import { defineEntities, emitModel, z } from '@substrat-run/contracts';
+import { defineEntities, z } from '@substrat-run/contracts';
 
 // ============================================================================
 // The bike shop's ENTITY REGISTRY — what this vertical declares exists.
@@ -71,13 +71,3 @@ export const bikeShopEntities = defineEntities({
   },
 });
 
-/**
- * The artifact of record, emitted from the declaration above.
- *
- * A scaffolded project is not in this repo's `demos/`, so nothing here re-emits
- * a `model.json` for it — `pnpm lint:model` walks `demos/` and `engines/`. What
- * this export is for in a scaffold is the same thing it is for in the reference
- * verticals: one object downstream reads, so the authoring notation stays
- * swappable.
- */
-export const bikeShopModel = emitModel(bikeShopEntities);

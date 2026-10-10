@@ -21,8 +21,6 @@ import {
   assertTransition,
   LIST_PAGE_DEFAULT,
   mulDecimal,
-  operationConcurrencyOf,
-  operationInputsOf,
   pageOf,
   pageVisible,
   permissionKey,
@@ -32,8 +30,6 @@ import {
   z,
   type CountedPage,
   type EntityRow,
-  type HandlerInput,
-  type HandlerOutput,
   type PermissionKey,
   type PrincipalId,
   MODEL_USAGE_KIND,
@@ -48,6 +44,7 @@ import {
   type OperationContext,
   type OperationHandler,
   type SqlValue,
+  operationsFor,
 } from '@substrat-run/kernel';
 import {
   closePeriod,
@@ -555,7 +552,7 @@ async function runMacroPart(
   input: Record<string, unknown>,
 ): Promise<unknown> {
   const declared = ticket0Operations[op] as { input?: z.ZodTypeAny };
-  const handler = operations[op] as unknown as OperationHandler<unknown, unknown>;
+  const handler = bound.operations.handlers[op] as OperationHandler<unknown, unknown>;
   return handler(ctx, declared.input ? declared.input.parse(input) : input);
 }
 
@@ -3893,7 +3890,7 @@ function overfetch(limit: number): number {
 // Operations
 // ---------------------------------------------------------------------------
 
-const operations = {
+const bound = operationsFor(ticket0Operations)({
   // --- The desk ------------------------------------------------------------
 
   'ticket0/get-desk': async (ctx) => {
@@ -3991,19 +3988,6 @@ const operations = {
   },
 
   // --- The blocklist (#1088) -----------------------------------------------
-
-  'ticket0/list-block-rules': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
-    // Same shape as `list-signups`: an absent filter must be absent rather than an
-    // explicit undefined, which becomes a `WHERE kind IS NULL` that returns nothing.
-    const filters: Record<string, unknown> = {};
-    if (input.kind !== undefined) filters.kind = input.kind;
-    return (await ctx.page<BlockRuleRow>('blockRule', {
-      ...input,
-      filters,
-      total: true,
-    })) as CountedPage<BlockRuleRow>;
-  },
 
   /**
    * Block somebody. Idempotent on the rule rather than on the click.
@@ -4169,11 +4153,6 @@ const operations = {
       payload: { principal: row.principal, created_at: row.created_at },
     });
     return row;
-  },
-
-  'ticket0/list-agents': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationRead));
-    return ctx.page<AgentProfileRow>('agentProfile', input);
   },
 
   // --- Knowledge base ------------------------------------------------------
@@ -4497,16 +4476,6 @@ const operations = {
     return pageOf(ctx.sql.query<ContactRow>(sql, params), limit, (row) => row.id);
   },
 
-  'ticket0/get-contact': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.contactRead));
-    return contactOrThrow(ctx, input.contactId);
-  },
-
-  'ticket0/list-contacts': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.contactRead));
-    return ctx.page<ContactRow>('contact', input);
-  },
-
   // --- The inbox -----------------------------------------------------------
 
   /**
@@ -4619,11 +4588,6 @@ const operations = {
       })),
     ).sort((a, b) => a.dueAt.localeCompare(b.dueAt) || a.conversationId.localeCompare(b.conversationId));
     return { withinMinutes: input.withinMinutes, rows: rows.slice(0, SLA_SOON_LIMIT), truncated: rows.length > SLA_SOON_LIMIT };
-  },
-
-  'ticket0/get-conversation': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
-    return conversationOrThrow(ctx, input.conversationId);
   },
 
   'ticket0/widget-session': async (ctx, input) => {
@@ -6261,11 +6225,6 @@ const operations = {
 
   // --- Saved-reply folders -------------------------------------------------
 
-  'ticket0/list-saved-reply-folders': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
-    return ctx.page<SavedReplyFolderRow>('savedReplyFolder', input);
-  },
-
   'ticket0/create-saved-reply-folder': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
     const existing = ctx.sql.query<SavedReplyFolderRow>(
@@ -7835,14 +7794,7 @@ const operations = {
       })),
     };
   },
-} satisfies {
-  // Derived by the platform, not restated here - `HandlerOutput` is what knows that
-  // a `paged` declaration means the handler returns a Page of the declared entry.
-  [K in keyof typeof ticket0Operations]: OperationHandler<
-    HandlerInput<(typeof ticket0Operations)[K]>,
-    HandlerOutput<(typeof ticket0Operations)[K]>
-  >;
-};
+});
 
 /**
  * The assistant's display name.
@@ -7904,15 +7856,6 @@ const ticket0SubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
 export const ticket0Module: ModuleRegistration = {
   manifest: ticket0Manifest,
   migrations: ticket0Migrations,
-  // The host parses every invocation against the same declaration the routes and
-  // the document come from, so "parse, don't trust" holds on every path in — HTTP,
-  // widget, test, seed — rather than in the handlers that remembered (#953).
-  operationInputs: operationInputsOf(ticket0Operations),
-  // #129, and the same reasoning one line up: the DECLARATION is what a reader
-  // trusts, so the host has to be handed it rather than the handlers remembering.
-  // Without this the `concurrency` on the saved-reply operations is a promise
-  // nothing keeps — the header arrives, nothing compares it, and every write lands.
-  operationConcurrency: operationConcurrencyOf(ticket0Operations),
   onSubjectErased: ticket0SubjectErased,
-  operations: operations as ModuleRegistration['operations'],
+  ...bound,
 };

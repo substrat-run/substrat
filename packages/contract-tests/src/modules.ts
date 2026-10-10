@@ -31,6 +31,7 @@ import {
 import { membershipFixtureMod } from './membership-module.js';
 import { rebuildMod, stateMod } from './entity-state-module.js';
 import { trashMod } from './entity-trash-module.js';
+import { derivedMod } from './derived-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { commentedDdlMod } from './migration-comments.js';
 import {
@@ -47,6 +48,7 @@ import {
   type OperationContext,
   type OperationHandler,
 } from '@substrat-run/kernel';
+import { testOperations } from './test-operations.js';
 
 /**
  * #1744: the machine `test/move` walks, in the form `model.json` emits — what the suite
@@ -169,7 +171,7 @@ export const freshnessModManifest = moduleManifest.parse({
 export const freshnessMod: ModuleRegistration = {
   manifest: freshnessModManifest,
   migrations: [],
-  operations: {},
+  ...testOperations({}),
 };
 
 /**
@@ -205,7 +207,7 @@ export const jobsMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE job_items (item TEXT NOT NULL)' },
   ],
-  operations: {
+  ...testOperations({
     // Deliberately NOT idempotent and NOT unique-keyed: a repeated step shows up as
     // a DUPLICATE ROW rather than being silently absorbed, which is the only way the
     // resume assertion can fail loudly when the memo stops working.
@@ -217,7 +219,7 @@ export const jobsMod: ModuleRegistration = {
       ctx.sql
         .query<{ item: string }>('SELECT item FROM job_items ORDER BY rowid')
         .map((r) => r.item)) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const flowModManifest = moduleManifest.parse({
@@ -1314,7 +1316,7 @@ export const testMod: ModuleRegistration = {
       `,
     },
   ],
-  operations: {
+  ...testOperations({
     'testmod/add': addItem as OperationHandler<never, unknown>,
     'testmod/link-again': linkItemAgain as OperationHandler<never, unknown>,
     'testmod/link-undeclared': linkUndeclared as OperationHandler<never, unknown>,
@@ -1343,7 +1345,7 @@ export const testMod: ModuleRegistration = {
     'testmod/project-journal': projectJournal as OperationHandler<never, unknown>,
     'testmod/read-items': readItems as OperationHandler<never, unknown>,
     'testmod/read-notes': readNotes as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const atomicMod: ModuleRegistration = {
@@ -1351,7 +1353,7 @@ export const atomicMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE atomic_rows (id TEXT PRIMARY KEY, tag TEXT NOT NULL)' },
   ],
-  operations: {
+  ...testOperations({
     'atomic/rollback': atomicRollback as OperationHandler<never, unknown>,
     'atomic/success': atomicSuccess as OperationHandler<never, unknown>,
     'atomic/stacked': atomicStacked as OperationHandler<never, unknown>,
@@ -1363,7 +1365,7 @@ export const atomicMod: ModuleRegistration = {
     'atomic/read-outbox': atomicReadOutbox as OperationHandler<never, unknown>,
     'atomic/read-tuples': atomicReadTuples as OperationHandler<never, unknown>,
     'atomic/read-intents': atomicReadIntents as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const scheduleMod: ModuleRegistration = {
@@ -1371,7 +1373,7 @@ export const scheduleMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE sched_ticks (n INTEGER NOT NULL)' },
   ],
-  operations: {
+  ...testOperations({
     // The scheduled operation: check the granted permission, then emit + record a
     // tick. Under a system caller its emitted event's actor must be { system: … }.
     'sched/tick': (async (ctx) => {
@@ -1428,7 +1430,7 @@ export const scheduleMod: ModuleRegistration = {
     // on `sched/schedule-state` — proving a FAILED run carries the identical id, not
     // just a fired one.
     'sched/read-denials': readDenialsOp as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 /**
@@ -1460,11 +1462,11 @@ export const deniedScheduleModManifest = moduleManifest.parse({
 
 export const deniedScheduleMod: ModuleRegistration = {
   manifest: deniedScheduleModManifest,
-  operations: {
+  ...testOperations({
     'sched-denied/tick': (async (ctx) => {
       assertAllowed(await ctx.check('sched-denied:admin' as PermissionKey));
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 // -- #1654: a composed engine's own schedule, on a tenant holding only the vertical's key --
@@ -1503,7 +1505,7 @@ export function countComposedSweeps(ctx: Pick<OperationContext, 'sql'>): number 
 export const composedEngineMod: ModuleRegistration = {
   manifest: composedEngineModManifest,
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE composed_engine_sweeps (n INTEGER NOT NULL)' }],
-  operations: {
+  ...testOperations({
     'composed-engine/sweep': (async (ctx) => {
       assertAllowed(await ctx.check('composed-engine:sweep' as PermissionKey));
       ctx.sql.exec('INSERT INTO composed_engine_sweeps (n) VALUES (1)');
@@ -1519,7 +1521,7 @@ export const composedEngineMod: ModuleRegistration = {
       assertAllowed(await ctx.check('composed-engine:sweep' as PermissionKey));
       ctx.sql.exec('INSERT INTO composed_engine_sweeps (n) VALUES (1)');
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 /**
@@ -1541,9 +1543,9 @@ export const composerModManifest = moduleManifest.parse({
 
 export const composerMod: ModuleRegistration = {
   manifest: composerModManifest,
-  operations: {
+  ...testOperations({
     'composer/sweeps': ((ctx) => countComposedSweeps(ctx)) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const flowMod: ModuleRegistration = {
@@ -1554,7 +1556,7 @@ export const flowMod: ModuleRegistration = {
       sql: 'CREATE TABLE flow_log (event_id TEXT PRIMARY KEY, type TEXT NOT NULL)',
     },
   ],
-  operations: {
+  ...testOperations({
     'flow/produce': ((ctx) => {
       ctx.emit({
         type: 'flow.step1',
@@ -1593,7 +1595,7 @@ export const flowMod: ModuleRegistration = {
         `SELECT id, type, operation, caused_by FROM _substrat_outbox
          WHERE type IN ('flow.step1', 'flow.step2') ORDER BY id`,
       )) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     'flow.step1': flowStep1Consumer,
     'flow.step2': flowStep2Consumer,
@@ -1603,7 +1605,7 @@ export const flowMod: ModuleRegistration = {
 export const guardedMod: ModuleRegistration = {
   manifest: guardedModManifest,
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE guarded_t (v TEXT NOT NULL)' }],
-  operations: {
+  ...testOperations({
     'guarded/act': ((ctx, input: { flag?: string }) => {
       ctx.sql.exec('INSERT INTO guarded_t (v) VALUES (?)', [input?.flag ?? 'none']);
       ctx.emit({
@@ -1626,7 +1628,7 @@ export const guardedMod: ModuleRegistration = {
     'guarded/events': ((ctx) =>
       ctx.sql.query('SELECT id FROM _substrat_outbox WHERE type = ?', ['guarded.acted'])
         .length) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const gateMod: ModuleRegistration = {
@@ -1668,11 +1670,11 @@ export const withdrawEarlyMod: ModuleRegistration = { manifest: withdrawEarlyMan
 
 export const victimMod: ModuleRegistration = {
   manifest: victimModManifest,
-  operations: {
+  ...testOperations({
     'victim/a': (() => 'a') as OperationHandler<never, unknown>,
     'victim/b': (() => 'b') as OperationHandler<never, unknown>,
     'victim/c': (() => 'c') as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const withdrawLateMod: ModuleRegistration = { manifest: withdrawLateManifest };
@@ -1680,16 +1682,16 @@ export const withdrawLateMod: ModuleRegistration = { manifest: withdrawLateManif
 export const lateMod: ModuleRegistration = {
   manifest: lateModManifest,
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE late_t (id TEXT PRIMARY KEY)' }],
-  operations: {
+  ...testOperations({
     'late/check': ((ctx) =>
       ctx.sql.query(`SELECT name FROM sqlite_master WHERE name = 'late_t'`)
         .length) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const billedMod: ModuleRegistration = {
   manifest: billedModManifest,
-  operations: {
+  ...testOperations({
     'billed/act': (() => 'ran') as OperationHandler<never, unknown>,
     // #304: read the request-time entitlement view. Gated on 'billed' like every op in this
     // module, so the tenant holds 'billed' when it runs; the KEY read is the operation input,
@@ -1697,7 +1699,7 @@ export const billedMod: ModuleRegistration = {
     'billed/read-entitlement': (async (ctx, key) =>
       ctx.entitlement(key as string)) as OperationHandler<string, unknown>,
     'billed/list-entitlements': (async (ctx) => ctx.entitlements()) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const impersonationEchoMod: ModuleRegistration = {
@@ -1708,12 +1710,12 @@ export const impersonationEchoMod: ModuleRegistration = {
       sql: 'CREATE TABLE imp_echo (event_id TEXT PRIMARY KEY, impersonation TEXT)',
     },
   ],
-  operations: {
+  ...testOperations({
     'imp-echo/seen': ((ctx) =>
       ctx.sql.query(
         'SELECT event_id, impersonation FROM imp_echo ORDER BY event_id',
       )) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     // The stamp as the CONSUMER received it, JSON-encoded so an absent one and a
     // null one stay distinguishable in the assertion.
@@ -1728,7 +1730,7 @@ export const impersonationEchoMod: ModuleRegistration = {
 
 export const permMod: ModuleRegistration = {
   manifest: permModManifest,
-  operations: {
+  ...testOperations({
     'perm/link': linkOp as OperationHandler<never, unknown>,
     'perm/relink': relinkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
@@ -1827,7 +1829,7 @@ export const permMod: ModuleRegistration = {
       );
       return { revoked: true };
     }) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     'perm.check-requested': checkRequestedConsumer,
   },
@@ -1871,7 +1873,7 @@ export const connectorMod: ModuleRegistration = {
       sql: 'CREATE TABLE connector_requests (id TEXT PRIMARY KEY, principal TEXT NOT NULL)',
     },
   ],
-  operations: {
+  ...testOperations({
     'connector/request-member': ((ctx: OperationContext, input: { principal: string; orgId: string }) => {
       ctx.sql.exec('INSERT INTO connector_requests (id, principal) VALUES (?, ?)', [
         input.principal,
@@ -1936,7 +1938,7 @@ export const connectorMod: ModuleRegistration = {
       never,
       unknown
     >,
-  },
+  }),
 };
 
 /**
@@ -2009,7 +2011,6 @@ export const listDeclaredOps = {
 
 export const listMod: ModuleRegistration = {
   manifest: listModManifest,
-  operationInputs: operationInputsOf(listDeclaredOps),
   migrations: [
     {
       version: '0001-init',
@@ -2019,7 +2020,7 @@ export const listMod: ModuleRegistration = {
     },
     { version: '0002-hold', sql: 'ALTER TABLE list_orders ADD COLUMN hold TEXT;' },
   ],
-  operations: {
+  ...testOperations({
     'list/add': (async (ctx, input) => {
       const i = input as { id: string; number: string; status: string; kind: string; hold?: string };
       ctx.sql.exec('INSERT INTO list_orders (id, number, status, kind, hold) VALUES (?, ?, ?, ?, ?)', [
@@ -2100,7 +2101,7 @@ export const listMod: ModuleRegistration = {
       ]);
       return ctx.page<Record<string, unknown>>('listorder', { limit: 50 });
     }) as OperationHandler<never, unknown>,
-  },
+  }, { inputs: operationInputsOf(listDeclaredOps) }),
 };
 
 export const searchModManifest = moduleManifest.parse({
@@ -2129,7 +2130,7 @@ export const searchMod: ModuleRegistration = {
             CREATE TABLE search_notes (id TEXT PRIMARY KEY, body TEXT NOT NULL);`,
     },
   ],
-  operations: {
+  ...testOperations({
     'search/add': (async (ctx, input) => {
       const i = input as { id: string; number: string; name: string };
       ctx.sql.exec('INSERT INTO search_customers (id, number, name) VALUES (?, ?, ?)', [
@@ -2170,7 +2171,7 @@ export const searchMod: ModuleRegistration = {
       ]);
       return ctx.search('searchcustomer', i.term);
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 // -- #893: the declared input the HOST parses ---------------------------------
@@ -2233,12 +2234,11 @@ const parseDeclaration = {
 
 export const parseMod: ModuleRegistration = {
   manifest: parseModManifest,
-  operations: {
+  ...testOperations({
     'parse/echo': echo as OperationHandler<never, unknown>,
     'parse/paged': echo as OperationHandler<never, unknown>,
     'parse/bare': echo as OperationHandler<never, unknown>,
-  },
-  operationInputs: operationInputsOf(parseDeclaration),
+  }, { inputs: operationInputsOf(parseDeclaration) }),
 };
 
 // -- #129: the precondition the HOST compares ---------------------------------
@@ -2356,16 +2356,17 @@ const concurrencyDeclaration = {
 
 export const concurrencyMod: ModuleRegistration = {
   manifest: concurrencyModManifest,
-  operations: {
+  ...testOperations({
     'conc/update': concUpdate as OperationHandler<never, unknown>,
     'conc/read': concRead as OperationHandler<never, unknown>,
     'conc/silent': concSilent as OperationHandler<never, unknown>,
     'conc/keyless': concRead as OperationHandler<never, unknown>,
     'conc/forbidden': concForbidden as OperationHandler<never, unknown>,
     'conc/unguarded': concUnguarded as OperationHandler<never, unknown>,
-  },
-  operationInputs: operationInputsOf(concurrencyDeclaration),
-  operationConcurrency: operationConcurrencyOf(concurrencyDeclaration),
+  }, {
+    inputs: operationInputsOf(concurrencyDeclaration),
+    concurrency: operationConcurrencyOf(concurrencyDeclaration),
+  }),
 };
 
 // -- #116: request idempotency ------------------------------------------------
@@ -2469,17 +2470,18 @@ const idempotencyDeclaration = {
 
 export const idempotencyMod: ModuleRegistration = {
   manifest: idempotencyModManifest,
-  operations: {
+  ...testOperations({
     'idem/create': idemCreate as OperationHandler<never, unknown>,
     'idem/create-guarded': idemCreate as OperationHandler<never, unknown>,
     'idem/runs': idemRuns as OperationHandler<never, unknown>,
     'idem/fails': idemFails as OperationHandler<never, unknown>,
     'idem/big': idemBig as OperationHandler<never, unknown>,
     'idem/secret': idemSecret as OperationHandler<never, unknown>,
-  },
-  operationInputs: operationInputsOf(idempotencyDeclaration),
-  operationConcurrency: operationConcurrencyOf(idempotencyDeclaration),
-  operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(idempotencyDeclaration),
+  }, {
+    inputs: operationInputsOf(idempotencyDeclaration),
+    concurrency: operationConcurrencyOf(idempotencyDeclaration),
+    idempotencyOptOuts: operationIdempotencyOptOutsOf(idempotencyDeclaration),
+  }),
 };
 
 // -- capabilities (#1672) ------------------------------------------------------
@@ -2543,7 +2545,7 @@ export const capMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE cap_notes (id TEXT PRIMARY KEY, body TEXT NOT NULL)' },
   ],
-  operations: {
+  ...testOperations({
     'cap/link': linkOp as OperationHandler<never, unknown>,
     'cap/share': ((ctx, input) => ctx.capabilities.mint(input as CapShareInput)) as OperationHandler<
       never,
@@ -2681,7 +2683,7 @@ export const capMod: ModuleRegistration = {
       }
       return out;
     }) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     // Records what the mint answered rather than letting the delivery fail, so the test
     // reads an outcome instead of inferring one from a dead letter.
@@ -2745,7 +2747,7 @@ export const peerMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE peer_notes (id TEXT PRIMARY KEY, body TEXT NOT NULL)' },
   ],
-  operations: {
+  ...testOperations({
     'peer/note': (async (ctx, input) => {
       assertAllowed(await ctx.check(PEER_WRITE));
       const { id, body } = input as { id: string; body: string };
@@ -2788,7 +2790,7 @@ export const peerMod: ModuleRegistration = {
       ctx.sql.query(
         "SELECT subject, relation, object, revoked_at FROM _substrat_tuples WHERE substr(subject, 1, 9) = 'vertical:' ORDER BY subject, relation",
       )) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 // -- #1746: what an invocation emitted ----------------------------------------
@@ -2830,7 +2832,7 @@ const touchAll = (ctx: OperationContext, ids: readonly string[]): void => {
  */
 export const emittedMod: ModuleRegistration = {
   manifest: emittedModManifest,
-  operations: {
+  ...testOperations({
     'emitted/touch': ((ctx, input: { ids: string[] }) => {
       touchAll(ctx, input.ids);
       return { touched: input.ids.length };
@@ -2853,7 +2855,7 @@ export const emittedMod: ModuleRegistration = {
       }
       return { ok: true };
     }) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     'emitted.touched': ((ctx, event) => {
       ctx.emit({
@@ -2890,7 +2892,7 @@ export const loggedModManifest = moduleManifest.parse({
  */
 export const loggedMod: ModuleRegistration = {
   manifest: loggedModManifest,
-  operations: {
+  ...testOperations({
     'logged/act': ((ctx, input: { ticketId: string }) => {
       // `tenantId` and `operation` in the fields are the caller's own values: they stay
       // fields and never replace what the host stamps.
@@ -2908,7 +2910,7 @@ export const loggedMod: ModuleRegistration = {
       ctx.log.error('could not reach {ticketId}', { ticketId: input.ticketId });
       throw new Error('logged/fail: refused after logging');
     }) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     'logged.acted': ((ctx, event) => {
       ctx.log.warn('saw {type}', { type: event.type });
@@ -2949,7 +2951,7 @@ export const ASYNC_LOG_SECRET_ENTITY = 'alice@example.com';
  */
 export const asyncLogMod: ModuleRegistration = {
   manifest: asyncLogModManifest,
-  operations: {
+  ...testOperations({
     'asynclog/act': ((ctx, input: { tags: string[]; fail?: boolean }) => {
       for (const tag of input.tags) {
         ctx.emit({
@@ -2980,7 +2982,7 @@ export const asyncLogMod: ModuleRegistration = {
       ctx.log.info('ticking, about to refuse');
       throw substratError('conflict', `tick refused: ${ASYNC_LOG_SECRET_TEXT}`);
     }) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     'asynclog.acted': ((ctx, event) => {
       const { tag, fail } = event.payload as { tag: string; fail: boolean };
@@ -3026,6 +3028,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // its tables or invokes a `state/*` operation.
   stateMod,
   trashMod,
+  // #1773: the derived-handler suite's module. Inert for every other suite — nothing else reads
+  // its tables or invokes a `derived/*` operation.
+  derivedMod,
   // #2068: the subject-erasure suite's modules. Every scope in the kit carries them, so every
   // `shredSubject` in every suite runs their declared erasure and their hook — which reaches
   // only `er_*` tables nothing else writes, and misbehaves only for a subject the erasure suite
@@ -3221,7 +3226,7 @@ const liveReshelveOp: OperationHandler<{ folderId: string; from: string; to: str
 export const liveMod: ModuleRegistration = {
   manifest: liveModManifest,
   migrations: [],
-  operations: {
+  ...testOperations({
     'live/touch': liveTouchOp as OperationHandler<never, unknown>,
     'live/touch-ledger': liveTouchLedgerOp as OperationHandler<never, unknown>,
     'live/unshare': liveUnshareOp as OperationHandler<never, unknown>,
@@ -3230,7 +3235,7 @@ export const liveMod: ModuleRegistration = {
     'live/touch-each': liveTouchEachOp as OperationHandler<never, unknown>,
     'live/shelve': liveShelveOp as OperationHandler<never, unknown>,
     'live/reshelve': liveReshelveOp as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const brokenModManifest = moduleManifest.parse({
@@ -3260,9 +3265,9 @@ export const brokenMod: ModuleRegistration = {
     { version: '0001-ok', sql: 'CREATE TABLE broken_ok (id TEXT PRIMARY KEY)' },
     { version: '0002-broken', sql: 'CREATE TABLE broken_t (' },
   ],
-  operations: {
+  ...testOperations({
     'broken/act': (() => 'ran') as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 /**
@@ -3294,7 +3299,7 @@ export const spineParentMod: ModuleRegistration = {
       sql: 'CREATE TABLE lists (id TEXT PRIMARY KEY);\nCREATE TABLE notes (t TEXT REFERENCES/**/"_Substrat_Tuples"(subject));',
     },
   ],
-  operations: {},
+  ...testOperations({}),
 };
 
 /**
@@ -3308,7 +3313,7 @@ export const journalFenceDropMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE jt (id TEXT PRIMARY KEY);\nDROP TRIGGER "_Substrat_Migrations_Digest_Required";' },
   ],
-  operations: {},
+  ...testOperations({}),
 };
 
 export const journalWriteMod: ModuleRegistration = {
@@ -3316,7 +3321,7 @@ export const journalWriteMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: "CREATE TABLE jt (id TEXT PRIMARY KEY);\nDELETE FROM main._substrat_migrations WHERE module_id = 'x';" },
   ],
-  operations: {},
+  ...testOperations({}),
 };
 
 /**
@@ -3329,13 +3334,13 @@ export const spineShadowMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE jt (id TEXT PRIMARY KEY);\nCREATE TEMP TABLE "_Substrat_Tuples" (subject TEXT);' },
   ],
-  operations: {},
+  ...testOperations({}),
 };
 
 export const spineDropMod: ModuleRegistration = {
   manifest: foreignKeyModManifest('@test/spine-drop'),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE jt (id TEXT PRIMARY KEY);\nDROP TABLE main._substrat_outbox;' }],
-  operations: {},
+  ...testOperations({}),
 };
 
 export const ownParentMod: ModuleRegistration = {
@@ -3343,5 +3348,5 @@ export const ownParentMod: ModuleRegistration = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE lists (id TEXT PRIMARY KEY);\nCREATE TABLE notes (t TEXT REFERENCES lists(id));' },
   ],
-  operations: {},
+  ...testOperations({}),
 };

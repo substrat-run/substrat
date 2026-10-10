@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { assertAllowed, ulid, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
+import { assertAllowed, ulid, type ModuleRegistration, type OperationHandler, undeclaredOperations } from '@substrat-run/kernel';
 import {
   moduleId,
   permissionKey,
@@ -50,12 +50,12 @@ const tickModule: ModuleRegistration = {
     schedules: [{ operation: 'tick/run', cadence: { everyMinutes: 60 }, permissions: ['tick:run'] }],
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE ticks (at TEXT NOT NULL)' }],
-  operations: {
+  ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
     'tick/run': (async (ctx) => {
       assertAllowed(await ctx.check('tick:run' as PermissionKey));
       ctx.sql.exec('INSERT INTO ticks (at) VALUES (?)', [ctx.now()]);
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 describe('the schedule switch routes (#1666)', () => {

@@ -19,7 +19,7 @@ import { protocolOperations, PROTOCOL_PERMISSIONS } from '../src/operations.js';
 
 describe('the declared operations agree with the registered ones', () => {
   it('declares exactly the operations the module registers', () => {
-    const registered = protocolModule.operations;
+    const registered = protocolModule.operations?.handlers;
     expect(registered, 'the module registers no operations at all').toBeDefined();
     expect(Object.keys(protocolOperations).sort()).toEqual(Object.keys(registered ?? {}).sort());
   });

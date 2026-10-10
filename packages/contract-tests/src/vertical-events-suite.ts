@@ -33,6 +33,7 @@ import {
   type SweepRunInput,
 } from '@substrat-run/kernel';
 import { expectAnswered, expectSettledUnknown, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
+import { testOperations } from './test-operations.js';
 
 // -- the two fixture verticals ------------------------------------------------
 //
@@ -168,13 +169,13 @@ const crmFlag: OperationHandler<{ id: string }, void> = async (ctx, input) => {
 export const crmExportMod: ModuleRegistration = {
   manifest: crmExportModManifest,
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE crm_customers (id TEXT PRIMARY KEY, name TEXT NOT NULL)' }],
-  operations: {
+  ...testOperations({
     'crm/create': crmCreate as OperationHandler<never, unknown>,
     'crm/note': crmNote as OperationHandler<never, unknown>,
     'crm/touch': crmTouch as OperationHandler<never, unknown>,
     'crm/create-then-fail': crmCreateThenFail as OperationHandler<never, unknown>,
     'crm/flag': crmFlag as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     // In the invoke's post-commit tail: an exported type committed by a consumer, not the operation.
     'crm.customer-flagged': async (ctx, event) => {
@@ -295,10 +296,10 @@ export const boardImportMod: ModuleRegistration = {
       `,
     },
   ],
-  operations: {
+  ...testOperations({
     'board/read': boardRead as OperationHandler<never, unknown>,
     'board/note-member': boardNoteMember as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     // #1757: fails quoting the subject, so its delivery row holds the subject's id as text.
     'board.member-noted': async (_ctx, event) => {

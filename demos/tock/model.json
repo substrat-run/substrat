@@ -793,5 +793,16 @@
         "source_key"
       ]
     }
+  },
+  "handlers": {
+    "tock/get-run": {
+      "derive": "get"
+    },
+    "tock/list-rows": {
+      "authored": "answers not_found for a run that does not exist, where the derived page would answer an empty one"
+    },
+    "tock/list-sources": {
+      "derive": "list"
+    }
   }
 }

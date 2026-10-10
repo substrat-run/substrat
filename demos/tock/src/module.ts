@@ -19,7 +19,6 @@
  */
 import {
   addDecimal,
-  operationInputsOf,
   substratError,
   type CountedPage,
   type EntityRow,
@@ -32,6 +31,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 import {
   COUNT_CHUNK,
@@ -553,14 +553,6 @@ const listMappingsOp: OperationHandler<
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(TOCK_PERM.reportRead));
   return ctx.page<MappingRow>('mapping', { ...input, filters: { source_key: input.sourceKey } });
-};
-
-const listSourcesOp: OperationHandler<
-  HandlerInput<(typeof tockOperations)['tock/list-sources']>,
-  HandlerOutput<(typeof tockOperations)['tock/list-sources']>
-> = async (ctx, input) => {
-  assertAllowed(await ctx.check(TOCK_PERM.reportRead));
-  return ctx.page<SourceRow>('source', input ?? {});
 };
 
 /**
@@ -1401,14 +1393,6 @@ const countRunOp: OperationHandler<
 
 // ── reads ───────────────────────────────────────────────────────────────────
 
-const getRunOp: OperationHandler<
-  HandlerInput<(typeof tockOperations)['tock/get-run']>,
-  HandlerOutput<(typeof tockOperations)['tock/get-run']>
-> = async (ctx, input) => {
-  assertAllowed(await ctx.check(TOCK_PERM.reportRead, runRef(input.runId)));
-  return runOrThrow(ctx, input.runId);
-};
-
 const listRunsOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/list-runs']>,
   HandlerOutput<(typeof tockOperations)['tock/list-runs']>
@@ -1780,7 +1764,7 @@ const reportOp: OperationHandler<
   };
 };
 
-const operations = {
+const bound = operationsFor(tockOperations)({
   'tock/declare-source': declareSourceOp,
   'tock/declare-variants': declareVariantsOp,
   'tock/save-output-schema': saveOutputSchemaOp,
@@ -1788,14 +1772,12 @@ const operations = {
   'tock/save-mapping': saveMappingOp,
   'tock/list-mappings': listMappingsOp,
   'tock/list-variants': listVariantsOp,
-  'tock/list-sources': listSourcesOp,
   'tock/save-schema': saveSchemaOp,
   'tock/list-schemas': listSchemasOp,
   'tock/receive-run': receiveRunOp,
   'tock/profile-run': profileRunOp,
   'tock/map-run': mapRunOp,
   'tock/count-run': countRunOp,
-  'tock/get-run': getRunOp,
   'tock/list-runs': listRunsOp,
   'tock/run-rules': runRulesOp,
   'tock/list-observations': listObservationsOp,
@@ -1805,16 +1787,10 @@ const operations = {
   'tock/list-rows': listRowsOp,
   'tock/read-source-file': readSourceFileOp,
   'tock/report': reportOp,
-} satisfies {
-  [K in keyof typeof tockOperations]: OperationHandler<
-    HandlerInput<(typeof tockOperations)[K]>,
-    HandlerOutput<(typeof tockOperations)[K]>
-  >;
-};
+});
 
 export const tockModule: ModuleRegistration = {
   manifest: tockManifest,
   migrations: tockMigrations,
-  operationInputs: operationInputsOf(tockOperations),
-  operations: operations as ModuleRegistration['operations'],
+  ...bound,
 };

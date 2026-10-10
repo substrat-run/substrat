@@ -24,6 +24,10 @@
     "./ulid": {
       "types": "./dist/ulid.d.ts",
       "default": "./dist/ulid.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "files": [

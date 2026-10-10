@@ -250,6 +250,20 @@ describe('R2 / R3', () => {
 
     expect(lint(root2)).toEqual([]);
   });
+
+  it('flags a test seam imported by module code (#2155 review)', () => {
+    // `@substrat-run/kernel/testing` mints operations over any maps, which is everything the
+    // binder exists to stop; the kits wrap it. A test file is not walked, so it needs no exemption.
+    const seams = (imports: string) =>
+      rules(lint(project({ 'package.json': VERTICAL_PKG, ...engine('engine-workorder', ['workorder_orders']), 'src/module.ts': imports })));
+    expect(seams(`import { forgeBoundOperationsForTest } from '@substrat-run/kernel/testing';`)).toEqual(['R2']);
+    expect(seams(`import { testOperations } from '@substrat-run/contract-tests';`)).toEqual(['R2']);
+    expect(seams(`import { createEngineTestKit } from '@substrat-run/engine-test-kit';`)).toEqual(['R2']);
+    expect(seams(`export * from '@substrat-run/contract-tests/anything';`)).toEqual(['R2']);
+    // Twins: the kernel itself, and a package that only shares the prefix.
+    expect(seams(`import { operationsFor } from '@substrat-run/kernel';`)).toEqual([]);
+    expect(seams(`import { x } from '@substrat-run/contract-tests-extra';`)).toEqual([]);
+  });
 });
 
 describe('harness exemption', () => {
@@ -1207,6 +1221,122 @@ describe('R8 — star reads in an engine', () => {
     });
 
     expect(rules(lint(root))).toEqual(['R8']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R11 — a registration's handler map is never cast (#1835)
+//
+// The binder refuses a cast ENTRY by type; a cast of the WHOLE map is the one spelling no type
+// can see, because `never` and `any` are assignable to anything.
+// ---------------------------------------------------------------------------
+
+/**
+ * A vertical whose `src/module.ts` registers with `registration` as the object's body, after
+ * `top` — module-level code the registration may name.
+ */
+function registers(registration: string, top = ''): string {
+  return project({
+    'package.json': VERTICAL_PKG,
+    'src/module.ts': `
+      import { operationsFor, undeclaredOperations } from '@substrat-run/kernel';
+      import { shopOperations } from './operations.js';
+      const addOp = async () => ({});
+      export const shopModule = {
+        manifest,
+        ${registration}
+      };
+      ${top}
+    `,
+  });
+}
+
+describe('R11 — a cast handler map (#1835)', () => {
+  it('passes a map handed over as the binder made it', () => {
+    expect(lint(registers(`...operationsFor(shopOperations)({ 'shop/add': addOp }),`))).toEqual([]);
+    expect(lint(registers(`...operationsFor(shopOperations)(OPERATIONS),`))).toEqual([]);
+    expect(lint(registers(`...undeclaredOperations('no surface', { 'shop/add': addOp }),`))).toEqual([]);
+  });
+
+  it('fires on a cast on one ENTRY of a binder\'s handlers — `as` or angle-bracket (#2155 review)', () => {
+    // The type sees an entry only when the cast erases it to `any`; `as OperationHandler<…>` or a
+    // cast to a narrower function type passes it, which is why the deleted text rule refused all of them.
+    const entry = (handlers: string, top = '') => rules(lint(registers(`...operationsFor(shopOperations)(${handlers}),`, top)));
+    expect(entry(`{ 'shop/add': addOp as never }`)).toEqual(['R11']);
+    expect(entry(`{ 'shop/add': (addOp as (...a: any[]) => any) }`)).toEqual(['R11']);
+    expect(entry(`{ 'shop/add': <OperationHandler<never, unknown>>addOp }`)).toEqual(['R11']);
+    expect(entry(`{ ...(SHARED as never) }`)).toEqual(['R11']);
+    expect(entry(`OPERATIONS`, `const OPERATIONS = { 'shop/add': addOp as never };`)).toEqual(['R11']);
+    expect(rules(lint(registers(`...undeclaredOperations('why', { 'shop/add': addOp as never }),`)))).toEqual(['R11']);
+    // Twins: plain entries, a typed arrow, a generic arrow (which starts like an angle cast), and a
+    // cast INSIDE a handler body, which is the handler's own business.
+    expect(entry(`{ 'shop/add': addOp, 'shop/b': async (ctx, i: { id: string }) => ({ id: i.id }) }`)).toEqual([]);
+    expect(entry(`{ 'shop/add': <T,>(ctx, i: T) => i }`)).toEqual([]);
+    expect(entry(`{ 'shop/add': async (ctx, i) => (i as { id: string }).id }`)).toEqual([]);
+    expect(entry(`OPERATIONS`, `const OPERATIONS = { 'shop/add': addOp };`)).toEqual([]);
+  });
+
+  it('fires on a whole-map cast one hop away — a named map, the shorthand, an angle bracket (#2155 review)', () => {
+    expect(rules(lint(registers(`operations,`, `const operations = OPERATIONS as never;`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`operations: FORGED,`, `const FORGED = OPERATIONS as never;`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`operations: <never>OPERATIONS,`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`...operationsFor(shopOperations)(<never>OPERATIONS),`)))).toEqual(['R11']);
+    // Twins: the same names, uncast.
+    expect(lint(registers(`operations,`, `const operations = bound.operations;`))).toEqual([]);
+    expect(lint(registers(`operations: FORGED,`, `const FORGED = bound.operations;`))).toEqual([]);
+  });
+
+  it('follows a name carrying `$`, which is an identifier character and a regex anchor (#2155 review)', () => {
+    expect(rules(lint(registers(`operations: $ops,`, `const $ops = OPERATIONS as never;`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`operations: ops$,`, `const ops$ = OPERATIONS as never;`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`...operationsFor(shopOperations)($ops),`, `const $ops = { 'shop/add': addOp as never };`)))).toEqual(['R11']);
+    // Twins: the same names, uncast — and a longer name sharing the prefix is not the one followed.
+    expect(lint(registers(`operations: $ops,`, `const $ops = bound.operations;`))).toEqual([]);
+    expect(lint(registers(`operations: ops$,`, `const ops$x = OPERATIONS as never; const ops$ = bound.operations;`))).toEqual([]);
+  });
+
+  it('fires on a cast TO the bound value anywhere in module code (#2155 review)', () => {
+    const anywhere = (top: string) => rules(lint(registers(`...bound,`, top)));
+    expect(anywhere(`const FORGED = { handlers: {} } as unknown as BoundOperations;`)).toEqual(['R11']);
+    expect(anywhere(`const F = <BoundOperations>{ handlers: {} };`)).toEqual(['R11']);
+    expect(anywhere(`const F = raw as ModuleRegistration['operations'];`)).toEqual(['R11']);
+    expect(anywhere(`const F = raw as ModuleRegistration<[E]>["operations"];`)).toEqual(['R11']);
+    // Twins: naming the type is not casting to it.
+    expect(anywhere(`const keep: BoundOperations = bound.operations; type Ops = ModuleRegistration['operations'];`)).toEqual([]);
+  });
+
+  it('fires on a cast of the operations: value, anchored at the key', () => {
+    const violations = lint(registers(`operations: { 'shop/add': addOp } as never,`));
+    expect(rules(violations)).toEqual(['R11']);
+    expect(violations[0]!.line).toBe(7);
+    expect(rules(lint(registers(`operations: (OPERATIONS as ModuleRegistration['operations']),`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`operations: OPERATIONS as any }`)))).toEqual(['R11']);
+  });
+
+  it('fires on a cast of either binder\'s handler argument', () => {
+    expect(rules(lint(registers(`...operationsFor(shopOperations)(OPERATIONS as never),`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`...operationsFor(shopOperations)({ 'shop/add': addOp } as any),`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`...undeclaredOperations('why', OPERATIONS as never),`)))).toEqual(['R11']);
+  });
+
+  it('does not read a cast of the DECLARATION as a cast of the map', () => {
+    // The declaration argument is the binder's own business: inferring `Ops` from it is the
+    // point, and a cast there loosens the declaration rather than the join.
+    expect(lint(registers(`...operationsFor(shopOperations as typeof shopOperations)(OPERATIONS),`))).toEqual([]);
+  });
+
+  it('is not fooled by `as` in a string, a comment or an identifier', () => {
+    expect(lint(registers(`operations: pick(OPERATIONS, 'as never'), // as never\n`))).toEqual([]);
+    expect(lint(registers(`operations: aliases,`))).toEqual([]);
+  });
+
+  it('takes the reviewable hatch', () => {
+    const root = registers(`
+        // boundary-lint-allow R11 — a fixture that exists to prove the host refuses this
+        operations: OPERATIONS as never,
+        // boundary-lint-end R11
+    `);
+    expect(lint(root)).toEqual([]);
   });
 });
 

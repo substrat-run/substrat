@@ -1,6 +1,7 @@
 import { emitModel } from '@substrat-run/contracts';
 import { invitesEntities } from './entities.js';
 import { invitesManifest } from './index.js';
+import { invitesOperations } from './operations.js';
 
 /**
  * The artifact of record for this engine (#697/#844, #976).
@@ -16,4 +17,7 @@ import { invitesManifest } from './index.js';
  * field's reader: a bump has to appear in the same diff as the shape change it
  * announces.
  */
-export const invitesModel = emitModel(invitesEntities, { version: invitesManifest.version });
+export const invitesModel = emitModel(invitesEntities, {
+  version: invitesManifest.version,
+  operations: invitesOperations,
+});

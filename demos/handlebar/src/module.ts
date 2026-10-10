@@ -9,7 +9,6 @@ import {
   listLimitOf,
   mapPage,
   mulMoney,
-  operationInputsOf,
   pageOf,
   pageVisible,
   permissionKey,
@@ -18,7 +17,6 @@ import {
   type EntityRef,
   type Page,
   type EntityRow,
-  type OperationImpl,
   type Money,
   type TimelineEntry,
 } from '@substrat-run/contracts';
@@ -40,8 +38,8 @@ import {
   readTimeline,
   ulid,
   type ModuleRegistration,
-  type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 import type { PageParams } from '@substrat-run/kernel';
 import {
@@ -492,8 +490,8 @@ const whoamiOp: OperationHandler<undefined, WhoAmI> = async (ctx) => {
   return { role };
 };
 
-/** The handlers bound to `handlebarOperations`. `satisfies` is the drift detector. */
-const declaredOperations = {
+/** The handlers bound to `handlebarOperations` — `operationsFor` is the drift detector. */
+const bound = operationsFor(handlebarOperations)({
   'bike-shop/whoami': whoamiOp,
   'bike-shop/create-customer': createCustomerOp,
   'bike-shop/list-customers': listCustomersOp,
@@ -506,19 +504,10 @@ const declaredOperations = {
   'bike-shop/close-repair': closeRepairOp,
   'bike-shop/portal-repairs': portalRepairsOp,
   'bike-shop/timeline': timelineOp,
-} satisfies OperationImpl<typeof handlebarOperations, OperationContext>;
+});
 
 export const bikeShopModule: ModuleRegistration = {
   manifest: bikeShopManifest,
   migrations: bikeShopMigrations,
-  // The host parses every invocation against the same declaration the routes and
-  // the document come from, so "parse, don't trust" holds on every path in rather
-  // than in the handlers that remembered (#953).
-  operationInputs: operationInputsOf(handlebarOperations),
-  operations: {
-    // ALL of them bound to the declaration (#707): input and return checked at
-    // the exact method. The `as never` casts these carried were never necessary
-    // — OperationHandler<never, unknown> accepts any handler by contravariance.
-    ...(declaredOperations as Record<string, OperationHandler<never, unknown>>),
-  },
+  ...bound,
 };

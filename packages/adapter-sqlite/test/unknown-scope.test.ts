@@ -9,6 +9,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 // SQLite-local: Cloudflare's admin RPC does not yet preserve these typed refusals.
 const doors = [
@@ -39,7 +40,7 @@ describe('unknown scope refusals', () => {
     });
     let directory: Database.Database | undefined;
     try {
-      host.registerModule({ manifest, migrations: [], operations: {} });
+      host.registerModule({ manifest, migrations: [], ...testOperations({}) });
       await host.admin.createTenant(staff, { id: own, slug: 'own', name: 'Own' });
       await host.admin.createTenant(staff, { id: foreign, slug: 'foreign', name: 'Foreign' });
       await host.admin.grantEntitlement(staff, own, 'refusals');

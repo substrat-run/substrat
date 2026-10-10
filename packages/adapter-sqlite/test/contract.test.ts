@@ -46,6 +46,7 @@ import {
   entityStateContractSuite,
   entityStateMigrationContractSuite,
   entityTrashContractSuite,
+  derivedHandlersContractSuite,
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
@@ -633,6 +634,20 @@ entityStateMigrationContractSuite(
     },
   },
 );
+
+// #1773: the handlers the platform derives from a declaration, on node's SQLite. The DEFAULT
+// checker: the derived check coming first is a permission property.
+derivedHandlersContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-derived-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
 
 // #119 PR 2: the host's trash refusal, the link refusal and the purge horizon. The DEFAULT
 // checker, for the suite above's reason: the refusal's ORDER is a permission property.

@@ -2102,5 +2102,25 @@
         }
       }
     }
+  },
+  "handlers": {
+    "ticket0/get-contact": {
+      "derive": "get"
+    },
+    "ticket0/get-conversation": {
+      "derive": "get"
+    },
+    "ticket0/list-agents": {
+      "derive": "list"
+    },
+    "ticket0/list-block-rules": {
+      "derive": "list"
+    },
+    "ticket0/list-contacts": {
+      "derive": "list"
+    },
+    "ticket0/list-saved-reply-folders": {
+      "derive": "list"
+    }
   }
 }

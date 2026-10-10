@@ -13,7 +13,7 @@ import { invoicingOperations, INVOICING_PERMISSIONS } from '../src/operations.js
 
 describe('the declared operations agree with the registered ones', () => {
   it('declares exactly the operations the module registers', () => {
-    const registered = invoicingModule.operations;
+    const registered = invoicingModule.operations?.handlers;
     expect(registered, 'the module registers no operations at all').toBeDefined();
     expect(Object.keys(invoicingOperations).sort()).toEqual(Object.keys(registered ?? {}).sort());
   });

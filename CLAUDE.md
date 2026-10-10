@@ -448,14 +448,28 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   `TextEncoder`/`TextDecoder`, URLs are `URL`. Never hand-roll a hash to dodge an
   import ban. (Harness code may use `node:fs` etc. for genuinely node-only needs.)
 - Parse, don't trust: operation inputs go through Zod schemas at the boundary — and the
-  **host** is what applies them. A module passes `operationInputs: operationInputsOf(ops)`
-  beside its `operations`, and every invocation is parsed before the guards and the handler,
-  on every path in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared
-  input that nobody parses is no longer possible rather than merely discouraged — and the
-  word "possible" is carried by `pnpm lint:module-inputs`, not by this sentence. The kernel
-  field is optional, so the rule was true of the modules that remembered the line and
-  silently false of the nine that did not — both reference demos and the scaffold among
-  them (#953). The gate is what refuses the omission; the prose only describes it.
+  **host** is what applies them. A module binds its handlers with `...operationsFor(ops)({
+  … })`, which hands the host the handler map AND the schemas (`operationInputsOf(ops)`),
+  the concurrency and the idempotency opt-outs of the same declaration, so every
+  invocation is parsed before the guards and the handler, on every path in (HTTP, test,
+  seed, schedule). Handlers do not hand-parse; a declared input that nobody parses is no
+  longer possible rather than merely discouraged, and "possible" is carried by a **type**
+  (#1835): `ModuleRegistration.operations` is a `BoundOperations` — the handlers and their
+  derived maps in one value, with no separate `operationInputs` field to forget — which
+  only the binder produces, so a hand-written map does not compile, and the binder refuses
+  a missing, extra, mistyped or cast handler at the exact entry. A module with no declared
+  surface (the dashboard, a test fixture) says so with `undeclaredOperations(reason,
+  handlers)` — `testOperations` in contract-tests for fixtures, which is also the one test
+  seam that may hand the host raw derived maps (through `@substrat-run/kernel/testing`).
+  The brand is an ES-private field, so a spread or a copy with one map swapped is not a
+  `BoundOperations` either, and both adapters refuse one at registration. The spellings no
+  type can see — a cast of the WHOLE map, of one entry handed to a binder, or to
+  `BoundOperations` anywhere — are boundary-lint **R11**, with the reviewable
+  `boundary-lint-allow R11` … `boundary-lint-end R11` hatch; R2 refuses module code
+  importing the test seams (`@substrat-run/kernel/testing`, `contract-tests`,
+  `engine-test-kit`). It used to be prose plus a text rule (`lint:module-inputs`,
+  #953/#959), and the optional field let nine modules — both reference demos and the
+  scaffold among them — parse nothing while everything stayed green.
 
 ## Two human checkpoints (agents never self-approve)
 
@@ -612,22 +626,6 @@ never "every model.json is new". CI runs the tool's own tests first. What makes 
 (type, schemaVersion) its checked-in `model.json` does not carry, and `lint:model --check` holds
 that file to the declaration. No vertical in the repo exports yet, so today all three pass over
 nothing; the first export is held by all three),
-`lint:module-inputs` (`tools/module-inputs.mjs`: a `ModuleRegistration` that declares
-`operations:` hands the host `operationInputs: operationInputsOf(ops)` — the mechanism behind
-the "parse, don't trust" rule above. The kernel field is **optional**, so that rule held only
-for the modules that remembered the line: nine were short of it at once, both reference demos
-and the scaffold among them, and nothing went red, because a scenario calls `invoke()` with an
-object TypeScript already agreed with and wire input never appears in a test (#953). A
-hand-written map is refused as well as a missing one — it reads as coverage while covering
-what someone remembered to type — and so is a registration this text rule cannot read, rather
-than being skipped. `demos`, `engines` and the scaffold template, which are the modules built
-from a declared surface; `apps/dashboard` binds its operations by hand and declares none, so
-there is nothing to derive. A file opts out with `module-inputs-allow: <reason>`. The same
-gate holds the OUTPUT half for `engines/` (#959): an engine's handler map is written
-`{ … } satisfies OperationImpl<typeof ops, OperationContext>`, with no cast on any entry,
-bound to the same declaration `operationInputsOf` parses with. That clause is the only thing
-tying a handler's return to its declared output, and no test can see it deleted — nor an entry
-cast `as never` or `as any`, which pass the `satisfies` silently — so the lint refuses all three),
 `lint:skills` (`tools/skill-paths.mjs`: a repo-rooted path a skill cites in code — a bare
 `demos/todo/src/module.ts`, or the `tools/…` inside a command — exists, spelled the way the
 tree spells it. `.claude/skills/*` and `plugin/substrat/skills/*` are both read; a

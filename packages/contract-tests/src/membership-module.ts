@@ -1,5 +1,6 @@
 import { moduleManifest, type PermissionKey } from '@substrat-run/contracts';
 import type { ModuleRegistration, OperationContext, OperationHandler } from '@substrat-run/kernel';
+import { testOperations } from './test-operations.js';
 
 /**
  * The requests the membership executor consumes (#1184), in engine-invites' event shapes and
@@ -85,7 +86,7 @@ export const membershipFixtureMod: ModuleRegistration = {
       sql: 'CREATE TABLE invitefix_accepts (invitation_id TEXT NOT NULL, principal TEXT NOT NULL)',
     },
   ],
-  operations: {
+  ...testOperations({
     'invitefix/send': ((ctx: OperationContext, input: Invitation) => {
       ctx.emit({
         type: 'invites.sent',
@@ -137,5 +138,5 @@ export const membershipFixtureMod: ModuleRegistration = {
     'invitefix/probe': (async (ctx: OperationContext, input: { permission: PermissionKey }) => ({
       allowed: (await ctx.check(input.permission)).allowed,
     })) as unknown as OperationHandler<never, unknown>,
-  },
+  }),
 };

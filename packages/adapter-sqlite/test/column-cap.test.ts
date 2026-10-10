@@ -7,6 +7,7 @@ import { moduleManifest, type ScopeDump, platformActorId, principalId, scopeId, 
 import { DO_SQL_LIMITS, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
 import type { ModuleRegistration, OperationHandler } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 /**
  * #1811: a Durable Object's SQLite holds at most `DO_SQL_LIMITS.columns` columns in a table and
@@ -32,10 +33,10 @@ const run: OperationHandler<{ sql: string }, unknown> = (ctx, input) => ctx.sql.
 const modWith = (migrations: { version: string; sql: string }[]): ModuleRegistration => ({
   manifest,
   migrations,
-  operations: {
+  ...testOperations({
     'wide/read': read as OperationHandler<never, unknown>,
     'wide/exec': run as OperationHandler<never, unknown>,
-  },
+  }),
 });
 
 describe('the column cap of a Durable Object, on node (#1811)', () => {

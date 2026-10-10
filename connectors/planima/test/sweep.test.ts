@@ -16,6 +16,7 @@ import {
   webCryptoSecretBox,
   type ModuleRegistration,
   type OperationHandler,
+  undeclaredOperations
 } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import {
@@ -76,7 +77,7 @@ describe('planima connector — inbound sync', () => {
       attachmentTargets: [],
       entitlementKey: 'plan',
     }),
-    operations: {
+    ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
       [OPERATION]: (async (ctx, input: PlanimaPlanPage) => {
         assertAllowed(await ctx.check(PLAN_RECORD));
         landed.push(input);
@@ -89,7 +90,7 @@ describe('planima connector — inbound sync', () => {
         assertAllowed(await ctx.check(PLAN_RECORD));
         throw new Error('plan closed for the year');
       }) as OperationHandler<never, unknown>,
-    },
+    }),
   };
 
   const world = async (opts: { grant?: boolean; mock?: PlanimaMock } = {}) => {

@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moduleManifest, permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { assertAllowed, ulid, type OperationHandler } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 const { LIMIT, liftLimit } = createRequire(import.meta.url)('../../../tools/vitest/like-pattern-limit.cjs') as {
   LIMIT: number;
@@ -139,7 +140,7 @@ describe('the connection the adapter opens for a scope carries the limit too (#1
       attachmentTargets: [],
       entitlementKey: 'pat',
     }),
-    operations: {
+    ...testOperations({
       'pat/like': (async (ctx, input: { pattern: string }) => {
         assertAllowed(await ctx.check(PAT_RUN));
         return ctx.sql.query('SELECT ? LIKE ? AS hit', ['x', input.pattern]);
@@ -148,7 +149,7 @@ describe('the connection the adapter opens for a scope carries the limit too (#1
         assertAllowed(await ctx.check(PAT_RUN));
         return ctx.sql.query('SELECT ? GLOB ? AS hit', ['x', input.pattern]);
       }) as OperationHandler<never, unknown>,
-    },
+    }),
   };
 
   const dir = mkdtempSync(join(tmpdir(), 'substrat-like-limit-'));

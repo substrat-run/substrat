@@ -1,6 +1,7 @@
 import { emitModel } from '@substrat-run/contracts';
 import { meteringEntities } from './entities.js';
 import { meteringManifest } from './index.js';
+import { meteringOperations } from './operations.js';
 
 /**
  * The artifact of record for this engine (#697/#844, #976).
@@ -16,4 +17,7 @@ import { meteringManifest } from './index.js';
  * field's reader: a bump has to appear in the same diff as the shape change it
  * announces.
  */
-export const meteringModel = emitModel(meteringEntities, { version: meteringManifest.version });
+export const meteringModel = emitModel(meteringEntities, {
+  version: meteringManifest.version,
+  operations: meteringOperations,
+});

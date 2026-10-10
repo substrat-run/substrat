@@ -1,6 +1,7 @@
 import { emitModel } from '@substrat-run/contracts';
 import { bookingEntities } from './entities.js';
 import { bookingManifest } from './index.js';
+import { bookingOperations } from './operations.js';
 import { bookingLifecycles } from './lifecycle.js';
 
 /**
@@ -18,4 +19,5 @@ import { bookingLifecycles } from './lifecycle.js';
 export const bookingModel = emitModel(bookingEntities, {
   lifecycles: bookingLifecycles,
   version: bookingManifest.version,
+  operations: bookingOperations,
 });

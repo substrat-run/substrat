@@ -376,9 +376,9 @@ operations + the `ModuleRegistration`. Keep the split — the linter and tests e
   timestamps, money/decimals as TEXT. **Append-only forever after first ship.**
 - Operations: first line is always `assertAllowed(await ctx.check(PERM))`.
   `ctx.link(child, parent)` when creating related entities.
-- **Handlers do not hand-parse their input.** The module passes
-  `operationInputs: operationInputsOf(<vertical>Operations)` beside its `operations`, and
-  the host parses every invocation against the declared schema before the guards and the
+- **Handlers do not hand-parse their input.** The module binds its handlers with
+  `...operationsFor(<vertical>Operations)({ … })`, which hands the host the declared schemas
+  with them, and the host parses every invocation against them before the guards and the
   handler run — on every path in (HTTP, test, seed, schedule). The reference module already
   does this; keep it. An inline `z.object(…).parse(input)` at the top of a handler is a
   second description of a schema the model already declares, and it only covers the paths

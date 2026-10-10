@@ -23,6 +23,7 @@
 import { z } from 'zod';
 import { dataSubjectId, defineEntities, manifestEntities, moduleManifest } from '@substrat-run/contracts';
 import type { ModuleRegistration, OnSubjectErased, OperationHandler } from '@substrat-run/kernel';
+import { testOperations } from './test-operations.js';
 
 export const erasureEntities = defineEntities({
   erperson: {
@@ -168,7 +169,7 @@ type Handler = OperationHandler<never, unknown>;
 export const erasureMod: ModuleRegistration = {
   manifest: erasureModManifest,
   migrations: [{ version: '0001-init', sql: ERASURE_DDL }],
-  operations: {
+  ...testOperations({
     /** Write a fixture row: `{ sql, params }` against the module's own tables. */
     'erasure/put': ((ctx, input: { sql: string; params?: (string | null)[] }) => {
       ctx.sql.exec(input.sql, input.params ?? []);
@@ -194,7 +195,7 @@ export const erasureMod: ModuleRegistration = {
         payload: { secret: input.secret },
       });
     }) as Handler,
-  },
+  }),
   onSubjectErased,
 };
 

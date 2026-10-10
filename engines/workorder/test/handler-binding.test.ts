@@ -2,8 +2,7 @@
  * #959 — engine-workorder's handlers are bound to its declared operations, as a
  * compile-time suite.
  *
- * `src/index.ts` writes its handler map
- * `satisfies OperationImpl<typeof workorderOperations, OperationContext>`, so
+ * `src/index.ts` binds its handler map with `operationsFor(workorderOperations)(…)`, so
  * each handler's input and output are DERIVED from the declaration instead of
  * cast away. A type-level check fails permissively — one that has stopped biting
  * compiles exactly like one that still does — so every `@ts-expect-error` below
@@ -13,9 +12,9 @@
  * positive twin through the same type, because a negative alone passes just as well
  * when nothing is left to accept anything.
  *
- * What a test cannot see is whether `src/index.ts` still CARRIES the clause: deleting
- * it compiles. That half is `lint:module-inputs`, which refuses an engine map that
- * is not bound, or has an entry cast.
+ * That `src/index.ts` binds at all is a type too (#1835): the registration takes only a
+ * `BoundOperations`, which the binder produces, and boundary-lint R11 refuses the one
+ * spelling a type cannot see — a cast of the whole map.
  */
 import { describe, expect, it } from 'vitest';
 import type { HandlerInput, HandlerOutput, OperationImpl } from '@substrat-run/contracts';
@@ -57,6 +56,6 @@ export const inputUndeclared: Handlers['workorder/get'] = async (
 
 describe('#959 engine-workorder handler binding', () => {
   it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(workorderModule.operations ?? {}).sort()).toEqual(Object.keys(workorderOperations).sort());
+    expect(Object.keys(workorderModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(workorderOperations).sort());
   });
 });

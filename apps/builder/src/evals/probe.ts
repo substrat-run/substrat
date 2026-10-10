@@ -60,7 +60,7 @@ try {
 	const modules = Array.isArray(mod.MODULES)
 		? mod.MODULES.map((m) => ({
 				id: String(m?.manifest?.id ?? '(unknown)'),
-				operations: Object.keys(m?.operations ?? {}),
+				operations: Object.keys(m?.operations?.handlers ?? {}),
 				permissions: (m?.manifest?.permissions ?? []).map((p) => String(p?.key)),
 			}))
 		: null;
