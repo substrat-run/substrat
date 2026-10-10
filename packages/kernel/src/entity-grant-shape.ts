@@ -94,6 +94,13 @@ export const SHAPE_TOP_UP_BATCH = 500;
  * next pass reads on from there.
  */
 export const SHAPE_MARKER_READS_PER_ROW = 10;
+/**
+ * Confirming walks that may take keys, per shape per reconcile, before its retirement is left open
+ * for the next reconcile. Each one that takes keys starts another, so a steady stream of grants of
+ * a retired key landing ahead of the walk would otherwise keep a single reconcile walking forever.
+ * Left open, the retirement keeps no record, so the next reconcile simply runs it again.
+ */
+export const SHAPE_RETIRE_CONFIRMS_MAX = 3;
 /** The largest batch a caller may ask for: past this a pass is the long transaction it exists to avoid. */
 export const SHAPE_TOP_UP_BATCH_MAX = 5000;
 
@@ -163,18 +170,22 @@ export function grantEntityShapeIn(db: SwitchSql, principal: PrincipalId, entity
  *   reaches that holder.
  * - Holding a key the shape retired: a retirement ends in a run-once record, so a holder it never
  *   saw would never be reached. The first walk therefore never writes that record. Once it reaches
- *   the last marker, a CONFIRMING walk starts again from the first (`clean`), and the record is
+ *   the last marker, a CONFIRMING walk starts again from the first (`confirm`), and the record is
  *   written only when a confirming walk reaches the last marker having taken nothing; one that
- *   took keys starts another. A grant landing behind the confirming walk itself is the gap left,
- *   the same as one landing after the retirement finished.
+ *   took keys starts another, up to `SHAPE_RETIRE_CONFIRMS_MAX`; past that the retirement is left
+ *   open for the next reconcile. A grant landing behind the confirming walk itself is the gap
+ *   left, the same as one landing after the retirement finished.
  */
 export interface ShapeCursor {
   shape: number;
   step: 'backfill' | 'retire' | 'topUp';
   /** The last marker a walk read; `null` resumes the step from its start. */
   marker: { object: string; subject: string } | null;
-  /** A retire walk only: it is a confirming walk, and has taken nothing so far. */
-  clean?: boolean;
+  /**
+   * A confirming retire walk only: whether it has taken nothing so far, and how many confirming
+   * walks before it, on this shape in this reconcile, took keys.
+   */
+  confirm?: { clean: boolean; count: number };
 }
 
 /** Where a pass runs and how its events are stamped — the facts only the adapter holds. */
@@ -200,13 +211,15 @@ export interface ShapePass {
  * is not done here, then holders whose retired keys are taken back, each with its
  * `entity.grants-retired` event, then holders topped up, each with its `entity.grants-topped-up`
  * event. `next` is `null` once the scope is done; otherwise the caller runs another pass with it
- * as `after`. Run it inside ONE transaction, so the keys and their events commit together.
- * Re-running a finished scope writes nothing.
+ * as `after`. `retirementsLeftOpen` counts the shapes whose retirement this pass gave up on at
+ * `SHAPE_RETIRE_CONFIRMS_MAX`, for the next reconcile to run again. Run it inside ONE
+ * transaction, so the keys and their events commit together. Re-running a finished scope writes
+ * nothing.
  */
 export function topUpEntityGrantShapes(
   db: SwitchSql,
   pass: ShapePass,
-): { toppedUp: number; retired: number; next: ShapeCursor | null } {
+): { toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null } {
   // Here as well as at each entry point: a pass with no budget never hands back `next: null`, so
   // a caller looping until it does would never stop.
   const limit = shapeTopUpBatch(pass.limit);
@@ -214,6 +227,7 @@ export function topUpEntityGrantShapes(
   recordGranteeKeys(db, pass.shapes);
   let toppedUp = 0;
   let retired = 0;
+  let retirementsLeftOpen = 0;
   const from = pass.after ?? null;
   for (let i = from?.shape ?? 0; i < pass.shapes.length; i++) {
     const shape = pass.shapes[i]!;
@@ -227,10 +241,11 @@ export function topUpEntityGrantShapes(
     const resume = from?.shape === i ? from : null;
     const at = resume?.step ?? 'backfill';
     const marker = (step: ShapeCursor['step']) => (resume?.step === step ? resume.marker : null);
-    const stop = (step: ShapeCursor['step'], last: ShapeCursor['marker'], clean?: boolean) => ({
+    const stop = (step: ShapeCursor['step'], last: ShapeCursor['marker'], confirm?: ShapeCursor['confirm']) => ({
       toppedUp,
       retired,
-      next: { shape: i, step, marker: last, ...(clean === undefined ? {} : { clean }) },
+      retirementsLeftOpen,
+      next: { shape: i, step, marker: last, ...(confirm ? { confirm } : {}) },
     });
     const prefix = `${shape.entityType}:`;
     if (at === 'backfill') {
@@ -243,15 +258,21 @@ export function topUpEntityGrantShapes(
       reopenRetirements(db, pass, shape.entityType, keys);
       let start = marker('retire');
       // The first walk is never a confirming one; nor is a resumed walk that does not say it is.
-      let clean = resume?.step === 'retire' && resume.clean === true;
+      let confirm = resume?.step === 'retire' ? resume.confirm : undefined;
       for (;;) {
-        const took = retire(db, pass, shape.entityType, prefix, gone, start, room, clean);
+        const took = retire(db, pass, shape.entityType, prefix, gone, start, room, confirm?.clean === true);
         retired += took.found.length;
-        clean &&= took.found.length === 0;
-        if (!took.done) return stop('retire', took.at, clean);
-        if (clean) break; // `retire` recorded the retirement finished
-        // A confirming walk from the first marker, for what landed behind this one.
-        [start, clean] = [null, true];
+        if (confirm) confirm = { ...confirm, clean: confirm.clean && took.found.length === 0 };
+        if (!took.done) return stop('retire', took.at, confirm);
+        if (confirm?.clean) break; // `retire` recorded the retirement finished
+        // A confirming walk from the first marker, for what landed behind this one; a walk that
+        // ended here having taken keys counts against the cap if it was itself confirming.
+        const count = confirm ? confirm.count + 1 : 0;
+        if (count >= SHAPE_RETIRE_CONFIRMS_MAX) {
+          retirementsLeftOpen++;
+          break;
+        }
+        [start, confirm] = [null, { clean: true, count }];
       }
     }
     if (keys.length === 0) continue;
@@ -259,7 +280,7 @@ export function topUpEntityGrantShapes(
     toppedUp += gave.found.length;
     if (!gave.done) return stop('topUp', gave.at);
   }
-  return { toppedUp, retired, next: null };
+  return { toppedUp, retired, retirementsLeftOpen, next: null };
 }
 
 /** What a pass may still spend: rows of work it may write, and markers it may read. */

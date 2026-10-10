@@ -2007,14 +2007,17 @@ export interface HostAdmin {
    * that confirming walk keeps the key, as one landing after the retirement finished does. Each (person, entity) topped up is
    * an `entity.grants-topped-up` event on the entity, and each one retired keys were taken from an
    * `entity.grants-retired` event. Audited as `reconcileEntityGrantShapes` when it changed
-   * anything. Returns how many (person, entity) it topped up, and how many it retired keys from.
+   * anything. Returns how many (person, entity) it topped up, and how many it retired keys from;
+   * plus, only when nonzero, `retirementsLeftOpen`: shapes whose retirement kept meeting new
+   * grants of a retired key (`SHAPE_RETIRE_CONFIRMS_MAX` confirming walks that took keys) and was
+   * left for the next reconcile to run again, unrecorded.
    */
   reconcileEntityGrantShapes(
     actor: PlatformActorId,
     node: { tenantId: TenantId; scopeId: ScopeId },
     shapes: readonly EntityGrantShape[],
     opts?: { batch?: number },
-  ): Promise<{ toppedUp: number; retired: number }>;
+  ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen?: number }>;
   /** Grant to an organization (portal customers); members reach it via membership tuples. */
   /**
    * Grant a permission to a CONNECTION (#97) — how a connector is allowed to

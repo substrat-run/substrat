@@ -449,14 +449,14 @@ describe('a key a declared shape retires, over a CP-less host (#2082)', () => {
             shapes: unknown,
             limit: number,
             after: ShapeCursor | null,
-          ) => Promise<{ toppedUp: number; retired: number; next: ShapeCursor | null; done: boolean }>;
+          ) => Promise<{ toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; done: boolean }>;
         }
       ).topUpEntityGrantShapes(tn, sc, sh, limit, after);
     const first = await pass(t, s, shapes, 4, null);
-    expect(first).toEqual({ retired: 3, toppedUp: 1, next: { shape: 0, step: 'topUp', marker: expect.any(Object) }, done: false });
+    expect(first).toEqual({ retired: 3, toppedUp: 1, retirementsLeftOpen: 0, next: { shape: 0, step: 'topUp', marker: expect.any(Object) }, done: false });
     expect([await events('entity.grants-retired'), await events('entity.grants-topped-up')]).toEqual([{ n: 3 }, { n: 1 }]);
     // The next pass resumes where the first stopped (#2083).
-    expect(await pass(t, s, shapes, 4, first.next)).toEqual({ retired: 0, toppedUp: 2, next: null, done: true });
+    expect(await pass(t, s, shapes, 4, first.next)).toEqual({ retired: 0, toppedUp: 2, retirementsLeftOpen: 0, next: null, done: true });
     for (const [i, p] of people.entries()) {
       expect([await can(p, READ, i), await can(p, USE, i), await can(p, ADMIN, i)]).toEqual([true, false, true]);
     }
@@ -515,6 +515,6 @@ describe('a host from before the shape cursor still finishes against this ScopeD
       calls.push(pass);
       done = pass.done;
     }
-    expect(calls).toEqual([{ toppedUp: 3, retired: 0, next: null, done: true }]);
+    expect(calls).toEqual([{ toppedUp: 3, retired: 0, retirementsLeftOpen: 0, next: null, done: true }]);
   });
 });

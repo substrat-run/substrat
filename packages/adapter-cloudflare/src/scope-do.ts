@@ -2398,7 +2398,7 @@ export function defineScopeDO(
       shapes: readonly EntityGrantShape[],
       limit: number,
       after?: ShapeCursor | null,
-    ): Promise<{ toppedUp: number; retired: number; next: ShapeCursor | null; done: boolean }> {
+    ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; done: boolean }> {
       const pass = (from: ShapeCursor | null) =>
         this.queue.enqueue(() =>
           this.revision.transactionSync(() =>
@@ -2418,14 +2418,15 @@ export function defineScopeDO(
         const one = await pass(after);
         return { ...one, done: one.next === null };
       }
-      let [toppedUp, retired, from] = [0, 0, null as ShapeCursor | null];
+      let [toppedUp, retired, retirementsLeftOpen, from] = [0, 0, 0, null as ShapeCursor | null];
       do {
         const one = await pass(from);
         toppedUp += one.toppedUp;
         retired += one.retired;
+        retirementsLeftOpen += one.retirementsLeftOpen;
         from = one.next;
       } while (from);
-      return { toppedUp, retired, next: null, done: true };
+      return { toppedUp, retired, retirementsLeftOpen, next: null, done: true };
     }
 
     /**

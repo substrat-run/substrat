@@ -7882,6 +7882,7 @@ export class SqliteScopeHost implements ScopeHost {
         const rt = this.runtime(tenantId, scopeId);
         let toppedUp = 0;
         let retired = 0;
+        let retirementsLeftOpen = 0;
         // #2071: one bounded transaction per pass, so a large scope never holds one long; each
         // pass resumes where the last one stopped (#2083), until one reports nothing left.
         let after: ShapeCursor | null = null;
@@ -7902,12 +7903,14 @@ export class SqliteScopeHost implements ScopeHost {
           );
           toppedUp += pass.toppedUp;
           retired += pass.retired;
+          retirementsLeftOpen += pass.retirementsLeftOpen;
           after = pass.next;
         } while (after);
+        const result = { toppedUp, retired, ...(retirementsLeftOpen > 0 ? { retirementsLeftOpen } : {}) };
         if (toppedUp > 0 || retired > 0) {
-          this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, toppedUp, retired });
+          this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, ...result });
         }
-        return { toppedUp, retired };
+        return result;
       },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);

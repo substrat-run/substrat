@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import { errorCodeOf } from '@substrat-run/contracts';
-import { SHAPE_MARKER_READS_PER_ROW } from '../src/entity-grant-shape.js';
+import { SHAPE_MARKER_READS_PER_ROW, SHAPE_RETIRE_CONFIRMS_MAX } from '../src/entity-grant-shape.js';
 import { SHAPE_MARKER_INDEX_DDL, grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, writeExplicitTupleIn, type ShapeCursor, type SwitchSql } from '../src/index.js';
 
 /**
@@ -748,10 +748,10 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       const last = who();
       t.shape(last, id(14), GROWN); // the only holder of the retired key, past the first window
       const first = step(t, RETIRING, 1, null);
-      expect([first.retired, first.next, retiredRecord(t)]).toEqual([0, { shape: 0, step: 'retire', marker: expect.any(Object), clean: false }, { n: 0 }]);
+      expect([first.retired, first.next, retiredRecord(t)]).toEqual([0, { shape: 0, step: 'retire', marker: expect.any(Object) }, { n: 0 }]);
       const second = step(t, RETIRING, 1, first.next);
       // It took a key, so the walk it finished confirms nothing: the next starts at the first marker.
-      expect([second.retired, second.next, retiredRecord(t)]).toEqual([1, { shape: 0, step: 'retire', marker: null, clean: true }, { n: 0 }]);
+      expect([second.retired, second.next, retiredRecord(t)]).toEqual([1, { shape: 0, step: 'retire', marker: null, confirm: { clean: true, count: 0 } }, { n: 0 }]);
       expect(finish(t, RETIRING, 1, second.next)).toBeNull();
       expect(retiredRecord(t)).toEqual({ n: 1 });
       expect(t.keysOf(last, id(14))).toEqual(OLD);
@@ -761,7 +761,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       const t = fresh();
       for (let i = 0; i < 25; i++) t.shape(who(), id(i), OLD);
       const first = step(t, RETIRING, 1, null);
-      expect(first.next).toMatchObject({ step: 'retire', clean: false });
+      expect(first.next).toEqual({ shape: 0, step: 'retire', marker: expect.any(Object) });
       const stale = who();
       t.shape(stale, 'a0', GROWN); // the shape as it was, cancel included, sorting before the cursor
       expect(finish(t, RETIRING, 1, first.next)).toBeNull();
@@ -773,13 +773,44 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       const t = fresh();
       for (let i = 0; i < 25; i++) t.shape(who(), id(i), OLD);
       let after = step(t, RETIRING, 1, null).next;
-      for (let n = 0; after && !(after.step === 'retire' && after.clean && after.marker) && n < 50; n++) after = step(t, RETIRING, 1, after).next;
-      expect(after).toMatchObject({ step: 'retire', clean: true });
+      for (let n = 0; after && !(after.step === 'retire' && after.confirm?.clean && after.marker) && n < 50; n++) after = step(t, RETIRING, 1, after).next;
+      expect(after).toMatchObject({ step: 'retire', confirm: { clean: true } });
       const stale = who();
       t.shape(stale, 'a0', GROWN); // behind the confirming walk's cursor
       expect(finish(t, RETIRING, 1, after)).toBeNull();
       expect(retiredRecord(t)).toEqual({ n: 1 });
       expect(t.keysOf(stale, 'a0')).toEqual(GROWN.slice().sort());
+    });
+
+    /**
+     * #2153 round 2: every confirming walk that takes keys starts another, so a steady stream of
+     * grants of the retired key landing ahead of the walk would keep one reconcile walking forever.
+     */
+    const streamed = (stream: boolean) => {
+      const t = fresh();
+      for (let i = 0; i < 30; i++) t.shape(who(), id(i), OLD);
+      let after: ShapeCursor | null = null;
+      let [passes, leftOpen, granted] = [0, 0, 0];
+      do {
+        // An older deployment granting the shape as it was, cancel included, ahead of every walk.
+        if (stream && passes % 2 === 0) t.shape(who(), `z${String(granted++).padStart(4, '0')}`, GROWN);
+        const r = step(t, RETIRING, 1, after);
+        leftOpen += r.retirementsLeftOpen;
+        after = r.next;
+        passes++;
+      } while (after && passes < 2000);
+      return { t, finished: after === null, passes, leftOpen };
+    };
+
+    it(`a stream of grants of a retired key ends the reconcile after ${SHAPE_RETIRE_CONFIRMS_MAX} confirming walks that took keys, unrecorded`, () => {
+      const run = streamed(true);
+      expect([run.finished, run.leftOpen, retiredRecord(run.t)]).toEqual([true, 1, { n: 0 }]);
+      expect(run.passes).toBeLessThan(2000);
+    });
+
+    it('...and with no stream the same retirement records itself finished, left open nowhere', () => {
+      const run = streamed(false);
+      expect([run.finished, run.leftOpen, retiredRecord(run.t)]).toEqual([true, 0, { n: 1 }]);
     });
 
     it('a cursor at a later shape skips the shapes before it, and a backfill cut short resumes at its shape', () => {
