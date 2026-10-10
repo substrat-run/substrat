@@ -336,14 +336,16 @@ export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<
   await host.admin.reconcileEntityGrantShapes(staff, { tenantId: world.t1, scopeId: world.s1 }, ENTITY_GRANTS);
 
   // Where the workshop's staff hear about their repairs: each person's own persona address,
-  // set as that person (a notification address is a preference nobody else may set).
-  // Idempotent, so existing demo data gains it on restart. The `.test` addresses are
-  // placeholders; the dev server sends nothing.
+  // set as that person (a notification address is a preference nobody else may set). Only
+  // where they have none, so existing demo data gains it on restart while an address a person
+  // changed survives one, and a restart writes and announces nothing. The `.test` addresses
+  // are placeholders; the dev server sends nothing.
   for (const persona of PERSONAS) {
     const key = PERSONA_PRINCIPALS[persona.sub];
     if (key !== 'greta' && key !== 'mans') continue;
     const self = await host.getScope(world[key], world.t1, world.s1);
-    await self.invoke('notifications/set-my-address', { email: persona.email });
+    const { email } = await self.invoke<{ email: string | null }>('notifications/my-preferences', {});
+    if (email === null) await self.invoke('notifications/set-my-address', { email: persona.email });
   }
 
   return world;
