@@ -311,12 +311,21 @@ function main() {
   if (Number.isNaN(now.getTime())) fail(`override-advisories: --now is not a date`);
   const overrides = attempt('cannot read pnpm-workspace.yaml', () => effectiveOverrides(readFileSync('pnpm-workspace.yaml', 'utf8')));
   const locked = attempt('cannot read pnpm-lock.yaml', () => lockedVersions(readFileSync('pnpm-lock.yaml', 'utf8')));
+  // Judged before the pins resolve: a second copy of a `catalog:` override is also what stops
+  // it resolving, and the duplicate is the actionable half of that report.
+  const doubled = oneVersionErrors(locked);
+  const reportDoubled = () => {
+    if (doubled.length === 0) return;
+    console.error(`override-advisories: more than one resolved version of a package that must have one:\n  ${doubled.join('\n  ')}\nFind what pulls in the second copy (\`pnpm why <name>\`) and bring it onto the catalog's version.`);
+  };
   const { pins, errors } = resolvePins(overrides, locked);
-  if (errors.length > 0) fail(`override-advisories: cannot tell the version an override is judged at:\n  ${errors.join('\n  ')}`);
+  if (errors.length > 0) {
+    reportDoubled();
+    fail(`override-advisories: cannot tell the version an override is judged at:\n  ${errors.join('\n  ')}`);
+  }
   const ignored = JSON.parse(readFileSync('package.json', 'utf8')).pnpm?.auditConfig?.ignoreGhsas ?? [];
   const audit = attempt(`cannot read ${auditPath}`, () => JSON.parse(readFileSync(auditPath, 'utf8')));
   const hits = attempt('cannot judge the audit report', () => check(pins, audit, ignored));
-  const doubled = oneVersionErrors(locked);
 
   const accepts = attempt(`cannot read ${ACCEPT_FILE}`, () => readAccepts(JSON.parse(readFileSync(ACCEPT_FILE, 'utf8')), pins, now));
   if (accepts.errors.length > 0) fail(`override-advisories: ${ACCEPT_FILE}:\n  ${accepts.errors.join('\n  ')}`);
@@ -346,9 +355,7 @@ function main() {
       : {};
   const staleFailing = staleLines.length > 0 && stalenessFails({ event, ...prChanges });
 
-  if (doubled.length > 0) {
-    console.error(`override-advisories: more than one resolved version of a package that must have one:\n  ${doubled.join('\n  ')}\nFind what pulls in the second copy (\`pnpm why <name>\`) and bring it onto the catalog's version.`);
-  }
+  reportDoubled();
   if (hits.length > 0) {
     console.error('override-advisories: advisories against an override — raise it in pnpm-workspace.yaml (the catalog entry, for a `catalog:` override):');
     for (const h of hits) {
