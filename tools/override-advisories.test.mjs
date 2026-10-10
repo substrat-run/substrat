@@ -254,6 +254,18 @@ test('a registry answer it cannot read throws (exit 2), never "none stale"', () 
   assert.throws(() => staleness('4.13.8', { time: { ...time, '4.13.9': 'soon' }, versions }, now), /unreadably/);
 });
 
+test('the first newer release is the earliest instant, whatever format dates it', () => {
+  // 4.13.9 written RFC-1123: as text "Thu, …" sorts after "2026-…", as an instant it is first
+  const rfc = { ...times, '4.13.9': new Date(times['4.13.9']).toUTCString() };
+  const now = after(times['4.13.9'], GRACE_DAYS + 1);
+  const iso = staleness('4.13.8', released(times), now);
+  const s = staleness('4.13.8', released(rfc), now);
+  assert.equal(s.behindSince, rfc['4.13.9']);
+  const toSecond = (d) => Math.floor(Date.parse(d) / 1000); // RFC-1123 carries no milliseconds
+  assert.equal(toSecond(s.behindSince), toSecond(iso.behindSince));
+  assert.deepEqual({ ...s, behindSince: undefined }, { ...iso, behindSince: undefined });
+});
+
 test('below 1.0.0 the minor is the line', () => {
   const zero = { '0.4.1': '2020-01-01T00:00:00Z', '0.4.2': '2020-02-01T00:00:00Z', '0.5.0': '2020-01-01T00:00:00Z' };
   assert.equal(staleness('0.4.2', released(zero), at('2030-01-01')), null);

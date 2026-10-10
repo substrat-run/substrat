@@ -244,7 +244,8 @@ export function staleness(version, release, now) {
   if (newer.length === 0) return null;
   const unreadable = newer.find((v) => typeof times[v] !== 'string' || Number.isNaN(Date.parse(times[v])));
   if (unreadable) throw new Error(`the registry answer dates ${unreadable} unreadably: ${JSON.stringify(times[unreadable])}`);
-  const behindSince = newer.map((v) => times[v]).sort()[0];
+  // by instant, not by string: a parseable date need not be ISO, and only ISO sorts as text
+  const behindSince = newer.map((v) => times[v]).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
   return { latest: newer.at(-1), behindSince, stale: now.getTime() - Date.parse(behindSince) > GRACE_DAYS * DAY };
 }
 
@@ -339,7 +340,7 @@ function main() {
     }
     const s = attempt(`cannot judge the release dates of ${pin.name}`, () => staleness(pin.version, releasesOf.get(pin.name), now));
     if (s?.stale && !accepts.held.has(`${pin.name}@${pin.version}`)) {
-      staleLines.push(`${pin.name}@${pin.version} (override "${pin.key}") — behind since ${s.behindSince.slice(0, 10)}, more than ${GRACE_DAYS} days; latest on its line is ${s.latest}`);
+      staleLines.push(`${pin.name}@${pin.version} (override "${pin.key}") — behind since ${new Date(s.behindSince).toISOString().slice(0, 10)}, more than ${GRACE_DAYS} days; latest on its line is ${s.latest}`);
     }
   }
   for (const e of accepts.expired) staleLines.push(`${e.package}@${e.version} — its ${ACCEPT_FILE} entry expired on ${e.expires} ("${e.reason}")`);
