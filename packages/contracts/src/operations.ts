@@ -1522,7 +1522,9 @@ function getPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): De
   if (common) return common;
   if (decl.paged !== undefined) return 'it is paged — a page is a `list`';
   if (decl.emits !== undefined) return 'it emits, and a read announces nothing';
-  if (decl.http?.method !== undefined && decl.http.method !== 'GET') return `it is served as ${decl.http.method}, not GET`;
+  // An invoke-only operation that emits nothing may still write — a silent transition reads the
+  // same from here — so a `get` is one the declaration itself SERVES as a read.
+  if (decl.http?.method !== 'GET') return 'it is not served as GET, the method that says it only reads';
   const name = entityOfOutput(decl.output, entities);
   if (name === undefined) return "its output is not one of this module's entities' own `fields`";
   const base = derivableEntity(name, entities);
@@ -1656,7 +1658,7 @@ function updatePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
 function deletePlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
   const common = commonClause(decl, 'delete');
   if (common) return common;
-  if (decl.http?.method !== undefined && decl.http.method !== 'DELETE') return `it is served as ${decl.http.method}, not DELETE`;
+  if (decl.http?.method !== 'DELETE') return 'it is not served as DELETE, the method that says it removes the row';
   if (decl.paged !== undefined) return 'it is paged';
   const target = writeTarget(decl, entities);
   if (typeof target === 'string') return target;
