@@ -1712,7 +1712,10 @@ function assertHandlersDeclared(operations: Record<string, unknown>, entities: R
     }
     if (derive !== undefined) {
       if (!(DERIVED_KINDS as readonly unknown[]).includes(derive)) {
-        throw new Error(`model: '${name}' declares \`derive: '${String(derive)}'\` — the derivable shapes are ${DERIVED_KINDS.join(', ')}`);
+        throw new Error(
+          `model: '${name}' declares \`derive: '${String(derive)}'\` — the derivable shapes are ${DERIVED_KINDS.join(', ')}.\n` +
+            '  Remedy: declare one of them, or drop `derive` and write the handler.',
+        );
       }
       const plan = planFor(derive as DerivedKind, decl, entities);
       if (typeof plan === 'string') {
@@ -1729,7 +1732,8 @@ function assertHandlersDeclared(operations: Record<string, unknown>, entities: R
       if (authored !== undefined) {
         throw new Error(
           `model: '${name}' declares \`authored\`, but nothing about it is derivable — it matches none of ` +
-            `${DERIVED_KINDS.join(', ')}, so every handler for it is authored already. Remove \`authored\`.`,
+            `${DERIVED_KINDS.join(', ')}, so every handler for it is authored already.\n` +
+            '  Remedy: remove `authored`.',
         );
       }
       continue;

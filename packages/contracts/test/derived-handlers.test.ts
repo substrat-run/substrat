@@ -271,7 +271,8 @@ describe('the gate', () => {
     );
     // A kind that does not exist, through a cast, is refused by name too.
     expect(() => define({ 'n/get': { ...GET, derive: 'create' as never } })).toThrow(
-      "model: 'n/get' declares `derive: 'create'` — the derivable shapes are get, list, update, delete",
+      "model: 'n/get' declares `derive: 'create'` — the derivable shapes are get, list, update, delete.\n" +
+        '  Remedy: declare one of them, or drop `derive` and write the handler.',
     );
   });
 
@@ -284,7 +285,8 @@ describe('the gate', () => {
       define({ 'n/ping': { summary: 's', permission: 'note:read', output: z.object({ ok: z.boolean() }), authored: 'habit' } }),
     ).toThrow(
       "model: 'n/ping' declares `authored`, but nothing about it is derivable — it matches none of get, list, update, delete, " +
-        'so every handler for it is authored already. Remove `authored`.',
+        'so every handler for it is authored already.\n' +
+        '  Remedy: remove `authored`.',
     );
   });
 
