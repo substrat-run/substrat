@@ -9,9 +9,9 @@ import {
   relayConnectLinkMint,
   relayConnectLinkRevoke,
   tenantTokenAuth,
+  signConnectState,
 } from '@substrat-run/control-plane-api';
 import { platformActorId, principalId, scopeId, tenantId, type TenantId } from '@substrat-run/contracts';
-import { signConnectState } from '@substrat-run/control-plane-api';
 import { ulid } from '@substrat-run/kernel';
 import { TenantNarrowedControlPlane } from '../src/authority.js';
 import {
