@@ -15,9 +15,12 @@ import {
   substratError,
   type DerivationPlan,
   type DerivedEmit,
+  type DerivedParent,
+  type DerivedStamp,
   type EntityRef,
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
+import { ulid } from './ulid.js';
 import type { OperationContext, OperationHandler, SqlValue } from './scope-host.js';
 
 type Row = Record<string, unknown>;
@@ -68,6 +71,8 @@ function bodyOf(
 
     case 'list':
       return (ctx, input) => {
+        // A page of a parent's rows names the parent: one that does not exist is not an empty page.
+        if (plan.parent) parentOrThrow(ctx, plan.parent, input);
         const filters: Row = {};
         for (const { field, column } of plan.filters) {
           if (input?.[field] !== undefined) filters[column] = input[field];
@@ -90,11 +95,15 @@ function bodyOf(
         const sent = plan.fields.filter(({ field }) => input?.[field] !== undefined);
         // Nothing sent is nothing changed — no write, and no event to move the version.
         if (sent.length === 0) return existing;
+        const set = [
+          ...sent.map(({ field, column }) => ({ column, value: input?.[field] as SqlValue })),
+          ...stamped(ctx, plan.stamps),
+        ];
         ctx.sql.exec(
-          `UPDATE ${quoted(plan.table)} SET ${sent.map(({ column }) => `${quoted(column)} = ?`).join(', ')} ` +
+          `UPDATE ${quoted(plan.table)} SET ${set.map(({ column }) => `${quoted(column)} = ?`).join(', ')} ` +
             `WHERE ${quoted(plan.primaryKey)} = ?`,
           // The plan admits only string and number columns, and the host parsed the input against them.
-          [...sent.map(({ field }) => input?.[field] as SqlValue), id],
+          [...set.map(({ value }) => value), id],
         );
         const row = rowOrThrow(ctx, id);
         ctx.emit(eventOf(plan.emit, ref(id), row));
@@ -110,7 +119,58 @@ function bodyOf(
         ctx.emit(eventOf(plan.emit, ref(id), result));
         return result;
       };
+
+    case 'create':
+      return (ctx, input) => {
+        const parentId = plan.parent ? parentOrThrow(ctx, plan.parent, input) : undefined;
+        const set = [
+          ...(plan.parent ? [{ column: plan.parent.column, value: parentId as SqlValue }] : []),
+          // A field the caller left out is NULL — the plan admits it only over a nullable column.
+          ...plan.values.map(({ field, column }) => ({ column, value: (input?.[field] ?? null) as SqlValue })),
+        ];
+        // Idempotent on the natural key: the row that already holds it is the answer, unchanged.
+        if (plan.key.length > 0) {
+          const byKey = new Map(set.map(({ column, value }) => [column, value]));
+          const existing = ctx.sql.query<Row>(
+            `SELECT ${plan.columns.map(quoted).join(', ')} FROM ${quoted(plan.table)} WHERE ` +
+              plan.key.map((column) => `${quoted(column)} IS ?`).join(' AND '),
+            plan.key.map((column) => byKey.get(column) as SqlValue),
+          )[0];
+          if (existing) return existing;
+        }
+        const id = ulid();
+        const row = [{ column: plan.primaryKey, value: id }, ...set, ...stamped(ctx, plan.stamps)];
+        ctx.sql.exec(
+          `INSERT INTO ${quoted(plan.table)} (${row.map(({ column }) => quoted(column)).join(', ')}) ` +
+            `VALUES (${row.map(() => '?').join(', ')})`,
+          row.map(({ value }) => value),
+        );
+        // The edge the permission walk follows from the new row to the parent it was checked on.
+        if (plan.parent) ctx.link(ref(id), { entityType: plan.parent.entity, entityId: String(parentId) });
+        const created = rowOrThrow(ctx, id);
+        ctx.emit(eventOf(plan.emit, ref(id), created));
+        return created;
+      };
   }
+}
+
+/** The parent the input names, or `not_found` — answered after the check, so it probes nothing. */
+function parentOrThrow(ctx: OperationContext, parent: DerivedParent, input: Input): string {
+  const id = String(input?.[parent.idFrom]);
+  const found = ctx.sql.query(
+    `SELECT 1 AS found FROM ${quoted(parent.table)} WHERE ${quoted(parent.primaryKey)} = ?`,
+    [id],
+  )[0];
+  if (!found) throw substratError('not_found', `${parent.entity} not found: ${id}`);
+  return id;
+}
+
+/** Each stamp's value for this invocation: the time, or the caller. */
+function stamped(ctx: OperationContext, stamps: readonly DerivedStamp[]): { column: string; value: SqlValue }[] {
+  return stamps.map(({ column, kind }) => ({
+    column,
+    value: kind === 'createdAt' || kind === 'updatedAt' ? ctx.now() : String(ctx.principal),
+  }));
 }
 
 /** The declared event, its payload and subject drawn from what the operation answers with. */

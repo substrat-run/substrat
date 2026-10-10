@@ -22,6 +22,7 @@
  * from is #680/#685's question; the registry is a prerequisite either way.
  */
 import { z } from 'zod';
+import { baseDefOf } from './zod-read.js';
 import { emitLifecycles, type EmittedLifecycle, type LifecycleDef } from './lifecycle.js';
 import { isKernelNamespace } from './object-ref.js';
 import type { EntityStateDeclaration } from './entity-state.js';
@@ -155,7 +156,29 @@ export interface EntityDef<Names extends string = string> {
    * fields and no `erasure` is unreached, and every receipt says so.
    */
   readonly erasure?: EntityErasureDef;
+  /**
+   * Columns a DERIVED write fills from the invocation rather than from the input (#2157) —
+   * `{ column: kind }`:
+   *
+   * - `createdAt` — `ctx.now()`, on insert.
+   * - `createdBy` — the calling principal, on insert.
+   * - `updatedAt` — `ctx.now()`, on insert and on every derived update.
+   * - `updatedBy` — the calling principal, on insert and on every derived update.
+   *
+   * What makes a `create` derivable: every column of the row has to come from somewhere the
+   * model names, and the time and the caller are the two sources no input carries. A stamped
+   * column is a string column and never the primary key, and no derived body field may write it.
+   *
+   * **A statement about derived writes only.** An authored handler writes its own columns, as it
+   * always has; declaring a stamp does not reach into it. Adds no column and no migration — the
+   * column is declared in `fields` like any other.
+   */
+  readonly stamps?: Readonly<Record<string, StampKind>>;
 }
+
+/** What a stamped column is filled with (#2157) — see `EntityDef.stamps`. */
+export const STAMP_KINDS = ['createdAt', 'createdBy', 'updatedAt', 'updatedBy'] as const;
+export type StampKind = (typeof STAMP_KINDS)[number];
 
 /** An entity's `erasure` declaration, as authored. */
 export type EntityErasureDef<F extends string = string> =
@@ -225,6 +248,8 @@ export function defineEntities<
       erasable?: readonly EntityFields<T[K]>[];
       outsideText?: readonly EntityFields<T[K]>[];
       erasure?: EntityErasureDef<EntityFields<T[K]>>;
+      // Checked at run time too (`stampsOf`): a constraint does not refuse an excess key.
+      stamps?: Readonly<Partial<Record<EntityFields<T[K]>, StampKind>>>;
       // Keys are CURRENT field names — the thing being renamed TO. The values
       // are historical and name nothing that still exists, so they stay strings.
       //
@@ -239,7 +264,31 @@ export function defineEntities<
   },
 >(entities: T): T {
   assertEntityNames(Object.keys(entities));
+  for (const [name, entity] of Object.entries(entities)) stampsOf(name, entity as EntityDef);
   return entities;
+}
+
+/**
+ * The entity's stamped columns (#2157), refused where the declaration cannot be true: a column
+ * that is not a field, the primary key (a derived create mints that), or a column that is not a
+ * string — a timestamp is ISO text and a principal is an id.
+ */
+export function stampsOf(name: string, entity: EntityDef): Readonly<Record<string, StampKind>> {
+  const stamps = entity.stamps;
+  if (stamps === undefined) return {};
+  const primaryKey = primaryKeyOf(name, entity);
+  for (const [column, kind] of Object.entries(stamps)) {
+    const schema = (entity.fields.shape as Record<string, unknown>)[column];
+    if (schema === undefined) throw new Error(`model: ${name}.stamps names '${column}', which is not a field`);
+    if (!(STAMP_KINDS as readonly string[]).includes(kind)) {
+      throw new Error(`model: ${name}.stamps.${column} is '${String(kind)}' — a stamp is one of ${STAMP_KINDS.join(', ')}`);
+    }
+    if (primaryKey.includes(column)) throw new Error(`model: ${name}.stamps names '${column}', which is the primary key`);
+    if (baseDefOf(schema)?.type !== 'string') {
+      throw new Error(`model: ${name}.stamps names '${column}', which is not a string column`);
+    }
+  }
+  return stamps;
 }
 
 /**
@@ -329,6 +378,8 @@ export interface EmittedEntity {
   readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number };
   /** How a subject erasure reaches it (#2068), when declared. `subjects` sorted. */
   readonly erasure?: { readonly mode: 'blank' | 'delete' | 'custom'; readonly subjects?: readonly string[] };
+  /** The columns a derived write stamps (#2157), keyed sorted. */
+  readonly stamps?: Readonly<Record<string, StampKind>>;
 }
 
 export interface EmittedModel {
@@ -372,7 +423,7 @@ export interface EmittedModel {
  * The handler shapes the platform derives (#1773), in the order a declaration is classified.
  * Here rather than beside `defineOperations` because the artifact's schema reads them too.
  */
-export const DERIVED_KINDS = ['get', 'list', 'update', 'delete'] as const;
+export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'create'] as const;
 
 /**
  * The shapes the model already describes completely, so the platform writes the handler.
@@ -385,20 +436,28 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete'] as const;
  * - `list` — a kernel-composed page (`paged.over`) of the entity's own rows, the output IS its
  *   `fields`. Every input field is one of its declared `filterable` columns; a check narrowed to a
  *   PARENT scopes the page to that parent's rows through the link column `<parent>_id`, so the
- *   filter is the link and not merely a column of the same name as the id input. Served as GET,
- *   and emits nothing: a paged command is not a read.
+ *   filter is the link and not merely a column of the same name as the id input, and a parent that
+ *   does not exist is `not_found` rather than an empty page (#2157). Served as GET, and emits
+ *   nothing: a paged command is not a read.
  * - `update` — the partial `PATCH`. Absent fields are left as they are and `null` clears a
  *   nullable column; `concurrency` over the row is required, so the field bag cannot lose an
  *   update. Emits about the row, and answers with it.
  * - `delete` — removes one row with no child entity (a cascade is authored), emits, and answers
  *   `{ id, deleted: true }`.
+ * - `create` — the `POST` that inserts one row and answers with it (#2157). Every column comes from
+ *   exactly one place the model names: the primary key is minted (`ulid()`), a check narrowed to a
+ *   PARENT fills the link column `<parent>_id` (the parent must exist, and the new row is linked
+ *   to it), a declared `stamps` column is the time or the caller, an input field fills the column
+ *   of its snake_case name, and a nullable column no input names is `NULL`. An entity with a
+ *   natural `key` is created idempotently: a row already holding that key is the answer, with no
+ *   write and no event. Emits about the new row.
  *
  * A derived handler checks the declared permission first, reads and writes only the entity's
  * declared columns through `ctx.sql`, and answers `not_found` for a missing row — the same steps
  * a hand-written one takes, written once.
  *
- * `create` is not here yet: the id, the timestamps and the parent link it would write are not all
- * declared. Neither are hooks around a derived handler.
+ * There are no hooks around a derived handler: an operation that needs one more step is authored,
+ * and says why.
  */
 export type DerivedKind = (typeof DERIVED_KINDS)[number];
 
@@ -452,6 +511,7 @@ export const emittedEntity = z.object({
   erasure: z
     .object({ mode: z.enum(['blank', 'delete', 'custom']), subjects: z.array(z.string()).optional() })
     .optional(),
+  stamps: z.record(z.string(), z.enum(STAMP_KINDS)).optional(),
 });
 
 export const emittedExport = z.object({
@@ -539,6 +599,7 @@ export function emitModel<T extends Record<string, EntityDef>>(
           }
         : {}),
       ...(e.erasure ? { erasure: emittedErasure(e.erasure) } : {}),
+      ...(e.stamps && Object.keys(e.stamps).length ? { stamps: sortedStamps(name, e) } : {}),
     };
   }
   // Refused at emit too, so `lint:model --check` goes red where `manifestEntities` would.
@@ -574,6 +635,12 @@ export function emitModel<T extends Record<string, EntityDef>>(
     ...(Object.keys(exports).length ? { exports } : {}),
     ...(Object.keys(handlers).length ? { handlers } : {}),
   };
+}
+
+/** The stamps, validated, keyed in sorted order so the artifact diffs cleanly. */
+function sortedStamps(name: string, entity: EntityDef): Record<string, StampKind> {
+  const stamps = stampsOf(name, entity);
+  return Object.fromEntries(Object.keys(stamps).sort().map((column) => [column, stamps[column] as StampKind]));
 }
 
 /**
