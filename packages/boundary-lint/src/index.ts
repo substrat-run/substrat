@@ -892,6 +892,23 @@ function marks(line: string, stripped: string, marker: string): boolean {
 }
 
 /**
+ * The lines inside a `boundary-lint-allow <rule>` … `boundary-lint-end <rule>` block, read as
+ * directives (`marks`) from the comment-stripped copy.
+ */
+function allowedLines(lines: string[], strippedLines: string[], rule: string): Set<number> {
+  const allowed = new Set<number>();
+  let on = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const bare = strippedLines[i] ?? '';
+    if (marks(line, bare, `boundary-lint-allow ${rule}`)) on = true;
+    else if (marks(line, bare, `boundary-lint-end ${rule}`)) on = false;
+    if (on) allowed.add(i + 1);
+  }
+  return allowed;
+}
+
+/**
  * R8 — an engine read names its columns.
  *
  * The counterpart to #771's runtime seam: `returns(schema, surface, value)`
@@ -912,18 +929,7 @@ function checkSelectStar(rel: string, source: string, out: Violation[]): void {
   if (!/select/i.test(source)) return;
 
   const stripped = maskSource(source, { literals: false });
-  const lines = source.split('\n');
-  const strippedLines = stripped.split('\n');
-
-  const allowed = new Set<number>();
-  let on = false;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const bare = strippedLines[i] ?? '';
-    if (marks(line, bare, 'boundary-lint-allow R8')) on = true;
-    else if (marks(line, bare, 'boundary-lint-end R8')) on = false;
-    if (on) allowed.add(i + 1);
-  }
+  const allowed = allowedLines(source.split('\n'), stripped.split('\n'), 'R8');
 
   SELECT_STAR.lastIndex = 0;
   for (let m: RegExpExecArray | null; (m = SELECT_STAR.exec(stripped)); ) {
@@ -998,7 +1004,7 @@ function castAtTop(expr: string): boolean {
     const c = e[i]!;
     if (c === '(' || c === '[' || c === '{') depth++;
     else if (c === ')' || c === ']' || c === '}') depth--;
-    else if (depth === 0 && /\sas\s/.test(e.slice(i - 1, i + 3)) && e.slice(i, i + 2) === 'as') return true;
+    else if (depth === 0 && isWord(e, i, 'as')) return true;
   }
   return false;
 }
@@ -1020,16 +1026,7 @@ const HANDLER_MAP_SITES = /\boperations\s*:|\boperationsFor\s*\(|\bundeclaredOpe
 function checkHandlerMapCast(rel: string, source: string, out: Violation[]): void {
   if (!/\boperations(?:For)?\b|\bundeclaredOperations\b/.test(source)) return;
   const masked = maskSource(source);
-  const stripped = maskSource(source, { literals: false });
-  const lines = source.split('\n');
-  const strippedLines = stripped.split('\n');
-  const allowed = new Set<number>();
-  let on = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (marks(lines[i] ?? '', strippedLines[i] ?? '', 'boundary-lint-allow R11')) on = true;
-    else if (marks(lines[i] ?? '', strippedLines[i] ?? '', 'boundary-lint-end R11')) on = false;
-    if (on) allowed.add(i + 1);
-  }
+  let allowed: Set<number> | undefined;
 
   HANDLER_MAP_SITES.lastIndex = 0;
   for (let m: RegExpExecArray | null; (m = HANDLER_MAP_SITES.exec(masked)); ) {
@@ -1037,17 +1034,19 @@ function checkHandlerMapCast(rel: string, source: string, out: Violation[]): voi
     if (m[0].startsWith('operationsFor')) {
       // `operationsFor(declaration)(handlers)` — skip the declaration, judge the handlers.
       const close = expressionEnd(masked, from);
-      const next = masked.slice(close + 1).match(/^\s*\(/);
-      if (masked[close] !== ')' || !next) continue;
-      from = close + 1 + next[0].length;
+      const next = /\s*\(/y;
+      next.lastIndex = close + 1;
+      if (masked[close] !== ')' || !next.test(masked)) continue;
+      from = next.lastIndex;
     } else if (m[0].startsWith('undeclaredOperations')) {
       const reasonEnd = expressionEnd(masked, from);
       if (masked[reasonEnd] !== ',') continue;
       from = reasonEnd + 1;
     }
-    const expr = masked.slice(from, expressionEnd(masked, from));
+    if (!castAtTop(masked.slice(from, expressionEnd(masked, from)))) continue;
     const line = lineAt(source, m.index);
-    if (!castAtTop(expr) || allowed.has(line)) continue;
+    allowed ??= allowedLines(source.split('\n'), maskSource(source, { literals: false }).split('\n'), 'R11');
+    if (allowed.has(line)) continue;
     out.push({
       file: rel,
       line,

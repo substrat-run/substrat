@@ -552,7 +552,7 @@ async function runMacroPart(
   input: Record<string, unknown>,
 ): Promise<unknown> {
   const declared = ticket0Operations[op] as { input?: z.ZodTypeAny };
-  const handler = bound.operations[op] as unknown as OperationHandler<unknown, unknown>;
+  const handler = bound.operations[op] as OperationHandler<unknown, unknown>;
   return handler(ctx, declared.input ? declared.input.parse(input) : input);
 }
 
@@ -7895,7 +7895,5 @@ export const ticket0Module: ModuleRegistration = {
   manifest: ticket0Manifest,
   migrations: ticket0Migrations,
   onSubjectErased: ticket0SubjectErased,
-  // The handlers above are bound to the declaration, and the host parses every
-  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
   ...bound,
 };

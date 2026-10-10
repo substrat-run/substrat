@@ -686,8 +686,6 @@ const closeOp: OperationHandler<{ orderId: string }, WorkOrder> = async (ctx, in
 export const workorderModule: ModuleRegistration = {
   manifest: workorderManifest,
   migrations: workorderMigrations,
-  // The handlers are bound to the declaration, and the host parses every invocation
-  // against it, from one object — so neither can drift from the other (#953, #1835).
   ...operationsFor(workorderOperations)({
     'workorder/get': getOp,
     'workorder/list': listOp,

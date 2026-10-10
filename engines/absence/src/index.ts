@@ -998,8 +998,6 @@ const listEntriesOp: OperationHandler<
 export const absenceModule: ModuleRegistration = {
   manifest: absenceManifest,
   migrations: absenceMigrations,
-  // The handlers are bound to the declaration, and the host parses every invocation
-  // against it, from one object — so neither can drift from the other (#953, #1835).
   ...operationsFor(absenceOperations)({
     'absence/configure-leave-type': configureLeaveTypeOp,
     'absence/list-leave-types': listLeaveTypesOp,
