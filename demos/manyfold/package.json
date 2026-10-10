@@ -83,8 +83,8 @@
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "better-sqlite3": "^13.0.3",
-    "hono": "^4.13.13",
+    "better-sqlite3": "catalog:",
+    "hono": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

@@ -32,7 +32,10 @@ name: Dependency audit
 # package.json ranges and the catalog blocks and nothing under `overrides:` in
 # pnpm-workspace.yaml, so a vulnerable pin there has no other actor: for those packages ANY
 # severity fails, per package (`tools/override-advisories.mjs`). The GHSA-id escape above
-# applies to it too.
+# applies to it too. The same step fails a STALE override — a newer release on its line out for
+# more than 30 days — on the weekly run, a push to main and a PR that changes what an override
+# says; any other PR gets a warning, so the calendar never turns an unrelated PR red. And it
+# asserts that hono and better-sqlite3 each resolve to one version in the lockfile.
 #
 # It reads the lockfile, so it needs no install and no build.
 on:
@@ -54,6 +57,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The PR merge commit and its first parent, the base: the override step compares the
+          # two to decide whether this PR changed the pins.
+          fetch-depth: 2
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
@@ -92,10 +99,12 @@ jobs:
         run: pnpm audit --audit-level critical
 
       # Every severity, but only for the packages pnpm-workspace.yaml pins in `overrides:` —
-      # the pins Dependabot structurally cannot move (#1601). Reads the report written above;
+      # the pins Dependabot structurally cannot move (#1601) — a pin left stale (warned, not
+      # failed, on a PR that does not touch the pins), and a second resolved copy of hono or
+      # better-sqlite3. Reads the report written above;
       # a missing or failed lookup fails here too rather than reading as clean. The tool's own
       # tests run first, so a check that stopped refusing is red rather than quiet.
-      - name: Fail on any advisory against an override
+      - name: Fail on an advisory against an override, a stale override, or a second copy
         run: |
           node --test tools/override-advisories.test.mjs
           node tools/override-advisories.mjs audit.json

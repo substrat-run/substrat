@@ -24,7 +24,7 @@
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "hono": "^4.13.13"
+    "hono": "catalog:"
   },
   "devDependencies": {
     "@substrat-run/contract-tests": "workspace:^",
@@ -32,7 +32,7 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
     "@vitest/ui": "catalog:",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "catalog:",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
