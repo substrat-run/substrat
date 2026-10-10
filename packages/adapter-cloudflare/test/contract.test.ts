@@ -34,6 +34,7 @@ import {
   attachmentTextContractSuite,
   type AttachmentTextHostOptions,
   capabilityContractSuite,
+  becomeMintContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
   connectLinkContractSuite,
@@ -260,6 +261,17 @@ capabilityContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
+});
+
+// #1686: a principal's `become` capability, on the DO path — the bound and the mint in one
+// queued ScopeDO body, its event settled from the DO's own outbox, on workerd's SQLite.
+becomeMintContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, verbs: host, cleanup: async () => host.close() };
 });
 
 // #1706: the peer door, on the DO path — the coordinator threads the platform's `caller` to the

@@ -184,7 +184,7 @@ on it produces a per-tenant number.
 > propagates) and never the dispatched vertical, while every vertical event is a trace of
 > exactly **one** event. Verified from both directions against production before any code
 > was written. So each vertical stamps its own line — `invocationLog()` from
-> `@substrat-run/kernel`, mounted first, enforced by `pnpm lint:invocation-log`.
+> `@substrat-run/vertical-host`, mounted first, enforced by `pnpm lint:invocation-log`.
 
 **The stamp is a verified assertion, not a header.** The middleware writes the line from
 `readRoutedNode`'s answer, given the same `ROUTER_SECRET` and the same `ALLOW_DEV_NODE`

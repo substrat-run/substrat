@@ -16,6 +16,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./invocation-line": {
+      "types": "./dist/invocation-line.d.ts",
+      "default": "./dist/invocation-line.js"
+    },
+    "./ulid": {
+      "types": "./dist/ulid.d.ts",
+      "default": "./dist/ulid.js"
     }
   },
   "files": [

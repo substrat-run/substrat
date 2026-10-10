@@ -3,13 +3,13 @@ import { Hono } from 'hono';
 import {
   fieldCoverageArmed,
   INVOCATION_RECORD_KEY,
-  invocationLevelOf,
   invocationLog,
   type InvocationLogLine,
   type InvocationRecord,
   invocationStampOf,
   withInvocationLog,
 } from '../src/invocation-log.js';
+import { invocationLevelOf } from '@substrat-run/contracts/invocation-record';
 
 /**
  * The middleware's whole output is a `console.log` line, so the suite captures the

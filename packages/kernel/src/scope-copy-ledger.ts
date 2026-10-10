@@ -67,6 +67,72 @@ export const COPY_CLAIM_SQL = `
   WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
     AND state = 'pending' AND (lease_until IS NULL OR lease_until <= ?)`;
 
+/** The move id every backfilled entry carries (#1722), which names it as one in a listing. */
+export const BACKFILL_MOVE_ID = 'backfill:1722';
+
+/**
+ * Record a copy made before the ledger existed, as `retained` (#1722). Never pending, so no move's
+ * confirmation and no lease sweep ever acts on it; never `eligible`, because a historic copy has
+ * no recorded load stamp for a fenced wipe to compare. Refused under a reap claim, like any new
+ * entry, and skipped when the ledger already names the script for this scope in any state: from
+ * that entry on the ledger tracks that store, historic data in it included.
+ * Params: `copyBackfillParams`.
+ */
+export const COPY_BACKFILL_SQL = `
+  INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state, last_attempt_at)
+  SELECT tenant_id, scope_id, ?, ?, 'retained', strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM scopes
+  WHERE tenant_id = ? AND scope_id = ? AND reap_claimed_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
+      WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id AND copy.script_ref = ?)`;
+
+export const copyBackfillParams = (tenantId: string, scopeId: string, scriptRef: string): string[] =>
+  [scriptRef, BACKFILL_MOVE_ID, tenantId, scopeId, scriptRef];
+
+/** What a backfill insert did: wrote the entry, found the script already ledgered, or was refused. */
+export type ScopeCopyBackfillResult = 'recorded' | 'ledgered' | 'reaping' | 'missing';
+
+/**
+ * Settle the scope's backfilled entries a tracked entry has taken over (#1722, review r1). The
+ * backfill records a script only while no move names it; once a move's own entry for the same
+ * script is `done`, that store was wiped under the move's fence or is the scope's route, so the
+ * historic data the backfilled entry stood for is gone or reached. Leaving the entry `retained`
+ * would send every later reap and erasure to a store that refuses writes behind its tombstone.
+ * Run in the same transaction as every write that settles an entry `done`: a settle and a
+ * confirming bind, on both adapters. Params: tenantId, scopeId.
+ */
+export const COPY_BACKFILL_SUPERSEDE_SQL = `
+  UPDATE scope_script_copies SET state = 'done', last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+  WHERE tenant_id = ? AND scope_id = ? AND move_id = '${BACKFILL_MOVE_ID}' AND state <> 'done'
+    AND EXISTS (SELECT 1 FROM scope_script_copies AS tracked
+      WHERE tracked.tenant_id = scope_script_copies.tenant_id AND tracked.scope_id = scope_script_copies.scope_id
+        AND tracked.script_ref = scope_script_copies.script_ref AND tracked.move_id <> '${BACKFILL_MOVE_ID}'
+        AND tracked.state = 'done')`;
+
+/**
+ * The scope row read in the backfill insert's own transaction: what explains an insert that wrote
+ * nothing, and the erasure epoch a recorded entry was written under. An erasure claimed before the
+ * insert moved the epoch past what it compared (its `shredSubject` row's `before`), so a subject
+ * whose erasure's epoch is below this one never reached the recorded copy, whatever order their
+ * audit rows landed in. Params: tenantId, scopeId.
+ */
+export const COPY_BACKFILL_SCOPE_SQL =
+  'SELECT reap_claimed_at, COALESCE(erasure_epoch, 0) AS erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?';
+
+/**
+ * What an erasure's `shredSubject` row records in `before` (#1722): the erasure epoch it ran under
+ * and how it ran. `orchestrated` claimed the scope's copy inventory at that epoch and redacted every
+ * copy in it; `direct` took no claim and redacted only the scope's own store, so it never reaches a
+ * script copy whatever its epoch. The backfill orders erasures against the copies it records by it.
+ */
+export interface ErasureEpochStamp { erasureEpoch: number; path: 'orchestrated' | 'direct' }
+
+/** `COPY_BACKFILL_SCOPE_SQL`'s row. */
+export interface CopyBackfillScopeRow { reap_claimed_at: string | null; erasure_epoch: number }
+
+/** Read the outcome of a backfill insert that wrote nothing, from `COPY_BACKFILL_SCOPE_SQL`'s row. */
+export const copyBackfillRefusal = (scope: CopyBackfillScopeRow | undefined): ScopeCopyBackfillResult =>
+  !scope ? 'missing' : scope.reap_claimed_at !== null ? 'reaping' : 'ledgered';
+
 /**
  * The fence a copy move's restore carries into the destination's own store (#1722). The vertical
  * that holds the destination has no reach to the directory, so the move's lease travels with

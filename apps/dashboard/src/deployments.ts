@@ -1,5 +1,5 @@
 import type { DeployAssets, PermissionRegistry, PlatformActorId, TenantId, VersionOrigin } from '@substrat-run/contracts';
-import { LIST_PAGE_MAX, storedDeployManifest, type DeployManifest } from '@substrat-run/contracts';
+import { errorCodeOf, LIST_PAGE_MAX, storedDeployManifest, substratError, type DeployManifest } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import type { TenantNarrowedControlPlane } from './authority.js';
 
@@ -165,7 +165,8 @@ export async function ownedDeploymentFromCp(
   return shape(v, versions, channels);
 }
 
-const notOwned = (slug: string): Error => new Error(`vertical '${slug}' is not one of your deployments`);
+/** A slug that is not the caller's own deployment reads as not-found, not a leak. */
+const notOwned = (slug: string): Error => substratError('not_found', `vertical '${slug}' is not one of your deployments`);
 
 /**
  * The ownership gate alone — for a route that acts on a slug and reads nothing off the
@@ -309,7 +310,7 @@ export async function versionRegistryFromHost(
 /**
  * #1232: the embedded-mode twin of `versionSchedules` — null without a manifest or the
  * field, and null for a MISSING or cross-lineage version id too, matching the HTTP twin:
- * the adapters' one rejection here is `unknown version …`, and a caller holding a stale
+ * the adapters' one rejection here is `not_found` (`unknown version …`), and a caller holding a stale
  * id (a version deleted between list and read) deserves the same empty panel the
  * CP-backed path gives, not a 500. Anything else still propagates — a parse failure is
  * a real defect, never an absence.
@@ -324,7 +325,7 @@ export async function versionSchedulesFromHost(
   try {
     json = await host.admin.versionManifest(actor, slug, versionId);
   } catch (e) {
-    if (e instanceof Error && e.message.startsWith('unknown version')) return null;
+    if (errorCodeOf(e) === 'not_found') return null;
     throw e;
   }
   if (!json) return null;

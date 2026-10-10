@@ -196,7 +196,7 @@ Three reasons, in order of force:
 
 **There is no encryption primitive in this codebase.** Every `crypto.subtle` call today is a
 one-way digest. Every secret is a plaintext Worker binding compared in constant time
-([platform-call.ts:24](../../packages/kernel/src/platform-call.ts)). Nothing is per-tenant,
+([wire-auth.ts](../../packages/contracts/src/wire-auth.ts)). Nothing is per-tenant,
 rotatable, or encrypted at rest.
 
 D-18 classifies the KMS as an **adapter**, so:
@@ -211,11 +211,12 @@ export interface SecretBox {
 ```
 
 - **dev / self-host** — AES-GCM via Web Crypto, key from env. Fail closed if unset. The rule is
-  already written down at [platform-call.ts:40](../../packages/kernel/src/platform-call.ts):
-  *"An unset secret is a failure, not a bypass."* Note the router secret currently does the
-  opposite ([routed-node.ts:65](../../packages/kernel/src/routed-node.ts), `expectedSecret &&`)
-  and Better Auth ships a hardcoded fallback
-  ([staff-auth.ts:32](../../apps/control-plane/src/staff-auth.ts)); neither is a precedent to
+  already written down at [wire-auth.ts](../../packages/contracts/src/wire-auth.ts):
+  *"An unset secret is a failure, not a bypass."* The router secret has done the same since
+  #966: with no secret configured, [`readRoutedNode`](../../packages/vertical-host/src/routed-node.ts)
+  refuses an assertion unless the worker opts into `allowUnsigned` for local dev. Better Auth,
+  by contrast, ships a hardcoded fallback
+  ([staff-auth.ts:32](../../apps/control-plane/src/staff-auth.ts)), which is not a precedent to
   copy here.
 - **hosted** — Cloudflare Secrets Store binding, or an external KMS behind the same interface.
 
@@ -467,7 +468,7 @@ that needs to MAIL a round to someone else is the other case again, and gets a r
 
 **The two states are separate MAC families.** The link's key is HKDF from the dashboard's
 `SESSION_SECRET`; the platform round's is HKDF from `PLATFORM_SECRET` under its own purpose
-label (`signConnectState`, in the kernel beside `platform-call.ts` — two workers hold the
+label (`signConnectState`, in the kernel — two workers hold the
 halves, so it must not be written twice). A token verifies under at most one. If either
 could sign for the other, a vertical holding the shared script secret could mint a claim
 naming the dashboard's own scope.

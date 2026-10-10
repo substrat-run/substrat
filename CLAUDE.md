@@ -487,7 +487,7 @@ The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:cli
 `lint:conformance`, `lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`,
 `lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
 `lint:platform-entry` (`tools/platform-entry-emit.mts`: the entry module the uploader puts
-in front of every vertical's bundle, #1893, bundled from the kernel's `withInvocationLog` —
+in front of every vertical's bundle, #1893, bundled from vertical-host's `withInvocationLog` —
 and the scope sweeper it supplies beside it to a vertical that declares schedules and exports
 none, #1902, bundled from adapter-cloudflare's `defineScopeSweeperDO`),
 `lint:auth-schema`, `lint:lake-schema` (`tools/lake-schema-emit.mjs`: the Tier-2 stream

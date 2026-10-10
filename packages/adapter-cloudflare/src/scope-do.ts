@@ -19,6 +19,7 @@ import {
   type WireFailure,
   grantRefFromProof,
   principalId,
+  principalBecomeCapabilityInput,
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
   platformRequestInput,
@@ -252,6 +253,10 @@ import type {
   PeerSpec,
   VerticalCaller,
   BecomeCapabilityInput,
+  BoundedBecomeMint,
+  BoundedBecomeRevoke,
+  BecomeLinkState,
+  PrincipalBecomeCapabilityInput,
   CapabilityExchange,
   CapabilityId,
   CapabilityFilter,
@@ -317,6 +322,11 @@ import {
   blankSqlComments,
   type TableStep,
   CAPABILITY_EXCHANGE_OPERATION,
+  CAPABILITY_BECOME_MINT_OPERATION,
+  becomeMintCheck,
+  mintBecomeCapabilityAsPrincipal,
+  revokeBecomeCapabilityAsPrincipal,
+  readBecomeLinkStates,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
   createEntityEdgeVerbs,
@@ -4794,6 +4804,9 @@ export function defineScopeDO(
                   [],
                   now,
                 ), event),
+              holdings: this.checker.holdings
+                ? (principal) => this.checker.holdings!({ kind: 'principal', id: principal }, { tenantId, scopeId })
+                : undefined,
             },
             secret,
             mode,
@@ -4802,6 +4815,88 @@ export function defineScopeDO(
         if (outcome) await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return outcome;
       });
+    }
+
+    /**
+     * A principal's `become` mint (#1686) — a member invite's link. The kernel's
+     * `becomeMintCheck` and the write in ONE queued body and one storage transaction, so
+     * nothing the target or the caller holds moves between the check and the mint; a refusal
+     * writes nothing. On the spine as `capability.become-minted`, the caller its actor.
+     */
+    async mintBecomeCapabilityBoundedFor(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      caller: PrincipalId,
+      input: PrincipalBecomeCapabilityInput,
+    ): Promise<BoundedBecomeMint> {
+      await this.ensureMigrations();
+      const minter = principalId.parse(caller);
+      const parsed = principalBecomeCapabilityInput.parse(input);
+      return await this.queue.enqueue(async (): Promise<BoundedBecomeMint> => {
+        const checked = await becomeMintCheck({ sql: doSpineSql(this.sql), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
+        if (!checked.ok) return checked;
+        const liveSince = this.liveHighWaterMark();
+        const now = instant.parse(new Date().toISOString());
+        let minted: MintedCapability | undefined;
+        await this.revision.transaction(async () => {
+          minted = await mintBecomeCapabilityAsPrincipal(
+            {
+              sql: doSpineSql(this.sql),
+              now,
+              emit: (event) =>
+                kernelEmit(this.operationContext(
+                  minter,
+                  tenantId,
+                  scopeId,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  CAPABILITY_BECOME_MINT_OPERATION,
+                  undefined,
+                  [],
+                  now,
+                ), event),
+            },
+            minter,
+            parsed,
+            checked.targetDigest,
+          );
+        });
+        await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        return { ok: true, minted: minted! };
+      });
+    }
+
+    /** Where each named `become` link stands (#1686) — a pending-invite list's read. */
+    async becomeLinkStatesFor(tenantId: TenantId, scopeId: ScopeId, ids: string[]): Promise<BecomeLinkState[]> {
+      await this.ensureMigrations();
+      return this.queue.enqueue(() =>
+        readBecomeLinkStates(
+          doSpineSql(this.sql),
+          ids,
+          instant.parse(new Date().toISOString()),
+          this.checker.holdings
+            ? (principal) => this.checker.holdings!({ kind: 'principal', id: principal }, { tenantId, scopeId })
+            : undefined,
+        ),
+      );
+    }
+
+    /**
+     * Revoke a `become` capability a principal minted (#1686) — withdrawing a member invite's
+     * link, with `by` recorded as the revoker. False for any other capability.
+     */
+    async revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke> {
+      await this.ensureMigrations();
+      return await this.queue.enqueue(() =>
+        revokeBecomeCapabilityAsPrincipal(
+          { sql: doSpineSql(this.sql), checker: this.checker, node: { tenantId, scopeId }, now: instant.parse(new Date().toISOString()) },
+          id,
+          principalId.parse(by),
+        ),
+      );
     }
 
     /**
@@ -6244,6 +6339,10 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
         // #2126: NULL keeps every existing capability's attachment behavior unchanged.
         'ALTER TABLE _substrat_capabilities ADD COLUMN attachments TEXT',
+        // #1686: NULL on every row already there — none is a principal-minted become.
+        'ALTER TABLE _substrat_capabilities ADD COLUMN target_digest TEXT',
+        // #1686: why the kernel revoked a link itself; NULL for every revoke already there.
+        'ALTER TABLE _substrat_capabilities ADD COLUMN revoked_reason TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
         // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.

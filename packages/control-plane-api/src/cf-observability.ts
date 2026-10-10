@@ -1375,8 +1375,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    *
    * ## The connector-call dataset's published ordinals
    *
-   * Written by the kernel's `connectorCallDataPoint` from `CONNECTOR_CALL_DATA_POINT_LAYOUT`
-   * (`packages/kernel/src/connector-calls.ts`), through the control plane's
+   * Written by adapter-cloudflare's `connectorCallDataPoint` from `CONNECTOR_CALL_DATA_POINT_LAYOUT`
+   * (`packages/adapter-cloudflare/src/connector-calls.ts`), through the control plane's
    * `CONNECTOR_ANALYTICS` binding — its OWN dataset, never the router's, because the two
    * shapes' ordinals mean different things. Each position carries an OpenTelemetry
    * semantic-convention name (checked against `@opentelemetry/semantic-conventions` 1.43.0,

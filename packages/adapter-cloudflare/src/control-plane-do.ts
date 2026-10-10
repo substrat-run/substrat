@@ -120,7 +120,7 @@ import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
 import { blankSqlComments, executableSqlStatements } from '@substrat-run/kernel';
 import {
-  COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3252,6 +3252,7 @@ export class ControlPlaneDO extends DurableObject {
       if (cond.confirmMove) {
         const { tenant_id } = this.sql.exec('SELECT tenant_id FROM scopes WHERE scope_id = ?', scopeId).one() as { tenant_id: string };
         this.sql.exec(COPY_MOVE_CONFIRM_SQL, ...copyMoveConfirmParams(cond.confirmMove, tenant_id, scopeId, now));
+        this.sql.exec(COPY_BACKFILL_SUPERSEDE_SQL, tenant_id, scopeId);
       }
       return true;
     });
@@ -3299,6 +3300,21 @@ export class ControlPlaneDO extends DurableObject {
     return 'recorded'; // idempotent retry of this move
   }
 
+  /**
+   * Record a pre-ledger copy, and its `backfillScopeCopy` audit row in the same unit (#1722): the row
+   * carries the erasure epoch read here, which the backfill orders erasures by, so an entry with no
+   * row (an audit write lost after the insert) would let a later run compare against an older epoch.
+   */
+  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, audit: AdminEntryInput): ScopeCopyBackfillResult {
+    return this.ctx.storage.transactionSync(() => {
+      const written = this.sql.exec(COPY_BACKFILL_SQL, ...copyBackfillParams(tenantId, scopeId, scriptRef)).rowsWritten > 0;
+      const scope = this.sql.exec(COPY_BACKFILL_SCOPE_SQL, tenantId, scopeId).toArray()[0] as CopyBackfillScopeRow | undefined;
+      if (!written) return copyBackfillRefusal(scope);
+      this.recordAdmin({ ...audit, before: { erasureEpoch: scope!.erasure_epoch } });
+      return 'recorded';
+    });
+  }
+
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): ScopeScriptCopyRow[] {
     const limit = assertRowLimit('limit', input.limit);
     return this.ctx.storage.transactionSync(() => {
@@ -3338,15 +3354,19 @@ export class ControlPlaneDO extends DurableObject {
     tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string,
     loadStamp: string | null, revision: string | null, claimedBy?: string,
   ): boolean {
-    return this.sql.exec(
-      `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
-         last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-       WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
-         AND (state <> 'done' OR ? = 'done')
-         ${claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
-      state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId, state,
-      ...(claimedBy === undefined ? [] : [claimedBy]),
-    ).rowsWritten > 0;
+    return this.ctx.storage.transactionSync(() => {
+      const settled = this.sql.exec(
+        `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
+           last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
+           AND (state <> 'done' OR ? = 'done')
+           ${claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
+        state, loadStamp, revision, tenantId, scopeId, scriptRef, moveId, state,
+        ...(claimedBy === undefined ? [] : [claimedBy]),
+      ).rowsWritten > 0;
+      if (settled && state === 'done') this.sql.exec(COPY_BACKFILL_SUPERSEDE_SQL, tenantId, scopeId);
+      return settled;
+    });
   }
 
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): void {

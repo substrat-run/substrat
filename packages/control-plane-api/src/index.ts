@@ -48,6 +48,9 @@ export {
   assertNoUnreachableScopeCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
   settleExpiredScopeScriptCopies, sweepScopeScriptCopies,
 } from './scope-copy-cleanup.js';
+export {
+  BIRTH_WINDOW_MS, backfillScopeScriptCopies, type CopyBackfillPage,
+} from './scope-copy-backfill.js';
 export { versionReachedAt } from './scope-deployment.js';
 // #1705 PR 2: the cross-vertical phase's reach for a control plane whose scopes live elsewhere.
 export { hostedCrossVerticalReach } from './cross-vertical.js';
@@ -95,7 +98,7 @@ export {
   type EmailSent,
   type SendEmailDeps,
 } from './email-intent.js';
-// #1978: moving here from the kernel — the drain is its only reader.
+// #1978: moved here from the kernel — the drain is its only reader.
 export {
   isTerminalDispatchFailure,
   isTerminalProviderError,

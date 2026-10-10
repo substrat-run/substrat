@@ -1084,7 +1084,15 @@ export interface AppMembersView {
   roles: string[];
   members: { principal: string; roles: string[]; logins: number; email: string | null; owner: boolean }[];
   /** `roleKey`: the role it was minted at. `roles`: what its principal holds now. */
-  invites: { principal: string; roleKey: string; roles: string[]; email: string | null; createdAt: number }[];
+  invites: {
+    principal: string;
+    roleKey: string;
+    roles: string[];
+    email: string | null;
+    createdAt: number;
+    /** Where the invite's link stands (#1686); null for an older invite, absent from an older vertical. */
+    link?: { state: 'open' | 'used' | 'revoked' | 'expired'; reason: 'holdings-changed' | null } | null;
+  }[];
 }
 
 /** A freshly minted member invite — shown once, stored nowhere. */

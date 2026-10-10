@@ -58,7 +58,7 @@ Observability page would be either empty or someone else's.
 
 So a line carrying the tenant is written from inside the vertical's script, and the platform
 puts it there. At upload, the control plane adds its own entry module in front of the
-vertical's. That module wraps the vertical's default export with the kernel's
+vertical's. That module wraps the vertical's default export with `@substrat-run/vertical-host`'s
 `withInvocationLog`, so every request the script's `fetch` handler serves is stamped, whether or
 not its author thought about logging. Two kinds of script are uploaded unwrapped: one whose default
 export has no `fetch` to wrap, and one built on an older kernel that writes the line itself (see

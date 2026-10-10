@@ -37,12 +37,11 @@ import {
   connectorDispatchKind,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
+import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import {
   runPlatformSweep,
   runCrossVerticalFrom,
   isPrimaryScope,
-  assertPlatformCall,
-  PlatformCallError,
   StorageReadUnsupported,
   webCryptoSecretBox,
   globalFetch,

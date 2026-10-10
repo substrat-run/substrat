@@ -8,6 +8,7 @@ import {
   orgId as orgIdSchema,
   platformActorId,
   scopeId as scopeIdSchema,
+  substratError,
   type BindAcknowledgement,
   type ExportBreak,
   type PermissionKey,
@@ -1703,7 +1704,7 @@ export async function removeAppHostname(
   }
   const bound = await listAppHostnames(host, input);
   const row = bound.find((h) => h.hostname === hostname);
-  if (!row) throw new Error(`'${hostname}' is not bound to this app`);
+  if (!row) throw substratError('not_found', `'${hostname}' is not bound to this app`);
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
   await scope.invoke('dashboard/unbind-app-hostname', {
     appScopeId: input.appScopeId,

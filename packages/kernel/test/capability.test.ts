@@ -19,8 +19,11 @@ import {
   readCapabilityPage,
   capabilityTokenHash,
   carriesSecret,
+  exchangeCapability,
   guardSecrets,
+  holdingsDigest,
   mintCapabilitySecret,
+  readBecomeLinkStates,
   persistedText,
   redactSecrets,
   type CapabilityRow,
@@ -379,5 +382,127 @@ describe('the operator read of the directory (#1686)', () => {
       expect(status === 'live').toBe(capabilityExchangeable(row, NOW));
       expect(status === 'live' || status === 'used-up').toBe(capabilityLive(row, NOW));
     }
+  });
+});
+
+/**
+ * Where a `become` link stands (#1686) — what a pending-invite list shows, so a link the kernel
+ * revoked or that expired is never listed as open. One row per id, in the order asked.
+ */
+describe('readBecomeLinkStates', () => {
+  const become = (over: Partial<CapabilityRow> = {}): CapabilityRow =>
+    capRow({
+      mode: 'become', entity_type: null, entity_id: null, permissions: null, principal: ALICE, max_uses: 1,
+      minted_by: JSON.stringify({ platform: '01JZ00000000000000000000P1' }),
+      ...over,
+    });
+  const sqlOf = (rows: Record<string, CapabilityRow>): ScopedSql => ({
+    query: <T,>(_sql: string, params?: readonly unknown[]) => {
+      const row = rows[String(params?.[0])];
+      return (row ? [row] : []) as unknown as T[];
+    },
+    exec: () => ({ changes: 0 }),
+  });
+  const ids = ['01JZ00000000000000000000C1', '01JZ00000000000000000000C2', '01JZ00000000000000000000C3',
+    '01JZ00000000000000000000C4', '01JZ00000000000000000000C5', '01JZ00000000000000000000C6'];
+
+  it('reads open, used, expired, revoked (with and without the kernel\'s reason), and a missing one as revoked', async () => {
+    const sql = sqlOf({
+      [ids[0]!]: become({ id: ids[0]! }),
+      [ids[1]!]: become({ id: ids[1]!, uses: 1 }),
+      [ids[2]!]: become({ id: ids[2]!, expires_at: NOW }),
+      [ids[3]!]: become({ id: ids[3]!, revoked_at: NOW, revoked_by: null, revoked_reason: 'holdings-changed' }),
+      [ids[4]!]: become({ id: ids[4]!, revoked_at: NOW, revoked_by: JSON.stringify(ALICE) }),
+    });
+    // Platform-minted rows (an object minter): no digest to judge.
+    expect(await readBecomeLinkStates(sql, ids, NOW as never)).toEqual([
+      { state: 'open', reason: null },
+      { state: 'used', reason: null },
+      { state: 'expired', reason: null },
+      { state: 'revoked', reason: 'holdings-changed' },
+      { state: 'revoked', reason: null },
+      { state: 'revoked', reason: null },
+    ]);
+  });
+
+  it('an act share named by mistake never reads as an open link', async () => {
+    expect(await readBecomeLinkStates(sqlOf({ [ids[0]!]: capRow({ id: ids[0]! }) }), [ids[0]!], NOW as never)).toEqual([
+      { state: 'revoked', reason: null },
+    ]);
+  });
+
+  it('a principal-minted link reads open only while its principal holds what it did at mint — judged on read, nothing written', async () => {
+    const then = { permissions: [READ], roles: ['member'], granted: [], narrowed: [] };
+    const digest = await holdingsDigest(then);
+    const writes: string[] = [];
+    const row = become({ id: ids[0]!, minted_by: JSON.stringify(ALICE), target_digest: digest });
+    const sql: ScopedSql = { ...sqlOf({ [ids[0]!]: row }), exec: (t) => (writes.push(t), { changes: 1 }) };
+    expect(await readBecomeLinkStates(sql, [ids[0]!], NOW as never, async () => then)).toEqual([{ state: 'open', reason: null }]);
+    const raised = { ...then, roles: ['member', 'lead'] };
+    expect(await readBecomeLinkStates(sql, [ids[0]!], NOW as never, async () => raised)).toEqual([
+      { state: 'revoked', reason: 'holdings-changed' },
+    ]);
+    expect(writes).toEqual([]);
+    // No digest, or nothing to judge it by: never open, as its exchange refuses it.
+    expect(await readBecomeLinkStates(sqlOf({ [ids[1]!]: { ...row, id: ids[1]!, target_digest: null } }), [ids[1]!], NOW as never, async () => then))
+      .toEqual([{ state: 'revoked', reason: null }]);
+    expect(await readBecomeLinkStates(sql, [ids[0]!], NOW as never)).toEqual([{ state: 'revoked', reason: null }]);
+  });
+});
+
+describe('holdingsDigest', () => {
+  const d = (folder: string) => ({ entityType: 'folder', entityId: folder });
+  it('is order-independent and deduplicated, and moves with any role, grant or narrowed grant', async () => {
+    const base = await holdingsDigest({ permissions: [READ, WRITE], roles: ['a', 'b'], granted: [READ], narrowed: [{ permission: READ, entity: d('F') }] });
+    expect(
+      await holdingsDigest({ permissions: [WRITE, READ], roles: ['b', 'a', 'a'], granted: [READ, READ], narrowed: [{ permission: READ, entity: d('F') }, { permission: READ, entity: d('F') }] }),
+    ).toBe(base);
+    expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['a'], granted: [READ], narrowed: [{ permission: READ, entity: d('F') }] })).not.toBe(base);
+    expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['a', 'b'], granted: [], narrowed: [{ permission: READ, entity: d('F') }] })).not.toBe(base);
+    expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['a', 'b'], granted: [READ], narrowed: [{ permission: READ, entity: d('G') }] })).not.toBe(base);
+  });
+
+  it('does not move with a role\'s expansion: definitions are the vertical\'s code, not the inviter\'s doing', async () => {
+    const one = await holdingsDigest({ permissions: [READ], roles: ['member'], granted: [], narrowed: [] });
+    expect(await holdingsDigest({ permissions: [READ, WRITE], roles: ['member'], granted: [], narrowed: [] })).toBe(one);
+  });
+});
+
+/**
+ * A principal-minted `become` whose `target_digest` is NULL (#1686) — a row from before the column,
+ * or one written by hand: the exchange cannot tell whether its principal's holdings changed, so it
+ * refuses, and writes NOTHING — no revoke (it is not known to be dead) and no use taken. Its twin:
+ * the same row with the digest of what the principal holds now is exchanged.
+ */
+describe('exchange of a principal-minted become with no digest', () => {
+  const held = { permissions: [READ], roles: ['member'], granted: [], narrowed: [] };
+  const exchangeOf = async (digest: string | null) => {
+    const secret = mintCapabilitySecret();
+    const row = capRow({
+      mode: 'become', entity_type: null, entity_id: null, permissions: null, principal: ALICE, max_uses: 1,
+      minted_by: JSON.stringify(ALICE), target_digest: digest,
+    });
+    const writes: string[] = [];
+    const sql: ScopedSql = {
+      query: <T,>() => [row] as unknown as T[],
+      exec: (text) => {
+        writes.push(text.trim().split(/\s+/).slice(0, 3).join(' '));
+        return { changes: 1 };
+      },
+    };
+    const out = await exchangeCapability({ sql, now: NOW as never, emit: () => {}, holdings: async () => held }, secret, 'become');
+    return { out, writes };
+  };
+
+  it('is refused, not revoked, and no use is spent', async () => {
+    const { out, writes } = await exchangeOf(null);
+    expect(out).toBeNull();
+    expect(writes).toEqual([]);
+  });
+
+  it('…while the same row carrying the digest of what its principal holds now is exchanged', async () => {
+    const { out, writes } = await exchangeOf(await holdingsDigest(held));
+    expect(out).toMatchObject({ kind: 'principal', principal: ALICE });
+    expect(writes).toEqual(['UPDATE _substrat_capabilities SET']);
   });
 });

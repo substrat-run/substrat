@@ -7,17 +7,17 @@
  * neither made it impossible, and a vertical that forgot served an empty Logs view that
  * read as "no traffic". So the platform no longer asks: at upload it puts its own entry
  * module in front of the bundle's, and that module wraps the vertical's default export
- * with the kernel's `withInvocationLog`.
+ * with vertical-host's `withInvocationLog`.
  *
  * Three facts about bundles decide the shape:
  *
- * - **A bundle that mounts the middleware too is fine.** A current kernel's middleware
+ * - **A bundle that mounts the middleware too is fine.** A current middleware
  *   finds the platform's stamp on the request and steps aside, so the request is logged
  *   once, and the operation route still writes its record onto the one line.
- * - **An older kernel does not know to step aside**, so wrapping it would log every request
+ * - **An older one does not know to step aside**, so wrapping it would log every request
  *   twice. A bundle that writes the line itself (it carries the line's marker) but not the
  *   shared stamp registry is uploaded as it is: it already logs, and re-pushing on a
- *   current kernel is what moves it over.
+ *   current vertical-host is what moves it over.
  * - **The archive script is the bundle store** that promote and backout re-upload from, so
  *   a re-served bundle already holds a platform entry. It is replaced with the current
  *   one, never stacked: the manifest's `entry` is always the vertical's own module.
@@ -51,7 +51,7 @@ const PLATFORM_MODULES = new Set([PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE
 
 /** The line `invocationLog` writes, as it appears in any build: `substrat:"invocation"`. */
 const WRITES_THE_LINE = /substrat['"]?\s*:\s*["']invocation["']/;
-/** The registry a current kernel shares with the platform's copy. */
+/** The registry a current middleware shares with the platform's copy. */
 const SHARES_THE_STAMP = 'substrat.invocation-stamp';
 
 const isScript = (m: VerticalBundle['modules'][number]) =>
@@ -74,7 +74,7 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
     const text = decoder.decode(m.content);
     writes ||= WRITES_THE_LINE.test(text);
     shares ||= text.includes(SHARES_THE_STAMP);
-    if (writes && shares) break; // a current kernel: nothing further could change the answer
+    if (writes && shares) break; // a current middleware: nothing further could change the answer
   }
   if (writes && !shares) return 'the bundle writes the invocation line with a kernel that predates the platform stamp';
   return undefined;

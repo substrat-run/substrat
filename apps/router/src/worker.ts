@@ -23,6 +23,7 @@ import {
 } from '@substrat-run/adapter-cloudflare/routing';
 import {
   decodeInvocationRecord,
+  EXPORTED_EVENTS_HEADER,
   FIELD_COVERAGE_HEADER,
   FIELD_COVERAGE_ID_FIELD,
   INVOCATION_RECORD_HEADER,
@@ -32,6 +33,8 @@ import {
   peerCallResponse,
   peerCaller,
   type PeerCaller,
+  PLATFORM_REQUEST_HEADER,
+  PLATFORM_SECRET_HEADER,
   evaluateRateLimits,
   parseRateLimits,
   RATE_LIMIT_POLICY_HEADER,
@@ -166,15 +169,6 @@ interface OutboundPolicy {
 
 /** Headers the router asserts. Any inbound copy is stripped before these are set. */
 const ASSERTED_PREFIX = 'x-substrat-';
-
-/**
- * The two response flags that ask for a kick. The kernel's `PLATFORM_REQUEST_HEADER` and
- * `EXPORTED_EVENTS_HEADER`, hardcoded like the other `x-substrat-*` names here, since the router
- * does not depend on the kernel. Both sit under {@link ASSERTED_PREFIX}, so an inbound copy never
- * reaches a vertical.
- */
-const PLATFORM_REQUEST_HEADER = 'x-substrat-platform-request';
-const EXPORTED_EVENTS_HEADER = 'x-substrat-exported-events';
 
 const bindingNameFor = (slug: string): string =>
   `VERTICAL_${slug.toUpperCase().replace(/-/g, '_')}`;
@@ -383,9 +377,8 @@ function record(
  * returned): the header is a HINT, not a dependency. The intent is already durably
  * enqueued, and the periodic sweep drains it regardless — so a failed, slow, or
  * unconfigured kick costs latency, never correctness, and never delays the response the
- * user already has. The `x-substrat-platform` secret is the same wire constant the kernel
- * defines (`PLATFORM_SECRET_HEADER`) — hardcoded here like the other `x-substrat-*` names
- * the router asserts, since the router does not depend on the kernel.
+ * user already has. The secret travels in contracts' `PLATFORM_SECRET_HEADER`, the header
+ * every platform-call check reads.
  */
 async function kickDrain(
   env: Env,
@@ -415,7 +408,7 @@ async function kickDrain(
     await cp.fetch(
       new Request('https://control-plane/internal/drain-scope', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-substrat-platform': secret },
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: secret },
         body: JSON.stringify({ tenantId: target.tenantId, scopeId: target.scopeId, ...flags }),
       }),
     );
@@ -676,10 +669,9 @@ export async function handlePeerCall(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        // The same wire constant `kickDrain` hardcodes, for the same reason: the router does
-        // not depend on the kernel. A public request can never carry it — this router strips
-        // every `x-substrat-*` header before it forwards one.
-        'x-substrat-platform': secret,
+        // The same wire constant `kickDrain` sends. A public request can never carry it — this
+        // router strips every `x-substrat-*` header before it forwards one.
+        [PLATFORM_SECRET_HEADER]: secret,
       },
       body: JSON.stringify({
         caller: { vertical: caller.vertical, scope: caller.scopeId },

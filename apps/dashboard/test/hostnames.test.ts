@@ -164,10 +164,11 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
     await expect(
       removeAppHostname(host, { node, appScopeId: appScope, hostname: appHostname, defaultHostname: appHostname }),
     ).rejects.toThrow(/default hostname/);
-    // A hostname that is not the app's reads as not bound.
+    // A hostname that is not the app's reads as not bound — a `not_found`, which is what the
+    // route's 404 reads (#113), not the sentence.
     await expect(
       removeAppHostname(host, { node, appScopeId: appScope, hostname: 'nobody.example.com', defaultHostname: appHostname }),
-    ).rejects.toThrow(/not bound/);
+    ).rejects.toMatchObject({ code: 'not_found', message: "'nobody.example.com' is not bound to this app" });
   });
 
   it('resolveDefaultHostname recovers the URL from live bindings when the stored column is null', async () => {

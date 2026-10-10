@@ -736,7 +736,7 @@ reached the control plane by service binding rather than public URL.
 
 Built, with one addition the design did not originally call for: the router also
 presents a **shared secret** (`x-substrat-router`), which the vertical verifies through
-`readRoutedNode` in the kernel.
+`readRoutedNode` in `@substrat-run/vertical-host`.
 
 The no-public-route rule is the real boundary, but it is a *deployment fact*, and
 `workers.dev` is on by default — so "only the router can reach this worker" is one

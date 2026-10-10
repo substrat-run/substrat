@@ -1,4 +1,6 @@
 import {
+  BECOME_LINK_STATES_MAX_IDS,
+  CAPABILITY_BECOME_MINTED,
   CAPABILITY_EXERCISED,
   CAPABILITY_MINTED,
   CAPABILITY_REVOKED,
@@ -12,11 +14,17 @@ import {
   capabilityMintInput,
   capabilityRecord,
   permissionKey,
+  principalBecomeCapabilityInput,
   principalId as principalIdSchema,
   substratError,
   entityObjectRef,
   type BecomeCapabilityInput,
+  type BecomeLinkState,
+  type BecomeMintRefusal,
+  type BoundedBecomeRevoke,
+  type Coverage,
   type CapabilityAuthor,
+  type CapabilityBecomeMintedPayload,
   type CapabilityExchange,
   type CapabilityExercisedPayload,
   type CapabilityFilter,
@@ -35,10 +43,11 @@ import {
   type Node,
   type PermissionKey,
   type PlatformActorId,
+  type PrincipalBecomeCapabilityInput,
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { toBase64url } from './base64url.js';
-import { PermissionDenied } from './permission-checker.js';
+import { PermissionDenied, type Holdings, type PermissionChecker } from './permission-checker.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
 
@@ -106,6 +115,12 @@ export const CAPABILITY_DDL = `
     -- NULL = no attachment read opt-in; 'read' explicitly allows attachment readers.
     attachments TEXT,
     principal TEXT,
+    -- #1686: a principal-minted 'become' only — the digest of what \`principal\` held when it was
+    -- minted (\`holdingsDigest\`). The exchange recomputes it, and a link whose principal's
+    -- holdings have changed since is revoked rather than exchanged. NULL on every other row.
+    target_digest TEXT,
+    -- #1686: why the kernel itself revoked it ('holdings-changed'); NULL for any other revoke.
+    revoked_reason TEXT,
     -- JSON capabilityAuthor: a principal id (a module minted it, and its authority is
     -- re-checked on every use) or {"platform": …} (HostAdmin minted it).
     minted_by TEXT NOT NULL,
@@ -161,12 +176,16 @@ export interface CapabilityRow {
   last_used_at: string | null;
   revoked_at: string | null;
   revoked_by: string | null;
+  /** #1686: a principal-minted `become`'s holdings digest at mint; NULL elsewhere. */
+  target_digest?: string | null;
+  /** #1686: why the kernel itself revoked it; NULL otherwise. */
+  revoked_reason?: string | null;
 }
 
 /** Every column a read returns — everything but `token_hash`, which no reader has a use for. */
 export const CAPABILITY_COLUMNS =
   'id, mode, label, entity_type, entity_id, permissions, operations, attachments, principal, minted_by, ' +
-  'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by';
+  'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by, target_digest, revoked_reason';
 
 /** The row the permission checker reads for a capability subject (`ScopeTupleReader.capability`). */
 export function capabilityByIdQuery(id: string): { sql: string; params: SqlValue[] } {
@@ -307,6 +326,7 @@ export function capabilityRecordOf(row: CapabilityRow): CapabilityRecord {
     lastUsedAt: row.last_used_at,
     revokedAt: row.revoked_at,
     revokedBy: row.revoked_by === null ? null : JSON.parse(row.revoked_by),
+    revokedReason: row.revoked_reason ?? null,
   };
   return capabilityRecord.parse(
     row.mode === 'become'
@@ -630,9 +650,12 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
       if (!row) throw substratError('not_found', `no capability ${id} in this scope`);
       const grant = capabilityGrantOf(row);
       if (!grant) {
+        // A `become` row: the platform's (HostAdmin) or a member invite's (the host's
+        // principal revoke, #1686) — never module code's.
         throw substratError(
           'forbidden',
-          `capability ${id} was minted by the platform and is revoked through HostAdmin`,
+          `capability ${id} is a become capability and is revoked by the host that minted it, not ctx.capabilities`,
+          // The reason predates principal-minted `become` rows and is kept: a caller may match on it.
           { reason: 'capability_platform_minted' },
         );
       }
@@ -646,11 +669,7 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
           );
         }
       }
-      deps.sql.exec(
-        `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
-         WHERE id = ? AND revoked_at IS NULL`,
-        [deps.now, JSON.stringify(revoker), id],
-      );
+      markRevoked(deps.sql, id, revoker, deps.now);
       const payload: CapabilityRevokedPayload = {
         capabilityId: id,
         entity: grant.entity,
@@ -696,6 +715,12 @@ export async function exchangeCapability(
     sql: ScopedSql;
     now: Instant;
     emit: (capability: CapabilityId, event: DomainEventInput) => void;
+    /**
+     * What a principal holds now (#1686) — the checker's `holdings` at this scope. A
+     * principal-minted `become` is exchanged only while its principal's holdings digest is the
+     * one recorded at mint; absent, such a link is refused.
+     */
+    holdings?: (principal: PrincipalId) => Promise<Holdings>;
   },
   secret: unknown,
   /**
@@ -713,6 +738,18 @@ export async function exchangeCapability(
   )[0];
   if (!row || !capabilityExchangeable(row, deps.now)) return null;
   if (mode !== undefined && row.mode !== mode) return null;
+  if (row.mode === 'become' && typeof JSON.parse(row.minted_by) === 'string') {
+    // A principal minted it (#1686): the bound held against what its principal held THEN. If
+    // that has changed in any way since — a role raised or lowered, a grant added, an org joined,
+    // a role redefined — the link is revoked here, with no revoker, and refused: the one answer
+    // a refusal always gets, and nothing written beyond the revoke. Its use is never taken.
+    if (!deps.holdings || !row.target_digest) return null;
+    const held = await deps.holdings(principalIdSchema.parse(row.principal));
+    if ((await holdingsDigest(held)) !== row.target_digest) {
+      markRevoked(deps.sql, capabilityIdSchema.parse(row.id), null, deps.now, 'holdings-changed');
+      return null;
+    }
+  }
   const taken = deps.sql.exec(
     `UPDATE _substrat_capabilities SET uses = uses + 1, last_used_at = ?
      WHERE id = ? AND uses = ?`,
@@ -896,14 +933,28 @@ export async function mintBecomeCapability(
   now: Instant,
 ): Promise<MintedCapability> {
   const input = checkBecomeInput(raw, now);
+  return insertBecome(sql, input, { platform: actor }, now);
+}
+
+/**
+ * The one `become` row write, for the platform's mint and a principal's alike: a fresh id and
+ * secret, the secret's hash stored, the secret returned once.
+ */
+async function insertBecome(
+  sql: ScopedSql,
+  input: { principal: PrincipalId; expiresAt?: Instant; maxUses: number; label?: string },
+  author: CapabilityAuthor,
+  now: Instant,
+  /** A principal's mint only: the target's `holdingsDigest` now. */
+  targetDigest: string | null = null,
+): Promise<MintedCapability> {
   const id = capabilityIdSchema.parse(ulid());
   const secret = mintCapabilitySecret();
-  const author: CapabilityAuthor = { platform: actor };
   sql.exec(
     `INSERT INTO _substrat_capabilities
        (id, token_hash, mode, label, entity_type, entity_id, permissions, operations, attachments,
-        principal, minted_by, minted_at, expires_at, max_uses, uses)
-     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0)`,
+        principal, minted_by, minted_at, expires_at, max_uses, uses, target_digest)
+     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0, ?)`,
     [
       id,
       await capabilityTokenHash(secret),
@@ -911,11 +962,132 @@ export async function mintBecomeCapability(
       input.principal,
       JSON.stringify(author),
       now,
-      input.expiresAt,
+      input.expiresAt ?? null,
       input.maxUses,
+      targetDigest,
     ],
   );
-  return { id, secret, expiresAt: input.expiresAt };
+  return { id, secret, expiresAt: input.expiresAt ?? null };
+}
+
+/**
+ * The one revoke write: stamps `author` once, on a row not yet revoked. True when this call did.
+ * `null` is the kernel's own revoke — a link whose principal's holdings changed (#1686) — which no
+ * person or platform actor made, and is recorded with no revoker.
+ */
+function markRevoked(
+  sql: ScopedSql,
+  id: CapabilityId,
+  author: CapabilityAuthor | null,
+  now: Instant,
+  /** The kernel's own revoke says why. */
+  reason: 'holdings-changed' | null = null,
+): boolean {
+  return (
+    sql.exec(
+      `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?, revoked_reason = ?
+       WHERE id = ? AND revoked_at IS NULL`,
+      [now, author === null ? null : JSON.stringify(author), reason, id],
+    ).changes === 1
+  );
+}
+
+/**
+ * Where each named `become` link stands (#1686), in the order asked — what a pending-invite list
+ * shows beside each invite. A capability the scope does not hold reads as `revoked`, never `open`.
+ *
+ * A principal-minted link that would otherwise read `open` is judged as its exchange would judge
+ * it: its principal's holdings are read now (`holdings`) and compared with the digest taken at
+ * mint, and a link whose principal changed since reads `revoked` / `holdings-changed` — before
+ * anybody has tried it. Nothing is written on a read: the exchange is what revokes it. One with no
+ * digest, or with no `holdings` to judge it by, reads `revoked`, as its exchange refuses it.
+ */
+export async function readBecomeLinkStates(
+  sql: ScopedSql,
+  ids: readonly string[],
+  now: Instant,
+  holdings?: (principal: PrincipalId) => Promise<Holdings>,
+): Promise<BecomeLinkState[]> {
+  assertBecomeLinkStateIds(ids);
+  const states: BecomeLinkState[] = [];
+  for (const raw of ids) {
+    const q = capabilityByIdQuery(capabilityIdSchema.parse(raw));
+    const row = sql.query<CapabilityRow>(q.sql, q.params)[0];
+    states.push(await becomeLinkStateOf(row, now, holdings));
+  }
+  return states;
+}
+
+/**
+ * `becomeLinkStates`' bound on how many links one call names (`BECOME_LINK_STATES_MAX_IDS`):
+ * refused over it, never truncated — a caller asks in pages. Its own function so a host whose
+ * storage sits across an RPC boundary checks on the near side, where the typed refusal survives.
+ */
+export function assertBecomeLinkStateIds(ids: readonly string[]): void {
+  if (ids.length > BECOME_LINK_STATES_MAX_IDS) {
+    throw substratError(
+      'validation_failed',
+      `becomeLinkStates: ${ids.length} ids is more than ${BECOME_LINK_STATES_MAX_IDS} — ask in pages`,
+    );
+  }
+}
+
+async function becomeLinkStateOf(
+  row: CapabilityRow | undefined,
+  now: Instant,
+  holdings: ((principal: PrincipalId) => Promise<Holdings>) | undefined,
+): Promise<BecomeLinkState> {
+  if (!row || row.mode !== 'become') return { state: 'revoked', reason: null };
+  if (row.revoked_at !== null) {
+    return { state: 'revoked', reason: row.revoked_reason === 'holdings-changed' ? 'holdings-changed' : null };
+  }
+  if (row.expires_at !== null && row.expires_at <= now) return { state: 'expired', reason: null };
+  if (row.max_uses !== null && row.uses >= row.max_uses) return { state: 'used', reason: null };
+  if (typeof JSON.parse(row.minted_by) === 'string') {
+    if (!holdings || !row.target_digest) return { state: 'revoked', reason: null };
+    const held = await holdings(principalIdSchema.parse(row.principal));
+    if ((await holdingsDigest(held)) !== row.target_digest) return { state: 'revoked', reason: 'holdings-changed' };
+  }
+  return { state: 'open', reason: null };
+}
+
+/**
+ * A canonical digest of what a principal holds (#1686): the role KEYS it holds at the node, as
+ * assigned, the permissions granted to it directly at the node, and its entity-narrowed grants —
+ * at scope and tenant level, through its orgs — each sorted and deduplicated, so two reads of the
+ * same holdings in any order give the same digest. Taken when a principal mints a `become` for it,
+ * and again at the exchange: a role assigned or taken away, a grant added or removed, an org joined
+ * or left, all change it, and the link dies.
+ *
+ * Role KEYS, not their expansions, deliberately: a role's definition is the vertical's code,
+ * re-projected on a push and reviewed at the permission-diff checkpoint — nothing an inviter
+ * controls. Expanding it would revoke every open invite at a role whenever a release adds a key to
+ * that role. The price, by design: a REDEFINITION can make the invitee hold more than the minter
+ * held when it minted — a release that widens the role widens what the link becomes. That is a
+ * change only code or staff make (`defineRole` has no HTTP route), never an inviter.
+ *
+ * What the digest deliberately does not see, so nobody relies on it as a reach check:
+ * - the LEVEL a grant is held at — a key moved between the scope and the tenant node leaves it
+ *   unchanged, as the mint bound compares the same flattened set (`holdingsOf` merges the levels);
+ * - reach that grows under a narrowed grant's entity through `ctx.link` / `ctx.relink` — the
+ *   minter's coverage of that entity was checked through `check`, whose reach grows the same way;
+ * - module authority decided from a principal column (an assignee, an author) rather than a tuple
+ *   — neither the bound nor the digest sees it.
+ * None of these three lets the link yield more than its minter held (a role redefinition can, by
+ * design — see above): the identity a link binds is per
+ * (scope, sub), so what it becomes is this principal in this scope only. The first two are judged
+ * by the same checker, over the same flattened set and the same walk, that bounded the minter;
+ * the third is a row the scope itself points at this principal, as it would for any member it
+ * names — and a member invite's principal is minted fresh, so no row names it when its link is.
+ */
+export async function holdingsDigest(held: Holdings): Promise<string> {
+  const sorted = (xs: Iterable<string>) => [...new Set(xs)].sort();
+  const canonical = JSON.stringify({
+    roles: sorted(held.roles),
+    granted: sorted(held.granted),
+    narrowed: sorted(held.narrowed.map((n) => `${n.permission} ${n.entity.entityType}:${n.entity.entityId}`)),
+  });
+  return capabilityTokenHash(canonical);
 }
 
 /**
@@ -933,11 +1105,152 @@ export function revokeCapabilityAsPlatform(
   const q = capabilityByIdQuery(id);
   const row = sql.query<CapabilityRow>(q.sql, q.params)[0];
   if (!row) return undefined;
-  const author: CapabilityAuthor = { platform: actor };
-  sql.exec(
-    `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = ?
-     WHERE id = ? AND revoked_at IS NULL`,
-    [now, JSON.stringify(author), id],
-  );
+  markRevoked(sql, id, { platform: actor }, now);
   return capabilityRecordOf(row);
+}
+
+// ---------------------------------------------------------------------------
+// A principal's `become` (#1686): the bound, the mint, and the revoke a member invite runs.
+// ---------------------------------------------------------------------------
+
+/** The pseudo-operation a principal's `become` mint names on its spine event. */
+export const CAPABILITY_BECOME_MINT_OPERATION = 'capabilities.mint-become';
+
+/**
+ * May `caller` mint a `become` capability for `target` at `node`? (#1686) Becoming someone
+ * acquires everything they hold, so the bound is the assignment bound (K-21) applied to the
+ * whole of it: the caller must already hold, at the node, every permission the target holds
+ * there, and must be able to exercise every entity-narrowed grant the target holds on that same
+ * entity. Anything less mints impersonation upward — a lead inviting a stranger in as the owner.
+ *
+ * The bound is evaluated at mint, against what the target holds then; the exchange does not
+ * re-check the minter. It compares the target's holdings instead: a link whose principal's
+ * holdings have changed since the mint is revoked rather than exchanged (`exchangeCapability`). So a target holding nothing at the node is refused outright: its empty set would
+ * cover trivially, and the link would yield whatever that principal is granted later. A member
+ * invite never meets this — it grants the role before it mints.
+ *
+ * It is also refused for a target some `become` capability has already been exchanged into in
+ * this scope (`target-already-claimed`): a principal-minted `become` is for a seat nobody has
+ * taken, never a second key to someone who already exists. Whether a login is bound to the
+ * target outside the scope (an identity directory) is not visible here; the one caller today,
+ * a member invite, always targets a principal it has just minted.
+ *
+ * When the mint may go ahead, the target's `holdingsDigest` — what the mint records, and what the
+ * exchange compares against. Otherwise the refusal, as the host answers it — a `Coverage` naming
+ * what the caller lacks, as `canAssign`'s does, `target-holds-nothing`, or
+ * `target-already-claimed`. A checker with
+ * no `holdings` cannot say what the target holds, so the bound refuses rather than guess.
+ */
+export async function becomeMintCheck(
+  deps: { sql: ScopedSql; checker: Pick<PermissionChecker, 'check' | 'covers' | 'holdings'> },
+  caller: PrincipalId,
+  target: PrincipalId,
+  node: Node,
+): Promise<BecomeMintRefusal | { ok: true; targetDigest: string }> {
+  const { checker } = deps;
+  if (becomeClaimed(deps.sql, target)) return { ok: false, refused: 'target-already-claimed' };
+  if (!checker.holdings) {
+    throw substratError('unavailable', 'this permission checker cannot read what a principal holds — refusing to mint a become capability');
+  }
+  const held = await checker.holdings({ kind: 'principal', id: target }, node);
+  if (held.permissions.length === 0) return { ok: false, refused: 'target-holds-nothing' };
+  const coverage = await coversHoldings(checker, caller, held, node);
+  return coverage ? { ok: false, coverage } : { ok: true, targetDigest: await holdingsDigest(held) };
+}
+
+/** Has any `become` capability for `principal` been exchanged in this scope — platform-minted or not? */
+function becomeClaimed(sql: ScopedSql, principal: PrincipalId): boolean {
+  return (
+    sql.query<{ one: number }>(
+      `SELECT 1 AS one FROM _substrat_capabilities WHERE mode = 'become' AND principal = ? AND uses > 0 LIMIT 1`,
+      [principal],
+    ).length > 0
+  );
+}
+
+/**
+ * Does `caller` hold everything in `held` at `node`? Node-level keys compared as `covers`
+ * compares, and each entity-narrowed grant re-asked through `check` on its entity. Null when it
+ * does; otherwise the refusal naming what is lacked.
+ */
+async function coversHoldings(
+  checker: Pick<PermissionChecker, 'check' | 'covers'>,
+  caller: PrincipalId,
+  held: Holdings,
+  node: Node,
+): Promise<Extract<Coverage, { covered: false }> | null> {
+  const nodeLevel = await checker.covers({ kind: 'principal', id: caller }, held.permissions, node);
+  const missing = new Set<PermissionKey>(nodeLevel.covered ? [] : nodeLevel.missing);
+  for (const { permission, entity } of held.narrowed) {
+    if (missing.has(permission)) continue;
+    if (!(await checker.check({ kind: 'principal', id: caller }, permission, node, entity)).allowed) missing.add(permission);
+  }
+  return missing.size === 0 ? null : { covered: false, missing: [...missing] as [PermissionKey, ...PermissionKey[]] };
+}
+
+/**
+ * A principal's `become` mint (#1686) — the write a member invite makes once `becomeMintCheck`
+ * has said yes, in the same scope task. Recorded with the principal as its minter, and on the
+ * spine as `capability.become-minted` through `emit`, whose actor the host stamps as `minter`.
+ * No expiry unless one is given, as an invite has never had one; the use limit is required.
+ */
+export async function mintBecomeCapabilityAsPrincipal(
+  deps: { sql: ScopedSql; now: Instant; emit: (event: DomainEventInput) => void },
+  minter: PrincipalId,
+  raw: PrincipalBecomeCapabilityInput,
+  /** `becomeMintCheck`'s answer: the target's holdings now, which the exchange compares against. */
+  targetDigest: string,
+): Promise<MintedCapability> {
+  const input = principalBecomeCapabilityInput.parse(raw);
+  if (input.expiresAt !== undefined && input.expiresAt <= deps.now) {
+    throw substratError('validation_failed', `mintBecomeCapability: expiresAt ${input.expiresAt} is not in the future`);
+  }
+  const minted = await insertBecome(deps.sql, input, minter, deps.now, targetDigest);
+  const payload: CapabilityBecomeMintedPayload = {
+    capabilityId: minted.id,
+    principal: input.principal,
+    expiresAt: input.expiresAt ?? null,
+    maxUses: input.maxUses,
+    label: input.label ?? null,
+    mintedBy: minter,
+  };
+  deps.emit({
+    type: CAPABILITY_BECOME_MINTED,
+    schemaVersion: 1,
+    entity: { entityType: 'capability', entityId: minted.id },
+    piiClass: 'none',
+    payload,
+  });
+  return minted;
+}
+
+/**
+ * Revoke a `become` capability a PRINCIPAL minted (#1686) — what withdrawing a member invite
+ * does to its link, recorded with `by` as the revoker. Only such a row: a platform-minted one
+ * (an owner claim link) is the platform's to revoke, and an `act` one is `ctx.capabilities`'.
+ *
+ * Bounded here, not only by the caller: `by` must be the link's minter, or hold everything its
+ * principal holds now — whoever could have minted it, as a module's revoke of an `act` link is
+ * open to whoever could have minted that. A refusal writes nothing. `revoked` is true when this
+ * call revoked it; false when it was already revoked or is not such a row.
+ */
+export async function revokeBecomeCapabilityAsPrincipal(
+  deps: { sql: ScopedSql; checker: Pick<PermissionChecker, 'check' | 'covers' | 'holdings'>; node: Node; now: Instant },
+  rawId: string,
+  by: PrincipalId,
+): Promise<BoundedBecomeRevoke> {
+  const id = capabilityIdSchema.parse(rawId);
+  const q = capabilityByIdQuery(id);
+  const row = deps.sql.query<CapabilityRow>(q.sql, q.params)[0];
+  const minter: unknown = row ? JSON.parse(row.minted_by) : null;
+  if (!row || row.mode !== 'become' || typeof minter !== 'string') return { ok: true, revoked: false };
+  if (minter !== by) {
+    if (!deps.checker.holdings) {
+      throw substratError('unavailable', 'this permission checker cannot read what a principal holds — refusing to revoke a become capability');
+    }
+    const held = await deps.checker.holdings({ kind: 'principal', id: principalIdSchema.parse(row.principal) }, deps.node);
+    const coverage = await coversHoldings(deps.checker, by, held, deps.node);
+    if (coverage) return { ok: false, coverage };
+  }
+  return { ok: true, revoked: markRevoked(deps.sql, id, by, deps.now) };
 }

@@ -41,7 +41,7 @@ data it will serve. Two things keep that safe, and both are required:
 1. **Vertical workers have no public route.** `workers_dev: false`, no route, reachable
    only by service binding from here.
 2. **`ROUTER_SECRET`**, the same value here and on every vertical. Presented as
-   `x-substrat-router` and verified by `readRoutedNode` in the kernel.
+   `x-substrat-router` and verified by `readRoutedNode` in `@substrat-run/vertical-host`.
 
 Both halves fail closed when the secret is missing: this router answers 500 to every
 request until `ROUTER_SECRET` is set, and a vertical without its own refuses any asserted

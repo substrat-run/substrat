@@ -118,32 +118,24 @@ describe('connector calls into the recorder, hosted (#1691)', () => {
 });
 
 /**
- * #1978: the hosted recorder is moving here from the kernel, which keeps the neutral half.
- * For one release the kernel still exports it, and an import from either package must be the
- * ONE binding — a copy of `CONNECTOR_CALL_DATA_POINT_LAYOUT` could drift from the reader that
- * indexes into it by ordinal.
+ * #1978: the hosted recorder moved here from the kernel (#1998), which keeps the neutral
+ * half. The kernel no longer exports it, so `CONNECTOR_CALL_DATA_POINT_LAYOUT` has the one
+ * definition the reader that indexes into it by ordinal agrees with.
  */
-describe('exports moving here from the kernel (#1978)', () => {
-  // The names the kernel tags `@deprecated Import from \`@substrat-run/adapter-cloudflare\``.
-  // This suite runs in workerd and cannot read the kernel's source, so the kernel's own
-  // `wire-headers-move.test.ts` pins its tags to this same list.
+// @ts-expect-error moved to adapter-cloudflare
+export type MovedAnalyticsEngineDatasetLike = kernel.AnalyticsEngineDatasetLike;
+
+describe('exports moved here from the kernel (#1978)', () => {
   const NAMES = ['analyticsEngineConnectorCallRecorder', 'CONNECTOR_CALL_DATA_POINT_LAYOUT', 'connectorCallDataPoint'];
 
-  it.each(NAMES)("exposes %s as the kernel's binding", (name) => {
-    const kernelBinding = (kernel as Record<string, unknown>)[name];
-    expect(kernelBinding).toBeDefined();
-    expect((adapter as Record<string, unknown>)[name]).toBe(kernelBinding);
+  it.each(NAMES)('exports %s, and the kernel does not', (name) => {
+    expect((adapter as Record<string, unknown>)[name], name).toBeDefined();
+    expect((connectorCalls as Record<string, unknown>)[name], name).toBe((adapter as Record<string, unknown>)[name]);
+    expect((kernel as Record<string, unknown>)[name], name).toBeUndefined();
   });
 
-  it('the forwarding module holds only kernel bindings, each one a moved name', () => {
-    for (const [name, binding] of Object.entries(connectorCalls)) {
-      expect(NAMES, name).toContain(name);
-      expect(binding, name).toBe((kernel as Record<string, unknown>)[name]);
-    }
-  });
-
-  it('the moved type is the kernel type', () => {
-    expectTypeOf<adapter.AnalyticsEngineDatasetLike>().toEqualTypeOf<kernel.AnalyticsEngineDatasetLike>();
+  it('the moved type is exported here', () => {
+    expectTypeOf<adapter.AnalyticsEngineDatasetLike>().not.toBeAny();
   });
 
   it("the live-mode header is contracts' binding", () => {

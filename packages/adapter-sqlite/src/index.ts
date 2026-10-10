@@ -109,6 +109,11 @@ import {
   type AccessLogEntry,
   type CheckSubject,
   type BecomeCapabilityInput,
+  type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
+  type BecomeLinkState,
+  type PrincipalBecomeCapabilityInput,
+  principalBecomeCapabilityInput,
   type Instant,
   type CapabilityExchange,
   type CapabilityFilter,
@@ -236,6 +241,11 @@ import {
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
+  CAPABILITY_BECOME_MINT_OPERATION,
+  becomeMintCheck,
+  mintBecomeCapabilityAsPrincipal,
+  revokeBecomeCapabilityAsPrincipal,
+  readBecomeLinkStates,
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
   createCapabilityVerbs,
@@ -535,6 +545,7 @@ import {
   type OperationContext,
   type OperationHandler,
   PermissionDenied,
+  type Holdings,
   type PermissionChecker,
   type ProvisionScopeInput,
   type RoleFilter,
@@ -714,7 +725,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
 import {
-  COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -4597,6 +4608,7 @@ export class SqliteScopeHost implements ScopeHost {
                 [],
                 now,
               ), event),
+            holdings: this.holdingsAt(tenantId, scopeId),
           },
           secret,
           options?.mode,
@@ -4763,6 +4775,91 @@ export class SqliteScopeHost implements ScopeHost {
         (run) => rt.db.transaction(run)(),
       ),
     );
+  }
+
+  /**
+   * A principal's `become` mint (#1686) — a member invite's link. The kernel's `becomeMintCheck`
+   * and the write in ONE scope turn and one transaction, so nothing the target or the caller
+   * holds can move between the check and the mint; a refusal writes nothing. The mint is on the
+   * spine as `capability.become-minted`, the caller its actor.
+   */
+  async mintBecomeCapabilityBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    input: PrincipalBecomeCapabilityInput,
+  ): Promise<BoundedBecomeMint> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const minter = principalId.parse(caller);
+    const parsed = principalBecomeCapabilityInput.parse(input);
+    const outcome = await rt.actor.turn(async (): Promise<BoundedBecomeMint> => {
+      const checked = await becomeMintCheck({ sql: spineSql(rt.db), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
+      if (!checked.ok) return checked;
+      const now = this.clock();
+      rt.db.exec('BEGIN IMMEDIATE');
+      try {
+        const minted = await mintBecomeCapabilityAsPrincipal(
+          {
+            sql: spineSql(rt.db),
+            now,
+            emit: (event) =>
+              kernelEmit(this.operationContext(
+                rt, asPrincipal(minter), undefined, undefined, undefined, CAPABILITY_BECOME_MINT_OPERATION, [], now,
+              ), event),
+          },
+          minter,
+          parsed,
+          checked.targetDigest,
+        );
+        rt.db.exec('COMMIT');
+        return { ok: true, minted };
+      } catch (err) {
+        rt.db.exec('ROLLBACK');
+        throw err;
+      }
+    });
+    if (outcome.ok) {
+      await this.dispatch(rt, null);
+      await this.dispatchExecutors(rt, null);
+    }
+    return outcome;
+  }
+
+  /**
+   * Revoke a `become` capability a principal minted (#1686) — withdrawing a member invite's
+   * link, recorded with `by` as the revoker. `revoked` is false for anything else: a platform-minted
+   * or an `act` capability is not this verb's. The kernel bounds `by` in the same turn: the link's
+   * minter, or someone holding everything its principal holds now.
+   */
+  async revokeBecomeCapability(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    capabilityId: CapabilityId,
+    by: PrincipalId,
+  ): Promise<BoundedBecomeRevoke> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.turn(() =>
+      revokeBecomeCapabilityAsPrincipal(
+        { sql: spineSql(rt.db), checker: this.checker, node: { tenantId, scopeId }, now: this.clock() },
+        capabilityId,
+        principalId.parse(by),
+      ),
+    );
+  }
+
+  /**
+   * Where each named `become` link stands (#1686) — what a pending-invite list shows, so a link the
+   * kernel revoked or that expired is never shown as open. A read in the scope's task.
+   */
+  async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.enqueue(() => readBecomeLinkStates(spineSql(rt.db), ids, this.clock(), this.holdingsAt(tenantId, scopeId)));
+  }
+
+  /** What a principal holds at this scope, for a `become` exchange (#1686); absent with a checker that cannot say. */
+  private holdingsAt(tenantId: TenantId, scopeId: ScopeId): ((principal: PrincipalId) => Promise<Holdings>) | undefined {
+    const checker = this.checker;
+    return checker.holdings ? (principal) => checker.holdings!(asPrincipal(principal), { tenantId, scopeId }) : undefined;
   }
 
   /** The caller's bound per role at the scope, `null` for a role this tenant does not define (#1150). */
@@ -8950,6 +9047,18 @@ export class SqliteScopeHost implements ScopeHost {
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (scope.reap_claimed_at !== null) throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
       },
+      backfillScopeScriptCopy: async (actor, tenantId, scopeId, scriptRef, opts) => {
+        if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
+        // The audit row commits with the entry, stamped with the erasure epoch read in the same unit.
+        return this.directory.transaction((): ScopeCopyBackfillResult => {
+          const written = this.directory.prepare(COPY_BACKFILL_SQL).run(...copyBackfillParams(tenantId, scopeId, scriptRef)).changes > 0;
+          const scope = this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as CopyBackfillScopeRow | undefined;
+          if (!written) return copyBackfillRefusal(scope);
+          this.recordAdmin(actor, 'backfillScopeCopy', { tenantId, scopeId }, { erasureEpoch: scope!.erasure_epoch },
+            { scriptRef, fromLogId: opts?.fromLogId ?? null });
+          return 'recorded';
+        })();
+      },
       claimExpiredScopeScriptCopies: async (_actor, input) => {
         const limit = assertRowLimit('limit', input.limit);
         return this.directory.transaction(() => {
@@ -8983,14 +9092,18 @@ export class SqliteScopeHost implements ScopeHost {
         throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker, opts) =>
-        this.directory.prepare(
-          `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
-             last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-           WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
-             AND (state <> 'done' OR ? = 'done')
-             ${opts?.claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
-        ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state,
-          ...(opts?.claimedBy === undefined ? [] : [opts.claimedBy])).changes > 0,
+        this.directory.transaction(() => {
+          const settled = this.directory.prepare(
+            `UPDATE scope_script_copies SET state = ?, load_stamp = ?, revision = ?,
+               last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE tenant_id = ? AND scope_id = ? AND script_ref = ? AND move_id = ?
+               AND (state <> 'done' OR ? = 'done')
+               ${opts?.claimedBy === undefined ? '' : "AND state = 'pending' AND lease_owner = ?"}`,
+          ).run(state, marker?.loadStamp ?? null, marker?.revision ?? null, tenantId, scopeId, scriptRef, moveId, state,
+            ...(opts?.claimedBy === undefined ? [] : [opts.claimedBy])).changes > 0;
+          if (settled && state === 'done') this.directory.prepare(COPY_BACKFILL_SUPERSEDE_SQL).run(tenantId, scopeId);
+          return settled;
+        })(),
       touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) => {
         this.directory.prepare(
           `UPDATE scope_script_copies SET last_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -10181,8 +10294,15 @@ export class SqliteScopeHost implements ScopeHost {
         );
         return opened;
       },
-      shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
+      // `stamp` is the erasure epoch an orchestrated erasure's claim compared (#1722). A direct shred
+      // claims nothing and records the epoch it ran under: the backfill orders erasures by them.
+      shredSubject: async (actor, tenantId, scopeId, subjectId, stamp?: ErasureEpochStamp): Promise<SubjectShredReceipt> => {
         this.assertScope(tenantId, scopeId);
+        const before: ErasureEpochStamp = stamp ?? {
+          erasureEpoch: (this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as CopyBackfillScopeRow | undefined)
+            ?.erasure_epoch ?? 0,
+          path: 'direct',
+        };
         // Redact the live spine FIRST. Both halves are idempotent and a crash between them
         // converges on retry, so the order is decided by which half-done state harms the
         // person: dying after this leaves ciphertext in a backup that no key opens; dying
@@ -10267,7 +10387,7 @@ export class SqliteScopeHost implements ScopeHost {
         // BOTH logs, which is unusual and deliberate: the admin log because this is a
         // mutation, the access log because it destroys evidence. An erasure is the one
         // action where "who asked for this to disappear" is itself the record.
-        this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, before, receipt);
         // BOTH counts: the access log's number is "how much evidence this destroyed", and
         // an intent payload is a whole event's worth of it.
         this.recordAccess(
@@ -10301,7 +10421,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
         // The pure adapter has one co-located scope store. Its existing atomic shred is
         // the final local redaction and key destruction, after remote copies confirmed.
-        return this.admin.shredSubject(actor, tenantId, scopeId, subjectId);
+        const shred = this.admin.shredSubject as (...args: [...Parameters<HostAdmin['shredSubject']>, ErasureEpochStamp]) =>
+          Promise<SubjectShredReceipt>;
+        return shred(actor, tenantId, scopeId, subjectId, { erasureEpoch: expected.epoch, path: 'orchestrated' });
       },
 
       // -- impersonation (K-42, #868) ----------------------------------------
@@ -11783,6 +11905,7 @@ export class SqliteScopeHost implements ScopeHost {
       if (moved.changes === 0) return false;
       if (cond?.confirmMove) {
         this.directory.prepare(COPY_MOVE_CONFIRM_SQL).run(...copyMoveConfirmParams(cond.confirmMove, tenantId, scopeId, now));
+        this.directory.prepare(COPY_BACKFILL_SUPERSEDE_SQL).run(tenantId, scopeId);
       }
       return true;
     })();
@@ -12978,6 +13101,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
     // #2126: NULL keeps every existing capability's attachment behavior unchanged.
     this.ensureColumn(db, '_substrat_capabilities', 'attachments', 'attachments TEXT');
+    // #1686: NULL on every row already there — none is a principal-minted become.
+    this.ensureColumn(db, '_substrat_capabilities', 'target_digest', 'target_digest TEXT');
+    this.ensureColumn(db, '_substrat_capabilities', 'revoked_reason', 'revoked_reason TEXT');
     db.exec(GRANT_CHILDREN_INDEX_DDL);
     // Executor retry state (#100), same reasoning: scopes provisioned before it
     // already have the table. Defaults read as "terminal", which is exactly right

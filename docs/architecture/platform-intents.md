@@ -274,7 +274,7 @@ an implementation detail below.
   dashboard's integration detail renders, `lastError` **verbatim and untruncated**.
 - **Retry classification (#618).** `pending` means *try again*, and a handler that throws gets it by
   default — correct for a provider outage, wrong for a provider's refusal. A **4xx carrying a
-  status** (`isTerminalProviderError`, `packages/kernel/src/provider-error.ts`) settles `failed` on
+  status** (`isTerminalProviderError`, `packages/control-plane-api/src/provider-error.ts`) settles `failed` on
   the first attempt: it is the provider telling the caller its request is wrong, and attempt 101
   sends the identical bytes. 5xx, timeouts (408), locks (423/425) and rate limits (429) stay
   retryable, as does anything with no status — an unclassifiable failure must never be settled

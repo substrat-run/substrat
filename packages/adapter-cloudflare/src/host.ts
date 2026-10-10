@@ -68,6 +68,10 @@ import {
   connection,
   capabilityExchange,
   mintedCapability,
+  boundedBecomeMint,
+  boundedBecomeRevoke,
+  becomeLinkState,
+  principalBecomeCapabilityInput,
   capabilityGrant,
   principalId,
   connectionGrant,
@@ -182,6 +186,10 @@ import {
   type PlatformActorId,
   type OnBehalfOf,
   type BecomeCapabilityInput,
+  type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
+  type BecomeLinkState,
+  type PrincipalBecomeCapabilityInput,
   type CapabilityExchange,
   type CapabilityId,
   type CapabilityFilter,
@@ -280,6 +288,7 @@ import {
   KEPT_COPY_REFUSAL,
   capabilityTokenHash,
   checkBecomeInput,
+  assertBecomeLinkStateIds,
   plausibleSessionToken,
   type AccessLogFilter,
   type AuditLogFilter,
@@ -474,7 +483,7 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
 import type { PlatformRequestSettle } from '@substrat-run/kernel';
 import {
@@ -788,6 +797,7 @@ interface ControlPlaneStub {
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
+  backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, audit: AdminEntry): Promise<ScopeCopyBackfillResult>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
@@ -1323,6 +1333,17 @@ interface ScopeStubRpc {
   mintBecomeCapability(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
   /** The platform's revoke (#1672) — the record as it stood before, or null. */
   revokeCapabilityAsPlatform(id: string, actor: PlatformActorId): Promise<CapabilityRecord | null>;
+  /** A principal's bounded `become` mint (#1686) — a member invite's link. */
+  mintBecomeCapabilityBoundedFor(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    input: PrincipalBecomeCapabilityInput,
+  ): Promise<BoundedBecomeMint>;
+  /** Revoke a `become` a principal minted (#1686); false for any other capability. */
+  revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke>;
+  /** Where each named `become` link stands (#1686). */
+  becomeLinkStatesFor(tenantId: TenantId, scopeId: ScopeId, ids: string[]): Promise<BecomeLinkState[]>;
   /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
   listCapabilities(filter?: CapabilityFilter): Promise<CapabilityPage>;
   /** #1834: the system door's state read — where a module's schedules stand on this scope
@@ -4962,6 +4983,50 @@ export class CloudflareScopeHost implements ScopeHost {
     return { coverage: coverage.parse(result.coverage), revoked: result.revoked };
   }
 
+  /**
+   * A principal's `become` mint (#1686) — a member invite's link, minted by the member who
+   * invites. The bound (`becomeMintCheck`: the caller holds everything the target holds here)
+   * and the write are one ScopeDO task; a refusal is `{ ok: false, coverage }` and writes
+   * nothing. Same gate as the scope-role verbs, which the invite grants with beside it.
+   */
+  async mintBecomeCapabilityBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBecomeCapabilityInput,
+  ): Promise<BoundedBecomeMint> {
+    await this.scopeRoleGate(tenantId, scopeId, 'mintBecomeCapabilityBounded');
+    return boundedBecomeMint.parse(
+      await this.scopeStub(scopeId).mintBecomeCapabilityBoundedFor(
+        tenantId, scopeId, principalId.parse(caller), principalBecomeCapabilityInput.parse(input),
+      ),
+    );
+  }
+
+  /**
+   * Revoke a `become` capability a principal minted (#1686) — what withdrawing a member invite
+   * does to its link. `revoked` is false when it was already revoked or is not such a capability
+   * (a platform-minted claim link, an `act` share). The kernel bounds `by` in the same ScopeDO
+   * task: the link's minter, or someone holding everything its principal holds now.
+   */
+  async revokeBecomeCapability(
+    tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId,
+  ): Promise<BoundedBecomeRevoke> {
+    await this.scopeRoleGate(tenantId, scopeId, 'revokeBecomeCapability');
+    return boundedBecomeRevoke.parse(
+      await this.scopeStub(scopeId).revokeBecomeCapabilityFor(tenantId, scopeId, capabilityId, principalId.parse(by)),
+    );
+  }
+
+  /**
+   * Where each named `become` link stands (#1686) — what a pending-invite list shows beside each
+   * invite, so a link the kernel revoked or that expired is never shown as open.
+   */
+  async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
+    // Refused here, on the near side, where the typed refusal reaches the caller as one.
+    assertBecomeLinkStateIds(ids);
+    await this.scopeRoleGate(tenantId, scopeId, 'becomeLinkStates');
+    if (ids.length === 0) return [];
+    return (await this.scopeStub(scopeId).becomeLinkStatesFor(tenantId, scopeId, [...ids])).map((state) => becomeLinkState.parse(state));
+  }
+
   /** The (tenant, scope) gate the scope-role verbs share — `assignScopeRoleBounded`'s two checks. */
   private async scopeRoleGate(tenantId: TenantId, scopeId: ScopeId, verb: string): Promise<void> {
     if (this.cpLess && !(await this.scopeStub(scopeId).servesTenant(tenantId))) {
@@ -7249,6 +7314,12 @@ export class CloudflareScopeHost implements ScopeHost {
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (result === 'pending') throw substratError('precondition_failed', `scope ${scopeId} has a copy move in flight; retry reap after it settles`);
       },
+      backfillScopeScriptCopy: async (actor, tenantId, scopeId, scriptRef, opts) => {
+        if (!scriptRef) throw substratError('conflict', 'a backfilled copy must name a real script');
+        // The audit row is written in the insert's own unit, stamped there with its erasure epoch.
+        return this.cp.backfillScopeScriptCopy(tenantId, scopeId, scriptRef,
+          this.adminEntry(actor, 'backfillScopeCopy', { tenantId, scopeId }, null, { scriptRef, fromLogId: opts?.fromLogId ?? null }));
+      },
       claimExpiredScopeScriptCopies: async (_actor, input) =>
         (await this.cp.claimExpiredScopeScriptCopies(input)).map(scopeScriptCopyOf),
       settleScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, state, marker, opts) =>
@@ -8105,6 +8176,9 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
+        // #1722: a direct shred claims nothing; it records the epoch it ran under, as an orchestrated
+        // one records the epoch its claim compared, so the backfill can order every erasure.
+        const stamp: ErasureEpochStamp = { erasureEpoch: await this.cp.scopeErasureEpoch(tenantId, scopeId), path: 'direct' };
         // Redact the live spine FIRST, destroy the key LAST. Both halves are idempotent and
         // a crash between them converges on retry, so the order is decided by which
         // half-done state harms the person: dying after the redaction leaves ciphertext in
@@ -8199,7 +8273,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // BOTH logs, deliberately: the admin log because this is a mutation, the access log
         // because it destroys evidence. An erasure is the one action where "who asked for
         // this to disappear" is itself part of the record.
-        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, stamp, receipt);
         // BOTH counts: the access log's number is "how much evidence this destroyed", and
         // an intent payload is a whole event's worth of it.
         await this.recordAccess(
@@ -8233,7 +8307,9 @@ export class CloudflareScopeHost implements ScopeHost {
           keyDestroyed: existed,
           tombstoned: true,
         });
-        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
+        // The epoch the claim compared (#1722): the backfill orders itself against this erasure by it.
+        await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId },
+          { erasureEpoch: expected.epoch, path: 'orchestrated' } satisfies ErasureEpochStamp, receipt);
         await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId },
           redactions.reduce((n, r) => n + r.events + r.intents + r.jobRuns + r.idempotencyResults + moduleRowsErased(r.vertical), 0));
         return receipt;

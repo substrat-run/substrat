@@ -158,6 +158,7 @@ import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } fro
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
+import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
@@ -6328,6 +6329,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await carry();
     await bind({ acknowledge });
     return c.json(await c.var.admin.getScopeRecord(actor, tenantId, scopeId));
+  });
+
+  // -- copy-ledger backfill (#1722) ------------------------------------------------------------
+  // Records the scripts a scope was copied into before the ledger existed, read from the admin
+  // log, as `retained`: reached by reap and erasure from then on, never wiped from here
+  // (`scope-copy-backfill.ts`). A dry run unless the body says otherwise, one page per call,
+  // resumed with the `nextCursor` it answers. Staff only, by default-deny: on neither
+  // BUILDER_ROUTES nor TENANT_ROUTES.
+  const copyBackfillBody = z.object({
+    dryRun: z.boolean().default(true),
+    cursor: z.string().min(1).optional(),
+    limit: z.number().int().min(1).max(BACKFILL_PAGE_MAX).optional(),
+  }).strict();
+  app.post('/scope-copies/backfill', async (c) => {
+    const body = await readJsonBody(c, copyBackfillBody);
+    if (!options.resolveVerticalRef) throw new ControlPlaneError(501, 'the copy backfill needs dispatch resolution by script');
+    return c.json(await backfillScopeScriptCopies(
+      { admin: c.var.admin, actor: c.get('actor'), resolveRef: options.resolveVerticalRef },
+      body,
+    ));
   });
 
   // -- instances (K-31) -------------------------------------------------------

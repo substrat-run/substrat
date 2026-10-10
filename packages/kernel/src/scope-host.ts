@@ -1,6 +1,7 @@
 import type { ModuleLog } from './module-log.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
+import type { ScopeCopyBackfillResult } from './scope-copy-ledger.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -864,7 +865,7 @@ export interface InvokeOptions {
    * call. That is the join a trace view needs and the one nothing could make: the
    * runtime's own request id is stamped by the log platform at ingestion, so no
    * vertical code can read it, and a trace does not cross the dispatch hop
-   * (`invocation-log.ts`, verified in production).
+   * (vertical-host's `invocation-log.ts`, verified in production).
    *
    * So the platform mints one, puts it in the invocation log line, and carries it
    * here — where it is stamped onto every event the call emits. That makes an
@@ -2223,14 +2224,13 @@ export interface HostAdmin {
 
   /**
    * Mint a `become` capability on a scope (#1672): whoever exchanges its secret yields
-   * `input.principal` rather than a session — the shape an owner claim link and a member
-   * invite are, so both can move onto this primitive later. The secret is returned once;
-   * the scope keeps its hash. Expiry and a use limit are required.
+   * `input.principal` rather than a session — the shape an owner claim link is. The secret is
+   * returned once; the scope keeps its hash. Expiry and a use limit are required.
    *
-   * Platform-only in this first cut, deliberately: `become` is impersonation by another
-   * name, and the bound on who may mint one from module code is designed with the claim
-   * and invite migrations. Audited in the admin log (never the secret, never its hash).
-   * Refuses an unknown or inactive scope, as `getScope` does.
+   * `become` is impersonation by another name, so module code never mints one. This is the
+   * platform's mint; a principal mints one only through an adapter's bounded host verb (a
+   * member invite, `becomeMintCheck`, #1686). Audited in the admin log (never the secret, never
+   * its hash). Refuses an unknown or inactive scope, as `getScope` does.
    */
   mintCapability(
     actor: PlatformActorId,
@@ -2727,6 +2727,19 @@ export interface HostAdmin {
     /** A sweep's own claim: the entry settles only while it is still pending under that owner. */
     opts?: { claimedBy?: string },
   ): Promise<boolean>;
+  /**
+   * Record a copy made before this ledger existed (#1722's backfill) as `retained`: reached by reap
+   * and erasure, never wiped by the sweep. One entry per (scope, script), under `BACKFILL_MOVE_ID`.
+   * Answers `ledgered`, writing nothing, when the ledger already names the script for the scope in
+   * any state; `reaping` under a reap claim; `missing` for an unknown scope. Never throws for those,
+   * so a backfill page reports each one instead of stopping. A recorded entry is audited as
+   * `backfillScopeCopy`.
+   */
+  backfillScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string,
+    /** The admin-log row the script was read from, named in the `backfillScopeCopy` row a recorded entry writes. */
+    opts?: { fromLogId?: string },
+  ): Promise<ScopeCopyBackfillResult>;
   /** Move a failed retry to the back of the due queue without changing its state. */
   touchScopeScriptCopy(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, scriptRef: string, moveId: string): Promise<void>;
   listScopeScriptCopies(
