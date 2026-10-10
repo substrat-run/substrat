@@ -696,6 +696,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
 
   'tock/list-sources': {
     summary: 'The sources in this workspace',
+    derive: 'list',
     permission: 'report:read',
     output: tockEntities.source.fields,
     paged: { over: { entity: 'source', sortable: ['created_at', 'key'] } },
@@ -1090,6 +1091,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
 
   'tock/get-run': {
     summary: 'One run, and how it got where it is',
+    derive: 'get',
     permission: { key: 'report:read', entity: 'run', idFrom: 'runId' },
     input: z.object({ runId: z.string() }),
     output: tockEntities.run.fields,
@@ -1252,6 +1254,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   /** The rows one run produced. `row:read`, and the reason the role list has four entries. */
   'tock/list-rows': {
     summary: 'The mapped rows of one run',
+    authored: 'answers not_found for a run that does not exist, where the derived page would answer an empty one',
     permission: { key: 'row:read', entity: 'run', idFrom: 'runId' },
     input: z.object({ runId: z.string() }),
     output: tockEntities.row.fields,

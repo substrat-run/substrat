@@ -477,6 +477,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
    */
   'todo/list-shares': {
     summary: 'Who this list is shared with',
+    authored: 'answers not_found for a list that does not exist, where the derived page would answer an empty one',
     permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string() }),
     output: todoEntities.share.fields,

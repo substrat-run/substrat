@@ -2000,6 +2000,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
 
   'ticket0/list-block-rules': {
     summary: 'Who this desk refuses',
+    derive: 'list',
     permission: 'desk:configure',
     input: z.object({ kind: z.enum(['email', 'domain', 'contact']).optional() }),
     output: ticket0Entities.blockRule.fields,
@@ -2140,6 +2141,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    */
   'ticket0/list-agents': {
     summary: 'The staff of this desk',
+    derive: 'list',
     permission: 'conversation:read',
     output: ticket0Entities.agentProfile.fields,
     paged: { over: { entity: 'agentProfile', sortable: ['display_name', 'created_at'] } },
@@ -2465,6 +2467,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    */
   'ticket0/get-contact': {
     summary: 'One person who has asked something, or is copied in on it',
+    derive: 'get',
     permission: 'contact:read',
     input: z.object({ contactId: z.string() }),
     output: ticket0Entities.contact.fields,
@@ -2473,6 +2476,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
 
   'ticket0/list-contacts': {
     summary: 'The people who have asked something',
+    derive: 'list',
     permission: 'contact:read',
     output: ticket0Entities.contact.fields,
     paged: { over: { entity: 'contact', sortable: ['created_at'], filterable: ['external_id'] } },
@@ -2629,6 +2633,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
 
   'ticket0/get-conversation': {
     summary: 'One conversation',
+    derive: 'get',
     permission: { key: 'conversation:read', entity: 'conversation', idFrom: 'conversationId' },
     input: z.object({ conversationId: z.string() }),
     output: ticket0Entities.conversation.fields,
@@ -4037,6 +4042,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   /** The desk's folders. Everyone who may use a saved reply may see where they are filed. */
   'ticket0/list-saved-reply-folders': {
     summary: 'The folders the desk files its canned answers in',
+    derive: 'list',
     permission: 'conversation:draft',
     output: ticket0Entities.savedReplyFolder.fields,
     paged: { over: { entity: 'savedReplyFolder', sortable: ['name'] } },
