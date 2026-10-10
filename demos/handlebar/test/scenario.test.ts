@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Page } from '@substrat-run/contracts';
+import { isPlatformRequest, type Page } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { WorkOrder, BillableLine } from '@substrat-run/engine-workorder';
 import { workorderManifest } from '@substrat-run/engine-workorder';
@@ -61,6 +61,7 @@ describe('Handlebar demo scenario (spec §7)', () => {
     expect(rows.map((r) => r.module_id)).toEqual([
       '@substrat-run/demo-handlebar',
       '@substrat-run/engine-invoicing',
+      '@substrat-run/engine-notifications',
       '@substrat-run/engine-protocol',
       '@substrat-run/engine-workorder',
     ]);
@@ -106,6 +107,26 @@ describe('Handlebar demo scenario (spec §7)', () => {
     expect(detail.order.status).toBe('in_progress');
     expect(detail.time).toHaveLength(1);
     expect(detail.material).toHaveLength(2);
+  });
+
+  it('3b. the assignment reached the mechanic as mail — written, never sent here', async () => {
+    // The notifications engine consumed `workorder.assigned` and wrote a send intent for the
+    // platform's drain; this suite plays no drain, so the mail stays a pending intent.
+    const mail = (await host.listPlatformRequestHistory(w.t1, w.s1))
+      .filter(isPlatformRequest)
+      .map((r) => r.payload as { to?: string; subject?: string; subjectId?: string })
+      .filter((p) => p.subjectId === w.mans);
+    expect(mail).toEqual([
+      expect.objectContaining({ to: 'mans@handlebar.test', subject: 'Ny reparation tilldelad dig' }),
+    ]);
+    const { entries } = await greta.invoke<Page<{ topic: string; principal: string; status: string }>>(
+      'notifications/list-deliveries',
+    );
+    expect(entries).toMatchObject([{ topic: 'repair-assigned', principal: w.mans, status: 'requested' }]);
+
+    // Måns switches the topic off; the next assignment is recorded as skipped, not mailed.
+    await mans.invoke('notifications/set-my-preference', { topic: 'repair-assigned', enabled: false });
+    await expect(mans.invoke('notifications/list-deliveries')).rejects.toThrow(/permission denied/);
   });
 
   it('4. the denials hold: mechanic, portal user, and the cross-tenant attacker', async () => {
@@ -284,6 +305,11 @@ describe('Handlebar demo scenario (spec §7)', () => {
     ).rejects.toThrow(/already open/);
 
     await greta.invoke('workorder/assign', { orderId: serviceRepairId, technician: w.mans });
+    // Måns muted the topic in 3b: this assignment is recorded, and not mailed.
+    const { entries: muted } = await greta.invoke<Page<{ reason: string | null }>>('notifications/list-deliveries', {
+      status: 'skipped',
+    });
+    expect(muted).toMatchObject([{ reason: 'muted' }]);
     await mans.invoke('workorder/start', { orderId: serviceRepairId });
 
     // The mechanic fills; a correction is a NEW row (append-only history).

@@ -1,5 +1,6 @@
 import { defineEngineRoutes, defineOperations, money, timelineEntry } from '@substrat-run/contracts';
 import { invoicingEntities, invoicingOperations } from '@substrat-run/engine-invoicing';
+import { notificationsOperations } from '@substrat-run/engine-notifications';
 import { protocolEntities, protocolInstanceRow, protocolOperations } from '@substrat-run/engine-protocol';
 import { billableLine, workOrder, workorderEntities, workorderOperations } from '@substrat-run/engine-workorder';
 import { z } from 'zod';
@@ -45,6 +46,9 @@ export const HANDLEBAR_PERMISSIONS = [
   'protocol:attach',
   'protocol:request-signature',
   'protocol:record-signature',
+  // @substrat-run/engine-notifications
+  'notifications:self',
+  'notifications:read',
 ] as const;
 
 /** A price-list row. A table, not an entity — no id, never an `EntityRef`. */
@@ -305,4 +309,15 @@ export const handlebarInvoicingRoutes = defineEngineRoutes(invoicingOperations)(
   'invoicing/list': { method: 'GET', path: '/invoicing' },
   'invoicing/get': { method: 'GET', path: '/invoicing/{underlagId}' },
   'invoicing/export': { method: 'POST', path: '/invoicing/{underlagId}/export' },
+});
+
+/**
+ * The notifications engine's operations, at Handlebar's URLs. All four: the three under
+ * `/me` act on the caller only, and the delivery log is the workshop lead's.
+ */
+export const handlebarNotificationsRoutes = defineEngineRoutes(notificationsOperations)({
+  'notifications/my-preferences': { method: 'GET', path: '/me/notifications' },
+  'notifications/set-my-address': { method: 'PUT', path: '/me/notifications/address' },
+  'notifications/set-my-preference': { method: 'PUT', path: '/me/notifications/topics' },
+  'notifications/list-deliveries': { method: 'GET', path: '/notifications/deliveries' },
 });
