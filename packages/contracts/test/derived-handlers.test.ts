@@ -473,6 +473,35 @@ describe('stamps (#2157)', () => {
   });
 });
 
+describe('the model artifact is forward-compatible to its readers (#2157)', () => {
+  // A control plane parses a pushed model with the contracts it was built with. A kind, a stamp
+  // or a handler key it does not know yet was written by a newer emitter, not a broken one.
+  const fromNewerEmitter = {
+    entities: { tag: { ...emitModel(entities).entities.tag, stamps: { created_at: 'createdAt', gone_at: 'deletedAt' } } },
+    handlers: {
+      't/archive': { derive: 'archive' },
+      't/new': { derive: 'create', before: 'the folder is not closed' },
+      't/odd': { authored: 'a reason' },
+    },
+  };
+
+  it('parses a derive kind, a stamp kind and a handler key this release does not know, and keeps them', () => {
+    const parsed = emittedModel.parse(fromNewerEmitter);
+    expect(parsed.handlers).toEqual(fromNewerEmitter.handlers);
+    expect(parsed.entities.tag?.stamps).toEqual({ created_at: 'createdAt', gone_at: 'deletedAt' });
+  });
+
+  it('still refuses what no emitter writes: a blank kind, a handler with neither key', () => {
+    expect(() => emittedModel.parse({ entities: {}, handlers: { x: { derive: '' } } })).toThrow();
+    expect(() => emittedModel.parse({ entities: {}, handlers: { x: { reason: 'r' } } })).toThrow();
+  });
+
+  it('the emitter itself still writes only a kind it knows', () => {
+    expect(() => emitModel(entities, { operations: { x: { derive: 'upsert' } } })).toThrow();
+    expect(emitModel(entities, { operations: { x: { derive: 'create' } } }).handlers).toEqual({ x: { derive: 'create' } });
+  });
+});
+
 describe('the gate', () => {
   it('records the plan for a `derive` declaration, and none for anything else', () => {
     const ops = define({

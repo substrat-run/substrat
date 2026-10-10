@@ -511,7 +511,9 @@ export const emittedEntity = z.object({
   erasure: z
     .object({ mode: z.enum(['blank', 'delete', 'custom']), subjects: z.array(z.string()).optional() })
     .optional(),
-  stamps: z.record(z.string(), z.enum(STAMP_KINDS)).optional(),
+  // A string, not `STAMP_KINDS`: carried, never acted on — see `emittedHandler` for why a reader
+  // must not refuse a kind a newer emitter knows.
+  stamps: z.record(z.string(), z.string().min(1)).optional(),
 });
 
 export const emittedExport = z.object({
@@ -520,10 +522,26 @@ export const emittedExport = z.object({
   payload: z.record(z.string(), z.unknown()),
 });
 
-/** Who writes an operation's handler, for the operations whose declaration says (#1773). */
-export const emittedHandler = z.union([
+/** Who writes an operation's handler, as the EMITTER states it: a kind this release knows. */
+const declaredHandler = z.union([
   z.object({ derive: z.enum(DERIVED_KINDS) }).strict(),
   z.object({ authored: z.string().min(1) }).strict(),
+]);
+
+/**
+ * Who writes an operation's handler, for the operations whose declaration says (#1773) — as a
+ * READER parses it, and so structural, per this block's rule (#2157).
+ *
+ * A control plane parses a pushed model with the contracts it was built with. A closed list of
+ * kinds here refused every model an emitter newer than it wrote: the first `derive: 'create'` a
+ * vertical pushed was a 400 until the control plane was redeployed. The kind is carried, not
+ * judged — `defineOperations` refused an unknown one when the vertical loaded, and no reader acts
+ * on it. Loose for the same reason: a later emitter may say more about a handler, and a reader
+ * that stores the model keeps what it said.
+ */
+export const emittedHandler = z.union([
+  z.looseObject({ derive: z.string().min(1) }),
+  z.looseObject({ authored: z.string().min(1) }),
 ]);
 
 export const emittedModel = z.object({
@@ -624,8 +642,8 @@ export function emitModel<T extends Record<string, EntityDef>>(
   const handlers: Record<string, EmittedHandler> = {};
   for (const name of Object.keys(options.operations ?? {}).sort()) {
     const { derive, authored } = (options.operations?.[name] ?? {}) as { derive?: unknown; authored?: unknown };
-    if (derive !== undefined) handlers[name] = emittedHandler.parse({ derive });
-    else if (authored !== undefined) handlers[name] = emittedHandler.parse({ authored });
+    if (derive !== undefined) handlers[name] = declaredHandler.parse({ derive });
+    else if (authored !== undefined) handlers[name] = declaredHandler.parse({ authored });
   }
   return {
     // First, so a reader of the checked-in artifact meets it before the entities.
