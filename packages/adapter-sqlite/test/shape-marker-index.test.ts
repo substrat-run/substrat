@@ -121,11 +121,11 @@ describe('the shape reconcile reads markers on their own index (#2083)', () => {
  * adapter-cloudflare's `shape-marker-index.test.ts`.
  */
 describe('the shape backfill reads every row of a table holder, ties included (#2154)', () => {
-  it('a duplicate id, a NULL principal at a window edge and a WITHOUT ROWID table each mark every holder', async () => {
+  it('a duplicate id, a NULL principal at a window edge and a WITHOUT ROWID table (however its DDL ends) each mark every holder', async () => {
     const { host, file, t1, s1 } = await provisioned();
     await host.close();
     const cases = withFile(file, (db) => shapeBackfillTies(raw(db), { tenantId: t1, scopeId: s1 }));
-    expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid']);
+    expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid', 'without rowid, strict', 'without rowid, then a comment']);
     expect(cases.map((c) => [c.name, c.marked, c.recorded])).toEqual(cases.map((c) => [c.name, c.expected, true]));
   });
 });

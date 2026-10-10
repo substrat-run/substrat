@@ -31,7 +31,8 @@ const KEY = 'shape-tie:use';
  * - `null principal at the edge`: nine rows with no principal, then `(e1, NULL)` closing the first
  *   window, then `(e1, A)`. A principal-keyed seek past `(e1, NULL)` compares NULL for every e1 row.
  * - `without rowid`: `(e1, A)`, `(e1, B)`, `(e2, C)` in a `WITHOUT ROWID` table keyed on another
- *   column, with an index on the id.
+ *   column, with an index on the id. Then the same table declared `WITHOUT ROWID, STRICT`, and
+ *   `WITHOUT ROWID` followed by a comment: DDL text that does not end in the clause.
  */
 export function shapeBackfillTies(raw: SwitchSql, ids: { tenantId: string; scopeId: string }): TieCase[] {
   const cases: { name: string; type: string; ddl: string[]; rows: [string, string | null][] }[] = [
@@ -53,6 +54,24 @@ export function shapeBackfillTies(raw: SwitchSql, ids: { tenantId: string; scope
       ddl: [
         'CREATE TABLE shape_tie_badge (k TEXT PRIMARY KEY, entity_id TEXT, holder TEXT) WITHOUT ROWID',
         'CREATE INDEX shape_tie_badge_id ON shape_tie_badge (entity_id)',
+      ],
+      rows: [['e1', 'A'], ['e1', 'B'], ['e2', 'C']],
+    },
+    {
+      name: 'without rowid, strict',
+      type: 'tiestrict',
+      ddl: [
+        'CREATE TABLE shape_tie_strict (k TEXT PRIMARY KEY, entity_id TEXT, holder TEXT) WITHOUT ROWID, STRICT',
+        'CREATE INDEX shape_tie_strict_id ON shape_tie_strict (entity_id)',
+      ],
+      rows: [['e1', 'A'], ['e1', 'B'], ['e2', 'C']],
+    },
+    {
+      name: 'without rowid, then a comment',
+      type: 'tienote',
+      ddl: [
+        'CREATE TABLE shape_tie_note (k TEXT PRIMARY KEY, entity_id TEXT, holder TEXT) WITHOUT ROWID -- keyed on k',
+        'CREATE INDEX shape_tie_note_id ON shape_tie_note (entity_id)',
       ],
       rows: [['e1', 'A'], ['e1', 'B'], ['e2', 'C']],
     },

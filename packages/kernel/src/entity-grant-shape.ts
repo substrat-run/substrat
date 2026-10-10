@@ -623,8 +623,10 @@ function backfill(
     }
     // The vertical's table may not exist yet on this scope (a module not migrated): nothing to
     // mark, and the backfill stays open for the next reconcile rather than being recorded done.
-    const ddl = db.all(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table)[0];
-    if (!ddl) return { done: true, at: null };
+    // Asked of SQLite, not read off the DDL's text, which keeps table options in any order and
+    // comments after them (#2159 review).
+    const listed = db.all(`SELECT wr FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND name = ?`, table)[0];
+    if (!listed) return { done: true, at: null };
     const subject = `'${PRINCIPAL}' || e."${principalColumn}"`;
     const object = `? || e."${idColumn}"`;
     // The table in `idColumn` order, the cursor a seek on it: the raw values, so they compare as the
@@ -632,7 +634,7 @@ function backfill(
     // to the row's own identity (#2159 review): rows sharing an id are never skipped at a window's
     // edge. Bounded only where `idColumn` leads an index (an entity id is the primary key);
     // otherwise every window sorts the whole table, which `warnUnboundedRead` reports.
-    const key = [`e."${idColumn}"`, ...rowIdentity(db, table, idColumn, String(ddl['sql'] ?? ''))];
+    const key = [`e."${idColumn}"`, ...rowIdentity(db, table, idColumn, Number(listed['wr']) === 1)];
     const sql = `SELECT ${key.map((k, i) => `${k} AS k${i}`).join(', ')}, ${subject} AS subject, ${object} AS object,
                         (e."${principalColumn}" IS NOT NULL AND ${heldThere(subject, object)} AND ${unmarked(subject, object)}) AS hit
                    FROM "${table}" e
@@ -660,8 +662,8 @@ function backfill(
  * they stand in, read in key order (those already `idColumn`'s left out: a key of `idColumn`
  * alone is unique, and needs nothing after it).
  */
-function rowIdentity(db: SwitchSql, table: string, idColumn: string, ddl: string): string[] {
-  if (!/\bWITHOUT\s+ROWID\s*;?\s*$/i.test(ddl)) return ['e.rowid'];
+function rowIdentity(db: SwitchSql, table: string, idColumn: string, withoutRowid: boolean): string[] {
+  if (!withoutRowid) return ['e.rowid'];
   return db
     .all('SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk', table)
     .map((r) => String(r['name']))

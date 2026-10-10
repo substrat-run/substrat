@@ -99,9 +99,9 @@ export function shapeReconcilePlans(
     if (sql.includes('(m.object, m.subject) > (?, ?)')) walks.push(joined);
     const kind = backfillOf(sql, params);
     if (kind) backfills[kind].push(joined);
-    // A virtual table (`json_each`) is scanned by design, and so is the schema table a table holder's
-    // existence is read from; a scan of the tuple table, or of the holder's table, never is.
-    for (const d of detail) if (/^SCAN /.test(d) && !/VIRTUAL TABLE|^SCAN sqlite_master$/.test(d)) scans.push(`${d} — ${sql.replace(/\s+/g, ' ').slice(0, 160)}`);
+    // A virtual table (`json_each`, `pragma_table_list`) is scanned by design; a scan of the tuple
+    // table, or of the holder's table, never is.
+    for (const d of detail) if (/^SCAN /.test(d) && !/VIRTUAL TABLE/.test(d)) scans.push(`${d} — ${sql.replace(/\s+/g, ' ').slice(0, 160)}`);
   };
   const sql: SwitchSql = {
     all: (q, ...p) => {

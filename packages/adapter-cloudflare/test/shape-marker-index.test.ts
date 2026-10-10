@@ -162,11 +162,11 @@ describe('#2154: the shape backfill reads a bounded window per pass, on workerd'
    * #2159 review: rows sharing an id are all read whichever row a window ends on, after a NULL
    * principal too, and in a WITHOUT ROWID table, whose key is read with `pragma_table_info`.
    */
-  it('a duplicate id, a NULL principal at a window edge and a WITHOUT ROWID table each mark every holder', async () => {
+  it('a duplicate id, a NULL principal at a window edge and a WITHOUT ROWID table (however its DDL ends) each mark every holder', async () => {
     const cases = await runInDurableObject(stubOf(`shape-backfill-ties-${ulid()}`), (_instance, state) =>
       shapeBackfillTies(switchSqlOver(state.storage.sql), { tenantId: ulid(), scopeId: ulid() }),
     );
-    expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid']);
+    expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid', 'without rowid, strict', 'without rowid, then a comment']);
     expect(cases.map((c) => [c.name, c.marked, c.recorded])).toEqual(cases.map((c) => [c.name, c.expected, true]));
   });
 
