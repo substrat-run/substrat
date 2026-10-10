@@ -67,7 +67,8 @@ describe('classifyError reads the taxonomy first', () => {
 /**
  * The sentence fallbacks, deprecated (#113). A throw that declared nothing still gets the
  * status its wording used to earn, for one more release — and says so in the vertical's
- * own logs, once per sentence, so the author learns before the status moves.
+ * own logs (once per code and sentence prefix, at most a hundred times per isolate), so
+ * the author learns before the status moves.
  *
  * The dedupe is per isolate and these tests share one, so each case throws a sentence of
  * its own (`fresh`), never one another case has already announced.

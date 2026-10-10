@@ -84,8 +84,9 @@ function isParseFailure(err: unknown): boolean {
  * `assertTransition`'s `conflict`, every engine's and adapter's `not_found`. What still
  * reaches these patterns is a vertical's own untyped `throw new Error('… not found')`.
  * When they go, such a throw becomes the caller's 400 like any other unrecognised throw,
- * so until then each one is announced in the vertical's own logs, once per sentence,
- * naming the typed spelling that keeps its status.
+ * so until then each one is announced in the vertical's own logs, naming the typed
+ * spelling that keeps its status — once per code and sentence prefix, at most
+ * `ANNOUNCED_MAX` times per isolate (see `announced`).
  */
 const DENIAL_SENTENCES: readonly { pattern: RegExp; code: ErrorCode }[] = [
   { pattern: /permission denied/i, code: 'permission_denied' },

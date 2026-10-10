@@ -279,8 +279,10 @@ A throw that declares nothing still gets a status from its wording, for now: "pe
 denied" answers 403, "not found" or "unknown scope" 404, "invalid transition" or "immutable"
 409. A later release stops reading the sentence, and such a throw becomes the caller's 400
 like any other unrecognised one. Until then the vertical's own logs carry a
-`vertical-host.untyped-refusal` line, once per sentence, naming the code that keeps the
-status. This answers the same 404 with the same `detail`, and gains its `code`:
+`vertical-host.untyped-refusal` line naming the code that keeps the status. Each worker
+isolate logs a given code and first 120 characters of the sentence once, cuts a longer
+sentence to those 120 (marked `… (truncated)`), and goes silent after 100 such lines; the
+status is the same either way. This answers the same 404 with the same `detail`, and gains its `code`:
 
 ```ts
 throw substratError('not_found', `customer not found: ${id}`);
