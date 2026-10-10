@@ -9,24 +9,22 @@ registration object bundling a manifest, migrations, operations, the schemas and
 preconditions the host enforces around them, and event consumers:
 
 ```ts
-import { operationInputsOf, operationConcurrencyOf } from '@substrat-run/contracts';
-import type { ModuleRegistration } from '@substrat-run/kernel';
+import { operationsFor, type ModuleRegistration } from '@substrat-run/kernel';
 
 const registration: ModuleRegistration = {
   manifest,      // self-describing metadata (validated Zod document)
   migrations,    // ordered SQL, journaled per module, applied lazily per scope
-  operations,    // 'workorder/create' → handler
-  operationInputs: operationInputsOf(workorderOperations),        // name → input schema
-  operationConcurrency: operationConcurrencyOf(workorderOperations), // name → If-Match target
+  // 'workorder/get' → handler, held to the declaration — plus, derived from the same
+  // declaration: name → input schema, name → If-Match target, the idempotency opt-outs
+  ...operationsFor(workorderOperations)({ 'workorder/get': getOp, /* … */ }),
   consumers,     // 'workorder.completed' → handler
 };
 
 host.registerModule(registration);
 ```
 
-The two maps are derived from the declared operation surface rather than written a second
-time, and both are **optional** — see [the parse the host owns](#the-parse-the-host-owns)
-for what their absence means.
+The maps beside the handlers are derived from the declared operation surface rather than
+written a second time — see [the parse the host owns](#the-parse-the-host-owns).
 
 ## The manifest
 
@@ -307,21 +305,20 @@ run, on every path in — HTTP, in-process `invoke`, a seed, a schedule — so a
 receives a value that has already been validated and does not parse again.
 
 ```ts
-operations: { 'rally/book': bookOp, /* … */ },
-operationInputs: operationInputsOf(rallyOperations),
+...operationsFor(rallyOperations)({ 'rally/book': bookOp, /* … */ }),
 ```
 
 The map is derived from the declared operation surface, never written a second time: a
 declared `input` that the handler was supposed to re-parse is the same schema stated twice,
 and across the fleet the two drifted — rally declared 32 inputs and parsed 2.
 
-Both maps are optional on the interface, and the two directions are not symmetric:
-
-- **A name in the map that no operation binds is an error.** It is a schema enforcing
-  nothing while reading as coverage.
-- **A bound operation with no entry is allowed**, and means what it always meant — nothing
-  was declared to parse. So a module that declares Zod inputs but omits the map has
-  compile-time types and no runtime check anywhere, with nothing to say so.
+The handlers and the schemas arrive together or not at all. `operations` takes only a
+`BoundOperations`, which `operationsFor` produces with the schemas beside it, so a module that
+declares its inputs cannot register its handlers without handing the host the parse. The
+other producer is the stated exception, `undeclaredOperations(reason, handlers)`, for a
+module with no declared surface: nothing is parsed for it, and the reason says why. A name in
+`operationInputs` that no operation binds is still an error — a schema enforcing nothing
+while reading as coverage.
 
 ## Attachment contracts and opaque refs
 

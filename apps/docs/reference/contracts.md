@@ -378,11 +378,11 @@ compiler checks the joins between them. Full walkthrough in
 | `manifestOperations(ops, { permissions, checksDeclaredElsewhere?, consumes? })` | the operation half of the manifest — descriptions supplied, the permission key set and `events.emits` derived; a key checked but owned by a composed engine is listed under `checksDeclaredElsewhere` with its owner, and both an undescribed key and a stale exemption are load errors |
 | `manifestEntities(entities, refs)` | composes the entity-referencing manifest fragments; derives `entityRelations` from each entity's `parents` |
 | `permissionsUsedBy` · `eventsEmittedBy` | derive the manifest's `permissions` and `events.emits` from the operations |
-| `operationInputsOf(ops)` | the `operationInputs` map a `ModuleRegistration` carries — every operation's declared input schema, which the **host** parses on every path in before the guards and the handler |
+| `operationInputsOf(ops)` | the `operationInputs` map a `ModuleRegistration` carries — every operation's declared input schema, which the **host** parses on every path in before the guards and the handler. A module gets it from `operationsFor` in the kernel rather than calling it |
 | `operationConcurrencyOf(ops)` · `operationIdempotencyOptOutsOf(ops)` | the `operationConcurrency` map (which entity's version each operation's `If-Match` is checked against) and the operations that opted out of `Idempotency-Key` — both derived, never written a second time |
 | `emitModel` | renders the registry to deterministic JSON — the artifact `pnpm lint:model --check` gates |
 | `EntityRow<T, K>` | a declared entity's row type, for `ctx.sql.query<…>` |
-| `OperationImpl<Ops, Ctx>` | the handler map an operation set requires; bind with `satisfies` |
+| `OperationImpl<Ops, Ctx>` | the handler map an operation set requires; the kernel's `operationsFor` holds a module's map to it |
 | `journalColumns(sql)` | test tooling — columns per table from a migration journal, following `ADD COLUMN`, `DROP TABLE` and `RENAME TO` |
 
 `model.json` is for consumers that must not execute your code, or that want diffability. A

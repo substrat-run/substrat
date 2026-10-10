@@ -157,16 +157,23 @@ which denies by default until roles and grants say otherwise. See
 
 ### 2. Register a module
 
-A module is a manifest + migrations + operations, and — optionally, though every engine and
-vertical in this repo does it — the schemas the host parses those operations against.
-Here's a minimal one (engines ship
+A module is a manifest + migrations + operations, and its operations are **declared**: what
+each one accepts, answers with and is gated by. The handlers are bound to that declaration,
+which also hands the host the schemas it parses every invocation against. Here's a minimal one (engines ship
 this structure for you — see [What is an engine?](/engines/)):
 
 ```ts
-import { z, moduleManifest } from '@substrat-run/contracts';
-import { assertAllowed, ulid, type ModuleRegistration } from '@substrat-run/kernel';
+import { z, defineEntities, defineOperations, moduleManifest } from '@substrat-run/contracts';
+import { assertAllowed, operationsFor, ulid, type ModuleRegistration } from '@substrat-run/kernel';
 
-const noteInput = z.object({ text: z.string().min(1) });
+const noteOperations = defineOperations(defineEntities({}), ['notes:write'])({
+  'notes/create': {
+    summary: 'Create a note',
+    permission: 'notes:write',
+    input: z.object({ text: z.string().min(1) }),
+    output: z.object({ id: z.string() }),
+  },
+});
 
 export const notesModule: ModuleRegistration = {
   manifest: moduleManifest.parse({
@@ -195,8 +202,8 @@ export const notesModule: ModuleRegistration = {
       );`,
     },
   ],
-  operations: {
-    'notes/create': async (ctx, { text }: z.infer<typeof noteInput>) => {
+  ...operationsFor(noteOperations)({
+    'notes/create': async (ctx, { text }) => {
       assertAllowed(await ctx.check('notes:write' as never));
       const id = ulid();
       ctx.sql.exec(
@@ -212,8 +219,7 @@ export const notesModule: ModuleRegistration = {
       });
       return { id };
     },
-  },
-  operationInputs: { 'notes/create': noteInput },
+  }),
 };
 
 host.registerModule(notesModule);
@@ -221,15 +227,14 @@ host.registerModule(notesModule);
 
 Things to notice:
 
-- **The host parses the input, not the handler.** `operationInputs` names the schema for
-  each operation, and the host applies it before the guards and the handler on every path
-  in — HTTP, in-process `invoke`, a seed, a schedule. A handler that parsed its own input
-  would be a trust boundary each new operation has to remember; this one cannot be
-  forgotten. A vertical with a declared operation surface hands the whole map over at once
-  with `operationInputsOf(ops)` rather than listing names — see
-  [Modules & the manifest](/concepts/modules#the-parse-the-host-owns). Leaving the map out
-  is legal and means nothing was declared to parse, so the Zod object above would be
-  compile-time only.
+- **The host parses the input, not the handler.** `operationsFor` hands the host the
+  declared schema for each operation with its handler, and the host applies it before the
+  guards and the handler on every path in — HTTP, in-process `invoke`, a seed, a schedule.
+  A handler that parsed its own input would be a trust boundary each new operation has to
+  remember; this one cannot be forgotten, because a registration takes no handler map the
+  binder did not make — see [Modules & the manifest](/concepts/modules#the-parse-the-host-owns).
+  The handler's `{ text }` is typed from the same declaration, and a handler declared and
+  missing, or present and undeclared, does not compile.
 - **The permission check is the first line.** `assertAllowed` throws `PermissionDenied`
   unless the decision is an allow.
 - **`ctx.emit` takes no origin fields.** Tenant, scope, actor, id, and timestamp are
