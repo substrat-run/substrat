@@ -177,7 +177,7 @@ describe('derivationOf — list', () => {
 
   it('refuses `derive: list` on a declaration that is not a read, or filters the wrong column', () => {
     const post = { ...LIST, http: { method: 'POST', path: '/folders/{folderId}/notes' }, emits: emitsNote('n.listed') };
-    expect(() => define({ 'n/list': { ...post, derive: 'list' } })).toThrow(
+    expect(() => define({ 'n/list': { ...post, derive: 'list' } as never })).toThrow(
       "model: 'n/list' declares `derive: 'list'`, but it emits, and a read announces nothing.\n" +
         '  Remedy: make the declaration the shape it derives, or drop `derive` and write the handler.',
     );
@@ -197,9 +197,10 @@ describe('derivationOf — list', () => {
   });
 
   it('(a) does not call a paged POST that emits derivable — it is a command, and its handler is its own', () => {
+    // Cast: the type rejects this declaration already; the runtime gate is what is under test.
     const post = { ...LIST, http: { method: 'POST', path: '/folders/{folderId}/notes' }, emits: emitsNote('n.listed') };
     expect(kindOf(post)).toBeUndefined();
-    expect(() => define({ 'n/run': post })).not.toThrow();
+    expect(() => define({ 'n/run': post as never })).not.toThrow();
   });
 });
 
