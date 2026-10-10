@@ -103,6 +103,61 @@ describe('#2154: the shape backfill reads a bounded window per pass, on workerd'
     expect(large).toBeLessThanOrEqual(small * 1.25);
   });
 
+  /**
+   * #2159 review: the probe's candidates are a fixed share of its rows, so a read that filtered
+   * candidates in its WHERE would also stop after a constant number of rows. What the window must
+   * bound is a range where non-candidates GROW and candidates do not: the restart an interrupted
+   * reconcile makes, re-reading every holder it already marked ahead of the few it has not. Each
+   * holder kind, with `marked` holders already marked and five left, all at the range's end.
+   */
+  const restartRows = (kind: 'self' | 'grantee' | 'table', marked: number) =>
+    runInDurableObject(stubOf(`shape-backfill-restart-${ulid()}`), (_instance, state) => {
+      const c = counted(state.storage.sql);
+      const tuple = (subject: string, relation: string, object: string) =>
+        c.sql.run('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', subject, relation, object);
+      const KEY = 'restart:use';
+      if (kind === 'table') c.sql.run('CREATE TABLE shape_restart_badge (id TEXT PRIMARY KEY, holder TEXT)');
+      const left: string[] = [];
+      for (let i = 0; i < marked + 5; i++) {
+        const p = ulid();
+        // Already-marked holders sort first, the five left to mark after them: `a…` before `z…`.
+        const id = kind === 'self' ? `${i < marked ? '0' : '7'}${p.slice(1)}` : `${i < marked ? 'a' : 'z'}${String(i).padStart(5, '0')}`;
+        const object = `${kind === 'self' ? 'owner' : kind === 'grantee' ? 'desk' : 'badge'}:${id}`;
+        const subject = `principal:${kind === 'self' ? id : p}`;
+        if (kind === 'table') c.sql.run('INSERT INTO shape_restart_badge (id, holder) VALUES (?, ?)', id, p);
+        tuple(subject, `granted:${KEY}`, object);
+        if (i < marked) tuple(subject, 'bootstrap', object);
+        else left.push(`${subject} ${object}`);
+      }
+      const holder = kind === 'table' ? { table: 'shape_restart_badge', idColumn: 'id', principalColumn: 'holder' } : kind;
+      const entityType = kind === 'self' ? 'owner' : kind === 'grantee' ? 'desk' : 'badge';
+      const shapes = [entityGrantShape.parse({ entityType, permissions: [KEY], bootstrap: true, holder })];
+      let [max, passes, after] = [0, 0, null as ShapeCursor | null];
+      do {
+        const before = c.rowsRead();
+        after = topUpEntityGrantShapes(c.sql, { tenantId: ulid(), scopeId: ulid(), shapes, now: new Date().toISOString(), limit: 2, after, mintEventId: () => ulid(), version: null }).next;
+        max = Math.max(max, c.rowsRead() - before);
+        passes++;
+      } while (after && passes < 10_000);
+      const markedNow = c.sql
+        .all("SELECT subject || ' ' || object AS pair FROM _substrat_tuples WHERE relation = 'bootstrap' AND object >= ? AND object < ?", `${entityType}:`, `${entityType};`)
+        .map((r) => String(r['pair']));
+      expect(after).toBeNull();
+      for (const pair of left) expect(markedNow).toContain(pair);
+      return max;
+    });
+
+  it.each(['self', 'grantee', 'table'] as const)(
+    '%s: a restart over four times the already-marked holders reads no more in any pass',
+    async (kind) => {
+      const small = await restartRows(kind, 200);
+      const large = await restartRows(kind, 800);
+      expect(small).toBeGreaterThan(0);
+      // Filtered in the WHERE, the first pass reads every marked holder to find the five left.
+      expect(large).toBeLessThanOrEqual(small * 1.25);
+    },
+  );
+
   /** The holder table's schema is the vertical's: the first window plans its read and says so if it sorts. */
   const warnings = (ddl: string) =>
     runInDurableObject(stubOf(`shape-backfill-warn-${ulid()}`), (_instance, state) => {
