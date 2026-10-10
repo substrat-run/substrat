@@ -106,7 +106,7 @@ export const MAX_SEARCH_LIMIT = 100;
  * minimum of 3 characters". Two for `prefix` matches the `prefix='2 3'` index
  * below. A shorter term is REFUSED rather than answered by a silent table scan.
  */
-export const MIN_SEARCH_TERM: Record<SearchTokenizer, number> = { prefix: 2, substring: 3 };
+const MIN_SEARCH_TERM: Record<SearchTokenizer, number> = { prefix: 2, substring: 3 };
 
 /** Raised for a term the index cannot answer. Distinguishable from a crash at the seam. */
 export class SearchTermTooShort extends Error {
@@ -136,7 +136,7 @@ function slug(value: string): string {
 }
 
 /** The prefix every derived index table carries. Shadow tables inherit it. */
-export const SEARCH_INDEX_PREFIX = '_substrat_search_';
+const SEARCH_INDEX_PREFIX = '_substrat_search_';
 
 /**
  * Is this table part of a derived search index?
@@ -319,33 +319,6 @@ export function searchIndexMigrations(
 export const searchIndexVersion = (plan: SearchIndexPlan): string =>
   `search/${plan.entityType}:${plan.tokenizer}:${plan.fields.join('+')}`;
 
-
-/**
- * Index the plans by entity type for a whole scope, refusing an ambiguity.
- *
- * Two modules declaring the same entity type searchable is not resolvable by
- * picking one: `ctx.search('customer', …)` would mean different rows depending
- * on registration order, which is the kind of fact that stays true in tests and
- * changes in production.
- */
-export function searchPlansByEntityType(
-  modules: readonly { readonly id: string; readonly searchables?: readonly SearchableDeclaration[] }[],
-): Map<string, SearchIndexPlan> {
-  const byType = new Map<string, SearchIndexPlan>();
-  for (const mod of modules) {
-    for (const plan of searchIndexPlans(mod.id, mod.searchables)) {
-      const existing = byType.get(plan.entityType);
-      if (existing) {
-        throw new Error(
-          `search: '${plan.entityType}' is declared searchable by both '${existing.moduleId}' and ` +
-            `'${plan.moduleId}' — one entity type, one index; rename one`,
-        );
-      }
-      byType.set(plan.entityType, plan);
-    }
-  }
-  return byType;
-}
 
 /**
  * Turn what a person typed into an FTS5 MATCH expression.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertNoReservedColumnWrite } from '../src/index.js';
+import { assertNoReservedColumnWrite } from '../src/spine-guard.js';
 
 /**
  * The SET scanner, generated (#119, Codex r2): random assignment lists whose VALUES carry

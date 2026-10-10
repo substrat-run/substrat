@@ -21,7 +21,7 @@ import { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
  */
 
 /** Every column of `_substrat_refusals`, in the order `mapRefusalRow` expects. */
-export const REFUSAL_COLUMNS =
+const REFUSAL_COLUMNS =
   'id, kind, tenant_id, scope_id, entity_type, entity_id, from_state, attempted_state, operation,' +
   ' invoked_operation, guard, reason, actor, impersonation, invocation_id, at, drained_at';
 

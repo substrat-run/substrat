@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { errorCodeOf } from '@substrat-run/contracts';
-import { assertNoSpineWrite, guardSpine, type ScopedSql } from '../src/index.js';
+import { guardSpine, type ScopedSql } from '../src/index.js';
+import { assertNoSpineWrite } from '../src/spine-guard.js';
 
 /**
  * The statement scan behind `ctx.sql` (#954). Two properties are being pinned and

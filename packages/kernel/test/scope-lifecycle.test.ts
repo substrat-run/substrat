@@ -3,15 +3,14 @@ import { describe, expect, it } from 'vitest';
 import type { ScopeLifecycle } from '@substrat-run/contracts';
 import {
   isLifecycleWrite,
-  lifecycleAfterLoad,
   lifecycleReceipt,
   lifecycleRefusal,
   readLifecycle,
   settleLifecycleAfterLoad,
   writeLifecycle,
-  WRITE_LIFECYCLE_SQL,
   type SwitchSql,
 } from '../src/index.js';
+import { lifecycleAfterLoad, WRITE_LIFECYCLE_SQL } from '../src/scope-lifecycle.js';
 
 /**
  * The lifecycle a CP-less deployment holds a scope by (#1713): the one refusal predicate both the

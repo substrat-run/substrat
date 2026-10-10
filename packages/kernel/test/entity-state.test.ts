@@ -3,27 +3,24 @@ import { piecesReproduce } from '../src/spine-guard.js';
 import { describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, permissionKey } from '@substrat-run/contracts';
 import {
-  assertNoReservedColumnWrite,
   entityStateMigrations,
-  entityStatePlans,
-  entityStateWhere,
-  listIndexDdl,
   listIndexPlans,
   moduleMigrations,
   addStatePlans,
   createTrashedReads,
-  assertEntityStateColumns,
   afterRuntimeDdl,
   derivesAnything,
   repairDerivedObjects,
   StateColumnLost,
-  assertNoStatefulDdl,
-  changesSchema,
   guardSpine,
   cursorOf,
   listQuery,
   type OperationContext,
 } from '../src/index.js';
+import { assertNoReservedColumnWrite, assertNoStatefulDdl, changesSchema } from '../src/spine-guard.js';
+import { entityStatePlans, entityStateWhere } from '../src/entity-state.js';
+import { listIndexDdl } from '../src/list-index.js';
+import { assertEntityStateColumns } from '../src/derived-objects.js';
 
 /**
  * The declaration-to-DDL half of archive and trash (#119), and the column guard's grammar.

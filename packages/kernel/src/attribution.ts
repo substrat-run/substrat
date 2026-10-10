@@ -58,14 +58,3 @@ export function attributedView<H extends { admin: HostAdmin }>(
   return view;
 }
 
-/**
- * `ScopeHost.attributed` for a host whose admin rows read `this.onBehalfOf` (#977) —
- * `attributedView` with the person alone, kept for a host built against it.
- */
-export function attributedHost<H extends { admin: HostAdmin }>(
-  host: H,
-  onBehalfOf: OnBehalfOf,
-  buildAdmin: (this: H) => HostAdmin,
-): H {
-  return attributedView(host, { onBehalfOf }, buildAdmin);
-}

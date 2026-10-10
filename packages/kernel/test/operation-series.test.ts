@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { OPERATION_SERIES_LAST_INSTANT_MS, operationSeriesInput, type OperationSeriesInput } from '@substrat-run/contracts';
-import { createUlid, OPERATION_SERIES_ID_SLACK_MS, operationSeriesQuery, readOperationSeries, type ScopedSql } from '../src/index.js';
+import { createUlid, operationSeriesQuery, readOperationSeries, type ScopedSql } from '../src/index.js';
+import { OPERATION_SERIES_ID_SLACK_MS } from '../src/operation-series.js';
 
 /**
  * Business volumes per bucket (#1750), against a real outbox: the read is one aggregate

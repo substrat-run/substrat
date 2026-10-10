@@ -284,15 +284,6 @@ export function exportReadPlan(
   return { types: types.sort(), keys: [...keys].sort(), wanted, unexported };
 }
 
-/** Every (type → export) the given manifests declare. The caller's registration refuses conflicts. */
-export function exportsOf(
-  manifests: readonly { events: { exports?: readonly EventExport[] } }[],
-): Map<string, EventExport> {
-  const out = new Map<string, EventExport>();
-  for (const m of manifests) for (const e of m.events.exports ?? []) if (!out.has(e.type)) out.set(e.type, e);
-  return out;
-}
-
 /**
  * The outbox's insertion mark (#1705 PR 2): the kick's "before", taken ahead of an invoke.
  *

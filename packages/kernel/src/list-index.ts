@@ -89,12 +89,7 @@ export interface ListIndexPlan {
 }
 
 /** The prefix every derived list index carries. */
-export const LIST_INDEX_PREFIX = '_substrat_list_';
-
-/** Is this index one the kernel derived for a paged read? */
-export function isListIndexName(name: string): boolean {
-  return name.startsWith(LIST_INDEX_PREFIX);
-}
+const LIST_INDEX_PREFIX = '_substrat_list_';
 
 const assertIdentifier = (kind: string, value: string, where: string): string =>
   assertSqlIdentifier('list', kind, value, where);
@@ -219,7 +214,7 @@ export function listIndexPlans(
  * two-filter combination is hot wants a hand-written index, and knowing that is
  * how somebody adds one.
  */
-export function listIndexColumns(
+function listIndexColumns(
   plan: ListIndexPlan,
 ): { name: string; columns: string[]; where?: string }[] {
   const out: { name: string; columns: string[]; where?: string }[] = [];
@@ -318,35 +313,6 @@ export const listIndexVersion = (plan: ListIndexPlan): string =>
   `list/${plan.entityType}:${plan.sortable.join('+')}:${plan.filterable.join('+')}` +
   (plan.states ? `:${viewsOf(plan.states).join('+')}` : '');
 
-/**
- * Index the plans by entity type for a whole scope, refusing an ambiguity — the
- * same refusal `searchPlansByEntityType` makes, because `ctx.page('customer', …)`
- * meaning different rows depending on registration order is the kind of fact
- * that stays true in tests and changes in production.
- */
-export function listPlansByEntityType(
-  modules: readonly {
-    readonly id: string;
-    readonly lists?: readonly ListDeclaration[];
-    readonly entityStates?: readonly EntityStateDeclaration[];
-  }[],
-): Map<string, ListIndexPlan> {
-  const byType = new Map<string, ListIndexPlan>();
-  for (const mod of modules) {
-    for (const plan of listIndexPlans(mod.id, mod.lists, mod.entityStates)) {
-      const existing = byType.get(plan.entityType);
-      if (existing) {
-        throw new Error(
-          `list: '${plan.entityType}' declares a paged list in both '${existing.moduleId}' and ` +
-            `'${plan.moduleId}' — one entity type, one walk; rename one`,
-        );
-      }
-      byType.set(plan.entityType, plan);
-    }
-  }
-  return byType;
-}
-
 /** What a caller asks for. Everything optional but the limit, which the host defaults. */
 export interface ListQueryParams {
   readonly limit: number;
@@ -377,19 +343,6 @@ export interface ComposedListQuery {
   readonly order: 'asc' | 'desc';
   /** The view the walk ran over (#119) — what its cursors are minted for. */
   readonly view: EntityStateName;
-}
-
-/**
- * Split a composite cursor into its sort value and its tie-break id.
- *
- * The first part is `|`-free by construction (`pagination.ts`), so the split is
- * on the FIRST separator and a sort value containing `|` still round-trips as
- * long as the id does not — which it cannot, being a ULID.
- */
-export function splitCursor(cursor: string): { value: string; id: string | undefined } {
-  const at = cursor.indexOf('|');
-  if (at === -1) return { value: cursor, id: undefined };
-  return { value: cursor.slice(0, at), id: cursor.slice(at + 1) };
 }
 
 /**

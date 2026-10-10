@@ -184,11 +184,6 @@ export function switchPeer(
   return moveSwitch(db, 'peer', { key: vertical, ...rest });
 }
 
-/** Is this peer switched off on the scope `db` is? */
-export function peerSwitchedOff(db: SwitchSql, vertical: string): boolean {
-  return subjectSwitchedOff(db, peerSubjectRef(vertical));
-}
-
 /** One peer's position on one scope, as `peerGrantsStatus` enumerates them. */
 export interface PeerGrantsRow {
   vertical: string;

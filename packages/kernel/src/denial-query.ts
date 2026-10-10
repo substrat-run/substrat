@@ -28,7 +28,7 @@ import { rowDecoder, UNDECODED_ACTOR, UNDECODED_PERMISSION } from './row-decode.
  */
 
 /** Every column of `_substrat_denials`, in the order `mapDenialRow` expects. */
-export const DENIAL_COLUMNS =
+const DENIAL_COLUMNS =
   'id, actor, permission, tenant_id, scope_id, operation, impersonation, invocation_id, at, drained_at';
 
 /** The raw row shape, as either adapter hands it back. */

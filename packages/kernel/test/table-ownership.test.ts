@@ -4,12 +4,12 @@ import { errorCodeOf } from '@substrat-run/contracts';
 import {
   TABLE_OWNERS_DDL,
   assertMigrationLeavesLedgerAlone,
-  assertTablesOwned,
   recordOwnershipSteps,
   runMigrationStatements,
   type ScopedSql,
   type SqlValue,
 } from '../src/index.js';
+import { assertTablesOwned } from '../src/table-ownership.js';
 
 /**
  * #2068 — table ownership as the migrations actually made it, on a real SQLite. The adapters

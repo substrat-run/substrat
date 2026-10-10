@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { platformRequest } from '@substrat-run/contracts';
 import {
   platformRequestOf,
-  UNDECODED_REQUESTER,
   ulid,
   type PlatformRequestRawRow,
 } from '../src/index.js';
+import { UNDECODED_REQUESTER } from '../src/platform-request-query.js';
 
 /**
  * The journal's row decoder (#1588), column by column.

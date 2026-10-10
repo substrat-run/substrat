@@ -9,12 +9,15 @@ import {
   systemSwitchedOff,
   systemSwitchedOffMessage,
   switchRecordedOff,
-  peerSwitchedOff,
   recordedOffFromWire,
   tenantHoldsGrant,
   tenantSystemSwitchedOffMessage,
   type SwitchSql,
 } from '../src/index.js';
+import { peerSubjectRef, subjectSwitchedOff } from '../src/system-switch.js';
+
+/** Is this peer switched off on the scope `db` is? The read `admitPeer` refuses on. */
+const peerSwitchedOff = (db: SwitchSql, vertical: string): boolean => subjectSwitchedOff(db, peerSubjectRef(vertical));
 
 /**
  * #1666: the switch's own rule, executed against a real SQLite. Each adapter runs the same

@@ -87,7 +87,7 @@ export function applyScopeRoleChange(
  * tenant no longer defines contributes `null` — it confers nothing, so taking it back is
  * bounded by nothing (the invite revoke's rule, #1931).
  */
-export function combineCoverage(bounds: readonly (Coverage | null)[]): Coverage {
+function combineCoverage(bounds: readonly (Coverage | null)[]): Coverage {
   const missing = [...new Set(bounds.flatMap((b) => (b && !b.covered ? b.missing : [])))].sort() as PermissionKey[];
   return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing: missing as [PermissionKey, ...PermissionKey[]] };
 }

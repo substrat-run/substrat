@@ -32,7 +32,7 @@ import type { ScopedSql } from './scope-host.js';
 import { executableSqlStatements, splitSqlStatements } from './sql-statements.js';
 
 /** The ledger's name — also what an authored migration may never name. */
-export const TABLE_OWNERS = '_substrat_table_owners';
+const TABLE_OWNERS = '_substrat_table_owners';
 
 /**
  * The spine table the ownership lives in — a scope table, so it travels with the scope's data.
@@ -66,7 +66,7 @@ export function assertMigrationLeavesLedgerAlone(sql: string, what: string): voi
 }
 
 /** The scope's own tables, lowercased: no spine, no SQLite or workerd internals, no views. */
-export function moduleTableNames(sql: ScopedSql): Set<string> {
+function moduleTableNames(sql: ScopedSql): Set<string> {
   return new Set(
     sql
       .query<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -141,7 +141,7 @@ export type TableChange =
  * THE transition, shared by the live record and the journal replay: a create sets its owner (or
  * an unknown one), a rename moves the row to the new name, a drop removes it.
  */
-export function applyTableChange(store: OwnerStore, change: TableChange): void {
+function applyTableChange(store: OwnerStore, change: TableChange): void {
   switch (change.kind) {
     case 'create':
       store.set(change.table, change.owner);
@@ -225,7 +225,7 @@ function rootOf(names: readonly string[]): string | undefined {
  * appeared, a rename, each shadow moving with its root. Anything else is not a shape a single
  * statement produces, and is refused rather than guessed at.
  */
-export function tableChangesOf(moduleId: string, step: TableStep): TableChange[] {
+function tableChangesOf(moduleId: string, step: TableStep): TableChange[] {
   const gone = [...step.before].filter((t) => !step.after.has(t));
   const appeared = [...step.after].filter((t) => !step.before.has(t));
   const from = rootOf(gone);
@@ -267,7 +267,7 @@ export function recordOwnershipSteps(sql: ScopedSql, moduleId: string, steps: re
  *
  * An unknown owner is no row, and the erasure refuses that table.
  */
-export function backfillOwnershipFromJournal(
+function backfillOwnershipFromJournal(
   sql: ScopedSql,
   tables: Iterable<string>,
   migrationSqlOf: (moduleId: string, version: string) => string | undefined,
