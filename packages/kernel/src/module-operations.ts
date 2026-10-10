@@ -51,6 +51,14 @@ interface DerivedMaps {
 export const MINT: unique symbol = Symbol('BoundOperations.mint');
 
 /**
+ * The run-time mark, a REGISTERED symbol held as a non-enumerable own property. Registered, so a
+ * second copy of the kernel in one process — a bundle that resolved two, or a test that reset its
+ * module graph — recognises the binder's value; non-enumerable, so a spread, `Object.assign` or a
+ * structured clone leaves it behind, exactly as they leave the `#bound` field behind at compile time.
+ */
+const BRAND = Symbol.for('substrat.kernel.boundOperations');
+
+/**
  * Everything a module hands the host about its operations, in one value only `operationsFor` and
  * `undeclaredOperations` produce — never written by hand.
  *
@@ -61,9 +69,10 @@ export const MINT: unique symbol = Symbol('BoundOperations.mint');
  * **A class with an ES-private brand, so a copy is not one** (#2155 review). A symbol-keyed brand
  * survives an object spread, so `{ ...bound, inputs: undefined }` type-checked as the bound value
  * with its schemas gone. A `#private` field is nominal to TypeScript and absent from any copy, so
- * that spread does not compile — and at run time `isBoundOperations` asks for the same field,
- * which a spread, `Object.create` or a literal cannot supply, so both adapters refuse a forgery
- * at registration too.
+ * that spread does not compile. At run time the adapters ask for `BRAND` instead, which a spread,
+ * `Object.assign` or a literal does not carry either, so they refuse such a copy at registration
+ * too. (The field cannot be the run-time check: it is private to one copy of this class, and a
+ * process can hold two — a test that resets its modules does, and #2155's suite found one.)
  */
 export class BoundOperations<H = HandlerMap> {
   readonly #bound = true;
@@ -85,6 +94,7 @@ export class BoundOperations<H = HandlerMap> {
     if (mint !== MINT) {
       throw new Error('BoundOperations: made by operationsFor or undeclaredOperations, never constructed directly');
     }
+    Object.defineProperty(this, BRAND, { value: true });
     this.handlers = handlers;
     if (derived.inputs !== undefined) this.inputs = derived.inputs;
     if (derived.concurrency !== undefined) this.concurrency = derived.concurrency;
@@ -93,7 +103,7 @@ export class BoundOperations<H = HandlerMap> {
 
   /** Was this value made by the binder — not a copy, a spread or a literal shaped like one? */
   static is(value: unknown): value is BoundOperations {
-    return typeof value === 'object' && value !== null && #bound in value;
+    return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, BRAND);
   }
 }
 

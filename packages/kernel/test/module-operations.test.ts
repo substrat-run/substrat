@@ -6,7 +6,7 @@
  * goes red. Each refusal has its positive twin beside it, so a check that refuses everything
  * cannot pass for one that refuses the right thing.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   operationConcurrencyOf,
   operationIdempotencyOptOutsOf,
@@ -14,6 +14,7 @@ import {
   z,
 } from '@substrat-run/contracts';
 import {
+  assertBoundOperations,
   operationsFor,
   undeclaredOperations,
   type ModuleRegistration,
@@ -158,5 +159,34 @@ describe('the registration field (#1835)', () => {
     expect(Object.keys(registration.operations?.handlers ?? {})).toEqual(['notes/add']);
     expect(registration.operations?.inputs).toBeUndefined();
     expect(() => undeclaredOperations('  ', { 'notes/add': addOp })).toThrow(/reason/);
+  });
+});
+
+describe('the run-time mark (#2155 review)', () => {
+  const { operations } = operationsFor(notesOperations)({ 'notes/add': addOp, 'notes/rename': renameOp });
+
+  it('refuses a copy — a spread, Object.assign onto the prototype, a literal of the same shape', () => {
+    const copies = {
+      spread: { ...operations },
+      assigned: Object.assign(Object.create(Object.getPrototypeOf(operations) as object), operations),
+      literal: { handlers: operations.handlers, inputs: operations.inputs },
+      cloned: structuredClone({ inputs: {}, concurrency: operations.concurrency }),
+    };
+    for (const [shape, copy] of Object.entries(copies)) {
+      expect(() => assertBoundOperations('@test/notes', copy), shape).toThrow(/not a value operationsFor/);
+    }
+    // Twins: the value as made, and no operations at all.
+    expect(() => assertBoundOperations('@test/notes', operations)).not.toThrow();
+    expect(() => assertBoundOperations('@test/notes', undefined)).not.toThrow();
+  });
+
+  it('accepts the value made by a second copy of the kernel in the same process', async () => {
+    // A test that resets its module graph holds two; so does a bundle that resolved two. The
+    // `#bound` field is private to one copy of the class, which is why it is not the run-time check.
+    vi.resetModules();
+    const again = (await import('../src/module-operations.js')) as typeof import('../src/module-operations.js');
+    const fromSecondCopy = again.operationsFor(notesOperations)({ 'notes/add': addOp, 'notes/rename': renameOp }).operations;
+    expect(Object.getPrototypeOf(fromSecondCopy)).not.toBe(Object.getPrototypeOf(operations));
+    expect(() => assertBoundOperations('@test/notes', fromSecondCopy)).not.toThrow();
   });
 });
