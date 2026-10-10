@@ -280,8 +280,9 @@ const NOTHING_TO_WALK: Walk = { found: [], done: true, at: null };
 
 /**
  * The live markers of one shape after `after`, in index order, that are `wanted` (a SQL predicate
- * on the marker `m`, binding one parameter: `json`), as many as `room` allows. Spends one read per marker
- * read and one write per marker found.
+ * on the marker `m`, binding one parameter: `json`), as many as `room` allows. Spends one write
+ * per marker found, and one read per marker FETCHED: the whole window, not only up to where the
+ * writes ran out, because SQLite evaluated `wanted` on every row it returned.
  */
 function walkMarkers(
   db: SwitchSql,
@@ -317,7 +318,7 @@ function walkMarkers(
     const r = rows[read++]!;
     if (r.hit) found.push({ subject: r.subject, object: r.object });
   }
-  room.reads -= read;
+  room.reads -= rows.length;
   room.writes -= found.length;
   const last = rows[read - 1];
   return {
