@@ -566,6 +566,14 @@ type Vars = {
   host: ScopeHost;
   /** `host.admin` of the same request — the spelling every route writes through. */
   admin: HostAdmin;
+  /**
+   * The error this request answered with, when a route answered it itself instead of throwing
+   * (`failedWith`) or `onError` did. The 5xx backstop reads it to attribute the row, and to skip
+   * one a step already recorded.
+   */
+  failure?: unknown;
+  /** A step recorded this request's failure with no error object to mark (a literal 5xx). */
+  failureRecorded?: true;
 };
 
 /** What a helper needs of a request: its actor and the host it writes through (#977). */
@@ -1385,6 +1393,19 @@ const namedTenants = (c: Context<{ Variables: Vars }>): string[] => {
   return named.filter((v): v is string => typeof v === 'string' && v.length > 0);
 };
 
+function messageOfThrow(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** What a 5xx answered with no error object said: the JSON body's `error` (and `detail`), else the status. */
+async function answeredMessage(res: Response): Promise<string> {
+  const body = (await res.clone().json().catch(() => null)) as Record<string, unknown> | null;
+  const error = typeof body?.['error'] === 'string' ? body['error'] : typeof body?.['title'] === 'string' ? body['title'] : null;
+  const detail = typeof body?.['detail'] === 'string' ? body['detail'] : null;
+  if (error && detail) return `${error}: ${detail}`;
+  return error ?? detail ?? `HTTP ${res.status}`;
+}
+
 /**
  * The audited HTTP surface over `HostAdmin` (control-plane.md §4.5).
  *
@@ -1416,6 +1437,51 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const { host, authenticate, authenticateBuilder, authenticateTenantService } = options;
   const copyLeaseMs = options.copyLeaseMs ?? SCOPE_COPY_LEASE_MS;
   const app = new Hono<{ Variables: Vars }>();
+
+  // The 5xx backstop: every 5xx this API answers lands an ops-failure row, however it was
+  // answered. A 5xx is the PLATFORM failing (an unmapped throw, or a downstream vertical's own
+  // 5xx passing through, #559), so the console must be able to list it and a `reference = <id>`
+  // search must find it. It used to be recorded only in `onError`, which never sees the routes
+  // that catch a ControlPlaneError and answer it themselves: a preview re-push whose bind failed
+  // after a clean carry answered 502 with a reference and left no row behind.
+  //
+  // Registered first, so it wraps every other middleware and route. 501 stays out: an honest
+  // not-implemented is a capability statement, not a failure. 4xx stay out too: they are
+  // refusals the caller can already read. Actor is unset only when the request failed before
+  // authentication, where nothing worth recording refuses. A throw a step already recorded,
+  // with its stage and scope, is not recorded again.
+  app.use('*', async (c, next) => {
+    await next();
+    const status = c.res.status;
+    const actor = c.get('actor');
+    if (status >= 500 && status !== 501 && actor && !c.get('failureRecorded')) {
+      const cause = c.get('failure');
+      const marked = typeof cause === 'object' && cause !== null && recordedCauses.has(cause);
+      if (!marked) {
+        const { vertical, tenantId } = await failureSubject(c);
+        recordFailure(
+          {
+            actor,
+            operation: `${c.req.method} ${c.req.routePath}`,
+            vertical,
+            tenantId,
+            scopeId: (c.req.param('scopeId') as OpsFailureInput['scopeId']) ?? null,
+            status,
+            message: cause !== undefined ? messageOfThrow(cause) : await answeredMessage(c.res),
+          },
+          cause === undefined ? NO_CAUSE : cause,
+        );
+      }
+    }
+    if (inflightRecords.size) {
+      // `executionCtx` throws outside a Worker (tests, node); the write then simply runs on.
+      try {
+        c.executionCtx.waitUntil(Promise.allSettled([...inflightRecords]));
+      } catch {
+        // no execution context
+      }
+    }
+  });
 
   // The CLI version advisory (#971), stamped on EVERY response — including the 401 the
   // auth middleware below answers with, since a CLI too old to authenticate is exactly
@@ -1639,20 +1705,63 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // `undefined` (`throw undefined`, a bare rejection), and that throw deserves an
   // `unknown` attribution, not a skipped one. Only true omission skips.
   const NO_CAUSE = Symbol('no-cause');
+  // The throws a step already recorded, so the 5xx backstop below does not record them twice.
+  const recordedCauses = new WeakSet<object>();
+  // The writes still in flight. A Worker may end once its response is sent, and a write nobody
+  // awaits goes with it, so the backstop hands these to `waitUntil`.
+  const inflightRecords = new Set<Promise<unknown>>();
   const recordFailure = (entry: OpsFailureInput, cause: unknown = NO_CAUSE): void => {
+    if (typeof cause === 'object' && cause !== null) recordedCauses.add(cause);
     // The error SHAPE rides beside the prose (#1233): attributed here — one place,
     // from the throw itself — so a fingerprint groups on a column and never has to
     // regex a message. A caller with no throw in hand leaves the columns null,
     // which reads as "nobody classified this" rather than a guess nobody made.
     const attributed = cause === NO_CAUSE ? undefined : attributeFailure(cause);
-    void host.admin
+    const write = host.admin
       .recordOpsFailure({
         ...entry,
         origin: entry.origin ?? attributed?.origin ?? null,
         code: entry.code ?? attributed?.code ?? null,
         reference: entry.reference ?? UPSTREAM_REFERENCE.exec(entry.message)?.[1] ?? null,
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => inflightRecords.delete(write));
+    inflightRecords.add(write);
+  };
+
+  /**
+   * Whose failure the backstop is recording, so the dashboard's tenant-pinned failure view lists
+   * it. The path's tenant when it names one; otherwise the credential's own (a CI push token, a
+   * builder); otherwise, on a vertical route, the vertical's owner. The slug is resolved the way
+   * the route resolves it, so a CI push's bare `todo` is recorded as the full slug the
+   * dashboard filters on. Best effort: a lookup that fails still records the row, unattributed.
+   */
+  const failureSubject = async (
+    c: Context<{ Variables: Vars }>,
+  ): Promise<{ vertical: string | null; tenantId: OpsFailureInput['tenantId'] }> => {
+    // Already decoded by Hono, and handed on as-is the way the routes hand it to
+    // `resolveVerticalId`. Decoding again would throw on a slug carrying `%25`, and a throw here
+    // replaces the 5xx being recorded with onError's answer.
+    const raw = c.req.param('slug') ?? null;
+    const pathTenant = (c.req.param('tenantId') as OpsFailureInput['tenantId']) ?? null;
+    const principal = c.get('principal');
+    const confined = principal ? confinedTenant(principal) : null;
+    if (!raw) return { vertical: null, tenantId: pathTenant ?? confined };
+    try {
+      const vertical = await resolveVerticalId(c, raw);
+      const owner = (pathTenant ?? confined)
+        ? null
+        : ((await verticalOf(c.get('actor'), vertical))?.ownerTenant ?? null);
+      return { vertical, tenantId: pathTenant ?? confined ?? owner };
+    } catch {
+      return { vertical: raw, tenantId: pathTenant ?? confined };
+    }
+  };
+
+  /** The status of a ControlPlaneError a route answers itself, with the error marked for the backstop. */
+  const failedWith = (c: { set: (k: 'failure', v: unknown) => void }, e: ControlPlaneError): ContentfulStatusCode => {
+    c.set('failure', e);
+    return e.status as ContentfulStatusCode;
   };
 
   // Rides out a transient downstream window: the install path's binding-attach →
@@ -1696,25 +1805,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: err.message, carrySourceChanged: { scopeId: err.scopeId, from: err.from, to: err.to, attempts: err.attempts } }, 409);
     }
     const { status, body } = mapError(err);
-    // A 5xx is the PLATFORM failing — an unmapped throw, or a downstream vertical's
-    // own 5xx passing through (a DO storage fault during a preview restore is the
-    // founding case, #559) — so it lands a durable ops-failure row the console can
-    // list and a `reference = <id>` search can find. 501 stays out: an honest
-    // not-implemented is a capability statement, not a failure. 4xx stay out too:
-    // they are refusals the caller can already read. Actor is unset only when the
-    // throw happened before authentication — nothing worth recording refuses there.
-    const actor = c.get('actor');
-    if (status >= 500 && status !== 501 && actor) {
-      recordFailure({
-        actor,
-        operation: `${c.req.method} ${c.req.routePath}`,
-        vertical: c.req.param('slug') ? decodeURIComponent(c.req.param('slug')!) : null,
-        tenantId: (c.req.param('tenantId') as OpsFailureInput['tenantId']) ?? null,
-        scopeId: (c.req.param('scopeId') as OpsFailureInput['scopeId']) ?? null,
-        status,
-        message: err instanceof Error ? err.message : String(err),
-      }, err);
-    }
+    // The 5xx backstop (registered first, above) records it, with this throw as the cause.
+    c.set('failure', err);
     // A 500 is, by definition, a throw whose message `mapError` did not recognise — so the
     // client gets a GENERIC body that discloses nothing, and until now nothing recorded WHAT
     // threw either. That left every unmapped failure (e.g. a raw SQLite constraint from a
@@ -1829,7 +1921,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(await c.var.admin.getTenant(actor, tenantId));
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -2544,7 +2636,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (!result.ok) return c.json({ error: result.error }, result.status as ContentfulStatusCode);
       return c.json(await c.var.admin.getScopeRecord(actor, tenantId, input.scopeId), 201);
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
       throw e;
     }
   });
@@ -3968,7 +4060,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // unbound store is exactly what makes a vertical refuse its own reconcile), so
         // it must not be the half that gets dropped.
         const detail = storeErrors.length ? `${e.message} (stores: ${storeErrors.join('; ')})` : e.message;
-        return c.json({ error: detail }, e.status as ContentfulStatusCode);
+        return c.json({ error: detail }, failedWith(c, e));
       }
       throw e;
     }
@@ -4373,7 +4465,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       return c.json(await vertical.ownerSeat(tenantId, scopeId));
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
       throw e;
     }
   });
@@ -4415,7 +4507,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       return c.json(await vertical.mintOwnerClaim({ tenantId, scopeId, origin, actor }), 201);
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
       throw e;
     }
   });
@@ -4468,7 +4560,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { operationId } = done;
     if ('error' in done) {
       if (done.error instanceof ControlPlaneError) {
-        return c.json({ error: done.error.message, operationId }, done.error.status as ContentfulStatusCode);
+        return c.json({ error: done.error.message, operationId }, failedWith(c, done.error));
       }
       throw done.error;
     }
@@ -4513,7 +4605,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       return c.json(await target.vertical.listMembers(target.tenantId, target.scopeId));
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
       throw e;
     }
   });
@@ -4636,7 +4728,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await vertical.configureInstance({ tenantId, scopeId, entries: input.entries });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -4696,6 +4788,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               },
               failure.cause,
             );
+            c.set('failureRecorded', true);
             return c.json({ error }, 503);
           }
         }
@@ -4829,7 +4922,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(await c.var.admin.getScopeRecord(c.get('actor'), tenantId, snapId), 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -4920,7 +5013,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ deleted: scopeId, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -5018,7 +5111,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(await backupScope(c, tenantId, scope), 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -5547,7 +5640,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         backup = await backupScope(c, tenantId, scope);
       } catch (e) {
         if (e instanceof ControlPlaneError) {
-          return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+          return c.json({ error: e.message }, failedWith(c, e));
         }
         return c.json(
           {
@@ -5571,7 +5664,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ ...reaped, backup, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -5620,7 +5713,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ ...dump, tables: await maskDump(tables, mask), masked: true });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -5749,7 +5842,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(body);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -5815,7 +5908,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       // A restore throw is driven by the caller-supplied dump (a shape the target cannot
       // load, a DDL the engine rejects), so DISCLOSE it as an actionable 422 rather than
@@ -5898,7 +5991,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(answer);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -5918,7 +6011,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ adopted: scopeId, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json(exportBreakBody(e), e.status as ContentfulStatusCode);
+        return c.json(exportBreakBody(e), failedWith(c, e));
       }
       throw e;
     }
@@ -5956,7 +6049,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ ...exportBreakBody(e), adopted, alreadyAdopted }, e.status as ContentfulStatusCode);
+        return c.json({ ...exportBreakBody(e), adopted, alreadyAdopted }, failedWith(c, e));
       }
       throw e;
     }
@@ -5990,7 +6083,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ rebound: scopeId, vertical, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json(exportBreakBody(e), e.status as ContentfulStatusCode);
+        return c.json(exportBreakBody(e), failedWith(c, e));
       }
       throw e;
     }
@@ -6508,7 +6601,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             message: e.message,
           }, e);
         }
-        return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+        return c.json({ error: e.message }, failedWith(c, e));
       }
       throw e;
     }
@@ -7754,6 +7847,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         status: rejected ? 422 : 502,
         message: detail,
       }, e);
+      c.set('failureRecorded', true);
       return rejected
         ? c.json({ error: 'deploy rejected', detail }, 422)
         : c.json({ error: 'deploy upload failed', detail }, 502);
@@ -9159,7 +9253,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const out = await orchestratedPreview(c, tenantId, slug, source, body);
       return c.json(out, out.reused ? 200 : 201);
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
       throw e;
     }
   });
@@ -9209,7 +9303,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const { storageStranded } = await reapPreview(c, preview);
       return c.json({ deleted: preview.id, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
       throw e;
     }
   });
