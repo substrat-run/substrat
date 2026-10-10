@@ -89,9 +89,17 @@ export interface ImportResult {
   counts: Record<ImportOutcome['outcome'], number>;
 }
 
+// boundary-lint-allow R6
+// Not a Substrat row's stamp: `created_at`/`updated_at` on `user` and `account` are Better
+// Auth's storage contract, the same class `auth-schema.ts` and `bankid.ts` are harness for.
+// An admin request has no operation whose instant to borrow, and a row its library reads
+// back must carry the time it was written.
+const wallClock = (): number => Date.now();
+// boundary-lint-end R6
+
 const localPart = (email: string): string => email.slice(0, email.indexOf('@'));
 
-export function importUsers(sql: SqlExec, body: ImportBody, now: number = Date.now()): ImportResult {
+export function importUsers(sql: SqlExec, body: ImportBody, now: number = wallClock()): ImportResult {
   const dryRun = body.dryRun ?? false;
   // Planned writes in a dry run are tracked here, so a batch naming one person twice — or two
   // people with one GitHub id — answers the same with and without `dryRun`.
