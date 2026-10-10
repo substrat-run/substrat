@@ -49,16 +49,25 @@ export function derivedHandler(plan: DerivationPlan): OperationHandler<never, un
     assertAllowed(decision);
   };
 
+  const body = bodyOf(plan, rowOrThrow, ref);
+  return (async (ctx: OperationContext, input: Input) => {
+    await check(ctx, input);
+    return body(ctx, input);
+  }) as OperationHandler<never, unknown>;
+}
+
+/** What the handler does once the check has passed. */
+function bodyOf(
+  plan: DerivationPlan,
+  rowOrThrow: (ctx: OperationContext, id: string) => Row,
+  ref: (id: string) => EntityRef,
+): (ctx: OperationContext, input: Input) => unknown {
   switch (plan.kind) {
     case 'get':
-      return (async (ctx: OperationContext, input: Input) => {
-        await check(ctx, input);
-        return rowOrThrow(ctx, String(input?.[plan.idFrom]));
-      }) as OperationHandler<never, unknown>;
+      return (ctx, input) => rowOrThrow(ctx, String(input?.[plan.idFrom]));
 
     case 'list':
-      return (async (ctx: OperationContext, input: Input) => {
-        await check(ctx, input);
+      return (ctx, input) => {
         const filters: Row = {};
         for (const { field, column } of plan.filters) {
           if (input?.[field] !== undefined) filters[column] = input[field];
@@ -71,17 +80,16 @@ export function derivedHandler(plan: DerivationPlan): OperationHandler<never, un
           filters,
           ...(plan.total ? { total: true } : {}),
         });
-      }) as OperationHandler<never, unknown>;
+      };
 
     case 'update':
-      return (async (ctx: OperationContext, input: Input) => {
-        await check(ctx, input);
+      return (ctx, input) => {
         const id = String(input?.[plan.idFrom]);
-        rowOrThrow(ctx, id);
+        const existing = rowOrThrow(ctx, id);
         // Absent is untouched, `null` clears: only the fields the caller sent are written.
         const sent = plan.fields.filter(({ field }) => input?.[field] !== undefined);
         // Nothing sent is nothing changed — no write, and no event to move the version.
-        if (sent.length === 0) return rowOrThrow(ctx, id);
+        if (sent.length === 0) return existing;
         ctx.sql.exec(
           `UPDATE ${quoted(plan.table)} SET ${sent.map(({ column }) => `${quoted(column)} = ?`).join(', ')} ` +
             `WHERE ${quoted(plan.primaryKey)} = ?`,
@@ -91,18 +99,17 @@ export function derivedHandler(plan: DerivationPlan): OperationHandler<never, un
         const row = rowOrThrow(ctx, id);
         ctx.emit(eventOf(plan.emit, ref(id), row));
         return row;
-      }) as OperationHandler<never, unknown>;
+      };
 
     case 'delete':
-      return (async (ctx: OperationContext, input: Input) => {
-        await check(ctx, input);
+      return (ctx, input) => {
         const id = String(input?.[plan.idFrom]);
         rowOrThrow(ctx, id);
         ctx.sql.exec(`DELETE FROM ${quoted(plan.table)} WHERE ${quoted(plan.primaryKey)} = ?`, [id]);
         const result = { id, deleted: true };
         ctx.emit(eventOf(plan.emit, ref(id), result));
         return result;
-      }) as OperationHandler<never, unknown>;
+      };
   }
 }
 

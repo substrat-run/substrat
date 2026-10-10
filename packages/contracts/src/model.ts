@@ -368,9 +368,41 @@ export interface EmittedModel {
   readonly handlers?: Record<string, EmittedHandler>;
 }
 
+/**
+ * The handler shapes the platform derives (#1773), in the order a declaration is classified.
+ * Here rather than beside `defineOperations` because the artifact's schema reads them too.
+ */
+export const DERIVED_KINDS = ['get', 'list', 'update', 'delete'] as const;
+
+/**
+ * The shapes the model already describes completely, so the platform writes the handler.
+ *
+ * Each is matched EXACTLY — every clause below is something the derived handler relies on, and a
+ * declaration that misses one is a command with its own body, not a near-miss to be stretched:
+ *
+ * - `get` — one row by its id. Input is the id alone, the output IS the entity's `fields`, and
+ *   nothing is emitted. The check is a scope key, or narrowed to that same row.
+ * - `list` — a kernel-composed page (`paged.over`) of the entity's own rows, the output IS its
+ *   `fields`. Every input field is one of its declared `filterable` columns; a check narrowed to a
+ *   PARENT scopes the page to that parent's rows through the parent's id column.
+ * - `update` — the partial `PATCH`. Absent fields are left as they are and `null` clears a
+ *   nullable column; `concurrency` over the row is required, so the field bag cannot lose an
+ *   update. Emits about the row, and answers with it.
+ * - `delete` — removes one row with no child entity (a cascade is authored), emits, and answers
+ *   `{ id, deleted: true }`.
+ *
+ * A derived handler checks the declared permission first, reads and writes only the entity's
+ * declared columns through `ctx.sql`, and answers `not_found` for a missing row — the same steps
+ * a hand-written one takes, written once.
+ *
+ * `create` is not here yet: the id, the timestamps and the parent link it would write are not all
+ * declared. Neither are hooks around a derived handler.
+ */
+export type DerivedKind = (typeof DERIVED_KINDS)[number];
+
 /** Who writes one operation's handler (#1773). */
 export type EmittedHandler =
-  | { readonly derive: 'get' | 'list' | 'update' | 'delete' }
+  | { readonly derive: DerivedKind }
   | { readonly authored: string };
 
 /** One exported event type in the model (#1705 PR 3). */
@@ -428,7 +460,7 @@ export const emittedExport = z.object({
 
 /** Who writes an operation's handler, for the operations whose declaration says (#1773). */
 export const emittedHandler = z.union([
-  z.object({ derive: z.enum(['get', 'list', 'update', 'delete']) }).strict(),
+  z.object({ derive: z.enum(DERIVED_KINDS) }).strict(),
   z.object({ authored: z.string().min(1) }).strict(),
 ]);
 
