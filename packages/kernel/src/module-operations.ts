@@ -95,10 +95,21 @@ export class BoundOperations<H = HandlerMap> {
       throw new Error('BoundOperations: made by operationsFor or undeclaredOperations, never constructed directly');
     }
     Object.defineProperty(this, BRAND, { value: true });
-    this.handlers = handlers;
-    if (derived.inputs !== undefined) this.inputs = derived.inputs;
-    if (derived.concurrency !== undefined) this.concurrency = derived.concurrency;
-    if (derived.idempotencyOptOuts !== undefined) this.idempotencyOptOuts = derived.idempotencyOptOuts;
+    // Frozen, all the way to what the adapters read (#2155 review): `readonly` does not stop
+    // `Object.assign(bound, { inputs: undefined })`, and an edit in place keeps the brand, so the
+    // value would register with its schemas gone or a handler added that nothing parses for.
+    // Frozen, each of those throws at module load — ES modules are strict.
+    this.handlers = Object.freeze({ ...handlers });
+    // In place, not copied: the map `operationInputsOf` returned is the key its declared surface
+    // is recorded under (#119), and it arrives frozen already. A test seam's map gets the same.
+    if (derived.inputs !== undefined) this.inputs = Object.freeze(derived.inputs);
+    if (derived.concurrency !== undefined) {
+      this.concurrency = Object.freeze(
+        Object.fromEntries(Object.entries(derived.concurrency).map(([name, at]) => [name, Object.freeze({ ...at })])),
+      );
+    }
+    if (derived.idempotencyOptOuts !== undefined) this.idempotencyOptOuts = Object.freeze([...derived.idempotencyOptOuts]);
+    Object.freeze(this);
   }
 
   /** Was this value made by the binder — not a copy, a spread or a literal shaped like one? */

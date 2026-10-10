@@ -190,3 +190,31 @@ describe('the run-time mark (#2155 review)', () => {
     expect(() => assertBoundOperations('@test/notes', fromSecondCopy)).not.toThrow();
   });
 });
+
+describe('a bound value is frozen (#2155 review)', () => {
+  it('refuses an edit in place — schemas dropped or swapped, a handler added, a precondition moved', () => {
+    const { operations } = operationsFor(notesOperations)({ 'notes/add': addOp, 'notes/rename': renameOp });
+    const other = operationsFor({ 'notes/add': notesOperations['notes/add'] })({ 'notes/add': addOp }).operations;
+    const edits: Record<string, () => unknown> = {
+      dropped: () => Object.assign(operations, { inputs: undefined }),
+      swapped: () => Object.assign(operations, { inputs: other.inputs }),
+      added: () => Object.assign(operations.handlers, { 'notes/remove': addOp }),
+      moved: () => Object.assign(operations.concurrency!['notes/rename']!, { idFrom: 'text' }),
+      optedIn: () => (operations.idempotencyOptOuts as string[]).pop(),
+    };
+    for (const [edit, run] of Object.entries(edits)) expect(run, edit).toThrow(TypeError);
+    // Twin: nothing moved.
+    expect(operations.inputs).toBeDefined();
+    expect(Object.keys(operations.handlers)).toEqual(['notes/add', 'notes/rename']);
+    expect(operations.concurrency).toEqual({ 'notes/rename': { entity: 'note', idFrom: 'id' } });
+    expect(operations.idempotencyOptOuts).toEqual(['notes/rename']);
+  });
+
+  it('copies the handler map it is given, so the caller\'s object stays its own', () => {
+    const handlers = { 'notes/add': addOp, 'notes/rename': renameOp };
+    const { operations } = operationsFor(notesOperations)(handlers);
+    expect(Object.isFrozen(handlers)).toBe(false);
+    expect(operations.handlers).not.toBe(handlers);
+    expect(operations.handlers['notes/add']).toBe(addOp);
+  });
+});
