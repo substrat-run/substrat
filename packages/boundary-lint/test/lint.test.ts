@@ -1210,6 +1210,76 @@ describe('R8 — star reads in an engine', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// R11 — a registration's handler map is never cast (#1835)
+//
+// The binder refuses a cast ENTRY by type; a cast of the WHOLE map is the one spelling no type
+// can see, because `never` and `any` are assignable to anything.
+// ---------------------------------------------------------------------------
+
+/** A vertical whose `src/module.ts` registers with `registration` as the object's body. */
+function registers(registration: string): string {
+  return project({
+    'package.json': VERTICAL_PKG,
+    'src/module.ts': `
+      import { operationsFor, undeclaredOperations } from '@substrat-run/kernel';
+      import { shopOperations } from './operations.js';
+      const addOp = async () => ({});
+      export const shopModule = {
+        manifest,
+        ${registration}
+      };
+    `,
+  });
+}
+
+describe('R11 — a cast handler map (#1835)', () => {
+  it('passes a map handed over as the binder made it', () => {
+    expect(lint(registers(`...operationsFor(shopOperations)({ 'shop/add': addOp }),`))).toEqual([]);
+    expect(lint(registers(`...operationsFor(shopOperations)(OPERATIONS),`))).toEqual([]);
+    expect(lint(registers(`...undeclaredOperations('no surface', { 'shop/add': addOp }),`))).toEqual([]);
+  });
+
+  it('leaves a cast INSIDE an entry to the type, which sees it', () => {
+    const root = registers(`...undeclaredOperations('no surface', { 'shop/add': addOp as never, 'shop/b': (x as any) }),`);
+    expect(lint(root)).toEqual([]);
+  });
+
+  it('fires on a cast of the operations: value, anchored at the key', () => {
+    const violations = lint(registers(`operations: { 'shop/add': addOp } as never,`));
+    expect(rules(violations)).toEqual(['R11']);
+    expect(violations[0]!.line).toBe(7);
+    expect(rules(lint(registers(`operations: (OPERATIONS as ModuleRegistration['operations']),`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`operations: OPERATIONS as any }`)))).toEqual(['R11']);
+  });
+
+  it('fires on a cast of either binder\'s handler argument', () => {
+    expect(rules(lint(registers(`...operationsFor(shopOperations)(OPERATIONS as never),`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`...operationsFor(shopOperations)({ 'shop/add': addOp } as any),`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`...undeclaredOperations('why', OPERATIONS as never),`)))).toEqual(['R11']);
+  });
+
+  it('does not read a cast of the DECLARATION as a cast of the map', () => {
+    // The declaration argument is the binder's own business: inferring `Ops` from it is the
+    // point, and a cast there loosens the declaration rather than the join.
+    expect(lint(registers(`...operationsFor(shopOperations as typeof shopOperations)(OPERATIONS),`))).toEqual([]);
+  });
+
+  it('is not fooled by `as` in a string, a comment or an identifier', () => {
+    expect(lint(registers(`operations: pick(OPERATIONS, 'as never'), // as never\n`))).toEqual([]);
+    expect(lint(registers(`operations: aliases,`))).toEqual([]);
+  });
+
+  it('takes the reviewable hatch', () => {
+    const root = registers(`
+        // boundary-lint-allow R11 — a fixture that exists to prove the host refuses this
+        operations: OPERATIONS as never,
+        // boundary-lint-end R11
+    `);
+    expect(lint(root)).toEqual([]);
+  });
+});
+
 describe('config', () => {
   it('honours explicit packages and externals', () => {
     const root = project({

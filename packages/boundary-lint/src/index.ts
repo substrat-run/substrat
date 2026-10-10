@@ -111,6 +111,19 @@
  *                      `substrat push` reports it as a warning rather than refusing:
  *                      empty logs are a defect, not unsafe code. No hatch.
  *
+ *   R11 bound map      a registration's handler map is never cast (#1835). The
+ *                      registration takes `BoundOperations`, which only
+ *                      `operationsFor(declaration)(handlers)` and
+ *                      `undeclaredOperations(reason, handlers)` produce, and the
+ *                      binder refuses a missing, extra, mistyped or cast ENTRY by
+ *                      type. What no type can refuse is a cast of the WHOLE map —
+ *                      `never` and `any` are assignable to anything — so that is
+ *                      this rule: an `as` at the top of an `operations:` value or of
+ *                      the handler argument to either binder. Casts inside an entry
+ *                      are the type's business, not this rule's. A deliberate cast
+ *                      sits in a `boundary-lint-allow R11` … `boundary-lint-end R11`
+ *                      block, where a reviewer reads it.
+ *
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
  * unbuilt; the no-clock rule landed first and took the number, so #786 shipped
@@ -172,7 +185,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10' | 'R11';
   message: string;
 }
 
@@ -955,6 +968,98 @@ function checkLocalBroker(file: string, rel: string, inPkg: string, out: Violati
   });
 }
 
+// ---------------------------------------------------------------------------
+// R11 — a registration's handler map is never cast (#1835)
+// ---------------------------------------------------------------------------
+
+/**
+ * The end of the expression starting at `from` in masked source: the first `,`, `)`, `]` or
+ * `}` at depth zero. Literals are blank in the masked copy, so no bracket inside one counts.
+ */
+function expressionEnd(masked: string, from: number): number {
+  let depth = 0;
+  for (let i = from; i < masked.length; i++) {
+    const c = masked[i]!;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) return i;
+      depth--;
+    } else if (c === ',' && depth === 0) return i;
+  }
+  return masked.length;
+}
+
+/** Does this expression assert its type at its top level — `x as T`, or `(x as T)`? */
+function castAtTop(expr: string): boolean {
+  let e = expr.trim();
+  while (e.startsWith('(') && expressionEnd(e, 1) === e.length - 1) e = e.slice(1, -1).trim();
+  let depth = 0;
+  for (let i = 0; i < e.length; i++) {
+    const c = e[i]!;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (depth === 0 && /\sas\s/.test(e.slice(i - 1, i + 3)) && e.slice(i, i + 2) === 'as') return true;
+  }
+  return false;
+}
+
+/**
+ * Where a handler map is handed over: the value of an `operations:` key, the argument of the
+ * call `operationsFor(…)` returns, and the second argument of `undeclaredOperations`.
+ */
+const HANDLER_MAP_SITES = /\boperations\s*:|\boperationsFor\s*\(|\bundeclaredOperations\s*\(/g;
+
+/**
+ * R11 — the handler map reaches the registration as the binder made it.
+ *
+ * The type refuses an entry erased with `as never` or `as any`, because it can see each entry;
+ * it cannot refuse the same cast applied to the whole map, which is the one spelling that turns
+ * the join back into a request. Read over the masked source, so a cast in a comment or a string
+ * is not one.
+ */
+function checkHandlerMapCast(rel: string, source: string, out: Violation[]): void {
+  if (!/\boperations(?:For)?\b|\bundeclaredOperations\b/.test(source)) return;
+  const masked = maskSource(source);
+  const stripped = maskSource(source, { literals: false });
+  const lines = source.split('\n');
+  const strippedLines = stripped.split('\n');
+  const allowed = new Set<number>();
+  let on = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (marks(lines[i] ?? '', strippedLines[i] ?? '', 'boundary-lint-allow R11')) on = true;
+    else if (marks(lines[i] ?? '', strippedLines[i] ?? '', 'boundary-lint-end R11')) on = false;
+    if (on) allowed.add(i + 1);
+  }
+
+  HANDLER_MAP_SITES.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = HANDLER_MAP_SITES.exec(masked)); ) {
+    let from = m.index + m[0].length;
+    if (m[0].startsWith('operationsFor')) {
+      // `operationsFor(declaration)(handlers)` — skip the declaration, judge the handlers.
+      const close = expressionEnd(masked, from);
+      const next = masked.slice(close + 1).match(/^\s*\(/);
+      if (masked[close] !== ')' || !next) continue;
+      from = close + 1 + next[0].length;
+    } else if (m[0].startsWith('undeclaredOperations')) {
+      const reasonEnd = expressionEnd(masked, from);
+      if (masked[reasonEnd] !== ',') continue;
+      from = reasonEnd + 1;
+    }
+    const expr = masked.slice(from, expressionEnd(masked, from));
+    const line = lineAt(source, m.index);
+    if (!castAtTop(expr) || allowed.has(line)) continue;
+    out.push({
+      file: rel,
+      line,
+      rule: 'R11',
+      message:
+        'cast handler map — an `as` on the whole map erases the join between the handlers and the ' +
+        'declaration, which the binder exists to keep. Bind with operationsFor(declaration)(handlers), ' +
+        'or undeclaredOperations(reason, handlers) for a module with no declared surface',
+    });
+  }
+}
+
 function checkModuleFile(
   file: string,
   rel: string,
@@ -967,6 +1072,7 @@ function checkModuleFile(
   checkForeignTables(rel, source, pkg.name, tableOwners, out);
   checkClock(rel, source, out);
   checkEngineCatch(rel, source, out);
+  checkHandlerMapCast(rel, source, out);
   if (pkg.engine) checkSelectStar(rel, source, out);
 
   for (const spec of importsOf(source)) {
