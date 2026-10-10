@@ -247,8 +247,13 @@ test('readersOf: an engine manifest selects the console, nothing else an engine 
   assert.deepEqual(readersOf(['engines/notifications/src/send.ts', 'engines/notifications/test/index.ts']), []);
   assert.deepEqual(readersOf(['packages/kernel/src/index.ts', 'apps/console/src/index.ts']), []);
 });
-test('READS: every entry names a suite that exists', () => {
-  for (const r of READS) assert.ok(existsSync(r.suite), `${r.reader}: ${r.suite} does not exist`);
+test('READS: every entry names a suite that exists, in the package it names', () => {
+  // A misspelled or renamed reader is a pnpm filter that selects nothing, silently.
+  for (const r of READS) {
+    assert.ok(existsSync(r.suite), `${r.reader}: ${r.suite} does not exist`);
+    const pkg = r.suite.split('/').slice(0, 2).join('/');
+    assert.equal(JSON.parse(readFileSync(`${pkg}/package.json`, 'utf8')).name, r.reader);
+  }
 });
 test('decide: package files changed but pnpm selected nothing runs everything', () => {
   const r = decide({ event: 'pull_request', base: 'B', files: ['demos/todo/src/a.ts'], lockfile: null, all, selectChanged: () => [] });
