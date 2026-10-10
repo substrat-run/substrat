@@ -15,7 +15,7 @@ tracking: ["#118"]
 
 **The kernel already provides everything a notification layer needs.** A domain event reaches the vertical's consumers at least once. Any operation or consumer can write a send intent in its own transaction with `requestEmail` (#2102). If the caller throws, nothing is sent; if it commits, the platform's drain delivers the mail. The drain writes the outcome back into the scope as `email.sent`, `email.refused` or `email.dead-lettered`. Subject erasure finds a held send by the intent's `subjectId` and cancels it, and reaches a module's own table through the `erasure` the module declares (K-46). None of that is specific to notifications, and none of it needed changing.
 
-**The engine owns what happens between "notify these people" and the send.** A vertical decides when to notify, usually in its own consumer of a domain event, and calls `notify(ctx, { topic, recipients, template, vars, dedupeKey, … })` inside its own transaction. The engine then owns:
+**The engine owns what happens between "notify these people" and the send.** A vertical decides when to notify, usually in its own consumer of a domain event, and calls `notify(ctx, { topic, description, recipients, template, vars, dedupeKey, … })` inside its own transaction. The engine then owns:
 
 - whether each person wants it: per-topic, per-channel mutes, except on a topic called `required`;
 - where it goes;

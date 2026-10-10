@@ -13,8 +13,8 @@ Status: **built** — in the repo, composed by the Handlebar demo; not yet publi
 > own README (`engines/notifications/README.md`) is the composing guide.
 
 The engine is composed **by call**. A vertical decides when a notification is due, usually
-in its own consumer of a domain event, and calls `notify(ctx, { topic, recipients, template,
-vars, dedupeKey, about, required? })` in its own transaction. For each recipient,
+in its own consumer of a domain event, and calls `notify(ctx, { topic, description,
+recipients, template, vars, dedupeKey, about, required? })` in its own transaction. For each recipient,
 `notify`:
 
 - applies the person's mutes, unless the topic is required;
