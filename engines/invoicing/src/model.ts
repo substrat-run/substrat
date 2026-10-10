@@ -1,6 +1,7 @@
 import { emitModel } from '@substrat-run/contracts';
 import { invoicingEntities } from './entities.js';
 import { invoicingLifecycles, invoicingManifest } from './index.js';
+import { invoicingOperations } from './operations.js';
 
 /**
  * The artifact of record for this engine (#697/#844). Imported by nothing, so the direction stays acyclic.
@@ -11,4 +12,5 @@ import { invoicingLifecycles, invoicingManifest } from './index.js';
 export const invoicingModel = emitModel(invoicingEntities, {
   lifecycles: invoicingLifecycles,
   version: invoicingManifest.version,
+  operations: invoicingOperations,
 });

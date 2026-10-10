@@ -5457,4 +5457,7 @@ export const ticket0Lifecycles = defineLifecycles(
   },
 });
 
-export const ticket0Model = emitModel(ticket0Entities, { lifecycles: ticket0Lifecycles });
+export const ticket0Model = emitModel(ticket0Entities, {
+  lifecycles: ticket0Lifecycles,
+  operations: ticket0Operations,
+});

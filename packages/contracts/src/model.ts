@@ -359,7 +359,19 @@ export interface EmittedModel {
    * already parsing that version breaks on it (K-39).
    */
   readonly exports?: Record<string, EmittedExport>;
+  /**
+   * Who writes each handler, for the operations whose declaration says (#1773): `derive` when the
+   * platform does, `authored` with the reason when a derivable one is written by hand. Keyed by
+   * operation and absent when no operation says either, so a reviewer sees a handler change
+   * hands — and an exception's reason — in the diff of this file.
+   */
+  readonly handlers?: Record<string, EmittedHandler>;
 }
+
+/** Who writes one operation's handler (#1773). */
+export type EmittedHandler =
+  | { readonly derive: 'get' | 'list' | 'update' | 'delete' }
+  | { readonly authored: string };
 
 /** One exported event type in the model (#1705 PR 3). */
 export interface EmittedExport {
@@ -414,11 +426,18 @@ export const emittedExport = z.object({
   payload: z.record(z.string(), z.unknown()),
 });
 
+/** Who writes an operation's handler, for the operations whose declaration says (#1773). */
+export const emittedHandler = z.union([
+  z.object({ derive: z.enum(['get', 'list', 'update', 'delete']) }).strict(),
+  z.object({ authored: z.string().min(1) }).strict(),
+]);
+
 export const emittedModel = z.object({
   version: z.string().min(1).optional(),
   entities: z.record(z.string(), emittedEntity),
   lifecycles: z.record(z.string(), emittedLifecycle).optional(),
   exports: z.record(z.string(), emittedExport).optional(),
+  handlers: z.record(z.string(), emittedHandler).optional(),
 });
 
 /**
@@ -444,6 +463,13 @@ export function emitModel<T extends Record<string, EntityDef>>(
      * and omitted when empty.
      */
     readonly exports?: readonly ({ type: string } & EmittedExport)[];
+    /**
+     * The module's operation declarations (#1773). Each one that declares `derive` or
+     * `authored` is rendered under `handlers`, sorted, so a handler the platform takes over —
+     * or one a module keeps writing by hand, with its reason — appears in the reviewed diff.
+     * Read structurally; omitted when no operation says either.
+     */
+    readonly operations?: Readonly<Record<string, { readonly derive?: unknown; readonly authored?: unknown }>>;
   } = {},
 ): EmittedModel {
   if (options.version !== undefined && options.version.length === 0) {
@@ -500,12 +526,19 @@ export function emitModel<T extends Record<string, EntityDef>>(
     if (e.type in exports) throw new Error(`model: '${e.type}' is exported twice`);
     exports[e.type] = { schemaVersion: e.schemaVersion, readPermission: e.readPermission, payload: e.payload };
   }
+  const handlers: Record<string, EmittedHandler> = {};
+  for (const name of Object.keys(options.operations ?? {}).sort()) {
+    const { derive, authored } = options.operations?.[name] ?? {};
+    if (derive !== undefined) handlers[name] = emittedHandler.parse({ derive });
+    else if (authored !== undefined) handlers[name] = emittedHandler.parse({ authored });
+  }
   return {
     // First, so a reader of the checked-in artifact meets it before the entities.
     ...(options.version !== undefined ? { version: options.version } : {}),
     entities: out,
     ...(lifecycles && Object.keys(lifecycles).length ? { lifecycles } : {}),
     ...(Object.keys(exports).length ? { exports } : {}),
+    ...(Object.keys(handlers).length ? { handlers } : {}),
   };
 }
 

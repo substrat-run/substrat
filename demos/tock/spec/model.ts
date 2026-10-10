@@ -1325,4 +1325,4 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   },
 });
 
-export const tockModel = emitModel(tockEntities);
+export const tockModel = emitModel(tockEntities, { operations: tockOperations });

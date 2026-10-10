@@ -1,6 +1,7 @@
 import { emitModel } from '@substrat-run/contracts';
 import { workorderEntities } from './entities.js';
 import { workorderManifest } from './index.js';
+import { workorderOperations } from './operations.js';
 import { workorderLifecycles } from './lifecycle.js';
 
 /**
@@ -24,4 +25,5 @@ import { workorderLifecycles } from './lifecycle.js';
 export const workorderModel = emitModel(workorderEntities, {
   lifecycles: workorderLifecycles,
   version: workorderManifest.version,
+  operations: workorderOperations,
 });

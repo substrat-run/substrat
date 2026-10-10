@@ -506,4 +506,4 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   },
 });
 
-export const todoModel = emitModel(todoEntities);
+export const todoModel = emitModel(todoEntities, { operations: todoOperations });
