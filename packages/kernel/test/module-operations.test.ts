@@ -91,6 +91,12 @@ describe('operationsFor (#1835)', () => {
     operationsFor(notesOperations)({ 'notes/add': addOp as never, 'notes/rename': renameOp });
     // @ts-expect-error — and so would `as any`
     operationsFor(notesOperations)({ 'notes/add': addOp as any, 'notes/rename': renameOp });
+    // @ts-expect-error — a cast to a function of `any` erases the input and the return all the same
+    operationsFor(notesOperations)({ 'notes/add': addOp as (...a: any[]) => any, 'notes/rename': renameOp });
+    // @ts-expect-error — and so does an untyped handler, with no cast at all
+    operationsFor(notesOperations)({ 'notes/add': async (_c: any, i: any) => i, 'notes/rename': renameOp });
+    // @ts-expect-error — a return of `any` alone is enough
+    operationsFor(notesOperations)({ 'notes/add': async (_c, i) => JSON.parse(i.text), 'notes/rename': renameOp });
   });
 
   it('hands the host the inputs, concurrency and opt-outs of the SAME declaration', () => {

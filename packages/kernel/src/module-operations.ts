@@ -113,9 +113,26 @@ export function assertBoundOperations(moduleId: string, operations: unknown): as
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
-/** The keys whose handler type was erased at the map — `as never`, `as any`. */
+/** Does this function type take or return `any` anywhere a handler's contract lives? */
+type TypedLoosely<F> = F extends (...args: infer P) => infer R
+  ? true extends IsAny<R> | IsAny<Awaited<R>> | { [I in keyof P]: IsAny<P[I]> }[number]
+    ? true
+    : false
+  : false;
+
+/**
+ * The keys whose handler type was erased at the map: an entry cast `as never` or `as any`, or one
+ * whose parameters or return are `any` — `addOp as (...a: any[]) => any`, or an untyped
+ * `(c: any, i: any) => i`, which `OperationImpl` accepts because `any` fits every slot.
+ */
 type ErasedKeys<H> = {
-  [K in keyof H]-?: IsAny<H[K]> extends true ? K : [H[K]] extends [never] ? K : never;
+  [K in keyof H]-?: IsAny<H[K]> extends true
+    ? K
+    : [H[K]] extends [never]
+      ? K
+      : TypedLoosely<H[K]> extends true
+        ? K
+        : never;
 }[keyof H];
 
 /**
