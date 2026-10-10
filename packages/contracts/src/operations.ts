@@ -1742,11 +1742,15 @@ function assertHandlersDeclared(operations: Record<string, unknown>, entities: R
     const { derive, authored } = decl;
     if (derive !== undefined && authored !== undefined) {
       throw new Error(
-        `model: '${name}' declares both \`derive\` and \`authored\` — a handler is written by the platform or by you, not both`,
+        `model: '${name}' declares both \`derive\` and \`authored\` — a handler is written by the platform or by you, not both.\n` +
+          '  Remedy: keep `derive` and delete the handler, or keep `authored` and drop `derive`.',
       );
     }
     if (authored !== undefined && (typeof authored !== 'string' || authored.trim() === '')) {
-      throw new Error(`model: '${name}' declares authored without a reason`);
+      throw new Error(
+        `model: '${name}' declares \`authored\` without a reason.\n` +
+          '  Remedy: say what the derived handler would get wrong here, or declare `derive` and delete the handler.',
+      );
     }
     if (derive !== undefined) {
       if (!DERIVED_KINDS.includes(derive as DerivedKind)) {

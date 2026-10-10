@@ -256,7 +256,8 @@ describe('the gate', () => {
 
   it('(c) refuses a blank `authored`, and one on an operation nothing could derive', () => {
     expect(() => define({ 'n/get': { ...GET, authored: '  ' } })).toThrow(
-      "model: 'n/get' declares authored without a reason",
+      "model: 'n/get' declares `authored` without a reason.\n" +
+        '  Remedy: say what the derived handler would get wrong here, or declare `derive` and delete the handler.',
     );
     expect(() =>
       define({ 'n/ping': { summary: 's', permission: 'note:read', output: z.object({ ok: z.boolean() }), authored: 'habit' } }),
@@ -269,7 +270,8 @@ describe('the gate', () => {
   it('(d) refuses `derive` and `authored` together', () => {
     // The type refuses the pair as well; the cast stands for a declaration built around it.
     expect(() => define({ 'n/get': { ...GET, derive: 'get', authored: 'both' } as never })).toThrow(
-      "model: 'n/get' declares both `derive` and `authored` — a handler is written by the platform or by you, not both",
+      "model: 'n/get' declares both `derive` and `authored` — a handler is written by the platform or by you, not both.\n" +
+        '  Remedy: keep `derive` and delete the handler, or keep `authored` and drop `derive`.',
     );
   });
 
