@@ -5,8 +5,9 @@
  *
  * The other moved names are held by their new homes' tests. What this file also pins is that
  * no deprecation is left in the index, that the platform-call check — which moved to
- * contracts' `./wire-auth` (#1998) — is gone from the kernel too, and that the live-socket
- * cap is: it is the hosted adapter's own policy, defined in its `live-reads.ts`.
+ * contracts' `./wire-auth` (#1998) — is gone from the kernel too, that the live-socket
+ * cap is: it is the hosted adapter's own policy, defined in its `live-reads.ts` — and that
+ * the signed connect state is, which control-plane-api now defines and exports.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -30,13 +31,21 @@ const WIRE_HEADERS = Object.keys(wireHeaders);
 export type MovedLiveRefusal = kernel.LiveRefusal;
 // @ts-expect-error moved to contracts
 export type MovedInvocationLevel = kernel.InvocationLevel;
+// @ts-expect-error moved to control-plane-api
+export type MovedConnectStateClaim = kernel.ConnectStateClaim;
 
 describe('wire header names, moved to contracts (#1978)', () => {
   it('no export is still tagged as moving', () => {
     expect(tagged()).toEqual([]);
   });
 
-  it.each(['assertPlatformCall', 'PlatformCallError', 'kickFlags', 'secretMatches', 'LIVE_SOCKETS_PER_PRINCIPAL'])(
+  it.each(['assertPlatformCall', 'PlatformCallError', 'kickFlags', 'secretMatches',
+    'LIVE_SOCKETS_PER_PRINCIPAL',
+    'signConnectState',
+    'verifyConnectState',
+    'ConnectStateError',
+    'CONNECT_STATE_PURPOSE',
+  ])(
     'the kernel no longer exports %s',
     (name) => {
       expect(kernelExports[name], name).toBeUndefined();

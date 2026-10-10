@@ -18,11 +18,12 @@
  * rather than duplicating (#1267). The consent code itself is single-use at the provider.
  * A vertical's MAILED link is the other case again, and carries a row: `linkId`, below.
  *
- * **Why the kernel.** Two workers hold the halves — the control plane mints (it owns the
+ * **Why here.** Two workers hold the halves — the control plane mints (it owns the
  * directory the vertical is re-derived from), the dashboard verifies (it owns the one
  * `redirect_uri` registered with the provider) — and a MAC that two deployments must agree
- * on is exactly the thing that must not be written twice. It sits beside `platform-call.ts`
- * for the same reason that does: both answer "did this really come from the platform".
+ * on is exactly the thing that must not be written twice. This package is the mint's home
+ * and the dashboard already depends on it, so one copy serves both; it left the kernel in
+ * #1978, which needs no guarantee of the kernel's to hold it.
  *
  * Web Crypto only, so this file is testable in Node and runs unchanged in workerd.
  */

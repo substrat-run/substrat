@@ -19,6 +19,8 @@ export {
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 export type { ConnectionCandidatePrepare, ConnectionCandidatePreparer } from './connection-relay.js';
+export { signConnectState, verifyConnectState, ConnectStateError } from './connect-state.js';
+export type { ConnectStateClaim } from './connect-state.js';
 export { relayConnectUrl, ConnectUrlRelayError } from './connect-url.js';
 export type { ConnectFlowSpec, ConnectUrlRelayOptions } from './connect-url.js';
 export { relayConnectLinkMint, relayConnectLinkList, relayConnectLinkRevoke, connectLinkViewOf } from './connect-links.js';

@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid, verifyConnectState, webCryptoSecretBox } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { verifyConnectState } from '../src/connect-state.js';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { relayConnectUrl, ConnectUrlRelayError, PREVIEW_CONNECTIONS_REFUSAL } from '../src/index.js';
 
