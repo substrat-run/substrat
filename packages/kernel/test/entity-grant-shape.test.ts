@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import { errorCodeOf } from '@substrat-run/contracts';
-import { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, writeExplicitTupleIn, type SwitchSql } from '../src/index.js';
+import { SHAPE_MARKER_READS_PER_ROW } from '../src/entity-grant-shape.js';
+import { SHAPE_MARKER_INDEX_DDL, grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, writeExplicitTupleIn, type ShapeCursor, type SwitchSql } from '../src/index.js';
 
 /**
  * The declared shape's reconcile (#2071), over a bare `_substrat_tuples`. The edges the
@@ -22,6 +23,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       subject TEXT NOT NULL, relation TEXT NOT NULL, object TEXT NOT NULL,
       expires_at TEXT, revoked_at TEXT, PRIMARY KEY (subject, relation, object)
     )`);
+    db.exec(SHAPE_MARKER_INDEX_DDL);
     db.exec(`CREATE TABLE _substrat_outbox (
       id TEXT PRIMARY KEY, type TEXT, schema_version INTEGER, occurred_at TEXT, tenant_id TEXT,
       scope_id TEXT, actor TEXT, entity_type TEXT, entity_id TEXT, pii_class TEXT, subject_id TEXT,
@@ -73,7 +75,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       const retired = of('entity.grants-retired') as { principal: string; entity: unknown; removed: string[] }[];
       expect(rows).toHaveLength(toppedUp.length + retired.length);
       expect(result).toMatchObject({ toppedUp: toppedUp.length, retired: retired.length });
-      return { toppedUp, retired, done: result.done };
+      return { toppedUp, retired, done: result.next === null };
     };
     const pass = (shapes: unknown[], limit = 500) => run(shapes, limit).toppedUp;
     const topUp = (permissions = GROWN, limit?: number) => pass([{ entityType: 'employee', permissions, bootstrap: true }], limit);
@@ -646,6 +648,126 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       t.db.prepare('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)').run(`principal:${anna}`, 'granted:list:old', `owner:${anna}`);
       const r = t.run([{ entityType: 'owner', permissions: ['list:manage'], bootstrap: true, holder: 'self', retired: ['list:old'] }]);
       expect([r.retired.map((x) => x.removed), r.toppedUp.map((x) => x.added)]).toEqual([[['list:old']], [['list:manage']]]);
+    });
+  });
+
+  /**
+   * #2083: a pass reads at most `limit × SHAPE_MARKER_READS_PER_ROW` markers, and the next pass of
+   * the same reconcile resumes where it stopped, so a reconcile over M markers reads each once
+   * and no pass reads them all, whether or not anybody needs anything.
+   */
+  describe('passes resume from a cursor and read a bounded window', () => {
+    const GROWN_SHAPE = [{ entityType: 'employee', permissions: GROWN, bootstrap: true }];
+    const id = (i: number) => `e${String(i).padStart(2, '0')}`;
+    /** One pass, with the rows each marker walk read. */
+    const step = (t: ReturnType<typeof fresh>, shapes: unknown[], limit: number, after: ShapeCursor | null) => {
+      let read = 0;
+      const sql: SwitchSql = {
+        all: (q, ...p) => {
+          const rows = t.sql.all(q, ...p);
+          if (q.includes('AND m.object >= ? AND m.object < ?')) read += rows.length;
+          return rows;
+        },
+        run: t.sql.run,
+      };
+      const r = topUpEntityGrantShapes(sql, { tenantId: T, scopeId: S, shapes: shapes as never, now: NOW, limit, after, mintEventId: () => ulid(), version: null });
+      return { ...r, read };
+    };
+    /** A whole reconcile, as the adapters run it: passes until one hands back no cursor. */
+    const reconcile = (t: ReturnType<typeof fresh>, shapes: unknown[], limit: number, cap = 50) => {
+      let after: ShapeCursor | null = null;
+      const passes: { toppedUp: number; retired: number; read: number }[] = [];
+      do {
+        const r = step(t, shapes, limit, after);
+        passes.push({ toppedUp: r.toppedUp, retired: r.retired, read: r.read });
+        after = r.next;
+      } while (after && passes.length < cap);
+      return { passes, finished: after === null };
+    };
+
+    it('on a scope where nobody needs anything, a pass reads its window and hands back where it stopped', () => {
+      const t = fresh();
+      const people = Array.from({ length: 25 }, (_, i) => {
+        const p = who();
+        t.shape(p, id(i), GROWN);
+        return p;
+      });
+      const first = step(t, GROWN_SHAPE, 1, null);
+      expect(first.read).toBe(SHAPE_MARKER_READS_PER_ROW);
+      expect(first.next).toEqual({ shape: 0, step: 'topUp', after: { object: `employee:${id(9)}`, subject: `principal:${people[9]}` } });
+      const second = step(t, GROWN_SHAPE, 1, first.next);
+      expect(second.next?.after).toEqual({ object: `employee:${id(19)}`, subject: `principal:${people[19]}` });
+      const third = step(t, GROWN_SHAPE, 1, second.next);
+      expect([third.read, third.next]).toEqual([5, null]);
+    });
+
+    it('holders behind a window of finished markers are reached, each once, and the reconcile ends', () => {
+      const t = fresh();
+      for (let i = 0; i < 30; i++) t.shape(who(), id(i), GROWN);
+      const late = [0, 1, 2].map((i) => {
+        const p = who();
+        t.shape(p, `f${i}`); // sorts after every `e…`, with a key to gain
+        return p;
+      });
+      const run = reconcile(t, GROWN_SHAPE, 1);
+      expect(run.finished).toBe(true);
+      // Three windows of finished markers, then one holder per pass; the last pass reads the last marker.
+      expect(run.passes.map((p) => p.toppedUp)).toEqual([0, 0, 0, 1, 1, 1]);
+      expect(run.passes.reduce((n, p) => n + p.read, 0)).toBeLessThanOrEqual(33 + 3 * SHAPE_MARKER_READS_PER_ROW);
+      for (const [i, p] of late.entries()) expect(t.keysOf(p, `f${i}`)).toEqual(['emp:cancel', 'emp:read', 'emp:report']);
+    });
+
+    it('a holder granted the older shape BEHIND the cursor mid-run waits for the next reconcile', () => {
+      const t = fresh();
+      for (let i = 0; i < 12; i++) t.shape(who(), id(i), GROWN);
+      const first = step(t, GROWN_SHAPE, 1, null);
+      expect(first.next?.after?.object).toBe(`employee:${id(9)}`);
+      const stale = who();
+      t.shape(stale, 'a0'); // an older deployment's grant, sorting before the cursor
+      let after = first.next;
+      for (let n = 0; after && n < 50; n++) after = step(t, GROWN_SHAPE, 1, after).next;
+      expect(after).toBeNull();
+      expect(t.keysOf(stale, 'a0')).toEqual(OLD);
+      // The next reconcile starts from the beginning, and reaches it.
+      expect(reconcile(t, GROWN_SHAPE, 1).passes.reduce((n, p) => n + p.toppedUp, 0)).toBe(1);
+      expect(t.keysOf(stale, 'a0')).toEqual(['emp:cancel', 'emp:read', 'emp:report']);
+    });
+
+    it("a retirement's run-once record waits until its walk has read the shape's last marker", () => {
+      const t = fresh();
+      const shapes = [{ entityType: 'employee', permissions: OLD, retired: ['emp:cancel'], bootstrap: true }];
+      for (let i = 0; i < 14; i++) t.shape(who(), id(i), OLD);
+      const last = who();
+      t.shape(last, id(14), GROWN); // the only holder of the retired key, past the first window
+      const record = () => t.db.prepare("SELECT count(*) AS n FROM _substrat_tuples WHERE relation = 'shape-retired:emp:cancel'").get();
+      const first = step(t, shapes, 1, null);
+      expect([first.retired, first.next?.step, record()]).toEqual([0, 'retire', { n: 0 }]);
+      const second = step(t, shapes, 1, first.next);
+      // Its budget spent on the retirement, the pass leaves the top-up to the next one.
+      expect([second.retired, second.next, record()]).toEqual([1, { shape: 0, step: 'topUp', after: null }, { n: 1 }]);
+      expect(t.keysOf(last, id(14))).toEqual(OLD);
+    });
+
+    it('a cursor at a later shape skips the shapes before it, and a backfill cut short resumes at its shape', () => {
+      const t = fresh();
+      const anna = who();
+      t.db.prepare('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)').run(`principal:${anna}`, 'granted:list:manage', `owner:${anna}`);
+      const shapes = [
+        { entityType: 'employee', permissions: GROWN, bootstrap: true },
+        { entityType: 'owner', permissions: ['list:manage', 'list:share'], bootstrap: true, holder: 'self' },
+      ];
+      t.shape(who(), id(0)); // the first shape's one holder, needing a key
+      const first = step(t, shapes, 1, null);
+      expect([first.toppedUp, first.next]).toEqual([1, { shape: 1, step: 'backfill', after: null }]);
+      const stale = who();
+      t.shape(stale, id(1)); // a holder of the first shape, behind the cursor
+      const second = step(t, shapes, 1, first.next);
+      // The backfill marked anna with the whole budget, so it is where the next pass starts again.
+      expect([second.toppedUp, second.next]).toEqual([0, { shape: 1, step: 'backfill', after: null }]);
+      const third = step(t, shapes, 1, second.next);
+      expect([third.toppedUp, third.next]).toEqual([1, null]);
+      expect(t.db.prepare('SELECT count(*) AS n FROM _substrat_tuples WHERE object = ? AND relation = ?').get(`owner:${anna}`, 'granted:list:share')).toEqual({ n: 1 });
+      expect(t.keysOf(stale, id(1))).toEqual(OLD);
     });
   });
 

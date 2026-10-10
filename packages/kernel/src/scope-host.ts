@@ -1997,8 +1997,11 @@ export interface HostAdmin {
    * something was fully shared with as a holder.
    *
    * Bounded: `batch` rows of work (default 500, an integer from 1 to 5000, or `validation_failed`)
-   * per scope transaction, backfill included, repeated until a pass finishes — so it is safe
-   * on a large scope, and finishes on a re-run if interrupted. Each (person, entity) topped up is
+   * per scope transaction, backfill included, and at most ten markers read per row of work, read
+   * on their own index (#2083). Each pass resumes where the last one stopped, until one finds
+   * nothing left, so it is safe on a large scope whether or not anything changed, and finishes on
+   * a re-run if interrupted. A holder an older deployment grants the shape to behind the point a
+   * running reconcile has reached waits for the next reconcile. Each (person, entity) topped up is
    * an `entity.grants-topped-up` event on the entity, and each one retired keys were taken from an
    * `entity.grants-retired` event. Audited as `reconcileEntityGrantShapes` when it changed
    * anything. Returns how many (person, entity) it topped up, and how many it retired keys from.

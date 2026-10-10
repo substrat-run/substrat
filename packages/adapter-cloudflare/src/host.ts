@@ -485,7 +485,7 @@ import {
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
-import type { PlatformRequestSettle } from '@substrat-run/kernel';
+import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -1515,13 +1515,14 @@ interface ScopeStubRpc {
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
   /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
   grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
-  /** One bounded pass of the shape reconcile with its events (#2071, retirements #2082). */
+  /** One bounded pass of the shape reconcile with its events (#2071, retirements #2082), resuming at `after` (#2083). */
   topUpEntityGrantShapes(
     tenantId: string,
     scopeId: string,
     shapes: readonly EntityGrantShape[],
     limit: number,
-  ): Promise<{ toppedUp: number; retired: number; done: boolean }>;
+    after: ShapeCursor | null,
+  ): Promise<{ toppedUp: number; retired: number; next: ShapeCursor | null }>;
   /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
   writeTuple(
     subject: string,
@@ -10588,12 +10589,14 @@ export class CloudflareScopeHost implements ScopeHost {
     let retired = 0;
     if (shapes.length === 0) return { toppedUp, retired };
     const stub = this.scopeStub(scopeId);
-    for (let done = false; !done; ) {
-      const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, limit);
+    // Each pass resumes where the last one stopped (#2083), until one reports nothing left.
+    let after: ShapeCursor | null = null;
+    do {
+      const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, limit, after);
       toppedUp += pass.toppedUp;
       retired += pass.retired;
-      done = pass.done;
-    }
+      after = pass.next;
+    } while (after);
     return { toppedUp, retired };
   }
 

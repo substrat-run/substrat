@@ -683,6 +683,33 @@ export function permissionContractSuite(
         }
       });
 
+      /**
+       * #2083: a rollout on a scope too large for one pass to read. 900 holders already hold the
+       * grown shape, sorting before the 100 who do not; with a batch of 10 a pass may read 100
+       * markers, so the reconcile only ends because each pass resumes where the last stopped.
+       */
+      it('a large rollout behind finished holders reaches each holder exactly once, in bounded passes', async () => {
+        const s = scopeId.parse(ulid());
+        const at = { tenantId: t1, scopeId: s };
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, s);
+        const grant = (who: PrincipalId, id: string, permissions: PermissionKey[]) =>
+          host.admin.grantEntityShape(staff, { principalId: who, node: at, entity: desk(id), permissions, grantedBy: alice });
+        const pad = (i: number) => String(i).padStart(4, '0');
+        const late = Array.from({ length: 100 }, () => principalId.parse(ulid()));
+        const seeds = [
+          ...Array.from({ length: 900 }, (_, i) => () => grant(principalId.parse(ulid()), `a${pad(i)}`, GROWN)),
+          ...late.map((p, i) => () => grant(p, `z${pad(i)}`, OLD)),
+        ];
+        for (let i = 0; i < seeds.length; i += 50) await Promise.all(seeds.slice(i, i + 50).map((f) => f()));
+        const shape = [{ entityType: 'desk', permissions: GROWN, bootstrap: true as const }];
+        expect(await host.admin.reconcileEntityGrantShapes(staff, at, shape, { batch: 10 })).toEqual({ toppedUp: 100, retired: 0 });
+        const events = await (await host.getScope(alice, t1, s)).invoke<unknown[]>('perm/topped-up', desk(`z${pad(0)}`));
+        expect(events).toHaveLength(1);
+        for (const [i, p] of late.entries()) if (i % 9 === 0) expect(await probe(p, s, PERM_USE, desk(`z${pad(i)}`))).toMatchObject({ allowed: true });
+        expect(await host.admin.reconcileEntityGrantShapes(staff, at, shape, { batch: 10 })).toEqual({ toppedUp: 0, retired: 0 });
+      }, 120_000);
+
       it('the shape grant brings back a key a revoke tombstoned — it is the explicit grant', async () => {
         await shapeTo(kim, 'd9', GROWN);
         await (await host.getScope(alice, t1, s4)).invoke('perm/unshare', { principal: kim, permission: PERM_USE, entity: desk('d9') });

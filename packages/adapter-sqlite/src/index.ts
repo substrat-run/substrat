@@ -729,7 +729,7 @@ import {
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
-import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
+import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForContext, type ShapeCursor } from '@substrat-run/kernel';
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker, directoryTenantReader } from './checker.js';
@@ -1168,6 +1168,7 @@ const KERNEL_DDL = `
     PRIMARY KEY (subject, relation, object)
   );
   ${GRANT_CHILDREN_INDEX_DDL};
+  ${SHAPE_MARKER_INDEX_DDL};
   CREATE TABLE IF NOT EXISTS _substrat_deliveries (
     event_id TEXT NOT NULL,
     consumer_module TEXT NOT NULL,
@@ -7881,9 +7882,10 @@ export class SqliteScopeHost implements ScopeHost {
         const rt = this.runtime(tenantId, scopeId);
         let toppedUp = 0;
         let retired = 0;
-        // #2071: one bounded transaction per pass, so a large scope never holds one long; a pass
-        // that did not use its whole budget found everything.
-        for (let done = false; !done; ) {
+        // #2071: one bounded transaction per pass, so a large scope never holds one long; each
+        // pass resumes where the last one stopped (#2083), until one reports nothing left.
+        let after: ShapeCursor | null = null;
+        do {
           const pass = await rt.actor.turn(() =>
             rt.db.transaction(() =>
               topUpEntityGrantShapes(switchSqlOf(rt.db), {
@@ -7892,6 +7894,7 @@ export class SqliteScopeHost implements ScopeHost {
                 shapes,
                 now: new Date().toISOString(),
                 limit,
+                after,
                 mintEventId: (ms) => rt.mintEventId(ms),
                 version: this.versionId,
               }),
@@ -7899,8 +7902,8 @@ export class SqliteScopeHost implements ScopeHost {
           );
           toppedUp += pass.toppedUp;
           retired += pass.retired;
-          done = pass.done;
-        }
+          after = pass.next;
+        } while (after);
         if (toppedUp > 0 || retired > 0) {
           this.recordAdmin(actor, 'reconcileEntityGrantShapes', { tenantId, scopeId }, null, { shapes, toppedUp, retired });
         }

@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { permissionKey, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox, type ShapeCursor } from '@substrat-run/kernel';
 import { mountInviteRoutes, type InviteDirectory } from '@substrat-run/vertical-auth/invite-routes';
 import { CloudflareScopeHost } from '../src/host.js';
 
@@ -440,15 +440,23 @@ describe('a key a declared shape retires, over a CP-less host (#2082)', () => {
   it('one pass retires and tops up together, and does no more than its limit', async () => {
     const shapes = [{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true as const, retired: [USE] }];
     // Through an arrow on the real stub, never a `.bind`: the RPC proxy is not a plain function.
-    const pass = (tn: string, sc: string, sh: unknown, limit: number) =>
+    const pass = (tn: string, sc: string, sh: unknown, limit: number, after: ShapeCursor | null) =>
       (
         stub() as unknown as {
-          topUpEntityGrantShapes: (t: string, s: string, shapes: unknown, limit: number) => Promise<{ toppedUp: number; retired: number; done: boolean }>;
+          topUpEntityGrantShapes: (
+            t: string,
+            s: string,
+            shapes: unknown,
+            limit: number,
+            after: ShapeCursor | null,
+          ) => Promise<{ toppedUp: number; retired: number; next: ShapeCursor | null }>;
         }
-      ).topUpEntityGrantShapes(tn, sc, sh, limit);
-    expect(await pass(t, s, shapes, 4)).toEqual({ retired: 3, toppedUp: 1, done: false });
+      ).topUpEntityGrantShapes(tn, sc, sh, limit, after);
+    const first = await pass(t, s, shapes, 4, null);
+    expect(first).toEqual({ retired: 3, toppedUp: 1, next: { shape: 0, step: 'topUp', after: expect.any(Object) } });
     expect([await events('entity.grants-retired'), await events('entity.grants-topped-up')]).toEqual([{ n: 3 }, { n: 1 }]);
-    expect(await pass(t, s, shapes, 4)).toEqual({ retired: 0, toppedUp: 2, done: true });
+    // The next pass resumes where the first stopped (#2083).
+    expect(await pass(t, s, shapes, 4, first.next)).toEqual({ retired: 0, toppedUp: 2, next: null });
     for (const [i, p] of people.entries()) {
       expect([await can(p, READ, i), await can(p, USE, i), await can(p, ADMIN, i)]).toEqual([true, false, true]);
     }
