@@ -2839,8 +2839,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #119: refused before anything is recorded, so a module the trash rules refuse leaves nothing.
     const trashTargets = registerTrashTargets(
       manifest.id,
-      new Set(Object.keys(registration.operations ?? {})),
-      registration.operationInputs,
+      new Set(Object.keys(registration.operations?.handlers ?? {})),
+      registration.operations?.inputs,
       manifest.entityStates,
       manifest.schedules,
     );
@@ -2988,7 +2988,7 @@ export class SqliteScopeHost implements ScopeHost {
     // engine's in-scope FUNCTION is untouched — withdrawal removes the binding,
     // not the capability, which is how a vertical re-offers the same transition
     // behind its own guarded operation.
-    const ownOperations = new Set(Object.keys(registration.operations ?? {}));
+    const ownOperations = new Set(Object.keys(registration.operations?.handlers ?? {}));
     for (const name of manifest.withdraws ?? []) {
       if (ownOperations.has(name)) {
         throw new Error(
@@ -3001,7 +3001,7 @@ export class SqliteScopeHost implements ScopeHost {
     // A declared input schema for an operation this module does not bind is a
     // schema that enforces nothing while reading as coverage — the same reason
     // `checksDeclaredElsewhere` refuses a stale exemption.
-    const declaredInputs = registration.operationInputs ?? {};
+    const declaredInputs = registration.operations?.inputs ?? {};
     const unbound = Object.keys(declaredInputs).filter((name) => !ownOperations.has(name));
     if (unbound.length > 0) {
       throw new Error(
@@ -3012,7 +3012,7 @@ export class SqliteScopeHost implements ScopeHost {
     // Same rule for a declared precondition, and it matters more: a `concurrency`
     // on an unbound name is a guarantee nothing enforces, which is exactly the
     // belief #129 exists to stop anyone holding.
-    const declaredConcurrency = registration.operationConcurrency ?? {};
+    const declaredConcurrency = registration.operations?.concurrency ?? {};
     const unguarded = Object.keys(declaredConcurrency).filter((name) => !ownOperations.has(name));
     if (unguarded.length > 0) {
       throw new Error(
@@ -3023,7 +3023,7 @@ export class SqliteScopeHost implements ScopeHost {
     // #116: an opt-out on an unbound name is the same defect one paragraph up,
     // and reads worse — it looks like a deliberate exclusion of something that is
     // not there, so nobody goes looking for what actually honours the header.
-    const declaredOptOuts = registration.operationIdempotencyOptOuts ?? [];
+    const declaredOptOuts = registration.operations?.idempotencyOptOuts ?? [];
     const unboundOptOuts = declaredOptOuts.filter((name) => !ownOperations.has(name));
     if (unboundOptOuts.length > 0) {
       throw new Error(
@@ -3037,7 +3037,7 @@ export class SqliteScopeHost implements ScopeHost {
       entitlementKey: manifest.entitlementKey,
       scheduledOperations: new Set((manifest.schedules ?? []).map((sch) => sch.operation)),
     };
-    for (const [name, handler] of Object.entries(registration.operations ?? {})) {
+    for (const [name, handler] of Object.entries(registration.operations?.handlers ?? {})) {
       this.defineOperation(name, handler);
       // Record which SKU flag gates this operation (§4.3). Bare defineOperation
       // bindings (tests, glue) carry no manifest and stay ungated.

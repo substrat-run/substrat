@@ -7,7 +7,8 @@
  * rule looking for a `satisfies` clause — and a `satisfies` is invisible to every test, so
  * deleting one compiled and passed exactly like keeping it (#959).
  *
- * Now the field takes `BoundOperations`, which only two functions produce:
+ * Now the field takes `BoundOperations` — the handlers and the maps derived from their
+ * declaration, as one value — which only two functions produce:
  *
  * - `operationsFor(declaration)(handlers)` — the handlers are held EXACTLY to the declaration
  *   (a missing, extra, mistyped or cast entry is a compile error), and the input schemas, the
@@ -19,9 +20,10 @@
  * A plain object literal no longer compiles, which is the point: binding a declared module by
  * hand is not a shape that can be written by accident. What the type cannot see is an `as`
  * applied to the whole map, since `never` and `any` are assignable to anything; boundary-lint
- * **R9** refuses that at the registration.
+ * **R11** refuses that at the registration.
  *
- * The brand is type-only. The host reads the same plain object it always did.
+ * The brand is type-only: at runtime `operations` is a plain `{ handlers, inputs, concurrency,
+ * idempotencyOptOuts }`, read by both adapters.
  */
 import {
   derivationPlanOf,
@@ -36,17 +38,32 @@ import type { OperationContext, OperationHandler } from './scope-host.js';
 
 declare const bound: unique symbol;
 
-/** A handler map produced by `operationsFor` or `undeclaredOperations` — never written by hand. */
-export type BoundOperations = Readonly<Record<string, OperationHandler<never, unknown>>> & {
-  readonly [bound]: true;
-};
+/** name → handler, as the host reads it. */
+export type HandlerMap = Readonly<Record<string, OperationHandler<never, unknown>>>;
 
-/** What `operationsFor` hands a registration: the map, and everything the host derives from the declaration. */
-export interface DeclaredOperations {
-  operations: BoundOperations;
-  operationInputs: Readonly<Record<string, { parse(value: unknown): unknown }>>;
-  operationConcurrency: Record<string, { entity: string; idFrom: string }>;
-  operationIdempotencyOptOuts: readonly string[];
+/**
+ * Everything a module hands the host about its operations, in one value only `operationsFor` and
+ * `undeclaredOperations` produce — never written by hand.
+ *
+ * The handlers and the three maps derived from their declaration travel together, so a
+ * registration cannot carry one without the others or pair a handler map with another
+ * declaration's schemas. `H` keeps each handler's own type, so a module can still call one.
+ */
+export interface BoundOperations<H = HandlerMap> {
+  readonly [bound]: true;
+  /** name → handler. */
+  readonly handlers: H & HandlerMap;
+  /**
+   * name → the schema the host parses an invocation's input against, before the guards and the
+   * handler (#893). The map `operationInputsOf` returned, as returned: it also carries the
+   * declared surface the host derives its trash refusal from (#119). Absent for a module that
+   * declares no operations, where nothing is parsed.
+   */
+  readonly inputs?: Readonly<Record<string, { parse(value: unknown): unknown }>>;
+  /** name → the entity whose version an `If-Match` on that operation is compared against (#129). */
+  readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
+  /** The operations that declared `idempotency: false`, and so refuse an `Idempotency-Key` (#116). */
+  readonly idempotencyOptOuts?: readonly string[];
 }
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
@@ -85,11 +102,13 @@ type Exact<Ops, H> = { readonly [K in Exclude<keyof H, keyof Ops>]: never } & ([
 export function operationsFor<const Ops extends Record<string, object>>(declaration: Ops) {
   return <const H extends OperationImpl<Ops, OperationContext>>(
     handlers: H & Exact<Omit<Ops, DerivedKeys<Ops>>, H>,
-  ): DeclaredOperations => ({
-    operations: withDerivedHandlers(declaration, handlers) as unknown as BoundOperations,
-    operationInputs: operationInputsOf(declaration),
-    operationConcurrency: operationConcurrencyOf(declaration),
-    operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
+  ): { operations: BoundOperations<H> } => ({
+    operations: {
+      handlers: withDerivedHandlers(declaration, handlers),
+      inputs: operationInputsOf(declaration),
+      concurrency: operationConcurrencyOf(declaration),
+      idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
+    } as unknown as BoundOperations<H>,
   });
 }
 
@@ -130,10 +149,7 @@ function withDerivedHandlers(
  * The declared exception: a module whose operations have no declaration to bind to, so the
  * host parses nothing for them. The reason is required, and is what a reviewer reads.
  */
-export function undeclaredOperations(
-  reason: string,
-  handlers: Readonly<Record<string, OperationHandler<never, unknown>>>,
-): { operations: BoundOperations } {
+export function undeclaredOperations(reason: string, handlers: HandlerMap): { operations: BoundOperations } {
   if (reason.trim() === '') throw new Error('undeclaredOperations: give the reason this module declares no operations');
-  return { operations: handlers as BoundOperations };
+  return { operations: { handlers } as unknown as BoundOperations };
 }

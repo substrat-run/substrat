@@ -802,8 +802,6 @@ export const invoicingLifecycles = defineLifecycles(
 export const invoicingModule: ModuleRegistration = {
   manifest: invoicingManifest,
   migrations: invoicingMigrations,
-  // The handlers are bound to the declaration, and the host parses every invocation
-  // against it, from one object — so neither can drift from the other (#953, #1835).
   ...operationsFor(invoicingOperations)(OPERATIONS),
   consumers: {
     'workorder.completed': onWorkOrderCompleted,

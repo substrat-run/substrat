@@ -12,6 +12,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  undeclaredOperations,
 } from '@substrat-run/kernel';
 import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } from '@substrat-run/engine-invites';
 
@@ -1561,7 +1562,9 @@ const listConnectLinksOp: OperationHandler<z.infer<typeof listConnectLinksInput>
 export const dashboardModule: ModuleRegistration = {
   manifest: dashboardManifest,
   migrations: dashboardMigrations,
-  operations: {
+  // The dashboard predates declared operation surfaces and declares none yet, so there is no
+  // declaration to bind its handlers to or to parse their inputs with; each handler parses its own.
+  ...undeclaredOperations('the dashboard declares no operation surface; its handlers parse their own input', {
     'dashboard/provision-app': provisionAppOp as OperationHandler<never, unknown>,
     'dashboard/mark-app-active': markAppActiveOp as OperationHandler<never, unknown>,
     'dashboard/update-app': updateAppOp as OperationHandler<never, unknown>,
@@ -1604,5 +1607,5 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/restore-connect-link': restoreConnectLinkOp as OperationHandler<never, unknown>,
     'dashboard/revoke-connect-link': revokeConnectLinkOp as OperationHandler<never, unknown>,
     'dashboard/list-connect-links': listConnectLinksOp as OperationHandler<never, unknown>,
-  },
+  }),
 };

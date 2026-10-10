@@ -466,7 +466,7 @@ export function registerTrashTargets(
       throw new Error(
         `${where} but its \`operationInputs\` is not a map \`operationInputsOf\` returned — the host could not see which ` +
           'operations address a binned one. A copy, a spread or an edited map is not one, and nor is a map built by a ' +
-          'second copy of @substrat-run/contracts.\n  Remedy: `operationInputs: operationInputsOf(ops)`, as returned.',
+          'second copy of @substrat-run/contracts.\n  Remedy: bind with `...operationsFor(ops)({ … })`, which hands the map over as returned.',
       );
     }
     const undeclared = [...ownOps].filter((name) => !surface.operations.includes(name)).sort();

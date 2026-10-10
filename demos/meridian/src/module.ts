@@ -995,8 +995,6 @@ const timelineOp: OperationHandler<
 export const meridianModule: ModuleRegistration = {
   manifest: meridianManifest,
   migrations: meridianMigrations,
-  // The handlers are bound to the declaration, and the host parses every
-  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
   ...operationsFor(meridianOperations)({
     'hr/create-employee': createEmployeeOp,
     'hr/list-employees': listEmployeesOp,

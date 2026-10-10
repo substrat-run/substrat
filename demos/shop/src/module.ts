@@ -1173,8 +1173,6 @@ const OPERATIONS = {
 export const shopModule: ModuleRegistration = {
   manifest: shopManifest,
   migrations: shopMigrations,
-  // The handlers are bound to the declaration, and the host parses every
-  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
   ...operationsFor(shopOperations)(OPERATIONS),
 };
 

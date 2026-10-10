@@ -7,7 +7,7 @@
  * is what only a person could decide — what it MEANS to share a list, and who
  * may do what to one.
  *
- * `satisfies OperationImpl<…>` is the join: a handler whose input or return
+ * `operationsFor(todoOperations)` is the join: a handler whose input or return
  * disagrees with the declared operation, one declared and not implemented, or
  * one implemented and not declared, is a compile error naming the exact method.
  */
@@ -17,8 +17,6 @@ import {
   dataSubjectId,
   LIST_PAGE_DEFAULT,
   substratError,
-  type HandlerInput,
-  type HandlerOutput,
   z,
   type EntityRow,
   type PrincipalId,
@@ -30,7 +28,6 @@ import {
   ulid,
   type ModuleRegistration,
   type OperationContext,
-  type OperationHandler,
   operationsFor,
 } from '@substrat-run/kernel';
 import { SEARCH_OVERFETCH, todoEntities, todoOperations } from '../spec/model.js';

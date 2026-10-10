@@ -865,8 +865,6 @@ const periodLinesOp: OperationHandler<{ periodId: string } & ListPage, Page<Peri
 export const meteringModule: ModuleRegistration = {
   manifest: meteringManifest,
   migrations: meteringMigrations,
-  // The handlers are bound to the declaration, and the host parses every invocation
-  // against it, from one object — so neither can drift from the other (#953, #1835).
   ...operationsFor(meteringOperations)({
     'metering/configure-meter': configureMeterOp,
     'metering/list-meters': listMetersOp,

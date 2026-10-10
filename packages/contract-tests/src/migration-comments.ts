@@ -8,6 +8,7 @@
  */
 import { moduleManifest } from '@substrat-run/contracts';
 import type { ModuleRegistration, OperationHandler } from '@substrat-run/kernel';
+import { testOperations } from './test-operations.js';
 
 export const commentedDdlMod: ModuleRegistration = {
   manifest: moduleManifest.parse({
@@ -40,12 +41,12 @@ export const commentedDdlMod: ModuleRegistration = {
       sql: '-- the last column goes\nALTER TABLE cm_runs DROP COLUMN finished_at;',
     },
   ],
-  operations: {
+  ...testOperations({
     'commented-ddl/read': ((ctx) => ({
       columns: ctx.sql.query<{ name: string }>("SELECT name FROM pragma_table_info('cm_runs')").map((r) => r.name),
       noteDefault: ctx.sql.query<{ d: string }>("SELECT dflt_value AS d FROM pragma_table_info('cm_runs') WHERE name = 'note'")[0]?.d,
       rows: ctx.sql.query('SELECT id, note FROM cm_runs ORDER BY id'),
       stored: ctx.sql.query<{ sql: string }>("SELECT sql FROM sqlite_master WHERE name = 'cm_runs'")[0]?.sql,
     })) as OperationHandler<never, unknown>,
-  },
+  }),
 };

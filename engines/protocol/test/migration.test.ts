@@ -27,6 +27,7 @@ import {
   type ProtocolSignatureRow,
   type ProtocolTemplateRow,
 } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 /**
  * The 0002 migration, exercised as an UPGRADE rather than as a fresh install.
@@ -86,10 +87,10 @@ function probe(): ModuleRegistration {
       entityRelations: [{ entityType: 'protocol', parentType: 'workorder' }],
       entitlementKey: 'probe',
     }),
-    operations: {
+    ...testOperations({
       'probe/exec': exec as OperationHandler<never, unknown>,
       'probe/query': query as OperationHandler<never, unknown>,
-    },
+    }),
   };
 }
 

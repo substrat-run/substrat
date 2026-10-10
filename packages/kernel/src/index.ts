@@ -161,7 +161,7 @@ export {
   operationsFor,
   undeclaredOperations,
   type BoundOperations,
-  type DeclaredOperations,
+  type HandlerMap,
 } from './module-operations.js';
 export {
   isSecretBoxConfigured,

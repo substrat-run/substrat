@@ -1810,7 +1810,5 @@ const bound = operationsFor(tockOperations)({
 export const tockModule: ModuleRegistration = {
   manifest: tockManifest,
   migrations: tockMigrations,
-  // The handlers above are bound to the declaration, and the host parses every
-  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
   ...bound,
 };

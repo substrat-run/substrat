@@ -156,15 +156,21 @@ export const bikeShopOperations = defineOperations(bikeShopEntities, SHOP_PERMIS
 Then `src/module.ts` holds only the **bodies**, bound to that declaration:
 
 ```ts
-} satisfies OperationImpl<typeof bikeShopOperations, OperationContext>;
+const bound = operationsFor(bikeShopOperations)({
+  'shop/create-customer': createCustomerOp,
+  …
+});
+export const bikeShopModule: ModuleRegistration = { manifest, migrations, ...bound };
 ```
 
-Four things are now compile errors at the exact method: a handler whose input
+Five things are now compile errors at the exact method: a handler whose input
 disagrees with the declared `input`, one whose return disagrees with `output`, an
-operation declared and not implemented, and one implemented and not declared. The
-same object feeds `operationInputs: operationInputsOf(bikeShopOperations)`, so the
-schemas the host parses with are the ones the declaration states — they cannot drift,
-because there is only one of them.
+operation declared and not implemented, one implemented and not declared, and one
+whose type was thrown away with `as never` or `as any`. The same call hands the host
+the schemas it parses with (`operationInputsOf(bikeShopOperations)`), so they are the
+ones the declaration states — they cannot drift, because there is only one of them.
+A registration takes no other kind of map: a hand-written `operations: { … }` does not
+compile, and `boundary-lint` refuses a cast of the whole map.
 
 The permission list works the same way. `SHOP_PERMISSIONS`, the array handed to
 `defineOperations`, is also the `keys` that `src/provision.ts` hands
@@ -245,11 +251,11 @@ consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
    (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
 10. **Web-standard APIs always** — `globalThis.crypto`, `TextEncoder`, `URL`. Never
     hand-roll a hash to dodge an import ban.
-11. **Parse, don't trust** — and the **host** is what parses. A module passes
-    `operationInputs: operationInputsOf(ops)` beside its `operations`, and every invocation
-    is parsed against the declared schema before the guards and the handler, on every path
-    in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared input nobody
-    parses stops being possible rather than merely discouraged. Import `z` from
+11. **Parse, don't trust** — and the **host** is what parses. A module binds its
+    handlers with `operationsFor(ops)(…)`, which hands the host the declared schemas with
+    them, and every invocation is parsed against them before the guards and the handler,
+    on every path in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared
+    input nobody parses stops being possible rather than merely discouraged. Import `z` from
     `@substrat-run/contracts`, **never from `zod`**. Zod schemas don't compose across
     copies or majors; composing a contracts schema into one built from a separate `zod`
     fails at *runtime* (`expected a Zod schema`) with an error pointing nowhere near the

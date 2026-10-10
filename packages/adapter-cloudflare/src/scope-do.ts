@@ -1376,8 +1376,8 @@ export function defineScopeDO(
       // #119: refused before anything is recorded, as in the pure adapter.
       const trashTargets = registerTrashTargets(
         manifest.id,
-        new Set(Object.keys(registration.operations ?? {})),
-        registration.operationInputs,
+        new Set(Object.keys(registration.operations?.handlers ?? {})),
+        registration.operations?.inputs,
         manifest.entityStates,
         manifest.schedules,
       );
@@ -1481,8 +1481,8 @@ export function defineScopeDO(
       }
       // #893: a schema declared for an operation this module does not bind
       // enforces nothing while reading as coverage — refused, as in the pure adapter.
-      const declaredInputs = registration.operationInputs ?? {};
-      const ownOps = new Set(Object.keys(registration.operations ?? {}));
+      const declaredInputs = registration.operations?.inputs ?? {};
+      const ownOps = new Set(Object.keys(registration.operations?.handlers ?? {}));
       const unbound = Object.keys(declaredInputs).filter((name) => !ownOps.has(name));
       if (unbound.length > 0) {
         throw new Error(
@@ -1492,7 +1492,7 @@ export function defineScopeDO(
       }
       // Same rule for a declared precondition, and it matters more: a
       // `concurrency` on an unbound name is a guarantee nothing enforces.
-      const declaredConcurrency = registration.operationConcurrency ?? {};
+      const declaredConcurrency = registration.operations?.concurrency ?? {};
       const unguarded = Object.keys(declaredConcurrency).filter((name) => !ownOps.has(name));
       if (unguarded.length > 0) {
         throw new Error(
@@ -1502,7 +1502,7 @@ export function defineScopeDO(
       }
       // #116: same rule again for an opt-out — one on an unbound name reads as a
       // deliberate exclusion of an operation that is not there.
-      const declaredOptOuts = registration.operationIdempotencyOptOuts ?? [];
+      const declaredOptOuts = registration.operations?.idempotencyOptOuts ?? [];
       const unboundOptOuts = declaredOptOuts.filter((name) => !ownOps.has(name));
       if (unboundOptOuts.length > 0) {
         throw new Error(
@@ -1511,7 +1511,7 @@ export function defineScopeDO(
             'exclusion someone decided, of an operation that does not exist',
         );
       }
-      for (const [name, handler] of Object.entries(registration.operations ?? {})) {
+      for (const [name, handler] of Object.entries(registration.operations?.handlers ?? {})) {
         this.defineOperation(name, handler);
         // The schema follows the HANDLER, not the name: a withdrawn operation
         // never binds, and has nothing to parse for.

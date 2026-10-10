@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moduleId, permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { ulid, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
-import { TBOX_PURGE_DAYS, TRASH_MODULE_ID, trashMod } from '@substrat-run/contract-tests';
+import { TBOX_PURGE_DAYS, TRASH_MODULE_ID, trashMod, testOperations } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
 const DAY = 86_400_000;
@@ -21,11 +21,11 @@ const MODULE = moduleId.parse(TRASH_MODULE_ID);
 
 /** The purge's handler, paused on an `await` until the test lets it go. */
 let paused: { entered: () => void; release: Promise<void> } | undefined;
-const original = trashMod.operations!['trash/delete-box']! as OperationHandler<unknown, unknown>;
+const original = trashMod.operations!.handlers['trash/delete-box']! as OperationHandler<unknown, unknown>;
 const pausing: ModuleRegistration = {
   ...trashMod,
-  operations: {
-    ...trashMod.operations,
+  ...testOperations({
+    ...trashMod.operations!.handlers,
     'trash/delete-box': (async (ctx, input) => {
       if (paused) {
         paused.entered();
@@ -33,7 +33,7 @@ const pausing: ModuleRegistration = {
       }
       return original(ctx, input);
     }) as OperationHandler<unknown, unknown>,
-  },
+  }, { inputs: trashMod.operations!.inputs }),
 };
 
 describe('the purge gate, read again where no directory write can interleave (#119)', () => {

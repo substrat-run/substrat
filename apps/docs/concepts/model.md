@@ -188,15 +188,14 @@ export const operations = defineOperations(entities, PERMISSIONS)({
 is TypeScript: a schema language would need the shape written twice, and transcription is where
 argument names go wrong.
 
-Being real is also what lets the **host** parse with it. Hand your derived schemas to the
-registration and every invocation is parsed before your handler runs — over HTTP, from a test,
-from a seed, from a schedule:
+Being real is also what lets the **host** parse with it. Bind your handlers to the declaration
+and the registration carries the derived schemas with them, so every invocation is parsed before
+your handler runs — over HTTP, from a test, from a seed, from a schedule:
 
 ```ts
 export const shopModule: ModuleRegistration = {
   manifest: shopManifest,
-  operations: { 'shop/checkout': checkoutOp, … },
-  operationInputs: operationInputsOf(shopOperations),
+  ...operationsFor(shopOperations)({ 'shop/checkout': checkoutOp, … }),
 };
 ```
 
@@ -547,15 +546,20 @@ invoice basis, and you read it back through its operations or by consuming its e
 
 ## Binding the handlers
 
-`OperationImpl` derives the handler map your operations require, and `satisfies` is the drift
-detector:
+`operationsFor` from `@substrat-run/kernel` holds the handler map to the one your operations
+require (`OperationImpl`), and is the drift detector:
 
 ```ts
-export const operations = { … } satisfies OperationImpl<typeof model.operations, OperationContext>;
+const bound = operationsFor(model.operations)({ … });
+export const module: ModuleRegistration = { manifest, migrations, ...bound };
 ```
 
 Change a declared return and `tsc` names the exact method whose handler no longer agrees. An
-operation declared and not implemented — or implemented and not declared — is an error too.
+operation declared and not implemented — or implemented and not declared, or a handler whose type
+was thrown away with `as never` — is an error too. It is the only way to hand a registration a
+declared map: `operations` takes a `BoundOperations`, so a hand-written object does not compile,
+and `boundary-lint` (R11) refuses a cast of the whole map. A module with no declared surface says
+so with `undeclaredOperations(reason, handlers)`.
 
 ## The manifest, derived
 

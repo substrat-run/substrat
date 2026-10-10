@@ -1352,8 +1352,6 @@ const OPERATIONS = {
 export const bookingModule: ModuleRegistration = {
   manifest: bookingManifest,
   migrations: bookingMigrations,
-  // The handlers are bound to the declaration, and the host parses every invocation
-  // against it, from one object — so neither can drift from the other (#953, #1835).
   // `booking/move` declares `concurrency` (#961), so the host compares its `If-Match` (#129).
   ...operationsFor(bookingOperations)(OPERATIONS),
 };

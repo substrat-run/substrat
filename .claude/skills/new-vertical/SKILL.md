@@ -30,10 +30,10 @@ Read these before writing anything, in this order:
 1. `demos/todo/spec/model.ts` — `defineEntities` / `defineOperations` / `emitModel`. The
    permission array, the `http` line on each operation, `emits`, `paged`, `narrows`, and a
    `permission: { key, entity, idFrom }` entity check. Everything below derives from this.
-2. `demos/todo/src/module.ts` — the handlers, `satisfies` a map derived from the
-   declarations (an operation declared and not implemented, or the reverse, is a compile
-   error naming the method), and the `ModuleRegistration` with
-   `operationInputs: operationInputsOf(ops)`. `ctx.grant` / `ctx.revoke` doing
+2. `demos/todo/src/module.ts` — the handlers, bound with `operationsFor(ops)({ … })` (an
+   operation declared and not implemented, or the reverse, is a compile error naming the
+   method), spread into the `ModuleRegistration`, which hands the host the declared input
+   schemas with them. `ctx.grant` / `ctx.revoke` doing
    user-initiated sharing in one line each.
 3. `demos/todo/src/manifest.ts` — assembled, not written: `manifestOperations`,
    `manifestEntities`, `listsDeclaredBy`. What is left is deployment facts (id, version,

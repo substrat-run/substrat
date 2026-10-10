@@ -70,6 +70,7 @@ import {
   testModManifest,
   victimModManifest,
 } from './modules.js';
+import { testOperations } from './test-operations.js';
 
 export interface ScopeHostFixture {
   host: ScopeHost;
@@ -7641,7 +7642,7 @@ export function scopeHostContractSuite(
             permissions: [{ key: 'selfw:use', description: 'self' }],
             withdraws: ['selfw/op'],
           }),
-          operations: { 'selfw/op': (() => 'x') as OperationHandler<never, unknown> },
+          ...testOperations({ 'selfw/op': (() => 'x') as OperationHandler<never, unknown> }),
         }),
       ).toThrow(/withdraws its own operation/);
     });

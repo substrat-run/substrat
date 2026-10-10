@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { journalFenceDropMod, journalWriteMod, spineDropMod, spineShadowMod } from '@substrat-run/contract-tests';
+import { journalFenceDropMod, journalWriteMod, spineDropMod, spineShadowMod, testOperations } from '@substrat-run/contract-tests';
 import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { migrationDigest, ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler, type SqlMigration } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
@@ -28,12 +28,12 @@ const modWith = (migrations: SqlMigration[]): ModuleRegistration => ({
     entitlementKey: 'digest',
   }),
   migrations,
-  operations: {
+  ...testOperations({
     'digest/add': (async (ctx) => {
       ctx.sql.exec('INSERT INTO digest_notes (id) VALUES (?)', [ulid()]);
       return null;
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 });
 
 const INIT = { version: '0001-init', sql: 'CREATE TABLE digest_notes (id TEXT PRIMARY KEY);' };

@@ -45,6 +45,7 @@ import {
   type OperationHandler,
 } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 const VERTICAL = 'lever-vertical';
 const LEVER = '@test/lever';
@@ -76,11 +77,11 @@ const leverMod: ModuleRegistration = {
     freshness: [{ eventType: 'lever.happened', within: { hours: 1 } }],
   }),
   migrations: [],
-  operations: {
+  ...testOperations({
     'lever/tick': (() => {
       onTick?.();
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 describe('scope-level admin writes survive a concurrent operation that rolls back (#1678)', () => {

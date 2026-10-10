@@ -24,6 +24,7 @@ import {
   type EntityRef,
 } from '@substrat-run/contracts';
 import { assertAllowed, readHistory, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
+import { testOperations } from './test-operations.js';
 
 export const TRASH_MODULE_ID = '@test/trash';
 export const TBOX_PURGE_DAYS = 7;
@@ -191,11 +192,9 @@ export const trashMod: ModuleRegistration = {
             CREATE TABLE trash_keeps (id TEXT PRIMARY KEY);`,
     },
   ],
-  // The host derives each operation's target from these — the same declarations it parses with.
-  operationInputs: operationInputsOf(trashOperations),
   // Every handler checks its declared key first, as a vertical's does — the host's refusal has
   // to agree with that order, which is what the suite asserts.
-  operations: {
+  ...testOperations({
     'trash/add-box': (async (ctx, i: { id: string; name: string }) => {
       assertAllowed(await ctx.check(P('box:write')));
       ctx.sql.exec('INSERT INTO trash_boxes (id, name) VALUES (?, ?)', [i.id, i.name]);
@@ -296,5 +295,6 @@ export const trashMod: ModuleRegistration = {
       assertAllowed(await ctx.check(P('box:read')));
       return { entries: readHistory({ sql: ctx.sql }, boxRef(i.boxId)).entries };
     }) as Handler,
-  },
+  // The host derives each operation's target from these — the same declarations it parses with.
+  }, { inputs: operationInputsOf(trashOperations) }),
 };

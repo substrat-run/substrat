@@ -1,5 +1,6 @@
 import { moduleManifest } from '@substrat-run/contracts';
 import type { ConsumerHandler, ModuleRegistration, OperationContext, OperationHandler } from '@substrat-run/kernel';
+import { testOperations } from './test-operations.js';
 
 /**
  * #2055: a consumer that can be held mid-handler, for `scopeCausedByContractSuite`.
@@ -49,12 +50,12 @@ const emitTagged = (ctx: OperationContext, type: string, tag: string): void => {
 export const causedByMod: ModuleRegistration = {
   manifest,
   migrations: [],
-  operations: {
+  ...testOperations({
     'causedby/start': ((ctx: OperationContext, input: { tag: string }) =>
       emitTagged(ctx, 'causedby.requested', input.tag)) as unknown as OperationHandler<never, unknown>,
     'causedby/other': ((ctx: OperationContext, input: { tag: string }) =>
       emitTagged(ctx, 'causedby.other', input.tag)) as unknown as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: {
     'causedby.requested': (async (ctx, event) => {
       const hold = (globalThis as Record<string, unknown>)[CAUSED_BY_HOLD] as CausedByHold | undefined;
