@@ -18,6 +18,7 @@ import {
   type ModuleRegistration,
   type OperationHandler,
 } from '@substrat-run/kernel';
+import { testOperations } from './test-operations.js';
 
 export const stateModManifest = moduleManifest.parse({
   id: '@test/state',
@@ -66,7 +67,7 @@ export const stateMod: ModuleRegistration = {
             CREATE TABLE state_plain (id TEXT PRIMARY KEY, title TEXT NOT NULL);`,
     },
   ],
-  operations: {
+  ...testOperations({
     'state/add': (async (ctx, input) => {
       const i = input as { entityType?: string; id: string; title: string; owner?: string };
       const table = { stdoc: 'state_docs', stnote: 'state_notes', stplain: 'state_plain' }[i.entityType ?? 'stdoc'];
@@ -146,7 +147,7 @@ export const stateMod: ModuleRegistration = {
         .query<{ detail: string }>(`EXPLAIN QUERY PLAN ${q.sql}`, q.params as (string | number)[])
         .map((row) => row.detail);
     }) as Handler,
-  },
+  }),
 };
 
 /**
@@ -254,7 +255,7 @@ export const rebuildMod: ModuleRegistration = {
             ALTER TABLE rb_search_new RENAME TO rb_search;`,
     },
   ],
-  operations: {
+  ...testOperations({
     'rb/add': (async (ctx, input) => {
       const i = input as { entityType: keyof typeof RB_TABLES; id: string; title: string };
       ctx.sql.exec(`INSERT INTO ${RB_TABLES[i.entityType]} (id, title) VALUES (?, ?)`, [i.id, i.title]);
@@ -287,7 +288,7 @@ export const rebuildMod: ModuleRegistration = {
       ctx.sql
         .query<{ title: string }>(`SELECT title FROM ${RB_TABLES[(input as { entityType: keyof typeof RB_TABLES }).entityType]} ORDER BY title`)
         .map((r) => r.title)) as Handler,
-  },
+  }),
 };
 
 /** Its operations declared the same way as `stateMod`'s, so a trashable module registers (#119). */

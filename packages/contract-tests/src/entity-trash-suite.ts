@@ -32,6 +32,7 @@ import { PURGE_BATCH, runPlatformSweep, ulid, type FetchLike, type ScopeHost, ty
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import type { RawScopeSql } from './entity-state-suite.js';
 import { EXPLODING_BOX, TBOX_PURGE_DAYS, TRASH_MODULE_ID, trashMod, trashOperations } from './entity-trash-module.js';
+import { testOperations } from './test-operations.js';
 
 const KEYS = ['box:read', 'box:write', 'box:archive', 'box:trash', 'box:delete'].map((k) => permissionKey.parse(k));
 const READ = permissionKey.parse('box:read');
@@ -669,7 +670,7 @@ export function entityTrashContractSuite(
 
       it('refuses a bound operation its declarations do not name — an omitted target cannot pass', () => {
         expect(
-          variant((m) => ({ ...m, operations: { ...m.operations, 'trash/sneak-rename': m.operations!['trash/rename-box']! } })),
+          variant((m) => ({ ...m, ...testOperations({ ...m.operations, 'trash/sneak-rename': m.operations!['trash/rename-box']! }) })),
         ).toThrow(/trash\/sneak-rename/);
       });
 

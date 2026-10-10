@@ -51,6 +51,7 @@ import {
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { parseMod, parseModManifest } from './modules.js';
+import { testOperations } from './test-operations.js';
 
 const PARSE_USE = permissionKey.parse('parse:use');
 
@@ -175,7 +176,7 @@ export function inputParseContractSuite(
       expect(() =>
         host.registerModule({
           manifest: { ...parseModManifest, id: moduleId.parse('@test/parse-unbound') },
-          operations: { 'unbound/act': (() => 'ran') as never },
+          ...testOperations({ 'unbound/act': (() => 'ran') as never }),
           operationInputs: { 'unbound/nope': { parse: (v: unknown) => v } },
         }),
       ).toThrow(/unbound/i);
