@@ -51,14 +51,14 @@ export {
 export {
   BIRTH_WINDOW_MS, backfillScopeScriptCopies, type CopyBackfillPage,
 } from './scope-copy-backfill.js';
-export { versionReachedAt } from './scope-deployment.js';
+export { scopeDeployment, versionReachedAt } from './scope-deployment.js';
 // #1705 PR 2: the cross-vertical phase's reach for a control plane whose scopes live elsewhere.
 export { hostedCrossVerticalReach } from './cross-vertical.js';
 // A preview's own sign-in client (#1704): the create's wiring, and the reap's half the
 // platform sweep also runs when it garbage-collects an expired preview.
 export { retireAllPreviewClients, retireClientsOfReapedScope, tenantIssuers, wirePreviewAuth } from './preview-auth.js';
 export type { PreviewAuthDeps, WirePreviewAuthInput } from './preview-auth.js';
-export type { ScopeDeployment, ScopeDeploymentVia } from './scope-deployment.js';
+export type { ScopeDeployment, ScopeDeploymentLadder, ScopeDeploymentVia } from './scope-deployment.js';
 export {
   drainScopePlatformRequests,
   MAX_PLATFORM_REQUEST_ATTEMPTS,

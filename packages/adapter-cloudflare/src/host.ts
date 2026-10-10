@@ -2043,6 +2043,8 @@ export interface ImportCursorDelegation {
  */
 export interface CapabilityDelegation {
   revoke(args: {
+    /** The scope's tenant: what the reach's prefixed-slug retry (#417) reads the tenant's slug by. */
+    tenantId: TenantId;
     scopeId: ScopeId;
     served: { vertical: string; verticalVersionId: string | null; servingRef: string | null };
     capabilityId: CapabilityId;
@@ -6789,7 +6791,7 @@ export class CloudflareScopeHost implements ScopeHost {
         let revoke: () => Promise<CapabilityRecord | null>;
         if (vertical !== null && delegation) {
           const served = { vertical, verticalVersionId: rec.vertical_version_id, servingRef: rec.serving_ref };
-          revoke = () => delegation.revoke({ scopeId, served, capabilityId, actor });
+          revoke = () => delegation.revoke({ tenantId, scopeId, served, capabilityId, actor });
         } else {
           const stub = await this.capabilityScopeStub(rec, scopeId, 'revokeCapability');
           revoke = () => stub.revokeCapabilityAsPlatform(capabilityId, actor);
