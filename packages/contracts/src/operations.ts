@@ -1558,6 +1558,12 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
     }
     const idFrom = permission.idFrom as string;
     const column = snakeCaseField(idFrom);
+    // The filter is what scopes the page to the checked parent, so it must BE the link to that
+    // parent — a filter on any other column passes the check on one row and pages another set.
+    const link = `${snakeCaseField(permission.entity)}_id`;
+    if (column !== link) {
+      return `the parent's id '${idFrom}' filters column '${column}', which is not the link to '${permission.entity}' ('${link}')`;
+    }
     if (!required.includes(idFrom) || !filterable.has(column)) {
       return `the parent's id '${idFrom}' is not a required input filtering the declared \`filterable\` column '${column}'`;
     }

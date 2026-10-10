@@ -21,7 +21,7 @@
 The derivable shapes, each matched exactly:
 
 - `get` is served as `GET`, its input is the id alone, its output is the entity's own `fields`, and it emits nothing.
-- `list` is a `paged.over` page of the entity's own `fields`. Every input is a declared `filterable` column of the same type, and a check narrowed to a parent scopes the page to that parent.
+- `list` is a `paged.over` page of the entity's own `fields`, served as `GET` and emitting nothing. Every input is a declared `filterable` column of the same type. A check narrowed to a parent scopes the page through the link to that parent: the `<parent>_id` column, named by an `idFrom` of `<parent>Id`.
 - `update` is a `PATCH` narrowed to the row, with `concurrency` over it, emitting about it and answering with its `fields`. Absent fields are left alone and `null` clears.
 - `delete` is a `DELETE` narrowed to the row, emitting about it and answering `{ id, deleted }`, on an entity that no other entity declares as parent.
 

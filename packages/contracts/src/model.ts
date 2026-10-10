@@ -384,7 +384,9 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete'] as const;
  *   nothing is emitted. The check is a scope key, or narrowed to that same row.
  * - `list` — a kernel-composed page (`paged.over`) of the entity's own rows, the output IS its
  *   `fields`. Every input field is one of its declared `filterable` columns; a check narrowed to a
- *   PARENT scopes the page to that parent's rows through the parent's id column.
+ *   PARENT scopes the page to that parent's rows through the link column `<parent>_id`, so the
+ *   filter is the link and not merely a column of the same name as the id input. Served as GET,
+ *   and emits nothing: a paged command is not a read.
  * - `update` — the partial `PATCH`. Absent fields are left as they are and `null` clears a
  *   nullable column; `concurrency` over the row is required, so the field bag cannot lose an
  *   update. Emits about the row, and answers with it.

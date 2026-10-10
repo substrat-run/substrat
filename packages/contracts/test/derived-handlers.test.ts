@@ -159,11 +159,23 @@ describe('derivationOf — list', () => {
     ['served as anything but GET', { ...LIST, http: { method: 'POST', path: '/folders/{folderId}/notes' } }],
     ['invoke-only, which a silent transition is too', { ...LIST, http: undefined }],
     ['emitting', { ...LIST, emits: emitsNote('n.listed') }],
+    // The check is on folder `title`, the filter on the `title` column: a declared filter, of the
+    // same type, and not the link to the folder — so the page would not be the checked folder's.
+    [
+      'the parent id filters a column that is not the link to the checked parent',
+      {
+        ...LIST,
+        permission: { key: 'note:read', entity: 'folder', idFrom: 'title' },
+        input: z.object({ title: z.string() }),
+        paged: { over: { entity: 'note', sortable: ['rank'], filterable: ['folder_id', 'title'] } },
+        http: { method: 'GET', path: '/folders/{title}/notes' },
+      },
+    ],
   ])('not when %s', (_, decl) => {
     expect(kindOf(decl)).toBeUndefined();
   });
 
-  it('refuses `derive: list` on a declaration that is not a read', () => {
+  it('refuses `derive: list` on a declaration that is not a read, or filters the wrong column', () => {
     const post = { ...LIST, http: { method: 'POST', path: '/folders/{folderId}/notes' }, emits: emitsNote('n.listed') };
     expect(() => define({ 'n/list': { ...post, derive: 'list' } })).toThrow(
       "model: 'n/list' declares `derive: 'list'`, but it emits, and a read announces nothing.\n" +
@@ -171,6 +183,16 @@ describe('derivationOf — list', () => {
     );
     expect(() => define({ 'n/list': { ...LIST, http: { method: 'POST', path: '/x' }, derive: 'list' } })).toThrow(
       "model: 'n/list' declares `derive: 'list'`, but it is not served as GET, the method that says it only reads.",
+    );
+    const misLinked = {
+      ...LIST,
+      permission: { key: 'note:read', entity: 'folder', idFrom: 'title' },
+      input: z.object({ title: z.string() }),
+      paged: { over: { entity: 'note', sortable: ['rank'], filterable: ['folder_id', 'title'] } },
+      http: { method: 'GET', path: '/folders/{title}/notes' },
+    } as const;
+    expect(() => define({ 'n/list': { ...misLinked, derive: 'list' } })).toThrow(
+      "model: 'n/list' declares `derive: 'list'`, but the parent's id 'title' filters column 'title', which is not the link to 'folder' ('folder_id').",
     );
   });
 

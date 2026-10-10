@@ -30,7 +30,7 @@ export const derivedEntities = defineEntities({
     table: 'derived_notes',
     fields: z.object({
       id: z.string(),
-      folder_id: z.string(),
+      dfolder_id: z.string(),
       title: z.string(),
       body: z.string().nullable(),
       rank: z.number(),
@@ -68,11 +68,11 @@ export const derivedOperations = defineOperations(derivedEntities, PERMISSIONS)(
   'derived/list-notes': {
     summary: "A folder's notes",
     derive: 'list',
-    permission: { key: 'dnote:read', entity: 'dfolder', idFrom: 'folderId' },
-    input: z.object({ folderId: z.string(), title: z.string().optional() }),
+    permission: { key: 'dnote:read', entity: 'dfolder', idFrom: 'dfolderId' },
+    input: z.object({ dfolderId: z.string(), title: z.string().optional() }),
     output: derivedEntities.dnote.fields,
-    paged: { over: { entity: 'dnote', sortable: ['rank'], filterable: ['folder_id', 'title'] }, total: true },
-    http: { method: 'GET', path: '/folders/{folderId}/notes' },
+    paged: { over: { entity: 'dnote', sortable: ['rank'], filterable: ['dfolder_id', 'title'] }, total: true },
+    http: { method: 'GET', path: '/folders/{dfolderId}/notes' },
   },
   'derived/update-note': {
     summary: 'Change a note',
@@ -137,7 +137,7 @@ export const derivedMod: ModuleRegistration = {
     {
       version: '0001-init',
       sql: `CREATE TABLE derived_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL);
-            CREATE TABLE derived_notes (id TEXT PRIMARY KEY, folder_id TEXT NOT NULL, title TEXT NOT NULL,
+            CREATE TABLE derived_notes (id TEXT PRIMARY KEY, dfolder_id TEXT NOT NULL, title TEXT NOT NULL,
                                         body TEXT, rank INTEGER NOT NULL);`,
     },
   ],
@@ -150,7 +150,7 @@ export const derivedMod: ModuleRegistration = {
     },
     'derived/add-note': async (ctx, i) => {
       assertAllowed(await ctx.check(WRITE));
-      ctx.sql.exec('INSERT INTO derived_notes (id, folder_id, title, body, rank) VALUES (?, ?, ?, ?, ?)', [
+      ctx.sql.exec('INSERT INTO derived_notes (id, dfolder_id, title, body, rank) VALUES (?, ?, ?, ?, ?)', [
         i.id,
         i.folderId,
         i.title,

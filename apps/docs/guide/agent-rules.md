@@ -203,7 +203,7 @@ envelope where it used to answer with an array. That is the case for not
 hand-mounting anything an operation can declare.
 
 **An operation the model describes completely says who writes its handler.** Four
-shapes are derivable: a `GET` of one row by its id, a `paged.over` page of the
+shapes are derivable: a `GET` of one row by its id, a `GET` that is a `paged.over` page of the
 entity's own rows behind declared filters, a `PATCH` field bag with `concurrency`, and
 a `DELETE` of a row nothing declares as parent. Declare `derive: 'get'` (or `'list'`,
 `'update'`, `'delete'`) and write no handler: `operationsFor` leaves it out of the map

@@ -28,7 +28,7 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 import { derivedMod } from './derived-module.js';
 
 const KEYS = ['dnote:read', 'dnote:write'].map((k) => permissionKey.parse(k));
-type Note = { id: string; folder_id: string; title: string; body: string | null; rank: number };
+type Note = { id: string; dfolder_id: string; title: string; body: string | null; rank: number };
 
 export function derivedHandlersContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
   describe(`derived handlers (#1773): ${adapterName}`, () => {
@@ -58,7 +58,7 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
     const addNote = async (folderId: string, title: string, rank: number, body: string | null = 'b'): Promise<Note> => {
       const id = ulid();
       await as.invoke('derived/add-note', { id, folderId, title, body, rank });
-      return { id, folder_id: folderId, title, body, rank };
+      return { id, dfolder_id: folderId, title, body, rank };
     };
     const history = async (noteId: string): Promise<HistoryEntry[]> =>
       (await as.invoke<{ entries: HistoryEntry[] }>('derived/history', { noteId })).entries;
@@ -200,21 +200,21 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
       const byRank = (rows: Note[]) => [...rows].sort((a, b) => a.rank - b.rank);
 
       it("walks the parent's rows whole, in the declared order, across pages", async () => {
-        expect(await walk({ folderId: 'fb' }, 2)).toEqual(byRank(inB));
+        expect(await walk({ dfolderId: 'fb' }, 2)).toEqual(byRank(inB));
       });
 
       it('counts the scoped set when the declaration asks for a total', async () => {
-        const page = await as.invoke<CountedPage<Note>>('derived/list-notes', { folderId: 'fb', limit: 2 });
+        const page = await as.invoke<CountedPage<Note>>('derived/list-notes', { dfolderId: 'fb', limit: 2 });
         expect(page.total).toBe(inB.length);
       });
 
       it('applies a declared filter beside the parent, and none when it is absent', async () => {
-        expect(await walk({ folderId: 'fb', title: 'x' }, 1)).toEqual(byRank(inB.filter((n) => n.title === 'x')));
-        expect(await walk({ folderId: 'fb' }, 50)).toHaveLength(inB.length);
+        expect(await walk({ dfolderId: 'fb', title: 'x' }, 1)).toEqual(byRank(inB.filter((n) => n.title === 'x')));
+        expect(await walk({ dfolderId: 'fb' }, 50)).toHaveLength(inB.length);
       });
 
       it('is permission_denied to a caller without the key', async () => {
-        expect(await codeOf(asDave.invoke('derived/list-notes', { folderId: 'fb' }))).toBe('permission_denied');
+        expect(await codeOf(asDave.invoke('derived/list-notes', { dfolderId: 'fb' }))).toBe('permission_denied');
       });
     });
 
@@ -240,7 +240,7 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         who.invoke<Note>('derived/update-note', { noteId, title });
       const del = (who: ScopeStub, noteId: string) => who.invoke('derived/delete-note', { noteId });
       const list = (who: ScopeStub, folderId: string) =>
-        who.invoke<CountedPage<Note>>('derived/list-notes', { folderId, limit: 50 });
+        who.invoke<CountedPage<Note>>('derived/list-notes', { dfolderId: folderId, limit: 50 });
 
       beforeAll(async () => {
         n1 = await addNote('fa', 'mine', 61);
@@ -272,7 +272,7 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
       it('list: the granted folder pages, the other folder is denied', async () => {
         const page = await list(asFran, 'fa');
         expect(page.entries.map((n) => n.id)).toContain(n2.id);
-        expect(page.entries.every((n) => n.folder_id === 'fa')).toBe(true);
+        expect(page.entries.every((n) => n.dfolder_id === 'fa')).toBe(true);
         expect(await codeOf(list(asFran, 'fb'))).toBe('permission_denied');
       });
     });
