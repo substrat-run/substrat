@@ -164,7 +164,7 @@ export interface ShapeCursor {
   shape: number;
   step: 'backfill' | 'retire' | 'topUp';
   /** The last marker a walk read; `null` resumes the step from its start. */
-  after: { object: string; subject: string } | null;
+  marker: { object: string; subject: string } | null;
 }
 
 /** Where a pass runs and how its events are stamped — the facts only the adapter holds. */
@@ -184,8 +184,6 @@ export interface ShapePass {
   version: string | null;
 }
 
-const STEPS = ['backfill', 'retire', 'topUp'] as const;
-
 /**
  * One pass of the reconcile over one scope, at most `limit` rows of work and
  * `limit × SHAPE_MARKER_READS_PER_ROW` markers read: backfill marks for any shape whose backfill
@@ -199,8 +197,8 @@ export function topUpEntityGrantShapes(
   db: SwitchSql,
   pass: ShapePass,
 ): { toppedUp: number; retired: number; next: ShapeCursor | null } {
-  // Here as well as at each entry point: a pass with no budget never reports done, so a caller
-  // looping until it does would never stop.
+  // Here as well as at each entry point: a pass with no budget never hands back `next: null`, so
+  // a caller looping until it does would never stop.
   const limit = shapeTopUpBatch(pass.limit);
   const room = { writes: limit, reads: limit * SHAPE_MARKER_READS_PER_ROW };
   recordGranteeKeys(db, pass.shapes);
@@ -215,27 +213,28 @@ export function topUpEntityGrantShapes(
     // A key the shape grants is never taken back, whatever the declaration says.
     const gone = keysOf(shape.retired ?? []).filter((k) => !keys.includes(k));
     if (keys.length === 0 && gone.length === 0) continue;
+    // Where this shape starts: the cursor's step if it points here, else the beginning.
     const resume = from?.shape === i ? from : null;
-    const first = resume ? STEPS.indexOf(resume.step) : 0;
-    const after = (step: ShapeCursor['step']) => (resume?.step === step ? resume.after : null);
-    const stop = (step: ShapeCursor['step'], at: ShapeCursor['after']) => ({ toppedUp, retired, next: { shape: i, step, after: at } });
+    const at = resume?.step ?? 'backfill';
+    const marker = (step: ShapeCursor['step']) => (resume?.step === step ? resume.marker : null);
+    const stop = (step: ShapeCursor['step'], last: ShapeCursor['marker']) => ({ toppedUp, retired, next: { shape: i, step, marker: last } });
     const prefix = `${shape.entityType}:`;
-    if (first <= 0) {
+    if (at === 'backfill') {
       // A live retired key still identifies a legacy holder so this pass can retire it.
       // The grantee query excludes tombstoned tuples.
       room.writes -= backfill(db, pass, shape, prefix, JSON.stringify([...keys, ...gone]), room.writes);
       if (room.writes === 0) return stop('backfill', null);
     }
-    if (first <= 1) {
+    if (at !== 'topUp') {
       reopenRetirements(db, pass, shape.entityType, keys);
-      const took = retire(db, pass, shape.entityType, prefix, gone, after('retire'), room);
-      retired += took.holders;
-      if (took.walk && !took.walk.done) return stop('retire', took.walk.at);
+      const took = retire(db, pass, shape.entityType, prefix, gone, marker('retire'), room);
+      retired += took.found.length;
+      if (!took.done) return stop('retire', took.at);
     }
     if (keys.length === 0) continue;
-    const gave = topUp(db, pass, shape.entityType, prefix, keys, after('topUp'), room);
-    toppedUp += gave.holders;
-    if (gave.walk && !gave.walk.done) return stop('topUp', gave.walk.at);
+    const gave = topUp(db, pass, shape.entityType, prefix, keys, marker('topUp'), room);
+    toppedUp += gave.found.length;
+    if (!gave.done) return stop('topUp', gave.at);
   }
   return { toppedUp, retired, next: null };
 }
@@ -250,8 +249,11 @@ interface Room {
 interface Walk {
   found: { subject: string; object: string }[];
   done: boolean;
-  at: ShapeCursor['after'];
+  at: ShapeCursor['marker'];
 }
+
+/** A step with nothing to walk: done, having read nothing. */
+const NOTHING_TO_WALK: Walk = { found: [], done: true, at: null };
 
 /**
  * The live markers of one shape after `after`, in index order, that are `wanted` (a SQL predicate
@@ -260,32 +262,30 @@ interface Walk {
  */
 function walkMarkers(
   db: SwitchSql,
-  pass: ShapePass,
+  now: string,
   prefix: string,
-  after: ShapeCursor['after'],
+  after: ShapeCursor['marker'],
   room: Room,
   wanted: string,
   json: string,
 ): Walk {
   if (room.writes === 0 || room.reads === 0) return { found: [], done: false, at: after };
   const [, end] = typeRange(prefix);
+  const from = after ?? { object: prefix, subject: '' };
   const window = room.reads;
   const rows = db.all(
     `SELECT m.object, m.subject,
             (substr(m.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}' AND ${liveTupleSql('m')} AND ${wanted}) AS hit
        FROM _substrat_tuples m
-      WHERE m.relation = '${ENTITY_SHAPE_MARKER_RELATION}' AND m.object >= ? AND m.object < ?
-        AND (m.object > ? OR (m.object = ? AND m.subject > ?))
+      WHERE m.relation = '${ENTITY_SHAPE_MARKER_RELATION}' AND (m.object, m.subject) > (?, ?) AND m.object < ?
       ORDER BY m.object, m.subject
       LIMIT ?`,
-    pass.now,
+    now,
     json,
-    // The seek starts AT the cursor's object, so a resumed walk reads none of what it passed.
-    after?.object ?? prefix,
+    // A row-value seek: a resumed walk starts after the cursor and reads none of what it passed.
+    from.object,
+    from.subject,
     end,
-    after?.object ?? '',
-    after?.object ?? '',
-    after?.subject ?? '',
     window,
   ) as { object: string; subject: string; hit: number }[];
   const found: { subject: string; object: string }[] = [];
@@ -315,13 +315,13 @@ function topUp(
   entityType: string,
   prefix: string,
   keys: readonly string[],
-  after: ShapeCursor['after'],
+  after: ShapeCursor['marker'],
   room: Room,
-): { holders: number; walk: Walk | null } {
+): Walk {
   const json = JSON.stringify(keys);
   const walk = walkMarkers(
     db,
-    pass,
+    pass.now,
     prefix,
     after,
     room,
@@ -344,7 +344,12 @@ function topUp(
       ) as { key: string }[]
     ).map((m) => m.key);
     for (const key of added) {
-      db.run(`INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)`, h.subject, `granted:${key}`, h.object);
+      db.run(
+        `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)`,
+        h.subject,
+        `granted:${key}`,
+        h.object,
+      );
     }
     const st = kernelOutboxInsertSql(
       shapeEvent(pass, ENTITY_GRANTS_TOPPED_UP, entityGrantsToppedUpPayload, {
@@ -356,7 +361,7 @@ function topUp(
     );
     db.run(st.sql, ...st.params);
   }
-  return { holders: walk.found.length, walk };
+  return walk;
 }
 
 /**
@@ -371,10 +376,10 @@ function retire(
   entityType: string,
   prefix: string,
   gone: readonly string[],
-  after: ShapeCursor['after'],
+  after: ShapeCursor['marker'],
   room: Room,
-): { holders: number; walk: Walk | null } {
-  if (gone.length === 0) return { holders: 0, walk: null };
+): Walk {
+  if (gone.length === 0) return NOTHING_TO_WALK;
   const [shapeRef, scopeRef] = recordRefs(entityType, pass.scopeId);
   const finished = new Set(
     (
@@ -389,11 +394,11 @@ function retire(
     ).map((r) => r.key),
   );
   const open = gone.filter((k) => !finished.has(k));
-  if (open.length === 0) return { holders: 0, walk: null };
+  if (open.length === 0) return NOTHING_TO_WALK;
   const json = JSON.stringify(open);
   const walk = walkMarkers(
     db,
-    pass,
+    pass.now,
     prefix,
     after,
     room,
@@ -430,10 +435,15 @@ function retire(
   }
   if (walk.done) {
     for (const k of open) {
-      db.run('INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', shapeRef, `${RETIRED_RELATION}${k}`, scopeRef);
+      db.run(
+        'INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)',
+        shapeRef,
+        `${RETIRED_RELATION}${k}`,
+        scopeRef,
+      );
     }
   }
-  return { holders: walk.found.length, walk };
+  return walk;
 }
 
 /**

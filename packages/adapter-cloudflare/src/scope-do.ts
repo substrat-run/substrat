@@ -2391,7 +2391,7 @@ export function defineScopeDO(
       scopeId: string,
       shapes: readonly EntityGrantShape[],
       limit: number,
-      after: ShapeCursor | null = null,
+      after: ShapeCursor | null,
     ): Promise<{ toppedUp: number; retired: number; next: ShapeCursor | null }> {
       return this.queue.enqueue(() =>
         this.revision.transactionSync(() =>

@@ -1,7 +1,8 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { shapeReconcilePlans, type RawScopeSql } from '@substrat-run/contract-tests';
+import { shapeReconcilePlans } from '@substrat-run/contract-tests';
 import { ulid } from '@substrat-run/kernel';
+import { switchSqlOver } from '../src/scope-do.js';
 
 /**
  * #2083 on the SQLite a scope Durable Object runs: the shape reconcile reads markers on
@@ -15,23 +16,17 @@ const INDEX = '_substrat_tuples_shape_marker';
 
 // A fresh `env.SCOPE.get` each time: `state.abort()` poisons the stub it was called through.
 const stubOf = (name: string) => env.SCOPE.get(env.SCOPE.idFromName(name));
-const rawOf = (sql: SqlStorage): RawScopeSql => ({
-  all: (q, params) => sql.exec(q, ...params).toArray() as Record<string, unknown>[],
-  run: (q, params) => {
-    sql.exec(q, ...params);
-  },
-});
 const indexSql = (sql: SqlStorage) =>
   sql.exec("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", INDEX).toArray()[0]?.['sql'] ?? null;
 
 function expectOnIndexes(name: string) {
   return runInDurableObject(stubOf(name), (_instance, state) => {
-    const report = shapeReconcilePlans(rawOf(state.storage.sql), { tenantId: ulid(), scopeId: ulid() });
+    const report = shapeReconcilePlans(switchSqlOver(state.storage.sql), { tenantId: ulid(), scopeId: ulid() });
     expect(report.complete).toBe(true);
     expect(report.passes).toBeGreaterThan(1);
     expect(report.walks.length).toBeGreaterThan(0);
     for (const plan of report.walks) {
-      expect(plan).toMatch(new RegExp(`SEARCH m USING (COVERING )?INDEX ${INDEX} \\(object>\\? AND object<\\?\\)`));
+      expect(plan).toMatch(new RegExp(`SEARCH m USING (COVERING )?INDEX ${INDEX} \\(\\(object,subject\\)>\\(\\?,\\?\\) AND object<\\?\\)`));
       expect(plan).not.toMatch(/TEMP B-TREE FOR ORDER BY/);
     }
     expect(report.backfills.length).toBeGreaterThan(0);

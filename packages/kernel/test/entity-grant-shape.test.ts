@@ -665,7 +665,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       const sql: SwitchSql = {
         all: (q, ...p) => {
           const rows = t.sql.all(q, ...p);
-          if (q.includes('AND m.object >= ? AND m.object < ?')) read += rows.length;
+          if (q.includes('(m.object, m.subject) > (?, ?)')) read += rows.length;
           return rows;
         },
         run: t.sql.run,
@@ -694,9 +694,9 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       });
       const first = step(t, GROWN_SHAPE, 1, null);
       expect(first.read).toBe(SHAPE_MARKER_READS_PER_ROW);
-      expect(first.next).toEqual({ shape: 0, step: 'topUp', after: { object: `employee:${id(9)}`, subject: `principal:${people[9]}` } });
+      expect(first.next).toEqual({ shape: 0, step: 'topUp', marker: { object: `employee:${id(9)}`, subject: `principal:${people[9]}` } });
       const second = step(t, GROWN_SHAPE, 1, first.next);
-      expect(second.next?.after).toEqual({ object: `employee:${id(19)}`, subject: `principal:${people[19]}` });
+      expect(second.next?.marker).toEqual({ object: `employee:${id(19)}`, subject: `principal:${people[19]}` });
       const third = step(t, GROWN_SHAPE, 1, second.next);
       expect([third.read, third.next]).toEqual([5, null]);
     });
@@ -721,7 +721,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       const t = fresh();
       for (let i = 0; i < 12; i++) t.shape(who(), id(i), GROWN);
       const first = step(t, GROWN_SHAPE, 1, null);
-      expect(first.next?.after?.object).toBe(`employee:${id(9)}`);
+      expect(first.next?.marker?.object).toBe(`employee:${id(9)}`);
       const stale = who();
       t.shape(stale, 'a0'); // an older deployment's grant, sorting before the cursor
       let after = first.next;
@@ -744,7 +744,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       expect([first.retired, first.next?.step, record()]).toEqual([0, 'retire', { n: 0 }]);
       const second = step(t, shapes, 1, first.next);
       // Its budget spent on the retirement, the pass leaves the top-up to the next one.
-      expect([second.retired, second.next, record()]).toEqual([1, { shape: 0, step: 'topUp', after: null }, { n: 1 }]);
+      expect([second.retired, second.next, record()]).toEqual([1, { shape: 0, step: 'topUp', marker: null }, { n: 1 }]);
       expect(t.keysOf(last, id(14))).toEqual(OLD);
     });
 
@@ -758,12 +758,12 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       ];
       t.shape(who(), id(0)); // the first shape's one holder, needing a key
       const first = step(t, shapes, 1, null);
-      expect([first.toppedUp, first.next]).toEqual([1, { shape: 1, step: 'backfill', after: null }]);
+      expect([first.toppedUp, first.next]).toEqual([1, { shape: 1, step: 'backfill', marker: null }]);
       const stale = who();
       t.shape(stale, id(1)); // a holder of the first shape, behind the cursor
       const second = step(t, shapes, 1, first.next);
       // The backfill marked anna with the whole budget, so it is where the next pass starts again.
-      expect([second.toppedUp, second.next]).toEqual([0, { shape: 1, step: 'backfill', after: null }]);
+      expect([second.toppedUp, second.next]).toEqual([0, { shape: 1, step: 'backfill', marker: null }]);
       const third = step(t, shapes, 1, second.next);
       expect([third.toppedUp, third.next]).toEqual([1, null]);
       expect(t.db.prepare('SELECT count(*) AS n FROM _substrat_tuples WHERE object = ? AND relation = ?').get(`owner:${anna}`, 'granted:list:share')).toEqual({ n: 1 });

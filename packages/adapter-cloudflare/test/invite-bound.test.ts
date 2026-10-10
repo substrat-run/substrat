@@ -453,7 +453,7 @@ describe('a key a declared shape retires, over a CP-less host (#2082)', () => {
         }
       ).topUpEntityGrantShapes(tn, sc, sh, limit, after);
     const first = await pass(t, s, shapes, 4, null);
-    expect(first).toEqual({ retired: 3, toppedUp: 1, next: { shape: 0, step: 'topUp', after: expect.any(Object) } });
+    expect(first).toEqual({ retired: 3, toppedUp: 1, next: { shape: 0, step: 'topUp', marker: expect.any(Object) } });
     expect([await events('entity.grants-retired'), await events('entity.grants-topped-up')]).toEqual([{ n: 3 }, { n: 1 }]);
     // The next pass resumes where the first stopped (#2083).
     expect(await pass(t, s, shapes, 4, first.next)).toEqual({ retired: 0, toppedUp: 2, next: null });

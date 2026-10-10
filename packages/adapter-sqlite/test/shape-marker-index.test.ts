@@ -17,8 +17,8 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { permMod, shapeReconcilePlans, type RawScopeSql } from '@substrat-run/contract-tests';
+import { ulid, webCryptoSecretBox, type SwitchSql } from '@substrat-run/kernel';
+import { permMod, shapeReconcilePlans } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
 const INDEX = '_substrat_tuples_shape_marker';
@@ -57,9 +57,9 @@ const withFile = <T>(file: string, f: (db: InstanceType<typeof Database>) => T):
   }
 };
 
-const raw = (db: InstanceType<typeof Database>): RawScopeSql => ({
-  all: (sql, params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
-  run: (sql, params) => {
+const raw = (db: InstanceType<typeof Database>): SwitchSql => ({
+  all: (sql, ...params) => db.prepare(sql).all(...params) as Record<string, unknown>[],
+  run: (sql, ...params) => {
     db.prepare(sql).run(...params);
   },
 });
@@ -73,7 +73,7 @@ function expectOnIndexes(db: InstanceType<typeof Database>, ids: { tenantId: str
   expect(report.complete).toBe(true);
   expect(report.passes).toBeGreaterThan(1); // small passes, so the cursor is what finished it
   expect(report.walks.length).toBeGreaterThan(0);
-  for (const plan of report.walks) expect(plan).toMatch(new RegExp(`SEARCH m USING (COVERING )?INDEX ${INDEX} \\(object>\\? AND object<\\?\\)`));
+  for (const plan of report.walks) expect(plan).toMatch(new RegExp(`SEARCH m USING (COVERING )?INDEX ${INDEX} \\(\\(object,subject\\)>\\(\\?,\\?\\) AND object<\\?\\)`));
   // The index order IS the walk's order: no sort, which would read the whole range first.
   for (const plan of report.walks) expect(plan).not.toMatch(/TEMP B-TREE FOR ORDER BY/);
   expect(report.backfills.length).toBeGreaterThan(0);
