@@ -107,11 +107,6 @@ export const ATTACHMENT_TEXT_MODULE = '@substrat-run/kernel' as ModuleId;
 /** The job's name. With the module, the key every adapter supplies a handler for. */
 export const ATTACHMENT_TEXT_JOB = 'attachment-text';
 
-/** Is this run one of the kernel's extraction runs? */
-export function isAttachmentTextRun(run: { module_id: string; job: string }): boolean {
-  return run.module_id === ATTACHMENT_TEXT_MODULE && run.job === ATTACHMENT_TEXT_JOB;
-}
-
 /** The backfill's job name: queues extraction for attachments that predate it. */
 export const ATTACHMENT_TEXT_BACKFILL_JOB = 'attachment-text-backfill';
 

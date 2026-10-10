@@ -78,7 +78,7 @@ export type {
   TenantStoreProvisionInput,
   TenantStoreRecord,
 } from './scope-host.js';
-export { GRANT_CHILDREN_INDEX_DDL, GRANT_READ_MAX_LIMIT, GRANT_READ_WORK_BUDGET } from './grant-scoped-read.js';
+export { GRANT_CHILDREN_INDEX_DDL } from './grant-scoped-read.js';
 export type { GrantedEntitiesPage, GrantedEntityIdsMayRepeatPage } from './grant-scoped-read.js';
 export type {
   ConnectionUseOutcome,
@@ -89,8 +89,6 @@ export type {
   CountingConnectorCallRecorder,
 } from './connector-calls.js';
 export {
-  CONNECTOR_CALL_ERROR_TYPES,
-  connectorCallErrorType,
   connectorCallRecord,
   noopConnectorCallRecorder,
   recordConnectorCall,
@@ -98,7 +96,6 @@ export {
 } from './connector-calls.js';
 export { requestEmail, settlePlatformRequestIn } from './email-intent.js';
 export type { OutcomeEventStamp, PlatformRequestSettle } from './email-intent.js';
-export { KERNEL_ACTOR, kernelOutboxInsertSql } from './kernel-outbox.js';
 export type {
   MailAddress,
   MailSender,
@@ -111,7 +108,6 @@ export {
   COPY_RESTORE_FENCE_LAPSED,
   copyRestoreFence,
   copyRestoreFenceLapsed,
-  copyRestoreFenceMarginMs,
   type CopyRestoreFence,
   BACKFILL_MOVE_ID,
   COPY_BACKFILL_SCOPE_SQL,
@@ -150,7 +146,6 @@ export {
   sweepRunsIntentHasKind,
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
-  TELEMETRY_PRUNE_BATCH,
   assertRowLimit,
   assertRowOffset,
   EMITTED_REPORT_CAP,
@@ -190,14 +185,12 @@ export {
   PermissionDenied,
   UNSAFE_allowAllChecker,
 } from './permission-checker.js';
-export { actorOf, asPrincipal, isUnknownRoleError, unknownRoleError } from './permission-checker.js';
+export { actorOf, asPrincipal, unknownRoleError } from './permission-checker.js';
 export type { Holdings, PermissionChecker } from './permission-checker.js';
 export {
   ancestorsWithin,
   createTupleEvaluator,
   grantedEntitiesForContext,
-  joinedMembershipExpiry,
-  liveOrgMembership,
   memberAddedAudit,
   orgChangeBound,
   reachesWithin,
@@ -210,7 +203,6 @@ export type {
   ScopeTupleReader,
 } from './permission-eval.js';
 export {
-  CAPABILITY_COLUMNS,
   CAPABILITY_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   CAPABILITY_SESSION_PRUNE_BATCH,
@@ -218,22 +210,13 @@ export {
   assertNoSecret,
   capabilityAttachmentWriteRefused,
   capabilityByIdQuery,
-  capabilityExchangeable,
-  capabilityGrantOf,
-  capabilityListQuery,
-  capabilityLive,
-  capabilityRecordOf,
   capabilityTokenHash,
-  carriesSecret,
   checkBecomeInput,
   createCapabilityVerbs,
   exchangeCapability,
   guardSecrets,
   mintBecomeCapability,
   mintCapabilitySecret,
-  mintCapabilitySessionToken,
-  persistedText,
-  readCapabilities,
   readCapabilityPage,
   plausibleSessionToken,
   plausibleCapabilitySecret,
@@ -243,7 +226,6 @@ export {
   revokeCapabilityAsPlatform,
   CAPABILITY_BECOME_MINT_OPERATION,
   becomeMintCheck,
-  holdingsDigest,
   readBecomeLinkStates,
   assertBecomeLinkStateIds,
   mintBecomeCapabilityAsPrincipal,
@@ -261,22 +243,14 @@ export {
   addStatePlans,
   createEntityStateVerbs,
   entityStateMigrations,
-  entityStatePlans,
-  entityStateTriggerDdl,
   ENTITY_STATE_MOVES_DDL,
-  ENTITY_STATE_MOVES_TABLE,
   statefulTablesOf,
-  entityStateWhere,
-  stateColumnsOf,
-  purgeIndexDdl,
 } from './entity-state.js';
 export {
   PURGE_BATCH,
   assertNoCallerPurge,
   heldPurgePass,
   isUnreachableParent,
-  purgeCandidates,
-  purgeCutoffOf,
   purgeDueOf,
   purgeHeldBy,
   purgeOnlyKeysOf,
@@ -292,30 +266,25 @@ export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns }
 export {
   afterMigration,
   afterRuntimeDdl,
-  assertEntityStateColumns,
   derivesAnything,
   repairDerivedObjects,
   StateColumnLost,
 } from './derived-objects.js';
 export type { DerivedPlans } from './derived-objects.js';
-export { TRASH_SCAN_BUDGET, createTrashedReads, searchStateWhere, uncheckedView } from './entity-state-reads.js';
+export { createTrashedReads, searchStateWhere, uncheckedView } from './entity-state-reads.js';
 export type { TrashedReadDeps, TrashedReads } from './entity-state-reads.js';
 export { createAtomic } from './sub-transaction.js';
 export type { RunSub, AtomicMarks } from './sub-transaction.js';
 export {
   DEFAULT_SEARCH_LIMIT,
   MAX_SEARCH_LIMIT,
-  MIN_SEARCH_TERM,
   NotSearchable,
-  SEARCH_INDEX_PREFIX,
   SearchTermTooShort,
   isSearchIndexTable,
-  searchIndexDdl,
   searchIndexMigrations,
   searchIndexPlans,
   searchLimit,
   searchMatchExpression,
-  searchPlansByEntityType,
   searchQuery,
 } from './search-index.js';
 export type {
@@ -341,7 +310,6 @@ export {
   attachmentTextJob,
   enqueueAttachmentText,
   kernelJobFor,
-  isAttachmentTextRun,
   queueAttachmentTextBackfill,
   readAttachmentText,
   reconcileAttachmentText,
@@ -362,15 +330,9 @@ export {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,
   EXTRACTION_STRIDE,
   assertAttachmentExtractors,
-  assertAttachmentTextBounds,
   chooseAttachmentExtractor,
-  inputBoundRefusal,
-  isPositiveIntegerBound,
-  mediaTypeOf,
-  normalizeExtractedText,
   resolveAttachmentTextBounds,
   runAttachmentExtractor,
-  truncateUtf8,
 } from './attachment-extractor.js';
 export type {
   AttachmentExtractor,
@@ -384,18 +346,12 @@ export type {
 export {
   CursorMismatch,
   FilterNotDeclared,
-  LIST_INDEX_PREFIX,
   NotListable,
   SortNotDeclared,
   cursorOf,
-  isListIndexName,
-  listIndexColumns,
-  listIndexDdl,
   listIndexMigrations,
   listIndexPlans,
-  listPlansByEntityType,
   listQuery,
-  splitCursor,
 } from './list-index.js';
 export type {
   ComposedListQuery,
@@ -406,11 +362,9 @@ export type {
 export { moduleMigrations } from './module-migrations.js';
 export {
   MIGRATION_DIGEST_FENCE_DDL,
-  MIGRATION_DIGEST_LEGACY,
   MIGRATION_DIGEST_MARK_LEGACY,
   assertJournalDumpCoherent,
   assertMigrationSql,
-  assertNoJournalSql,
   migrationDigest,
   migrationDivergence,
   migrationFailedError,
@@ -422,14 +376,13 @@ export {
 } from './migration-digest.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
-export { createUlid, ulid, ulidCeiling, ulidFloor, ulidTime, type UlidMint } from './ulid.js';
+export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
-export { assertNoReservedColumnWrite, assertNoSpineReference, assertNoSpineWrite, assertNoStatefulDdl, changesSchema, guardSpine } from './spine-guard.js';
+export { guardSpine } from './spine-guard.js';
 export {
   DO_SQL_LIMITS,
   tooManyResultColumns,
   tooManyTableColumns,
-  assertWithinSqlLimits,
   guardSqlLimits,
 } from './sql-limits.js';
 export { assertPermissionKey } from './check-key.js';
@@ -456,24 +409,18 @@ export {
   PLATFORM_REQUEST_COLUMNS,
   platformRequestHistoryQuery,
   platformRequestOf,
-  UNDECODED_REQUESTER,
 } from './platform-request-query.js';
 export type { PlatformRequestRawRow } from './platform-request-query.js';
 export {
-  CANCELLED_INTENT_NOTE,
   CANCELLED_JOB_NOTE,
   DELIVERY_ERROR_REDACTION_SQL,
   intentPayloadCarriesSubject,
-  JOB_RUN_REDACTION_SQL,
-  JOB_STEP_REDACTION_SQL,
   PLATFORM_REQUEST_REDACTION_SQL,
   platformRequestRedactionParams,
   platformRequestRedactionQuery,
   REDACTED_DELIVERY_NOTE,
   REDACTED_INTENT_MARKER,
-  REDACTED_INTENT_NOTE,
   REDACTED_JOB_NOTE,
-  redactedIntentPayload,
   redactSubjectJobRuns,
   REDACTED_FAILURE_NOTE,
   redactSubjectScopeText,
@@ -481,7 +428,6 @@ export {
   issueExemplarOwner,
   redactSubjectDirectoryText,
   platformIntentFailureMessage,
-  intentIdOfFailureMessage,
 } from './subject-redaction.js';
 export type {
   LegacySubjectRedactionCounts,
@@ -492,26 +438,17 @@ export type {
   IssueExemplarOwner,
 } from './subject-redaction.js';
 export {
-  assertWithinErasureReach,
   eraseSubjectFromModules,
   isModuleErasureCounts,
   moduleErasurePlan,
   moduleRowsErased,
   SECURE_DELETE_MIN_SQLITE,
-  tablesCreatedBy,
 } from './module-erasure.js';
 export {
-  TABLE_OWNERS,
   TABLE_OWNERS_DDL,
-  applyTableChange,
   assertMigrationLeavesLedgerAlone,
-  assertTablesOwned,
-  backfillOwnershipFromJournal,
-  moduleTableNames,
   recordOwnershipSteps,
   runMigrationStatements,
-  tableChangesOf,
-  tableStatements,
 } from './table-ownership.js';
 export type { OwnerStore, TableChange, TableStatement, TableStep } from './table-ownership.js';
 export { blankSqlComments, executableSqlStatements, splitSqlStatements } from './sql-statements.js';
@@ -539,25 +476,21 @@ export {
   type FindingObservation,
 } from './findings.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
-export { delegatedGrantSql, delegatedRevokeSql, writeExplicitTupleIn } from './entity-grant.js';
+export { delegatedRevokeSql, writeExplicitTupleIn } from './entity-grant.js';
 export { grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes } from './entity-grant-shape.js';
 export type { ShapePass } from './entity-grant-shape.js';
-export { applyScopeRoleChange, changeScopeRole, combineCoverage, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
+export { applyScopeRoleChange, changeScopeRole, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
-export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, MARK_COPY_ORIGIN_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
-export { isLifecycleWrite, lifecycleAfterLoad, lifecycleReceipt, lifecycleRefusal, readLifecycle, settleLifecycleAfterLoad, SCOPE_LIFECYCLE_KEY, WRITE_LIFECYCLE_SQL, writeLifecycle } from './scope-lifecycle.js';
+export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
+export { isLifecycleWrite, lifecycleReceipt, lifecycleRefusal, readLifecycle, settleLifecycleAfterLoad, writeLifecycle } from './scope-lifecycle.js';
 export { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, type KeptCopy, carriedAwayDump, dumpMetaValue, isCopyMarkInsert, isWriteStatement, metaValueIn, type CarriedAway, type LoadMarker } from './carried-copy.js';
-export { LEGACY_SCOPE_ROWS_BACKFILL, assertDirectoryTablesBuilt, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, spineColumnAdditions, spineRowsInsert, type KernelColumnsOf } from './spine-restore.js';
+export { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, spineColumnAdditions, type KernelColumnsOf } from './spine-restore.js';
 export {
-  SYSTEM_SWITCH_OFF_PREDICATE,
   SYSTEM_SWITCH_OFF_QUERY,
-  SYSTEM_SWITCH_OFF_RELATION,
-  subjectSwitchedOff,
   SWITCH_FENCES_DDL,
   moveSwitch,
   recordedOffFromWire,
   switchRecordedOff,
-  switchSubjectGrants,
   switchSystemSchedules,
   subjectGrantState,
   systemGrantsStatus,
@@ -580,12 +513,10 @@ export {
   SWITCH_KINDS,
   SWITCH_OWED_DDL,
   SYSTEM_SWITCHES_DDL,
-  SYSTEM_SWITCHES_TABLE,
   clearSwitchOwed,
   scopeOwesSwitch,
   markSwitchOwed,
   switchesOwedOf,
-  dumpCarriesSwitches,
   forgetSwitchesOf,
   inUnitMovesToAudit,
   listSystemSwitchRecords,
@@ -600,7 +531,6 @@ export {
   scopesSwitchedOffFor,
   staleCarryRevertRow,
   staleCarryReverts,
-  reportKeyOf,
   switchActionOf,
   switchAuditSubject,
   switchNotFoundMessage,
@@ -631,7 +561,6 @@ export type {
 export { ADMIN_LOG_INDEX_DDL, ADMIN_LOG_INDEXES_SQL } from './admin-log-ddl.js';
 export {
   AUDITED_CHANGE_ACTIONS,
-  AUDITED_OPERATIONS_BATCH,
   SETTLE_INTENT_SQL,
   SETTLE_OUTCOME_SQL,
   settleOutcomeParamsOf,
@@ -667,29 +596,23 @@ export {
 } from './version-migrations.js';
 export type { SplitManifest } from './version-migrations.js';
 export {
-  PEER_SUBJECT_PREFIX,
   admitPeer,
   collectPeers,
   peerGrantsStatus,
   peerSeats,
   peerSubjectRef,
-  peerSwitchedOff,
   resolveVerticalInstanceFrom,
   switchPeer,
 } from './peer.js';
 export { PEER_BINDINGS_DDL, resolvePeerInstanceFrom } from './peer.js';
 export type { PeerDeclaration, PeerDeclarations, PeerGrantsRow, PeerSeat, VerticalInstanceCandidate } from './peer.js';
 export {
-  DENIAL_COLUMNS,
   DENIAL_WINDOW_QUERY,
   denialListQuery,
   denialSummaryQuery,
   denialTotalsQuery,
   mapDenialRow,
-  mapDenialBucketRow,
-  mapDenialOperationBucketRow,
   mapDenialSummaryBuckets,
-  storedActor,
   type DenialRow,
   type DenialBucketRow,
   type DenialOperationBucketRow,
@@ -719,9 +642,8 @@ export {
   type ImpersonationRow,
 } from './impersonation.js';
 export { readLifecycleFlow } from './lifecycle-flow.js';
-export { OPERATION_SERIES_ID_SLACK_MS, operationSeriesQuery, readOperationSeries } from './operation-series.js';
+export { operationSeriesQuery, readOperationSeries } from './operation-series.js';
 export {
-  REFUSALS_DDL,
   REFUSALS_INDEX,
   REFUSALS_REBUILD,
   REFUSALS_TABLE_DDL,
@@ -729,24 +651,19 @@ export {
   refusalInsert,
   refusalOf,
   refusalsAdmitGuards,
-  refusedTransitionOf,
   type RefusalRow,
   type RefusedGuard,
 } from './refusals.js';
-export { REFUSAL_COLUMNS, mapRefusalRow, refusalListQuery, type RefusalDbRow } from './refusal-query.js';
+export { mapRefusalRow, refusalListQuery, type RefusalDbRow } from './refusal-query.js';
 export { readTimeline, readHistory, readScopeTimeline, readScopeHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation, readDeadLetters, readExecutorDelivery, type ExecutorDelivery, type ExecutorDeliveryState } from './timeline.js';
 export type { ScopeWalkPage } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 // #1636: one undecodable spine row no longer takes a list — or a delivery loop — with it.
-export { rowDecoder, UNDECODED_ACTOR, UNDECODED_PERMISSION } from './row-decode.js';
 export type { RowDecoder } from './row-decode.js';
 export {
   domainEventOf,
-  drainedEventOf,
   readUndrainedOutbox,
   undrainedEventsOf,
-  UNDRAINED_SCAN_FACTOR,
-  UNDRAINED_SKIPPED_IDS,
 } from './outbox-event.js';
 export type {
   OutboxEnvelopeRow,
@@ -761,7 +678,6 @@ export {
   idempotencyLookupQuery,
   idempotencyPruneStatement,
   idempotencyRecordStatement,
-  idempotencySubject,
   idempotencyOptedOutMessage,
   replayFor,
   type IdempotencyRow,
@@ -779,24 +695,15 @@ export {
   JOB_STEP_RECORD_SQL,
   JOB_LEASE_MS,
   JOB_LEASE_MIN_MS,
-  JOB_LEASE_ENTRY_MARGIN,
   JOB_ADMISSION_MISS_MAX,
-  JOB_ADMISSION_BACKOFF_BASE_MS,
-  JOB_ADMISSION_BACKOFF_MAX_MS,
   JOB_LEASE_TOO_SHORT_NOTE,
   admissionBackoffMs,
   JOB_LEASE_EXPIRED_NOTE,
   assertLeaseMs,
-  JOB_DRIVE_LIMIT,
-  JOB_DRIVE_SCAN_MAX,
-  JOB_RUN_LIST_LIMIT,
-  JOB_RUN_LIST_MAX,
   jobRunListLimit,
-  JOB_STEP_REUSED,
   SYSTEM_DOOR_WAIT,
   JOB_DEFER_MS,
   JOB_RUN_DUE_AT,
-  assertQueueSafe,
   jobRunOf,
   runDueJobRuns,
   runJobPass,
@@ -826,7 +733,6 @@ export {
   startPlatformSweeper,
   SCHEDULE_STATE_DDL,
   SCHEDULE_STATE_REBUILD,
-  SCHEDULE_STATE_KIND_OF_OP,
   scheduleStateHasKind,
 } from './platform-sweep.js';
 export type {
@@ -855,14 +761,12 @@ export {
   INERT_SCOPE_REASON,
   runningVersionOf,
   PROVISION_RECONCILE_BATCH,
-  PROVISION_RECONCILE_REPORTED_IDS,
   CROSS_VERTICAL_CONSUMERS_PER_PASS,
   runCrossVerticalFrom,
   registryImportCandidates,
   crossVerticalHealth,
   exportBreaksOf,
   exportBreakRefusal,
-  EXPORT_BREAK_REFUSAL,
   isExportBreakRefusal,
   bindExportBreaksOf,
   bindExportBreakRefusal,
@@ -879,11 +783,7 @@ export type {
   ServingPointer,
 } from './platform-sweep.js';
 export {
-  MIGRATION_FLAG_THRESHOLD,
-  migrationFleet,
   migrationProgress,
-  migrationSummary,
-  scopeMigrationState,
 } from './migration-progress.js';
 export type { ScopeMigrationState } from './migration-progress.js';
 export { foldMeterReading } from './meters.js';
@@ -914,10 +814,7 @@ export {
 
 export {
   moduleLog,
-  moduleLogLine,
-  renderTemplate,
   consoleLogSink,
-  MODULE_LOG_LIMITS,
 } from './module-log.js';
 export type {
   ModuleLog,
@@ -929,9 +826,7 @@ export type {
   ModuleLogContext,
 } from './module-log.js';
 export {
-  asyncInvocationLine,
   asyncInvocationId,
-  asyncLevelOf,
   asyncLinePass,
   consoleInvocationLineSink,
   ASYNC_LINES_PER_PASS,
@@ -962,19 +857,17 @@ export {
   exportedSinceQuery,
   exportReadQuery,
   exportReadPlan,
-  exportsOf,
   planExportBatch,
   withheldNote,
   CrossVerticalRegistry,
   type ExportRow,
   type RegisteredImport,
 } from './vertical-events.js';
-export { attributedHost, attributedView, type ConsumerDelivery, type HostAttribution } from './attribution.js';
+export { attributedView, type ConsumerDelivery, type HostAttribution } from './attribution.js';
 export {
   isDeliveryRefusal,
   refuseDelivery,
   refusalJournalText,
-  REFUSAL_JOURNAL_PREFIX,
   type DeliveryRefusal,
 } from './delivery-refusal.js';
 export {
@@ -984,7 +877,6 @@ export {
   MEMBERSHIP_REMOVAL_SKEW_MS,
   membershipEntity,
   membershipRemoveExecutorId,
-  memberRemoveRequestedPayload,
   registerMembershipExecutor,
   type MemberRemoveRequestedPayload,
   type MembershipExecutorOptions,

@@ -138,7 +138,7 @@ export const DEFAULT_ATTACHMENT_TEXT_BOUNDS: AttachmentTextBounds = {
 };
 
 /** A bound that means something: a positive integer. `NaN`, `Infinity`, `0`, `-1` and `'8'` do not. */
-export function isPositiveIntegerBound(value: unknown): value is number {
+function isPositiveIntegerBound(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
@@ -265,7 +265,7 @@ export function truncateUtf8(text: string, maxBytes: number): { text: string; tr
  * For the index whitespace is noise, and for the cap it is worse: a spreadsheet's padding
  * or an HTML file's indentation would spend the per-attachment budget on nothing.
  */
-export function normalizeExtractedText(text: string): string {
+function normalizeExtractedText(text: string): string {
   return text
     .replace(/\r\n?/g, '\n')
     // C0 controls other than tab and newline, DEL, and the C1 range.

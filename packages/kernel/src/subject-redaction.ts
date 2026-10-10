@@ -91,7 +91,7 @@ export function redactedIntentPayload(subjectId: string, at: string): string {
  * `payload` and left a provider quoting the name two columns over would be the same bug
  * this fixes, one column to the right.
  */
-export const REDACTED_INTENT_NOTE =
+const REDACTED_INTENT_NOTE =
   'redacted by subject erasure (#37) — what this intent said is gone; that it happened, and when, is not';
 
 /**
@@ -104,7 +104,7 @@ export const REDACTED_INTENT_NOTE =
  * happen and now cannot — and the executor delivery behind it was already journaled as
  * routed, so nothing re-routes the event to replace this row.
  */
-export const CANCELLED_INTENT_NOTE =
+const CANCELLED_INTENT_NOTE =
   'cancelled by subject erasure (#37) — the payload was redacted before the drain reached it, so this intent never ran';
 
 /** The row shape the redaction reads to decide. */
@@ -474,7 +474,7 @@ function isRedactedPayloadText(text: string, subjectId: string): boolean {
  *
  * Params: tombstone, note, run_id, step.
  */
-export const JOB_STEP_REDACTION_SQL = `UPDATE _substrat_job_steps
+const JOB_STEP_REDACTION_SQL = `UPDATE _substrat_job_steps
      SET result = ?, last_error = ?
    WHERE run_id = ? AND step = ?`;
 
@@ -487,7 +487,7 @@ export const JOB_STEP_REDACTION_SQL = `UPDATE _substrat_job_steps
  * Params: payload-hit (0/1), tombstone, cursor-hit (0/1), tombstone, cancelled-note,
  * redacted-note, at (ended_at), at (updated_at), id.
  */
-export const JOB_RUN_REDACTION_SQL = `UPDATE _substrat_job_runs
+const JOB_RUN_REDACTION_SQL = `UPDATE _substrat_job_runs
      SET payload = CASE WHEN ? = 1 THEN ? ELSE payload END,
          cursor = CASE WHEN ? = 1 THEN ? ELSE cursor END,
          last_error = CASE WHEN status = 'running' THEN ? ELSE ? END,

@@ -9,14 +9,13 @@ import {
   type ConnectorDispatchPayload,
 } from '@substrat-run/contracts';
 import {
-  intentIdOfFailureMessage,
   intentPayloadCarriesSubject,
   platformIntentFailureMessage,
   platformRequestRedactionQuery,
-  redactedIntentPayload,
   REDACTED_INTENT_MARKER,
   ulid,
 } from '../src/index.js';
+import { intentIdOfFailureMessage, redactedIntentPayload } from '../src/subject-redaction.js';
 
 /**
  * The decision behind the intent journal's half of a subject erasure (#1600).

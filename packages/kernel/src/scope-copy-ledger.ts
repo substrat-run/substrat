@@ -154,7 +154,7 @@ export interface CopyRestoreFence {
 }
 
 /** How far inside the lease a restore must commit: five minutes, or a quarter of a short lease. */
-export const copyRestoreFenceMarginMs = (leaseMs: number): number => Math.min(5 * 60_000, Math.floor(leaseMs / 4));
+const copyRestoreFenceMarginMs = (leaseMs: number): number => Math.min(5 * 60_000, Math.floor(leaseMs / 4));
 
 /** The fence for a move whose entries were recorded no earlier than `recordedAt` (epoch ms). */
 export const copyRestoreFence = (

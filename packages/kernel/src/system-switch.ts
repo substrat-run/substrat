@@ -404,7 +404,7 @@ export function moveSwitch(
  * and `seatScopeTuple`'s predicate is already bound per subject, so a marker blocks the seat
  * for exactly the subject it names.
  */
-export function switchSubjectGrants(
+function switchSubjectGrants(
   db: SwitchSql,
   input: {
     subject: string;

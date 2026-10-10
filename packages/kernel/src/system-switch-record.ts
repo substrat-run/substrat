@@ -52,7 +52,7 @@ import {
 export type { SwitchKind };
 
 /** The record's table name, as the DDL below spells it. */
-export const SYSTEM_SWITCHES_TABLE = '_substrat_system_switches';
+const SYSTEM_SWITCHES_TABLE = '_substrat_system_switches';
 /** The peer switch's record (#2029), as `PEER_SWITCHES_DDL` spells it. */
 const PEER_SWITCHES_TABLE = '_substrat_peer_switches';
 
@@ -546,7 +546,7 @@ export type InUnitReport = Pick<SwitchedOff, 'changed' | 'permissions'> &
   ({ moduleId: string; vertical?: never } | { vertical: string; moduleId?: never });
 
 /** The subject an in-unit report names, if it is of this kind. */
-export const reportKeyOf = (kind: SwitchKind, report: InUnitReport): string | undefined =>
+const reportKeyOf = (kind: SwitchKind, report: InUnitReport): string | undefined =>
   report[RECORDS[kind].payloadKey];
 
 /**

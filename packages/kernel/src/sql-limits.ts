@@ -119,6 +119,10 @@ function endOfNamedParameter(sql: string, from: number): number {
 /**
  * Refuse a statement a Durable Object's SQLite would refuse for its length, its compound
  * `SELECT` terms, or its bound parameters. Throws the DO's own message.
+ *
+ * Not in the kernel's index, but exported from this module on purpose:
+ * `tools/vitest/sql-limits.cjs` requires `dist/sql-limits.js` by file path to judge every
+ * statement a node suite prepares, so dropping this `export` would break that preload.
  */
 export function assertWithinSqlLimits(sql: string): void {
   // Cheap first: UTF-16 length is at most the byte length, so a string under

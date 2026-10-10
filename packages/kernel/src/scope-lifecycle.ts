@@ -27,7 +27,7 @@ import type { SwitchSql } from './system-switch.js';
  * restore of a backup taken before a suspension does not lift it. A copy (a fork, a snapshot, a
  * preview) never takes the source's row: it has a directory row of its own, and its own pushes.
  */
-export const SCOPE_LIFECYCLE_KEY = 'scope_lifecycle';
+const SCOPE_LIFECYCLE_KEY = 'scope_lifecycle';
 
 /**
  * The one statement that stores a delivered lifecycle, with its key written in. A delivery changes

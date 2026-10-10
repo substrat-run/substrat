@@ -109,7 +109,7 @@ export const noopConnectorCallRecorder: ConnectorCallRecorder = { record() {} };
  * Classify a settled call. Reads a status and a boolean — never the error text, which is
  * the point: the class is derived from facts that cannot carry a payload.
  */
-export function connectorCallErrorType(outcome: ConnectionUseOutcome): ConnectorCallErrorType | undefined {
+function connectorCallErrorType(outcome: ConnectionUseOutcome): ConnectorCallErrorType | undefined {
   if (outcome.ok) return undefined;
   const status = outcome.status;
   if (typeof status === 'number' && Number.isFinite(status)) {

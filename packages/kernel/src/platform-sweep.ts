@@ -2062,7 +2062,7 @@ export async function exportBreaksOf(input: {
 }
 
 /** How `exportBreakRefusal` begins: what lets the promote route recognise it and add the listing. */
-export const EXPORT_BREAK_REFUSAL = 'promotion drops or re-versions';
+const EXPORT_BREAK_REFUSAL = 'promotion drops or re-versions';
 
 /** Whether a throw is the promote gate's export-break refusal (`exportBreakRefusal`). */
 export function isExportBreakRefusal(err: unknown): err is Error {

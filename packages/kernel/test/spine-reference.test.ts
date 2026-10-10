@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { errorCodeOf } from '@substrat-run/contracts';
-import { assertNoSpineReference, assertNoSpineWrite, guardSpine, type ScopedSql } from '../src/index.js';
+import { guardSpine, type ScopedSql } from '../src/index.js';
+import { assertNoSpineReference, assertNoSpineWrite } from '../src/spine-guard.js';
 
 /**
  * #1898, the module half: a foreign key from a module's table to the spine makes the

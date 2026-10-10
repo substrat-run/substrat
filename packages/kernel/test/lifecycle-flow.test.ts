@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { LIFECYCLE_FLOW_EVENT_BUDGET, type LifecycleFlowInput } from '@substrat-run/contracts';
-import { readLifecycleFlow, REFUSALS_DDL, refusalInsert, type ScopedSql } from '../src/index.js';
+import { readLifecycleFlow, refusalInsert, type ScopedSql } from '../src/index.js';
+import { REFUSALS_DDL } from '../src/refusals.js';
 
 /**
  * The process map's replay (#1744), against a real outbox: the read is a keyset walk over
