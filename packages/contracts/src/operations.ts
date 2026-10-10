@@ -1665,18 +1665,9 @@ function updatePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
   const stamps = stampsOf(name, base.def);
   const fields: { field: string; column: string }[] = [];
   for (const field of optional) {
-    const column = snakeCaseField(field);
-    const columnSchema = columnShape[column];
-    if (columnSchema === undefined) return `body field '${field}' is not a column of '${name}'`;
-    if (column === base.head.primaryKey) return `body field '${field}' would rewrite the row's id`;
-    if (stamps[column] !== undefined) return `body field '${field}' writes '${column}', which is stamped`;
-    const fieldSchema = decl.input?.shape[field];
-    const kind = baseDefOf(columnSchema)?.type;
-    if (kind === 'enum') {
-      return `column '${column}' is an enum — a change of state is a lifecycle edge with its own operation`;
-    }
-    if (!kind || !DERIVED_WRITE_KINDS.has(kind)) return `column '${column}' is not a string or number column`;
-    if (baseDefOf(fieldSchema)?.type !== kind) return `body field '${field}' is not the same type as column '${column}'`;
+    const target = writableColumn(decl, field, name, base.head.primaryKey, columnShape, stamps, UPDATE_WORDS);
+    if (typeof target === 'string') return target;
+    const { column, columnSchema, fieldSchema } = target;
     if (acceptsNull(fieldSchema) && !acceptsNull(columnSchema)) {
       return `body field '${field}' accepts null, and column '${column}' cannot be cleared`;
     }
@@ -1691,6 +1682,50 @@ function updatePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
     stamps: stampList(stamps).filter(({ kind }) => kind === 'updatedAt' || kind === 'updatedBy'),
     emit: emitOf(decl),
   };
+}
+
+/** How a derived write's refusals name the field and the two columns it may not fill. */
+interface WriteWords {
+  readonly field: string;
+  readonly onId: string;
+  readonly onEnum: string;
+}
+const UPDATE_WORDS: WriteWords = {
+  field: 'body field',
+  onId: "would rewrite the row's id",
+  onEnum: 'a change of state is a lifecycle edge with its own operation',
+};
+const CREATE_WORDS: WriteWords = {
+  field: 'input field',
+  onId: "would set the row's id, which a create mints",
+  onEnum: "a row's first state is its lifecycle's, and authored",
+};
+
+/**
+ * The column one input field of a derived write fills, by its snake_case name — or the clause it
+ * fails: no such column, the id, a stamp, an enum, a kind the write cannot bind as it arrives, or
+ * a field of another type. Whether it may be empty is the caller's rule.
+ */
+function writableColumn(
+  decl: DeclarationRead,
+  field: string,
+  name: string,
+  primaryKey: string,
+  columnShape: z.ZodRawShape,
+  stamps: Readonly<Record<string, StampKind>>,
+  words: WriteWords,
+): { column: string; columnSchema: unknown; fieldSchema: unknown } | string {
+  const column = snakeCaseField(field);
+  const columnSchema = columnShape[column];
+  if (columnSchema === undefined) return `${words.field} '${field}' is not a column of '${name}'`;
+  if (column === primaryKey) return `${words.field} '${field}' ${words.onId}`;
+  if (stamps[column] !== undefined) return `${words.field} '${field}' writes '${column}', which is stamped`;
+  const fieldSchema = decl.input?.shape[field];
+  const kind = baseDefOf(columnSchema)?.type;
+  if (kind === 'enum') return `column '${column}' is an enum — ${words.onEnum}`;
+  if (!kind || !DERIVED_WRITE_KINDS.has(kind)) return `column '${column}' is not a string or number column`;
+  if (baseDefOf(fieldSchema)?.type !== kind) return `${words.field} '${field}' is not the same type as column '${column}'`;
+  return { column, columnSchema, fieldSchema };
 }
 
 /** The declared stamps, in declared order. */
@@ -1754,17 +1789,10 @@ function createPlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
   const values: { field: string; column: string }[] = [];
   for (const field of [...required, ...optional]) {
     if (field === parent?.idFrom) continue;
-    const column = snakeCaseField(field);
-    const columnSchema = columnShape[column];
-    if (columnSchema === undefined) return `input field '${field}' is not a column of '${name}'`;
-    if (column === primaryKey) return `input field '${field}' would set the row's id, which a create mints`;
-    if (column === parent?.column) return `input field '${field}' writes the link column '${column}'`;
-    if (stamps[column] !== undefined) return `input field '${field}' writes '${column}', which is stamped`;
-    const fieldSchema = decl.input?.shape[field];
-    const kind = baseDefOf(columnSchema)?.type;
-    if (kind === 'enum') return `column '${column}' is an enum — a row's first state is its lifecycle's, and authored`;
-    if (!kind || !DERIVED_WRITE_KINDS.has(kind)) return `column '${column}' is not a string or number column`;
-    if (baseDefOf(fieldSchema)?.type !== kind) return `input field '${field}' is not the same type as column '${column}'`;
+    if (snakeCaseField(field) === parent?.column) return `input field '${field}' writes the link column '${parent.column}'`;
+    const target = writableColumn(decl, field, name, primaryKey, columnShape, stamps, CREATE_WORDS);
+    if (typeof target === 'string') return target;
+    const { column, columnSchema, fieldSchema } = target;
     if ((optional.includes(field) || acceptsNull(fieldSchema)) && !columnMayBeNull(columnSchema)) {
       return `input field '${field}' may be absent or null, and column '${column}' cannot be empty`;
     }

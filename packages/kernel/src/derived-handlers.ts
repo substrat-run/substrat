@@ -32,15 +32,8 @@ const quoted = (identifier: string): string => `"${identifier.replace(/"/g, '""'
 /** The handler a plan describes. */
 export function derivedHandler(plan: DerivationPlan): OperationHandler<never, unknown> {
   const key = permissionKey.parse(plan.permission.key);
-  const columns = plan.columns.map(quoted).join(', ');
-  const select = `SELECT ${columns} FROM ${quoted(plan.table)} WHERE ${quoted(plan.primaryKey)} = ?`;
   const ref = (id: string): EntityRef => ({ entityType: plan.entity, entityId: id });
-
-  const rowOrThrow = (ctx: OperationContext, id: string): Row => {
-    const row = ctx.sql.query<Row>(select, [id])[0];
-    if (!row) throw substratError('not_found', `${plan.entity} not found: ${id}`);
-    return row;
-  };
+  const rowOrThrow = lookup(plan.entity, plan.table, plan.primaryKey, plan.columns.map(quoted).join(', '));
 
   /** The declared check: on the row the input names, or on its parent, or scope-wide. */
   const check = async (ctx: OperationContext, input: Input): Promise<void> => {
@@ -69,10 +62,11 @@ function bodyOf(
     case 'get':
       return (ctx, input) => rowOrThrow(ctx, String(input?.[plan.idFrom]));
 
-    case 'list':
+    case 'list': {
+      const parentOrThrow = plan.parent && parentLookup(plan.parent);
       return (ctx, input) => {
         // A page of a parent's rows names the parent: one that does not exist is not an empty page.
-        if (plan.parent) parentOrThrow(ctx, plan.parent, input);
+        parentOrThrow?.(ctx, input);
         const filters: Row = {};
         for (const { field, column } of plan.filters) {
           if (input?.[field] !== undefined) filters[column] = input[field];
@@ -86,8 +80,10 @@ function bodyOf(
           ...(plan.total ? { total: true } : {}),
         });
       };
+    }
 
-    case 'update':
+    case 'update': {
+      const stampSet = plan.stamps.map(({ column }) => `${quoted(column)} = ?`);
       return (ctx, input) => {
         const id = String(input?.[plan.idFrom]);
         const existing = rowOrThrow(ctx, id);
@@ -95,20 +91,17 @@ function bodyOf(
         const sent = plan.fields.filter(({ field }) => input?.[field] !== undefined);
         // Nothing sent is nothing changed — no write, and no event to move the version.
         if (sent.length === 0) return existing;
-        const set = [
-          ...sent.map(({ field, column }) => ({ column, value: input?.[field] as SqlValue })),
-          ...stamped(ctx, plan.stamps),
-        ];
         ctx.sql.exec(
-          `UPDATE ${quoted(plan.table)} SET ${set.map(({ column }) => `${quoted(column)} = ?`).join(', ')} ` +
+          `UPDATE ${quoted(plan.table)} SET ${[...sent.map(({ column }) => `${quoted(column)} = ?`), ...stampSet].join(', ')} ` +
             `WHERE ${quoted(plan.primaryKey)} = ?`,
           // The plan admits only string and number columns, and the host parsed the input against them.
-          [...set.map(({ value }) => value), id],
+          [...sent.map(({ field }) => input?.[field] as SqlValue), ...stamped(ctx, plan.stamps), id],
         );
         const row = rowOrThrow(ctx, id);
         ctx.emit(eventOf(plan.emit, ref(id), row));
         return row;
       };
+    }
 
     case 'delete':
       return (ctx, input) => {
@@ -120,57 +113,71 @@ function bodyOf(
         return result;
       };
 
-    case 'create':
+    case 'create': {
+      const parentOrThrow = plan.parent && parentLookup(plan.parent);
+      // Every column but the id, in the order the values are bound: the link, the input, the stamps.
+      const written = [
+        ...(plan.parent ? [plan.parent.column] : []),
+        ...plan.values.map(({ column }) => column),
+        ...plan.stamps.map(({ column }) => column),
+      ];
+      const insert =
+        `INSERT INTO ${quoted(plan.table)} (${[plan.primaryKey, ...written].map(quoted).join(', ')}) ` +
+        `VALUES (${['?', ...written.map(() => '?')].join(', ')})`;
+      const keyAt = plan.key.map((column) => written.indexOf(column));
+      const byKey =
+        `SELECT ${plan.columns.map(quoted).join(', ')} FROM ${quoted(plan.table)} WHERE ` +
+        plan.key.map((column) => `${quoted(column)} IS ?`).join(' AND ');
       return (ctx, input) => {
-        const parentId = plan.parent ? parentOrThrow(ctx, plan.parent, input) : undefined;
-        const set = [
-          ...(plan.parent ? [{ column: plan.parent.column, value: parentId as SqlValue }] : []),
+        const parentId = parentOrThrow?.(ctx, input);
+        const values: SqlValue[] = [
+          ...(parentId !== undefined ? [parentId] : []),
           // A field the caller left out is NULL — the plan admits it only over a nullable column.
-          ...plan.values.map(({ field, column }) => ({ column, value: (input?.[field] ?? null) as SqlValue })),
+          ...plan.values.map(({ field }) => (input?.[field] ?? null) as SqlValue),
+          ...stamped(ctx, plan.stamps),
         ];
         // Idempotent on the natural key: the row that already holds it is the answer, unchanged.
-        if (plan.key.length > 0) {
-          const byKey = new Map(set.map(({ column, value }) => [column, value]));
-          const existing = ctx.sql.query<Row>(
-            `SELECT ${plan.columns.map(quoted).join(', ')} FROM ${quoted(plan.table)} WHERE ` +
-              plan.key.map((column) => `${quoted(column)} IS ?`).join(' AND '),
-            plan.key.map((column) => byKey.get(column) as SqlValue),
-          )[0];
+        if (keyAt.length > 0) {
+          const existing = ctx.sql.query<Row>(byKey, keyAt.map((i) => values[i] as SqlValue))[0];
           if (existing) return existing;
         }
         const id = ulid();
-        const row = [{ column: plan.primaryKey, value: id }, ...set, ...stamped(ctx, plan.stamps)];
-        ctx.sql.exec(
-          `INSERT INTO ${quoted(plan.table)} (${row.map(({ column }) => quoted(column)).join(', ')}) ` +
-            `VALUES (${row.map(() => '?').join(', ')})`,
-          row.map(({ value }) => value),
-        );
+        ctx.sql.exec(insert, [id, ...values]);
         // The edge the permission walk follows from the new row to the parent it was checked on.
         if (plan.parent) ctx.link(ref(id), { entityType: plan.parent.entity, entityId: String(parentId) });
         const created = rowOrThrow(ctx, id);
         ctx.emit(eventOf(plan.emit, ref(id), created));
         return created;
       };
+    }
   }
 }
 
-/** The parent the input names, or `not_found` — answered after the check, so it probes nothing. */
-function parentOrThrow(ctx: OperationContext, parent: DerivedParent, input: Input): string {
-  const id = String(input?.[parent.idFrom]);
-  const found = ctx.sql.query(
-    `SELECT 1 AS found FROM ${quoted(parent.table)} WHERE ${quoted(parent.primaryKey)} = ?`,
-    [id],
-  )[0];
-  if (!found) throw substratError('not_found', `${parent.entity} not found: ${id}`);
-  return id;
+/** A read by primary key that answers `not_found` in the words a hand-written read uses. */
+function lookup(entity: string, table: string, primaryKey: string, columns: string): (ctx: OperationContext, id: string) => Row {
+  const select = `SELECT ${columns} FROM ${quoted(table)} WHERE ${quoted(primaryKey)} = ?`;
+  return (ctx, id) => {
+    const row = ctx.sql.query<Row>(select, [id])[0];
+    if (!row) throw substratError('not_found', `${entity} not found: ${id}`);
+    return row;
+  };
 }
 
-/** Each stamp's value for this invocation: the time, or the caller. */
-function stamped(ctx: OperationContext, stamps: readonly DerivedStamp[]): { column: string; value: SqlValue }[] {
-  return stamps.map(({ column, kind }) => ({
-    column,
-    value: kind === 'createdAt' || kind === 'updatedAt' ? ctx.now() : String(ctx.principal),
-  }));
+/** The parent the input names, or `not_found` — answered after the check, so it probes nothing. */
+function parentLookup(parent: DerivedParent): (ctx: OperationContext, input: Input) => string {
+  const exists = lookup(parent.entity, parent.table, parent.primaryKey, '1 AS found');
+  return (ctx, input) => {
+    const id = String(input?.[parent.idFrom]);
+    exists(ctx, id);
+    return id;
+  };
+}
+
+/** Each stamp's value for this invocation, in the plan's order: the time, or the caller. */
+function stamped(ctx: OperationContext, stamps: readonly DerivedStamp[]): SqlValue[] {
+  const now = ctx.now();
+  const caller = String(ctx.principal);
+  return stamps.map(({ kind }) => (kind === 'createdAt' || kind === 'updatedAt' ? now : caller));
 }
 
 /** The declared event, its payload and subject drawn from what the operation answers with. */
