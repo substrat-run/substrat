@@ -46,7 +46,7 @@
     "@types/node": "catalog:",
     "@vitest/ui": "catalog:",
     "ai": "7.0.128",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "catalog:",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "catalog:",

@@ -44,7 +44,7 @@
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

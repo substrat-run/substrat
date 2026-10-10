@@ -46,7 +46,7 @@
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "catalog:"
   },
   "devDependencies": {
     "@substrat-run/attachment-extractors": "workspace:^",
