@@ -583,8 +583,8 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    * The request body — the schema the HOST parses this operation's input with.
    *
    * **The handler does not have to parse it, and should not need to.** A module
-   * hands its derived schemas over as `operationInputs` (see
-   * `operationInputsOf`), and the scope host parses every invocation against
+   * hands its derived schemas over with its handlers, as `operations.inputs` (from
+   * `operationsFor`, which calls `operationInputsOf`), and the scope host parses every invocation against
    * them before the guards and the handler run — over HTTP, from a test, from a
    * seed, from a schedule. So a handler's declared input type is a fact about
    * what it receives rather than a claim about what it was sent.
@@ -1758,7 +1758,7 @@ function assertHandlersDeclared(operations: Record<string, unknown>, entities: R
 /**
  * The concurrency each operation declares, for the host (#129).
  *
- * Handed over beside `operationInputs` and read the same way — the adapter
+ * Handed over as `operations.concurrency`, beside the inputs, and read the same way — the adapter
  * compares versions from this map rather than each handler being trusted to. Same
  * argument as the parse: one place that cannot be forgotten beats a rule every
  * new operation has to remember.
@@ -1793,8 +1793,8 @@ export interface OperationTarget {
  * name → the entity each operation addresses by id, for the host (#119).
  *
  * Every operation whose leading check is `{ entity, idFrom }`, whether or not its entity
- * declares `trash` — the host keeps the ones whose entity does. Handed over beside
- * `operationInputs`, and required by the host from any module with a trashable entity, so a
+ * declares `trash` — the host keeps the ones whose entity does. Carried by `operations.inputs`,
+ * and required by the host from any module with a trashable entity, so a
  * module cannot leave its binned entities reachable by forgetting the line.
  */
 export function operationTargetsOf(

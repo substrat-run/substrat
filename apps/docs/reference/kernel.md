@@ -23,7 +23,8 @@ The adapter seam. Full semantics in
 | `ModuleRegistration` | interface | manifest + migrations + operations + consumers. `operations` is a `BoundOperations`, which only the two binders below produce: the `handlers`, and the maps the host derives from their declaration and the module never writes by hand — `inputs` (every invocation is parsed before the guards and the handler, on every path in), `concurrency` (which entity's version an `If-Match` on each operation is checked against) and `idempotencyOptOuts` |
 | `operationsFor(ops)(handlers)` | function | binds a module's handlers to its declared operations (#1835): returns `{ operations }`, the handlers and the three derived maps, all from the one declaration. A missing, extra or mistyped handler, or one cast `as never` / `as any`, is a compile error at the entry; boundary-lint R11 refuses a cast of the whole map |
 | `undeclaredOperations(reason, handlers)` | function | the declared exception: a module with no operation surface to bind to registers its handlers this way, with the reason stated; nothing is parsed for it |
-| `BoundOperations` · `HandlerMap` | types | what the two binders produce, and the handler map they take |
+| `BoundOperations` · `HandlerMap` | types | what the two binders produce — a class with an ES-private brand, so a spread or a copy is not one — and the handler map they take |
+| `assertBoundOperations(moduleId, operations)` | function | the adapters' registration check: refuses an `operations` value the binder did not make |
 | `SqlMigration` | interface | `{ version, sql }` — ordered, journaled per module |
 | `ScopedSql`, `SqlValue` | types | synchronous scope-local SQL: `query<T>()`, `exec()` |
 | `ExecutorHandler` | type | `(admin, event) => void` — out-of-band host code effecting what a module asked for via an event (K-22). Registered with `registerExecutor`; receives `HostAdmin`, never `ctx`, because it acts with platform authority |

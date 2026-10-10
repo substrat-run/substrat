@@ -22,8 +22,8 @@
  * applied to the whole map, since `never` and `any` are assignable to anything; boundary-lint
  * **R11** refuses that at the registration.
  *
- * The brand is type-only: at runtime `operations` is a plain `{ handlers, inputs, concurrency,
- * idempotencyOptOuts }`, read by both adapters.
+ * The brand is an ES-private field, so it holds at run time as well: both adapters refuse an
+ * `operations` value the binder did not make (`assertBoundOperations`).
  */
 import {
   derivationPlanOf,
@@ -36,10 +36,30 @@ import {
 import { derivedHandler } from './derived-handlers.js';
 import type { OperationContext, OperationHandler } from './scope-host.js';
 
-declare const bound: unique symbol;
-
 /** name → handler, as the host reads it. */
 export type HandlerMap = Readonly<Record<string, OperationHandler<never, unknown>>>;
+
+/** The derived maps, as the constructor takes them. */
+interface DerivedMaps {
+  readonly inputs?: Readonly<Record<string, { parse(value: unknown): unknown }>>;
+  readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
+  readonly idempotencyOptOuts?: readonly string[];
+}
+
+/**
+ * The key to the constructor. Module-private to the kernel: `operationsFor`,
+ * `undeclaredOperations` and the test seam in `./testing` hold it, and nothing a module can
+ * import does. Exported from this file only so `testing.ts` can reach it — never from the index.
+ */
+export const MINT: unique symbol = Symbol('BoundOperations.mint');
+
+/**
+ * The run-time mark, a REGISTERED symbol held as a non-enumerable own property. Registered, so a
+ * second copy of the kernel in one process — a bundle that resolved two, or a test that reset its
+ * module graph — recognises the binder's value; non-enumerable, so a spread, `Object.assign` or a
+ * structured clone leaves it behind, exactly as they leave the `#bound` field behind at compile time.
+ */
+const BRAND = Symbol.for('substrat.kernel.boundOperations');
 
 /**
  * Everything a module hands the host about its operations, in one value only `operationsFor` and
@@ -48,9 +68,17 @@ export type HandlerMap = Readonly<Record<string, OperationHandler<never, unknown
  * The handlers and the three maps derived from their declaration travel together, so a
  * registration cannot carry one without the others or pair a handler map with another
  * declaration's schemas. `H` keeps each handler's own type, so a module can still call one.
+ *
+ * **A class with an ES-private brand, so a copy is not one** (#2155 review). A symbol-keyed brand
+ * survives an object spread, so `{ ...bound, inputs: undefined }` type-checked as the bound value
+ * with its schemas gone. A `#private` field is nominal to TypeScript and absent from any copy, so
+ * that spread does not compile. At run time the adapters ask for `BRAND` instead, which a spread,
+ * `Object.assign` or a literal does not carry either, so they refuse such a copy at registration
+ * too. (The field cannot be the run-time check: it is private to one copy of this class, and a
+ * process can hold two — a test that resets its modules does, and #2155's suite found one.)
  */
-export interface BoundOperations<H = HandlerMap> {
-  readonly [bound]: true;
+export class BoundOperations<H = HandlerMap> {
+  readonly #bound = true;
   /** name → handler. */
   readonly handlers: H & HandlerMap;
   /**
@@ -64,13 +92,60 @@ export interface BoundOperations<H = HandlerMap> {
   readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
   /** The operations that declared `idempotency: false`, and so refuse an `Idempotency-Key` (#116). */
   readonly idempotencyOptOuts?: readonly string[];
+
+  constructor(mint: typeof MINT, handlers: H & HandlerMap, derived: DerivedMaps = {}) {
+    if (mint !== MINT) {
+      throw new Error('BoundOperations: made by operationsFor or undeclaredOperations, never constructed directly');
+    }
+    Object.defineProperty(this, BRAND, { value: true });
+    this.handlers = handlers;
+    if (derived.inputs !== undefined) this.inputs = derived.inputs;
+    if (derived.concurrency !== undefined) this.concurrency = derived.concurrency;
+    if (derived.idempotencyOptOuts !== undefined) this.idempotencyOptOuts = derived.idempotencyOptOuts;
+  }
+
+  /** Was this value made by the binder — not a copy, a spread or a literal shaped like one? */
+  static is(value: unknown): value is BoundOperations {
+    return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, BRAND);
+  }
+}
+
+/**
+ * The adapters' registration check: a module's `operations` is a value the binder made, or the
+ * module does not register. A copy has no brand; nor does one made by a second copy of the kernel,
+ * which is the same refusal for the same reason — its maps are not the ones this host can trust.
+ */
+export function assertBoundOperations(moduleId: string, operations: unknown): asserts operations is BoundOperations | undefined {
+  if (operations === undefined || BoundOperations.is(operations)) return;
+  throw new Error(
+    `${moduleId}: \`operations\` is not a value operationsFor or undeclaredOperations made — a copy, a spread ` +
+      'or a literal shaped like one carries maps nothing bound to the handlers (or the module was built ' +
+      'against a second copy of @substrat-run/kernel).\n  Remedy: `...operationsFor(ops)({ … })`, as returned.',
+  );
 }
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 
-/** The keys whose handler type was erased at the map — `as never`, `as any`. */
+/** Does this function type take or return `any` anywhere a handler's contract lives? */
+type TypedLoosely<F> = F extends (...args: infer P) => infer R
+  ? true extends IsAny<R> | IsAny<Awaited<R>> | { [I in keyof P]: IsAny<P[I]> }[number]
+    ? true
+    : false
+  : false;
+
+/**
+ * The keys whose handler type was erased at the map: an entry cast `as never` or `as any`, or one
+ * whose parameters or return are `any` — `addOp as (...a: any[]) => any`, or an untyped
+ * `(c: any, i: any) => i`, which `OperationImpl` accepts because `any` fits every slot.
+ */
 type ErasedKeys<H> = {
-  [K in keyof H]-?: IsAny<H[K]> extends true ? K : [H[K]] extends [never] ? K : never;
+  [K in keyof H]-?: IsAny<H[K]> extends true
+    ? K
+    : [H[K]] extends [never]
+      ? K
+      : TypedLoosely<H[K]> extends true
+        ? K
+        : never;
 }[keyof H];
 
 /**
@@ -103,12 +178,11 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
   return <const H extends OperationImpl<Ops, OperationContext>>(
     handlers: H & Exact<Omit<Ops, DerivedKeys<Ops>>, H>,
   ): { operations: BoundOperations<H> } => ({
-    operations: {
-      handlers: withDerivedHandlers(declaration, handlers),
+    operations: new BoundOperations<H>(MINT, withDerivedHandlers(declaration, handlers), {
       inputs: operationInputsOf(declaration),
       concurrency: operationConcurrencyOf(declaration),
       idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
-    } as unknown as BoundOperations<H>,
+    }),
   });
 }
 
@@ -120,11 +194,8 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
  * rather than preferred, since a hand-written one standing in silently for the derived one is the
  * restatement `derive` exists to remove.
  */
-function withDerivedHandlers(
-  declaration: Readonly<Record<string, object>>,
-  handlers: object,
-): Record<string, OperationHandler<never, unknown>> {
-  const out = { ...(handlers as Record<string, OperationHandler<never, unknown>>) };
+function withDerivedHandlers<H>(declaration: Readonly<Record<string, object>>, handlers: H): H & HandlerMap {
+  const out: Record<string, OperationHandler<never, unknown>> = { ...(handlers as HandlerMap) };
   for (const [name, op] of Object.entries(declaration)) {
     if ((op as { derive?: unknown }).derive === undefined) continue;
     if (Object.hasOwn(out, name)) {
@@ -142,7 +213,8 @@ function withDerivedHandlers(
     }
     out[name] = derivedHandler(plan);
   }
-  return out;
+  // The authored handlers keep their types; the derived ones are keys `H` never named.
+  return out as H & HandlerMap;
 }
 
 /**
@@ -151,5 +223,5 @@ function withDerivedHandlers(
  */
 export function undeclaredOperations(reason: string, handlers: HandlerMap): { operations: BoundOperations } {
   if (reason.trim() === '') throw new Error('undeclaredOperations: give the reason this module declares no operations');
-  return { operations: { handlers } as unknown as BoundOperations };
+  return { operations: new BoundOperations(MINT, handlers) };
 }

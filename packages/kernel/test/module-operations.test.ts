@@ -6,7 +6,7 @@
  * goes red. Each refusal has its positive twin beside it, so a check that refuses everything
  * cannot pass for one that refuses the right thing.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   defineEntities,
   defineOperations,
@@ -16,6 +16,7 @@ import {
   z,
 } from '@substrat-run/contracts';
 import {
+  assertBoundOperations,
   operationsFor,
   undeclaredOperations,
   type ModuleRegistration,
@@ -93,6 +94,12 @@ describe('operationsFor (#1835)', () => {
     operationsFor(notesOperations)({ 'notes/add': addOp as never, 'notes/rename': renameOp });
     // @ts-expect-error — and so would `as any`
     operationsFor(notesOperations)({ 'notes/add': addOp as any, 'notes/rename': renameOp });
+    // @ts-expect-error — a cast to a function of `any` erases the input and the return all the same
+    operationsFor(notesOperations)({ 'notes/add': addOp as (...a: any[]) => any, 'notes/rename': renameOp });
+    // @ts-expect-error — and so does an untyped handler, with no cast at all
+    operationsFor(notesOperations)({ 'notes/add': async (_c: any, i: any) => i, 'notes/rename': renameOp });
+    // @ts-expect-error — a return of `any` alone is enough
+    operationsFor(notesOperations)({ 'notes/add': async (_c, i) => JSON.parse(i.text), 'notes/rename': renameOp });
   });
 
   it('hands the host the inputs, concurrency and opt-outs of the SAME declaration', () => {
@@ -129,6 +136,18 @@ describe('the registration field (#1835)', () => {
     const withConcurrency: ModuleRegistration = { manifest, ...bound, operationConcurrency: {} };
     // @ts-expect-error — nor `operationIdempotencyOptOuts`
     const withOptOuts: ModuleRegistration = { manifest, ...bound, operationIdempotencyOptOuts: [] };
+    // A copy of the bound value is not one: the brand is an ES-private field, absent from a spread.
+    const other = operationsFor({ 'notes/add': notesOperations['notes/add'] })({ 'notes/add': addOp });
+    // @ts-expect-error — the schemas dropped after binding
+    const dropped: ModuleRegistration = { manifest, operations: { ...bound.operations, inputs: undefined } };
+    // @ts-expect-error — the handlers of one declaration with the schemas of another
+    const mixed: ModuleRegistration = { manifest, operations: { ...bound.operations, inputs: other.operations.inputs } };
+    const added: ModuleRegistration = {
+      manifest,
+      // @ts-expect-error — a handler added after binding, with no schema behind it
+      operations: { ...bound.operations, handlers: { ...bound.operations.handlers, 'notes/remove': addOp } },
+    };
+    expect([dropped, mixed, added]).toHaveLength(3);
     // @ts-expect-error — and the bound value cannot be assembled by hand either
     const assembled: ModuleRegistration = { manifest, operations: { handlers: {}, inputs } };
     expect([withInputs, withConcurrency, withOptOuts, assembled]).toHaveLength(4);
@@ -169,10 +188,11 @@ describe('operationsFor and derived handlers (#1773)', () => {
   });
   const listCards = async () => ({ entries: [], nextCursor: null });
 
-  it('takes no handler for a derived operation, and supplies one', () => {
+  it('takes no handler for a derived operation, and supplies one — in the branded value', () => {
     const bound = operationsFor(cardsOperations)({ 'cards/list': listCards });
     expect(Object.keys(bound.operations.handlers).sort()).toEqual(['cards/get', 'cards/list']);
     expect(bound.operations.handlers['cards/list']).toBe(listCards);
+    expect(() => assertBoundOperations('@test/cards', bound.operations)).not.toThrow();
   });
 
   it('refuses a handler for a derived operation — at compile time, and through a cast at load', () => {
@@ -196,5 +216,34 @@ describe('operationsFor and derived handlers (#1773)', () => {
     expect(() => operationsFor(raw)({})).toThrow(
       "operationsFor: 'cards/get' declares `derive`, but its declaration did not pass through `defineOperations`, which is what decides whether it is derivable",
     );
+  });
+});
+
+describe('the run-time mark (#2155 review)', () => {
+  const { operations } = operationsFor(notesOperations)({ 'notes/add': addOp, 'notes/rename': renameOp });
+
+  it('refuses a copy — a spread, Object.assign onto the prototype, a literal of the same shape', () => {
+    const copies = {
+      spread: { ...operations },
+      assigned: Object.assign(Object.create(Object.getPrototypeOf(operations) as object), operations),
+      literal: { handlers: operations.handlers, inputs: operations.inputs },
+      cloned: structuredClone({ inputs: {}, concurrency: operations.concurrency }),
+    };
+    for (const [shape, copy] of Object.entries(copies)) {
+      expect(() => assertBoundOperations('@test/notes', copy), shape).toThrow(/not a value operationsFor/);
+    }
+    // Twins: the value as made, and no operations at all.
+    expect(() => assertBoundOperations('@test/notes', operations)).not.toThrow();
+    expect(() => assertBoundOperations('@test/notes', undefined)).not.toThrow();
+  });
+
+  it('accepts the value made by a second copy of the kernel in the same process', async () => {
+    // A test that resets its module graph holds two; so does a bundle that resolved two. The
+    // `#bound` field is private to one copy of the class, which is why it is not the run-time check.
+    vi.resetModules();
+    const again = (await import('../src/module-operations.js')) as typeof import('../src/module-operations.js');
+    const fromSecondCopy = again.operationsFor(notesOperations)({ 'notes/add': addOp, 'notes/rename': renameOp }).operations;
+    expect(Object.getPrototypeOf(fromSecondCopy)).not.toBe(Object.getPrototypeOf(operations));
+    expect(() => assertBoundOperations('@test/notes', fromSecondCopy)).not.toThrow();
   });
 });

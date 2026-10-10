@@ -164,6 +164,7 @@ export const INDEX_VALUE_EXPORTS = [
   'assertAllowed',
   'assertAttachmentExtractors',
   'assertBecomeLinkStateIds',
+  'assertBoundOperations',
   'assertIdempotencyKey',
   'assertIfMatch',
   'assertImpersonationWrites',

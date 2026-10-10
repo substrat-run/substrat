@@ -20,7 +20,14 @@ function subpathsOf(pkgDir: string): (readonly [string, string])[] {
     .map(([path, entry]) => [path, join(pkgDir, entry.default.replace(/^\.\/dist\/(.*)\.js$/, 'src/$1.ts'))] as const);
 }
 
-const KERNEL = subpathsOf(join(import.meta.dirname, '..'));
+/**
+ * The one kernel subpath held to nothing above, by name: `./testing` (#1835) mints operations for
+ * the contract suites. No entry bundles it — boundary-lint R2 refuses its import from module code —
+ * so what it imports reaches a test runner and never an upload.
+ */
+const TEST_ONLY = new Set(['./testing']);
+
+const KERNEL = subpathsOf(join(import.meta.dirname, '..')).filter(([path]) => !TEST_ONLY.has(path));
 const CONTRACTS = subpathsOf(join(import.meta.dirname, '../../contracts'));
 
 /** The specifiers a module imports at run time: every `import`/`export … from` that is not type-only. */
@@ -44,6 +51,9 @@ function strayImports(file: string, siblings: readonly (readonly [string, string
 describe('zero-import subpaths (#1998)', () => {
   it('the kernel has the two the platform entry reaches, contracts the three', () => {
     expect(KERNEL.map(([path]) => path).sort()).toEqual(['./invocation-line', './ulid']);
+    // And the exemption names a subpath that exists, so it cannot outlive what it exempts.
+    const all = subpathsOf(join(import.meta.dirname, '..')).map(([path]) => path);
+    expect([...TEST_ONLY].filter((path) => !all.includes(path))).toEqual([]);
     expect(CONTRACTS.map(([path]) => path).sort()).toEqual(['./invocation-record', './wire-auth', './wire-headers']);
   });
 

@@ -273,6 +273,7 @@ import {
   purgeReportOf,
   purgeStillDue,
   refuseTrashedTarget,
+  assertBoundOperations,
   registerTrashTargets,
   runPurgePass,
   withheldKeysFor,
@@ -2836,6 +2837,9 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.modules.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    // #1835: the operations are the binder's own value, or the maps beside the handlers are a
+    // copy nothing bound to them.
+    assertBoundOperations(manifest.id, registration.operations);
     // #119: refused before anything is recorded, so a module the trash rules refuse leaves nothing.
     const trashTargets = registerTrashTargets(
       manifest.id,
@@ -3005,7 +3009,7 @@ export class SqliteScopeHost implements ScopeHost {
     const unbound = Object.keys(declaredInputs).filter((name) => !ownOperations.has(name));
     if (unbound.length > 0) {
       throw new Error(
-        `${manifest.id} declares operationInputs for unbound operation(s): ` +
+        `${manifest.id} declares operations.inputs for unbound operation(s): ` +
           `${unbound.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
       );
     }
@@ -3016,7 +3020,7 @@ export class SqliteScopeHost implements ScopeHost {
     const unguarded = Object.keys(declaredConcurrency).filter((name) => !ownOperations.has(name));
     if (unguarded.length > 0) {
       throw new Error(
-        `${manifest.id} declares operationConcurrency for unbound operation(s): ` +
+        `${manifest.id} declares operations.concurrency for unbound operation(s): ` +
           `${unguarded.sort().join(', ')} — a precondition on nothing reads as a guard that is not there`,
       );
     }

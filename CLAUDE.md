@@ -460,12 +460,16 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   a missing, extra, mistyped or cast handler at the exact entry. A module with no declared
   surface (the dashboard, a test fixture) says so with `undeclaredOperations(reason,
   handlers)` — `testOperations` in contract-tests for fixtures, which is also the one test
-  seam that may hand the host raw derived maps. The one spelling no type can see, a cast
-  of the WHOLE map, is boundary-lint **R11**, with the reviewable `boundary-lint-allow
-  R11` … `boundary-lint-end R11` hatch. It used to be prose plus a text rule
-  (`lint:module-inputs`, #953/#959), and the optional field let nine modules — both
-  reference demos and the scaffold among them — parse nothing while everything stayed
-  green.
+  seam that may hand the host raw derived maps (through `@substrat-run/kernel/testing`).
+  The brand is an ES-private field, so a spread or a copy with one map swapped is not a
+  `BoundOperations` either, and both adapters refuse one at registration. The spellings no
+  type can see — a cast of the WHOLE map, of one entry handed to a binder, or to
+  `BoundOperations` anywhere — are boundary-lint **R11**, with the reviewable
+  `boundary-lint-allow R11` … `boundary-lint-end R11` hatch; R2 refuses module code
+  importing the test seams (`@substrat-run/kernel/testing`, `contract-tests`,
+  `engine-test-kit`). It used to be prose plus a text rule (`lint:module-inputs`,
+  #953/#959), and the optional field let nine modules — both reference demos and the
+  scaffold among them — parse nothing while everything stayed green.
 
 ## Two human checkpoints (agents never self-approve)
 

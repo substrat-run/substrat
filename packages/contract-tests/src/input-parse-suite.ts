@@ -170,6 +170,25 @@ export function inputParseContractSuite(
       expect(await received('parse/bare')).toBeNull();
     });
 
+    it('refuses operations the binder did not make — a copy, a spread, a literal (#1835)', () => {
+      // The brand is an ES-private field, so none of these carries it, whatever its shape. Each
+      // would otherwise register handlers beside maps nothing bound to them: here, no schemas.
+      const bound = parseMod.operations!;
+      const forgeries: Record<string, unknown> = {
+        spread: { ...bound, inputs: undefined },
+        literal: { handlers: bound.handlers },
+        prototype: Object.assign(Object.create(Object.getPrototypeOf(bound) as object), bound),
+      };
+      for (const [shape, operations] of Object.entries(forgeries)) {
+        const id = moduleId.parse(`@test/parse-forged-${shape}`);
+        expect(() => host.registerModule({ manifest: { ...parseModManifest, id }, operations } as never), shape).toThrow(
+          /not a value operationsFor or undeclaredOperations made/,
+        );
+      }
+      // Twin: the same value, as the binder made it, registered in `beforeAll` — every other case
+      // in this suite runs against it.
+    });
+
     it('refuses a schema declared for an operation the module does not bind', () => {
       // A schema on nothing enforces nothing while reading as coverage — the
       // same reasoning `checksDeclaredElsewhere` applies to a stale exemption.
