@@ -1809,6 +1809,11 @@ function createPlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
   for (const column of key) {
     if (!fromInput.has(column)) return `its natural key column '${column}' is not filled from the input, so no existing row can be matched by it`;
   }
+  // A replay answers the row already holding the key. The check passed on the parent the caller
+  // named, so the key must pin that parent too, or the lookup answers another parent's row.
+  if (parent && key.length > 0 && !key.includes(parent.column)) {
+    return `its natural key does not include the link to '${parent.entity}' ('${parent.column}'), so a replay could answer another ${parent.entity}'s row`;
+  }
   return {
     kind: 'create',
     ...base.head,

@@ -450,7 +450,10 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'create'] as co
  *   to it), a declared `stamps` column is the time or the caller, an input field fills the column
  *   of its snake_case name, and a nullable column no input names is `NULL`. An entity with a
  *   natural `key` is created idempotently: a row already holding that key is the answer, with no
- *   write and no event. Emits about the new row.
+ *   write and no event. Under a parent, the key must include the link column, or a replay could
+ *   answer another parent's row. A replay answers on the write key alone, deliberately — as a
+ *   hand-written idempotent create does — so a caller holding the write key reads the row it
+ *   names. Emits about the new row.
  *
  * A derived handler checks the declared permission first, reads and writes only the entity's
  * declared columns through `ctx.sql`, and answers `not_found` for a missing row — the same steps

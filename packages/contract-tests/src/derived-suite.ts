@@ -15,6 +15,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  defineEntities,
+  defineOperations,
   errorCodeOf,
   etagOf,
   permissionKey,
@@ -27,6 +29,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import { z } from 'zod';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { derivedMod } from './derived-module.js';
 
@@ -320,6 +323,39 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         const inB = await create(as, { dfolderId: 'fb', label: 'linked' });
         expect(await getTag(asReader, inA.id)).toEqual(inA);
         expect(await codeOf(getTag(asReader, inB.id))).toBe('permission_denied');
+      });
+
+      // The round-1 review's reproduction (#2162): a key without the folder let a caller holding
+      // write on folder A replay folder B's row by guessing its label, and read it in full. Such a
+      // declaration no longer loads; the fixture's key includes the link, and stays in its folder.
+      it('a natural key without the parent link is refused at load, so a replay cannot cross parents', async () => {
+        const crossing = defineEntities({
+          folder: { table: 'x_folders', fields: z.object({ id: z.string() }) },
+          item: {
+            table: 'x_items',
+            fields: z.object({ id: z.string(), folder_id: z.string(), label: z.string(), secret: z.string() }),
+            parents: ['folder'],
+            key: ['label'],
+          },
+        });
+        const declare = () =>
+          defineOperations(crossing, ['item:write'] as const)({
+            'x/create-item': {
+              summary: 'Add an item',
+              derive: 'create',
+              permission: { key: 'item:write', entity: 'folder', idFrom: 'folderId' },
+              input: z.object({ folderId: z.string(), label: z.string(), secret: z.string() }),
+              output: crossing.item.fields,
+              http: { method: 'POST', path: '/folders/{folderId}/items' },
+              emits: { entity: 'item', entityIdFrom: 'id', type: 'x.item-created', schemaVersion: 1, piiClass: 'none', payload: ['id'] },
+            },
+          });
+        expect(declare).toThrow("its natural key does not include the link to 'folder' ('folder_id')");
+        // The twin, on this adapter: the same label in another folder is that folder's own row.
+        const inA = await create(as, { dfolderId: 'fa', label: 'payroll', note: 'salaries.xlsx' });
+        const inB = await create(asCarl, { dfolderId: 'fb', label: 'payroll', note: 'guess' });
+        expect(inB.id).not.toBe(inA.id);
+        expect(inB).toMatchObject({ dfolder_id: 'fb', note: 'guess' });
       });
 
       it('creates scope-wide with no parent, and without a natural key every call is a new row', async () => {

@@ -599,6 +599,12 @@ field fills the column of its snake_case name, same type; a column the entity de
 `stamps` is the time or the caller; and a nullable column nothing names is `NULL`. A column
 filled by none of these makes the operation a command with its own body, not a create.
 
+A natural `key` makes the create idempotent, and under a parent the key must include the link
+column `<parent>_id`: the check passed on the parent the caller named, and a key without the
+link would let the replay answer another parent's row. The replay answers on the write key
+alone, deliberately, as a hand-written idempotent create does. A caller who may create the row
+is answered with the row already holding its key, whether or not they may read it otherwise.
+
 ```ts
 savedReplyFolder: {
   table: 'acme_folders',

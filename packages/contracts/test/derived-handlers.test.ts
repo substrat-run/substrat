@@ -61,6 +61,13 @@ const entities = defineEntities({
     stamps: { created_at: 'createdAt' },
   },
   counter: { table: 't_counters', fields: z.object({ id: z.number(), label: z.string() }) },
+  // A folder's child whose natural key leaves the folder out: a label is unique scope-wide.
+  sticker: {
+    table: 't_stickers',
+    fields: z.object({ id: z.string(), folder_id: z.string(), label: z.string() }),
+    parents: ['folder'],
+    key: ['label'],
+  },
 });
 const PERMS = ['note:read', 'note:write'] as const;
 const define = defineOperations(entities, PERMS);
@@ -430,6 +437,23 @@ describe('derivationOf — create (#2157)', () => {
     expect(() => define({ 't/new': { ...misLinked, derive: 'create' } as never })).toThrow(
       "model: 't/new' declares `derive: 'create'`, but the parent's id 'label' fills column 'label', which is not the link to 'folder' ('folder_id').",
     );
+  });
+
+  it('refuses a parent-narrowed create whose natural key leaves the parent out — a replay would cross parents', () => {
+    const sticker = {
+      ...CREATE,
+      input: z.object({ folderId: z.string(), label: z.string() }),
+      output: entities.sticker.fields,
+      http: { method: 'POST', path: '/folders/{folderId}/stickers' },
+      emits: { ...emitsTag, entity: 'sticker' },
+    } as const;
+    expect(kindOf(sticker)).toBeUndefined();
+    expect(() => define({ 's/new': { ...sticker, derive: 'create' } })).toThrow(
+      "model: 's/new' declares `derive: 'create'`, but its natural key does not include the link to 'folder' ('folder_id'), so a replay could answer another folder's row.",
+    );
+    // Its positive twin: the same create, scope-wide, has no parent to cross.
+    const scoped = { ...sticker, permission: 'note:write', input: z.object({ folderId: z.string(), label: z.string() }) } as const;
+    expect(kindOf(scoped)).toBe('create');
   });
 
   it('(a) refuses a create that matches and declares neither', () => {
