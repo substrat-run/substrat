@@ -1820,9 +1820,8 @@ export function listsDeclaredBy(
  * seam the SDL adopter asked for (#695), which is what makes the declaration
  * BINDING rather than decorative.
  *
- * ```ts
- * export const operations = { … } satisfies OperationImpl<typeof calloutOps, OperationContext>;
- * ```
+ * A module does not apply it by hand: the kernel's `operationsFor(ops)(handlers)` holds its
+ * handler map to this type exactly, and the registration accepts no other map (#1835).
  *
  * Four things become compile errors at the exact method: a handler whose input
  * disagrees with the declared `input`, one whose return disagrees with the

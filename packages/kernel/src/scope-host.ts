@@ -1796,11 +1796,10 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    *
    * Derived from the declared operation surface — `operationInputsOf(ops)` — and
    * never written a second time. A module that declares its operations gets the
-   * parse by handing the same object over:
+   * parse with its handlers, from the binder that ties the two (#1835):
    *
    * ```ts
-   * operations: { 'rally/book': bookOp, … },
-   * operationInputs: operationInputsOf(rallyOperations),
+   * ...operationsFor(rallyOperations)({ 'rally/book': bookOp, … }),
    * ```
    *
    * **This is where "parse, don't trust" is kept, rather than in 85 handlers.**
@@ -1830,13 +1829,8 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * against, and the input field carrying its id (#129).
    *
    * Derived from the declared operation surface — `operationConcurrencyOf(ops)` —
-   * and never written a second time, exactly as `operationInputs` is:
-   *
-   * ```ts
-   * operations: { 'callout/update-customer': updateCustomerOp, … },
-   * operationInputs: operationInputsOf(calloutOperations),
-   * operationConcurrency: operationConcurrencyOf(calloutOperations),
-   * ```
+   * and never written a second time, exactly as `operationInputs` is: `operationsFor`
+   * hands over both.
    *
    * **The host compares, not the handler.** A precondition a handler evaluates is
    * a precondition a handler can forget, and the one that is forgotten is
@@ -1853,11 +1847,7 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
    * response must not be recorded, and which therefore refuse an
    * `Idempotency-Key` instead of honouring it.
    *
-   * Derived like the two above, and never written a second time:
-   *
-   * ```ts
-   * operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(calloutOperations),
-   * ```
+   * Derived like the two above, by `operationsFor`, and never written a second time.
    *
    * A list of refusals rather than a list of participants, because that is what
    * the declaration is. Absent means every operation honours a key, which is the

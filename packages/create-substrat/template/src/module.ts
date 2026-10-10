@@ -44,7 +44,7 @@ import { bikeShopMigrations } from './migrations.js';
 //
 // WHAT EACH OPERATION IS is declared in `src/operations.ts`, against the
 // entities in `src/entities.ts` — this file holds only the bodies. The binding
-// at the bottom is `satisfies OperationImpl<…>`, so a handler that disagrees
+// at the bottom is `operationsFor(bikeShopOperations)`, so a handler that disagrees
 // with its declaration is a compile error at the exact method.
 // ============================================================================
 
