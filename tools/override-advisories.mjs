@@ -333,7 +333,7 @@ function main() {
     console.error(`override-advisories: more than one resolved version of a package that must have one:\n  ${doubled.join('\n  ')}\nFind what pulls in the second copy (\`pnpm why <name>\`) and bring it onto the catalog's version.`);
   }
   if (hits.length > 0) {
-    console.error('override-advisories: advisories against a pinned override (Dependabot cannot move these — raise the pin in pnpm-workspace.yaml):');
+    console.error('override-advisories: advisories against an override — raise it in pnpm-workspace.yaml (the catalog entry, for a `catalog:` override):');
     for (const h of hits) {
       const a = h.advisory;
       const patched = a.patched_versions === '<0.0.0' ? 'none' : a.patched_versions;
@@ -341,9 +341,9 @@ function main() {
     }
     console.error('If one is consciously accepted, list its GHSA id in package.json pnpm.auditConfig.ignoreGhsas with the reason in the PR.');
   }
-  const how = `Raise the pin in pnpm-workspace.yaml to the latest release on its line, or hold it in ${ACCEPT_FILE} with a reason and an expiry.`;
+  const how = `Raise it in pnpm-workspace.yaml (the catalog entry, for a \`catalog:\` override) to the latest release on its line, or hold it in ${ACCEPT_FILE} with a reason and an expiry.`;
   if (staleFailing) {
-    console.error(`override-advisories: stale overrides (Dependabot cannot move these):\n  ${staleLines.join('\n  ')}\n${how}`);
+    console.error(`override-advisories: stale overrides:\n  ${staleLines.join('\n  ')}\n${how}`);
   } else {
     // A PR that does not touch the pins is not made red by the calendar; the annotation is
     // what reaches its author, and the next push to main or weekly run fails on it.
