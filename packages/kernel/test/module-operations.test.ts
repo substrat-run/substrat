@@ -195,6 +195,23 @@ describe('operationsFor and derived handlers (#1773)', () => {
     expect(() => assertBoundOperations('@test/cards', bound.operations)).not.toThrow();
   });
 
+  it('freezes the derived handlers with the rest: none can be swapped, removed or added', () => {
+    const { operations } = operationsFor(cardsOperations)({ 'cards/list': listCards });
+    const derived = operations.handlers['cards/get'];
+    const handlers = operations.handlers as Record<string, unknown>;
+    const edits: Record<string, () => unknown> = {
+      swapped: () => Object.assign(operations.handlers, { 'cards/get': listCards }),
+      removed: () => delete handlers['cards/get'],
+      added: () => Object.assign(operations.handlers, { 'cards/remove': listCards }),
+      rebound: () => Object.assign(operations, { handlers: { 'cards/list': listCards } }),
+    };
+    for (const [edit, run] of Object.entries(edits)) expect(run, edit).toThrow(TypeError);
+    // Twin: the platform's handler is still the one bound.
+    expect(Object.isFrozen(operations.handlers)).toBe(true);
+    expect(operations.handlers['cards/get']).toBe(derived);
+    expect(Object.keys(operations.handlers).sort()).toEqual(['cards/get', 'cards/list']);
+  });
+
   it('refuses a handler for a derived operation — at compile time, and through a cast at load', () => {
     expect(() =>
       // @ts-expect-error — 'cards/get' is derived: the platform writes its handler
