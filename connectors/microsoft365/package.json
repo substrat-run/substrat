@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-microsoft365",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "description": "Substrat connector: a tenant's own Microsoft 365, over Microsoft Graph with app-only client credentials in the tenant's Entra directory. Sends mail as the tenant's own addresses (a MailSender behind the platform's email relay). Signs in with a per-connection certificate the platform generates, or a client secret. Host code, never module code.",
   "license": "AGPL-3.0-only",
