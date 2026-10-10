@@ -469,7 +469,7 @@ export function emitModel<T extends Record<string, EntityDef>>(
      * or one a module keeps writing by hand, with its reason — appears in the reviewed diff.
      * Read structurally; omitted when no operation says either.
      */
-    readonly operations?: Readonly<Record<string, { readonly derive?: unknown; readonly authored?: unknown }>>;
+    readonly operations?: Readonly<Record<string, object>>;
   } = {},
 ): EmittedModel {
   if (options.version !== undefined && options.version.length === 0) {
@@ -528,7 +528,7 @@ export function emitModel<T extends Record<string, EntityDef>>(
   }
   const handlers: Record<string, EmittedHandler> = {};
   for (const name of Object.keys(options.operations ?? {}).sort()) {
-    const { derive, authored } = options.operations?.[name] ?? {};
+    const { derive, authored } = (options.operations?.[name] ?? {}) as { derive?: unknown; authored?: unknown };
     if (derive !== undefined) handlers[name] = emittedHandler.parse({ derive });
     else if (authored !== undefined) handlers[name] = emittedHandler.parse({ authored });
   }
