@@ -11,7 +11,7 @@ operation surface are **decided** — transcribe them, never re-derive them:
 | `parents` | `entityRelations` — spread from `manifestEntities`, never hand-written |
 | `defineOperations` | one registered operation per key, each checking its declared `permission` |
 | `input` | the schema the handler parses — **import it, do not restate it** |
-| `output` | the handler's return type, bound with `satisfies OperationImpl<typeof operations, OperationContext>` |
+| `output` | the handler's return type, bound with `...operationsFor(operations)({ … })` in the registration |
 | `emits` | the `ctx.emit` call, using `entityIdFrom` for the entity id |
 
 Do not add an operation the model does not declare, rename one, or change an
@@ -84,10 +84,11 @@ timestamps, decimal/money as TEXT.
 
 ```ts
 import { z, moneyOf, mulMoney, addDecimal, type EntityRef } from '@substrat-run/contracts';
-import { assertAllowed, ulid, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
+import { assertAllowed, operationsFor, ulid, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
 import { createWorkOrder, getReportedLines, completeWorkOrder, PERM as WO } from '@substrat-run/engine-workorder';
 import { APP_PERM, appManifest } from './manifest.js';
 import { appMigrations } from './migrations.js';
+import { operations } from '../spec/model.js'; // the declared surface, approved in the model phase
 
 const createJobInput = z.object({ bikeId: z.string(), title: z.string() });
 const createJobOp: OperationHandler<z.infer<typeof createJobInput>, { id: string }> = async (ctx, raw) => {
@@ -107,7 +108,8 @@ const createJobOp: OperationHandler<z.infer<typeof createJobInput>, { id: string
 
 export const appModule: ModuleRegistration = {
   manifest: appManifest, migrations: appMigrations,
-  operations: { 'bikeshop/create-job': createJobOp /* namespaced '<app>/op-kebab' */ },
+  // the handlers, held to the declaration; the host parses every input against it too
+  ...operationsFor(operations)({ 'bikeshop/create-job': createJobOp /* namespaced '<app>/op-kebab' */ }),
 };
 ```
 
