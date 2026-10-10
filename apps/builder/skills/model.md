@@ -123,7 +123,7 @@ writes their handler. There are five such shapes: a `get` of one row by its id, 
 an `update` that is a `PATCH` field bag with `concurrency`, a `delete` of a row
 no entity declares as parent, and a `create` that is a `POST` whose every column comes from
 the input, the parent its check narrows to, a minted id, or the entity's `stamps`
-(`created_at: 'createdAt'`, `created_by: 'createdBy'`, and the `updated*` pair). Each of these operations must say who writes its handler:
+(`created_at: 'createdAt'`, `created_by: 'createdBy'`). Each of these operations must say who writes its handler:
 
 ```ts
 'acme/get-customer': {

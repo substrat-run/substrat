@@ -26,11 +26,11 @@ The derived create checks the declared key first. With a parent, it answers `not
 What changes:
 
 - `@substrat-run/contracts`:
-  - `EntityDef.stamps`, `{ column: 'createdAt' | 'createdBy' | 'updatedAt' | 'updatedBy' }`, names the columns a derived write fills from the call: `ctx.now()` or the calling principal. The created pair is written on insert, the updated pair on insert and on every derived update. A derived update refuses a body field that writes a stamped column.
-  - `defineEntities` refuses a stamp on a column that is not a field, on the primary key, or on a column that is not a string. Stamps describe derived writes only and add no migration.
+  - `EntityDef.stamps`, `{ column: 'createdAt' | 'createdBy' }`, names the columns a derived create fills from the call: `ctx.now()` or the calling principal. A derived update refuses a body field that writes a stamped column. Only the created pair exists, because a row is inserted once and the declaration stays true of it. An updated pair waits for the host to hold it on every write, authored ones included.
+  - `defineEntities` refuses a stamp on a column that is not a field, on the primary key, or on a column that is not a string. Stamps add no migration.
   - `emitModel` renders `stamps` into `model.json`. `DERIVED_KINDS` gains `'create'`, and the plan types gain `DerivedParent` and `DerivedStamp`.
   - `emittedModel`, the schema a reader such as the control plane parses a pushed `model.json` with, is forward-compatible. A `derive` kind, a stamp kind or an extra key on a handler entry that a newer emitter wrote is carried rather than refused. Before, a closed list refused every model whose emitter was newer than the reader, so a vertical's push was a 400 until the control plane was redeployed. What the reader holds is typed `IngressModel`. `emitModel` and the `EmittedModel` type still allow only the kinds this release knows, and `defineOperations` still refuses an unknown kind at load.
-- `@substrat-run/kernel`: the derived create, the parent-existence check on a derived list, and the update stamps.
-- `@substrat-run/contract-tests`: `derivedHandlersContractSuite` covers all three on both adapters.
+- `@substrat-run/kernel`: the derived create, with its stamps, and the parent-existence check on a derived list.
+- `@substrat-run/contract-tests`: `derivedHandlersContractSuite` covers both on both adapters.
 
 Nothing derives a hook around a handler: an operation that needs one more step than its shape stays authored.

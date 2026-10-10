@@ -42,8 +42,6 @@ type Tag = {
   note: string | null;
   created_at: string;
   created_by: string;
-  updated_at: string;
-  updated_by: string;
 };
 
 export function derivedHandlersContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
@@ -269,8 +267,6 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
           note: null,
           created_at: expect.any(String),
           created_by: alice,
-          updated_at: tag.created_at,
-          updated_by: alice,
         });
         expect(isoNow(tag.created_at)).toBe(true);
         expect(tag.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
@@ -366,19 +362,12 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         expect(await codeOf(asDave.invoke('derived/create-label', { name: 'x' }))).toBe('permission_denied');
       });
 
-      it('a derived update stamps the time and the new author, and leaves the create stamps alone', async () => {
+      it('a derived update by someone else leaves the create stamps as they were', async () => {
         const tag = await create(as, { dfolderId: 'fa', label: 'restamped' });
-        const { result: changed, from, to } = await during(() =>
-          asCarl.invoke<Tag>('derived/update-tag', { tagId: tag.id, note: 'by carl' }),
-        );
-        expect(changed.updated_at >= from && changed.updated_at <= to).toBe(true);
-        expect(changed).toEqual({ ...tag, note: 'by carl', updated_at: changed.updated_at, updated_by: carl });
-        expect(isoNow(changed.updated_at)).toBe(true);
-        expect(changed.updated_at >= tag.created_at).toBe(true);
+        const changed = await asCarl.invoke<Tag>('derived/update-tag', { tagId: tag.id, note: 'by carl' });
+        expect(changed).toEqual({ ...tag, note: 'by carl' });
         const events = (await history(tag.id)).filter((e) => e.type === 'dtag.updated');
-        expect(events[0]?.payload).toEqual({ id: tag.id, note: 'by carl', updated_at: changed.updated_at, updated_by: carl });
-        // Nothing sent is nothing written — the stamps do not move either.
-        expect(await asCarl.invoke<Tag>('derived/update-tag', { tagId: tag.id })).toEqual(changed);
+        expect(events[0]?.payload).toEqual({ id: tag.id, note: 'by carl', created_by: alice });
       });
     });
 

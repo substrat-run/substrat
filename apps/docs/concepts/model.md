@@ -612,8 +612,9 @@ savedReplyFolder: {
   table: 'acme_folders',
   fields: z.object({ id: z.string(), name: z.string(), created_by: z.string(), created_at: z.string() }),
   key: ['name'],
-  // What a derived write fills from the call. `updatedAt`/`updatedBy` are written on a derived
-  // update too. A statement about derived writes only, and no migration: the columns are fields.
+  // What a derived create fills from the call: the time, and the caller. No migration — the
+  // columns are fields. The created pair only: an updated pair waits for the host to hold it on
+  // every write, authored ones included.
   stamps: { created_by: 'createdBy', created_at: 'createdAt' },
 },
 ```

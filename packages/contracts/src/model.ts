@@ -162,22 +162,22 @@ export interface EntityDef<Names extends string = string> {
    *
    * - `createdAt` — `ctx.now()`, on insert.
    * - `createdBy` — the calling principal, on insert.
-   * - `updatedAt` — `ctx.now()`, on insert and on every derived update.
-   * - `updatedBy` — the calling principal, on insert and on every derived update.
    *
    * What makes a `create` derivable: every column of the row has to come from somewhere the
    * model names, and the time and the caller are the two sources no input carries. A stamped
    * column is a string column and never the primary key, and no derived body field may write it.
    *
-   * **A statement about derived writes only.** An authored handler writes its own columns, as it
-   * always has; declaring a stamp does not reach into it. Adds no column and no migration — the
-   * column is declared in `fields` like any other.
+   * **The created pair only, because it stays true.** A row is inserted once — by a derived
+   * create, or by an authored one whose author declared the stamp — and no derived update may
+   * rewrite it. An updated pair would be a claim in `model.json` that an authored update could
+   * make false, so it waits for the host to hold it on every write (#2166). Adds no column and no
+   * migration — the column is declared in `fields` like any other.
    */
   readonly stamps?: Readonly<Record<string, StampKind>>;
 }
 
 /** What a stamped column is filled with (#2157) — see `EntityDef.stamps`. */
-export const STAMP_KINDS = ['createdAt', 'createdBy', 'updatedAt', 'updatedBy'] as const;
+export const STAMP_KINDS = ['createdAt', 'createdBy'] as const;
 export type StampKind = (typeof STAMP_KINDS)[number];
 
 /** An entity's `erasure` declaration, as authored. */

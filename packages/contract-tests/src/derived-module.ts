@@ -49,12 +49,10 @@ export const derivedEntities = defineEntities({
       note: z.string().nullable(),
       created_at: z.string(),
       created_by: z.string(),
-      updated_at: z.string(),
-      updated_by: z.string(),
     }),
     parents: ['dfolder'],
     key: ['dfolder_id', 'label'],
-    stamps: { created_at: 'createdAt', created_by: 'createdBy', updated_at: 'updatedAt', updated_by: 'updatedBy' },
+    stamps: { created_at: 'createdAt', created_by: 'createdBy' },
   },
   dlabel: { table: 'derived_labels', fields: z.object({ id: z.string(), name: z.string() }) },
 });
@@ -163,7 +161,7 @@ export const derivedOperations = defineOperations(derivedEntities, PERMISSIONS)(
       type: 'dtag.updated',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'note', 'updated_at', 'updated_by'],
+      payload: ['id', 'note', 'created_by'],
     },
   },
   'derived/create-label': {
@@ -211,7 +209,6 @@ export const derivedMod: ModuleRegistration = {
                                         body TEXT, rank INTEGER NOT NULL);
             CREATE TABLE derived_tags (id TEXT PRIMARY KEY, dfolder_id TEXT NOT NULL, label TEXT NOT NULL, note TEXT,
                                        created_at TEXT NOT NULL, created_by TEXT NOT NULL,
-                                       updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
                                        UNIQUE (dfolder_id, label));
             CREATE TABLE derived_labels (id TEXT PRIMARY KEY, name TEXT NOT NULL);`,
     },

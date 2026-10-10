@@ -82,8 +82,7 @@ function bodyOf(
       };
     }
 
-    case 'update': {
-      const stampSet = plan.stamps.map(({ column }) => `${quoted(column)} = ?`);
+    case 'update':
       return (ctx, input) => {
         const id = String(input?.[plan.idFrom]);
         const existing = rowOrThrow(ctx, id);
@@ -92,16 +91,15 @@ function bodyOf(
         // Nothing sent is nothing changed — no write, and no event to move the version.
         if (sent.length === 0) return existing;
         ctx.sql.exec(
-          `UPDATE ${quoted(plan.table)} SET ${[...sent.map(({ column }) => `${quoted(column)} = ?`), ...stampSet].join(', ')} ` +
+          `UPDATE ${quoted(plan.table)} SET ${sent.map(({ column }) => `${quoted(column)} = ?`).join(', ')} ` +
             `WHERE ${quoted(plan.primaryKey)} = ?`,
           // The plan admits only string and number columns, and the host parsed the input against them.
-          [...sent.map(({ field }) => input?.[field] as SqlValue), ...stamped(ctx, plan.stamps), id],
+          [...sent.map(({ field }) => input?.[field] as SqlValue), id],
         );
         const row = rowOrThrow(ctx, id);
         ctx.emit(eventOf(plan.emit, ref(id), row));
         return row;
       };
-    }
 
     case 'delete':
       return (ctx, input) => {
@@ -177,7 +175,7 @@ function parentLookup(parent: DerivedParent): (ctx: OperationContext, input: Inp
 function stamped(ctx: OperationContext, stamps: readonly DerivedStamp[]): SqlValue[] {
   const now = ctx.now();
   const caller = String(ctx.principal);
-  return stamps.map(({ kind }) => (kind === 'createdAt' || kind === 'updatedAt' ? now : caller));
+  return stamps.map(({ kind }) => (kind === 'createdAt' ? now : caller));
 }
 
 /** The declared event, its payload and subject drawn from what the operation answers with. */

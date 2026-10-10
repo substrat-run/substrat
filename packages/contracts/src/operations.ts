@@ -1385,8 +1385,6 @@ export type DerivationPlan = {
       readonly idFrom: string;
       /** input field → the column it writes. */
       readonly fields: readonly { readonly field: string; readonly column: string }[];
-      /** The `updatedAt`/`updatedBy` stamps, written whenever a field is. */
-      readonly stamps: readonly DerivedStamp[];
       readonly emit: DerivedEmit;
     }
   | { readonly kind: 'delete'; readonly idFrom: string; readonly emit: DerivedEmit }
@@ -1396,7 +1394,7 @@ export type DerivationPlan = {
       readonly parent?: DerivedParent;
       /** input field → the column it fills. A field the caller left out is `NULL`. */
       readonly values: readonly { readonly field: string; readonly column: string }[];
-      /** Every stamp, since an insert is both a creation and a write. */
+      /** Every stamp: each is written on insert. */
       readonly stamps: readonly DerivedStamp[];
       /** The natural key's columns — a row already holding them is the answer. Empty for none. */
       readonly key: readonly string[];
@@ -1679,7 +1677,6 @@ function updatePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
     permission: target.permission,
     idFrom,
     fields,
-    stamps: stampList(stamps).filter(({ kind }) => kind === 'updatedAt' || kind === 'updatedBy'),
     emit: emitOf(decl),
   };
 }

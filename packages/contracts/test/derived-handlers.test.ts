@@ -47,11 +47,11 @@ const entities = defineEntities({
       note: z.string().nullable(),
       created_at: z.string(),
       created_by: z.string(),
-      updated_at: z.string(),
     }),
     parents: ['folder'],
     key: ['folder_id', 'label'],
-    stamps: { created_at: 'createdAt', created_by: 'createdBy', updated_at: 'updatedAt' },
+    // Declared out of order, so the rendered artifact's sort is visible.
+    stamps: { created_by: 'createdBy', created_at: 'createdAt' },
   },
   // Its natural key holds a stamp, which no input carries — so nothing can match it before the insert.
   badge: {
@@ -266,7 +266,7 @@ describe('derivationOf — update', () => {
     });
   });
 
-  it("writes the entity's update stamps, and no create stamp (#2157)", () => {
+  it('writes no stamp, and refuses a body field that would rewrite one (#2157)', () => {
     const tagUpdate = {
       ...UPDATE,
       permission: { key: 'note:write', entity: 'tag', idFrom: 'tagId' },
@@ -276,12 +276,9 @@ describe('derivationOf — update', () => {
       concurrency: { over: 'tag', idFrom: 'tagId' },
       emits: { ...emitsTag, type: 't.updated' },
     } as const;
-    expect(derivationOf(tagUpdate, entities)).toMatchObject({
-      kind: 'update',
-      fields: [{ field: 'note', column: 'note' }],
-      stamps: [{ column: 'updated_at', kind: 'updatedAt' }],
-    });
-    expect(derivationOf(UPDATE, entities)).toMatchObject({ stamps: [] });
+    const plan = derivationOf(tagUpdate, entities);
+    expect(plan).toMatchObject({ kind: 'update', fields: [{ field: 'note', column: 'note' }] });
+    expect(plan).not.toHaveProperty('stamps');
     const writesStamp = { ...tagUpdate, input: z.object({ tagId: z.string(), createdBy: z.string().optional() }) };
     expect(kindOf(writesStamp)).toBeUndefined();
     expect(() => define({ 't/upd': { ...writesStamp, derive: 'update' } })).toThrow(
@@ -341,7 +338,7 @@ describe('derivationOf — create (#2157)', () => {
       entity: 'tag',
       table: 't_tags',
       primaryKey: 'id',
-      columns: ['id', 'folder_id', 'label', 'note', 'created_at', 'created_by', 'updated_at'],
+      columns: ['id', 'folder_id', 'label', 'note', 'created_at', 'created_by'],
       permission: { key: 'note:write', entity: 'folder', idFrom: 'folderId' },
       parent: { entity: 'folder', table: 't_folders', primaryKey: 'id', idFrom: 'folderId', column: 'folder_id' },
       values: [
@@ -349,9 +346,8 @@ describe('derivationOf — create (#2157)', () => {
         { field: 'note', column: 'note' },
       ],
       stamps: [
-        { column: 'created_at', kind: 'createdAt' },
         { column: 'created_by', kind: 'createdBy' },
-        { column: 'updated_at', kind: 'updatedAt' },
+        { column: 'created_at', kind: 'createdAt' },
       ],
       key: ['folder_id', 'label'],
       emit: { type: 't.created', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] },
@@ -474,24 +470,26 @@ describe('stamps (#2157)', () => {
       },
     });
 
-  it('accepts a string column, any of the four kinds', () => {
+  it('accepts a string column, either of the two kinds', () => {
     expect(stamped({ at: 'createdAt' })).not.toThrow();
-    expect(stamped({ at: 'updatedBy' })).not.toThrow();
+    expect(stamped({ at: 'createdBy' })).not.toThrow();
   });
 
   it.each([
     [{ gone: 'createdAt' }, "model: e.stamps names 'gone', which is not a field"],
     [{ id: 'createdAt' }, "model: e.stamps names 'id', which is the primary key"],
     [{ n: 'createdAt' }, "model: e.stamps names 'n', which is not a string column"],
-    [{ at: 'deletedAt' }, "model: e.stamps.at is 'deletedAt' — a stamp is one of createdAt, createdBy, updatedAt, updatedBy"],
+    [{ at: 'deletedAt' }, "model: e.stamps.at is 'deletedAt' — a stamp is one of createdAt, createdBy"],
+    // Not yet: an updated pair waits for the host to hold it on every write (#2166).
+    [{ at: 'updatedAt' }, "model: e.stamps.at is 'updatedAt' — a stamp is one of createdAt, createdBy"],
   ])('refuses %j', (stamps, message) => {
     expect(stamped(stamps)).toThrow(message);
   });
 
   it('renders into the model, sorted, in a shape the artifact schema parses', () => {
     const model = emitModel(entities);
-    expect(model.entities.tag?.stamps).toEqual({ created_at: 'createdAt', created_by: 'createdBy', updated_at: 'updatedAt' });
-    expect(Object.keys(model.entities.tag?.stamps ?? {})).toEqual(['created_at', 'created_by', 'updated_at']);
+    expect(model.entities.tag?.stamps).toEqual({ created_at: 'createdAt', created_by: 'createdBy' });
+    expect(Object.keys(model.entities.tag?.stamps ?? {})).toEqual(['created_at', 'created_by']);
     expect(model.entities.note).not.toHaveProperty('stamps');
     expect(emittedModel.parse(model).entities.tag?.stamps).toEqual(model.entities.tag?.stamps);
   });
