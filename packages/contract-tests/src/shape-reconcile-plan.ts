@@ -89,24 +89,26 @@ export function shapeReconcilePlans(
   const backfills: Record<HolderKind, string[]> = { self: [], grantee: [], table: [] };
   const scans: string[] = [];
   let [marks, fetched] = [0, 0];
+  /** Which holder kind a statement is the backfill read of, if it is one. */
+  const backfillOf = (sql: string, params: readonly Param[]): HolderKind | null =>
+    sql.includes(`FROM "${BADGES}" e`) ? 'table' : sql.includes('(t.object, t.relation, t.subject) > (?, ?, ?)') ? (params.includes('seat;') ? 'self' : 'grantee') : null;
   const plan = (sql: string, params: readonly Param[]) => {
     if (!/^\s*(SELECT|UPDATE|DELETE)/i.test(sql)) return;
     const detail = raw.all(`EXPLAIN QUERY PLAN ${sql}`, ...params).map((r) => String(r['detail']));
     const joined = detail.join(' | ');
     if (sql.includes('(m.object, m.subject) > (?, ?)')) walks.push(joined);
-    if (sql.includes(`FROM "${BADGES}" e`)) backfills.table.push(joined);
-    if (sql.includes('(t.object, t.relation, t.subject) > (?, ?, ?)')) backfills[params.includes('seat;') ? 'self' : 'grantee'].push(joined);
+    const kind = backfillOf(sql, params);
+    if (kind) backfills[kind].push(joined);
     // A virtual table (`json_each`) is scanned by design, and so is the schema table a table holder's
     // existence is read from; a scan of the tuple table, or of the holder's table, never is.
     for (const d of detail) if (/^SCAN /.test(d) && !/VIRTUAL TABLE|^SCAN sqlite_master$/.test(d)) scans.push(`${d} — ${sql.replace(/\s+/g, ' ').slice(0, 160)}`);
   };
-  const isBackfillRead = (sql: string) => sql.includes(`FROM "${BADGES}" e`) || sql.includes('(t.object, t.relation, t.subject) > (?, ?, ?)');
   const sql: SwitchSql = {
     all: (q, ...p) => {
       if (q.startsWith('EXPLAIN')) return raw.all(q, ...p); // the kernel's own plan check: not a read of rows
       plan(q, p);
       const rows = raw.all(q, ...p);
-      if (isBackfillRead(q)) fetched += rows.length;
+      if (backfillOf(q, p)) fetched += rows.length;
       return rows;
     },
     run: (q, ...p) => {
@@ -124,7 +126,7 @@ export function shapeReconcilePlans(
   let after: ShapeCursor | null = null;
   let passes = 0;
   let maxFetched = 0;
-  let maxRowsRead: number | null = opts.rowsRead ? 0 : null;
+  let maxRowsRead = 0;
   do {
     fetched = 0;
     const before = opts.rowsRead?.() ?? 0;
@@ -139,7 +141,7 @@ export function shapeReconcilePlans(
     }).next;
     maxFetched = Math.max(maxFetched, fetched);
     // `EXPLAIN QUERY PLAN` executes nothing, so the probe's own planning adds no rows read.
-    if (opts.rowsRead) maxRowsRead = Math.max(maxRowsRead!, opts.rowsRead() - before);
+    maxRowsRead = Math.max(maxRowsRead, (opts.rowsRead?.() ?? 0) - before);
     passes++;
   } while (after && passes < 100_000);
 
@@ -165,6 +167,6 @@ export function shapeReconcilePlans(
     holders,
     maxFetched,
     window: LIMIT * SHAPE_MARKER_READS_PER_ROW,
-    maxRowsRead,
+    maxRowsRead: opts.rowsRead ? maxRowsRead : null,
   };
 }

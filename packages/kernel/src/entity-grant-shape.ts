@@ -390,11 +390,7 @@ function walkMarkers(
     window,
   ) as WindowRow[];
   const { found, done, last } = takeWindow(rows, window, room);
-  return {
-    found: found.map((r) => ({ subject: r.subject, object: r.object })),
-    done,
-    at: last ? { object: last.object, subject: last.subject } : after,
-  };
+  return { found, done, at: last ? { object: last.object, subject: last.subject } : after };
 }
 
 /**
@@ -555,16 +551,10 @@ function reopenRetirements(db: SwitchSql, pass: ShapePass, entityType: string, k
   );
 }
 
-/** Where a backfill read stopped: `done` once it read its whole range, else the last row it read. */
-interface BackfillRead {
-  done: boolean;
-  at: ShapeCursor['row'];
-}
-
 /**
  * One window of the backfill for one shape after `after` (#2154), as one {@link takeWindow}: at
  * most `room.reads` rows read, in an index order a cursor can seek, and at most `room.writes`
- * marks. The run-once record is written only by the window that reads to the end of the range, so
+ * marks; `done` once it read its whole range, else `at` is the last row it read. The run-once record is written only by the window that reads to the end of the range, so
  * a backfill cut short by either budget hands back where it stopped and keeps no record. See the
  * module comment: provenance only, from the shape's declared `holder`.
  */
@@ -576,7 +566,7 @@ function backfill(
   json: string,
   room: Room,
   after: ShapeCursor['row'],
-): BackfillRead {
+): { done: boolean; at: ShapeCursor['row'] } {
   if (!shape.holder) return { done: true, at: null };
   const [shapeRef, scopeRef] = recordRefs(shape.entityType, pass.scopeId);
   const record = [shapeRef, BACKFILLED_RELATION, scopeRef] as const;
@@ -592,37 +582,36 @@ function backfill(
     `EXISTS (SELECT 1 FROM _substrat_tuples g WHERE g.subject = ${subject} AND g.object = ${object}
                AND g.relation IN (SELECT 'granted:' || value FROM json_each(?)))`;
   const shapeKey = `t.relation IN (SELECT 'granted:' || value FROM json_each(?))`;
-  // A tuple's row carries its relation, a table's its id: the parts of the sort key past the pair.
-  let rows: (WindowRow & { relation?: string; id?: string | number })[];
+  // The rows of the window, and the sort key the cursor carries for a row.
+  let rows: WindowRow[];
+  let keyOf: (r: WindowRow) => (string | number)[];
   if (shape.holder === 'self' || shape.holder === 'grantee') {
     // The type's tuples on `_substrat_tuples_object_relation_subject`, in its order, so the cursor
     // is a row-value seek into the range. Every tuple of the type is read, a key of another shape
     // or a marker included; which of them make a candidate is `hit`.
     const [, end] = typeRange(prefix);
     const from = after ?? [prefix, '', ''];
-    const self = shape.holder === 'self';
+    const [holds, holdsParams] =
+      shape.holder === 'self'
+        ? // The entity id IS the principal: `owner:<p>` belongs to `principal:<p>` and nobody else.
+          [`t.subject = '${PRINCIPAL}' || substr(t.object, ${prefix.length + 1})`, []]
+        : // Whoever holds a LIVE key of the shape on an entity of this type. Live, unlike the other
+          // two holders: with no record naming the person, a key taken back from them is no evidence
+          // they still belong there, and marking them would hand a revoked portal the next key it gains.
+          [`substr(t.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}' AND ${liveTupleSql('t')}`, [pass.now]];
     rows = db.all(
-      `SELECT t.object, t.relation, t.subject,
-              (${shapeKey} AND ${
-                self
-                  ? // The entity id IS the principal: `owner:<p>` belongs to `principal:<p>` and nobody else.
-                    `t.subject = '${PRINCIPAL}' || substr(t.object, ${prefix.length + 1})`
-                  : // Whoever holds a LIVE key of the shape on an entity of this type. Live, unlike the
-                    // other two holders: with no record naming the person, a key taken back from them is no
-                    // evidence they still belong there, and marking them would hand a revoked portal the
-                    // next key it gains.
-                    `substr(t.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}' AND ${liveTupleSql('t')}`
-              } AND ${unmarked('t.subject', 't.object')}) AS hit
+      `SELECT t.object, t.relation, t.subject, (${shapeKey} AND ${holds} AND ${unmarked('t.subject', 't.object')}) AS hit
          FROM _substrat_tuples t
         WHERE (t.object, t.relation, t.subject) > (?, ?, ?) AND t.object < ?
         ORDER BY t.object, t.relation, t.subject
         LIMIT ?`,
       json,
-      ...(self ? [] : [pass.now]),
+      ...holdsParams,
       ...from,
       end,
       window,
-    ) as typeof rows;
+    ) as WindowRow[];
+    keyOf = (r) => [r.object, (r as WindowRow & { relation: string }).relation, r.subject];
   } else {
     const { table, idColumn, principalColumn } = shape.holder;
     const where = `entityGrants holder of '${shape.entityType}'`;
@@ -645,27 +634,15 @@ function backfill(
                   LIMIT ?`;
     const params = [prefix, prefix, json, prefix, ...(after ? [after[0]!] : []), window];
     if (!after) warnUnboundedRead(db, pass, shape.entityType, { table, idColumn }, sql, params);
-    rows = db.all(sql, ...params) as typeof rows;
+    rows = db.all(sql, ...params) as WindowRow[];
+    keyOf = (r) => [(r as WindowRow & { id: string | number }).id];
   }
   const { found, done, last } = takeWindow(rows, window, room);
   for (const c of found) {
     db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', c.subject, ENTITY_SHAPE_MARKER_RELATION, c.object);
   }
   if (done) db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', ...record);
-  const at = !last ? after : last.relation !== undefined ? [last.object, last.relation, last.subject] : [last.id!];
-  return { done, at };
-}
-
-/** The line {@link warnUnboundedRead} writes: one JSON line, its keys a contract like the log lines'. */
-interface ShapeBackfillUnboundedLine {
-  substrat: 'shape-backfill-unbounded';
-  level: 'warn';
-  tenantId: string;
-  scopeId: string;
-  entityType: string;
-  table: string;
-  idColumn: string;
-  message: string;
+  return { done, at: last ? keyOf(last) : after };
 }
 
 /**
@@ -673,7 +650,8 @@ interface ShapeBackfillUnboundedLine {
  * an index; where it must sort instead (`idColumn` leads no index), every window reads the whole
  * table. The schema is the vertical's, known only on the scope, so the backfill's first window
  * asks SQLite for the plan of the read it is about to send and writes one structured warn line
- * when the plan sorts. The read still runs: the backfill is correct, only unbounded.
+ * when the plan sorts, its keys a contract as the log lines' are. The read still runs: the backfill
+ * is correct, only unbounded.
  */
 function warnUnboundedRead(
   db: SwitchSql,
@@ -685,16 +663,17 @@ function warnUnboundedRead(
 ): void {
   const plan = db.all(`EXPLAIN QUERY PLAN ${sql}`, ...params).map((r) => String(r['detail']));
   if (!plan.some((d) => d.startsWith('USE TEMP B-TREE FOR ORDER BY'))) return;
-  const line: ShapeBackfillUnboundedLine = {
-    substrat: 'shape-backfill-unbounded',
-    level: 'warn',
-    tenantId: pass.tenantId,
-    scopeId: pass.scopeId,
-    entityType,
-    ...holder,
-    message: `the entity-grant backfill of '${entityType}' sorts all of "${holder.table}" on every pass: index "${holder.idColumn}" to bound it`,
-  };
-  console.warn(JSON.stringify(line));
+  console.warn(
+    JSON.stringify({
+      substrat: 'shape-backfill-unbounded',
+      level: 'warn',
+      tenantId: pass.tenantId,
+      scopeId: pass.scopeId,
+      entityType,
+      ...holder,
+      message: `the entity-grant backfill of '${entityType}' sorts all of "${holder.table}" on every pass: index "${holder.idColumn}" to bound it`,
+    }),
+  );
 }
 
 /**

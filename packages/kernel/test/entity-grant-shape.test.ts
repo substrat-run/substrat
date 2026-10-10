@@ -82,6 +82,27 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
     return { db, sql, keysOf, shape, tuple, topUp, pass, run };
   };
   const who = () => principalId.parse(ulid());
+  /**
+   * One pass at `after`, with the rows its marker walks (`read`) and backfill reads fetched, and
+   * the markers its backfill wrote.
+   */
+  const step = (t: ReturnType<typeof fresh>, shapes: readonly unknown[], limit: number, after: ShapeCursor | null) => {
+    let [read, backfillRead, marks] = [0, 0, 0];
+    const sql: SwitchSql = {
+      all: (q, ...p) => {
+        const rows = t.sql.all(q, ...p);
+        if (q.includes('(m.object, m.subject) > (?, ?)')) read += rows.length;
+        if (/\(t\.object, t\.relation, t\.subject\) > \(\?, \?, \?\)|^SELECT e\./.test(q.trim())) backfillRead += rows.length;
+        return rows;
+      },
+      run: (q, ...p) => {
+        if (q.startsWith('INSERT OR IGNORE') && p[1] === 'bootstrap') marks++;
+        t.sql.run(q, ...p);
+      },
+    };
+    const r = topUpEntityGrantShapes(sql, { tenantId: T, scopeId: S, shapes: shapes as never, now: NOW, limit, after, mintEventId: () => ulid(), version: null });
+    return { ...r, read, backfillRead, marks };
+  };
 
   it('a holder granted the old shape is given the key the shape gained, and the result says so', () => {
     const t = fresh();
@@ -659,20 +680,6 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
   describe('passes resume from a cursor and read a bounded window', () => {
     const GROWN_SHAPE = [{ entityType: 'employee', permissions: GROWN, bootstrap: true }];
     const id = (i: number) => `e${String(i).padStart(2, '0')}`;
-    /** One pass, with the rows each marker walk read. */
-    const step = (t: ReturnType<typeof fresh>, shapes: unknown[], limit: number, after: ShapeCursor | null) => {
-      let read = 0;
-      const sql: SwitchSql = {
-        all: (q, ...p) => {
-          const rows = t.sql.all(q, ...p);
-          if (q.includes('(m.object, m.subject) > (?, ?)')) read += rows.length;
-          return rows;
-        },
-        run: t.sql.run,
-      };
-      const r = topUpEntityGrantShapes(sql, { tenantId: T, scopeId: S, shapes: shapes as never, now: NOW, limit, after, mintEventId: () => ulid(), version: null });
-      return { ...r, read };
-    };
     /** A whole reconcile, as the adapters run it: passes until one hands back no cursor. */
     const reconcile = (t: ReturnType<typeof fresh>, shapes: unknown[], limit: number, cap = 50) => {
       let after: ShapeCursor | null = null;
@@ -851,26 +858,6 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
    */
   describe('the backfill reads a bounded window and resumes from the cursor (#2154)', () => {
     const pad = (i: number) => String(i).padStart(3, '0');
-    const BACKFILL_READ = /\(t\.object, t\.relation, t\.subject\) > \(\?, \?, \?\)|FROM "hr_employees" e/;
-    const WALK_READ = '(m.object, m.subject) > (?, ?)';
-    /** One pass, with the rows its backfill and walk reads fetched and the markers it wrote. */
-    const step = (t: ReturnType<typeof fresh>, shapes: unknown[], limit: number, after: ShapeCursor | null) => {
-      let [backfillRead, walkRead, marks] = [0, 0, 0];
-      const sql: SwitchSql = {
-        all: (q, ...p) => {
-          const rows = t.sql.all(q, ...p);
-          if (!q.startsWith('EXPLAIN') && BACKFILL_READ.test(q)) backfillRead += rows.length;
-          if (q.includes(WALK_READ)) walkRead += rows.length;
-          return rows;
-        },
-        run: (q, ...p) => {
-          if (q.startsWith('INSERT OR IGNORE') && p[1] === 'bootstrap') marks++;
-          t.sql.run(q, ...p);
-        },
-      };
-      const r = topUpEntityGrantShapes(sql, { tenantId: T, scopeId: S, shapes: shapes as never, now: NOW, limit, after, mintEventId: () => ulid(), version: null });
-      return { ...r, backfillRead, walkRead, marks };
-    };
     const record = (t: ReturnType<typeof fresh>, entityType: string) =>
       (t.db.prepare("SELECT count(*) AS n FROM _substrat_tuples WHERE subject = ? AND relation = 'shape-backfilled'").get(`shape:${entityType}`) as { n: number }).n;
     const markersOf = (t: ReturnType<typeof fresh>, entityType: string) =>
@@ -953,7 +940,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
           const passes: ReturnType<typeof step>[] = [];
           let after: ShapeCursor | null = null;
           do {
-            const r = step(t, world.shapes as unknown as unknown[], limit, after);
+            const r = step(t, world.shapes, limit, after);
             passes.push(r);
             after = r.next;
           } while (after && passes.length < 2000);
@@ -965,7 +952,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
           const expected = world.seed(t, 40);
           const passes = reconcile(t);
           expect(passes.at(-1)!.next).toBeNull();
-          for (const p of passes) expect(p.backfillRead + p.walkRead).toBeLessThanOrEqual(SHAPE_MARKER_READS_PER_ROW);
+          for (const p of passes) expect(p.backfillRead + p.read).toBeLessThanOrEqual(SHAPE_MARKER_READS_PER_ROW);
           expect(markersOf(t, world.entityType)).toEqual(expected);
           // Marked once each: no pass wrote a marker an earlier pass had written.
           expect(passes.reduce((n, p) => n + p.marks, 0)).toBe(expected.length);
@@ -990,18 +977,19 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
             return Math.max(...reconcile(t, 5).map((p) => p.backfillRead));
           };
           expect(max(320)).toBe(max(80));
-          expect(max(80)).toBeLessThanOrEqual(5 * SHAPE_MARKER_READS_PER_ROW);
+          // A whole window: the read budget of a pass at `limit` 5, and never more.
+          expect(max(80)).toBe(5 * SHAPE_MARKER_READS_PER_ROW);
         });
 
         it('a cursor from before #2154 (a backfill with no row) reads the backfill again from the start, marking nobody twice', () => {
           const t = fresh();
           const expected = world.seed(t, 30);
-          const first = step(t, world.shapes as unknown as unknown[], 3, null);
+          const first = step(t, world.shapes, 3, null);
           expect(first.next).toMatchObject({ shape: 0, step: 'backfill', row: expect.any(Array) });
           let after: ShapeCursor | null = { shape: 0, step: 'backfill', marker: null };
           let marks = first.marks;
           for (let n = 0; after && n < 500; n++) {
-            const r = step(t, world.shapes as unknown as unknown[], 3, after);
+            const r = step(t, world.shapes, 3, after);
             marks += r.marks;
             after = r.next;
           }
@@ -1014,7 +1002,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
 
     it('the run-once record waits for the read to reach the end, though a pass marked fewer than it could', () => {
       const t = fresh();
-      const shapes = worlds.self.shapes as unknown as unknown[];
+      const shapes = worlds.self.shapes;
       const anna = who();
       insert(t, `principal:${anna}`, 'granted:list:manage', `owner:${anna}`);
       const late = 'ZZZZZZZZZZZZZZZZZZZZZZZZZZ'; // an owner whose record sorts after anna's
@@ -1035,7 +1023,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
 
     it('a holder granted behind the cursor while the backfill runs is not marked: the cut-off is the cursor', () => {
       const t = fresh();
-      const shapes = worlds.self.shapes as unknown as unknown[];
+      const shapes = worlds.self.shapes;
       const owners = [who(), who(), who()].sort();
       for (const p of owners) insert(t, `principal:${p}`, 'granted:list:manage', `owner:${p}`);
       const first = step(t, shapes, 1, null);
@@ -1062,7 +1050,7 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
           let after: ShapeCursor | null = null;
           let passes = 0;
           do {
-            after = step(t, worlds.table.shapes as unknown as unknown[], 1, after).next;
+            after = step(t, worlds.table.shapes, 1, after).next;
             passes++;
           } while (after && passes < 100);
           expect(passes).toBeGreaterThan(1);
