@@ -20,8 +20,8 @@ import {
 import {
   assertAllowed,
   crossVerticalHealth,
-  REDACTED_DELIVERY_NOTE,
   INERT_SCOPE_REASON,
+  REDACTED_DELIVERY_NOTE,
   runPlatformSweep,
   ulid,
   type CrossVerticalReach,
@@ -247,8 +247,7 @@ interface BoardView {
   imports: { event_id: string; source_vertical: string; source_scope_id: string; type: string; hops: number; withheld: string | null }[];
   deliveries: { event_id: string; consumer_module: string; error: string | null }[];
   outbox: { id: string; type: string; caused_by: string | null; actor: string }[];
-  /** #1705 PR 3: what a replay moved aside, never deleted. */
-  /** `error` is the moved delivery row's (#1757); a journal row has none. */
+  /** #1705 PR 3: what a replay moved aside, never deleted. `error` is a moved delivery row's (#1757). */
   replays: { replay_id: string; kind: string; event_id: string; consumer_module: string; error: string | null }[];
 }
 
