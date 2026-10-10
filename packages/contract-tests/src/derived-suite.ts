@@ -217,5 +217,64 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         expect(await codeOf(asDave.invoke('derived/list-notes', { folderId: 'fb' }))).toBe('permission_denied');
       });
     });
+
+    // The check is on the entity the declaration names, not the scope: a principal holding the
+    // key on ONE row (or one parent) reaches that row and no other. A check that dropped the
+    // entity would deny the twins below, since an entity-narrowed grant is no node-level grant.
+    describe('entity-narrowed grants', () => {
+      const nina: PrincipalId = principalId.parse(ulid());
+      const fran: PrincipalId = principalId.parse(ulid());
+      let asNina: ScopeStub;
+      let asFran: ScopeStub;
+      let n1: Note;
+      let n2: Note;
+      const narrow = (principal: PrincipalId, key: string, entityType: string, entityId: string) =>
+        host.admin.grant(staff, {
+          principalId: principal,
+          permission: permissionKey.parse(key),
+          node: { tenantId: t, scopeId: s },
+          entity: { entityType, entityId },
+          grantedBy: alice,
+        });
+      const update = (who: ScopeStub, noteId: string, title: string) =>
+        who.invoke<Note>('derived/update-note', { noteId, title });
+      const del = (who: ScopeStub, noteId: string) => who.invoke('derived/delete-note', { noteId });
+      const list = (who: ScopeStub, folderId: string) =>
+        who.invoke<CountedPage<Note>>('derived/list-notes', { folderId, limit: 50 });
+
+      beforeAll(async () => {
+        n1 = await addNote('fa', 'mine', 61);
+        n2 = await addNote('fa', 'theirs', 62);
+        await narrow(nina, 'dnote:read', 'dnote', n1.id);
+        await narrow(nina, 'dnote:write', 'dnote', n1.id);
+        await narrow(fran, 'dnote:read', 'dfolder', 'fa');
+        asNina = await host.getScope(nina, t, s);
+        asFran = await host.getScope(fran, t, s);
+      });
+
+      it('get: the granted row answers, its sibling is denied', async () => {
+        expect(await get(asNina, n1.id)).toEqual(n1);
+        expect(await codeOf(get(asNina, n2.id))).toBe('permission_denied');
+      });
+
+      it('update: the granted row is written, its sibling is denied and left alone', async () => {
+        expect((await update(asNina, n1.id, 'mine, edited')).title).toBe('mine, edited');
+        expect(await codeOf(update(asNina, n2.id, 'not yours'))).toBe('permission_denied');
+        expect(await get(as, n2.id)).toEqual(n2);
+      });
+
+      it('delete: the sibling is denied and stays, the granted row goes', async () => {
+        expect(await codeOf(del(asNina, n2.id))).toBe('permission_denied');
+        expect(await get(as, n2.id)).toEqual(n2);
+        expect(await del(asNina, n1.id)).toEqual({ id: n1.id, deleted: true });
+      });
+
+      it('list: the granted folder pages, the other folder is denied', async () => {
+        const page = await list(asFran, 'fa');
+        expect(page.entries.map((n) => n.id)).toContain(n2.id);
+        expect(page.entries.every((n) => n.folder_id === 'fa')).toBe(true);
+        expect(await codeOf(list(asFran, 'fb'))).toBe('permission_denied');
+      });
+    });
   });
 }
