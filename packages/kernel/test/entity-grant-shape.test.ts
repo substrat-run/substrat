@@ -791,21 +791,27 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       for (let i = 0; i < 30; i++) t.shape(who(), id(i), OLD);
       let after: ShapeCursor | null = null;
       let [passes, leftOpen, granted] = [0, 0, 0];
+      // Each confirming walk spans several passes here (30 markers, a window of 10), so its cursors
+      // show it: the counts seen are the confirming walks that ran.
+      const confirms = new Set<number>();
       do {
         // An older deployment granting the shape as it was, cancel included, ahead of every walk.
         if (stream && passes % 2 === 0) t.shape(who(), `z${String(granted++).padStart(4, '0')}`, GROWN);
         const r = step(t, RETIRING, 1, after);
         leftOpen += r.retirementsLeftOpen;
         after = r.next;
+        if (after?.confirm) confirms.add(after.confirm.count);
         passes++;
       } while (after && passes < 2000);
-      return { t, finished: after === null, passes, leftOpen };
+      return { t, finished: after === null, passes, leftOpen, confirms: [...confirms].sort((a, b) => a - b) };
     };
 
     it(`a stream of grants of a retired key ends the reconcile after ${SHAPE_RETIRE_CONFIRMS_MAX} confirming walks that took keys, unrecorded`, () => {
       const run = streamed(true);
       expect([run.finished, run.leftOpen, retiredRecord(run.t)]).toEqual([true, 1, { n: 0 }]);
       expect(run.passes).toBeLessThan(2000);
+      // Exactly the cap: confirming walks 0 … max−1 ran, each took keys, and none after the last.
+      expect(run.confirms).toEqual(Array.from({ length: SHAPE_RETIRE_CONFIRMS_MAX }, (_, i) => i));
     });
 
     it('...and with no stream the same retirement records itself finished, left open nowhere', () => {
