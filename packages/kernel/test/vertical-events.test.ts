@@ -6,11 +6,11 @@ import {
   exportReadPlan,
   moveImportCursor,
   ulid,
-  ulidCeiling,
   planExportBatch,
   type ExportRow,
   type ImportHandler,
 } from '../src/index.js';
+import { ulidCeiling } from '../src/ulid.js';
 
 /** #1705's shared decisions, pure: registration refusals, the read plan, and the release. */
 

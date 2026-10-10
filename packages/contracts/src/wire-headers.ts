@@ -71,6 +71,17 @@ export type LiveRefusal =
   | 'forbidden';
 
 /**
+ * The close codes a live socket ends with, so a client can tell "try again" from "poll".
+ *
+ * - `1008` (policy): the subscriber may no longer watch what it subscribed to — a
+ *   `checkedWithin` gate refused, or the session that opened it ended. A reconnect meets
+ *   the handshake's own refusal.
+ * - `4429`: this principal already holds `LIVE_SOCKETS_PER_PRINCIPAL` sockets on the scope.
+ *   Not a reason to retry: the client should poll, which it does anyway, and stop asking.
+ */
+export const LIVE_CLOSE = { revoked: 1008, tooMany: 4429 } as const;
+
+/**
  * The RESPONSE header on `/internal/export` carrying the scope store's load stamp, read in the
  * same call as the dump it rides beside (#1722). A carry's fenced wipe of the copy it leaves
  * behind expects exactly this stamp, so the wipe is refused when anything was loaded into the

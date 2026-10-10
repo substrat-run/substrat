@@ -6,6 +6,7 @@
  * `FeedDeps`, so the node suite drives this with a fake socket and fake timers, and
  * `live.ts` binds it to the browser's `WebSocket` and the hook the screens call.
  */
+import { LIVE_CLOSE } from '@substrat-run/contracts/wire-headers';
 
 /**
  * The part of a frame this app reads: the kernel's `LiveChange`, cut down to what the
@@ -55,13 +56,6 @@ export interface FeedListener {
   /** The feed opened or closed. */
   state(open: boolean): void;
 }
-
-/**
- * The close code a scope sends when this principal already holds as many live sockets as
- * it may (the kernel's `LIVE_CLOSE.tooMany`, restated because the browser bundle does not
- * depend on the kernel). Not a reason to retry: the feed stops trying and the screen polls.
- */
-export const CLOSE_TOO_MANY = 4429;
 
 export const FEED_TIMING = {
   /** Connections in a row that did not hold before the feed stops trying for a while. */
@@ -221,7 +215,7 @@ export function createFeed(deps: FeedDeps): Feed {
       teardown();
       // Too many sockets for this principal: the scope said poll. Asking again would only
       // be told the same, so this feed stops for the life of the page.
-      if (event?.code === CLOSE_TOO_MANY) {
+      if (event?.code === LIVE_CLOSE.tooMany) {
         ended = true;
         return;
       }

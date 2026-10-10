@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DO_SQL_LIMITS, assertWithinSqlLimits, guardSqlLimits, type ScopedSql } from '../src/index.js';
+import { DO_SQL_LIMITS, guardSqlLimits, type ScopedSql } from '../src/index.js';
+import { assertWithinSqlLimits } from '../src/sql-limits.js';
 
 /**
  * The scanner behind `guardSqlLimits` (#1741). What the hosted values ARE is pinned against a

@@ -26,8 +26,6 @@ import {
 } from '@substrat-run/contracts';
 import {
   checkedWithin,
-  LIVE_CLOSE,
-  LIVE_SOCKETS_PER_PRINCIPAL,
   ulid,
   vouchedWithin,
   webCryptoSecretBox,
@@ -37,7 +35,7 @@ import {
   type VouchedWithin,
 } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
-import { LIVE_MODE_HEADER, O2O_HEADER, readSubscription } from '../src/live-reads.js';
+import { LIVE_CLOSE, LIVE_MODE_HEADER, LIVE_SOCKETS_PER_PRINCIPAL, O2O_HEADER, readSubscription } from '../src/live-reads.js';
 import { warmControlPlane } from './do-warmup.js';
 
 const staff = platformActorId.parse(ulid());

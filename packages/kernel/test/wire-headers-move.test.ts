@@ -4,8 +4,9 @@
  * definition of each string: two agree only until one of them is edited.
  *
  * The other moved names are held by their new homes' tests. What this file also pins is that
- * no deprecation is left in the index, and that the platform-call check — which moved to
- * contracts' `./wire-auth` (#1998) — is gone from the kernel too.
+ * no deprecation is left in the index, that the platform-call check — which moved to
+ * contracts' `./wire-auth` (#1998) — is gone from the kernel too, and that the live-socket
+ * cap is: it is the hosted adapter's own policy, defined in its `live-reads.ts`.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -35,7 +36,7 @@ describe('wire header names, moved to contracts (#1978)', () => {
     expect(tagged()).toEqual([]);
   });
 
-  it.each(['assertPlatformCall', 'PlatformCallError', 'kickFlags', 'secretMatches'])(
+  it.each(['assertPlatformCall', 'PlatformCallError', 'kickFlags', 'secretMatches', 'LIVE_SOCKETS_PER_PRINCIPAL'])(
     'the kernel no longer exports %s',
     (name) => {
       expect(kernelExports[name], name).toBeUndefined();
@@ -75,6 +76,7 @@ describe('wire header names, moved to contracts (#1978)', () => {
       LIVE_MODE_HEADER: 'x-substrat-live',
       LOAD_STAMP_HEADER: 'x-substrat-load-stamp',
       WRITE_REVISION_HEADER: 'x-substrat-write-revision',
+      LIVE_CLOSE: { revoked: 1008, tooMany: 4429 },
     });
   });
 });

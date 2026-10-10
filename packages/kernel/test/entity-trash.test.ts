@@ -13,9 +13,6 @@ import {
 import {
   refuseTrashedTarget,
   entityStateMigrations,
-  entityStatePlans,
-  purgeCandidates,
-  purgeCutoffOf,
   purgeHeldBy,
   purgeOnlyKeysOf,
   purgeReportOf,
@@ -26,6 +23,8 @@ import {
   SCHEDULE_STATE_DDL,
   type PurgeGateFacts,
 } from '../src/index.js';
+import { entityStatePlans } from '../src/entity-state.js';
+import { purgeCandidates, purgeCutoffOf } from '../src/entity-trash.js';
 import { purgeLapOf, readPurgeLap, type PurgeDue } from '../src/entity-trash.js';
 
 /**

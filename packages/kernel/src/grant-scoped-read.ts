@@ -34,8 +34,8 @@ type Frame = { ref: string; after: string; entered: boolean };
 type Position = { v: 1; permission: string; entityType: string; subject: number; rootAfter: string; stack: Frame[] };
 
 const WALK_DEPTH = 4;
-export const GRANT_READ_MAX_LIMIT = 100;
-export const GRANT_READ_WORK_BUDGET = 2_000;
+const GRANT_READ_MAX_LIMIT = 100;
+const GRANT_READ_WORK_BUDGET = 2_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 

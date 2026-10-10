@@ -183,7 +183,7 @@ export interface CapabilityRow {
 }
 
 /** Every column a read returns — everything but `token_hash`, which no reader has a use for. */
-export const CAPABILITY_COLUMNS =
+const CAPABILITY_COLUMNS =
   'id, mode, label, entity_type, entity_id, permissions, operations, attachments, principal, minted_by, ' +
   'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by, target_digest, revoked_reason';
 
@@ -242,7 +242,7 @@ export const DEFAULT_CAPABILITY_LIMIT = 50;
  * records and never a hash" is held in one place: the query selects no `token_hash`, and the
  * decode keeps only the record schema's fields.
  */
-export function readCapabilities(sql: ScopedSql, filter?: CapabilityFilter): CapabilityRecord[] {
+function readCapabilities(sql: ScopedSql, filter?: CapabilityFilter): CapabilityRecord[] {
   const q = capabilityListQuery(filter);
   return sql.query<CapabilityRow>(q.sql, q.params).map(capabilityRecordOf);
 }
@@ -348,7 +348,7 @@ export function mintCapabilitySecret(): string {
 }
 
 /** A fresh session token — the same construction, its own prefix. */
-export function mintCapabilitySessionToken(): string {
+function mintCapabilitySessionToken(): string {
   return CAPABILITY_SESSION_PREFIX + toBase64url(crypto.getRandomValues(new Uint8Array(32)));
 }
 

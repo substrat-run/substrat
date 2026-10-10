@@ -231,6 +231,3 @@ export function refusalInsert(row: RefusalRow): { sql: string; params: (string |
     ],
   };
 }
-
-/** The refused transition an operation failed with, or null. */
-export { refusedTransitionOf };
