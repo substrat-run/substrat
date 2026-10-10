@@ -23,7 +23,12 @@
  * platform's sweeper module, which is added to every such upload.
  */
 
-const HOSTS = Symbol.for('substrat.scope-sweep-host');
+/** The global registry key. Contracts' `PLATFORM_SWEEP_HOST_KEY`, spelled out because this file
+ *  imports nothing: the control plane looks for it in a pushed bundle to tell that the bundle
+ *  registers a host for the sweeper it would supply (#1646). */
+export const SCOPE_SWEEP_HOST_KEY = 'substrat.scope-sweep-host';
+
+const HOSTS = Symbol.for(SCOPE_SWEEP_HOST_KEY);
 
 /** The env var the uploader sets to the binding of the sweeper it supplied (#1902). Contracts'
  *  `PLATFORM_SWEEPER_VAR`, spelled out because this file imports nothing; control-plane-api's

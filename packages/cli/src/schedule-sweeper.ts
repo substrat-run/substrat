@@ -17,7 +17,9 @@
  *   2. no own sweeper, but the platform's names — class `SweeperDO`, binding `SWEEPER` — used
  *      for something else, which the control plane refuses at push;
  *   3. no own sweeper, and a `@substrat-run/vertical-host` too old to register the host the
- *      platform's sweeper runs.
+ *      platform's sweeper runs. The control plane refuses this one too, from the bundle
+ *      (`registersSweepHost` in control-plane-api, #1646), so a push this check cannot judge
+ *      — the package not found, `--allow-unswept-schedules` — still cannot land it.
  *
  * Two callers share this file, and that is why it lives in a published package:
  *

@@ -22,6 +22,7 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { build } from 'esbuild';
 import { deriveDeclaredSurface, sweeperClassesOf } from '../packages/cli/dist/push.js';
 import { platformSweeperDecision, withPlatformEntry } from '../packages/control-plane-api/dist/platform-entry.js';
 
@@ -44,6 +45,38 @@ export function declaredSweeper(dir, cfg) {
 const memo = new Map();
 
 /**
+ * The vertical's entry, bundled and minified the way `substrat push`'s wrangler build does
+ * (esbuild, workerd conditions, `cloudflare:*` left as imports). The push route reads one fact
+ * from these bytes — whether the bundle registers the scope host the supplied sweeper runs
+ * (#1646) — so the decision is made over a real build rather than an empty stand-in, and a
+ * registration a minifier dropped would refuse here first. Memoized per entry.
+ *
+ * @param {string} main  the entry's absolute path
+ * @returns {Promise<Uint8Array>}
+ */
+function bundledEntry(main) {
+  let found = bundles.get(main);
+  if (!found) {
+    found = build({
+      entryPoints: [main],
+      bundle: true,
+      minify: true,
+      format: 'esm',
+      platform: 'neutral',
+      target: 'es2022',
+      conditions: ['workerd', 'worker', 'browser'],
+      mainFields: ['module', 'main'],
+      external: ['cloudflare:*', 'node:*'],
+      write: false,
+      logLevel: 'silent',
+    }).then((r) => r.outputFiles[0].contents);
+    bundles.set(main, found);
+  }
+  return found;
+}
+const bundles = new Map();
+
+/**
  * @param {string} dir  the vertical's directory
  * @param {Record<string, any>} derived  its wrangler config, as `resolveWranglerConfig` derived it
  * @returns {Promise<Record<string, any>>} the config to hand the workers pool
@@ -58,7 +91,7 @@ export async function asUploaded(dir, derived) {
   // The vertical's entry, named by its path from where the platform's modules are written —
   // the uploader names it by its path from the script root, and the entry imports it so.
   const entry = relative(cacheDir, main).split('\\').join('/');
-  const modules = [{ name: entry, content: new Uint8Array(), contentType: 'application/javascript+module' }];
+  const modules = [{ name: entry, content: await bundledEntry(main), contentType: 'application/javascript+module' }];
   const bindings = doBindings.map((b) => ({ type: 'durable_object_namespace', name: b.name, class_name: b.class_name }));
   // The decision the control plane makes once, at push, from the same declaration.
   const decision = platformSweeperDecision({ schedules, bindings, ...(sweeperClasses ? { sweeperClasses } : {}) }, { entry, modules });

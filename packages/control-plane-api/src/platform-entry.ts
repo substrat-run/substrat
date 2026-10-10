@@ -33,6 +33,7 @@ import {
   PLATFORM_SWEEPER_BINDING,
   PLATFORM_SWEEPER_CLASS,
   PLATFORM_SWEEPER_VAR,
+  PLATFORM_SWEEP_HOST_KEY,
   sweeperConflict,
   type DeployManifest,
 } from '@substrat-run/contracts';
@@ -81,6 +82,30 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
 }
 
 /**
+ * Whether any of the vertical's own script modules carries the scope-host registry key — the
+ * one fact about the bundle's bytes the sweeper decision reads (#1646).
+ *
+ * This does not contradict "the bundle's bytes are deliberately not consulted" below. That rule
+ * is about IDENTITY: which class is a sweeper, which no export name or minified method says
+ * reliably, so it comes from the push's declaration. This is about REGISTRATION: the supplied
+ * sweeper runs the host `mountPlatformSurface` puts under `Symbol.for(PLATFORM_SWEEP_HOST_KEY)`,
+ * and that key is a string literal every build keeps — the same kind of fact as
+ * `SHARES_THE_STAMP` above. A bundler drops it with the registration itself, so a bundle on a
+ * vertical-host that predates it, or one that never mounts `mountPlatformSurface`, has none.
+ * Such a bundle's roster is never filled either, so its supplied sweeper would never arm and
+ * never log: the schedules would go unrun with no error anywhere, which is #1646 itself.
+ * The CLI refuses the same case from the installed package (`platformCanSupplySweeper`), but only
+ * when it can find it, only without `--allow-unswept-schedules`, and only from a CLI that has the
+ * check — so the push route is where it holds for every push.
+ */
+function registersSweepHost(bundle: Pick<VerticalBundle, 'modules'>): boolean {
+  const decoder = new TextDecoder();
+  return bundle.modules.some(
+    (m) => !PLATFORM_MODULES.has(m.name) && isScript(m) && decoder.decode(m.content).includes(PLATFORM_SWEEP_HOST_KEY),
+  );
+}
+
+/**
  * Whether the platform supplies a version's scope sweeper (#1902) — decided ONCE, by the push
  * route, from what the push DECLARED (`schedules`, `sweeperClasses`, `bindings`), and recorded
  * with the version (the stored manifest's `platformSweeper`). Every later upload of the version
@@ -102,7 +127,9 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
  * half-matches it cannot tell apart, rather than guessing either way: a wrong "it has one"
  * leaves the schedules unrun, and a wrong "it has none" runs them twice. Last, a bundle the
  * platform entry would not wrap (`platformEntrySkipReason`) cannot carry the sweeper the entry
- * re-exports, and recording "supplied" for it would be a lie every later upload repeats.
+ * re-exports, and recording "supplied" for it would be a lie every later upload repeats — and
+ * neither can a bundle that registers no scope host for that sweeper to run
+ * (`registersSweepHost`, #1646).
  */
 export function platformSweeperDecision(
   /** The push's manifest, or the part of it the decision reads: only whether it declares schedules. */
@@ -156,6 +183,14 @@ export function platformSweeperDecision(
     return refuse(
       `the platform supplies a sweeper through its entry module, and this bundle cannot take one (${skip}). ` +
         `Update @substrat-run/kernel and @substrat-run/vertical-host, or export your own sweeper`,
+    );
+  }
+  if (!registersSweepHost(bundle)) {
+    return refuse(
+      `the platform supplies a sweeper that runs the scope host your mountPlatformSurface registers, and this ` +
+        `bundle registers none — its @substrat-run/vertical-host predates that registration, or the worker never ` +
+        `mounts mountPlatformSurface. Update @substrat-run/vertical-host, or export your own defineScopeSweeperDO ` +
+        `class bound as a store`,
     );
   }
   return { supply: true };
