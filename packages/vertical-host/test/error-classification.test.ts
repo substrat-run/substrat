@@ -150,6 +150,17 @@ describe('classifyError announces a status it read from a sentence', () => {
     expect(isolate.announcedKeys()).toEqual([`not_found:${atTheBound}`]);
   });
 
+  it("keeps main's order around a parse failure that lost its name", () => {
+    // An `issues[]` with no code is a parse failure (400) — but a denial's sentence was always
+    // read before it, and the state sentences after it. Neither moves in this release.
+    const parse = (message: string) => Object.assign(new Error(message), { issues: [] });
+    expect(classifyError(parse(fresh('permission denied: x')))?.status).toBe(403);
+    expect(announcements()).toHaveLength(1);
+    expect(classifyError(parse(fresh('customer not found: c1')))?.status).toBe(400);
+    expect(classifyError(parse(fresh('invalid transition: y')))?.status).toBe(400);
+    expect(announcements()).toHaveLength(1);
+  });
+
   it('is silent for a throw that declared its code, however it is worded', () => {
     // The same sentences, typed: the code decides before any wording is read, so nothing
     // is guessed and nothing is announced.

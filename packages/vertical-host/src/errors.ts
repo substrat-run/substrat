@@ -87,8 +87,11 @@ function isParseFailure(err: unknown): boolean {
  * so until then each one is announced in the vertical's own logs, once per sentence,
  * naming the typed spelling that keeps its status.
  */
-const SENTENCE_GUESSES: readonly { pattern: RegExp; code: ErrorCode }[] = [
+const DENIAL_SENTENCES: readonly { pattern: RegExp; code: ErrorCode }[] = [
   { pattern: /permission denied/i, code: 'permission_denied' },
+];
+/** Read AFTER a parse failure, where the denial is read before it: the order these always had. */
+const STATE_SENTENCES: readonly { pattern: RegExp; code: ErrorCode }[] = [
   { pattern: /not found|unknown scope/i, code: 'not_found' },
   { pattern: /invalid transition|immutable/i, code: 'conflict' },
 ];
@@ -114,8 +117,11 @@ export function announcedKeys(): readonly string[] {
   return [...announced];
 }
 
-function guessFromSentence(message: string): ErrorCode | undefined {
-  const guess = SENTENCE_GUESSES.find((g) => g.pattern.test(message));
+function guessFromSentence(
+  message: string,
+  guesses: readonly { pattern: RegExp; code: ErrorCode }[],
+): ErrorCode | undefined {
+  const guess = guesses.find((g) => g.pattern.test(message));
   if (!guess) return undefined;
   const key = `${guess.code}:${message.slice(0, ANNOUNCED_PREFIX)}`;
   if (!announced.has(key) && announced.size < ANNOUNCED_MAX) {
@@ -155,7 +161,9 @@ export function classifyError(thrown: unknown): ErrorClassification | undefined 
   // once it has crossed the ScopeDO hop — so it is the same answer on both paths,
   // which is exactly what a sentence pattern could never manage.
   const code =
-    errorCodeOf(err) ?? (isParseFailure(err) ? 'validation_failed' : guessFromSentence(message));
+    errorCodeOf(err) ??
+    guessFromSentence(message, DENIAL_SENTENCES) ??
+    (isParseFailure(err) ? 'validation_failed' : guessFromSentence(message, STATE_SENTENCES));
   if (code !== undefined) {
     return { status: PROBLEM_CATALOG[code].status as ContentfulStatusCode, message };
   }
