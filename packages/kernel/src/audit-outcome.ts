@@ -27,16 +27,19 @@
  * settle's grace window, so a live request cannot normally be overtaken this way. The rule is
  * stated for the case where one is.
  */
-import { AUDIT_ERROR_MAX, auditOperationId, memberChangeAudit, ownerTransferAudit, peerBindingAudit, substratError, type AdminAction } from '@substrat-run/contracts';
+import { AUDIT_ERROR_MAX, auditOperationId, memberChangeAudit, ownerTransferAudit, peerBindingAudit, provesNothingChanged, substratError, type AdminAction, type CapabilityRecord } from '@substrat-run/contracts';
 import type { OpsFailureInput } from './scope-host.js';
 import { SWITCH_ACTIONS, type SwitchAction } from './system-switch-record.js';
+import { ulid } from './ulid.js';
 
 /**
  * The admin actions written intent-then-outcome, which a settle closes: the two the control plane
  * writes around a vertical call, (#2089) the schedule and peer kill switches, which each adapter
  * writes around the scope's move, and (#2114) the replay lever, written the same way around the
  * watermark's move. A lever row written before #2114 carries only `replayId`, no `operationId`,
- * so every reader passes it over as it passes over any row without one.
+ * so every reader passes it over as it passes over any row without one. (#1686) The operator's
+ * capability revoke is written the same way around the revoke in the scope's store
+ * (`auditedCapabilityRevoke`), which on the shared control plane is another deployment's.
  */
 export const AUDITED_CHANGE_ACTIONS = [
   'transferOwner',
@@ -44,6 +47,7 @@ export const AUDITED_CHANGE_ACTIONS = [
   'setPeerBinding',
   ...SWITCH_ACTIONS,
   'moveImportCursor',
+  'revokeCapability',
 ] as const satisfies readonly AdminAction[];
 export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
 
@@ -79,6 +83,69 @@ export async function recordAuditOutcome(
     }
     return message;
   }
+}
+
+/**
+ * The platform's capability revoke, audited intent-then-outcome (#1686) — the one body both
+ * adapters run, so the rows cannot differ by adapter. The intent row lands before anything is
+ * revoked, every attempt; then exactly one outcome, or none:
+ *
+ * - `applied`, with the record as it stood as the row's `before`, when the store answers the
+ *   record of the capability asked for;
+ * - `refused` when the store holds no such capability (the call then throws `not_found`), or when
+ *   the revoke failed in a way that proves nothing changed (`provesNothingChanged`: a refusal, or
+ *   a deployment without the route);
+ * - none when the answer is lost, or names another capability: the revoke may have landed, so the
+ *   intent is left for the control plane's scheduled settle to close as `unknown`, and the call
+ *   throws. Never `refused`, which would read as "the link still opens, retry".
+ *
+ * An outcome row that cannot be written is logged (`recordAuditOutcome`) and the intent settles
+ * `unknown` the same way, so a revoke that landed is never left with no admin record.
+ */
+export async function auditedCapabilityRevoke(input: {
+  capabilityId: string;
+  scopeId: string;
+  /** Write one admin row of the operation: `before` is the record as it stood, on `applied` only. */
+  record: (before: CapabilityRecord | null, after: Record<string, unknown>) => unknown;
+  /** The revoke in the scope's store: the record as it stood, or null when it holds no such capability. */
+  revoke: () => Promise<CapabilityRecord | null>;
+  logError: AuditLogError;
+}): Promise<void> {
+  const { capabilityId, scopeId, logError } = input;
+  const operationId = ulid();
+  const base = { operationId, capabilityId };
+  await input.record(null, { ...base, phase: 'intent' });
+  const line = (phase: string) => ({ flow: 'capability-revoke', operationId, phase });
+  const outcome = (before: CapabilityRecord | null, row: { phase: 'applied' | 'refused' } & Record<string, unknown>) =>
+    recordAuditOutcome(() => input.record(before, { ...base, ...row }), line(row.phase), logError);
+  const leftUnknown = (error: string) => {
+    try {
+      logError(UNRECORDED_OUTCOME_LOG, { ...line('unknown'), auditError: error });
+    } catch {
+      // Reporting must not replace the revoke's own error.
+    }
+  };
+  let before: CapabilityRecord | null;
+  try {
+    before = await input.revoke();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (provesNothingChanged(error)) await outcome(null, { phase: 'refused', error: message.slice(0, AUDIT_ERROR_MAX) });
+    else leftUnknown(message);
+    throw error;
+  }
+  if (before === null) {
+    await outcome(null, { phase: 'refused', notFound: true });
+    throw substratError('not_found', `no capability ${capabilityId} in scope ${scopeId}`);
+  }
+  if (before.id !== capabilityId) {
+    const message =
+      `the scope's store answered the revoke of capability ${capabilityId} with the record of ${before.id}: ` +
+      'whether it was revoked is unknown. Read the scope\'s capabilities before retrying.';
+    leftUnknown(message);
+    throw substratError('unavailable', message);
+  }
+  await outcome(before, { phase: 'applied', revoked: true });
 }
 
 /** The `auditWarning` a change that went through answers when its `applied` row could not be written. */
@@ -223,7 +290,8 @@ const isAudited = (action: string): action is AuditedChangeAction =>
   (AUDITED_CHANGE_ACTIONS as readonly string[]).includes(action);
 const isSwitch = (action: string): action is SwitchAction => (SWITCH_ACTIONS as readonly string[]).includes(action);
 /** The actions whose rows have no schema of their own, so an `unknown` row is the intent's fields. */
-const copiesIntent = (action: string): boolean => isSwitch(action) || action === 'moveImportCursor';
+const copiesIntent = (action: string): boolean =>
+  isSwitch(action) || action === 'moveImportCursor' || action === 'revokeCapability';
 
 /**
  * The `unknown` row of a kill switch's operation (#2089), or of the replay lever's (#2114): the

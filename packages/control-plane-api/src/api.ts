@@ -4448,9 +4448,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // The operator's revoke of one capability (#1686): the lever for a leaked link, beside the
   // read above and gated the same way, in the handler as well as by the builder default-deny.
   // `HostAdmin.revokeCapability` reaches the deployment serving a hosted scope (its
-  // `capabilityDelegation`) and writes the admin row on this side; the record names the actor as
-  // its revoker. Idempotent: revoking a revoked capability answers 204 again. A capability the
-  // scope does not hold is 404; a deployment built before the far end answers 501 "redeploy".
+  // `capabilityDelegation`) and audits it on this side, intent then outcome; the record names the
+  // actor as its revoker. Idempotent: revoking a revoked capability answers 204 again. A capability
+  // the scope does not hold is 404; a deployment built before the far end answers 501 "redeploy".
   app.post('/tenants/:tenantId/scopes/:scopeId/capabilities/:capabilityId/revoke', async (c) => {
     if (confinedTenant(c.get('principal')) !== null) {
       return c.json({ error: 'forbidden: revoking a capability is staff-only' }, 403);

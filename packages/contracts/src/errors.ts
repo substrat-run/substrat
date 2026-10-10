@@ -634,3 +634,19 @@ export function fromWireFailure(failure: WireFailure): Error {
   err.name = failure.name;
   return err;
 }
+
+/**
+ * Whether a failed call proves it changed nothing (#2010): the plane or the deployment behind it
+ * refused it (a 4xx), or that deployment does not have the route (501). Any other failure — a
+ * 502 that lost the deployment's answer, another 5xx, a malformed 2xx, a transport error
+ * (status 0), or no status at all — may follow a write that landed, so what it did is unknown
+ * and the caller reads the state before retrying. Takes any error carrying a numeric `status`,
+ * so an app's own error class for the same responses reads the same way.
+ * In contracts (#1686) because the kernel's audited capability revoke reads a delegated revoke's
+ * failure by it, and the kernel cannot import the client; `@substrat-run/control-plane-client`
+ * re-exports it.
+ */
+export function provesNothingChanged(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && ((status >= 400 && status < 500) || status === 501);
+}

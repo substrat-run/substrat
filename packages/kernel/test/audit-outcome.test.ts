@@ -13,10 +13,12 @@ import {
   AUDITED_CHANGE_ACTIONS,
   UNRECORDED_OUTCOME_LOG,
   recordAuditOutcome,
+  auditedCapabilityRevoke,
   unknownOutcomeOf,
   type AuditedOperationSqlRow,
 } from '../src/audit-outcome.js';
 import { SWITCH_ACTIONS } from '../src/system-switch-record.js';
+import { errorCodeOf } from '@substrat-run/contracts';
 
 /**
  * #2064: an audited operation's effective outcome is a PRIORITY over its rows, never an order.
@@ -269,5 +271,125 @@ describe('unknownOutcomeOf, for the replay lever (#2114)', () => {
   it('a lever intent written before #2114, with a replayId and no operationId, is not one to settle', () => {
     const legacy = { replayId: 'r1', mode: 'replay', from: 'acme/crm', source: 's0', phase: 'intent', reason: 'r' };
     expect(() => unknownOutcomeOf(intent(legacy), 'row-1', 'x')).toThrow(/no audited-change intent/);
+  });
+});
+
+/**
+ * #1686: the platform's capability revoke, audited intent-then-outcome. The rows each branch leaves
+ * are the whole claim: a revoke that may have landed is never left with no admin record, and never
+ * recorded `refused` (which reads as "the link still opens").
+ */
+describe('auditedCapabilityRevoke (#1686)', () => {
+  const capabilityId = '01J0000000000000000000CAP1';
+  const record = (id = capabilityId) =>
+    ({
+      mode: 'act', id, label: null, mintedBy: '01J0000000000000000000PRN1', mintedAt: '2026-10-01T00:00:00.000Z',
+      expiresAt: null, maxUses: null, uses: 0, lastUsedAt: null, revokedAt: null, revokedBy: null,
+      entity: { entityType: 'folder', entityId: 'F1' }, permissions: ['doc:read'], operations: null,
+    }) as const;
+  const run = async (opts: {
+    revoke: () => Promise<unknown>;
+    refuse?: (phase: string) => boolean;
+  }) => {
+    const rows: { before: unknown; after: Record<string, unknown> }[] = [];
+    const logged: [string, Record<string, unknown>][] = [];
+    const settled = await Promise.allSettled([
+      auditedCapabilityRevoke({
+        capabilityId,
+        scopeId: 's1',
+        record: (before, after) => {
+          if (opts.refuse?.(after.phase as string)) throw new Error(`refused ${after.phase as string}`);
+          rows.push({ before, after });
+        },
+        revoke: opts.revoke as () => Promise<never>,
+        logError: (message, fields) => logged.push([message, fields]),
+      }),
+    ]);
+    return { rows, logged, settled: settled[0]!, phases: rows.map((r) => r.after.phase) };
+  };
+  const status = (n: number) => Object.assign(new Error(`status ${n}`), { status: n });
+
+  it('revoked: the intent, then applied with the record as it stood — one operation id', async () => {
+    const { rows, settled, phases } = await run({ revoke: async () => record() });
+    expect(settled.status).toBe('fulfilled');
+    expect(phases).toEqual(['intent', 'applied']);
+    expect(rows[1]!.before).toEqual(record());
+    expect(rows[1]!.after).toMatchObject({ capabilityId, revoked: true });
+    expect(rows[0]!.after.operationId).toBe(rows[1]!.after.operationId);
+    expect(rows[0]!.before).toBeNull();
+  });
+
+  it('not held: the intent, then refused, and the call is not_found', async () => {
+    const { settled, phases, rows } = await run({ revoke: async () => null });
+    expect(phases).toEqual(['intent', 'refused']);
+    expect(rows[1]!.after).toMatchObject({ notFound: true });
+    expect(settled.status === 'rejected' && errorCodeOf(settled.reason)).toBe('not_found');
+  });
+
+  it.each([403, 404, 409, 501])('a failure that proves nothing changed (%i) is refused, and rethrown', async (n) => {
+    const { settled, phases, logged } = await run({ revoke: async () => Promise.reject(status(n)) });
+    expect(phases).toEqual(['intent', 'refused']);
+    expect(logged).toEqual([]);
+    expect(settled.status === 'rejected' && (settled.reason as { status: number }).status).toBe(n);
+  });
+
+  // The twin of the refusals: a revoke that may have landed is left for the settle — never refused.
+  it.each([
+    ['a lost answer (502)', () => status(502)],
+    ['a 500', () => status(500)],
+    ['a transport failure with no status', () => new Error('Network connection lost')],
+  ])('%s leaves only the intent, logged for the settle, and rethrows', async (_name, error) => {
+    const { settled, phases, logged } = await run({ revoke: async () => Promise.reject(error()) });
+    expect(phases).toEqual(['intent']);
+    expect(logged.map(([m, f]) => [m, f.phase])).toEqual([[UNRECORDED_OUTCOME_LOG, 'unknown']]);
+    expect(settled.status).toBe('rejected');
+  });
+
+  it('a record naming ANOTHER capability is unknown: only the intent, and the call is unavailable', async () => {
+    const { settled, phases, logged } = await run({ revoke: async () => record('01J0000000000000000000CAP2') });
+    expect(phases).toEqual(['intent']);
+    expect(logged).toHaveLength(1);
+    expect(settled.status === 'rejected' && errorCodeOf(settled.reason)).toBe('unavailable');
+  });
+
+  it('an applied row that cannot be written: the revoke stands, the intent is on the log, the failure is logged', async () => {
+    let revoked = false;
+    const { settled, phases, logged } = await run({
+      revoke: async () => {
+        revoked = true;
+        return record();
+      },
+      refuse: (phase) => phase === 'applied',
+    });
+    expect(revoked).toBe(true);
+    expect(settled.status).toBe('fulfilled');
+    expect(phases).toEqual(['intent']);
+    expect(logged.map(([m, f]) => [m, f.phase])).toEqual([[UNRECORDED_OUTCOME_LOG, 'applied']]);
+  });
+
+  it('an intent that cannot be written revokes nothing', async () => {
+    let revoked = false;
+    const { settled, rows } = await run({
+      revoke: async () => {
+        revoked = true;
+        return record();
+      },
+      refuse: (phase) => phase === 'intent',
+    });
+    expect(settled.status).toBe('rejected');
+    expect(revoked).toBe(false);
+    expect(rows).toEqual([]);
+  });
+
+  it('is settled: its unknown row is the intent’s own fields', () => {
+    expect(AUDITED_CHANGE_ACTIONS).toContain('revokeCapability');
+    const after = { operationId: 'op-1', capabilityId, phase: 'intent' };
+    const outcome = unknownOutcomeOf(
+      { id: 'row-1', action: 'revokeCapability', tenant_id: 't1', scope_id: 's1', vertical: 'desk', after: JSON.stringify(after) },
+      'row-1',
+      'why',
+    );
+    expect(outcome.after).toEqual({ ...after, phase: 'unknown', error: 'why' });
+    expect(outcome.failure).toMatchObject({ operation: 'audit.revokeCapability', reference: 'op-1' });
   });
 });

@@ -334,6 +334,10 @@ describe('GET /tenants/:t/scopes/:s/capabilities (#1686)', () => {
       (await host.admin.listCapabilities(staff, t, sR as never, { includeRevoked: true })).entries.find((r) => r.id === id)!;
     const revokeRows = async () =>
       (await host.admin.auditLog(staff)).filter((e) => e.action === 'revokeCapability' && e.scopeId === sR);
+    const phasesOf = async (id: string) =>
+      (await revokeRows())
+        .filter((e) => (e.after as { capabilityId?: string }).capabilityId === id)
+        .map((e) => (e.after as { phase: string }).phase);
 
     beforeAll(async () => {
       sR = scopeId.parse(ulid());
@@ -350,7 +354,11 @@ describe('GET /tenants/:t/scopes/:s/capabilities (#1686)', () => {
       expect(res.status).toBe(204);
       expect(await exchanges(leaked)).toBe(false);
       expect(await recordOf(leaked.id)).toMatchObject({ revokedBy: { platform: staff } });
-      const [row] = (await revokeRows()).filter((e) => JSON.stringify(e.after).includes(leaked.id));
+      // The intent, then the outcome: the same rows the hosted adapter writes (#1666's grammar).
+      expect(await phasesOf(leaked.id)).toEqual(['intent', 'applied']);
+      const row = (await revokeRows()).find(
+        (e) => (e.after as { capabilityId?: string; phase: string }).capabilityId === leaked.id && (e.after as { phase: string }).phase === 'applied',
+      );
       expect(row).toMatchObject({ actor: staff, after: { capabilityId: leaked.id, revoked: true } });
       expect(JSON.stringify(row)).not.toContain(leaked.secret);
       // The twin: the link beside it, never named, still opens.
@@ -380,12 +388,13 @@ describe('GET /tenants/:t/scopes/:s/capabilities (#1686)', () => {
       expect((await recordOf(link.id)).revokedAt).toBeNull();
     });
 
-    it('a capability the scope does not hold is 404 with no admin row — one minted in ANOTHER scope keeps working', async () => {
-      const rows = (await revokeRows()).length;
-      expect((await post(revokeRoute(ulid()), asStaff)).status).toBe(404);
+    it('a capability the scope does not hold is 404, audited as refused — one minted in ANOTHER scope keeps working', async () => {
+      const stranger = ulid();
+      expect((await post(revokeRoute(stranger), asStaff)).status).toBe(404);
       // `link` lives in the outer scope `s`: named against `sR`, it is not found, and still opens.
       expect((await post(revokeRoute(link.id), asStaff)).status).toBe(404);
-      expect((await revokeRows()).length).toBe(rows);
+      expect(await phasesOf(stranger)).toEqual(['intent', 'refused']);
+      expect(await phasesOf(link.id)).toEqual(['intent', 'refused']);
       expect(await host.exchangeCapability(t, s as never, link.secret)).not.toBeNull();
     });
 

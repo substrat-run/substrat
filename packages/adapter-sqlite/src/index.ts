@@ -460,6 +460,7 @@ import {
   switchActionOf,
   switchAuditSubject,
   recordAuditOutcome,
+  auditedCapabilityRevoke,
   auditWarningOf,
   switchNotFoundMessage,
   switchRecordsOf,
@@ -8123,17 +8124,16 @@ export class SqliteScopeHost implements ScopeHost {
         }
         const rt = this.runtime(tenantId, scopeId);
         await this.applyPendingMigrations(rt);
-        const before = await rt.actor.turn(() =>
-          rt.db.transaction(() =>
-            revokeCapabilityAsPlatform(spineSql(rt.db), capabilityId, actor, this.clock()),
-          )(),
-        );
-        if (!before) {
-          throw substratError('not_found', `no capability ${capabilityId} in scope ${scopeId}`);
-        }
-        this.recordAdmin(actor, 'revokeCapability', { tenantId, scopeId }, before, {
+        // #1686: the same intent-then-outcome rows the hosted adapter writes around its revoke.
+        await auditedCapabilityRevoke({
           capabilityId,
-          revoked: true,
+          scopeId,
+          record: (before, after) => this.recordAdmin(actor, 'revokeCapability', { tenantId, scopeId }, before, after),
+          revoke: async () =>
+            (await rt.actor.turn(() =>
+              rt.db.transaction(() => revokeCapabilityAsPlatform(spineSql(rt.db), capabilityId, actor, this.clock()))(),
+            )) ?? null,
+          logError: (message, fields) => console.error(message, fields),
         });
       },
 

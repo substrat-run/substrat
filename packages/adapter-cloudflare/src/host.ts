@@ -429,6 +429,7 @@ import {
   switchActionOf,
   switchAuditSubject,
   recordAuditOutcome,
+  auditedCapabilityRevoke,
   auditWarningOf,
   switchNotFoundMessage,
   recordWriteSuperseded,
@@ -6780,25 +6781,28 @@ export class CloudflareScopeHost implements ScopeHost {
         capabilityId: CapabilityId,
       ): Promise<void> => {
         // #1686: a hosted scope's directory is in the deployment serving it, reached through the
-        // delegation; this host's own ScopeDO otherwise.
+        // delegation; this host's own ScopeDO otherwise. Where it lands is settled before the
+        // audit opens: a scope this host cannot reach is refused with nothing written.
         const rec = await this.capabilityScopeRecord(tenantId, scopeId);
         const { vertical } = rec;
         const delegation = this.capabilityDelegation;
-        const before =
-          vertical !== null && delegation
-            ? await delegation.revoke({
-                scopeId,
-                served: { vertical, verticalVersionId: rec.vertical_version_id, servingRef: rec.serving_ref },
-                capabilityId,
-                actor,
-              })
-            : await (await this.capabilityScopeStub(rec, scopeId, 'revokeCapability')).revokeCapabilityAsPlatform(capabilityId, actor);
-        if (!before) {
-          throw substratError('not_found', `no capability ${capabilityId} in scope ${scopeId}`);
+        let revoke: () => Promise<CapabilityRecord | null>;
+        if (vertical !== null && delegation) {
+          const served = { vertical, verticalVersionId: rec.vertical_version_id, servingRef: rec.serving_ref };
+          revoke = () => delegation.revoke({ scopeId, served, capabilityId, actor });
+        } else {
+          const stub = await this.capabilityScopeStub(rec, scopeId, 'revokeCapability');
+          revoke = () => stub.revokeCapabilityAsPlatform(capabilityId, actor);
         }
-        await this.recordAdmin(actor, 'revokeCapability', { tenantId, scopeId, vertical }, before, {
+        // Intent first, then the outcome (#1666's grammar): a revoke whose answer is lost, or
+        // whose outcome row cannot be written, is still on the admin log, and settles `unknown`.
+        await auditedCapabilityRevoke({
           capabilityId,
-          revoked: true,
+          scopeId,
+          record: (before, after) =>
+            this.recordAdmin(actor, 'revokeCapability', { tenantId, scopeId, vertical }, before, after),
+          revoke,
+          logError: (message, fields) => console.error(message, fields),
         });
       },
 

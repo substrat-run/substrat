@@ -572,6 +572,7 @@ export {
   unknownOutcomeOf,
   UNRECORDED_OUTCOME_LOG,
   recordAuditOutcome,
+  auditedCapabilityRevoke,
   auditWarningOf,
 } from './audit-outcome.js';
 export type {
