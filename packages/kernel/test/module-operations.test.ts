@@ -8,6 +8,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  defineEntities,
+  defineOperations,
   operationConcurrencyOf,
   operationIdempotencyOptOutsOf,
   operationInputsOf,
@@ -140,5 +142,59 @@ describe('the registration field (#1835)', () => {
     expect(Object.keys(registration.operations?.handlers ?? {})).toEqual(['notes/add']);
     expect(registration.operations?.inputs).toBeUndefined();
     expect(() => undeclaredOperations('  ', { 'notes/add': addOp })).toThrow(/reason/);
+  });
+});
+
+describe('operationsFor and derived handlers (#1773)', () => {
+  const entities = defineEntities({
+    card: { table: 'k_cards', fields: z.object({ id: z.string(), title: z.string() }) },
+  });
+  const cardsOperations = defineOperations(entities, ['card:read', 'card:write'] as const)({
+    'cards/get': {
+      summary: 'One card',
+      derive: 'get',
+      permission: { key: 'card:read', entity: 'card', idFrom: 'cardId' },
+      input: z.object({ cardId: z.string() }),
+      output: entities.card.fields,
+      http: { method: 'GET', path: '/cards/{cardId}' },
+    },
+    'cards/list': {
+      summary: 'Every card',
+      authored: 'a fixture exception, to prove an authored handler is still required',
+      permission: 'card:read',
+      output: entities.card.fields,
+      paged: { over: { entity: 'card', sortable: ['title'] } },
+      http: { method: 'GET', path: '/cards' },
+    },
+  });
+  const listCards = async () => ({ entries: [], nextCursor: null });
+
+  it('takes no handler for a derived operation, and supplies one', () => {
+    const bound = operationsFor(cardsOperations)({ 'cards/list': listCards });
+    expect(Object.keys(bound.operations.handlers).sort()).toEqual(['cards/get', 'cards/list']);
+    expect(bound.operations.handlers['cards/list']).toBe(listCards);
+  });
+
+  it('refuses a handler for a derived operation — at compile time, and through a cast at load', () => {
+    expect(() =>
+      // @ts-expect-error — 'cards/get' is derived: the platform writes its handler
+      operationsFor(cardsOperations)({ 'cards/list': listCards, 'cards/get': listCards }),
+    ).toThrow("'cards/get' is derived");
+    const cast = { 'cards/list': listCards, 'cards/get': listCards } as unknown as { 'cards/list': typeof listCards };
+    expect(() => operationsFor(cardsOperations)(cast)).toThrow(
+      "operationsFor: 'cards/get' is derived (`derive`) and must not be handed a handler — delete it, or declare `authored` in place of `derive`",
+    );
+  });
+
+  it('still requires the handler of an `authored` operation', () => {
+    // @ts-expect-error — 'cards/list' is authored, so its handler is the module's to write
+    operationsFor(cardsOperations)({});
+  });
+
+  it('refuses a `derive` declaration that never passed through defineOperations', () => {
+    const raw = { 'cards/get': { ...cardsOperations['cards/get'] } } as const;
+    expect(() => operationsFor(raw)({})).toThrow(
+      "operationsFor: 'cards/get' declares `derive`, but its declaration did not pass through `defineOperations`, which is what decides whether it is derivable",
+    );
   });
 });
