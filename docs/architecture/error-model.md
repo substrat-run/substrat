@@ -201,7 +201,10 @@ code. `attachmentRefusalContractSuite` now holds the two adapters to the same an
 original — `introspectTable`, `introspectQuery`, `attachmentAdd`, `attachmentList`,
 `attachmentAuthorize`, `attachmentRemove`, `systemAttachmentAuthorize` — for a coordinator
 isolate from before #113, which calls them while a deploy rolls out and reads the bare
-sentence it always read. No current coordinator calls them. They go with the release that
+sentence it always read. No current coordinator calls them. The other direction fails loudly:
+a new coordinator reaching a ScopeDO still running older code finds no `…Reply` method, and
+the call throws rather than answering wrong. An upload in that window deletes the bytes it
+wrote and records no row. It is the same trade the `introspect*` pair made. They go with the release that
 deletes `vertical-host`'s sentence patterns (§5, phase 4), since both exist for the same old
 callers.
 
