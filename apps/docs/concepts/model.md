@@ -311,9 +311,11 @@ return mapPage(page, (c) => ({ ...c, facilities: facilitiesOf(ctx, c.id) }));
 ```
 
 `mapPage` re-shapes the entries and leaves the walk alone — the cursor and the total survive
-it. A page with no projection at all, the entity's own rows behind declared filters, is one
-the platform writes for you: declare [`derive: 'list'`](#derived) and drop the handler. Note what the page also bought you: that `facilitiesOf` call now runs once per customer
+it. Note what the page also bought you: that `facilitiesOf` call now runs once per customer
 **on the page**, where an unbounded list ran it once per customer in the scope.
+
+A page with no projection at all, the entity's own rows behind declared filters, is one the
+platform writes for you: declare [`derive: 'list'`](#derived) and drop the handler.
 
 Add the manifest fragment once, derived rather than written:
 
