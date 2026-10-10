@@ -1,3 +1,7 @@
+import { IMPORT_BATCH_LIMIT, type ImportEntry } from '../../src/user-import-wire.js';
+
+export type { ImportEntry };
+
 /**
  * A dropped file → the entries `POST /api/admin/users/import` takes (`src/user-import.ts`).
  *
@@ -19,16 +23,6 @@
  *      github | google | apple | microsoft → an upstream identity, the cell its subject
  *    Unknown columns are ignored and listed, so a misspelt header is visible rather than silent.
  */
-
-export interface ImportEntry {
-  id: string;
-  email: string;
-  name?: string;
-  emailVerified?: boolean;
-  createdAt?: string;
-  passwordHash?: string;
-  accounts?: { providerId: string; accountId: string }[];
-}
 
 export interface ParsedImportFile {
   users: ImportEntry[];
@@ -97,8 +91,11 @@ export function csvRows(text: string): string[][] {
       } else {
         field += ch;
       }
-    } else if (ch === '"' && field === '') {
+    } else if (ch === '"' && field.trim() === '') {
+      // Whitespace before the opening quote is not RFC 4180, but hand-edited exports have it
+      // (`id, "Lovelace, Ada"`); without this the comma in the name would split the field.
       quoted = true;
+      field = '';
     } else if (ch === ',') {
       row.push(field);
       field = '';
@@ -148,19 +145,42 @@ function fromCsv(text: string): ParsedImportFile {
   return { users, ignoredColumns };
 }
 
-/** A date or an epoch (seconds or milliseconds) → the ISO 8601 the server parses. */
+/**
+ * A date, or an epoch of exactly 10 (seconds) or 13 (milliseconds) digits → the ISO 8601 the
+ * server parses. The digit count is what tells them apart: `20250102` is a compact date, and
+ * reading every number as seconds would put it in August 1970 without a word.
+ */
 function isoOf(value: string, line: number): string {
-  const n = Number(value);
-  const date = Number.isFinite(n) ? new Date(n < 1e12 ? n * 1000 : n) : new Date(value);
+  const date = /^\d{10}$/.test(value)
+    ? new Date(Number(value) * 1000)
+    : /^\d{13}$/.test(value)
+      ? new Date(Number(value))
+      : /^\d{8}$/.test(value)
+        ? new Date(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T00:00:00Z`)
+        : /^\d+$/.test(value)
+          ? new Date(Number.NaN)
+          : new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`line ${line}: created_at '${value}' is not a date`);
   return date.toISOString();
 }
 
-/** The server takes at most this many per call (`IMPORT_BATCH_LIMIT`). */
-export const IMPORT_BATCH = 500;
-
-export function batchesOf<T>(items: T[], size = IMPORT_BATCH): T[][] {
+/** Split into the server's write batch size (`IMPORT_BATCH_LIMIT`). */
+export function batchesOf<T>(items: T[], size = IMPORT_BATCH_LIMIT): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
+}
+
+/**
+ * The server names a bad row by its index in the CALL (`users.233.passwordHash: …`). A batch
+ * starts mid-file, so that index is rewritten to the person's position in the FILE — person
+ * 734, not 234 — before anybody goes looking for it.
+ */
+export async function inFileRows<T>(offset: number, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(message.replace(/\busers\.(\d+)\./g, (_, n: string) => `person ${offset + Number(n) + 1} in the file, `));
+  }
 }

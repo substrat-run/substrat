@@ -1,6 +1,14 @@
 import { useState } from 'react';
-import { importUsers, type ImportOutcome, type ImportResult } from '../api';
-import { IMPORT_BATCH, batchesOf, parseImportFile, type ImportEntry } from '../user-import-file';
+import { importUsers } from '../api';
+import { batchesOf, inFileRows, parseImportFile } from '../user-import-file';
+import {
+  DRY_RUN_LIMIT,
+  IMPORT_BATCH_LIMIT,
+  emptyCounts,
+  type ImportEntry,
+  type ImportOutcome,
+  type ImportResult,
+} from '../../../src/user-import-wire.js';
 
 /**
  * "Import users" on the directory — a dropped CSV or JSON file, previewed, then written.
@@ -24,14 +32,24 @@ export function ImportUsers({ onImported }: { onImported: () => void }) {
 
   const reset = () => { setFile(null); setPreview(null); setDone(null); setErr(null); };
 
-  const run = async (users: ImportEntry[], dryRun: boolean): Promise<ImportResult> => {
-    const batches = batchesOf(users);
-    const merged: ImportResult = { dryRun, results: [], counts: { created: 0, merged: 0, unchanged: 0, conflict: 0 } };
-    for (const [i, batch] of batches.entries()) {
-      setBusy(`${dryRun ? 'Checking' : 'Importing'} ${i * IMPORT_BATCH + 1}–${i * IMPORT_BATCH + batch.length} of ${users.length}…`);
-      const result = await importUsers(batch, dryRun);
+  /**
+   * The dry run is ONE call over the whole file, so it sees a duplicate 500 rows apart the way
+   * the real run will once its first batch is written. The real run is batched, each batch
+   * committed whole by the server.
+   */
+  const check = async (users: ImportEntry[]): Promise<ImportResult> => {
+    setBusy(`Checking ${users.length}…`);
+    return inFileRows(0, () => importUsers(users, true));
+  };
+
+  const write = async (users: ImportEntry[]): Promise<ImportResult> => {
+    const merged: ImportResult = { dryRun: false, results: [], counts: emptyCounts() };
+    for (const [i, batch] of batchesOf(users).entries()) {
+      const first = i * IMPORT_BATCH_LIMIT;
+      setBusy(`Importing ${first + 1}–${first + batch.length} of ${users.length}…`);
+      const result = await inFileRows(first, () => importUsers(batch, false));
       merged.results.push(...result.results);
-      for (const [k, v] of Object.entries(result.counts)) merged.counts[k as ImportOutcome['outcome']] += v;
+      for (const [k, v] of Object.entries(result.counts) as [ImportOutcome['outcome'], number][]) merged.counts[k] += v;
     }
     return merged;
   };
@@ -42,8 +60,11 @@ export function ImportUsers({ onImported }: { onImported: () => void }) {
     try {
       const parsed = parseImportFile(picked.name, await picked.text());
       if (parsed.users.length === 0) throw new Error(`${picked.name} has no users in it`);
+      if (parsed.users.length > DRY_RUN_LIMIT) {
+        throw new Error(`${picked.name} has ${parsed.users.length} people; split it into files of at most ${DRY_RUN_LIMIT}`);
+      }
       setFile({ name: picked.name, users: parsed.users, ignored: parsed.ignoredColumns });
-      setPreview(await run(parsed.users, true));
+      setPreview(await check(parsed.users));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -55,12 +76,13 @@ export function ImportUsers({ onImported }: { onImported: () => void }) {
     if (!file) return;
     setErr(null);
     try {
-      setDone(await run(file.users, false));
-      onImported();
+      setDone(await write(file.users));
     } catch (e) {
-      setErr(`${e instanceof Error ? e.message : String(e)} — batches before this one were imported; dropping the file again is safe`);
+      setErr(`${e instanceof Error ? e.message : String(e)} — that batch wrote nothing and the ones before it are in; dropping the file again is safe`);
     } finally {
       setBusy(null);
+      // After a partial import too: the batches that committed are real people now.
+      onImported();
     }
   };
 
@@ -116,7 +138,7 @@ function Problems({ results }: { results: ImportOutcome[] }) {
   if (lines.length === 0) return null;
   return (
     <ul className="import-problems">
-      {lines.slice(0, 100).map((l) => <li key={l}>{l}</li>)}
+      {lines.slice(0, 100).map((l, i) => <li key={i}>{l}</li>)}
       {lines.length > 100 && <li className="muted">…and {lines.length - 100} more</li>}
     </ul>
   );

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { batchesOf, csvRows, parseImportFile } from '../app/src/user-import-file.js';
+import { batchesOf, csvRows, inFileRows, parseImportFile } from '../app/src/user-import-file.js';
 
 /**
  * The browser half of "Import users": a dropped file → the import body. The server holds
@@ -43,6 +43,20 @@ describe('CSV', () => {
     expect(csvRows('a,b\n"x ""y""","line\nbreak"\n')).toEqual([['a', 'b'], ['x "y"', 'line\nbreak']]);
   });
 
+  it('opens a quote after leading whitespace, as hand-edited exports write it', () => {
+    expect(parseImportFile('x.csv', 'id, name, email\n1, "Lovelace, Ada", a@example.test').users).toEqual([
+      { id: '1', name: 'Lovelace, Ada', email: 'a@example.test' },
+    ]);
+  });
+
+  it('tells a compact date from an epoch by its digit count', () => {
+    const at = (v: string) => parseImportFile('x.csv', `id,email,created_at\n1,a@example.test,${v}`).users[0]!.createdAt;
+    expect(at('20250102')).toBe('2025-01-02T00:00:00.000Z');
+    expect(at('1735787045')).toBe('2025-01-02T03:04:05.000Z');
+    expect(at('1735787045000')).toBe('2025-01-02T03:04:05.000Z');
+    expect(() => at('12345')).toThrow(/line 2: created_at '12345' is not a date/);
+  });
+
   it('refuses a file with no id column — the id is the sub and cannot be invented', () => {
     expect(() => parseImportFile('x.csv', 'email,name\na@example.test,A')).toThrow(/no id column/);
   });
@@ -72,4 +86,9 @@ describe('JSON', () => {
 
 it('splits into the server’s batch size', () => {
   expect(batchesOf(Array.from({ length: 1001 }, (_, i) => i)).map((b) => b.length)).toEqual([500, 500, 1]);
+});
+
+it('rewrites a server row index to the person’s place in the file', async () => {
+  const failing = () => Promise.reject(new Error('users.233.passwordHash: not a bcrypt hash'));
+  await expect(inFileRows(500, failing)).rejects.toThrow('person 734 in the file, passwordHash: not a bcrypt hash');
 });

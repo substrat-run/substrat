@@ -2,7 +2,7 @@ import { createAuthClient } from 'better-auth/client';
 import { adminClient } from 'better-auth/client/plugins';
 import { isIssuerState, isSessionOrNull, readIssuerJson } from './wire';
 import { isPlacesAnswer, placesOf, type Place } from './places';
-import type { ImportEntry } from './user-import-file';
+import type { ImportEntry, ImportResult } from '../../src/user-import-wire.js';
 
 export type { Place } from './places';
 
@@ -262,28 +262,10 @@ export async function adminRemoveSignInMethod(userId: string, accountId: string)
   );
 }
 
-/** What one imported person became — `src/user-import.ts` on the server. */
-export type ImportOutcome =
-  | { id: string; outcome: 'created' | 'merged'; password: boolean; accounts: string[]; skippedAccounts: SkippedImportAccount[] }
-  | { id: string; outcome: 'unchanged'; skippedAccounts: SkippedImportAccount[] }
-  | { id: string; outcome: 'conflict'; reason: 'email-taken'; existingId: string }
-  | { id: string; outcome: 'conflict'; reason: 'email-differs'; existingEmail: string };
-
-export interface SkippedImportAccount {
-  providerId: string;
-  accountId: string;
-  linkedTo: string;
-}
-
-export interface ImportResult {
-  dryRun: boolean;
-  results: ImportOutcome[];
-  counts: Record<ImportOutcome['outcome'], number>;
-}
-
 /**
- * Bring people over from another issuer, keeping their ids. One call is one batch of at most
- * 500; `dryRun` answers without writing. The server holds every rule — this only carries them.
+ * Bring people over from another issuer, keeping their ids. A real call writes one batch of at
+ * most `IMPORT_BATCH_LIMIT`, whole or not at all; a `dryRun` checks up to `DRY_RUN_LIMIT` and
+ * writes nothing. The server holds every rule — this only carries them.
  */
 export function importUsers(users: ImportEntry[], dryRun: boolean): Promise<ImportResult> {
   return admin<ImportResult>('/users/import', { method: 'POST', body: JSON.stringify({ users, dryRun }) });
