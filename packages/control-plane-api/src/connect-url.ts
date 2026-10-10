@@ -1,4 +1,5 @@
-import { isPrimaryScope, signConnectState, type ScopeHost } from '@substrat-run/kernel';
+import { isPrimaryScope, type ScopeHost } from '@substrat-run/kernel';
+import { signConnectState } from './connect-state.js';
 import {
   connectUrlRelayRequest,
   instant,

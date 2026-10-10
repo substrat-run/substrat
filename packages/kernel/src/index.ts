@@ -396,13 +396,6 @@ export {
 export { assertPermissionKey } from './check-key.js';
 export { assertModuleEnqueueableKind } from './platform-kinds.js';
 export {
-  signConnectState,
-  verifyConnectState,
-  ConnectStateError,
-  CONNECT_STATE_PURPOSE,
-} from './connect-state.js';
-export type { ConnectStateClaim } from './connect-state.js';
-export {
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink,
