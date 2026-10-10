@@ -70,8 +70,12 @@ import {
   denialFilterParams,
   capabilityFilterParams,
   capabilityPage,
+  capabilityRevokeAnswer,
+  capabilityRevokeRequest,
   type CapabilityFilter,
   type CapabilityPage,
+  type CapabilityRecord,
+  type CapabilityRevokeRequest,
   mintedPreviewClient,
   ownerSeat,
   ownerClaimLink,
@@ -584,6 +588,45 @@ export class VerticalClient {
     const q = capabilityFilterParams(filter);
     q.set('scopeId', scopeId);
     return capabilityPage.parse(await this.getInternal<unknown>(`/internal/capabilities?${q}`));
+  }
+
+  /**
+   * Revoke one capability in the deployment serving the scope (#1686) — the far end of
+   * `HostAdmin.revokeCapability` for a hosted scope, whose capability directory lives there.
+   * The record as it stood before, or `null` when the scope holds no such capability (the route
+   * answers that as `{ before: null }`, never a 404).
+   *
+   * The skew rule is `systemSwitch`'s: a **404** is the deployment's own proof that it predates
+   * the route, and only that becomes the 501 "redeploy" — nothing was revoked. Everything else
+   * (unreachable, a refusal, an unreadable or wrong-shaped 200) is a failure that may have landed,
+   * so it says to read the directory before retrying. A revoke is idempotent, so a retry is safe.
+   */
+  async revokeCapability(input: CapabilityRevokeRequest): Promise<CapabilityRecord | null> {
+    const verb = 'capability-revoke';
+    const lost = `the capability ${input.capabilityId} may or may not be revoked. Read the scope's capabilities before retrying.`;
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const rule = {
+      legacy501: false,
+      lost,
+      predates:
+        `the deployment serving scope ${input.scopeId} predates the capability revoke (#1686) — ` +
+        `redeploy the vertical, then retry. Nothing was revoked.`,
+      shape: `vertical answered ${verb} with an unexpected shape — ${lost}`,
+    };
+    // Parsed before anything is sent: a malformed request is the caller's error, never a far-end one.
+    const body = JSON.stringify(capabilityRevokeRequest.parse(input));
+    // Audited intent-then-outcome like a switch call (#2089), so held to the deadline the settle waits out.
+    const answer = await withDeadline(verb, AUDITED_CALL_DEADLINE_MS, (signal) =>
+      this.parsedAnswer(verb, rule, capabilityRevokeAnswer, () =>
+        this.options.fetch(`${base}/internal/capabilities/revoke`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+          body,
+          signal,
+        }),
+      ),
+    );
+    return answer.before;
   }
 
   /**

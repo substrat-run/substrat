@@ -88,6 +88,9 @@ import {
   type PrincipalBecomeCapabilityInput,
   type CapabilityFilter,
   type CapabilityPage,
+  type CapabilityRecord,
+  capabilityRevokeAnswer,
+  capabilityRevokeRequest,
   type DenialFilter,
   type DenialSummary,
   type PermissionDenial,
@@ -353,6 +356,8 @@ export interface VerticalScopeHost {
   summarizeDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary>;
   /** The operator's capability read (#1686): records, never a secret or a hash. */
   listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage>;
+  /** The far end of the operator's revoke (#1686): the record as it stood before, or null. */
+  revokeCapabilityLocal(scopeId: ScopeId, capabilityId: CapabilityId, actor: PlatformActorId): Promise<CapabilityRecord | null>;
   listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequestEntry[]>;
   listPlatformRequestHistory(
     tenantId: TenantId,
@@ -1497,6 +1502,17 @@ export function mountPlatformSurface<Env extends object>(
     const s = scopeIdOf.parse(c.req.query('scopeId'));
     const { scopeId: _scope, ...rest } = c.req.query();
     return c.json(await deps.hostFor(c.env).listCapabilitiesLocal(s, capabilityFilterQuery.parse(rest)));
+  });
+
+  // The operator's capability revoke (#1686), the write beside that read: the platform's lever
+  // for a leaked link, for a scope whose directory is in THIS deployment. The control plane made
+  // the tenant check before calling and writes the admin row after; the record names the
+  // platform actor as its revoker. A capability the scope does not hold is `{ before: null }`,
+  // never a 404, which is how a deployment built before this route answers.
+  app.post('/internal/capabilities/revoke', async (c) => {
+    const body = capabilityRevokeRequest.parse(await c.req.json());
+    const before = await deps.hostFor(c.env).revokeCapabilityLocal(body.scopeId, body.capabilityId, body.actor);
+    return c.json(capabilityRevokeAnswer.parse({ before }));
   });
 
   // Platform-intent drain surface (platform-intents.md): the control plane PULLS this

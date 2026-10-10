@@ -71,3 +71,13 @@ export function appendPage(held: CapabilityRecord[], next: CapabilityRecord[]): 
   const have = new Set(held.map((r) => r.id));
   return [...held, ...next.filter((r) => !have.has(r.id))];
 }
+
+/**
+ * Whether the card offers a revoke for a capability in this standing. A `used-up` one is
+ * offered too: its secret cannot be exchanged again, but the sessions it handed out keep acting
+ * until it expires, and revoking is how an operator stops them. A revoked or expired one acts
+ * for nobody, so a revoke would change nothing.
+ */
+export function revocable(status: CapabilityStatus): boolean {
+  return status === 'live' || status === 'used-up';
+}

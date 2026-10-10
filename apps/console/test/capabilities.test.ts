@@ -8,6 +8,7 @@ import {
   grantLine,
   operationsLine,
   capabilityTone,
+  revocable,
   usesLine,
 } from '../src/lib/capabilities';
 
@@ -103,5 +104,17 @@ describe('the console Capabilities card (#1686)', () => {
     );
     expect(usesLine(act({ uses: 3 }))).toBe('3');
     expect(usesLine(act({ uses: 1, maxUses: 4 }))).toBe('1 / 4');
+  });
+});
+
+describe('which capabilities the card offers to revoke (#1686)', () => {
+  it('a live one, and a used-up one whose sessions still act', () => {
+    expect(revocable(capabilityStatus(act(), NOW))).toBe(true);
+    expect(revocable(capabilityStatus(act({ maxUses: 1, uses: 1 }), NOW))).toBe(true);
+  });
+
+  it('twin: never a revoked or an expired one, which act for nobody', () => {
+    expect(revocable(capabilityStatus(act({ revokedAt: NOW as never, revokedBy: { platform: common.mintedBy } as never }), NOW))).toBe(false);
+    expect(revocable(capabilityStatus(act({ expiresAt: '2026-10-01T12:00:00.000Z' as never }), NOW))).toBe(false);
   });
 });

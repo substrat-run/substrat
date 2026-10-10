@@ -1,14 +1,16 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import {
   errorCodeOf,
   eventId,
+  instant,
   permissionKey,
   platformActorId,
   principalId,
   scopeId,
   tenantId,
+  type MintedCapability,
   type PrincipalId,
   type RoleDefinition,
   type Scope,
@@ -19,15 +21,16 @@ import {
   BOARD_VERTICAL,
   CRM_VERTICAL,
   adminRowFaultSql,
+  capMod,
   boardImportMod,
   crmExportMod,
   testMod,
   verticalEventsContractSuite,
 } from '@substrat-run/contract-tests';
-import { crossVerticalHealth, INERT_SCOPE_REASON, runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
+import { crossVerticalHealth, INERT_SCOPE_REASON, UNRECORDED_OUTCOME_LOG, runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@substrat-run/control-plane-api';
-import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
+import { CloudflareScopeHost, type CapabilityDelegation, type EventDrainDelegation } from '../src/host.js';
 import { kickCoalescerName, type KickCoalescerDo, type KickOutcome } from '../src/kick-coalescer-do.js';
 import { warmControlPlane } from './do-warmup.js';
 import { armRewind, landRewind } from './pitr-emulation.js';
@@ -1118,5 +1121,291 @@ describe('#2029 — a producer rewound past its consumer’s switch releases not
     const batch = await crm.hostFor().exportedEventsLocal(t, p, read);
     expect(batch).toMatchObject({ paused: null });
     expect(batch.events).toHaveLength(1);
+  });
+});
+
+/**
+ * #1686: the operator's capability revoke on the SHARED control plane, for a scope a vertical's own
+ * deployment serves. The capability directory is in that deployment's ScopeDO, so the revoke has to
+ * cross `/internal/capabilities/revoke` (`capabilityDelegation`, as `capabilityDelegationFor` wires
+ * it); the admin row stays on the control plane. The shared host's own namespace (CRM_SCOPE) is not
+ * the deployment's (SCOPE), so a revoke that skipped the delegation and wrote locally would
+ * find nothing and leave the link working, which these cases would see.
+ */
+describe('the operator’s capability revoke reaches the deployment serving the scope (#1686)', () => {
+  // The deployment's ScopeDO class is the contract suite's, which bundles `capMod`: its
+  // `cap/share` is a module minting a link share through `ctx.capabilities`.
+  const READ = key('cap:read');
+  const SHARE_OWNER: RoleDefinition = { key: 'share-owner', permissions: [READ], source: 'vertical' };
+  const SHARE_VERTICAL = 'share-vertical';
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const s2 = scopeId.parse(ulid());
+  const inAnHour = () => instant.parse(new Date(Date.now() + 3_600_000).toISOString());
+  let dep: ReturnType<typeof deployment>;
+  let shared: CloudflareScopeHost;
+  let owner: PrincipalId;
+
+  const exchange = (scope: ScopeId, secret: string, mode?: 'become') =>
+    dep.hostFor().exchangeCapability(t, scope, secret, mode ? { mode } : undefined);
+  const recordIn = async (scope: ScopeId, id: string) =>
+    (await dep.hostFor().listCapabilitiesLocal(scope, { includeRevoked: true })).entries.find((r) => r.id === id);
+  const revokeRows = async () =>
+    (await shared.admin.auditLog(staff)).filter((e) => e.action === 'revokeCapability' && e.scopeId === s);
+  /** The phases of every revoke operation on one capability, in the order the log holds them. */
+  const phasesOf = async (id: string) =>
+    (await revokeRows())
+      .filter((e) => (e.after as { capabilityId?: string }).capabilityId === id)
+      .map((e) => (e.after as { phase: string }).phase);
+  /** A shared control plane whose reach into the deployment is `revoke`, for the failure cases. */
+  const sharedWith = (revoke: CapabilityDelegation['revoke']) =>
+    new CloudflareScopeHost({ scope: env.CRM_SCOPE, controlPlane: env.VE_CONTROL_PLANE, capabilityDelegation: { revoke } });
+  const realRevoke: CapabilityDelegation['revoke'] = (a) =>
+    dep.client.revokeCapability({ scopeId: a.scopeId, capabilityId: a.capabilityId, actor: a.actor });
+  /** Settle the operation's open intent as the scheduled pass would, and answer its phases after. */
+  const settle = async (id: string) => {
+    const intent = (await revokeRows()).find(
+      (e) => (e.after as { capabilityId?: string; phase: string }).capabilityId === id && (e.after as { phase: string }).phase === 'intent',
+    )!;
+    expect(await shared.admin.settleUnrecordedOutcome(staff, { intentId: intent.id, error: 'no outcome was recorded (test)' })).toBe(true);
+    return phasesOf(id);
+  };
+  const share = async (scope: ScopeId, entityId: string) =>
+    (await dep.hostFor().getScope(owner, t, scope)).invoke<MintedCapability>('cap/share', {
+      entity: { entityType: 'folder', entityId },
+      permissions: [READ],
+      label: `share ${entityId}`,
+    });
+
+  beforeAll(async () => {
+    await warmControlPlane(env.VE_CONTROL_PLANE);
+    const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
+    dep = deployment(env.SCOPE, capMod, SHARE_OWNER);
+    // The shared control plane: its own namespace, and the revoke's reach into the deployment.
+    shared = new CloudflareScopeHost({
+      scope: env.CRM_SCOPE,
+      controlPlane: env.VE_CONTROL_PLANE,
+      secretBox,
+      capabilityDelegation: {
+        revoke: async (a) => {
+          if (a.served.vertical !== SHARE_VERTICAL) throw new Error(`no deployment serving scope ${a.scopeId}`);
+          return dep.client.revokeCapability({ scopeId: a.scopeId, capabilityId: a.capabilityId, actor: a.actor });
+        },
+      },
+    });
+    await shared.admin.createTenant(staff, { id: t, slug: `cap-revoke-${t.toLowerCase()}`, name: 'Capability revoke' });
+    for (const scope of [s, s2]) {
+      await shared.provisionScope(staff, { tenantId: t, scopeId: scope, vertical: SHARE_VERTICAL });
+      await shared.admin.activateScope(staff, t, scope);
+    }
+    owner = await dep.provision(t, s);
+    const owner2 = await dep.provision(t, s2);
+    expect(owner2).toBeDefined();
+  });
+
+  it('revokes a link share in the deployment: refused at the next exchange, the record names the operator, the admin row is here', async () => {
+    const link = await share(s, 'F1');
+    const sibling = await share(s, 'F2');
+    await shared.admin.revokeCapability(staff, t, s, link.id);
+
+    expect(dep.paths).toContain('/internal/capabilities/revoke');
+    expect(await recordIn(s, link.id)).toMatchObject({ revokedBy: { platform: staff } });
+    expect(await exchange(s, link.secret)).toBeNull();
+    // The twin: the link beside it, never named, still opens.
+    expect(await exchange(s, sibling.secret)).toMatchObject({ kind: 'session', capabilityId: sibling.id });
+    expect((await recordIn(s, sibling.id))!.revokedAt).toBeNull();
+
+    // The intent, then the outcome, paired by one operation id — the #1666 grammar.
+    expect(await phasesOf(link.id)).toEqual(['intent', 'applied']);
+    const rows = (await revokeRows()).filter((e) => JSON.stringify(e.after).includes(link.id));
+    const row = rows.find((e) => (e.after as { phase: string }).phase === 'applied')!;
+    expect(row).toMatchObject({ actor: staff, vertical: SHARE_VERTICAL, after: { capabilityId: link.id, revoked: true } });
+    expect(new Set(rows.map((e) => (e.after as { operationId: string }).operationId)).size).toBe(1);
+    // `before` is the deployment's record as it stood: live, and carrying neither secret nor hash.
+    expect(row.before).toMatchObject({ id: link.id, revokedAt: null });
+    expect(JSON.stringify(rows)).not.toContain(link.secret);
+  });
+
+  it('revokes a become link too, and a second revoke of it is idempotent', async () => {
+    const claim = await dep.hostFor().mintCapabilityLocal(t, s, { principal: owner, expiresAt: inAnHour(), maxUses: 1 }, staff);
+    await shared.admin.revokeCapability(staff, t, s, claim.id);
+    await shared.admin.revokeCapability(staff, t, s, claim.id);
+    expect(await exchange(s, claim.secret, 'become')).toBeNull();
+    expect((await recordIn(s, claim.id))!.uses).toBe(0);
+    // The twin: an unrevoked become in the same scope exchanges.
+    const other = await dep.hostFor().mintCapabilityLocal(t, s, { principal: owner, expiresAt: inAnHour(), maxUses: 1 }, staff);
+    expect(await exchange(s, other.secret, 'become')).toMatchObject({ kind: 'principal', capabilityId: other.id });
+  });
+
+  it('a capability the scope does not hold is not_found, audited as refused — including one held by ANOTHER scope, which keeps working', async () => {
+    const elsewhere = await dep.hostFor().mintCapabilityLocal(t, s2, { principal: owner, expiresAt: inAnHour(), maxUses: 1 }, staff);
+    const refused = await shared.admin.revokeCapability(staff, t, s, elsewhere.id).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('not_found');
+    const stranger = ulid();
+    const unknown = await shared.admin.revokeCapability(staff, t, s, stranger as never).catch((e: unknown) => e);
+    expect(errorCodeOf(unknown)).toBe('not_found');
+    // Nothing changed, and the log says so: the intent, settled refused — never applied.
+    expect(await phasesOf(elsewhere.id)).toEqual(['intent', 'refused']);
+    expect(await phasesOf(stranger)).toEqual(['intent', 'refused']);
+    expect((await recordIn(s2, elsewhere.id))!.revokedAt).toBeNull();
+    expect(await exchange(s2, elsewhere.secret, 'become')).toMatchObject({ kind: 'principal', capabilityId: elsewhere.id });
+  });
+
+  it('another tenant’s name for the scope is refused before the deployment is reached, and the link keeps working', async () => {
+    const link = await share(s, 'F5');
+    const reached = dep.paths.filter((p) => p === '/internal/capabilities/revoke').length;
+    const refused = await shared.admin.revokeCapability(staff, tenantId.parse(ulid()), s, link.id).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('not_found');
+    expect(dep.paths.filter((p) => p === '/internal/capabilities/revoke').length).toBe(reached);
+    // Refused before the audit opens: the scope is not this tenant's, so there is nothing to log.
+    expect(await phasesOf(link.id)).toEqual([]);
+    expect(await exchange(s, link.secret)).toMatchObject({ kind: 'session' });
+    // The twin: the right tenant's name revokes the same link.
+    await shared.admin.revokeCapability(staff, t, s, link.id);
+    expect(await exchange(s, link.secret)).toBeNull();
+  });
+
+  it('a deployment built before the route: 501 "redeploy", nothing revoked, audited as refused', async () => {
+    const link = await share(s, 'F3');
+    const old = sharedWith((a) =>
+      new VerticalClient({
+        fetch: (async () => new Response('Not Found', { status: 404 })) as typeof fetch,
+        platformSecret: PLATFORM_SECRET,
+      }).revokeCapability({ scopeId: a.scopeId, capabilityId: a.capabilityId, actor: a.actor }),
+    );
+    const refused = await old.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ControlPlaneError);
+    expect((refused as ControlPlaneError).status).toBe(501);
+    expect(String((refused as Error).message)).toMatch(/redeploy the vertical/);
+    expect(await phasesOf(link.id)).toEqual(['intent', 'refused']);
+    expect(await exchange(s, link.secret)).toMatchObject({ kind: 'session' });
+  });
+
+  // The should-fix of #2152's review: a revoke that LANDED but whose answer was lost must still be
+  // on the admin log, and never read as refused (which says the link still opens).
+  it('a revoke whose answer is lost: revoked in the deployment, the intent on the log, settled unknown — never refused', async () => {
+    const link = await share(s, 'F6');
+    const lossy = sharedWith(async (a) => {
+      await realRevoke(a);
+      throw new ControlPlaneError(502, 'unreachable during capability-revoke: Network connection lost');
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const failed = await lossy.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e);
+      expect((failed as ControlPlaneError).status).toBe(502);
+      expect(log.mock.calls.map(([m]) => m)).toContain(UNRECORDED_OUTCOME_LOG);
+    } finally {
+      log.mockRestore();
+    }
+    expect(await exchange(s, link.secret)).toBeNull();
+    expect(await phasesOf(link.id)).toEqual(['intent']);
+    expect(await settle(link.id)).toEqual(['intent', 'unknown']);
+  });
+
+  // CodeRabbit on #2152: the call to the deployment is held to AUDITED_CALL_DEADLINE_MS, and its 504
+  // (VerticalClient's deadline test pins the 504 itself) may have landed, so it must never read as refused.
+  it('a revoke past the deadline (504) may have landed: the intent stays open for the settle, which closes it unknown', async () => {
+    const link = await share(s, 'F11');
+    const late = sharedWith(async (a) => {
+      await realRevoke(a);
+      throw new ControlPlaneError(504, 'the vertical did not answer capability-revoke within 60 s; it may have stopped part-way');
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(((await late.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e)) as ControlPlaneError).status).toBe(504);
+    } finally {
+      log.mockRestore();
+    }
+    expect(await exchange(s, link.secret)).toBeNull();
+    expect(await phasesOf(link.id)).toEqual(['intent']);
+    expect(await settle(link.id)).toEqual(['intent', 'unknown']);
+  });
+
+  it('a REAPED scope is refused conflict before the audit opens or the deployment is reached; the live scope beside it revokes', async () => {
+    const gone = scopeId.parse(ulid());
+    await shared.provisionScope(staff, { tenantId: t, scopeId: gone, vertical: SHARE_VERTICAL });
+    await shared.admin.activateScope(staff, t, gone);
+    const goneOwner = await dep.provision(t, gone);
+    const link = await (await dep.hostFor().getScope(goneOwner, t, gone)).invoke<MintedCapability>('cap/share', {
+      entity: { entityType: 'folder', entityId: 'G1' },
+      permissions: [READ],
+    });
+    await shared.admin.archiveScope(staff, t, gone);
+    await shared.admin.reapScope(staff, t, gone, { force: true });
+    const reached = dep.paths.filter((p) => p === '/internal/capabilities/revoke').length;
+    const refused = await shared.admin.revokeCapability(staff, t, gone, link.id).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('conflict');
+    expect(String((refused as Error).message)).toMatch(/reaped/);
+    expect(dep.paths.filter((p) => p === '/internal/capabilities/revoke').length).toBe(reached);
+    const goneRows = (await shared.admin.auditLog(staff)).filter((e) => e.action === 'revokeCapability' && e.scopeId === gone);
+    expect(goneRows).toEqual([]);
+    // The twin: the same call against a live scope reaches the deployment and revokes.
+    const live = await share(s, 'G2');
+    await shared.admin.revokeCapability(staff, t, s, live.id);
+    expect(dep.paths.filter((p) => p === '/internal/capabilities/revoke').length).toBe(reached + 1);
+    expect(await exchange(s, live.secret)).toBeNull();
+  });
+
+  it('twin: a refusal from the deployment proves nothing changed, and is recorded refused', async () => {
+    const link = await share(s, 'F7');
+    const refusing = sharedWith(async () => {
+      throw new ControlPlaneError(403, 'forbidden');
+    });
+    expect(((await refusing.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e)) as ControlPlaneError).status).toBe(403);
+    expect(await phasesOf(link.id)).toEqual(['intent', 'refused']);
+    expect(await exchange(s, link.secret)).toMatchObject({ kind: 'session' });
+  });
+
+  it('an answer naming ANOTHER capability is unknown: the intent stays open, and the call says so', async () => {
+    const link = await share(s, 'F8');
+    const decoy = await share(s, 'F9');
+    const confused = sharedWith(async (a) => {
+      await realRevoke(a);
+      return (await recordIn(s, decoy.id))!;
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const failed = await confused.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e);
+      expect(errorCodeOf(failed)).toBe('unavailable');
+      expect(String((failed as Error).message)).toMatch(new RegExp(`record of ${decoy.id}`));
+    } finally {
+      log.mockRestore();
+    }
+    expect(await phasesOf(link.id)).toEqual(['intent']);
+    expect(await settle(link.id)).toEqual(['intent', 'unknown']);
+  });
+
+  it('an applied row the admin log refuses: the revoke stands and the call succeeds, its intent settles unknown', async () => {
+    const link = await share(s, 'F10');
+    const lift = await refuseAdminRows(s, 'applied');
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await shared.admin.revokeCapability(staff, t, s, link.id);
+      expect(log.mock.calls.some(([m, f]) => m === UNRECORDED_OUTCOME_LOG && (f as { phase: string }).phase === 'applied')).toBe(true);
+    } finally {
+      log.mockRestore();
+      await lift();
+    }
+    expect(await exchange(s, link.secret)).toBeNull();
+    expect(await phasesOf(link.id)).toEqual(['intent']);
+    expect(await settle(link.id)).toEqual(['intent', 'unknown']);
+  });
+
+  it('with no delegation configured, a hosted scope is refused unavailable rather than revoked in the wrong namespace', async () => {
+    const link = await share(s, 'F4');
+    const noReach = new CloudflareScopeHost({
+      scope: env.CRM_SCOPE,
+      controlPlane: env.VE_CONTROL_PLANE,
+      // Any delegation stands the host up as the shared control plane; this one is never called.
+      importCursorDelegation: {
+        move: async () => {
+          throw new Error('not reached');
+        },
+      },
+    });
+    const refused = await noReach.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('unavailable');
+    expect(await exchange(s, link.secret)).toMatchObject({ kind: 'session' });
   });
 });

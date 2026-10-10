@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { entityRef } from './events.js';
-import { capabilityId, instant, permissionKey, platformActorId, principalId } from './ids.js';
+import { capabilityId, instant, permissionKey, platformActorId, principalId, scopeId } from './ids.js';
 import { coverage } from './permission.js';
 
 /**
@@ -290,6 +290,25 @@ export const capabilityPage = z.object({
   nextCursor: capabilityId.nullable(),
 });
 export type CapabilityPage = z.infer<typeof capabilityPage>;
+
+/**
+ * The operator's revoke on its way to the deployment serving a scope (#1686,
+ * `/internal/capabilities/revoke`): which capability, and the platform actor its record names
+ * as the revoker. The control plane made the tenant check and keeps the admin log; the scope is
+ * all the far end needs to find the row.
+ */
+export const capabilityRevokeRequest = z
+  .object({ scopeId, capabilityId, actor: platformActorId })
+  .strict();
+export type CapabilityRevokeRequest = z.infer<typeof capabilityRevokeRequest>;
+
+/**
+ * Its answer: the record as it stood before the revoke (revoked now, or already), or `null` when
+ * the scope holds no such capability. An answer, never a 404, because a 404 is how a deployment
+ * built before the route says it does not have it.
+ */
+export const capabilityRevokeAnswer = z.object({ before: capabilityRecord.nullable() }).strict();
+export type CapabilityRevokeAnswer = z.infer<typeof capabilityRevokeAnswer>;
 
 /**
  * Where a capability stands NOW, read off its record — for a surface that shows many at once

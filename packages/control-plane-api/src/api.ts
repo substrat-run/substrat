@@ -105,6 +105,7 @@ import {
   migrationsOnTop,
   errorCodeOf,
   capabilityFilterQuery,
+  capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
 } from '@substrat-run/contracts';
@@ -160,7 +161,7 @@ import { connectionGrantsForScope, type VerticalClient } from './vertical-client
 import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
-import { versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
+import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
@@ -2702,40 +2703,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * served version's hook ran when the bound one's did. `versionReachedAt(via, …)` turns
    * this answer into the version, so the choice and the receipt have one source.
    */
-  const deploymentForScope = async (
+  const deploymentForScope = (
     c: ReqCtx,
     scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
-  ): Promise<ScopeDeployment | undefined> => {
-    if (!scope.vertical) return undefined;
-    const actor = c.get('actor');
-    // A scope on the stable serving script (#286) is reached THERE — that script holds
-    // its DOs regardless of what the bound version or the prod channel say.
-    if (scope.servingRef && options.resolveVerticalRef) {
-      const serving = await options.resolveVerticalRef(scope.servingRef);
-      if (serving) return { client: serving, via: 'serving-script' };
-    }
-    const bySlug = async (slug: string): Promise<ScopeDeployment | undefined> => {
-      if (scope.verticalVersionId && options.resolveVerticalVersion) {
-        const bound = await options.resolveVerticalVersion(slug, scope.verticalVersionId, actor);
-        if (bound) return { client: bound, via: 'bound-version' };
-      }
-      const bySlugClient = options.verticals?.[slug] ?? (await options.resolveVertical?.(slug, actor));
-      return bySlugClient ? { client: bySlugClient, via: 'slug' } : undefined;
-    };
-    const direct = await bySlug(scope.vertical);
-    if (direct) return direct;
-    // Miss path only (#417) — a resolved scope never pays for these registry reads: a
-    // scope bound to a BARE slug that is not registered, while the owning tenant's
-    // prefixed registration of the same name exists, is addressing the prefixed lineage
-    // under its bare spelling. Retry once under the registry id; anything else still
-    // misses and surfaces through `diagnoseUnboundScope` as before.
-    if (scope.tenantId && !scope.vertical.includes('/') && (await ownerOf(actor, scope.vertical)) === undefined) {
-      const tenant = await c.var.admin.getTenant(actor, scope.tenantId).catch(() => null);
-      const prefixed = tenant ? `${tenant.slug}/${scope.vertical}` : null;
-      if (prefixed && (await ownerOf(actor, prefixed)) !== undefined) return bySlug(prefixed);
-    }
-    return undefined;
-  };
+  ): Promise<ScopeDeployment | undefined> =>
+    scopeDeployment(
+      {
+        verticals: options.verticals,
+        resolveVertical: options.resolveVertical,
+        resolveVerticalVersion: options.resolveVerticalVersion,
+        resolveVerticalRef: options.resolveVerticalRef,
+        ownerOf,
+        tenantSlugOf: async (actor, tenantId) =>
+          (await c.var.admin.getTenant(actor, tenantId).catch(() => null))?.slug ?? null,
+      },
+      c.get('actor'),
+      scope,
+    );
 
   /**
    * Why a scope's vertical did not resolve to a running deployment — an ACTIONABLE 501
@@ -4442,6 +4426,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         (r) => r.entries.length,
       ),
     );
+  });
+
+  // The operator's revoke of one capability (#1686): the lever for a leaked link, beside the
+  // read above and gated the same way, in the handler as well as by the builder default-deny.
+  // `HostAdmin.revokeCapability` reaches the deployment serving a hosted scope (its
+  // `capabilityDelegation`) and audits it on this side, intent then outcome; the record names the
+  // actor as its revoker. Idempotent: revoking a revoked capability answers 204 again. A capability
+  // the scope does not hold is 404; a deployment built before the far end answers 501 "redeploy".
+  app.post('/tenants/:tenantId/scopes/:scopeId/capabilities/:capabilityId/revoke', async (c) => {
+    if (confinedTenant(c.get('principal')) !== null) {
+      return c.json({ error: 'forbidden: revoking a capability is staff-only' }, 403);
+    }
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const capability = capabilityIdSchema.parse(c.req.param('capabilityId'));
+    // An unknown scope, another tenant's included, is the verb's own `not_found`: a 404.
+    await c.var.admin.revokeCapability(c.get('actor'), tenantId, scopeId, capability);
+    return c.body(null, 204);
   });
 
   // The owner seat (#925). Both reads go to the VERTICAL — the seat lives in its identity

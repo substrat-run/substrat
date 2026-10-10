@@ -173,12 +173,16 @@ describe('owner claim link as a become capability (#1686)', () => {
   it('a revoked link is refused by the scope even while the directory still names it', async () => {
     const link = (await mint())!;
     const [cap] = await capabilities();
-    expect(await host.revokeCapabilityLocal(s, capabilityId.parse(cap!.id), actor)).toBe(true);
+    // The record as it stood before: live.
+    expect(await host.revokeCapabilityLocal(s, capabilityId.parse(cap!.id), actor)).toMatchObject({ id: cap!.id, revokedAt: null });
     expect((await redeem(secretOf(link.claimUrl))).status).toBe(400);
     expect(await identity().needsSetup(s)).toBe(true);
-    // Idempotent, and false for a capability the scope never held.
-    expect(await host.revokeCapabilityLocal(s, capabilityId.parse(cap!.id), actor)).toBe(true);
-    expect(await host.revokeCapabilityLocal(s, capabilityId.parse(ulid()), actor)).toBe(false);
+    // Idempotent (the record, revoked already), and null for a capability the scope never held.
+    expect(await host.revokeCapabilityLocal(s, capabilityId.parse(cap!.id), actor)).toMatchObject({
+      id: cap!.id,
+      revokedBy: { platform: actor },
+    });
+    expect(await host.revokeCapabilityLocal(s, capabilityId.parse(ulid()), actor)).toBeNull();
   });
 
   it('a become secret that is not the current link is refused WITHOUT spending its use', async () => {

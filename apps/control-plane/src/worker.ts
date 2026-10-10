@@ -65,6 +65,7 @@ import {
   type EventDrainDelegation,
   type PeerSwitchDelegation,
   type ImportCursorDelegation,
+  type CapabilityDelegation,
   type SystemSwitchDelegation,
   type LifecycleDelegation,
   analyticsEngineConnectorCallRecorder,
@@ -134,7 +135,9 @@ import {
   retireClientsOfReapedScope,
   settleUnrecordedOutcomes,
   versionReachedAt,
+  scopeDeployment,
   type ScopeDeployment,
+  type ScopeDeploymentLadder,
 } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
@@ -1051,6 +1054,60 @@ function importCursorDelegationFor(env: Env): ImportCursorDelegation | undefined
 }
 
 /**
+ * The operator's capability revoke, platform half (#1686): `HostAdmin.revokeCapability` lands on
+ * the host below, whose own `SCOPE` namespace is the module-less placeholder — a hosted scope's
+ * capability directory lives in its vertical's dispatch deployment. This is the reach, over
+ * `/internal/capabilities/revoke`, and it finds the deployment with the control-plane API's own
+ * ladder (`scopeDeployment`, the #417 prefixed-slug retry included) over the same resolvers the
+ * API is given, so a scope whose capabilities the console can list can also be revoked. The
+ * other delegations here still climb `resolveVerticalForScopeFor`. Undefined without
+ * DISPATCH/PLATFORM_SECRET, and then the host refuses a scope served elsewhere outright, never a
+ * leaked link reported revoked while it still opens.
+ */
+function capabilityDelegationFor(env: Env): CapabilityDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  const ladder: ScopeDeploymentLadder = {
+    verticals: verticalsFor(env),
+    resolveVertical: resolveVerticalFor(env),
+    resolveVerticalVersion: resolveVerticalVersionFor(env),
+    resolveVerticalRef: resolveVerticalRefFor(env),
+    ownerOf: async (actor, slug) =>
+      (await hostFor(env).admin.listVerticals(actor)).find((v) => v.slug === slug)?.ownerTenant,
+    tenantSlugOf: async (actor, tenantId) =>
+      (await hostFor(env).admin.getTenant(actor, tenantId).catch(() => null))?.slug ?? null,
+  };
+  return capabilityDelegationOver(async (actor, scope) => (await scopeDeployment(ladder, actor, scope))?.client);
+}
+
+/**
+ * `capabilityDelegationFor`'s body over the deployment ladder, testable without a dispatch
+ * namespace. The host hands it the directory's record of where the scope runs, read once; the
+ * ladder is climbed as the operator, whose reads the access log then names.
+ */
+export function capabilityDelegationOver(
+  clientFor: (
+    actor: PlatformActorId,
+    scope: { tenantId: TenantId } & Parameters<CapabilityDelegation['revoke']>[0]['served'],
+  ) => Promise<Pick<VerticalClient, 'revokeCapability'> | undefined>,
+): CapabilityDelegation {
+  return {
+    revoke: async (a) => {
+      const client = await clientFor(a.actor, { tenantId: a.tenantId, ...a.served });
+      // Nothing was sent, so the answer is one that proves nothing changed (501, as an
+      // undelegated verb's): audited `refused`, never left `unknown`.
+      if (!client) {
+        throw new ControlPlaneError(
+          501,
+          `no deployment serving scope ${a.scopeId} (vertical '${a.served.vertical}') — ` +
+            `capability ${a.capabilityId} was not revoked`,
+        );
+      }
+      return client.revokeCapability({ scopeId: a.scopeId, capabilityId: a.capabilityId, actor: a.actor });
+    },
+  };
+}
+
+/**
  * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
  * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
  * module-less placeholder — a hosted scope's outbox lives in its vertical's dispatch
@@ -1183,6 +1240,8 @@ function hostFor(env: Env): CloudflareScopeHost {
     lifecycleDelegation: lifecycleDelegationFor(env),
     // The replay lever (#1705 PR 3): a hosted consumer's watermark moves where it lives.
     importCursorDelegation: importCursorDelegationFor(env),
+    // The operator's capability revoke (#1686): a leaked link is revoked where its row lives.
+    capabilityDelegation: capabilityDelegationFor(env),
     // #1691: one data point per connector call, beside the health line. Absent binding ⇒
     // the host's no-op default.
     ...(env.CONNECTOR_ANALYTICS

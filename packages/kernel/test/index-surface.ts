@@ -191,6 +191,7 @@ export const INDEX_VALUE_EXPORTS = [
   'attachmentTextJob',
   'attributedView',
   'auditWarningOf',
+  'auditedCapabilityRevoke',
   'auditedOperationsSql',
   'backoffAt',
   'becomeMintCheck',

@@ -6,6 +6,7 @@ import type {
   ConnectionHealthPage,
   ConnectionHealthState,
   CapabilityFilter,
+  CapabilityId,
   CapabilityPage,
   DenialFilter,
   DenialSummary,
@@ -400,6 +401,10 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // deployment predating the route answers 404/501 like the other late reads. Records only.
   listCapabilities = (t: TenantId, s: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage> =>
     this.call(`/tenants/${t}/scopes/${s}/capabilities${capabilityQuery(filter)}`);
+  // …and its revoke, the lever for a leaked link. Staff-only server-side too, and audited there.
+  // Idempotent; a deployment predating the far end answers 501, relayed verbatim.
+  revokeCapability = (t: TenantId, s: ScopeId, id: CapabilityId): Promise<void> =>
+    this.post(`/tenants/${t}/scopes/${s}/capabilities/${id}/revoke`);
 
   // The #1666 schedule kill switch, read and moved from the console (#1674/#1675). No
   // new permission surface here — the route is already staff-only server-side

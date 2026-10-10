@@ -34,6 +34,7 @@ import {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
+  ControlPlaneError,
   type VerticalClient,
 } from '../src/index.js';
 
@@ -310,6 +311,115 @@ describe('GET /tenants/:t/scopes/:s/capabilities (#1686)', () => {
       // The twin: staff on the same route and scope does reach it.
       expect((await get(route(sV), asStaff, delegated)).status).toBe(200);
       expect(calls.length).toBe(before + 1);
+    });
+  });
+  /**
+   * The operator's revoke over HTTP: `POST …/scopes/:s/capabilities/:id/revoke`. Its own scope, so
+   * the read cases above keep the directory they count. Gated as the read is, and each refusal is
+   * shown with its staff twin on the same route; a refusal writes nothing.
+   */
+  describe('POST …/capabilities/:id/revoke (#1686)', () => {
+    let sR: string;
+    let owner2: ReturnType<typeof principalId.parse>;
+    const revokeRoute = (id: string, scope: string = sR, tenant: string = t) =>
+      `/tenants/${tenant}/scopes/${scope}/capabilities/${id}/revoke`;
+    const post = (path: string, headers: Record<string, string>, a = app) => a.request(path, { method: 'POST', headers });
+    const mintLink = async (entityId: string) =>
+      (await host.getScope(owner2, t, sR as never)).invoke<MintedCapability>('doc/share', {
+        entity: { entityType: 'folder', entityId },
+        permissions: [READ],
+      });
+    const exchanges = async (m: MintedCapability) => (await host.exchangeCapability(t, sR as never, m.secret)) !== null;
+    const recordOf = async (id: string) =>
+      (await host.admin.listCapabilities(staff, t, sR as never, { includeRevoked: true })).entries.find((r) => r.id === id)!;
+    const revokeRows = async () =>
+      (await host.admin.auditLog(staff)).filter((e) => e.action === 'revokeCapability' && e.scopeId === sR);
+    const phasesOf = async (id: string) =>
+      (await revokeRows())
+        .filter((e) => (e.after as { capabilityId?: string }).capabilityId === id)
+        .map((e) => (e.after as { phase: string }).phase);
+
+    beforeAll(async () => {
+      sR = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: sR as never, vertical: 'share-vertical' });
+      await host.admin.activateScope(staff, t, sR as never);
+      owner2 = principalId.parse(ulid());
+      await host.admin.assignRole(staff, { principalId: owner2, roleKey: 'owner', node: { tenantId: t, scopeId: null } });
+    });
+
+    it('staff revokes: 204, the link stops exchanging, the record and the admin log name the operator', async () => {
+      const leaked = await mintLink('R1');
+      const sibling = await mintLink('R2');
+      const res = await post(revokeRoute(leaked.id), asStaff);
+      expect(res.status).toBe(204);
+      expect(await exchanges(leaked)).toBe(false);
+      expect(await recordOf(leaked.id)).toMatchObject({ revokedBy: { platform: staff } });
+      // The intent, then the outcome: the same rows the hosted adapter writes (#1666's grammar).
+      expect(await phasesOf(leaked.id)).toEqual(['intent', 'applied']);
+      const row = (await revokeRows()).find(
+        (e) => (e.after as { capabilityId?: string; phase: string }).capabilityId === leaked.id && (e.after as { phase: string }).phase === 'applied',
+      );
+      expect(row).toMatchObject({ actor: staff, after: { capabilityId: leaked.id, revoked: true } });
+      expect(JSON.stringify(row)).not.toContain(leaked.secret);
+      // The twin: the link beside it, never named, still opens.
+      expect(await exchanges(sibling)).toBe(true);
+      // Idempotent: the same revoke again is 204 again.
+      expect((await post(revokeRoute(leaked.id), asStaff)).status).toBe(204);
+    });
+
+    it('REFUSES a tenant credential and a builder, revoking nothing — and staff revokes the same link', async () => {
+      const link = await mintLink('R3');
+      const rows = (await revokeRows()).length;
+      for (const who of [asTenant, asBuilder]) {
+        const refused = await post(revokeRoute(link.id), who);
+        expect(refused.status).toBe(403);
+        expect(await refused.text()).not.toContain(link.id);
+      }
+      expect((await recordOf(link.id)).revokedAt).toBeNull();
+      expect(await exchanges(link)).toBe(true);
+      expect((await revokeRows()).length).toBe(rows);
+      expect((await post(revokeRoute(link.id), asStaff)).status).toBe(204);
+      expect((await recordOf(link.id)).revokedAt).not.toBeNull();
+    });
+
+    it('refuses an unauthenticated revoke', async () => {
+      const link = await mintLink('R4');
+      expect((await post(revokeRoute(link.id), {})).status).toBe(401);
+      expect((await recordOf(link.id)).revokedAt).toBeNull();
+    });
+
+    it('a capability the scope does not hold is 404, audited as refused — one minted in ANOTHER scope keeps working', async () => {
+      const stranger = ulid();
+      expect((await post(revokeRoute(stranger), asStaff)).status).toBe(404);
+      // `link` lives in the outer scope `s`: named against `sR`, it is not found, and still opens.
+      expect((await post(revokeRoute(link.id), asStaff)).status).toBe(404);
+      expect(await phasesOf(stranger)).toEqual(['intent', 'refused']);
+      expect(await phasesOf(link.id)).toEqual(['intent', 'refused']);
+      expect(await host.exchangeCapability(t, s as never, link.secret)).not.toBeNull();
+    });
+
+    it('answers 404 for a scope of another tenant and one that does not exist, and 400 for a malformed id', async () => {
+      const mine = await mintLink('R5');
+      expect((await post(revokeRoute(mine.id, sR, tenantId.parse(ulid())), asStaff)).status).toBe(404);
+      expect((await post(revokeRoute(mine.id, scopeId.parse(ulid())), asStaff)).status).toBe(404);
+      expect((await post(revokeRoute('nope'), asStaff)).status).toBe(400);
+      expect(await exchanges(mine)).toBe(true);
+    });
+
+    it("relays the far end's 501 \"redeploy\" verbatim rather than calling it done", async () => {
+      const link = await mintLink('R6');
+      const old = Object.create(host.admin) as typeof host.admin;
+      old.revokeCapability = async () => {
+        throw new ControlPlaneError(501, 'the deployment serving scope x predates the capability revoke (#1686) — redeploy the vertical, then retry. Nothing was revoked.');
+      };
+      const skewed = createControlPlaneApi({
+        host: new Proxy(host, { get: (target, prop) => (prop === 'admin' ? old : Reflect.get(target, prop, target)) }),
+        authenticate: UNSAFE_devPlatformActorAuth(),
+      });
+      const res = await post(revokeRoute(link.id), asStaff, skewed);
+      expect(res.status).toBe(501);
+      expect(await res.text()).toMatch(/redeploy the vertical/);
+      expect(await exchanges(link)).toBe(true);
     });
   });
 });

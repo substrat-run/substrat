@@ -20,6 +20,7 @@ export type {
   EventDrainDelegation,
   PeerSwitchDelegation,
   ImportCursorDelegation,
+  CapabilityDelegation,
   SystemSwitchDelegation,
   LifecycleDelegation,
   LifecycleDeliveryReport,

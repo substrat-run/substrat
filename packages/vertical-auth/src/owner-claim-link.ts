@@ -65,7 +65,7 @@ export interface OwnerClaimMintHost {
     input: BecomeCapabilityInput,
     actor: PlatformActorId,
   ): Promise<MintedCapability>;
-  revokeCapabilityLocal(scopeId: ScopeId, capabilityId: CapabilityId, actor: PlatformActorId): Promise<boolean>;
+  revokeCapabilityLocal(scopeId: ScopeId, capabilityId: CapabilityId, actor: PlatformActorId): Promise<unknown>;
 }
 
 /** The slice of the identity directory a mint touches. */
