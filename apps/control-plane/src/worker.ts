@@ -42,6 +42,7 @@ import {
   runPlatformSweep,
   runCrossVerticalFrom,
   isPrimaryScope,
+  StorageReadUnsupported,
   webCryptoSecretBox,
   globalFetch,
   type CrossVerticalOptions,
@@ -1257,6 +1258,53 @@ function deploymentForScopeFor(
 }
 
 /**
+ * A 404 the vertical's router answered because it has no such route: a non-empty body that is
+ * not JSON (Hono's miss is plain text). vertical-host's `classifyError` and a vertical's own
+ * `mapError` also answer 404, for a scope or row it could not find, and those come as the JSON
+ * envelope. A 404 whose body is empty or could not be read proves nothing, so it is not a miss.
+ */
+function isRouteMiss(err: ControlPlaneError): boolean {
+  if (err.status !== 404 || !err.body?.trim()) return false;
+  try {
+    JSON.parse(err.body);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The storage-gauge phase's reader (#1524): one scope's database size, read through the
+ * deployment that holds its DO, the same `/internal/database-size` the console's on-demand
+ * reading uses. A scope bound to no vertical has no database on this plane, so it is skipped
+ * (`null`). A vertical scope whose deployment does not resolve FAILS rather than falling back
+ * to this host, whose namespace is a module-less placeholder: waking it would create an empty
+ * database and record its size as the scope's.
+ */
+export function storageReaderFor(
+  resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'databaseSize'> | undefined>,
+): (scope: Scope) => Promise<number | null> {
+  return async (scope) => {
+    if (!scope.vertical) return null;
+    const client = await resolve(scope);
+    if (!client) throw new Error(`no deployment resolves for vertical '${scope.vertical}'`);
+    try {
+      return await client.databaseSize(scope.id);
+    } catch (err) {
+      // A deployment built before the route answers 501 (the route, without the host's read)
+      // or a ROUTE MISS (no route at all). Standing until it is redeployed, so not a digest
+      // entry. Any other 404 is a real failure that reaches the digest.
+      if (err instanceof ControlPlaneError && (err.status === 501 || isRouteMiss(err))) {
+        throw new StorageReadUnsupported(
+          `vertical '${scope.vertical}' cannot read a database size (${err.status}); redeploy it`,
+        );
+      }
+      throw err;
+    }
+  };
+}
+
+/**
  * Drain one scope's pending platform-intents now: pull them from the vertical's
  * `/internal` surface (its DO lives in the vertical's deployment, K-31), execute each
  * with platform authority via the registered handlers, settle back. The unit shared by
@@ -1754,6 +1802,9 @@ export default {
       // execute each with platform authority, and settle back. The same `drainOneScope` the router
       // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
       drainPlatformRequestsFn: platformDrain.drain,
+      // #1524: the stored storage gauge. The kernel reads only scopes the drain above just
+      // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
+      storageGauge: { read: storageReaderFor(resolveVerticalForScopeFor(env)) },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
       // missing whatever that hook mints, and nothing else would ever deliver it.

@@ -69,6 +69,7 @@ import type {
   EntitlementGrantInput,
   EntitlementView,
   MeterReading,
+  ScopeStorageSample,
   EntityRef,
   IdentityLink,
   IdentityPool,
@@ -185,6 +186,7 @@ import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.j
 import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
+import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
 import type {
@@ -3511,7 +3513,12 @@ export interface HostAdmin {
   suspendScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /** suspended → active. */
   unsuspendScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
-  /** active|suspended → archived. Stops the active-scope meter (§9). */
+  /**
+   * provisioning|active|suspended → archived. Stops the active-scope meter (§9). A status
+   * change only: the storage stays until `reapScope`. Records the status it left as
+   * `archivedFromStatus` (#1524), so a scope abandoned while still provisioning, which never
+   * held data, is not metered for storage.
+   */
   archiveScope(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /**
    * archived → active. A RESTORE, never a flag flip (control-plane.md §4.2):
@@ -4110,6 +4117,31 @@ export interface HostAdmin {
    * to `null`.
    */
   pruneTelemetry?(actor: PlatformActorId, limit: number): Promise<TelemetryPruneReport>;
+  /**
+   * The stored storage gauge (#1524): record the scheduled pass's attempts to read scope
+   * database sizes. Each attempt replaces the scope's attempt row (what the pass picks due
+   * scopes by); a successful one also writes the day's sample, one row per (scope, UTC day),
+   * a later same-day reading replacing an earlier one. A failed one leaves the last sample
+   * standing. Rows are written only for a stored (not provisioning, not reaped) scope the directory holds under the named
+   * tenant. Returns how many SAMPLE rows were written. Not audited, like `recordSweepRun`:
+   * retention-bounded telemetry, not evidence.
+   *
+   * The gauge methods are optional, and the sweep's storage phase is skipped on a host that
+   * lacks them, so an adapter built before #1524 still satisfies `HostAdmin`.
+   */
+  recordScopeStorage?(actor: PlatformActorId, readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
+  /**
+   * Stored storage samples (#1524) — the latest per scope, or a bounded history. See
+   * `ScopeStorageFilter`. A directory read that wakes no scope. Access-logged (K-24).
+   */
+  listScopeStorage?(actor: PlatformActorId, filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
+  /** Every stored scope's latest storage-read attempt (#1524): the storage phase's due list. Access-logged. */
+  listScopeStorageAttempts?(actor: PlatformActorId): Promise<ScopeStorageAttempt[]>;
+  /**
+   * Delete storage samples past `STORAGE_GAUGE_RETENTION_MONTHS`, oldest first and at most
+   * `limit` per call, so a backlog drains over passes. Returns how many went. Not audited.
+   */
+  pruneScopeStorage?(actor: PlatformActorId, limit: number): Promise<number>;
   /**
    * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
    * is ingest's word and not accepted here. Returns the updated row, or undefined

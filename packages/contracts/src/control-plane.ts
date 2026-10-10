@@ -1695,6 +1695,70 @@ export const meterScopeCounts = z.object({
 });
 export type MeterScopeCounts = z.infer<typeof meterScopeCounts>;
 
+/**
+ * What a storage figure deliberately does NOT count, named on every figure so a consumer
+ * cannot mistake the number for the whole bill:
+ * - `attachments`: attachment bytes live in a blob store. The scope holds only their rows.
+ * - `tenant-stores`: per-tenant D1 databases are separate databases.
+ * - `lake`: shipped event history is volume in the lake, not in any scope.
+ */
+export const storageExclusion = z.enum(['attachments', 'tenant-stores', 'lake']);
+export type StorageExclusion = z.infer<typeof storageExclusion>;
+
+/** Every exclusion, in the order a surface lists them. A reading always carries all three. */
+export const STORAGE_EXCLUSIONS: readonly StorageExclusion[] = ['attachments', 'tenant-stores', 'lake'];
+
+/**
+ * The STORED storage gauge (#1524), as `/meters` shows it: the sum of each scope's latest
+ * sampled database size. It is read from the directory, so serving it wakes no scope.
+ *
+ * The scheduled pass samples a scope only when an earlier phase of the same pass already
+ * reached it, at most once a day, so a figure is a set of readings taken at different
+ * instants. `oldestReadAt` is the honest "as of": every scope in the sum was read at or
+ * after it. `sampled < total` means some scopes have never been read (a new scope, or one
+ * no pass reached), and a surface must not call `bytes` the tenant's total then.
+ */
+export const storageGauge = z.object({
+  /** What `bytes` is a sum of. Only scope databases, for now. */
+  basis: z.literal('scope-databases'),
+  excluded: z.array(storageExclusion),
+  /** Sum of the latest reading of every sampled scope that holds a store (not provisioning, not reaped). */
+  bytes: z.number().int().nonnegative(),
+  /** Non-reaped scopes with at least one reading. */
+  sampled: z.number().int().nonnegative(),
+  /** Every scope that holds a store, serving or not (not provisioning, not reaped): the denominator. */
+  total: z.number().int().nonnegative(),
+  /** The stalest reading in the sum, or null when nothing is sampled. */
+  oldestReadAt: instant.nullable(),
+  /** The freshest reading in the sum, or null when nothing is sampled. */
+  newestReadAt: instant.nullable(),
+  /**
+   * Non-reaped scopes whose LATEST read attempt failed. Their last good sample (if any) is
+   * still in `bytes`, so a surface must say the figure has failing scopes rather than let
+   * them go silently missing.
+   */
+  failing: z.number().int().nonnegative(),
+  /** When the most recent of those failures happened, or null when none is failing. */
+  lastFailedAt: instant.nullable(),
+});
+export type StorageGauge = z.infer<typeof storageGauge>;
+
+/**
+ * One stored storage sample (#1524): a scope's database size as last read on one UTC day.
+ * A later reading on the same day replaces it; the next day starts a new row. That is what
+ * makes byte-days computable later without storing every pass's reading. Kept 13 months
+ * (`STORAGE_GAUGE_RETENTION_MONTHS`).
+ */
+export const scopeStorageSample = z.object({
+  tenantId,
+  scopeId,
+  /** The UTC day, `YYYY-MM-DD`, taken from `readAt`. */
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  bytes: z.number().int().nonnegative(),
+  readAt: instant,
+});
+export type ScopeStorageSample = z.infer<typeof scopeStorageSample>;
+
 /** Meter 1, per tenant: the scopes under it, and how many SKUs it holds. */
 export const tenantMeterRow = z.object({
   tenantId,
@@ -1708,6 +1772,8 @@ export const tenantMeterRow = z.object({
     live: z.number().int().nonnegative(),
     expired: z.number().int().nonnegative(),
   }),
+  /** The stored storage gauge (#1524). Absent when the host keeps no gauge. */
+  storage: storageGauge.optional(),
 });
 export type TenantMeterRow = z.infer<typeof tenantMeterRow>;
 
@@ -1760,30 +1826,21 @@ export const meterReading = z.object({
    * of the reading (exactly one when narrowed by `tenantId`). Ordered by tenant id.
    */
   perTenant: z.array(tenantMeterRow),
+  /** The stored storage gauge summed over `perTenant` (#1524). Absent when the host keeps none. */
+  storage: storageGauge.optional(),
 });
 export type MeterReading = z.infer<typeof meterReading>;
 
 /**
- * Storage, read on demand (#1524): the size of each of one tenant's scope DATABASES,
- * and their sum. Read-only first, by decision — nothing is stored, no sweep takes it,
- * and there is no fleet-wide form. Reading a scope's size wakes that scope's Durable
- * Object, so a periodic or fleet-wide reading would bill a DO invocation per idle scope
- * per interval. The reading is taken when a person asks for it and costs what they asked.
+ * Storage, read on demand (#1524): the size of each of one tenant's scope DATABASES, and
+ * their sum, read live when a person asks. Reading a scope's size wakes that scope's Durable
+ * Object, so this reading is paged and has no fleet-wide form. The stored daily figure that
+ * `/meters` serves without a wake is `storageGauge`.
  *
  * What it counts: `SqlStorage.databaseSize` on Cloudflare, `page_count × page_size` on
  * SQLite. That is rows, indexes, the spine, and free pages the database has not given back.
- * What it deliberately does NOT count, named in `excluded` so a consumer cannot mistake
- * the number for the whole bill:
- * - `attachments`: attachment bytes live in a blob store. The scope holds only their rows.
- * - `tenant-stores`: per-tenant D1 databases are separate databases.
- * - `lake`: shipped event history is volume in the lake, not in any scope.
+ * What it does not count is named in `excluded` (`storageExclusion`).
  */
-export const storageExclusion = z.enum(['attachments', 'tenant-stores', 'lake']);
-export type StorageExclusion = z.infer<typeof storageExclusion>;
-
-/** Every exclusion, in the order a surface lists them. A reading always carries all three. */
-export const STORAGE_EXCLUSIONS: readonly StorageExclusion[] = ['attachments', 'tenant-stores', 'lake'];
-
 /** One scope's database size, or why it could not be read. Exactly one of the two is set. */
 export const scopeStorageReading = z.union([
   z.object({ scopeId, status: scopeStatus, bytes: z.number().int().nonnegative() }),

@@ -20,6 +20,15 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  SCOPE_STORAGE_DDL,
+  forgetScopeStorage,
+  listScopeStorageAttemptRows,
+  listScopeStorageRows,
+  pruneScopeStorageRows,
+  recordScopeStorageRows,
+  type ScopeStorageAttempt,
+  type ScopeStorageFilter,
+  type ScopeStorageReadingInput,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink as insertConnectLinkRow,
@@ -128,6 +137,7 @@ import type {
   ScopeDumpTable,
   ScopeId,
   ScopeStatus,
+  ScopeStorageSample,
   Tenant,
   TenantId,
   TenantStatus,
@@ -252,6 +262,8 @@ export interface ScopeRow {
   serving_ref: string | null;
   /** When the scope last entered `archived` (§4.4); null if never archived. */
   archived_at: string | null;
+  /** The status it was archived from (#1524); null when not archived or archived before it was recorded. */
+  archived_from_status?: string | null;
   created_at: string;
 }
 
@@ -782,6 +794,9 @@ const DIRECTORY_DDL = `
     -- filter (archived longer than N days); null for scopes that never archived. Stamped
     -- by transitionScope on the edge into archived, cleared on unarchive.
     archived_at TEXT,
+    -- #1524: the status it was archived FROM. 'provisioning' = it never held data, so the
+    -- storage gauge neither reads nor counts it. Written with archived_at, cleared with it.
+    archived_from_status TEXT,
     -- The scope's data lives in THIS dispatch script (#286). NULL = legacy per-version
     -- dispatch (the bound version's own script). Set at provision once the vertical has
     -- a serving script, or by adopt-serving when a legacy scope's data is moved over.
@@ -1254,6 +1269,8 @@ const DIRECTORY_DDL = `
   );
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
+  -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
+  ${SCOPE_STORAGE_DDL}
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
   -- #1713: the lifecycle each hosted scope's deployment last acknowledged, as
   -- "<scope status>/<tenant status>" (lifecycleReceipt). A CP-less deployment has no
@@ -1314,6 +1331,7 @@ const SCOPE_COLUMNS_ADDED = [
   'expires_at TEXT',
   'serving_ref TEXT',
   'archived_at TEXT',
+  'archived_from_status TEXT',
 ] as const;
 
 /**
@@ -2000,6 +2018,8 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
       '_substrat_findings', // #1748: the tenant's findings
       '_substrat_finding_rules', // #1748: the tenant's suppress rules
+      '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
+      '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -2543,16 +2563,18 @@ export class ControlPlaneDO extends DurableObject {
       // Stamp/clear archived_at so the reap sweep can age scopes. Entering `archived`
       // records when; `unarchive` (→ active, a restore per §4.2) clears it so a later
       // re-archive dates from the new event. `reaped` keeps it — it is terminal history.
+      // #1524: the status it left is recorded beside the stamp and cleared with it.
       if (to === 'archived') {
         this.sql.exec(
-          'UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?',
+          'UPDATE scopes SET status = ?, archived_at = ?, archived_from_status = ? WHERE scope_id = ?',
           to,
           new Date().toISOString(),
+          row.status,
           scopeId,
         );
       } else if (to === 'active') {
         this.sql.exec(
-          'UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?',
+          'UPDATE scopes SET status = ?, archived_at = NULL, archived_from_status = NULL WHERE scope_id = ?',
           to,
           scopeId,
         );
@@ -2565,6 +2587,8 @@ export class ControlPlaneDO extends DurableObject {
       if (to === 'reaped') {
         forgetSwitchesOf(this.kernelSql, scopeId);
         this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
+        // #1524: its storage is gone, so its samples describe nothing.
+        forgetScopeStorage(doRedactionSql(this.sql), scopeId);
       }
       this.bumpLifecycleRevision(`scope:${scopeId}`); // #1713, with the status it counts
     });
@@ -3402,6 +3426,7 @@ export class ControlPlaneDO extends DurableObject {
       this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
       forgetSwitchesOf(this.kernelSql, scopeId);
       this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
+      forgetScopeStorage(doRedactionSql(this.sql), scopeId);
       this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
     });
   }
@@ -3808,8 +3833,10 @@ export class ControlPlaneDO extends DurableObject {
    */
   meterRows(tenantId?: string): {
     tenants: { tenant_id: string; slug: string; status: string }[];
-    scopes: { tenant_id: string; status: string }[];
+    scopes: { tenant_id: string; status: string; archived_from_status: string | null }[];
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
+    storage: ScopeStorageSample[];
+    storageAttempts: ScopeStorageAttempt[];
   } {
     const where = tenantId ? ' WHERE tenant_id = ?' : '';
     const args = tenantId ? [tenantId] : [];
@@ -3818,8 +3845,8 @@ export class ControlPlaneDO extends DurableObject {
         .exec(`SELECT tenant_id, slug, status FROM tenants${where}`, ...args)
         .toArray() as unknown as { tenant_id: string; slug: string; status: string }[],
       scopes: this.sql
-        .exec(`SELECT tenant_id, status FROM scopes${where}`, ...args)
-        .toArray() as unknown as { tenant_id: string; status: string }[],
+        .exec(`SELECT tenant_id, status, archived_from_status FROM scopes${where}`, ...args)
+        .toArray() as unknown as { tenant_id: string; status: string; archived_from_status: string | null }[],
       entitlements: this.sql
         .exec(`SELECT tenant_id, entitlement_key, plan, expires_at FROM _substrat_entitlements${where}`, ...args)
         .toArray() as unknown as {
@@ -3828,7 +3855,27 @@ export class ControlPlaneDO extends DurableObject {
         plan: string | null;
         expires_at: string | null;
       }[],
+      // #1524: the stored gauge's latest sample per non-reaped scope. A directory read only.
+      storage: listScopeStorageRows(doRedactionSql(this.sql), { tenantId: tenantId as TenantId | undefined, latest: true }),
+      storageAttempts: listScopeStorageAttemptRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
     };
+  }
+
+  // -- the stored storage gauge (#1524) — kernel `storage-gauge.ts` --------------
+  recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): { recorded: number } {
+    return { recorded: this.ctx.storage.transactionSync(() => recordScopeStorageRows(doRedactionSql(this.sql), readings)) };
+  }
+
+  listScopeStorage(filter?: ScopeStorageFilter): ScopeStorageSample[] {
+    return listScopeStorageRows(doRedactionSql(this.sql), filter);
+  }
+
+  listScopeStorageAttempts(): ScopeStorageAttempt[] {
+    return listScopeStorageAttemptRows(doRedactionSql(this.sql));
+  }
+
+  pruneScopeStorage(limit: number): number {
+    return pruneScopeStorageRows(doRedactionSql(this.sql), Date.now(), limit);
   }
 
   // -- identity pools (K-23) --------------------------------------------------

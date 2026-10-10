@@ -319,6 +319,14 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  SCOPE_STORAGE_DDL,
+  forgetScopeStorage,
+  listScopeStorageAttemptRows,
+  listScopeStorageRows,
+  pruneScopeStorageRows,
+  recordScopeStorageRows,
+  type ScopeStorageFilter,
+  type ScopeStorageReadingInput,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink,
@@ -1304,6 +1312,8 @@ interface ScopeRow {
   serving_ref: string | null;
   /** When the scope last entered `archived` (§4.4); null if never archived. */
   archived_at: string | null;
+  /** The status it was archived from (#1524); null when not archived or archived before it was recorded. */
+  archived_from_status?: string | null;
   created_at: string;
 }
 
@@ -2065,6 +2075,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- When the scope last entered the archived state (§4.4). Drives the reap sweep's
         -- age filter; null for scopes that never archived, cleared on unarchive.
         archived_at TEXT,
+        -- #1524: the status it was archived FROM. 'provisioning' = it never held data, so the
+        -- storage gauge neither reads nor counts it. Written with archived_at, cleared with it.
+        archived_from_status TEXT,
         created_at TEXT NOT NULL
       );
       -- #1722: additive copy inventory; historical audit backfill is a separate act.
@@ -2610,6 +2623,8 @@ export class SqliteScopeHost implements ScopeHost {
       );
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
+      -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
+      ${SCOPE_STORAGE_DDL}
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -4021,6 +4036,7 @@ export class SqliteScopeHost implements ScopeHost {
       forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
       this.directory.prepare('DELETE FROM private_continuation_positions WHERE scope_id = ?').run(scopeId);
       this.directory.prepare('DELETE FROM private_continuation_keys WHERE scope_id = ?').run(scopeId);
+      forgetScopeStorage(redactionSqlOf(this.directory), scopeId);
       this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     })();
     this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
@@ -7214,6 +7230,7 @@ export class SqliteScopeHost implements ScopeHost {
         expiresAt: r.expires_at,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         archivedAt: r.archived_at ?? null,
+        archivedFromStatus: (r.archived_from_status ?? null) as ScopeStatus | null,
         createdAt: r.created_at,
       });
     // The (version, scope) pair a bind and its impact read both start from, and the refusals
@@ -7276,13 +7293,14 @@ export class SqliteScopeHost implements ScopeHost {
         // Stamp/clear archived_at so the reap sweep can age scopes (§4.4). Entering
         // `archived` records when; `unarchive` (→ active, a restore) clears it so a later
         // re-archive dates from the new event; `reaped` keeps it as terminal history.
+        // #1524: the status it left is recorded beside the stamp and cleared with it.
         if (to === 'archived') {
           this.directory
-            .prepare('UPDATE scopes SET status = ?, archived_at = ? WHERE scope_id = ?')
-            .run(to, new Date().toISOString(), scopeId);
+            .prepare('UPDATE scopes SET status = ?, archived_at = ?, archived_from_status = ? WHERE scope_id = ?')
+            .run(to, new Date().toISOString(), row.status, scopeId);
         } else if (to === 'active') {
           this.directory
-            .prepare('UPDATE scopes SET status = ?, archived_at = NULL WHERE scope_id = ?')
+            .prepare('UPDATE scopes SET status = ?, archived_at = NULL, archived_from_status = NULL WHERE scope_id = ?')
             .run(to, scopeId);
         } else {
           this.directory.prepare('UPDATE scopes SET status = ? WHERE scope_id = ?').run(to, scopeId);
@@ -7290,7 +7308,11 @@ export class SqliteScopeHost implements ScopeHost {
         if (to === 'archived' || to === 'reaped') {
           this.directory.prepare('UPDATE peer_bindings SET invalidated = 1 WHERE tenant_id = ? AND target_scope_id = ?').run(tenantId, scopeId);
         }
-        if (to === 'reaped') forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
+        if (to === 'reaped') {
+          forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
+          // #1524: its storage is gone, so its samples describe nothing.
+          forgetScopeStorage(redactionSqlOf(this.directory), scopeId);
+        }
         // The audit target carries the scope's vertical (control-plane.md §4.4:
         // "vertical stays null until §4.2 lifecycle actions that name one"). It is
         // read from the scope rather than passed in, so the trail cannot disagree
@@ -10508,6 +10530,8 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
           '_substrat_findings', // #1748: the tenant's findings
           '_substrat_finding_rules', // #1748: the tenant's suppress rules
+          '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
+          '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
         ];
         const clear = this.directory.transaction(() => {
           for (const table of tables) {
@@ -10653,11 +10677,16 @@ export class SqliteScopeHost implements ScopeHost {
             }[]
           ).map((r) => ({ tenantId: r.tenant_id as TenantId, slug: r.slug, status: r.status as TenantStatus })),
           scopes: (
-            this.directory.prepare(`SELECT tenant_id, status FROM scopes${where}`).all(...args) as {
+            this.directory.prepare(`SELECT tenant_id, status, archived_from_status FROM scopes${where}`).all(...args) as {
               tenant_id: string;
               status: string;
+              archived_from_status: string | null;
             }[]
-          ).map((r) => ({ tenantId: r.tenant_id as TenantId, status: r.status as ScopeStatus })),
+          ).map((r) => ({
+            tenantId: r.tenant_id as TenantId,
+            status: r.status as ScopeStatus,
+            archivedFromStatus: r.archived_from_status as ScopeStatus | null,
+          })),
           entitlements: (
             this.directory
               .prepare(`SELECT tenant_id, entitlement_key, plan, expires_at FROM _substrat_entitlements${where}`)
@@ -10673,6 +10702,9 @@ export class SqliteScopeHost implements ScopeHost {
             plan: r.plan,
             expiresAt: r.expires_at,
           })),
+          // #1524: the stored gauge's latest sample per non-reaped scope. A directory read only.
+          storage: listScopeStorageRows(redactionSqlOf(this.directory), { tenantId: only, latest: true }),
+          storageAttempts: listScopeStorageAttemptRows(redactionSqlOf(this.directory), only),
         });
         // The count that matters for K-24 is how many TENANTS this reading covered —
         // "read the meter for one tenant" and "metered the whole fleet" are different
@@ -11795,6 +11827,26 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.prepare('DELETE FROM _substrat_model_usage WHERE at < ?').run(horizon);
         return { recorded: res.changes > 0 };
       },
+      recordScopeStorage: async (_actor, readings: readonly ScopeStorageReadingInput[]) => ({
+        recorded: this.directory.transaction(() => recordScopeStorageRows(redactionSqlOf(this.directory), readings))(),
+      }),
+      listScopeStorage: async (actor, filter?: ScopeStorageFilter) => {
+        const rows = listScopeStorageRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(
+          actor,
+          'listScopeStorage',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows;
+      },
+      listScopeStorageAttempts: async (actor) => {
+        const rows = listScopeStorageAttemptRows(redactionSqlOf(this.directory));
+        this.recordAccess(actor, 'listScopeStorageAttempts', { tenantId: null }, null, rows.length);
+        return rows;
+      },
+      pruneScopeStorage: async (_actor, limit: number) => pruneScopeStorageRows(redactionSqlOf(this.directory), Date.now(), limit),
       listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
         const rows = this.selectModelUsage(filter);
         this.recordAccess(
@@ -12152,6 +12204,7 @@ export class SqliteScopeHost implements ScopeHost {
       ['expires_at', 'expires_at TEXT'],
       ['serving_ref', 'serving_ref TEXT'],
       ['archived_at', 'archived_at TEXT'],
+      ['archived_from_status', 'archived_from_status TEXT'],
     ] as const) {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }

@@ -9144,6 +9144,298 @@ export function scopeHostContractSuite(
       await host.admin.revokeEntitlement(staff, mt, 'aux-sku');
     });
 
+    // -- the stored storage gauge (#1524) --------------------------------------
+
+    describe('the stored storage gauge (#1524)', () => {
+      const day = (offsetDays: number, time: string) =>
+        `${new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10)}T${time}.000Z`;
+      const newScope = async (tenant: TenantId) => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: s });
+        await host.admin.activateScope(staff, tenant, s);
+        return s;
+      };
+      const record = (tenant: TenantId, scope: ScopeId, bytes: number, readAt: string) =>
+        host.admin.recordScopeStorage!(staff, [{ tenantId: tenant, scopeId: scope, bytes, readAt }]);
+
+      it('keeps one row per scope per UTC day: a same-day reading replaces an older one, the next day adds a row', async () => {
+        const tg = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tg, slug: 'gauge-days', name: 'Gauge Days' });
+        const s = await newScope(tg);
+
+        expect(await record(tg, s, 100, day(-1, '10:00:00'))).toEqual({ recorded: 1 });
+        expect(await record(tg, s, 200, day(-1, '11:00:00'))).toEqual({ recorded: 1 });
+        // An OLDER reading arriving late never overwrites a newer one of the same day.
+        expect(await record(tg, s, 50, day(-1, '09:00:00'))).toEqual({ recorded: 0 });
+        expect(await record(tg, s, 300, day(0, '00:00:00'))).toEqual({ recorded: 1 });
+
+        const history = await host.admin.listScopeStorage!(staff, { scopeId: s });
+        expect(history.map((r) => [r.day, r.bytes])).toEqual([
+          [day(-1, '00:00:00').slice(0, 10), 200],
+          [day(0, '00:00:00').slice(0, 10), 300],
+        ]);
+        expect(await host.admin.listScopeStorage!(staff, { scopeId: s, latest: true })).toEqual([
+          { tenantId: tg, scopeId: s, day: day(0, '00:00:00').slice(0, 10), bytes: 300, readAt: day(0, '00:00:00') },
+        ]);
+        // History is bounded and windowed by day.
+        expect(await host.admin.listScopeStorage!(staff, { scopeId: s, limit: 1 })).toHaveLength(1);
+        expect(
+          (await host.admin.listScopeStorage!(staff, { scopeId: s, since: day(0, '00:00:00').slice(0, 10) })).map((r) => r.bytes),
+        ).toEqual([300]);
+        // K-24: the read is attributable.
+        const reads = await host.admin.accessLog(staff, { method: 'listScopeStorage' });
+        expect(reads.some((r) => r.scopeId === s)).toBe(true);
+      });
+
+      it('records every attempt; a failed one keeps the last sample, and the attempt is what the pass reads next', async () => {
+        const tf = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tf, slug: 'gauge-tries', name: 'Gauge Tries' });
+        const [s, declined] = [await newScope(tf), await newScope(tf)];
+        await record(tf, s, 700, day(-1, '05:00:00'));
+
+        expect(
+          await host.admin.recordScopeStorage!(staff, [
+            { tenantId: tf, scopeId: s, bytes: null, error: 'vertical answered 501', readAt: day(0, '05:00:00') },
+            { tenantId: tf, scopeId: declined, bytes: null, readAt: day(0, '05:00:00') },
+            // Under the wrong tenant: no attempt row either.
+            { tenantId: tenantId.parse(ulid()), scopeId: s, bytes: null, error: 'x', readAt: day(0, '06:00:00') },
+          ]),
+        ).toEqual({ recorded: 0 });
+        // The last good sample stands.
+        expect((await host.admin.listScopeStorage!(staff, { scopeId: s, latest: true })).map((r) => r.bytes)).toEqual([700]);
+        const attempts = (await host.admin.listScopeStorageAttempts!(staff)).filter((a) => a.tenantId === tf);
+        expect(attempts.map((a) => [a.scopeId, a.attemptedAt, a.error]).sort()).toEqual(
+          [
+            [s, day(0, '05:00:00'), 'vertical answered 501'],
+            [declined, day(0, '05:00:00'), null],
+          ].sort(),
+        );
+
+        // /meters names the failing scope rather than letting it go missing; its last good
+        // reading is still in the sum. A declined scope is not failing.
+        expect((await host.admin.readMeters(staff, { tenantId: tf })).perTenant[0]!.storage).toMatchObject({
+          bytes: 700,
+          sampled: 1,
+          total: 2,
+          failing: 1,
+          lastFailedAt: day(0, '05:00:00'),
+        });
+
+        // A successful read clears the error and moves the attempt on.
+        await record(tf, s, 900, day(0, '07:00:00'));
+        expect((await host.admin.readMeters(staff, { tenantId: tf })).perTenant[0]!.storage).toMatchObject({
+          bytes: 900,
+          failing: 0,
+          lastFailedAt: null,
+        });
+        expect((await host.admin.listScopeStorageAttempts!(staff)).find((a) => a.scopeId === s)).toMatchObject({
+          attemptedAt: day(0, '07:00:00'),
+          error: null,
+        });
+      });
+
+      it("writes a reading only under the scope's own tenant, and folds each tenant's figure from its own scopes", async () => {
+        const [ta, tb] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
+        await host.admin.createTenant(staff, { id: ta, slug: 'gauge-a', name: 'Gauge A' });
+        await host.admin.createTenant(staff, { id: tb, slug: 'gauge-b', name: 'Gauge B' });
+        const [a1, a2, b1] = [await newScope(ta), await newScope(ta), await newScope(tb)];
+
+        // Named under the wrong tenant: refused by the directory, not merely filtered on read.
+        expect(await record(tb, a1, 1_000_000, day(0, '01:00:00'))).toEqual({ recorded: 0 });
+        expect(await host.admin.listScopeStorage!(staff, { tenantId: tb })).toEqual([]);
+
+        await host.admin.recordScopeStorage!(staff, [
+          { tenantId: ta, scopeId: a1, bytes: 4096, readAt: day(-1, '06:00:00') },
+          { tenantId: ta, scopeId: a2, bytes: 8192, readAt: day(0, '06:00:00') },
+          { tenantId: tb, scopeId: b1, bytes: 10, readAt: day(0, '07:00:00') },
+        ]);
+
+        const a = await host.admin.readMeters(staff, { tenantId: ta });
+        expect(a.perTenant[0]!.storage).toEqual({
+          basis: 'scope-databases',
+          excluded: ['attachments', 'tenant-stores', 'lake'],
+          bytes: 4096 + 8192,
+          sampled: 2,
+          total: 2,
+          oldestReadAt: day(-1, '06:00:00'),
+          newestReadAt: day(0, '06:00:00'),
+          failing: 0,
+          lastFailedAt: null,
+        });
+        expect(a.storage).toEqual(a.perTenant[0]!.storage);
+        const b = await host.admin.readMeters(staff, { tenantId: tb });
+        expect(b.perTenant[0]!.storage).toMatchObject({ bytes: 10, sampled: 1, total: 1 });
+
+        // A new scope with no reading yet: the figure says so rather than calling itself whole.
+        await newScope(tb);
+        expect((await host.admin.readMeters(staff, { tenantId: tb })).perTenant[0]!.storage).toMatchObject({
+          bytes: 10,
+          sampled: 1,
+          total: 2,
+        });
+
+        // The fleet figure is the per-tenant figures summed.
+        const fleet = await host.admin.readMeters(staff);
+        expect(fleet.storage!.bytes).toBe(fleet.perTenant.reduce((n, r) => n + (r.storage?.bytes ?? 0), 0));
+        expect(fleet.storage!.sampled).toBe(fleet.perTenant.reduce((n, r) => n + (r.storage?.sampled ?? 0), 0));
+      });
+
+      it("forgets a reaped scope's samples, and never writes one for it again", async () => {
+        const tr = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tr, slug: 'gauge-reap', name: 'Gauge Reap' });
+        const [kept, reaped] = [await newScope(tr), await newScope(tr)];
+        await record(tr, kept, 1, day(0, '02:00:00'));
+        await record(tr, reaped, 2, day(-1, '02:00:00'));
+        await record(tr, reaped, 3, day(0, '02:00:00'));
+        // A sample past retention, so the prune below (which reads the raw table, with no join
+        // to scope status) can tell whether reap deleted the rows or only the join hides them.
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        expect(await record(tr, reaped, 5, old.toISOString())).toEqual({ recorded: 1 });
+
+        await host.admin.archiveScope(staff, tr, reaped);
+        await host.admin.reapScope(staff, tr, reaped);
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
+
+        expect((await host.admin.listScopeStorage!(staff, { tenantId: tr })).map((r) => r.scopeId)).toEqual([kept]);
+        expect(await record(tr, reaped, 4, day(0, '03:00:00'))).toEqual({ recorded: 0 });
+        expect((await host.admin.readMeters(staff, { tenantId: tr })).perTenant[0]!.storage).toMatchObject({
+          bytes: 1,
+          sampled: 1,
+          total: 1, // the tombstone is not in the denominator
+        });
+      });
+
+      it('keeps an archived scope in the figure and refreshes it, so the tenant is not stuck stale', async () => {
+        const ta = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: ta, slug: 'gauge-archived', name: 'Gauge Archived' });
+        const s = await newScope(ta);
+        const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000).toISOString();
+        await record(ta, s, 4096, threeDaysAgo);
+        await host.admin.archiveScope(staff, ta, s);
+        // Archived storage is still storage until reap: counted, and stale until re-read.
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage).toMatchObject({
+          sampled: 1,
+          total: 1,
+          oldestReadAt: threeDaysAgo,
+        });
+
+        // No drain reaches an archived scope; the storage phase reads it anyway, once a day.
+        const before = new Date().toISOString();
+        const report = await runPlatformSweep(host, {
+          actor: staff,
+          fetch: connectorTestFetch,
+          sweepers: {},
+          drainRetries: false,
+          storageGauge: { read: (scope) => host.admin.scopeDatabaseSize(staff, scope.tenantId, scope.id), batch: 10_000 },
+        });
+        expect(report.errors.filter((e) => e.kind === 'storage' && e.id === s)).toEqual([]);
+        const after = (await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage!;
+        expect(after).toMatchObject({ sampled: 1, total: 1, failing: 0 });
+        expect(after.oldestReadAt! >= before).toBe(true);
+        expect(after.bytes).toBeGreaterThan(0);
+      });
+
+      it('leaves a provisioning scope, which has no store yet, out of the figure entirely', async () => {
+        const tp = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tp, slug: 'gauge-provisioning', name: 'Gauge Provisioning' });
+        const s = await newScope(tp);
+        const pending = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tp, scopeId: pending }); // not activated
+        expect((await host.admin.getScopeRecord(staff, tp, pending))!.status).toBe('provisioning');
+        await record(tp, s, 10, day(0, '08:00:00'));
+        // A reading for it is refused too, so it can never enter the sum.
+        expect(await record(tp, pending, 99, day(0, '08:00:00'))).toEqual({ recorded: 0 });
+        expect((await host.admin.readMeters(staff, { tenantId: tp })).perTenant[0]!.storage).toMatchObject({
+          bytes: 10,
+          sampled: 1,
+          total: 1, // not "1 of 2": the tenant's figure is whole
+        });
+      });
+
+      it('neither counts nor accepts a reading for a scope archived before it held data; one archived from active still counts', async () => {
+        const tv = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tv, slug: 'gauge-abandoned', name: 'Gauge Abandoned' });
+        const kept = await newScope(tv);
+        await record(tv, kept, 50, day(0, '09:00:00'));
+        // A failed provision is archived straight from `provisioning` (it never held data).
+        const abandoned = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tv, scopeId: abandoned });
+        await host.admin.archiveScope(staff, tv, abandoned);
+        expect((await host.admin.getScopeRecord(staff, tv, abandoned))!.archivedFromStatus).toBe('provisioning');
+        // An app deleted after it served is archived from `active`.
+        const deleted = await newScope(tv);
+        await record(tv, deleted, 70, day(-2, '09:00:00')); // due again by the time the pass runs
+        await host.admin.archiveScope(staff, tv, deleted);
+        expect((await host.admin.getScopeRecord(staff, tv, deleted))!.archivedFromStatus).toBe('active');
+
+        expect(await record(tv, abandoned, 99, day(0, '10:00:00'))).toEqual({ recorded: 0 });
+        expect((await host.admin.readMeters(staff, { tenantId: tv })).perTenant[0]!.storage).toMatchObject({
+          bytes: 120,
+          sampled: 2,
+          total: 2, // kept + deleted; never the abandoned one
+        });
+        // The storage phase never wakes it.
+        const asked: string[] = [];
+        await runPlatformSweep(host, {
+          actor: staff,
+          fetch: connectorTestFetch,
+          sweepers: {},
+          drainRetries: false,
+          storageGauge: {
+            read: async (scope) => {
+              asked.push(scope.id);
+              return host.admin.scopeDatabaseSize(staff, scope.tenantId, scope.id);
+            },
+            batch: 10_000,
+          },
+        });
+        expect(asked).not.toContain(abandoned);
+        expect(asked).toContain(deleted);
+
+        // Unarchiving clears it, as it clears archivedAt.
+        await host.admin.unarchiveScope(staff, tv, deleted);
+        expect((await host.admin.getScopeRecord(staff, tv, deleted))!.archivedFromStatus ?? null).toBeNull();
+      });
+
+      it("deletes a fork's samples when the fork is deleted", async () => {
+        const tk = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tk, slug: 'gauge-fork', name: 'Gauge Fork' });
+        const source = await newScope(tk);
+        const fork = await host.snapshotScope(staff, tk, source);
+        // A sample past retention: the prune reads the raw table, with no join to the scope
+        // row, so it sees a leftover that every other read would hide once the row is gone.
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        expect(await record(tk, fork, 9, old.toISOString())).toEqual({ recorded: 1 });
+
+        await host.deleteSnapshot(staff, tk, fork);
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
+      });
+
+      it('prunes samples older than thirteen months, at most the limit per call', async () => {
+        const tp = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tp, slug: 'gauge-prune', name: 'Gauge Prune' });
+        const s = await newScope(tp);
+        const monthsAgo = (m: number) => {
+          const d = new Date();
+          d.setUTCMonth(d.getUTCMonth() - m);
+          return d.toISOString();
+        };
+        for (const m of [14, 15, 16]) await record(tp, s, m, monthsAgo(m));
+        await record(tp, s, 12, monthsAgo(12)); // inside retention: kept
+        await record(tp, s, 0, day(0, '04:00:00'));
+
+        expect(await host.admin.pruneScopeStorage!(staff, 2)).toBe(2);
+        expect(await host.admin.pruneScopeStorage!(staff, 2)).toBe(1);
+        expect(await host.admin.pruneScopeStorage!(staff, 2)).toBe(0);
+        expect((await host.admin.listScopeStorage!(staff, { scopeId: s })).map((r) => r.bytes)).toEqual([12, 0]);
+        await expect(host.admin.pruneScopeStorage!(staff, -1)).rejects.toThrow(/limit/);
+      });
+    });
+
     it('leaves bare (module-less) operations ungated', async () => {
       // test/read-counter was registered via defineOperation, no manifest — it
       // must resolve regardless of entitlements.

@@ -1132,8 +1132,8 @@ are honestly computable *honest*, and display them.
   fan-in sink that does not exist yet; reads emit nothing, so API-call volume is unmeterable
   from the spine *by construction*; and `drained_at` is declared but written nowhere in the
   repo, so a metering consumer has no cursor to resume from. *Storage* has since become
-  readable on demand, per tenant, for scope databases only (§5.2). It is a reading, not a
-  stored gauge.
+  measurable for scope databases only (§5.2): readable on demand per tenant, and kept as a
+  stored daily gauge that `/meters` serves without waking a scope.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
@@ -1178,20 +1178,23 @@ a Tier-2 sink ever lands, meter 3 becomes a new question — not a resumption of
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 
-One tenant's storage is the sum of its **scope databases**, read when someone asks and
-stored nowhere: `GET /meters/storage?tenantId=…[&cursor=…&limit=…]` (staff-only, like
-`/meters`), rendered as the **Storage** card on the console's tenant page. Each scope
+One tenant's storage is the sum of its **scope databases**, and it has two forms. The
+**live reading** is taken when someone asks and is not kept: `GET
+/meters/storage?tenantId=…[&cursor=…&limit=…]` (staff-only, like `/meters`), rendered as
+the **Storage** card on the console's tenant page. The **stored gauge** (below) is the
+daily sample the platform sweep keeps in the directory, which `/meters` reads without
+waking anything. Each scope
 answers `SqlStorage.databaseSize` on Cloudflare and `page_count × page_size` on SQLite,
 through `HostAdmin.scopeDatabaseSize` when the scope is co-located and through the
 vertical's `/internal/database-size` when a vertical's deployment holds its DO.
 
-**Read-only first, by decision.** A stored gauge would bundle a migration, a cadence and a
-billing-truth decision before anyone had seen a number. The cadence is the trap. A reading
-wakes the scope, so a daily sweep would cost a DO invocation per scope per day, on scopes
-nobody uses. So:
+**The on-demand reading came first, by decision.** A stored gauge would have bundled a
+migration, a cadence and a billing-truth decision before anyone had seen a number, and the
+cadence looked like a trap: a reading wakes the scope. The stored gauge below answers that
+without a wake of its own. The on-demand reading stays the live one:
 
-- **No sweep, no drain phase, no fleet-wide form.** `tenantId` is required, and the card
-  reads nothing until the button is pressed.
+- **No fleet-wide form.** `tenantId` is required, and the card reads nothing live until the
+  button is pressed.
 - **Bounded per request.** A reading is one page of the tenant's scopes, at most 200
   (default 50), with at most 8 reads in flight. A tenant with thousands of scopes is read a
   page per press, and the card says how many scopes remain unread.
@@ -1215,6 +1218,57 @@ nobody uses. So:
 Preview forks are scopes of the tenant and are included. Backups are objects in a bucket
 and are not. The number is what the scope databases occupy, free pages included, which is
 what Cloudflare bills a DO for. It is not live row volume.
+
+#### The stored gauge
+
+The scheduled pass keeps a **stored** figure beside the live one, and `GET /meters` serves it
+as `storage` on each `perTenant` row and summed on the reading. Serving it is a directory read.
+
+- **Every scope that holds a store is measured.** That is every status but `provisioning`
+  (no store yet) and `reaped` (its store is gone). An archived or suspended scope still holds
+  its storage until reap, so it is in the figure and on the bill.
+  `archiveScope` deliberately accepts a scope still in `provisioning` (a failed provision is
+  archived; it is how a stuck scope is abandoned). Such a scope never held data, so the
+  archive records the status it left in `scopes.archived_from_status`, written with
+  `archived_at` and cleared with it on unarchive. A scope archived from `provisioning` is
+  neither read (a read would create the spine it never had) nor counted. A row archived
+  before the column existed has NULL there and is measured as before; there is no backfill.
+- **No wake added to the serving fleet.** The pass already reaches every active scope's DO on
+  every tick, through the platform-intent drain (`/internal/platform-requests` → the scope DO).
+  The storage phase runs straight after it and reads an ACTIVE scope only when that drain
+  reached it in the same pass (the executor drain, on a host with no platform drain), so the
+  read is one extra request to a DO that is already awake. A NON-SERVING scope (suspended,
+  archiving, archived) is reached by no drain, so the phase reads it anyway: that is the one
+  wake the gauge adds, at most once a day per such scope, inside the same batch. On the hosted plane
+  the read goes through the vertical's `/internal/database-size`, the same route as the live
+  reading, with the same rule: no deployment resolves, the read fails; it never falls back to
+  the control plane's placeholder namespace.
+- **Bounded.** A scope is due when the phase last tried it a day ago or never has. At most 100
+  scopes are read per pass, never-tried first, then the longest since a try; the rest wait for
+  the next pass (`deferred` in the sweep report). `batch: 0` pauses sampling. Every try is
+  kept in `_substrat_scope_storage_attempts` (one row per scope, with the error if it failed),
+  which is what the phase picks by: a scope that keeps failing is tried once a day, never on
+  every pass ahead of the readable ones, and reaches the failure digest once a day.
+- **One row per scope per UTC day** in the directory's `_substrat_scope_storage`, the day's
+  latest reading (a later same-day reading replaces it, an older one never does). The row is
+  written only for a non-reaped scope the directory holds under the named tenant. Kept
+  **thirteen months**, pruned by the same phase at most 500 rows per pass. A reaped scope's
+  rows are deleted at reap, and reads join on scope status as a second guard.
+- **A failed read keeps the last value, and is named.** It is a `storage` error in the pass
+  report and the scope's attempt row, and the figure on `/meters` counts it (`failing`, with
+  `lastFailedAt`), so the console says "the last read of N scopes failed" rather than letting
+  them go silently missing. The next successful read clears it. A scope bound to no vertical
+  is skipped, not failed. A vertical deployed before `/internal/database-size` (it answers 501,
+  or 404 with no route at all) is a **standing condition**, like a paused cross-vertical edge:
+  it is recorded as the scope's failing attempt, with "redeploy it" as the reason, but kept out
+  of the pass's `errors`, so the failure digest does not mail it every day.
+- **Labelled by coverage and age.** The figure carries `sampled` of `total` non-reaped scopes
+  and the `oldestReadAt` it is "as of". The console calls it a total only when every scope is
+  sampled, none is failing and the oldest sample is under two days old; otherwise it is
+  `partial`, `failing` or `stale`.
+- **History, not yet a price.** The day rows are what a byte-day (and so GB-month) figure
+  needs, through `HostAdmin.listScopeStorage`. Nothing prices them yet, because a GB-month
+  over days the pass did not sample is a coverage question the bill has to answer first.
 
 ## 6. Auth: the sequencing
 

@@ -332,6 +332,14 @@ export const scope = z.object({
    * to `reaped`. History-only for a `reaped` scope: the bytes are already gone.
    */
   archivedAt: instant.nullable(),
+  /**
+   * The status the scope was archived FROM (#1524), written when it enters `archived` and
+   * cleared on unarchive. `provisioning` means it was archived before it ever held data (a
+   * failed provision, an abandoned stuck scope), so it has no storage to meter. Null for a
+   * scope that is not archived, or one archived before this was recorded. Optional, so a
+   * host that predates it still produces a valid scope.
+   */
+  archivedFromStatus: scopeStatus.nullish(),
   createdAt: instant,
 });
 export type Scope = z.infer<typeof scope>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { StorageMeterReading } from '@substrat-run/contracts';
-import { foldStoragePage, formatBytes, partialNote, scopesLeftOut } from '../src/lib/storage';
+import type { StorageGauge, StorageMeterReading } from '@substrat-run/contracts';
+import { foldStoragePage, formatBytes, gaugeView, partialNote, scopesLeftOut, STORAGE_STALE_AFTER_MS } from '../src/lib/storage';
 
 /**
  * The storage card's tally (#1524). The property under test is that a partial sum is
@@ -105,5 +105,78 @@ describe('formatBytes', () => {
     expect(formatBytes(1536)).toBe('1.5 KiB');
     expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MiB');
     expect(formatBytes(300 * 1024 * 1024)).toBe('300 MiB');
+  });
+});
+
+describe('gaugeView (#1524)', () => {
+  const NOW = Date.parse('2026-09-21T12:00:00.000Z');
+  const gauge = (over: Partial<StorageGauge>): StorageGauge => ({
+    basis: 'scope-databases',
+    excluded: ['attachments', 'tenant-stores', 'lake'],
+    bytes: 2048,
+    sampled: 2,
+    total: 2,
+    oldestReadAt: '2026-09-21T06:00:00.000Z' as never,
+    newestReadAt: '2026-09-21T08:00:00.000Z' as never,
+    failing: 0,
+    lastFailedAt: null,
+    ...over,
+  });
+
+  it('calls a figure a total only when every scope is sampled and the oldest reading is fresh', () => {
+    expect(gaugeView(gauge({}), NOW)).toMatchObject({ value: '2.0 KiB', label: 'total' });
+    expect(gaugeView(gauge({}), NOW).detail).toMatch(/^Scope databases only, all 2 scopes sampled, as of /);
+  });
+
+  it('labels a figure missing scopes partial, and says how many it covers', () => {
+    const v = gaugeView(gauge({ sampled: 1, total: 3 }), NOW);
+    expect(v.label).toBe('partial');
+    expect(v.detail).toContain('1 of 3 scopes sampled');
+  });
+
+  it('labels a figure stale once its oldest reading is past the window, even if it covers every scope', () => {
+    const at = (ms: number) => new Date(NOW - ms).toISOString() as never;
+    expect(gaugeView(gauge({ oldestReadAt: at(STORAGE_STALE_AFTER_MS + 1000) }), NOW).label).toBe('stale');
+    expect(gaugeView(gauge({ oldestReadAt: at(STORAGE_STALE_AFTER_MS - 60_000) }), NOW).label).toBe('total');
+    expect(gaugeView(gauge({ sampled: 1, total: 3, oldestReadAt: at(STORAGE_STALE_AFTER_MS + 1000) }), NOW).label).toBe('stale');
+  });
+
+  it('names a scope whose last read failed, never calling the figure a total', () => {
+    const v = gaugeView(gauge({ failing: 1, lastFailedAt: '2026-09-21T11:00:00.000Z' as never }), NOW);
+    expect(v.label).toBe('failing');
+    expect(v.value).toBe('2.0 KiB'); // its last good reading is still in the sum
+    expect(v.detail).toMatch(/The last read of 1 scope failed, most recently at /);
+    // A scope that has only ever failed is named too, not left as "not sampled".
+    const never = gaugeView(
+      gauge({ sampled: 0, bytes: 0, oldestReadAt: null, newestReadAt: null, failing: 2, lastFailedAt: '2026-09-21T11:00:00.000Z' as never }),
+      NOW,
+    );
+    expect(never).toMatchObject({ value: '—', label: 'failing' });
+    expect(never.detail).toContain('The last read of 2 scopes failed');
+  });
+
+  it('shows a failed read as failing even when the prior sample is stale, keeping its age', () => {
+    const v = gaugeView(
+      gauge({
+        oldestReadAt: new Date(NOW - STORAGE_STALE_AFTER_MS - 1000).toISOString() as never,
+        failing: 1,
+        lastFailedAt: '2026-09-21T11:00:00.000Z' as never,
+      }),
+      NOW,
+    );
+    expect(v.label).toBe('failing');
+    expect(v.detail).toMatch(/as of .+, which is stale\./);
+    expect(v.detail).toMatch(/The last read of 1 scope failed/);
+  });
+
+  it('shows no number when nothing is sampled, or the host keeps no gauge', () => {
+    expect(gaugeView(gauge({ sampled: 0, bytes: 0, oldestReadAt: null, newestReadAt: null }), NOW)).toMatchObject({
+      value: '—',
+      label: 'not sampled',
+    });
+    expect(gaugeView(gauge({ sampled: 0, total: 0, bytes: 0, oldestReadAt: null, newestReadAt: null }), NOW).detail).toBe(
+      'No scope holds data.',
+    );
+    expect(gaugeView(undefined, NOW)).toMatchObject({ value: '—', label: 'not recorded' });
   });
 });

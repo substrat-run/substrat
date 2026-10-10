@@ -87,6 +87,7 @@ import {
   capabilityFilter,
   instant,
   meterReading,
+  scopeStorageSample,
   subjectRef,
   createConnectionInput,
   connectLinkFilter,
@@ -174,6 +175,7 @@ import {
   type IdentityPool,
   type ListPage,
   type MeterReading,
+  type ScopeStorageSample,
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type ProjectedIdentityLink,
@@ -477,6 +479,9 @@ import {
   memberAddedAudit,
   shapeTopUpBatch,
   type ConnectLinkKeyRow,
+  type ScopeStorageAttempt,
+  type ScopeStorageFilter,
+  type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
@@ -849,9 +854,17 @@ interface ControlPlaneStub {
   /** The three projections §5's meters fold from (#38); narrowed when a tenant is given. */
   meterRows(tenantId?: string): Promise<{
     tenants: { tenant_id: string; slug: string; status: string }[];
-    scopes: { tenant_id: string; status: string }[];
+    scopes: { tenant_id: string; status: string; archived_from_status: string | null }[];
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
+    /** #1524: the stored gauge's latest sample per non-reaped scope. */
+    storage: ScopeStorageSample[];
+    storageAttempts: ScopeStorageAttempt[];
   }>;
+  /** #1524: the stored storage gauge — kernel `storage-gauge.ts`, run inside the directory DO. */
+  recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
+  listScopeStorage(filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
+  listScopeStorageAttempts(): Promise<ScopeStorageAttempt[]>;
+  pruneScopeStorage(limit: number): Promise<number>;
   insertConnection(row: {
     id: string;
     tenantId: string;
@@ -5751,6 +5764,7 @@ export class CloudflareScopeHost implements ScopeHost {
         expiresAt: r.expires_at,
         ...(r.serving_ref ? { servingRef: r.serving_ref } : {}),
         archivedAt: r.archived_at ?? null,
+        archivedFromStatus: (r.archived_from_status ?? null) as ScopeStatus | null,
         createdAt: r.created_at,
       });
     // The (version, scope) pair a bind and its impact read both start from, and the refusals
@@ -8441,6 +8455,7 @@ export class CloudflareScopeHost implements ScopeHost {
           scopes: rows.scopes.map((r) => ({
             tenantId: r.tenant_id as TenantId,
             status: r.status as ScopeStatus,
+            archivedFromStatus: r.archived_from_status as ScopeStatus | null,
           })),
           entitlements: rows.entitlements.map((r) => ({
             tenantId: r.tenant_id as TenantId,
@@ -8448,6 +8463,8 @@ export class CloudflareScopeHost implements ScopeHost {
             plan: r.plan,
             expiresAt: r.expires_at,
           })),
+          storage: rows.storage,
+          storageAttempts: rows.storageAttempts,
         });
         // Tenants covered, not totals: "read one tenant's meter" and "metered the whole
         // fleet" are different acts, and K-24 exists to tell them apart.
@@ -9120,6 +9137,25 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'listFindingRules', { tenantId }, filter, rows.length);
         return rows.map((r) => findingRuleEntry.parse(r));
       },
+      recordScopeStorage: async (_actor, readings: readonly ScopeStorageReadingInput[]) =>
+        this.cp.recordScopeStorage(readings),
+      listScopeStorage: async (actor, filter?: ScopeStorageFilter) => {
+        const rows = (await this.cp.listScopeStorage(filter)).map((r) => scopeStorageSample.parse(r));
+        await this.recordAccess(
+          actor,
+          'listScopeStorage',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows;
+      },
+      listScopeStorageAttempts: async (actor) => {
+        const rows = await this.cp.listScopeStorageAttempts();
+        await this.recordAccess(actor, 'listScopeStorageAttempts', { tenantId: null }, null, rows.length);
+        return rows;
+      },
+      pruneScopeStorage: async (_actor, limit: number) => this.cp.pruneScopeStorage(assertRowLimit('limit', limit)),
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;
         return this.cp.recordModelUsage({

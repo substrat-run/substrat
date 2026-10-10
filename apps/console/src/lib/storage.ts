@@ -1,4 +1,4 @@
-import type { StorageExclusion, StorageMeterReading } from '@substrat-run/contracts';
+import type { StorageExclusion, StorageGauge, StorageMeterReading } from '@substrat-run/contracts';
 
 /**
  * The console's running tally over a tenant's storage pages (#1524).
@@ -103,4 +103,56 @@ export function formatBytes(n: number): string {
     i += 1;
   }
   return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+/**
+ * The stored gauge is sampled at most daily, so a reading older than two days means the
+ * sweep has not reached some scope for a full day longer than it should have.
+ */
+export const STORAGE_STALE_AFTER_MS = 2 * 86_400_000;
+
+/** How a surface states a stored storage figure (#1524), from the gauge alone. */
+export interface GaugeView {
+  /** The number to show, or a dash when there is nothing to sum. */
+  value: string;
+  /** `total` only when every scope is sampled, none is stale and none is failing. */
+  label: 'total' | 'partial' | 'failing' | 'stale' | 'not sampled' | 'not recorded';
+  /** One sentence naming what the figure covers and how old it is. */
+  detail: string;
+}
+
+/**
+ * The words a stored figure may be shown with. It is only ever called a total when every
+ * non-reaped scope has a reading, the oldest reading is fresh and no scope's last read failed.
+ * One with a scope whose last read failed is `failing` (its last good reading is still in the
+ * sum), and that wins over age: a failure is the cause an operator must act on, and staleness is
+ * usually its symptom. Otherwise one whose oldest reading is past `STORAGE_STALE_AFTER_MS` is
+ * `stale`, and one missing scopes is `partial`. Every case still says how many scopes it covers,
+ * from when — and whether that is stale — and which failed.
+ */
+export function gaugeView(g: StorageGauge | undefined, nowMs: number): GaugeView {
+  if (!g) return { value: '—', label: 'not recorded', detail: 'This host keeps no storage gauge.' };
+  const scopes = (n: number) => `${n} scope${n === 1 ? '' : 's'}`;
+  const failing =
+    g.failing > 0 && g.lastFailedAt
+      ? ` The last read of ${scopes(g.failing)} failed, most recently at ${new Date(g.lastFailedAt).toLocaleString()}.`
+      : '';
+  if (g.sampled === 0 || g.oldestReadAt === null) {
+    return {
+      value: '—',
+      label: failing ? 'failing' : 'not sampled',
+      detail:
+        g.total === 0
+          ? 'No scope holds data.'
+          : `None of ${scopes(g.total)} has been sampled yet. The scheduled pass reads each at most once a day.${failing}`,
+    };
+  }
+  const covers = g.sampled < g.total ? `${g.sampled} of ${scopes(g.total)} sampled` : `all ${scopes(g.total)} sampled`;
+  const stale = nowMs - Date.parse(g.oldestReadAt) > STORAGE_STALE_AFTER_MS;
+  const asOf = `as of ${new Date(g.oldestReadAt).toLocaleString()}${stale ? ', which is stale' : ''}`;
+  return {
+    value: formatBytes(g.bytes),
+    label: failing ? 'failing' : stale ? 'stale' : g.sampled < g.total ? 'partial' : 'total',
+    detail: `Scope databases only, ${covers}, ${asOf}.${failing}`,
+  };
 }
