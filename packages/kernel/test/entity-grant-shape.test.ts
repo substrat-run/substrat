@@ -1079,6 +1079,20 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
         expect(run('CREATE TABLE hr_employees (id TEXT, principal_ref TEXT); CREATE INDEX hr_by_principal ON hr_employees (principal_ref, id)')).toHaveLength(1);
       });
 
+      it('a table whose columns take rowid, _rowid_ and oid is refused, not read with a key that ties', () => {
+        const t = fresh();
+        t.db.exec('CREATE TABLE hr_employees (rowid TEXT, _rowid_ TEXT, oid TEXT, id TEXT PRIMARY KEY, principal_ref TEXT)');
+        t.db.prepare('INSERT INTO hr_employees (id, principal_ref) VALUES (?, ?)').run('e1', who());
+        let thrown: unknown;
+        try {
+          step(t, worlds.table.shapes, 1, null);
+        } catch (e) {
+          thrown = e;
+        }
+        expect(errorCodeOf(thrown)).toBe('validation_failed');
+        expect(String((thrown as Error).message)).toMatch(/rowid, _rowid_ and oid/);
+      });
+
       it.each([
         ['a TEXT primary key', 'CREATE TABLE hr_employees (id TEXT PRIMARY KEY, principal_ref TEXT)'],
         ['an INTEGER primary key (the rowid)', 'CREATE TABLE hr_employees (id INTEGER PRIMARY KEY, principal_ref TEXT)'],

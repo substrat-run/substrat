@@ -657,19 +657,33 @@ function backfill(
 /**
  * What tells apart two rows of a holder table that share an `idColumn`, after it in the read's key:
  * the `rowid`, unique, never NULL, and already the last column of every index on a rowid table, so
- * an index leading with `idColumn` serves the whole key with no sort. A `WITHOUT ROWID` table has
+ * an index leading with `idColumn` serves the whole key with no sort. Named by the first of its three
+ * names that no column of the table has taken: a column called `rowid` is that column, not the row's
+ * identity. A table that takes all three is refused (`validation_failed`) rather than read with a key
+ * that can tie: a rowid table's primary key may hold NULLs, so it cannot stand in. A `WITHOUT ROWID` table has
  * none; its primary key columns are NOT NULL, unique, and end each of its indexes the same way, so
  * they stand in, read in key order (those already `idColumn`'s left out: a key of `idColumn`
  * alone is unique, and needs nothing after it).
  */
 function rowIdentity(db: SwitchSql, table: string, idColumn: string, withoutRowid: boolean): string[] {
-  if (!withoutRowid) return ['e.rowid'];
-  return db
-    .all('SELECT name FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk', table)
-    .map((r) => String(r['name']))
-    .filter((c) => c !== idColumn)
-    .map((c) => `e."${c.replaceAll('"', '""')}"`);
+  const columns = db.all('SELECT name, pk FROM pragma_table_info(?) ORDER BY pk', table).map((r) => ({ name: String(r['name']), pk: Number(r['pk']) }));
+  if (withoutRowid) {
+    return columns.filter((c) => c.pk > 0 && c.name !== idColumn).map((c) => `e."${c.name.replaceAll('"', '""')}"`);
+  }
+  const taken = new Set(columns.map((c) => c.name.toLowerCase()));
+  const alias = ROWID_NAMES.find((n) => !taken.has(n));
+  if (!alias) {
+    throw substratError(
+      'validation_failed',
+      `reconcileEntityGrantShapes: holder table "${table}" has columns named rowid, _rowid_ and oid, so its rows cannot be told apart; rename one`,
+      { errors: [{ path: 'holder.table', message: 'a table that leaves one of rowid, _rowid_ or oid to the row' }] },
+    );
+  }
+  return [`e.${alias}`];
 }
+
+/** The names SQLite answers a rowid table's row identity to, unless a column has taken one. */
+const ROWID_NAMES = ['rowid', '_rowid_', 'oid'] as const;
 
 /**
  * A table holder's backfill is bounded only where SQLite reads the table in `idColumn` order off

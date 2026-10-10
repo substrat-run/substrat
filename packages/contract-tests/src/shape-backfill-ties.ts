@@ -33,6 +33,8 @@ const KEY = 'shape-tie:use';
  * - `without rowid`: `(e1, A)`, `(e1, B)`, `(e2, C)` in a `WITHOUT ROWID` table keyed on another
  *   column, with an index on the id. Then the same table declared `WITHOUT ROWID, STRICT`, and
  *   `WITHOUT ROWID` followed by a comment: DDL text that does not end in the clause.
+ * - `a column named rowid`: the duplicate-id case in a table whose own `rowid` column, the same on
+ *   every row, would stand where the row's identity should.
  */
 export function shapeBackfillTies(raw: SwitchSql, ids: { tenantId: string; scopeId: string }): TieCase[] {
   const cases: { name: string; type: string; ddl: string[]; rows: [string, string | null][] }[] = [
@@ -72,6 +74,15 @@ export function shapeBackfillTies(raw: SwitchSql, ids: { tenantId: string; scope
       ddl: [
         'CREATE TABLE shape_tie_note (k TEXT PRIMARY KEY, entity_id TEXT, holder TEXT) WITHOUT ROWID -- keyed on k',
         'CREATE INDEX shape_tie_note_id ON shape_tie_note (entity_id)',
+      ],
+      rows: [['e1', 'A'], ['e1', 'B'], ['e2', 'C']],
+    },
+    {
+      name: 'a column named rowid',
+      type: 'tieshadow',
+      ddl: [
+        "CREATE TABLE shape_tie_shadow (rowid TEXT DEFAULT 'same', entity_id TEXT, holder TEXT)",
+        'CREATE INDEX shape_tie_shadow_id ON shape_tie_shadow (entity_id)',
       ],
       rows: [['e1', 'A'], ['e1', 'B'], ['e2', 'C']],
     },
