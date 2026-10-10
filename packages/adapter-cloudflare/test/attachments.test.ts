@@ -4,6 +4,8 @@ import { errorCodeOf, permissionKey, platformActorId, principalId, scopeId, tena
 import {
   ATTACHMENT_SEARCH_OWNERS_SQL,
   ATTACHMENT_SEARCH_SQL,
+  dumpMetaValue,
+  LOAD_STAMP_KEY,
   ulid,
   webCryptoSecretBox,
   type AttachmentExtractor,
@@ -14,6 +16,7 @@ import { permMod } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
 import type { R2BlobStores } from '../src/r2.js';
 import { warmControlPlane } from './do-warmup.js';
+import { WIPED_READ, WIPED_WRITE, wipedCopyMod } from './wiped-copy-module.js';
 
 /**
  * The attachment surface on the Cloudflare host (#473): the ledger + permission gate live
@@ -211,6 +214,57 @@ describe('attachment surface (cloudflare host)', () => {
       message: 'permission denied: perm:use',
       extensions: { permission: 'perm:use' },
     });
+  });
+
+  // #113 (#1722): a wiped carried copy takes no writes, and `WriteRevision` refuses one as a
+  // `conflict`. The attachment verbs answer that refusal as `invoke` does on the same copy: a 409
+  // with the copy's own sentence. Before they replied as data, the refusal crossed the hop with no
+  // code and a vertical answered it 400. `list` writes too here: the wiped grants deny the read,
+  // and recording that denial is the refused write. A module set with migrations never gets this
+  // far — its first call fails closed re-applying them — hence the migration-free class.
+  it('a wiped carried copy refuses an attachment write as invoke does: conflict, its own sentence', async () => {
+    const bucket = fakeBucket();
+    const host = new CloudflareScopeHost({
+      scope: env.WIPED_COPY_SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      blobStores: fakeR2().r2,
+      attachmentBuckets: () => bucket.bucket,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(wipedCopyMod);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const editor = principalId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+    await host.admin.grantEntitlement(staff, t, 'wiped');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.defineRole(staff, t, { key: 'editor', permissions: [WIPED_READ, WIPED_WRITE], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: editor, roleKey: 'editor', node: { tenantId: t, scopeId: s } });
+    await host.provisionBlobStore(staff, { tenantId: t, vertical: 'docs', binding: 'ATTACHMENTS' });
+    const d1 = { entityType: 'doc', entityId: 'd1' };
+    const put = async (name: string) =>
+      (await host.attachments(editor, t, s)).upload({ entity: d1, filename: name, contentType: 'text/plain', visibility: 'internal', body: bytes(name) });
+    // The twin: before the wipe, the same calls succeed.
+    const rec = await put('before');
+    await (await host.getScope(editor, t, s)).invoke('wiped/touch', { docId: 'd1' });
+
+    const stamp = dumpMetaValue(await host.exportScopeLocal(s), LOAD_STAMP_KEY);
+    expect(await host.wipeCarriedLocal(s, stamp, { to: 'elsewhere', at: '2026-10-10T00:00:00.000Z' })).toBe(true);
+
+    const refusalOf = (p: Promise<unknown>) =>
+      p.then(
+        () => undefined,
+        (e: unknown) => ({ code: errorCodeOf(e), message: (e as Error).message }),
+      );
+    const invoked = await refusalOf((async () => (await host.getScope(editor, t, s)).invoke('wiped/touch', { docId: 'd1' }))());
+    expect(invoked).toEqual({ code: 'conflict', message: expect.stringMatching(/carried to another script and wiped/) });
+    expect(await refusalOf(put('after'))).toEqual(invoked);
+    expect(await refusalOf((async () => (await host.attachments(editor, t, s)).list(d1))())).toEqual(invoked);
+    // A remove finds no record — it went with the wipe — so it writes nothing and answers null.
+    expect(await (await host.attachments(editor, t, s)).remove(rec.id)).toBeNull();
+    // The refused upload's bytes were deleted again; only the pre-wipe object remains.
+    expect([...bucket.objs.keys()]).toEqual([`scope/${s}/att/${rec.id}`]);
   });
 
   it('opens bytes for a registered system module only after its read grant', async () => {
