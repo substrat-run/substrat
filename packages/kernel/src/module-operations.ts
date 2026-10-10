@@ -22,8 +22,8 @@
  * applied to the whole map, since `never` and `any` are assignable to anything; boundary-lint
  * **R11** refuses that at the registration.
  *
- * The brand is type-only: at runtime `operations` is a plain `{ handlers, inputs, concurrency,
- * idempotencyOptOuts }`, read by both adapters.
+ * The brand is an ES-private field, so it holds at run time as well: both adapters refuse an
+ * `operations` value the binder did not make (`assertBoundOperations`).
  */
 import {
   operationConcurrencyOf,
@@ -33,10 +33,22 @@ import {
 } from '@substrat-run/contracts';
 import type { OperationContext, OperationHandler } from './scope-host.js';
 
-declare const bound: unique symbol;
-
 /** name → handler, as the host reads it. */
 export type HandlerMap = Readonly<Record<string, OperationHandler<never, unknown>>>;
+
+/** The derived maps, as the constructor takes them. */
+interface DerivedMaps {
+  readonly inputs?: Readonly<Record<string, { parse(value: unknown): unknown }>>;
+  readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
+  readonly idempotencyOptOuts?: readonly string[];
+}
+
+/**
+ * The key to the constructor. Module-private to the kernel: `operationsFor`,
+ * `undeclaredOperations` and the test seam in `./testing` hold it, and nothing a module can
+ * import does. Exported from this file only so `testing.ts` can reach it — never from the index.
+ */
+export const MINT: unique symbol = Symbol('BoundOperations.mint');
 
 /**
  * Everything a module hands the host about its operations, in one value only `operationsFor` and
@@ -45,9 +57,16 @@ export type HandlerMap = Readonly<Record<string, OperationHandler<never, unknown
  * The handlers and the three maps derived from their declaration travel together, so a
  * registration cannot carry one without the others or pair a handler map with another
  * declaration's schemas. `H` keeps each handler's own type, so a module can still call one.
+ *
+ * **A class with an ES-private brand, so a copy is not one** (#2155 review). A symbol-keyed brand
+ * survives an object spread, so `{ ...bound, inputs: undefined }` type-checked as the bound value
+ * with its schemas gone. A `#private` field is nominal to TypeScript and absent from any copy, so
+ * that spread does not compile — and at run time `isBoundOperations` asks for the same field,
+ * which a spread, `Object.create` or a literal cannot supply, so both adapters refuse a forgery
+ * at registration too.
  */
-export interface BoundOperations<H = HandlerMap> {
-  readonly [bound]: true;
+export class BoundOperations<H = HandlerMap> {
+  readonly #bound = true;
   /** name → handler. */
   readonly handlers: H & HandlerMap;
   /**
@@ -61,6 +80,35 @@ export interface BoundOperations<H = HandlerMap> {
   readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
   /** The operations that declared `idempotency: false`, and so refuse an `Idempotency-Key` (#116). */
   readonly idempotencyOptOuts?: readonly string[];
+
+  constructor(mint: typeof MINT, handlers: H & HandlerMap, derived: DerivedMaps = {}) {
+    if (mint !== MINT) {
+      throw new Error('BoundOperations: made by operationsFor or undeclaredOperations, never constructed directly');
+    }
+    this.handlers = handlers;
+    if (derived.inputs !== undefined) this.inputs = derived.inputs;
+    if (derived.concurrency !== undefined) this.concurrency = derived.concurrency;
+    if (derived.idempotencyOptOuts !== undefined) this.idempotencyOptOuts = derived.idempotencyOptOuts;
+  }
+
+  /** Was this value made by the binder — not a copy, a spread or a literal shaped like one? */
+  static is(value: unknown): value is BoundOperations {
+    return typeof value === 'object' && value !== null && #bound in value;
+  }
+}
+
+/**
+ * The adapters' registration check: a module's `operations` is a value the binder made, or the
+ * module does not register. A copy has no brand; nor does one made by a second copy of the kernel,
+ * which is the same refusal for the same reason — its maps are not the ones this host can trust.
+ */
+export function assertBoundOperations(moduleId: string, operations: unknown): asserts operations is BoundOperations | undefined {
+  if (operations === undefined || BoundOperations.is(operations)) return;
+  throw new Error(
+    `${moduleId}: \`operations\` is not a value operationsFor or undeclaredOperations made — a copy, a spread ` +
+      'or a literal shaped like one carries maps nothing bound to the handlers (or the module was built ' +
+      'against a second copy of @substrat-run/kernel).\n  Remedy: `...operationsFor(ops)({ … })`, as returned.',
+  );
 }
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
@@ -100,12 +148,11 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
   return <const H extends OperationImpl<Ops, OperationContext>>(
     handlers: H & Exact<Ops, H>,
   ): { operations: BoundOperations<H> } => ({
-    operations: {
-      handlers,
+    operations: new BoundOperations<H>(MINT, handlers, {
       inputs: operationInputsOf(declaration),
       concurrency: operationConcurrencyOf(declaration),
       idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
-    } as unknown as BoundOperations<H>,
+    }),
   });
 }
 
@@ -115,5 +162,5 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
  */
 export function undeclaredOperations(reason: string, handlers: HandlerMap): { operations: BoundOperations } {
   if (reason.trim() === '') throw new Error('undeclaredOperations: give the reason this module declares no operations');
-  return { operations: { handlers } as unknown as BoundOperations };
+  return { operations: new BoundOperations(MINT, handlers) };
 }

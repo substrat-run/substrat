@@ -127,6 +127,18 @@ describe('the registration field (#1835)', () => {
     const withConcurrency: ModuleRegistration = { manifest, ...bound, operationConcurrency: {} };
     // @ts-expect-error — nor `operationIdempotencyOptOuts`
     const withOptOuts: ModuleRegistration = { manifest, ...bound, operationIdempotencyOptOuts: [] };
+    // A copy of the bound value is not one: the brand is an ES-private field, absent from a spread.
+    const other = operationsFor({ 'notes/add': notesOperations['notes/add'] })({ 'notes/add': addOp });
+    // @ts-expect-error — the schemas dropped after binding
+    const dropped: ModuleRegistration = { manifest, operations: { ...bound.operations, inputs: undefined } };
+    // @ts-expect-error — the handlers of one declaration with the schemas of another
+    const mixed: ModuleRegistration = { manifest, operations: { ...bound.operations, inputs: other.operations.inputs } };
+    const added: ModuleRegistration = {
+      manifest,
+      // @ts-expect-error — a handler added after binding, with no schema behind it
+      operations: { ...bound.operations, handlers: { ...bound.operations.handlers, 'notes/remove': addOp } },
+    };
+    expect([dropped, mixed, added]).toHaveLength(3);
     // @ts-expect-error — and the bound value cannot be assembled by hand either
     const assembled: ModuleRegistration = { manifest, operations: { handlers: {}, inputs } };
     expect([withInputs, withConcurrency, withOptOuts, assembled]).toHaveLength(4);

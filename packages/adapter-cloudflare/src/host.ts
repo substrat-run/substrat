@@ -470,6 +470,7 @@ import {
   assertNoCallerPurge,
   purgeReportOf,
   purgeStillDue,
+  assertBoundOperations,
   registerTrashTargets,
   type PurgePass,
   type AsyncLinePass,
@@ -3761,6 +3762,8 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       this.predicateNames.set(name, manifest.id);
     }
+    // #1835: a forged `operations` is refused at construction too, before its scope ever wakes.
+    assertBoundOperations(manifest.id, registration.operations);
     // #119: the trash rules, refused here too so a bad module fails at construction, not at its
     // scope's first wake. The scope holds the targets; the coordinator only needs the verdict.
     registerTrashTargets(

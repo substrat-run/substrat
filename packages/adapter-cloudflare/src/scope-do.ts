@@ -352,6 +352,7 @@ import {
   runPurgePass,
   type PurgePass,
   refuseTrashedTarget,
+  assertBoundOperations,
   registerTrashTargets,
   withheldKeysFor,
   statefulTablesOf,
@@ -1373,6 +1374,8 @@ export function defineScopeDO(
 
     private registerModule(registration: ModuleRegistration): void {
       const manifest = registration.manifest;
+      // #1835: the binder's own value, or nothing registers — as in the pure adapter.
+      assertBoundOperations(manifest.id, registration.operations);
       // #119: refused before anything is recorded, as in the pure adapter.
       const trashTargets = registerTrashTargets(
         manifest.id,
