@@ -483,7 +483,10 @@ describe('derivationOf — the bin (#119)', () => {
     ['with a leading check, which would deny a key narrowed to binned rows', { ...TRASHED, permission: 'note:write' }],
     ['narrowed under another key', { ...TRASHED, narrows: { reason: 'r', checks: ['note:read'] } }],
     ['narrowed under more than the trash key', { ...TRASHED, narrows: { reason: 'r', checks: ['note:write', 'note:read'] } }],
-    ['narrowed under nothing', { ...TRASHED, narrows: { reason: 'r', checks: [], noneChecked: 'x' } }],
+    ['narrowed under nothing', { ...TRASHED, narrows: { reason: 'r', checks: [] } }],
+    // The trash key listed AND the flag saying nothing is checked: the flag is a claim the walk
+    // contradicts, and it is refused rather than trusted either way.
+    ['declaring it checks nothing beside the trash key', { ...TRASHED, narrows: { reason: 'r', checks: ['note:write'], unchecked: true } }],
     ['asking for a total', { ...TRASHED, paged: { ...TRASHED.paged, total: true } }],
     ['over an entity that declares no trash', { ...TRASHED, output: entities.note.fields, paged: { over: { entity: 'note', sortable: ['rank'] } } }],
     ['a projection', { ...TRASHED, output: z.object({ id: z.string() }) }],
@@ -495,6 +498,12 @@ describe('derivationOf — the bin (#119)', () => {
     ['not paged over an entity', { ...TRASHED, paged: undefined }],
   ])('not when %s', (_, decl) => {
     expect(kindOf(decl)).toBeUndefined();
+  });
+
+  it('derives with the trash key alone in `narrows`, and not once `unchecked` rides beside it', () => {
+    const narrows = { reason: 'r', checks: ['note:write'] } as const;
+    expect(kindOf({ ...TRASHED, narrows })).toBe('trashed');
+    expect(kindOf({ ...TRASHED, narrows: { ...narrows, unchecked: true } })).toBeUndefined();
   });
 
   it('is still no `list`: a page with `narrows` is a walk unless it is the bin', () => {

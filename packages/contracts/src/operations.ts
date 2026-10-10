@@ -1779,8 +1779,9 @@ function trashedPlan(decl: DeclarationRead, entities: Record<string, EntityDef>)
   // `ctx.pageTrashed` checks the trash key on every row: a leading check on top would deny the
   // person whose key is narrowed to the rows they binned, and say nothing the walk does not.
   if (decl.permission !== undefined) return 'it declares a leading check, and the bin is checked row by row';
-  const narrows = decl.narrows as { checks?: readonly unknown[]; noneChecked?: unknown } | undefined;
-  if (narrows?.noneChecked !== undefined || narrows?.checks?.length !== 1 || narrows.checks[0] !== key) {
+  // `unchecked` says the operation checks nothing, which a bin walked under its key is not.
+  const narrows = decl.narrows as { checks?: readonly unknown[]; unchecked?: unknown } | undefined;
+  if (narrows?.unchecked !== undefined || narrows?.checks?.length !== 1 || narrows.checks[0] !== key) {
     return `it does not declare \`narrows\` checking exactly '${key}', the key the bin is walked under`;
   }
   const filterable = new Set(over.filterable ?? []);
