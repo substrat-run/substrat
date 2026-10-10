@@ -21,8 +21,6 @@ import {
   assertTransition,
   LIST_PAGE_DEFAULT,
   mulDecimal,
-  operationConcurrencyOf,
-  operationInputsOf,
   pageOf,
   pageVisible,
   permissionKey,
@@ -48,6 +46,7 @@ import {
   type OperationContext,
   type OperationHandler,
   type SqlValue,
+  operationsFor,
 } from '@substrat-run/kernel';
 import {
   closePeriod,
@@ -3893,7 +3892,7 @@ function overfetch(limit: number): number {
 // Operations
 // ---------------------------------------------------------------------------
 
-const operations = {
+const bound = operationsFor(ticket0Operations)({
   // --- The desk ------------------------------------------------------------
 
   'ticket0/get-desk': async (ctx) => {
@@ -7835,14 +7834,7 @@ const operations = {
       })),
     };
   },
-} satisfies {
-  // Derived by the platform, not restated here - `HandlerOutput` is what knows that
-  // a `paged` declaration means the handler returns a Page of the declared entry.
-  [K in keyof typeof ticket0Operations]: OperationHandler<
-    HandlerInput<(typeof ticket0Operations)[K]>,
-    HandlerOutput<(typeof ticket0Operations)[K]>
-  >;
-};
+});
 
 /**
  * The assistant's display name.
@@ -7904,15 +7896,8 @@ const ticket0SubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
 export const ticket0Module: ModuleRegistration = {
   manifest: ticket0Manifest,
   migrations: ticket0Migrations,
-  // The host parses every invocation against the same declaration the routes and
-  // the document come from, so "parse, don't trust" holds on every path in — HTTP,
-  // widget, test, seed — rather than in the handlers that remembered (#953).
-  operationInputs: operationInputsOf(ticket0Operations),
-  // #129, and the same reasoning one line up: the DECLARATION is what a reader
-  // trusts, so the host has to be handed it rather than the handlers remembering.
-  // Without this the `concurrency` on the saved-reply operations is a promise
-  // nothing keeps — the header arrives, nothing compares it, and every write lands.
-  operationConcurrency: operationConcurrencyOf(ticket0Operations),
   onSubjectErased: ticket0SubjectErased,
-  operations: operations as ModuleRegistration['operations'],
+  // The handlers above are bound to the declaration, and the host parses every
+  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
+  ...bound,
 };

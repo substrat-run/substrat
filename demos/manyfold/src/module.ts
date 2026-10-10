@@ -12,7 +12,6 @@ import {
   pageOf,
   substratError,
   type ListPage,
-  type OperationImpl,
   type Page,
   type TimelineEntry,
 } from '@substrat-run/contracts';
@@ -24,6 +23,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 import {
   buildBodySchema,
@@ -810,7 +810,7 @@ const OPERATIONS = {
   'manyfold/list-delivery': listDeliveryOp,
   'manyfold/whoami': whoamiOp,
   'manyfold/timeline': timelineOp,
-} satisfies OperationImpl<typeof manyfoldOperations, OperationContext>;
+};
 
 /**
  * The entry's editorial lifecycle, declared (#844).
@@ -864,9 +864,7 @@ export const manyfoldLifecycles = defineLifecycles(
 export const manyfoldModule: ModuleRegistration = {
   manifest: manyfoldManifest,
   migrations: manyfoldMigrations,
-  // Parse, don't trust: the HOST applies the declared schemas, on every path in —
-  // the handlers' own `.parse` calls stay, and now agree with a declaration a
-  // reviewer can read (#865).
-  operationInputs: operationInputsOf(manyfoldOperations),
-  operations: OPERATIONS,
+  // The handlers are bound to the declaration, and the host parses every
+  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
+  ...operationsFor(manyfoldOperations)(OPERATIONS),
 };

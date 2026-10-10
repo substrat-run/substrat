@@ -4,9 +4,7 @@ import {
   compareDecimal,
   dataSubjectId,
   type EntityRef,
-  operationInputsOf,
   substratError,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -16,6 +14,7 @@ import {
   type OperationContext,
   type OperationHandler,
   type PageParams,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 /**
@@ -996,7 +995,9 @@ const timelineOp: OperationHandler<
 export const meridianModule: ModuleRegistration = {
   manifest: meridianManifest,
   migrations: meridianMigrations,
-  operations: {
+  // The handlers are bound to the declaration, and the host parses every
+  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
+  ...operationsFor(meridianOperations)({
     'hr/create-employee': createEmployeeOp,
     'hr/list-employees': listEmployeesOp,
     'hr/roster': rosterOp,
@@ -1024,17 +1025,5 @@ export const meridianModule: ModuleRegistration = {
     'hr/verify-contract': verifyContractOp,
     'hr/start-onboarding': startOnboardingOp,
     'hr/timeline': timelineOp,
-  } satisfies OperationImpl<typeof meridianOperations, OperationContext>,
-  /**
-   * #893: the host parses each operation's declared `input` before the guards
-   * and the handler see it. Derived from the same declaration that produces the
-   * manifest and the routes — the schema is written once, in `operations.ts`.
-   *
-   * Meridian is the one of the four that already parsed all 18 by hand, and its
-   * suite stayed green through the change — which is the confirmation #893 asked
-   * for. The handler-side calls are left where they are: a second parse of an
-   * already-parsed value is a no-op, and removing eighteen of them is churn that
-   * would bury the part of this diff worth reading.
-   */
-  operationInputs: operationInputsOf(meridianOperations),
+  }),
 };

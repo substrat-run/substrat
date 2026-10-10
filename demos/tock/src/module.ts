@@ -19,7 +19,6 @@
  */
 import {
   addDecimal,
-  operationInputsOf,
   substratError,
   type CountedPage,
   type EntityRow,
@@ -32,6 +31,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 import {
   COUNT_CHUNK,
@@ -1780,7 +1780,7 @@ const reportOp: OperationHandler<
   };
 };
 
-const operations = {
+const bound = operationsFor(tockOperations)({
   'tock/declare-source': declareSourceOp,
   'tock/declare-variants': declareVariantsOp,
   'tock/save-output-schema': saveOutputSchemaOp,
@@ -1805,16 +1805,12 @@ const operations = {
   'tock/list-rows': listRowsOp,
   'tock/read-source-file': readSourceFileOp,
   'tock/report': reportOp,
-} satisfies {
-  [K in keyof typeof tockOperations]: OperationHandler<
-    HandlerInput<(typeof tockOperations)[K]>,
-    HandlerOutput<(typeof tockOperations)[K]>
-  >;
-};
+});
 
 export const tockModule: ModuleRegistration = {
   manifest: tockManifest,
   migrations: tockMigrations,
-  operationInputs: operationInputsOf(tockOperations),
-  operations: operations as ModuleRegistration['operations'],
+  // The handlers above are bound to the declaration, and the host parses every
+  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
+  ...bound,
 };

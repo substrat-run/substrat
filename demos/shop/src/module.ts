@@ -21,9 +21,7 @@ import {
   pageVisible,
   type ListPage,
   type Page,
-  operationInputsOf,
   substratError,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -49,6 +47,7 @@ import {
   type OperationContext,
   type OperationHandler,
   type PageParams,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -1169,18 +1168,14 @@ const OPERATIONS = {
   'shop/my-customer': myCustomerOp,
   'shop/fulfil-order': fulfilOrderOp,
   'shop/close-order': closeOrderOp,
-} satisfies OperationImpl<typeof shopOperations, OperationContext>;
+};
 
 export const shopModule: ModuleRegistration = {
   manifest: shopManifest,
   migrations: shopMigrations,
-  operations: OPERATIONS,
-  /**
-   * #893: the host parses each operation's declared `input` before the guards
-   * and the handler see it. Derived from the same declaration that produces the
-   * manifest and the routes — the schema is written once, in `operations.ts`.
-   */
-  operationInputs: operationInputsOf(shopOperations),
+  // The handlers are bound to the declaration, and the host parses every
+  // invocation against it, from one object — so neither can drift from the other (#953, #1835).
+  ...operationsFor(shopOperations)(OPERATIONS),
 };
 
 /**
