@@ -410,7 +410,7 @@ import type {
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
-import { GRANT_CHILDREN_INDEX_DDL, grantedEntitiesForContext } from '@substrat-run/kernel';
+import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForContext, type ShapeCursor } from '@substrat-run/kernel';
 
 /**
  * `defineScopeDO` — one Durable Object per scope, the CF analogue of a single
@@ -719,6 +719,7 @@ const KERNEL_DDL = `
     PRIMARY KEY (subject, relation, object)
   );
   ${GRANT_CHILDREN_INDEX_DDL};
+  ${SHAPE_MARKER_INDEX_DDL};
   CREATE TABLE IF NOT EXISTS _substrat_deliveries (
     event_id TEXT NOT NULL,
     consumer_module TEXT NOT NULL,
@@ -2382,28 +2383,50 @@ export function defineScopeDO(
 
     /**
      * One bounded pass of a declared shape's reconcile (#2071), with its events, in ONE
-     * transaction: how many it topped up, how many it took retired keys from (#2082), and
-     * whether the scope is done.
+     * transaction: how many it topped up, how many it took retired keys from (#2082), and where
+     * the next pass resumes (#2083), `null` once the scope is done.
+     *
+     * A host from before #2083 passes no `after` at all (a new one passes `null` to start) and
+     * loops until `done`, starting each call over. A bounded pass started over never gets past a
+     * window of finished markers, so that host would call forever; for it, this call runs the
+     * whole reconcile here instead, a transaction per pass, and answers `done: true`. Drop the
+     * branch and `done` once no host that predates the cursor can address a ScopeDO built from this.
      */
     async topUpEntityGrantShapes(
       tenantId: string,
       scopeId: string,
       shapes: readonly EntityGrantShape[],
       limit: number,
-    ): Promise<{ toppedUp: number; retired: number; done: boolean }> {
-      return this.queue.enqueue(() =>
-        this.revision.transactionSync(() =>
-          topUpEntityGrantShapes(this.switchSql(), {
-            tenantId,
-            scopeId,
-            shapes,
-            now: new Date().toISOString(),
-            limit,
-            mintEventId: (ms) => this.mintEventId(ms),
-            version: this.env.SUBSTRAT_VERSION_ID ?? null,
-          }),
-        ),
-      );
+      after?: ShapeCursor | null,
+    ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; done: boolean }> {
+      const pass = (from: ShapeCursor | null) =>
+        this.queue.enqueue(() =>
+          this.revision.transactionSync(() =>
+            topUpEntityGrantShapes(this.switchSql(), {
+              tenantId,
+              scopeId,
+              shapes,
+              now: new Date().toISOString(),
+              limit,
+              after: from,
+              mintEventId: (ms) => this.mintEventId(ms),
+              version: this.env.SUBSTRAT_VERSION_ID ?? null,
+            }),
+          ),
+        );
+      if (after !== undefined) {
+        const one = await pass(after);
+        return { ...one, done: one.next === null };
+      }
+      let [toppedUp, retired, retirementsLeftOpen, from] = [0, 0, 0, null as ShapeCursor | null];
+      do {
+        const one = await pass(from);
+        toppedUp += one.toppedUp;
+        retired += one.retired;
+        retirementsLeftOpen += one.retirementsLeftOpen;
+        from = one.next;
+      } while (from);
+      return { toppedUp, retired, retirementsLeftOpen, next: null, done: true };
     }
 
     /**

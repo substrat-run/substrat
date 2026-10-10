@@ -1997,18 +1997,27 @@ export interface HostAdmin {
    * something was fully shared with as a holder.
    *
    * Bounded: `batch` rows of work (default 500, an integer from 1 to 5000, or `validation_failed`)
-   * per scope transaction, backfill included, repeated until a pass finishes — so it is safe
-   * on a large scope, and finishes on a re-run if interrupted. Each (person, entity) topped up is
+   * per scope transaction, backfill included, and at most ten markers read per row of work, read
+   * on their own index (#2083). Each pass resumes where the last one stopped, until one finds
+   * nothing left, so it is safe on a large scope whether or not anything changed, and finishes on
+   * a re-run if interrupted. A holder an older deployment grants the shape to while it runs, behind
+   * the point it has reached: if they lack a key the shape gained, the next reconcile tops them up.
+   * If they hold a key the shape retired, a confirming walk from the first marker, which every
+   * retirement runs before it records itself finished, takes it back. Only a grant landing behind
+   * that confirming walk keeps the key, as one landing after the retirement finished does. Each (person, entity) topped up is
    * an `entity.grants-topped-up` event on the entity, and each one retired keys were taken from an
    * `entity.grants-retired` event. Audited as `reconcileEntityGrantShapes` when it changed
-   * anything. Returns how many (person, entity) it topped up, and how many it retired keys from.
+   * anything. Returns how many (person, entity) it topped up, and how many it retired keys from;
+   * plus, only when nonzero, `retirementsLeftOpen`: shapes whose retirement kept meeting new
+   * grants of a retired key (`SHAPE_RETIRE_CONFIRMS_MAX` confirming walks that took keys) and was
+   * left for the next reconcile to run again, unrecorded.
    */
   reconcileEntityGrantShapes(
     actor: PlatformActorId,
     node: { tenantId: TenantId; scopeId: ScopeId },
     shapes: readonly EntityGrantShape[],
     opts?: { batch?: number },
-  ): Promise<{ toppedUp: number; retired: number }>;
+  ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen?: number }>;
   /** Grant to an organization (portal customers); members reach it via membership tuples. */
   /**
    * Grant a permission to a CONNECTION (#97) — how a connector is allowed to

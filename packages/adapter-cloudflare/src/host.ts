@@ -486,7 +486,7 @@ import {
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
-import type { PlatformRequestSettle } from '@substrat-run/kernel';
+import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -1516,13 +1516,17 @@ interface ScopeStubRpc {
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
   /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
   grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
-  /** One bounded pass of the shape reconcile with its events (#2071, retirements #2082). */
+  /**
+   * One bounded pass of the shape reconcile with its events (#2071, retirements #2082), resuming
+   * at `after` (#2083). A DO from before the cursor ignores `after`, answers `done` and no `next`.
+   */
   topUpEntityGrantShapes(
     tenantId: string,
     scopeId: string,
     shapes: readonly EntityGrantShape[],
     limit: number,
-  ): Promise<{ toppedUp: number; retired: number; done: boolean }>;
+    after: ShapeCursor | null,
+  ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen?: number; next?: ShapeCursor | null; done: boolean }>;
   /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
   writeTuple(
     subject: string,
@@ -6585,11 +6589,11 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, 'grantEntityShape', grant.node, null, grant);
       },
       reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
-        const { toppedUp, retired } = await this.topUpEntityGrantShapesLocal(node.tenantId, node.scopeId, shapes, opts?.batch);
-        if (toppedUp > 0 || retired > 0) {
-          await this.recordAdmin(actor, 'reconcileEntityGrantShapes', node, null, { shapes, toppedUp, retired });
+        const result = await this.topUpEntityGrantShapesLocal(node.tenantId, node.scopeId, shapes, opts?.batch);
+        if (result.toppedUp > 0 || result.retired > 0) {
+          await this.recordAdmin(actor, 'reconcileEntityGrantShapes', node, null, { shapes, ...result });
         }
-        return { toppedUp, retired };
+        return result;
       },
       grantToConnection: async (actor: PlatformActorId, raw: ConnectionGrant) => {
         const grant = connectionGrant.parse(raw);
@@ -10638,26 +10642,33 @@ export class CloudflareScopeHost implements ScopeHost {
    * passes — at most `batch` rows of work per scope transaction (default 500, at most 5000;
    * anything else is `validation_failed`), repeated until a pass finishes. Never re-grants a revoked
    * key; takes back only a key the shape declares `retired` (#2082). Returns how many
-   * (person, entity) it topped up, and how many it took retired keys from.
+   * (person, entity) it topped up, how many it took retired keys from, and (only when nonzero) how
+   * many shapes' retirements it left open for the next reconcile.
    */
   async topUpEntityGrantShapesLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
     shapes: readonly EntityGrantShape[],
     batch?: number,
-  ): Promise<{ toppedUp: number; retired: number }> {
+  ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen?: number }> {
     const limit = shapeTopUpBatch(batch);
     let toppedUp = 0;
     let retired = 0;
+    let retirementsLeftOpen = 0;
     if (shapes.length === 0) return { toppedUp, retired };
     const stub = this.scopeStub(scopeId);
-    for (let done = false; !done; ) {
-      const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, limit);
+    // Each pass resumes where the last one stopped (#2083), until one reports nothing left. A DO
+    // from before the cursor answers no `next`: its passes each start over, until it says `done`.
+    let after: ShapeCursor | null = null;
+    for (let more = true; more; ) {
+      const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, limit, after);
       toppedUp += pass.toppedUp;
       retired += pass.retired;
-      done = pass.done;
+      retirementsLeftOpen += pass.retirementsLeftOpen ?? 0; // a DO from before the cap reports none
+      after = pass.next ?? null;
+      more = pass.next === undefined ? !pass.done : pass.next !== null;
     }
-    return { toppedUp, retired };
+    return { toppedUp, retired, ...(retirementsLeftOpen > 0 ? { retirementsLeftOpen } : {}) };
   }
 
   // -- the connector write-back's far end (#574) -----------------------------

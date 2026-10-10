@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { permissionKey, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox, type ShapeCursor } from '@substrat-run/kernel';
 import { mountInviteRoutes, type InviteDirectory } from '@substrat-run/vertical-auth/invite-routes';
 import { CloudflareScopeHost } from '../src/host.js';
 
@@ -440,15 +440,23 @@ describe('a key a declared shape retires, over a CP-less host (#2082)', () => {
   it('one pass retires and tops up together, and does no more than its limit', async () => {
     const shapes = [{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true as const, retired: [USE] }];
     // Through an arrow on the real stub, never a `.bind`: the RPC proxy is not a plain function.
-    const pass = (tn: string, sc: string, sh: unknown, limit: number) =>
+    const pass = (tn: string, sc: string, sh: unknown, limit: number, after: ShapeCursor | null) =>
       (
         stub() as unknown as {
-          topUpEntityGrantShapes: (t: string, s: string, shapes: unknown, limit: number) => Promise<{ toppedUp: number; retired: number; done: boolean }>;
+          topUpEntityGrantShapes: (
+            t: string,
+            s: string,
+            shapes: unknown,
+            limit: number,
+            after: ShapeCursor | null,
+          ) => Promise<{ toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; done: boolean }>;
         }
-      ).topUpEntityGrantShapes(tn, sc, sh, limit);
-    expect(await pass(t, s, shapes, 4)).toEqual({ retired: 3, toppedUp: 1, done: false });
+      ).topUpEntityGrantShapes(tn, sc, sh, limit, after);
+    const first = await pass(t, s, shapes, 4, null);
+    expect(first).toEqual({ retired: 3, toppedUp: 1, retirementsLeftOpen: 0, next: { shape: 0, step: 'topUp', marker: expect.any(Object) }, done: false });
     expect([await events('entity.grants-retired'), await events('entity.grants-topped-up')]).toEqual([{ n: 3 }, { n: 1 }]);
-    expect(await pass(t, s, shapes, 4)).toEqual({ retired: 0, toppedUp: 2, done: true });
+    // The next pass resumes where the first stopped (#2083).
+    expect(await pass(t, s, shapes, 4, first.next)).toEqual({ retired: 0, toppedUp: 2, retirementsLeftOpen: 0, next: null, done: true });
     for (const [i, p] of people.entries()) {
       expect([await can(p, READ, i), await can(p, USE, i), await can(p, ADMIN, i)]).toEqual([true, false, true]);
     }
@@ -457,5 +465,56 @@ describe('a key a declared shape retires, over a CP-less host (#2082)', () => {
   it('a provision carrying the shape again retires nobody a second time', async () => {
     await provision([{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true, retired: [USE] }]);
     expect(await events('entity.grants-retired')).toEqual({ n: 3 });
+  });
+});
+
+/**
+ * #2153 review: a host from before the cursor (#2083) calls the ScopeDO's pass with no `after` and
+ * loops until `done`, each call starting over. A bounded pass started over never gets past a window
+ * of finished markers, so that host would call forever; the DO runs the whole reconcile for it.
+ */
+describe('a host from before the shape cursor still finishes against this ScopeDO (#2083)', () => {
+  let host: CloudflareScopeHost;
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const READ = permissionKey.parse('perm:read');
+  const USE = permissionKey.parse('perm:use');
+  const shapes = [{ entityType: 'employee', permissions: [READ, USE], bootstrap: true as const }];
+  type Pass = { toppedUp: number; retired: number; next?: ShapeCursor | null; done: boolean };
+  // Through an arrow on the real stub, never a `.bind`: the RPC proxy is not a plain function.
+  const rpc = () =>
+    env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+      topUpEntityGrantShapes: (...args: unknown[]) => Promise<Pass>;
+    };
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({ scope: env.SCOPE, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    await host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner: principalId.parse(ulid()),
+      roles: [{ key: 'office-admin', permissions: [READ, USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    // Twelve finished holders sort first: more than one window at a batch of 1. Three behind them need USE.
+    for (let i = 0; i < 12; i++) await host.grantEntityShapeLocal(s, principalId.parse(ulid()), { entityType: 'employee', entityId: `a${String(i).padStart(2, '0')}` }, [READ, USE]);
+    for (let i = 0; i < 3; i++) await host.grantEntityShapeLocal(s, principalId.parse(ulid()), { entityType: 'employee', entityId: `z${i}` }, [READ]);
+  });
+
+  afterAll(async () => host.close());
+
+  it("a new host's call is one bounded pass, handing back where it stopped", async () => {
+    const pass = await rpc().topUpEntityGrantShapes(t, s, shapes, 1, null);
+    expect(pass).toMatchObject({ toppedUp: 0, done: false, next: { step: 'topUp' } });
+  });
+
+  it("an old host's call (no cursor, loop until `done`) finishes, every holder topped up once", async () => {
+    const calls: Pass[] = [];
+    for (let done = false; !done && calls.length < 5; ) {
+      const pass = await rpc().topUpEntityGrantShapes(t, s, shapes, 1);
+      calls.push(pass);
+      done = pass.done;
+    }
+    expect(calls).toEqual([{ toppedUp: 3, retired: 0, retirementsLeftOpen: 0, next: null, done: true }]);
   });
 });

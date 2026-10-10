@@ -71,8 +71,36 @@ import type { SwitchSql } from './system-switch.js';
  * whole, backfill included, so a sharee is never marked a holder.
  */
 
+/**
+ * The index every marker walk reads (#2083): markers only, in `(object, subject)` order, so one
+ * shape's markers are one range (`<type>:` up to `<type>;`) and a pass's cursor is a seek into
+ * it. Without it a pass scanned the whole `_substrat_tuples` table, even when it had nothing to
+ * do. Partial, so it costs a row per marker and nothing for any other tuple. SQLite uses a
+ * partial index only where it can prove the index's WHERE from the query's, so the walks write the
+ * relation as this same literal: proved from the text alone, with no dependence on SQLite
+ * re-planning once a parameter is bound. In KERNEL_DDL on both adapters, which every wake re-runs,
+ * so an existing scope builds it on its next wake.
+ */
+export const SHAPE_MARKER_INDEX_DDL = `CREATE INDEX IF NOT EXISTS _substrat_tuples_shape_marker ON _substrat_tuples (object, subject) WHERE relation = '${ENTITY_SHAPE_MARKER_RELATION}'`;
+
 /** Holders topped up per pass — one transaction each, so a large scope never holds one long. */
 export const SHAPE_TOP_UP_BATCH = 500;
+/**
+ * Markers a pass may READ, per row of work it may write. The budget bounds writes, but finding
+ * the holders who need one means reading past the ones who do not, and on a scope where nobody
+ * does (the common reconcile: nothing changed) that is every marker. Ten per row keeps a pass at
+ * 5000 index rows by default, short on any scope, while a rollout still spends most of each pass
+ * writing. A pass that reads its window without filling its budget hands back a cursor, and the
+ * next pass reads on from there.
+ */
+export const SHAPE_MARKER_READS_PER_ROW = 10;
+/**
+ * Confirming walks that may take keys, per shape per reconcile, before its retirement is left open
+ * for the next reconcile. Each one that takes keys starts another, so a steady stream of grants of
+ * a retired key landing ahead of the walk would otherwise keep a single reconcile walking forever.
+ * Left open, the retirement keeps no record, so the next reconcile simply runs it again.
+ */
+export const SHAPE_RETIRE_CONFIRMS_MAX = 3;
 /** The largest batch a caller may ask for: past this a pass is the long transaction it exists to avoid. */
 export const SHAPE_TOP_UP_BATCH_MAX = 5000;
 
@@ -104,6 +132,12 @@ const PRINCIPAL = 'principal:';
 const keysOf = (permissions: readonly string[]): string[] => [...new Set(permissions)].sort();
 
 /**
+ * Every object of one entity type, as an index range: `prefix` is `<type>:`, and `;` is the byte
+ * after `:`. A range, not `substr(object, …) = ?`, so an index leading with `object` can seek it.
+ */
+const typeRange = (prefix: string): [string, string] => [prefix, `${prefix.slice(0, -1)};`];
+
+/**
  * The shape's grant to one person on one entity: the marker and every key, each an explicit
  * write, so a re-grant brings back what a revoke tombstoned — as `ctx.grant` does.
  * `entityObjectRef` refuses a ref the walk could not read back (#1856). Run it in ONE
@@ -120,6 +154,40 @@ export function grantEntityShapeIn(db: SwitchSql, principal: PrincipalId, entity
   }
 }
 
+/**
+ * Where a pass stopped, so the next pass of the same reconcile starts there instead of at the
+ * first marker (#2083): the shape (its index in `shapes`), the step of it, and for a marker walk
+ * the last marker it read. Without it every pass re-read the holders earlier passes had already
+ * finished, and a rollout cost passes × markers.
+ *
+ * Skipping what lies behind it is safe because a walk leaves every marker it passes finished:
+ * topped up (each key now has a row) or with its retired keys tombstoned. A marker written behind
+ * it mid-run is complete when a shape grant writes it, and the backfill finishes before its
+ * shape's walks begin. The exception is a shape grant by an OLDER deployment, carrying the shape
+ * as it was, landing behind the cursor while the reconcile runs:
+ *
+ * - Missing a key the shape gained: the top-up keeps no record, so the next reconcile's top-up
+ *   reaches that holder.
+ * - Holding a key the shape retired: a retirement ends in a run-once record, so a holder it never
+ *   saw would never be reached. The first walk therefore never writes that record. Once it reaches
+ *   the last marker, a CONFIRMING walk starts again from the first (`confirm`), and the record is
+ *   written only when a confirming walk reaches the last marker having taken nothing; one that
+ *   took keys starts another, up to `SHAPE_RETIRE_CONFIRMS_MAX`; past that the retirement is left
+ *   open for the next reconcile. A grant landing behind the confirming walk itself is the gap
+ *   left, the same as one landing after the retirement finished.
+ */
+export interface ShapeCursor {
+  shape: number;
+  step: 'backfill' | 'retire' | 'topUp';
+  /** The last marker a walk read; `null` resumes the step from its start. */
+  marker: { object: string; subject: string } | null;
+  /**
+   * A confirming retire walk only: whether it has taken nothing so far, and how many confirming
+   * walks before it, on this shape in this reconcile, took keys.
+   */
+  confirm?: { clean: boolean; count: number };
+}
+
 /** Where a pass runs and how its events are stamped — the facts only the adapter holds. */
 export interface ShapePass {
   tenantId: string;
@@ -129,6 +197,8 @@ export interface ShapePass {
   now: string;
   /** Rows of work at most: a backfill mark or a holder topped up each count one. */
   limit: number;
+  /** The previous pass's `next`; absent or `null` starts the reconcile from the beginning. */
+  after?: ShapeCursor | null;
   /** The adapter's monotonic event-id mint, given the instant in ms. */
   mintEventId: (ms: number) => string;
   /** The deploy writing the events, for the outbox `version` column. */
@@ -136,105 +206,226 @@ export interface ShapePass {
 }
 
 /**
- * One pass of the reconcile over one scope, at most `limit` rows of work: backfill marks for any
- * shape whose backfill is not done here, then holders whose retired keys are taken back, each
- * with its `entity.grants-retired` event, then holders topped up, each with its
- * `entity.grants-topped-up` event. `done` is false when the budget ran out, and the caller runs
- * another pass. Run it inside ONE transaction, so the keys and their events commit together.
- * Re-running a finished scope writes nothing.
+ * One pass of the reconcile over one scope, at most `limit` rows of work and
+ * `limit × SHAPE_MARKER_READS_PER_ROW` markers read: backfill marks for any shape whose backfill
+ * is not done here, then holders whose retired keys are taken back, each with its
+ * `entity.grants-retired` event, then holders topped up, each with its `entity.grants-topped-up`
+ * event. `next` is `null` once the scope is done; otherwise the caller runs another pass with it
+ * as `after`. `retirementsLeftOpen` counts the shapes whose retirement this pass gave up on at
+ * `SHAPE_RETIRE_CONFIRMS_MAX`, for the next reconcile to run again. Run it inside ONE
+ * transaction, so the keys and their events commit together. Re-running a finished scope writes
+ * nothing.
  */
 export function topUpEntityGrantShapes(
   db: SwitchSql,
   pass: ShapePass,
-): { toppedUp: number; retired: number; done: boolean } {
-  // Here as well as at each entry point: a pass with no budget never reports done, so a caller
-  // looping until it does would never stop.
-  let budget = shapeTopUpBatch(pass.limit);
+): { toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null } {
+  // Here as well as at each entry point: a pass with no budget never hands back `next: null`, so
+  // a caller looping until it does would never stop.
+  const limit = shapeTopUpBatch(pass.limit);
+  const room = { writes: limit, reads: limit * SHAPE_MARKER_READS_PER_ROW };
   recordGranteeKeys(db, pass.shapes);
   let toppedUp = 0;
   let retired = 0;
-  for (const shape of pass.shapes) {
+  let retirementsLeftOpen = 0;
+  const from = pass.after ?? null;
+  for (let i = from?.shape ?? 0; i < pass.shapes.length; i++) {
+    const shape = pass.shapes[i]!;
     // A sharing shape is never reconciled — not topped up, not backfilled, nothing retired.
     if (!shape.bootstrap) continue;
     const keys = keysOf(shape.permissions);
     // A key the shape grants is never taken back, whatever the declaration says.
     const gone = keysOf(shape.retired ?? []).filter((k) => !keys.includes(k));
     if (keys.length === 0 && gone.length === 0) continue;
+    // Where this shape starts: the cursor's step if it points here, else the beginning.
+    const resume = from?.shape === i ? from : null;
+    const at = resume?.step ?? 'backfill';
+    const marker = (step: ShapeCursor['step']) => (resume?.step === step ? resume.marker : null);
+    const stop = (step: ShapeCursor['step'], last: ShapeCursor['marker'], confirm?: ShapeCursor['confirm']) => ({
+      toppedUp,
+      retired,
+      retirementsLeftOpen,
+      next: { shape: i, step, marker: last, ...(confirm ? { confirm } : {}) },
+    });
     const prefix = `${shape.entityType}:`;
-    const json = JSON.stringify(keys);
-    // A live retired key still identifies a legacy holder so this pass can retire it.
-    // The grantee query excludes tombstoned tuples.
-    budget -= backfill(db, pass, shape, prefix, JSON.stringify([...keys, ...gone]), budget);
-    if (budget === 0) return { toppedUp, retired, done: false };
-    reopenRetirements(db, pass, shape.entityType, keys);
-    const took = retire(db, pass, shape.entityType, prefix, gone, budget);
-    budget -= took;
-    retired += took;
-    if (budget === 0) return { toppedUp, retired, done: false };
-    if (keys.length === 0) continue;
-    const holders = db.all(
-      `SELECT m.subject, m.object FROM _substrat_tuples m
-        WHERE m.relation = ? AND ${liveTupleSql('m')}
-          AND substr(m.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}'
-          AND substr(m.object, 1, ?) = ?
-          AND EXISTS (SELECT 1 FROM json_each(?) k
-                       WHERE NOT EXISTS (SELECT 1 FROM _substrat_tuples t
-                                          WHERE t.subject = m.subject AND t.object = m.object
-                                            AND t.relation = 'granted:' || k.value))
-        ORDER BY m.subject, m.object
-        LIMIT ?`,
-      ENTITY_SHAPE_MARKER_RELATION,
-      pass.now,
-      prefix.length,
-      prefix,
-      json,
-      budget,
-    ) as { subject: string; object: string }[];
-    for (const h of holders) {
-      const added = (
-        db.all(
-          `SELECT k.value AS key FROM json_each(?) k
-            WHERE NOT EXISTS (SELECT 1 FROM _substrat_tuples t
-                               WHERE t.subject = ? AND t.object = ? AND t.relation = 'granted:' || k.value)
-            ORDER BY k.value`,
-          json,
-          h.subject,
-          h.object,
-        ) as { key: string }[]
-      ).map((m) => m.key);
-      for (const key of added) {
-        db.run(
-          `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)`,
-          h.subject,
-          `granted:${key}`,
-          h.object,
-        );
-      }
-      const st = kernelOutboxInsertSql(
-        shapeEvent(pass, ENTITY_GRANTS_TOPPED_UP, entityGrantsToppedUpPayload, {
-          principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
-          entity: { entityType: shape.entityType, entityId: h.object.slice(prefix.length) },
-          added,
-        }),
-        pass.version,
-      );
-      db.run(st.sql, ...st.params);
+    if (at === 'backfill') {
+      // A live retired key still identifies a legacy holder so this pass can retire it.
+      // The grantee query excludes tombstoned tuples.
+      room.writes -= backfill(db, pass, shape, prefix, JSON.stringify([...keys, ...gone]), room.writes);
+      if (room.writes === 0) return stop('backfill', null);
     }
-    budget -= holders.length;
-    toppedUp += holders.length;
-    if (budget === 0) return { toppedUp, retired, done: false };
+    if (at !== 'topUp') {
+      reopenRetirements(db, pass, shape.entityType, keys);
+      let start = marker('retire');
+      // The first walk is never a confirming one; nor is a resumed walk that does not say it is.
+      let confirm = resume?.step === 'retire' ? resume.confirm : undefined;
+      for (;;) {
+        const took = retire(db, pass, shape.entityType, prefix, gone, start, room, confirm?.clean === true);
+        retired += took.found.length;
+        if (confirm) confirm = { ...confirm, clean: confirm.clean && took.found.length === 0 };
+        if (!took.done) return stop('retire', took.at, confirm);
+        if (confirm?.clean) break; // `retire` recorded the retirement finished
+        // A confirming walk from the first marker, for what landed behind this one; a walk that
+        // ended here having taken keys counts against the cap if it was itself confirming.
+        const count = confirm ? confirm.count + 1 : 0;
+        if (count >= SHAPE_RETIRE_CONFIRMS_MAX) {
+          retirementsLeftOpen++;
+          break;
+        }
+        [start, confirm] = [null, { clean: true, count }];
+      }
+    }
+    if (keys.length === 0) continue;
+    const gave = topUp(db, pass, shape.entityType, prefix, keys, marker('topUp'), room);
+    toppedUp += gave.found.length;
+    if (!gave.done) return stop('topUp', gave.at);
   }
-  return { toppedUp, retired, done: true };
+  return { toppedUp, retired, retirementsLeftOpen, next: null };
+}
+
+/** What a pass may still spend: rows of work it may write, and markers it may read. */
+interface Room {
+  writes: number;
+  reads: number;
+}
+
+/** Where a marker walk stopped: `done` once it read the shape's last marker, else the last one it read. */
+interface Walk {
+  found: { subject: string; object: string }[];
+  done: boolean;
+  at: ShapeCursor['marker'];
+}
+
+/** A step with nothing to walk: done, having read nothing. */
+const NOTHING_TO_WALK: Walk = { found: [], done: true, at: null };
+
+/**
+ * The live markers of one shape after `after`, in index order, that are `wanted` (a SQL predicate
+ * on the marker `m`, binding one parameter: `json`), as many as `room` allows. Spends one write
+ * per marker found, and one read per marker FETCHED: the whole window, not only up to where the
+ * writes ran out, because SQLite evaluated `wanted` on every row it returned.
+ */
+function walkMarkers(
+  db: SwitchSql,
+  now: string,
+  prefix: string,
+  after: ShapeCursor['marker'],
+  room: Room,
+  wanted: string,
+  json: string,
+): Walk {
+  if (room.writes === 0 || room.reads === 0) return { found: [], done: false, at: after };
+  const [, end] = typeRange(prefix);
+  const from = after ?? { object: prefix, subject: '' };
+  const window = room.reads;
+  const rows = db.all(
+    `SELECT m.object, m.subject,
+            (substr(m.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}' AND ${liveTupleSql('m')} AND ${wanted}) AS hit
+       FROM _substrat_tuples m
+      WHERE m.relation = '${ENTITY_SHAPE_MARKER_RELATION}' AND (m.object, m.subject) > (?, ?) AND m.object < ?
+      ORDER BY m.object, m.subject
+      LIMIT ?`,
+    now,
+    json,
+    // A row-value seek: a resumed walk starts after the cursor and reads none of what it passed.
+    from.object,
+    from.subject,
+    end,
+    window,
+  ) as { object: string; subject: string; hit: number }[];
+  const found: { subject: string; object: string }[] = [];
+  let read = 0;
+  while (read < rows.length && found.length < room.writes) {
+    const r = rows[read++]!;
+    if (r.hit) found.push({ subject: r.subject, object: r.object });
+  }
+  room.reads -= rows.length;
+  room.writes -= found.length;
+  const last = rows[read - 1];
+  return {
+    found,
+    // Every marker it fetched was read, and the fetch came back short of the window: no more.
+    done: read === rows.length && rows.length < window,
+    at: last ? { object: last.object, subject: last.subject } : after,
+  };
 }
 
 /**
- * One bounded batch of a shape's retirement: at most `budget` (person, entity) pairs, each a
- * live marker still holding a retired key live there, whose retired keys are tombstoned with one
- * event. Keys whose retirement already finished on this scope are skipped, and a short batch
- * records the rest finished. Returns how many pairs it took keys from.
+ * One bounded walk of a shape's top-up: each live marker whose entity lacks a key of the current
+ * shape (no row at all — a tombstone is a revoke, kept) gets that key, with one event.
  */
-function retire(db: SwitchSql, pass: ShapePass, entityType: string, prefix: string, gone: readonly string[], budget: number): number {
-  if (gone.length === 0) return 0;
+function topUp(
+  db: SwitchSql,
+  pass: ShapePass,
+  entityType: string,
+  prefix: string,
+  keys: readonly string[],
+  after: ShapeCursor['marker'],
+  room: Room,
+): Walk {
+  const json = JSON.stringify(keys);
+  const walk = walkMarkers(
+    db,
+    pass.now,
+    prefix,
+    after,
+    room,
+    `EXISTS (SELECT 1 FROM json_each(?) k
+              WHERE NOT EXISTS (SELECT 1 FROM _substrat_tuples t
+                                 WHERE t.subject = m.subject AND t.object = m.object
+                                   AND t.relation = 'granted:' || k.value))`,
+    json,
+  );
+  for (const h of walk.found) {
+    const added = (
+      db.all(
+        `SELECT k.value AS key FROM json_each(?) k
+          WHERE NOT EXISTS (SELECT 1 FROM _substrat_tuples t
+                             WHERE t.subject = ? AND t.object = ? AND t.relation = 'granted:' || k.value)
+          ORDER BY k.value`,
+        json,
+        h.subject,
+        h.object,
+      ) as { key: string }[]
+    ).map((m) => m.key);
+    for (const key of added) {
+      db.run(
+        `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)`,
+        h.subject,
+        `granted:${key}`,
+        h.object,
+      );
+    }
+    const st = kernelOutboxInsertSql(
+      shapeEvent(pass, ENTITY_GRANTS_TOPPED_UP, entityGrantsToppedUpPayload, {
+        principal: h.subject.slice(PRINCIPAL.length) as PrincipalId,
+        entity: { entityType, entityId: h.object.slice(prefix.length) },
+        added,
+      }),
+      pass.version,
+    );
+    db.run(st.sql, ...st.params);
+  }
+  return walk;
+}
+
+/**
+ * One bounded walk of a shape's retirement: each live marker still holding a retired key live
+ * there has its retired keys tombstoned, with one event. Keys whose retirement already finished
+ * on this scope are skipped. The rest are recorded finished only by a `clean` (confirming) walk
+ * that reaches the shape's last marker having taken nothing.
+ */
+function retire(
+  db: SwitchSql,
+  pass: ShapePass,
+  entityType: string,
+  prefix: string,
+  gone: readonly string[],
+  after: ShapeCursor['marker'],
+  room: Room,
+  clean: boolean,
+): Walk {
+  if (gone.length === 0) return NOTHING_TO_WALK;
   const [shapeRef, scopeRef] = recordRefs(entityType, pass.scopeId);
   const finished = new Set(
     (
@@ -249,26 +440,20 @@ function retire(db: SwitchSql, pass: ShapePass, entityType: string, prefix: stri
     ).map((r) => r.key),
   );
   const open = gone.filter((k) => !finished.has(k));
-  if (open.length === 0) return 0;
+  if (open.length === 0) return NOTHING_TO_WALK;
   const json = JSON.stringify(open);
-  const holders = db.all(
-    `SELECT m.subject, m.object FROM _substrat_tuples m
-      WHERE m.relation = ? AND ${liveTupleSql('m')}
-        AND substr(m.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}'
-        AND substr(m.object, 1, ?) = ?
-        AND EXISTS (SELECT 1 FROM _substrat_tuples t
-                     WHERE t.subject = m.subject AND t.object = m.object AND t.revoked_at IS NULL
-                       AND t.relation IN (SELECT 'granted:' || value FROM json_each(?)))
-      ORDER BY m.subject, m.object
-      LIMIT ?`,
-    ENTITY_SHAPE_MARKER_RELATION,
+  const walk = walkMarkers(
+    db,
     pass.now,
-    prefix.length,
     prefix,
+    after,
+    room,
+    `EXISTS (SELECT 1 FROM _substrat_tuples t
+              WHERE t.subject = m.subject AND t.object = m.object AND t.revoked_at IS NULL
+                AND t.relation IN (SELECT 'granted:' || value FROM json_each(?)))`,
     json,
-    budget,
-  ) as { subject: string; object: string }[];
-  for (const h of holders) {
+  );
+  for (const h of walk.found) {
     // Tombstoned and read back in one statement: the keys this holder lost are what it touched.
     const removed = keysOf(
       (
@@ -294,7 +479,7 @@ function retire(db: SwitchSql, pass: ShapePass, entityType: string, prefix: stri
     );
     db.run(st.sql, ...st.params);
   }
-  if (holders.length < budget) {
+  if (walk.done && clean && walk.found.length === 0) {
     for (const k of open) {
       db.run(
         'INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)',
@@ -304,7 +489,7 @@ function retire(db: SwitchSql, pass: ShapePass, entityType: string, prefix: stri
       );
     }
   }
-  return holders.length;
+  return walk;
 }
 
 /**
@@ -346,14 +531,13 @@ function backfill(db: SwitchSql, pass: ShapePass, shape: EntityGrantShape, prefi
     // The entity id IS the principal: `owner:<p>` belongs to `principal:<p>` and nobody else.
     candidates = db.all(
       `SELECT DISTINCT t.subject, t.object FROM _substrat_tuples t
-        WHERE substr(t.object, 1, ?) = ?
+        WHERE t.object >= ? AND t.object < ?
           AND t.subject = '${PRINCIPAL}' || substr(t.object, ?)
           AND t.relation IN (SELECT 'granted:' || value FROM json_each(?))
           AND ${unmarked('t.subject', 't.object')}
         ORDER BY t.subject, t.object
         LIMIT ?`,
-      prefix.length,
-      prefix,
+      ...typeRange(prefix),
       prefix.length + 1,
       json,
       budget,
@@ -364,15 +548,14 @@ function backfill(db: SwitchSql, pass: ShapePass, shape: EntityGrantShape, prefi
     // still belong there, and marking them would hand a revoked portal the next key it gains.
     candidates = db.all(
       `SELECT DISTINCT t.subject, t.object FROM _substrat_tuples t
-        WHERE substr(t.object, 1, ?) = ?
+        WHERE t.object >= ? AND t.object < ?
           AND substr(t.subject, 1, ${PRINCIPAL.length}) = '${PRINCIPAL}'
           AND t.relation IN (SELECT 'granted:' || value FROM json_each(?))
           AND ${liveTupleSql('t')}
           AND ${unmarked('t.subject', 't.object')}
         ORDER BY t.subject, t.object
         LIMIT ?`,
-      prefix.length,
-      prefix,
+      ...typeRange(prefix),
       json,
       pass.now,
       budget,

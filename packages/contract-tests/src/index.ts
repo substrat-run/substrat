@@ -123,3 +123,4 @@ export { directoryRestoreSuite, type DirectoryRestoreHarness, type RestorableDir
 export { SPLIT_CASES } from './split-cases.js';
 export { migrationCommentsContractSuite } from './migration-comments-suite.js';
 export { commentedDdlMod } from './migration-comments.js';
+export { shapeReconcilePlans } from './shape-reconcile-plan.js';
