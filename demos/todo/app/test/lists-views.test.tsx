@@ -118,6 +118,34 @@ describe('Lists — active, archived and trash (#119)', () => {
     await press('trash');
     expect(container.textContent).toContain('Not allowed.');
     expect(container.textContent).toContain('Shared with me');
+    // A 403 is about permission, not a stale view: nothing to re-read.
+    expect(client.myLists).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stale move (409: moved in another tab) keeps the message and re-reads, so the stale row goes', async () => {
+    client.myLists.mockResolvedValueOnce(page(list('l5', 'Moved elsewhere'), list('l6', 'Stays'))).mockResolvedValue(page(list('l6', 'Stays')));
+    client.archiveList.mockRejectedValue(new ApiError(409, 'invalid_transition: list is archived', { error: 'conflict' }));
+    await draw('active');
+    await act(async () => {
+      [...container.querySelectorAll('.card')]
+        .find((c) => c.textContent?.includes('Moved elsewhere'))!
+        .querySelector('button')!
+        .click();
+    });
+    expect(client.myLists).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('invalid_transition: list is archived');
+    expect(container.textContent).not.toContain('Moved elsewhere');
+    expect(container.textContent).toContain('Stays');
+  });
+
+  it('a stale move (404: binned in another tab) re-reads the same way', async () => {
+    client.myLists.mockResolvedValueOnce(page(list('l7', 'Binned elsewhere'))).mockResolvedValue(page());
+    client.trashList.mockRejectedValue(new ApiError(404, 'list not found: l7', { error: 'not_found' }));
+    await draw('active');
+    await press('trash');
+    expect(client.myLists).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('list not found: l7');
+    expect(container.textContent).not.toContain('Binned elsewhere');
   });
 
   it('twin: a refused READ of the view is the wall — the rows go', async () => {

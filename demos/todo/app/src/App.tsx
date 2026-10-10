@@ -20,6 +20,9 @@ import { api, ApiError, auth, me, type Item, type List, type Paged, type Session
 /** The wall, as opposed to a blip: the server said no, not "try again". */
 const denied = (error: unknown) => error instanceof ApiError && error.status === 403;
 
+/** A move against a list that is no longer where this screen shows it (#119). */
+const stale = (error: unknown) => error instanceof ApiError && (error.status === 409 || error.status === 404);
+
 function useHash(): string {
   const [hash, setHash] = useState(() => window.location.hash);
   useEffect(() => {
@@ -148,12 +151,16 @@ export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
   useAutoRefresh(load);
 
   // A refused move is a 403 about THAT list, not a wall over the screen: the rows stay.
+  // A 409 or 404 is this view gone stale — another tab moved or binned the list — so the
+  // view is read again and the stale row goes; the message is set after, since a good
+  // read clears it.
   const move = async (fn: () => Promise<unknown>) => {
     setError(null);
     try {
       await fn();
       void load();
     } catch (e) {
+      if (stale(e)) await load();
       setError(e);
     }
   };
