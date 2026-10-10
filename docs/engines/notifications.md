@@ -35,6 +35,9 @@ What it holds:
 | `notifications_mutes` | a topic a person switched off, per channel | none: no personal data beyond the principal id |
 | `notifications_deliveries` | what became of each (dedupe key, topic, principal, channel) | none: principal and request id only, never the address |
 
+A vertical composing it needs the `emailSender` grant: without it the platform refuses
+every send, and each delivery settles `refused` with reason `permission_denied`.
+
 The send intent carries the recipient as its `subjectId`, so a subject erasure cancels a send
 that is still held.
 

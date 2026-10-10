@@ -35,6 +35,8 @@ host.registerModule(notificationsModule);
 
 `notify` checks no permission, like every by-call engine function: the caller checks first.
 
+**Prerequisite: the vertical's `emailSender` grant.** `notify` writes its sends with the kernel's `requestEmail`, and the platform delivers those only for a vertical that staff have granted the email-sender capability (the console's `setVerticalEmailSender`). Without it, nothing fails at the call: every delivery is written `requested`, and then settles `refused` with reason `permission_denied` when the platform's outcome comes back.
+
 ## What it owns
 
 - **Dispatch.** For each person, it writes one send intent with the kernel's `requestEmail`

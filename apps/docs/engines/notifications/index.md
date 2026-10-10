@@ -42,6 +42,8 @@ host.registerModule(notificationsModule);
 The template is your vocabulary, so it stays in your code. `dedupeKey` names the occasion: from a
 consumer, pass the event's id. The engine registers as one frozen constant, like every engine.
 
+**Prerequisite: the vertical's `emailSender` grant.** `notify` writes its sends with the kernel's `requestEmail`, and the platform delivers those only for a vertical that staff have granted the email-sender capability (the console's `setVerticalEmailSender`). Without it, nothing fails at the call: every delivery is written `requested`, and then settles `refused` with reason `permission_denied` when the platform's outcome comes back.
+
 ## What it guarantees
 
 - **Nobody is mailed twice for one occasion.** A delivery is unique on (dedupe key, topic,

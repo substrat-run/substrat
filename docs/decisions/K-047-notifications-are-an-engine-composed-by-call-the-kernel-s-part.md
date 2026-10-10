@@ -23,7 +23,7 @@ tracking: ["#118"]
 - the send intent;
 - what became of it: one delivery row per occasion, topic, person and channel, unique on those four so a redelivered event mails nobody twice, settled from the outcome event.
 
-The caller names the occasion with `dedupeKey`; from a consumer that is the event's id. This is the by-call shape of workorder, booking and protocol: the vertical composes an exported function in its own transaction and does its own permission check.
+The vertical needs the staff-granted `emailSender` capability, as for any `requestEmail`. Without it, each delivery settles `refused` with reason `permission_denied`. The caller names the occasion with `dedupeKey`; from a consumer that is the event's id. This is the by-call shape of workorder, booking and protocol: the vertical composes an exported function in its own transaction and does its own permission check.
 
 **The registration is one frozen constant, like every other engine's.** Its consumers are fixed: the three email outcome events. Topics are what the caller names when it calls `notify`, so the scope learns them by use. A topic is recorded the first time it is used and follows the caller's latest description and `required` flag after that. That is what a preferences screen lists and what a mute must name. "Engines take no configuration" stands unamended.
 
