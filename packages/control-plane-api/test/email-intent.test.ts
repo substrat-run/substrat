@@ -30,6 +30,7 @@ import {
   webCryptoSecretBox,
   type ConsumerHandler,
   type OperationHandler,
+  undeclaredOperations
 } from '@substrat-run/kernel';
 import {
   drainScopePlatformRequests,
@@ -70,7 +71,7 @@ const mailerMod = {
   migrations: [
     { version: '0001-init', sql: 'CREATE TABLE delivery (request TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL)' },
   ],
-  operations: {
+  ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
     'mailer/send': (async (ctx, input: SendEmailRequest) => {
       assertAllowed(await ctx.check(SEND));
       return requestEmail(ctx, input);
@@ -84,7 +85,7 @@ const mailerMod = {
       ctx.sql.query<{ request: string; type: string; payload: string }>(
         'SELECT request, type, payload FROM delivery',
       )) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: Object.fromEntries(
     [EMAIL_SENT, EMAIL_REFUSED, EMAIL_DEAD_LETTERED].map((type) => [
       type,
