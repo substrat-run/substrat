@@ -4,8 +4,8 @@
  * timing that a browser would take minutes to show.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LIVE_CLOSE } from '@substrat-run/contracts/wire-headers';
 import {
-  CLOSE_TOO_MANY,
   FEED_TIMING,
   createFeed,
   endingOnUnauthorized,
@@ -186,11 +186,11 @@ describe('the live feed ends with the session', () => {
 });
 
 describe('the live feed told it holds too many sockets (#938)', () => {
-  it(`stops asking after a ${CLOSE_TOO_MANY} close, and the screen keeps polling`, () => {
+  it(`stops asking after a ${LIVE_CLOSE.tooMany} close, and the screen keeps polling`, () => {
     const l = listener();
     feed.listen(l);
     latest().accept();
-    latest().drop(CLOSE_TOO_MANY);
+    latest().drop(LIVE_CLOSE.tooMany);
     expect(l.state).toHaveBeenLastCalledWith(false);
     const after = sockets.length;
     feed.wake();

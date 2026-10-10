@@ -161,8 +161,6 @@ export {
   checkedWithin,
   isCheckedWithin,
   type CheckedWithin,
-  LIVE_CLOSE,
-  LIVE_SOCKETS_PER_PRINCIPAL,
 } from './scope-host.js';
 export {
   isSecretBoxConfigured,
