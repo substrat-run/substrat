@@ -6199,12 +6199,8 @@ export function defineScopeDO(
 
     /** A bounded page of one table. Unknown table names throw — never queried blind. Kept for a
      *  coordinator from before #113; the current one calls `introspectTableReply`. */
-    introspectTable(table: string, limit: number, offset: number): ScopeTablePage {
-      try {
-        return this.tablePage(table, limit, offset);
-      } catch (e) {
-        throw toRpcError(e);
-      }
+    introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage> {
+      return thrownForRpc(async () => this.tablePage(table, limit, offset));
     }
 
     /** `introspectTable`, its refusal answered as DATA so its code survives the hop (#113). */
@@ -6244,12 +6240,8 @@ export function defineScopeDO(
      * at SCOPE_QUERY_ROW_MAX with `truncated` set, never an error.
      * Kept for a coordinator from before #113; the current one calls `introspectQueryReply`.
      */
-    async introspectQuery(sql: string): Promise<ScopeQueryResult> {
-      try {
-        return await this.readOnlyQuery(sql);
-      } catch (e) {
-        throw toRpcError(e);
-      }
+    introspectQuery(sql: string): Promise<ScopeQueryResult> {
+      return thrownForRpc(() => this.readOnlyQuery(sql));
     }
 
     /** `introspectQuery`, its refusal answered as DATA so its code survives the hop (#113). */

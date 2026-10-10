@@ -418,17 +418,13 @@ describe('attachment surface (cloudflare host)', () => {
     // merely different.
     const { host, t, s, editor, rec } = await dispatchReading({ grantRead: true });
 
-    let outcome: unknown = 'never ran';
-    let refused: unknown;
+    let refused: unknown = 'never ran';
     host.registerConnector(
       'signer',
       'perm.acted',
       async (ctx) => {
         const conn = await ctx.connection('signer');
-        outcome = await conn.openAttachment(rec.id).catch((e: unknown) => {
-          refused = e;
-          return `refused: ${String(e)}`;
-        });
+        refused = await conn.openAttachment(rec.id).catch((e: unknown) => e);
       },
       { provider: 'signer' },
     );
@@ -441,10 +437,9 @@ describe('attachment surface (cloudflare host)', () => {
     });
     await host.drainDue(t, s);
 
-    expect(String(outcome)).toMatch(/^refused:/);
-    expect(String(outcome)).toMatch(/item\/i1/);
-    expect(String(outcome)).toMatch(/item\/i2/);
-    expect(outcome).not.toBeNull();
+    expect(refused).toBeInstanceOf(Error);
+    expect(String(refused)).toMatch(/item\/i1/);
+    expect(String(refused)).toMatch(/item\/i2/);
     // #113: a denial by its code. Its sentence names no permission, so a reader guessing from
     // the words could not tell it from any other untyped failure.
     expect(errorCodeOf(refused)).toBe('permission_denied');

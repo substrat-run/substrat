@@ -41,13 +41,15 @@ interface DenialRow {
 
 const refusal = (p: Promise<unknown>): Promise<unknown> =>
   p.then(
-    () => {
-      throw new Error('expected a refusal, and the call succeeded');
-    },
+    () => undefined,
     (e: unknown) => e,
   );
 
-/** The refusal as a caller reads it: its code, its declared permission and its sentence. */
+/**
+ * The refusal as a caller reads it: its code, its declared permission and its sentence —
+ * `expectRefusal`'s check, plus the `permission` extension it does not read. A call that
+ * resolved fails it the same way, since `errorCodeOf(undefined)` is never a code.
+ */
 const expectDenied = (err: unknown, permission: string): void => {
   expect(errorCodeOf(err)).toBe('permission_denied');
   expect(toProblem(err)).toMatchObject({
