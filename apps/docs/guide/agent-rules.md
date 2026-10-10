@@ -202,13 +202,16 @@ matter what the operation supports, forget the second and it answers with an
 envelope where it used to answer with an array. That is the case for not
 hand-mounting anything an operation can declare.
 
-**An operation the model describes completely says who writes its handler.** Four
+**An operation the model describes completely says who writes its handler.** These
 shapes are derivable: a `GET` of one row by its id, a `GET` that is a `paged.over` page of the
-entity's own rows behind declared filters, a `PATCH` field bag with `concurrency`, and
-a `DELETE` of a row nothing declares as parent. Declare `derive: 'get'` (or `'list'`,
-`'update'`, `'delete'`) and write no handler: `operationsFor` leaves it out of the map
-it requires and supplies the platform's handler, which checks the declared key first,
-reads and writes only declared columns and emits the declared event. Keep a handler
+entity's own rows behind declared filters, a `PATCH` field bag with `concurrency`, a
+`DELETE` of a row nothing declares as parent, and, on an entity that declares `archive` or
+`trash`, its four moves and its bin. Declare `derive: 'get'` (or `'list'`, `'update'`,
+`'delete'`, `'archive'`, `'unarchive'`, `'trash'`, `'restore'`, `'trashed'`) and write no
+handler: `operationsFor` leaves it out of the map it requires and supplies the platform's
+handler, which checks the declared key first, reads and writes only declared columns and
+emits the declared event (the bin is checked row by row instead, and a move's event is the
+kernel's). Keep a handler
 only with `authored: '<what the derived one would get wrong here>'`. `defineOperations`
 refuses at module load a derivable operation that declares neither, a `derive` whose
 declaration is not that shape, and an `authored` on an operation nothing could derive.

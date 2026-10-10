@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-handlebar
 
-20 keys · 4 modules · 2 roles
+22 keys · 5 modules · 2 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -15,6 +15,8 @@
 | `customer:manage` | Manage customers and the workshop price list | `@substrat-run/demo-handlebar` |
 | `invoicing:export` | Export an invoice basis (makes it immutable) | `@substrat-run/engine-invoicing` |
 | `invoicing:read` | Read invoice bases | `@substrat-run/engine-invoicing` |
+| `notifications:read` | Read what became of every notification in the scope | `@substrat-run/engine-notifications` |
+| `notifications:self` | Set where your own notifications go and which topics reach you | `@substrat-run/engine-notifications` |
 | `protocol:attach` | Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate) | `@substrat-run/engine-protocol` |
 | `protocol:bind` | Bind vertical-owned document content (ref + hash) to an open document protocol | `@substrat-run/engine-protocol` |
 | `protocol:countersign` | Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup) | `@substrat-run/engine-protocol` |
@@ -38,8 +40,8 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
-| `mechanic` | `protocol:fill`, `protocol:read`, `workorder:read`, `workorder:report` |
-| `workshop-admin` | `bike:manage`, `customer:manage`, `invoicing:export`, `invoicing:read`, `protocol:create`, `protocol:fill`, `protocol:read`, `protocol:sign`, `protocol:void`, `workorder:assign`, `workorder:close`, `workorder:complete`, `workorder:create`, `workorder:read`, `workorder:report` |
+| `mechanic` | `notifications:self`, `protocol:fill`, `protocol:read`, `workorder:read`, `workorder:report` |
+| `workshop-admin` | `bike:manage`, `customer:manage`, `invoicing:export`, `invoicing:read`, `notifications:read`, `notifications:self`, `protocol:create`, `protocol:fill`, `protocol:read`, `protocol:sign`, `protocol:void`, `workorder:assign`, `workorder:close`, `workorder:complete`, `workorder:create`, `workorder:read`, `workorder:report` |
 
 ## 3. Coverage — which roles hold each key
 
@@ -49,6 +51,8 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `customer:manage` | `workshop-admin` |
 | `invoicing:export` | `workshop-admin` |
 | `invoicing:read` | `workshop-admin` |
+| `notifications:read` | `workshop-admin` |
+| `notifications:self` | `mechanic`, `workshop-admin` |
 | `protocol:attach` | — no role — |
 | `protocol:bind` | — no role — |
 | `protocol:countersign` | — no role — |

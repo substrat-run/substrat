@@ -32,6 +32,7 @@ import { protocolEntities } from '@substrat-run/engine-protocol';
 
 import { workorderEntities } from '@substrat-run/engine-workorder';
 import { handlebarEntities } from './entities.js';
+import { notifyOnAssignment } from './notifications.js';
 import { handlebarOperations, startConditionReportInput, timelineInput } from './operations.js';
 import {
   assertAllowed,
@@ -88,7 +89,8 @@ export const bikeShopManifest = moduleManifest.parse({
     { key: 'customer:manage', description: 'Manage customers and the workshop price list' },
     { key: 'bike:manage', description: "Register and manage customers' bikes" },
   ],
-  events: { emits: [], consumes: [] },
+  // `workorder.assigned` reaches the mechanic as mail, through engine-notifications (`notifications.ts`).
+  events: { emits: [], consumes: [{ type: 'workorder.assigned', schemaVersion: 1 }] },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   // Entity names checked against `handlebarEntities` (#697). `bike → customer`
   // is DERIVED from the entity's `parent`; the two engine-crossing edges are
@@ -509,5 +511,6 @@ const bound = operationsFor(handlebarOperations)({
 export const bikeShopModule: ModuleRegistration = {
   manifest: bikeShopManifest,
   migrations: bikeShopMigrations,
+  consumers: { 'workorder.assigned': notifyOnAssignment },
   ...bound,
 };

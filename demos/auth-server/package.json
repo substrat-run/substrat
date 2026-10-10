@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-auth-server",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "private": true,
   "license": "Apache-2.0",
   "description": "Standalone Better Auth OIDC provider demo (auth-server) — see spec/concept.md",
@@ -61,6 +61,7 @@
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
+    "bcryptjs": "^3.0.3",
     "better-auth": "^1.7.3",
     "better-sqlite3": "catalog:",
     "drizzle-orm": "^0.45.2",

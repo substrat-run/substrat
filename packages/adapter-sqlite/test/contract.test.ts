@@ -17,6 +17,7 @@ import {
   findingsContractSuite,
   findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
+  attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
   becomeMintContractSuite,
@@ -411,9 +412,8 @@ becomeMintContractSuite('adapter-sqlite', async () => {
   };
 });
 
-// #1686: attachments through a capability — the same checker branch, reached through the
-// attachment surface. The per-tenant blob store is the directory store the suite provisions.
-capabilityAttachmentContractSuite('adapter-sqlite', async () => {
+// The per-tenant blob store is the directory store each suite provisions.
+const attachmentHostFixture = async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cap-att-'));
   const host = new SqliteScopeHost({
     dir,
@@ -428,7 +428,14 @@ capabilityAttachmentContractSuite('adapter-sqlite', async () => {
       rmSync(dir, { recursive: true, force: true });
     },
   };
-});
+};
+
+// #1686: attachments through a capability — the same checker branch, reached through the
+// attachment surface.
+capabilityAttachmentContractSuite('adapter-sqlite', attachmentHostFixture);
+
+// #113: an attachment refusal reaches the caller typed — the pure adapter's half of the parity.
+attachmentRefusalContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // #1575: attachment text — extraction, the FTS5 index and the search gate on node SQLite.
 attachmentTextContractSuite('adapter-sqlite', async (options = {}) => {
