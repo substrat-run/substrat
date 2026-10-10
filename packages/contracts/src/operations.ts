@@ -361,9 +361,12 @@ export type PagedEntityOf<O> = O extends { paged: { over: { entity: infer N } } 
  * below the migration machinery, and a declared filter with no index is a table
  * scan that passes every test and degrades when one tenant's table grows.
  *
- * The handler still writes its own `SELECT` — it receives a page of ROWS and maps
- * or hydrates it with `mapPage`. So this is not a CRUD layer: it invents no
- * routes and no handlers.
+ * The handler asks `ctx.page` for a page of ROWS and maps or hydrates it with
+ * `mapPage`. It invents no routes. When the page IS the entity's rows — the output
+ * its `fields`, every input a declared filter of the same type, a check narrowed at
+ * most to a parent — the platform can write that handler too: declare
+ * `derive: 'list'` and write none, or `authored: '<reason>'` to keep yours (#1773,
+ * `DerivedKind`). `defineOperations` refuses one that says neither.
  */
 export type PagedOver<O, Entities, Engines> = {
   /**
