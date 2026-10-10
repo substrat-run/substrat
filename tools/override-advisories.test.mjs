@@ -1,7 +1,7 @@
 // node --test tools/override-advisories.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { check, inRange, overriddenName, parseOverrides } from './override-advisories.mjs';
+import { ACCEPT_FILE, GRACE_DAYS, check, inRange, overriddenName, parseOverrides, readAccepts, staleness, stalenessFails } from './override-advisories.mjs';
 
 const yaml = `packages:
   - 'packages/*'
@@ -123,4 +123,82 @@ test('fails closed: no advisories map means the lookup failed', () => {
 test('fails closed: a non-exact override cannot be judged and is not green', () => {
   const r = check({ hono: '^4.13.8', 'better-sqlite3': '13.0.3' }, report());
   assert.deepEqual(r.unjudgeable, ['hono: ^4.13.8']);
+});
+
+// `pnpm view <name> time --json`, trimmed: hono's real dates around the 4.13.8 pin.
+const times = {
+  created: '2021-12-14T00:00:00.000Z',
+  modified: '2026-10-04T03:53:48.117Z',
+  '4.13.8': '2026-09-15T07:31:34.010Z',
+  '4.13.9': '2026-09-24T01:32:02.438Z',
+  '4.13.13': '2026-10-04T03:53:48.117Z',
+  '5.0.0': '2026-08-01T00:00:00.000Z',
+  '4.14.0-rc.1': '2026-08-01T00:00:00.000Z',
+};
+const at = (iso) => new Date(iso);
+const after = (iso, days) => new Date(Date.parse(iso) + days * 24 * 60 * 60 * 1000);
+
+test('stale once the first newer release on the line is more than GRACE_DAYS old', () => {
+  const s = staleness('4.13.8', times, after(times['4.13.9'], GRACE_DAYS + 1));
+  assert.deepEqual(s, { latest: '4.13.13', behindSince: times['4.13.9'], stale: true });
+});
+
+test('not stale inside the grace window, counted from the FIRST newer release', () => {
+  assert.equal(staleness('4.13.8', times, after(times['4.13.9'], GRACE_DAYS - 1)).stale, false);
+  // 4.13.13 is younger; it is 4.13.9's age that says how long the pin has been behind
+  assert.equal(staleness('4.13.8', times, after(times['4.13.13'], GRACE_DAYS - 5)).stale, true);
+});
+
+test('the latest release on the line is never stale, however old', () => {
+  assert.equal(staleness('4.13.13', times, at('2030-01-01')), null);
+});
+
+test('a newer major and a prerelease are not newer releases on the line', () => {
+  const only = { '4.13.13': times['4.13.13'], '5.0.0': '2020-01-01T00:00:00Z', '4.14.0-rc.1': '2020-01-01T00:00:00Z' };
+  assert.equal(staleness('4.13.13', only, at('2030-01-01')), null);
+});
+
+test('below 1.0.0 the minor is the line', () => {
+  const zero = { '0.4.1': '2020-01-01T00:00:00Z', '0.4.2': '2020-02-01T00:00:00Z', '0.5.0': '2020-01-01T00:00:00Z' };
+  assert.equal(staleness('0.4.2', zero, at('2030-01-01')), null);
+  assert.equal(staleness('0.4.1', zero, at('2030-01-01')).latest, '0.4.2');
+});
+
+const pins = [{ key: 'hono', name: 'hono', version: '4.13.8' }];
+const entry = (over) => ({ package: 'hono', version: '4.13.8', reason: 'waiting on a fix', expires: '2026-11-01', ...over });
+
+test('an accept entry holds its pin through its expiry day, and not after', () => {
+  assert.deepEqual([...readAccepts([entry()], pins, at('2026-11-01T23:00:00Z')).held], ['hono@4.13.8']);
+  const r = readAccepts([entry()], pins, at('2026-11-02T00:00:00Z'));
+  assert.deepEqual([...r.held], []);
+  assert.deepEqual(r.expired, [entry()]);
+});
+
+test('an accept entry that names no current pin, or is malformed, is an error', () => {
+  assert.match(readAccepts([entry({ version: '4.13.7' })], pins, at('2026-10-01')).errors[0], /no override pins hono@4\.13\.7/);
+  for (const bad of [entry({ reason: ' ' }), entry({ expires: 'soon' }), { package: 'hono' }]) {
+    assert.equal(readAccepts([bad], pins, at('2026-10-01')).errors.length, 1, JSON.stringify(bad));
+  }
+  assert.equal(readAccepts({}, pins, at('2026-10-01')).errors.length, 1);
+});
+
+test('an empty accept list holds nothing', () => {
+  assert.deepEqual(readAccepts([], pins, at('2026-10-01')), { held: new Set(), expired: [], errors: [] });
+});
+
+test('staleness fails every run that is not a pull request, unknown events included', () => {
+  for (const event of ['schedule', 'push', 'workflow_dispatch', undefined, 'merge_group']) {
+    assert.equal(stalenessFails({ event }), true, String(event));
+  }
+});
+
+test('on a pull request staleness fails only when the PR touches the pins', () => {
+  const same = { baseOverrides: { hono: '4.13.8' }, headOverrides: { hono: '4.13.8' } };
+  assert.equal(stalenessFails({ event: 'pull_request', changedFiles: ['README.md', 'pnpm-workspace.yaml'], ...same }), false);
+  assert.equal(stalenessFails({ event: 'pull_request', changedFiles: ['pnpm-lock.yaml'], ...same }), true);
+  assert.equal(stalenessFails({ event: 'pull_request', changedFiles: [ACCEPT_FILE], ...same }), true);
+  assert.equal(stalenessFails({ event: 'pull_request', baseOverrides: { hono: '4.13.8' }, headOverrides: { hono: '4.13.9' } }), true);
+  assert.equal(stalenessFails({ event: 'pull_request', baseOverrides: { hono: '4.13.8' }, headOverrides: { hono: '4.13.8', x: '1.0.0' } }), true);
+  // key order is not a change
+  assert.equal(stalenessFails({ event: 'pull_request', baseOverrides: { a: '1.0.0', b: '1.0.0' }, headOverrides: { b: '1.0.0', a: '1.0.0' } }), false);
 });

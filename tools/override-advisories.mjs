@@ -1,24 +1,35 @@
-// node tools/override-advisories.mjs [audit.json]
+// node tools/override-advisories.mjs [audit.json] [--event <name>] [--base <rev>] [--now <ISO date>]
 //
-// An advisory of ANY severity against a version `pnpm-workspace.yaml` pins in `overrides:` is
-// a failure (#1601). Dependabot reads package.json ranges and the `catalog:` blocks and nothing
-// under `overrides`, so for these pins the scanner cannot act, and audit.yml's critical-only
-// gate will not — no severity is low enough to leave to either. Everything else in the tree
-// keeps that gate; this reads the SAME `pnpm audit --json` report and judges only the
-// overridden packages.
+// The pins `pnpm-workspace.yaml` holds in `overrides:` have no other actor (#1601): Dependabot
+// reads package.json ranges and the `catalog:` blocks and nothing under `overrides`, so a pin
+// there stays wherever the last human left it. Two things are judged, for every key — read
+// from the block, not a list, so a pin added tomorrow is covered by construction:
 //
-// Reads the keys, not a list: a pin added to `overrides:` tomorrow is covered by construction.
+//   ADVISORY  an advisory of ANY severity whose `vulnerable_versions` contains the pinned
+//             version. audit.yml's critical-only gate covers the rest of the tree and does not
+//             reach these; this reads the SAME `pnpm audit --json` report. Fails everywhere,
+//             immediately. A consciously accepted advisory is expressed exactly as the critical
+//             gate expresses it: its GHSA id in package.json's `pnpm.auditConfig.ignoreGhsas`.
+//   STALE     a newer release on the pin's line (same major; same minor on 0.x) has been out for
+//             more than GRACE_DAYS. Newer majors are migrations and prereleases are not
+//             releases, so neither counts. Time alone turns this red, so it FAILS only where
+//             the pins are the subject — a scheduled or manual run, a push to main, a PR that
+//             changes the overrides, the lockfile or the accept file — and is a warning on
+//             every other PR. A consciously held pin goes in ACCEPT_FILE with a reason and an
+//             expiry; an expired entry is judged like the stale pin it was holding.
 //
-// Fails closed. A report with no `advisories` map (registry error) and an override whose value
-// is not an exact version (a range cannot be placed against `vulnerable_versions`) both exit 2,
-// because "could not tell" must not read as "clean".
+// Release dates come from `pnpm view <name> time --json`, the registry the install uses.
 //
-// A consciously accepted advisory is expressed exactly as the critical gate expresses it: its
-// GHSA id in package.json's `pnpm.auditConfig.ignoreGhsas`.
+// Fails closed (exit 2): a report with no `advisories` map, a release lookup that fails, an
+// override that is not an exact version (a range cannot be placed against either question), and
+// an accept entry that is malformed or names no current pin — "could not tell" must not read as
+// "clean".
 //
 // No dependencies on purpose: the audit workflow runs no install.
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 /** The `overrides:` mapping of a pnpm-workspace.yaml, as `{ key: value }`. Flat scalars only. */
 export function parseOverrides(yaml) {
@@ -136,41 +147,164 @@ export function check(overrides, audit, ignored = []) {
   return { hits, unjudgeable };
 }
 
+export const GRACE_DAYS = 30;
+export const ACCEPT_FILE = 'tools/override-advisories.accept.json';
+const DAY = 24 * 60 * 60 * 1000;
+
+/** The release line a version belongs to: its major, or `0.<minor>` below 1.0.0. */
+function lineOf(version) {
+  const [major, minor] = parse(version).n;
+  return major === 0 ? `0.${minor}` : String(major);
+}
+
+/**
+ * How far `version` is behind its own line, given `pnpm view <name> time --json`.
+ * @returns {{ latest: string, behindSince: string, stale: boolean } | null} null when nothing
+ * newer exists on the line; `behindSince` is the publish date of the first release after it.
+ */
+export function staleness(version, times, now) {
+  const newer = Object.keys(times)
+    .filter((v) => EXACT.test(v) && !v.includes('-') && lineOf(v) === lineOf(version) && cmp(v, version) > 0)
+    .sort(cmp);
+  if (newer.length === 0) return null;
+  const behindSince = newer.map((v) => times[v]).sort()[0];
+  return { latest: newer.at(-1), behindSince, stale: now.getTime() - Date.parse(behindSince) > GRACE_DAYS * DAY };
+}
+
+/**
+ * Reads the accept list against the current pins (`[{ name, version }]`).
+ * @returns {{ held: Set<string>, expired: object[], errors: string[] }} `held` keys are `name@version`.
+ */
+export function readAccepts(entries, pins, now) {
+  const held = new Set();
+  const expired = [];
+  const errors = [];
+  if (!Array.isArray(entries)) return { held, expired, errors: [`${ACCEPT_FILE} must be a JSON array`] };
+  const today = now.toISOString().slice(0, 10);
+  for (const e of entries) {
+    const label = JSON.stringify(e);
+    if (typeof e?.package !== 'string' || typeof e.version !== 'string' || typeof e.reason !== 'string' || e.reason.trim() === '' || typeof e.expires !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.expires)) {
+      errors.push(`${label}: needs "package", "version", a non-empty "reason" and "expires" as YYYY-MM-DD`);
+    } else if (!pins.some((p) => p.name === e.package && p.version === e.version)) {
+      errors.push(`${label}: no override pins ${e.package}@${e.version} — remove the entry`);
+    } else if (e.expires < today) {
+      expired.push(e);
+    } else {
+      held.add(`${e.package}@${e.version}`);
+    }
+  }
+  return { held, expired, errors };
+}
+
+/**
+ * Whether a stale pin fails this run, or only warns. Only a PR that leaves the pins alone is let
+ * through: there the passage of time is not the PR's doing. An unknown event fails closed.
+ */
+export function stalenessFails({ event, changedFiles = [], baseOverrides = {}, headOverrides = {} }) {
+  if (event !== 'pull_request') return true;
+  if (changedFiles.some((f) => f === 'pnpm-lock.yaml' || f === ACCEPT_FILE)) return true;
+  const sorted = (o) => JSON.stringify(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
+  return sorted(baseOverrides) !== sorted(headOverrides);
+}
+
+function fail(message) {
+  console.error(message);
+  process.exit(2);
+}
+
 function main() {
-  const auditPath = process.argv[2] ?? 'audit.json';
+  const { values: opts, positionals } = parseArgs({
+    allowPositionals: true,
+    options: { event: { type: 'string' }, base: { type: 'string' }, now: { type: 'string' } },
+  });
+  const auditPath = positionals[0] ?? 'audit.json';
+  const event = opts.event ?? process.env.GITHUB_EVENT_NAME;
+  const now = new Date(opts.now ?? Date.now());
+  if (Number.isNaN(now.getTime())) fail(`override-advisories: --now is not a date`);
   const overrides = parseOverrides(readFileSync('pnpm-workspace.yaml', 'utf8'));
   const ignored = JSON.parse(readFileSync('package.json', 'utf8')).pnpm?.auditConfig?.ignoreGhsas ?? [];
   let audit;
   try {
     audit = JSON.parse(readFileSync(auditPath, 'utf8'));
   } catch (e) {
-    console.error(`override-advisories: cannot read ${auditPath}: ${e.message}`);
-    process.exit(2);
+    fail(`override-advisories: cannot read ${auditPath}: ${e.message}`);
   }
   let result;
   try {
     result = check(overrides, audit, ignored);
   } catch (e) {
-    console.error(e.message);
-    process.exit(2);
+    fail(e.message);
   }
-  const names = Object.keys(overrides);
   if (result.unjudgeable.length > 0) {
-    console.error(`override-advisories: not an exact version, so it cannot be checked against an advisory range:\n  ${result.unjudgeable.join('\n  ')}\nPin overrides exactly.`);
-    process.exit(2);
+    fail(`override-advisories: not an exact version, so it cannot be checked against an advisory range:\n  ${result.unjudgeable.join('\n  ')}\nPin overrides exactly.`);
   }
-  if (result.hits.length === 0) {
-    console.log(`override-advisories: ${names.length} override(s) (${names.join(', ')}) — no advisory of any severity against a pinned version.`);
-    return;
+
+  const pins = Object.entries(overrides).map(([key, version]) => ({ key, version, name: overriddenName(key) }));
+  let accepts;
+  try {
+    accepts = readAccepts(JSON.parse(readFileSync(ACCEPT_FILE, 'utf8')), pins, now);
+  } catch (e) {
+    fail(`override-advisories: cannot read ${ACCEPT_FILE}: ${e.message}`);
   }
-  console.error('override-advisories: advisories against a pinned override (Dependabot cannot move these — raise the pin in pnpm-workspace.yaml):');
-  for (const h of result.hits) {
-    const a = h.advisory;
-    const patched = a.patched_versions === '<0.0.0' ? 'none' : a.patched_versions;
-    console.error(`  ${h.name}@${h.version} (override "${h.key}") — ${a.severity} ${a.github_advisory_id}: ${a.title} · vulnerable ${a.vulnerable_versions} · patched ${patched} · ${a.url}`);
+  if (accepts.errors.length > 0) fail(`override-advisories: ${ACCEPT_FILE}:\n  ${accepts.errors.join('\n  ')}`);
+
+  const stale = [];
+  for (const pin of pins) {
+    let times;
+    try {
+      times = JSON.parse(execFileSync('pnpm', ['view', pin.name, 'time', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+    } catch (e) {
+      fail(`override-advisories: cannot read the release dates of ${pin.name}: ${e.message}`);
+    }
+    const s = staleness(pin.version, times, now);
+    if (s?.stale && !accepts.held.has(`${pin.name}@${pin.version}`)) stale.push({ ...pin, ...s });
   }
-  console.error('If one is consciously accepted, list its GHSA id in package.json pnpm.auditConfig.ignoreGhsas with the reason in the PR.');
-  process.exit(1);
+  const staleLines = [
+    ...stale.map((p) => `${p.name}@${p.version} (override "${p.key}") — behind since ${p.behindSince.slice(0, 10)}, more than ${GRACE_DAYS} days; latest on its line is ${p.latest}`),
+    ...accepts.expired.map((e) => `${e.package}@${e.version} — its ${ACCEPT_FILE} entry expired on ${e.expires} ("${e.reason}")`),
+  ];
+
+  let staleFails = true;
+  if (event === 'pull_request') {
+    const base = opts.base ?? 'HEAD^1';
+    try {
+      const git = (...a) => execFileSync('git', a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+      staleFails = stalenessFails({
+        event,
+        changedFiles: git('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean),
+        baseOverrides: parseOverrides(git('show', `${base}:pnpm-workspace.yaml`)),
+        headOverrides: overrides,
+      });
+    } catch (e) {
+      fail(`override-advisories: cannot compare against ${base}: ${e.message}`);
+    }
+  }
+
+  let failed = false;
+  if (result.hits.length > 0) {
+    failed = true;
+    console.error('override-advisories: advisories against a pinned override (Dependabot cannot move these — raise the pin in pnpm-workspace.yaml):');
+    for (const h of result.hits) {
+      const a = h.advisory;
+      const patched = a.patched_versions === '<0.0.0' ? 'none' : a.patched_versions;
+      console.error(`  ${h.name}@${h.version} (override "${h.key}") — ${a.severity} ${a.github_advisory_id}: ${a.title} · vulnerable ${a.vulnerable_versions} · patched ${patched} · ${a.url}`);
+    }
+    console.error('If one is consciously accepted, list its GHSA id in package.json pnpm.auditConfig.ignoreGhsas with the reason in the PR.');
+  }
+  if (staleLines.length > 0) {
+    const how = `Raise the pin in pnpm-workspace.yaml to the latest release on its line, or hold it in ${ACCEPT_FILE} with a reason and an expiry.`;
+    if (staleFails) {
+      failed = true;
+      console.error(`override-advisories: stale overrides (Dependabot cannot move these):\n  ${staleLines.join('\n  ')}\n${how}`);
+    } else {
+      // A PR that does not touch the pins is not made red by the calendar; the annotation is
+      // what reaches its author, and the next push to main or weekly run fails on it.
+      for (const line of staleLines) console.log(`::warning title=Stale pnpm override::${line}. ${how}`);
+    }
+  }
+  if (failed) process.exit(1);
+  const names = Object.keys(overrides);
+  console.log(`override-advisories: ${names.length} override(s) (${names.join(', ')}) — no advisory of any severity against a pinned version${staleLines.length > 0 && !staleFails ? '; stale pins warned above' : ', and none stale'}.`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main();
