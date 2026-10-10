@@ -149,7 +149,12 @@ export type PlatformRequestEntry = PlatformRequest | UndecodablePlatformRequest;
 export function isUndecodablePlatformRequest(
   entry: PlatformRequestEntry,
 ): entry is UndecodablePlatformRequest {
-  return 'undecodable' in entry && entry.undecodable === true;
+  return 'undecodable' in entry;
+}
+
+/** The other half: a row that IS the contract shape — `.filter(isPlatformRequest)` narrows a read. */
+export function isPlatformRequest(entry: PlatformRequestEntry): entry is PlatformRequest {
+  return !isUndecodablePlatformRequest(entry);
 }
 
 /**

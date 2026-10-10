@@ -1091,16 +1091,26 @@ export function scopeHostContractSuite(
        * beside a healthy twin, because a restored dump can only show a column at a time.
        */
       describe('a row whose identity does not decode (#1637)', () => {
-        const broken: { column: string; over: Record<string, unknown> }[] = [
-          { column: 'id', over: { id: 'not-a-ulid' } },
-          { column: 'id', over: { id: null } },
-          { column: 'kind', over: { kind: '' } },
-          { column: 'status', over: { status: 'queued' } },
-          { column: 'attempts', over: { attempts: -1 } },
-          { column: 'attempts', over: { attempts: 'abc' } },
+        /** The healthy pending row's identity, as the variant names it: stored, as text. */
+        const asStored = {
+          undecodable: true,
+          id: brokenPendingId as string | null,
+          kind: 'connector:test' as string | null,
+          status: 'pending' as string | null,
+          attempts: '0' as string | null,
+          requestedAt: at as string | null,
+        };
+        /** One broken column each: what is planted, and the field it reads back as — written out. */
+        const broken: { column: string; over: Record<string, unknown>; reads: Partial<typeof asStored> }[] = [
+          { column: 'id', over: { id: 'not-a-ulid' }, reads: { id: 'not-a-ulid' } },
+          { column: 'id', over: { id: null }, reads: { id: null } },
+          { column: 'kind', over: { kind: '' }, reads: { kind: '' } },
+          { column: 'status', over: { status: 'queued' }, reads: { status: 'queued' } },
+          { column: 'attempts', over: { attempts: -1 }, reads: { attempts: '-1' } },
+          { column: 'attempts', over: { attempts: 'abc' }, reads: { attempts: 'abc' } },
           // An epoch, the shape a dump from another world would carry — as text, since a restore
           // binds a JSON number as REAL and TEXT affinity would store it as `1756684800.0`.
-          { column: 'requested_at', over: { requested_at: '1756684800' } },
+          { column: 'requested_at', over: { requested_at: '1756684800' }, reads: { requestedAt: '1756684800' } },
         ];
         /** The raw reads — no `whole`, since meeting the variant is the point. */
         const readEntries = async (s: ScopeId) => ({
@@ -1108,21 +1118,16 @@ export function scopeHostContractSuite(
           history: await host.listPlatformRequestHistory(t1, s),
           inScope: await (await host.getScope(alice, t1, s)).invoke<PlatformRequestEntry[]>('platform/intents'),
         });
-        const text = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
-        for (const { column, over } of broken) {
+        for (const { column, over, reads } of broken) {
           it(`${column} = ${JSON.stringify(over[column])}: named as stored, beside the row that is whole`, async () => {
             const clean = await readAll(await restoredWith([healthyPending]));
             const row = { ...healthyPending, id: brokenPendingId, ...over };
             const { pending, history, inScope } = await readEntries(await restoredWith([row, healthyPending]));
 
             const expected = {
-              undecodable: true,
-              id: text(row.id),
-              kind: text(row.kind),
-              status: text(row.status),
-              attempts: text(row.attempts),
-              requestedAt: text(row.requested_at),
+              ...asStored,
+              ...reads,
               decodeError: expect.stringMatching(new RegExp(`^${column}: `)),
             };
             // A stored `queued` is not pending, so the drain's queue never meets that one.

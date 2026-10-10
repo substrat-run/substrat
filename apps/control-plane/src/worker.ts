@@ -1479,7 +1479,7 @@ export function platformRequestSweepRun(report: PlatformSweepReport, at: string)
   const errors = gaps.length > 0 ? [`${gaps.join('; ')} — their queues are not in these totals`] : [];
   if (totals.unsettleable > 0) {
     errors.push(
-      `${totals.unsettleable} pending intent(s) cannot be run or settled — the row did not decode and its stored id is not an id; each scope is logged as platform-request-unsettleable`,
+      `${totals.unsettleable} pending intent(s) cannot be run or settled — the row did not decode and its stored id is not an id; the platform-sweep log names each scope`,
     );
   }
   return {
@@ -1592,7 +1592,7 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
     resolveVerticalForScope,
     patchScriptBindings: patchScriptBindingsFor(env),
   };
-  const report = await drainScopePlatformRequests(
+  return drainScopePlatformRequests(
     client,
     drainContextOf(rec, vertical, await host.admin.getTenant(SWEEP_ACTOR, t)),
     {
@@ -1652,10 +1652,6 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
       },
     },
   );
-  // #1637: the pass's sweep row counts these fleet-wide; this line says WHERE, so the operator
-  // repairing the row knows which scope's journal to open.
-  if (report.unsettleable) console.log('platform-request-unsettleable', { tenantId: t, scopeId: s, ...report.unsettleable });
-  return report;
 }
 
 /**
@@ -1876,6 +1872,9 @@ export default {
     // never reach the lake while they stay that way, so a pass that met any says so here —
     // they are not `errors` (nothing about the pass failed), and would otherwise be silent.
     const skipped = report.eventDrain?.skipped;
+    // #1637: pending intents nothing can settle, and where — the sweep row counts them, this says
+    // which scope's journal to open. Standing, like `skipped`, so said on every pass while it lasts.
+    const unsettleable = report.platformRequestUnsettleable;
     // #1705: an edge that moved, paused or could not resolve. The counts only; each edge and
     // its reason is already a `vertical-events` sweep-run row.
     const cv = report.crossVertical;
@@ -1891,6 +1890,7 @@ export default {
       (rc !== null && rc.behind > 0) ||
       (al !== null && (al.shipped > 0 || al.pruned > 0)) ||
       skipped !== undefined ||
+      unsettleable !== undefined ||
       cvActive
     ) {
       console.log('platform-sweep', {
@@ -1903,6 +1903,7 @@ export default {
         // object the rows landed in, so a question about a pruned row has an address.
         ...(al ? { accessLog: al } : {}),
         ...(skipped ? { eventDrainSkipped: skipped } : {}),
+        ...(unsettleable ? { platformRequestUnsettleable: unsettleable } : {}),
         ...(cvActive
           ? {
               crossVertical: {

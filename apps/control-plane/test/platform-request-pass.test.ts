@@ -120,7 +120,7 @@ describe('platformRequestSweepRun (#1840)', () => {
     const run = platformRequestSweepRun(report({ platformRequestTotals: { ...totals, unsettleable: 2 } }), AT);
     expect(run.outcome).toBe('failed');
     expect(run.error).toBe(
-      '2 pending intent(s) cannot be run or settled — the row did not decode and its stored id is not an id; each scope is logged as platform-request-unsettleable',
+      '2 pending intent(s) cannot be run or settled — the row did not decode and its stored id is not an id; the platform-sweep log names each scope',
     );
     // Not a floor: those intents are counted, not missing, so the queue wording stays out of it.
     expect(run.error).not.toMatch(/not in these totals/);

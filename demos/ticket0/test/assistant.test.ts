@@ -34,7 +34,7 @@ import {
 } from '../harness/assistant.js';
 import { createModelHost } from '@substrat-run/vertical-host/model';
 import { MockLanguageModelV3 } from 'ai/test';
-import { MODEL_USAGE_KIND, modelUsageLine, isUndecodablePlatformRequest, type PlatformRequest } from '@substrat-run/contracts';
+import { MODEL_USAGE_KIND, modelUsageLine, isPlatformRequest } from '@substrat-run/contracts';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { ASSISTANT_ERROR_MAX } from '../spec/model.js';
 import { Hono } from 'hono';
@@ -911,7 +911,7 @@ describe('answering a customer', () => {
     // The same line, handed to the platform as an intent in the same transaction —
     // priced from the rate card on our side, attributed with the five keys.
     const intents = await host.listPlatformRequests(world.substrat.tenant, world.substrat.scope);
-    const mine = intents.filter((i): i is PlatformRequest => !isUndecodablePlatformRequest(i) && i.kind === MODEL_USAGE_KIND);
+    const mine = intents.filter(isPlatformRequest).filter((i) => i.kind === MODEL_USAGE_KIND);
     expect(mine.length).toBeGreaterThanOrEqual(1);
     const line = modelUsageLine.parse(mine[mine.length - 1]!.payload);
     expect(line).toMatchObject({

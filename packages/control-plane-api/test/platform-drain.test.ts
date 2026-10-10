@@ -434,6 +434,17 @@ describe('drainScopePlatformRequests — a row whose identity did not decode (#1
     expect(report.drained).toBe(0);
   });
 
+  it('(b) a held scope reports it the same way, and counts only what could run as waiting', async () => {
+    const { client, settled } = fakeTransport([variant({ id: 'not-a-ulid' }), intent('provision-sibling')]);
+    const report = await drainScopePlatformRequests(
+      client,
+      { ...ctx, lifecycle: { scope: 'suspended', tenant: 'active' } as never },
+      everyKind().handlers,
+    );
+    expect(settled).toEqual([]);
+    expect(report).toEqual({ drained: 0, done: 0, failed: 0, pending: 1, held: true, unsettleable: { count: 1, ids: ['not-a-ulid'] } });
+  });
+
   it('a healthy queue reports no unsettleable at all (the positive twin)', async () => {
     const { client } = fakeTransport([intent('provision-sibling'), intent('provision-sibling')]);
     const report = await drainScopePlatformRequests(client, ctx, everyKind().handlers);

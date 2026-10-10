@@ -139,18 +139,15 @@ export interface PlatformDrainReport {
    * #1637: pending rows whose identity did not decode AND whose stored id is not an id — so
    * nothing can address them: the settle route parses the id as a ULID, and that stays strict.
    * Never executed and never settled; they stay pending (holding a backpressure slot) until an
-   * operator repairs the row, and every pass counts them again. Not in `drained`. Absent when
+   * operator repairs the row, and every pass counts them again. Not in `drained` or `pending`. Absent when
    * there were none.
    */
-  unsettleable?: PlatformDrainUnsettleable;
-}
-
-/** The rows `PlatformDrainReport.unsettleable` stepped over, named as stored. */
-export interface PlatformDrainUnsettleable {
-  /** Exact. */
-  count: number;
-  /** The stored ids, as text (`null` for SQL NULL), first {@link UNSETTLEABLE_IDS} of them. */
-  ids: (string | null)[];
+  unsettleable?: {
+    /** Exact. */
+    count: number;
+    /** The stored ids, as text (`null` for SQL NULL), the first {@link UNSETTLEABLE_IDS} of them. */
+    ids: (string | null)[];
+  };
 }
 
 /** How many stored ids an `unsettleable` report names; `count` stays exact. */
@@ -200,71 +197,52 @@ export async function drainScopePlatformRequests(
   handlers: Record<string, PlatformRequestHandler>,
   opts?: PlatformDrainOptions,
 ): Promise<PlatformDrainReport> {
-  const pending = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
+  const listed = await client.listPlatformRequests(ctx.tenantId, ctx.scopeId);
+  // #1637: a row whose identity did not decode can be refused only if its stored id is still an
+  // id — the settle route parses it as a ULID. Decided on the id ITSELF, never on a settle's
+  // caught error, which would also swallow a transient outage. The rest are reported, not run.
+  const unsettleable = listed.filter((e) => isUndecodablePlatformRequest(e) && !platformRequestId.safeParse(e.id).success);
+  const pending = listed.filter((e) => !unsettleable.includes(e));
+  const reported = unsettleable.length
+    ? { unsettleable: { count: unsettleable.length, ids: unsettleable.slice(0, UNSETTLEABLE_IDS).map((e) => e.id) } }
+    : {};
   // #1713: a held scope's intents wait. Not settled `pending` either, since a settle counts an
   // attempt and the ceiling would give up on an intent nobody tried.
   if (lifecycleRefusal(ctx.lifecycle) !== null) {
-    return { drained: 0, done: 0, failed: 0, pending: pending.length, held: true };
+    return { drained: 0, done: 0, failed: 0, pending: pending.length, held: true, ...reported };
   }
-  const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0 };
+  const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0, ...reported };
   const primary = isPrimaryScope(ctx.scope);
-  for (const entry of pending) {
-    if (isUndecodablePlatformRequest(entry)) {
-      // #1637: the row's identity did not decode, so there is no kind to dispatch on and nothing
-      // a handler may be shown. Whether it can be refused is decided on the stored id ITSELF —
-      // the settle route parses it as a ULID — never on a settle's caught error, which would also
-      // swallow a transient outage.
-      const id = platformRequestId.safeParse(entry.id);
-      if (!id.success) {
-        const u = (report.unsettleable ??= { count: 0, ids: [] });
-        u.count++;
-        if (u.ids.length < UNSETTLEABLE_IDS) u.ids.push(entry.id);
-        report.drained--;
-        continue;
-      }
-      const error = undecodedRefusal(entry.decodeError);
-      opts?.recordFailure?.({
-        operation: 'intent.undecodable',
-        stage: 'terminal',
-        tenantId: ctx.tenantId,
-        scopeId: ctx.scopeId,
-        vertical: ctx.vertical,
-        version: ctx.versionId ?? null,
-        origin: UNDECODED_REFUSAL.origin,
-        code: UNDECODED_REFUSAL.code,
-        message: platformIntentFailureMessage(id.data, `failed: ${error}`),
-      });
-      await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, id.data, {
-        status: 'failed',
-        result: undefined,
-        lastError: error,
-        failure: UNDECODED_REFUSAL,
-      });
-      report.failed++;
-      continue;
-    }
-    const request = entry;
-    const handler = handlers[request.kind];
+  for (const request of pending) {
+    // A row whose identity did not decode has no kind to dispatch on; its id parses (above).
+    const { id, kind, attempts } = isUndecodablePlatformRequest(request)
+      ? { id: platformRequestId.parse(request.id), kind: 'undecodable', attempts: 0 }
+      : request;
+    const handler = handlers[kind];
     let outcome: PlatformRequestOutcome;
-    // #2005: an intent a non-primary scope raised for itself is settled, never executed.
-    const inert = request.decodeError === undefined && !primary && !RECORD_KINDS.has(request.kind);
-    if (request.decodeError !== undefined) {
+    let inert = false;
+    if (isUndecodablePlatformRequest(request)) {
+      // #1637: its identity did not decode, so it carries no content at all — refused as below.
+      outcome = { status: 'failed', error: undecodedRefusal(request.decodeError), failure: UNDECODED_REFUSAL };
+    } else if (request.decodeError !== undefined) {
       // #1588: the read is tolerant so one malformed row cannot hide the queue; the WORK stays
       // strict. A row that did not decode carries an empty stand-in wherever it failed — a
       // `null` payload, a `null` two-phase result a retry would re-mint without — and nothing
       // here may act on that with platform authority. Refused before any handler is looked at,
       // and terminal: nothing rewrites the stored columns, so the next pass would read the same.
       outcome = { status: 'failed', error: undecodedRefusal(request.decodeError), failure: UNDECODED_REFUSAL };
-    } else if (inert) {
-      // Settled `failed`, not left pending: nothing will ever run it. Before any handler is
-      // looked up, so no kind's handler is the place that has to remember (#2005).
+    } else if (!primary && !RECORD_KINDS.has(kind)) {
+      // #2005: an intent a non-primary scope raised for itself is settled, never executed —
+      // `failed`, not left pending: nothing will ever run it. Before any handler is looked up,
+      // so no kind's handler is the place that has to remember.
+      inert = true;
       outcome = {
         status: 'failed',
         error: INERT_SCOPE_REASON,
         failure: { origin: 'platform', code: 'precondition_failed', permission: null },
       };
     } else if (!handler) {
-      outcome = { status: 'failed', error: `no handler for platform-request kind '${request.kind}'` };
+      outcome = { status: 'failed', error: `no handler for platform-request kind '${kind}'` };
     } else {
       try {
         outcome = await handler(ctx, request);
@@ -289,17 +267,17 @@ export async function drainScopePlatformRequests(
     // lands an ops-failure row (#559) so a six-day retry loop is an operator's headline,
     // not a spine-table archaeology find.
     const maxAttempts = opts?.maxAttempts ?? MAX_PLATFORM_REQUEST_ATTEMPTS;
-    if (outcome.status === 'pending' && request.attempts + 1 >= maxAttempts) {
+    if (outcome.status === 'pending' && attempts + 1 >= maxAttempts) {
       outcome = {
         status: 'failed',
         result: outcome.result,
-        error: `gave up after ${request.attempts + 1} drain attempts — last error: ${outcome.error ?? 'unknown'}`,
+        error: `gave up after ${attempts + 1} drain attempts — last error: ${outcome.error ?? 'unknown'}`,
         // The give-up inherits the last pass's attribution rather than inventing one: what
         // refused a hundred times is what refused on the last attempt.
         failure: outcome.failure,
       };
       opts?.recordFailure?.({
-        operation: `intent.${request.kind}`,
+        operation: `intent.${kind}`,
         stage: 'attempt-ceiling',
         tenantId: ctx.tenantId,
         scopeId: ctx.scopeId,
@@ -309,7 +287,7 @@ export async function drainScopePlatformRequests(
         // until now the drain had {origin, code} in hand and dropped it here (#1233).
         origin: outcome.failure?.origin ?? null,
         code: outcome.failure?.code ?? null,
-        message: platformIntentFailureMessage(request.id, outcome.error ?? 'unknown'),
+        message: platformIntentFailureMessage(id, outcome.error ?? 'unknown'),
       });
     } else if (outcome.status === 'failed' && !inert) {
       // An inert settle (#2005) is expected, not an operator's headline; the settle below
@@ -320,7 +298,7 @@ export async function drainScopePlatformRequests(
       // column in the vertical's own DO. An unknown kind, a refused payload, a provider's 4xx:
       // each is an operator's headline for the same reason a give-up is.
       opts?.recordFailure?.({
-        operation: `intent.${request.kind}`,
+        operation: `intent.${kind}`,
         stage: 'terminal',
         tenantId: ctx.tenantId,
         scopeId: ctx.scopeId,
@@ -328,16 +306,16 @@ export async function drainScopePlatformRequests(
         version: ctx.versionId ?? null,
         origin: outcome.failure?.origin ?? null,
         code: outcome.failure?.code ?? null,
-        message: platformIntentFailureMessage(request.id, `failed: ${outcome.error ?? 'unknown'}`),
+        message: platformIntentFailureMessage(id, `failed: ${outcome.error ?? 'unknown'}`),
       });
     }
-    // No special case for a refused row: the tolerant read only ever hands back a row whose
-    // id satisfies the contract, so its settle is refused for the same reasons any settle
-    // is — transiently — and propagates the same way, surfacing the outage.
+    // No special case for a refused row: every row that reaches here has an id the settle
+    // route accepts (#1637 left the rest out above), so its settle is refused for the same
+    // reasons any settle is — transiently — and propagates the same way, surfacing the outage.
     // Never `deferred` here (it `continue`d above); said again because the ceiling's
     // reassignments widen what the compiler can see.
     const status = outcome.status === 'deferred' ? 'pending' : outcome.status;
-    await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, request.id, {
+    await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, id, {
       status,
       result: outcome.result,
       lastError: outcome.error ?? null,

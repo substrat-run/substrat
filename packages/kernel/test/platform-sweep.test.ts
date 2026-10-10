@@ -654,11 +654,26 @@ describe('runPlatformSweep', () => {
       drainPlatformRequestsFn: async (_t, s) =>
         s === scopes[2]!.id
           ? { drained: 1, done: 1, failed: 0, pending: 0 }
-          : { drained: 0, done: 0, failed: 0, pending: 0, unsettleable: { count: s === scopes[0]!.id ? 2 : 1 } },
+          : { drained: 0, done: 0, failed: 0, pending: 0, unsettleable: s === scopes[0]!.id ? { count: 2, ids: ['x', null] } : { count: 1, ids: ['y'] } },
     });
     expect(report.platformRequestTotals).toMatchObject({ unsettleable: 3, drained: 1, done: 1 });
+    // …and WHERE, per scope, so the operator knows which journal to open.
+    expect(report.platformRequestUnsettleable?.sort((a, b) => a.count - b.count)).toEqual([
+      { tenantId: T, scopeId: scopes[1]!.id, count: 1, ids: ['y'] },
+      { tenantId: T, scopeId: scopes[0]!.id, count: 2, ids: ['x', null] },
+    ]);
     // Not an error: a standing condition would be mailed on every tick.
     expect(report.errors).toEqual([]);
+  });
+
+  it('a pass with nothing unsettleable carries no per-scope list at all (the twin)', async () => {
+    const report = await runPlatformSweep(fakeHost({ scopes: [{ id: sid(), tenantId: T }] }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      drainPlatformRequestsFn: async () => ({ drained: 1, done: 1, failed: 0, pending: 0 }),
+    });
+    expect(report).not.toHaveProperty('platformRequestUnsettleable');
   });
 
   it('skips revoked connections and providers with no sweeper', async () => {

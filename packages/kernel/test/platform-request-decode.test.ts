@@ -158,29 +158,30 @@ describe('platformRequestOf — tolerant where evidence is read', () => {
    * branded id. It used to throw, and every read returns a LIST, so one such row took the
    * scope's whole journal with it. It reads as the variant now: the five columns as stored.
    */
+  /** One broken column each: what is planted, and the field it reads back as — written out. */
   const identity = [
-    ['id', { id: 'not-a-ulid' }],
-    ['id', { id: null }],
-    ['kind', { kind: '' }],
-    ['status', { status: 'queued' }],
-    ['attempts', { attempts: -1 }],
-    ['attempts', { attempts: 'abc' }],
-    ['attempts', { attempts: 1.5 }],
-    ['requested_at', { requested_at: 'yesterday' }],
+    ['id', { id: 'not-a-ulid' }, { id: 'not-a-ulid' }],
+    ['id', { id: null }, { id: null }],
+    ['kind', { kind: '' }, { kind: '' }],
+    ['status', { status: 'queued' }, { status: 'queued' }],
+    ['attempts', { attempts: -1 }, { attempts: '-1' }],
+    ['attempts', { attempts: 'abc' }, { attempts: 'abc' }],
+    ['attempts', { attempts: 1.5 }, { attempts: '1.5' }],
+    ['requested_at', { requested_at: 'yesterday' }, { requestedAt: 'yesterday' }],
   ] as const;
 
-  for (const [column, over] of identity) {
+  for (const [column, over, reads] of identity) {
     it(`a ${column} of ${JSON.stringify(Object.values(over)[0])} reads as the variant, the stored columns as text`, () => {
-      const row = stored(over as unknown as Partial<PlatformRequestRawRow>);
+      const row = stored({ id: '01JAAAAAAAAAAAAAAAAAAAAAAA', ...(over as unknown as Partial<PlatformRequestRawRow>) });
       const decoded = platformRequestOf(row);
-      const text = (v: unknown) => (v === null ? null : String(v));
       expect(decoded).toStrictEqual({
         undecodable: true,
-        id: text(row.id),
-        kind: text(row.kind),
-        status: text(row.status),
-        attempts: text(row.attempts),
-        requestedAt: text(row.requested_at),
+        id: '01JAAAAAAAAAAAAAAAAAAAAAAA',
+        kind: 'connector:test',
+        status: 'failed',
+        attempts: '2',
+        requestedAt: '2026-09-01T00:00:00.000Z',
+        ...reads,
         decodeError: expect.stringMatching(new RegExp(`^${column}: `)),
       });
       // Not the contract shape, and not passed off as one — but a value the published union accepts.

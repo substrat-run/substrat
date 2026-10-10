@@ -182,7 +182,7 @@ pending, reports it as `PlatformDrainReport.unsettleable`, and drains the rest o
 it.
 
 The pass's fleet `platform-request` sweep row reads `failed` while any such row exists, and the
-control plane logs the scope as `platform-request-unsettleable`. **The row keeps one of the
+sweep report's `platformRequestUnsettleable` names each scope, in the `platform-sweep` log line. **The row keeps one of the
 scope's `MAX_PENDING_PLATFORM_REQUESTS` slots** until an operator repairs it, in the SQL console
 or with a corrected dump.
 

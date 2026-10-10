@@ -33,6 +33,6 @@ The variant names the row without carrying it, in the same grammar as `withheldE
   - When the stored id is still an id, the drain settles the row `failed` (`validation_failed`, platform origin), as it already does for a row whose JSON did not decode.
   - When the stored id is not an id, nothing can settle the row. The drain leaves it pending, reports it as `PlatformDrainReport.unsettleable` and drains the rest of the queue past it.
   - That row keeps one of the scope's 32 pending slots until an operator repairs it.
-- **Sweep:** `platformRequestDrainTotals` gains `unsettleable`, defaulted to 0 so stored rows still parse. While the count is above zero, the fleet `platform-request` sweep row is `failed`, and the control plane logs each scope as `platform-request-unsettleable`.
+- **Sweep:** `platformRequestDrainTotals` gains `unsettleable`, defaulted to 0 so stored rows still parse. While the count is above zero, the fleet `platform-request` sweep row is `failed`, and `PlatformSweepReport.platformRequestUnsettleable` names each scope, logged in the `platform-sweep` line.
 - **Dashboard:** the integration drawer shows such a row as **Unreadable**, with the columns that broke. It used to show an empty list.
 - **Kernel internals:** `rowDecoder` gains `finishOr`, and `platformRequestOf` returns the union.
