@@ -126,6 +126,6 @@ describe('the shape backfill reads every row of a table holder, ties included (#
     await host.close();
     const cases = withFile(file, (db) => shapeBackfillTies(raw(db), { tenantId: t1, scopeId: s1 }));
     expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid']);
-    for (const c of cases) expect([c.name, c.marked, c.recorded]).toEqual([c.name, c.expected, true]);
+    expect(cases.map((c) => [c.name, c.marked, c.recorded])).toEqual(cases.map((c) => [c.name, c.expected, true]));
   });
 });

@@ -167,7 +167,7 @@ describe('#2154: the shape backfill reads a bounded window per pass, on workerd'
       shapeBackfillTies(switchSqlOver(state.storage.sql), { tenantId: ulid(), scopeId: ulid() }),
     );
     expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid']);
-    for (const c of cases) expect([c.name, c.marked, c.recorded]).toEqual([c.name, c.expected, true]);
+    expect(cases.map((c) => [c.name, c.marked, c.recorded])).toEqual(cases.map((c) => [c.name, c.expected, true]));
   });
 
   /** The holder table's schema is the vertical's: the first window plans its read and says so if it sorts. */
