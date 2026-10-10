@@ -149,6 +149,8 @@ export interface PlatformSweepOptions {
     pending: number;
     /** No deployment could be reached for this scope, so nothing was drained or counted (#1840). */
     unreachable?: boolean;
+    /** Pending intents nothing could run or settle — their stored id is not an id (#1637). */
+    unsettleable?: { count: number };
   }>;
   /**
    * Re-run one scope's provision in the vertical's own deployment (#1172).
@@ -992,6 +994,12 @@ export interface PlatformRequestDrainTotals {
    * drain fn returned `unreachable: true`. Their queues are not in the counts above either.
    */
   unreachable: number;
+  /**
+   * Pending intents a drain could neither run nor settle, because the stored id of a row whose
+   * identity did not decode is not an id (#1637). They stay pending, so every pass counts them
+   * again until the row is repaired. Not in `drained`.
+   */
+  unsettleable: number;
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -1064,7 +1072,7 @@ export async function runPlatformSweep(
     snapshotsReaped: 0,
     archivedScopesReaped: 0,
     tenantsReaped: 0,
-    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0 },
+    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0, unsettleable: 0 },
     provisionReconcile: null,
     migrations: null,
     schedules: null,
@@ -1225,6 +1233,7 @@ export async function runPlatformSweep(
         report.platformRequestTotals.done += r.done;
         report.platformRequestTotals.failed += r.failed;
         report.platformRequestTotals.pending += r.pending;
+        report.platformRequestTotals.unsettleable += r.unsettleable?.count ?? 0;
       } catch (err) {
         report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
       }

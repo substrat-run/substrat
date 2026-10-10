@@ -4,7 +4,9 @@ import {
   platformRequestFilter,
   type Actor,
   type PlatformRequest,
+  type PlatformRequestEntry,
   type PlatformRequestFilter,
+  type UndecodablePlatformRequest,
 } from '@substrat-run/contracts';
 import { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
 
@@ -93,10 +95,10 @@ export const UNDECODED_REQUESTER: Actor = UNDECODED_ACTOR;
  * refuse — a consumer switching on `status` or passing `id` on as a branded id can trust both.
  * The price is the REQUIRED scalars (`id`, `kind`, `status`, `attempts`, `requested_at`): they
  * have no empty value, so a row that breaks one of them cannot be a `PlatformRequest` without
- * lying, and it throws, naming every column it broke — the strict decode this replaced, kept
- * for exactly the part it cannot honestly be relaxed for. JSON is what a foreign dump actually
- * gets wrong; representing a row whose identity itself is corrupt needs a variant beside
- * `PlatformRequest` on every read, which is a contract change of its own.
+ * lying. It comes back as the OTHER half of the entry instead (#1637), an
+ * `UndecodablePlatformRequest`: those five columns as stored, as text, and `decodeError` naming
+ * every column it broke. It used to throw, which kept #1588's whole consequence — one row and
+ * the scope's journal was unreadable on all three reads — for exactly these columns.
  *
  * A row the kernel wrote decodes whole and carries no `decodeError` at all, so a healthy list
  * is exactly what it was. This is the READ's half of #1587's rule — strict where work happens,
@@ -107,10 +109,10 @@ export const UNDECODED_REQUESTER: Actor = UNDECODED_ACTOR;
  * another world, or one edited by hand, is enough. The field-by-field mechanics are
  * `rowDecoder`'s, shared with the history and denial reads (#1636).
  */
-export function platformRequestOf(row: PlatformRequestRawRow): PlatformRequest {
+export function platformRequestOf(row: PlatformRequestRawRow): PlatformRequestEntry {
   const shape = platformRequest.shape;
   const d = rowDecoder(`platform request row ${JSON.stringify(row.id)}`, 'PlatformRequest');
-  return d.finish<PlatformRequest>({
+  return d.finishOr<PlatformRequest, UndecodablePlatformRequest>({
     id: d.required<PlatformRequest['id']>('id', shape.id, row.id),
     kind: d.required<string>('kind', shape.kind, row.kind),
     payload: d.json<unknown>('payload', shape.payload, row.payload, null),
@@ -123,5 +125,18 @@ export function platformRequestOf(row: PlatformRequestRawRow): PlatformRequest {
     result: d.json<unknown>('result', shape.result, row.result, null),
     requestedAt: d.required<PlatformRequest['requestedAt']>('requested_at', shape.requestedAt, row.requested_at),
     settledAt: d.nullable<PlatformRequest['requestedAt']>('settled_at', shape.settledAt, row.settled_at),
-  });
+  }, (decodeError) => ({
+    undecodable: true,
+    id: storedText(row.id),
+    kind: storedText(row.kind),
+    status: storedText(row.status),
+    attempts: storedText(row.attempts),
+    requestedAt: storedText(row.requested_at),
+    decodeError,
+  }));
+}
+
+/** A stored column as text, whatever SQLite's affinity left in it — `null` only for SQL NULL. */
+function storedText(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
 }

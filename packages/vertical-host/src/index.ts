@@ -142,7 +142,7 @@ import {
   type OwnerClaimLink,
   type OwnerTransferRecord,
   type OwnerTransferResult,
-  type PlatformRequest,
+  type PlatformRequestEntry,
   type PlatformRequestFilter,
   type PlatformRequestId,
   type PlatformRequestStatus,
@@ -353,12 +353,12 @@ export interface VerticalScopeHost {
   summarizeDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary>;
   /** The operator's capability read (#1686): records, never a secret or a hash. */
   listCapabilitiesLocal(scopeId: ScopeId, filter?: CapabilityFilter): Promise<CapabilityPage>;
-  listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]>;
+  listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequestEntry[]>;
   listPlatformRequestHistory(
     tenantId: TenantId,
     scopeId: ScopeId,
     filter?: PlatformRequestFilter,
-  ): Promise<PlatformRequest[]>;
+  ): Promise<PlatformRequestEntry[]>;
   settlePlatformRequest(
     tenantId: TenantId,
     scopeId: ScopeId,

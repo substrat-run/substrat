@@ -177,7 +177,7 @@ describe('#1840: a directory DO whose sweep-run table predates platform_requests
         cp = new ControlPlaneDO(state, env);
         constructions.push(hasColumn(state));
       }
-      const totals = { scopes: 1, drained: 2, done: 1, failed: 0, pending: 1, skipped: 0, unreachable: 0 };
+      const totals = { scopes: 1, drained: 2, done: 1, failed: 0, pending: 1, skipped: 0, unreachable: 0, unsettleable: 0 };
       cp.recordSweepRun(row({ kind: 'platform-request', unit: 'fleet', outcome: 'ok', platform_requests: JSON.stringify(totals) }));
       return {
         staged,

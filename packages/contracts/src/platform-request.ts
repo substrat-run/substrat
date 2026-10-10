@@ -101,7 +101,7 @@ export const platformRequest = z.object({
    * did not decode is named here, and its field comes back EMPTY (`null`, or a self-naming
    * marker for `requestedBy`) rather than guessed at. Every other field still satisfies this
    * schema — a row whose id, kind, status, attempts or `requestedAt` does not is never
-   * returned as one of these at all.
+   * returned as one of these at all: it reads as an {@link UndecodablePlatformRequest} (#1637).
    *
    * The drain treats its presence as a refusal and never runs a handler on such a row: a
    * payload it could not decode is not a payload it may act on with `HostAdmin` authority.
@@ -111,6 +111,46 @@ export const platformRequest = z.object({
   decodeError: z.string().min(1).optional(),
 });
 export type PlatformRequest = z.infer<typeof platformRequest>;
+
+/**
+ * A journal row whose IDENTITY does not decode (#1637): its id, kind, status, attempts or
+ * `requested_at` breaks the contract, so it cannot be a {@link PlatformRequest} without a
+ * fabricated value. It used to throw instead, and since every read returns a list, one such row
+ * made the scope's whole journal unreadable — the drain's queue, the history, and
+ * `ctx.platformRequests` — which is #1588's consequence kept for exactly these columns.
+ *
+ * Named but not carried, in the grammar of `withheldEvent`: the five identity columns come
+ * back AS STORED, as text (`null` for SQL NULL — a TEXT primary key can be NULL in SQLite),
+ * claiming no branded type, and `decodeError` names every column that did not decode. No
+ * payload, requester, result or error text: a row whose identity is corrupt cannot honestly
+ * attribute its content to anything.
+ *
+ * Reachable without a forge: `importDump` replays rows verbatim, and none of these columns
+ * carries a CHECK constraint. Narrow with {@link isUndecodablePlatformRequest} before reading
+ * any other field. The drain never runs a handler on one: it settles it `failed` when the
+ * stored id is still an id, and reports it `unsettleable` when it is not.
+ */
+export const undecodablePlatformRequest = z.object({
+  undecodable: z.literal(true),
+  id: z.string().nullable(),
+  kind: z.string().nullable(),
+  status: z.string().nullable(),
+  attempts: z.string().nullable(),
+  requestedAt: z.string().nullable(),
+  decodeError: z.string().min(1),
+});
+export type UndecodablePlatformRequest = z.infer<typeof undecodablePlatformRequest>;
+
+/** One row of an intent-journal read (#1637): the contract shape, or the row named as unreadable. */
+export const platformRequestEntry = z.union([platformRequest, undecodablePlatformRequest]);
+export type PlatformRequestEntry = PlatformRequest | UndecodablePlatformRequest;
+
+/** Whether a journal read handed back a row whose identity does not decode (#1637). */
+export function isUndecodablePlatformRequest(
+  entry: PlatformRequestEntry,
+): entry is UndecodablePlatformRequest {
+  return 'undecodable' in entry && entry.undecodable === true;
+}
 
 /**
  * How a caller narrows a read of a scope's intent JOURNAL (#618) — every intent, not just the

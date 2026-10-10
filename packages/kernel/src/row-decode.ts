@@ -20,7 +20,8 @@ import { actor, permissionKey, type Actor, type PermissionKey } from '@substrat-
  * - a REQUIRED scalar has no honest empty value, so a row that breaks one cannot be the
  *   contract shape without lying. It is collected, and `finish` throws naming every
  *   column the row broke — the strict decode this replaced, kept for exactly the part it
- *   cannot honestly relax.
+ *   cannot honestly relax. A read whose contract has a variant for such a row (the intent
+ *   journal's, #1637) uses `finishOr` and returns that instead.
  *
  * **Every value a decoder built on this returns satisfies the published schema**, which
  * is #1634's review finding carried forward: a field is only ever replaced by a value its
@@ -100,6 +101,12 @@ export interface RowDecoder {
    * all did. Throws, naming every column, when a required scalar broke.
    */
   finish<R extends object>(decoded: R): R & { decodeError?: string };
+  /**
+   * `finish`, for a read that has a variant to return instead of throwing (#1637): when a
+   * required scalar broke, `unreadable` is handed the same message `finish` would throw — every
+   * column named — and its result is returned in place of the row.
+   */
+  finishOr<R extends object, V>(decoded: R, unreadable: (decodeError: string) => V): (R & { decodeError?: string }) | V;
 }
 
 /**
@@ -112,6 +119,13 @@ export function rowDecoder(subject: string, contract: string): RowDecoder {
   const undecoded: string[] = [];
   const unreadable: string[] = [];
   const failed = new Set<string>();
+  const finishOr = <R extends object, V>(
+    decoded: R,
+    onUnreadable: (decodeError: string) => V,
+  ): (R & { decodeError?: string }) | V => {
+    if (unreadable.length) return onUnreadable([...unreadable, ...undecoded].join('; '));
+    return undecoded.length ? { ...decoded, decodeError: undecoded.join('; ') } : decoded;
+  };
   return {
     failed,
     required<T>(column: string, field: Field<T>, stored: unknown): T {
@@ -156,12 +170,10 @@ export function rowDecoder(subject: string, contract: string): RowDecoder {
       return empty;
     },
     finish<R extends object>(decoded: R): R & { decodeError?: string } {
-      if (unreadable.length) {
-        throw new Error(
-          `${subject} cannot be read as a ${contract} — ${[...unreadable, ...undecoded].join('; ')}`,
-        );
-      }
-      return undecoded.length ? { ...decoded, decodeError: undecoded.join('; ') } : decoded;
+      return finishOr(decoded, (why) => {
+        throw new Error(`${subject} cannot be read as a ${contract} — ${why}`);
+      });
     },
+    finishOr,
   };
 }

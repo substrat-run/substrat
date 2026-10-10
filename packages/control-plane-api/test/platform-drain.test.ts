@@ -11,6 +11,8 @@ import {
   tenantId,
   platformRequestId,
   type PlatformRequest,
+  type PlatformRequestEntry,
+  type UndecodablePlatformRequest,
   type EntitlementGrant,
   ARCHIVE_SCOPE_KIND,
   connectorDispatchKind,
@@ -35,6 +37,7 @@ import {
   ControlPlaneError,
   VerticalClient,
 } from '../src/index.js';
+import { UNSETTLEABLE_IDS } from '../src/platform-drain.js';
 
 /** A primary install's kind and lineage, and a clean-room preview's (#2005). */
 const INSTALL = { kind: 'app', forkedFrom: null };
@@ -60,7 +63,7 @@ function intent(kind: string, over: Partial<PlatformRequest> = {}): PlatformRequ
 }
 
 /** A fake VerticalClient transport that records settlements. */
-function fakeTransport(pending: PlatformRequest[]) {
+function fakeTransport(pending: PlatformRequestEntry[]) {
   const settled: Array<{ id: string; status: string; result?: unknown; lastError?: string | null }> = [];
   const client = {
     listPlatformRequests: async () => pending,
@@ -343,6 +346,113 @@ describe('drainScopePlatformRequests — an undecodable row is refused, never ex
  * burned toward the ceiling and the first drain after the scope is live again runs each one once.
  * Against a real host, so "untouched" is read back from the journal rather than from a fake.
  */
+/**
+ * #1637: a row whose IDENTITY did not decode reaches the drain as the variant — no kind to
+ * dispatch on, nothing a handler may be shown. Whether it can be refused is decided on its stored
+ * id ITSELF, because the settle route parses that id as a ULID: an id still an id is settled
+ * `failed`; one that is not is reported, never settled and never run.
+ */
+describe('drainScopePlatformRequests — a row whose identity did not decode (#1637)', () => {
+  const ctx = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()), vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE };
+  const variant = (over: Partial<UndecodablePlatformRequest> = {}): UndecodablePlatformRequest => ({
+    undecodable: true,
+    id: ulid(),
+    kind: '',
+    status: 'pending',
+    attempts: '0',
+    requestedAt: new Date().toISOString(),
+    decodeError: 'kind: Too small: expected string to have >=1 characters',
+    ...over,
+  });
+  /** A handler for every kind that records what it was handed — which must stay healthy-only. */
+  const everyKind = () => {
+    const seen: string[] = [];
+    const handler: PlatformRequestHandler = async (_ctx, request) => {
+      seen.push(request.id);
+      return { status: 'done' };
+    };
+    return { seen, handlers: new Proxy({}, { get: () => handler }) as Record<string, PlatformRequestHandler> };
+  };
+
+  it('(a) a stored id that is still an id: settled failed, attributed to us, no handler — and the queue behind it drains', async () => {
+    const broken = variant({ kind: 'provision-sibling', attempts: '-1', decodeError: 'attempts: Too small: expected number to be >=0' });
+    const healthy = intent('provision-sibling');
+    const { client, settled } = fakeTransport([broken, healthy]);
+    const { seen, handlers } = everyKind();
+    const failures: Array<{ operation?: string; stage?: string | null; origin?: string | null; code?: string | null; message: string }> = [];
+
+    const report = await drainScopePlatformRequests(client, ctx, handlers, { recordFailure: (e) => failures.push(e) });
+
+    expect(seen).toEqual([healthy.id]);
+    expect(report).toEqual({ drained: 2, done: 1, failed: 1, pending: 0 });
+    expect(settled.find((s) => s.id === broken.id)).toEqual({
+      id: broken.id,
+      status: 'failed',
+      result: undefined,
+      lastError: 'not executed: the intent row could not be decoded (attempts: Too small: expected number to be >=0)',
+      failure: { origin: 'platform', code: 'validation_failed', permission: null },
+    });
+    expect(failures).toEqual([
+      expect.objectContaining({
+        operation: 'intent.undecodable',
+        stage: 'terminal',
+        origin: 'platform',
+        code: 'validation_failed',
+        message: expect.stringContaining(broken.id!),
+      }),
+    ]);
+  });
+
+  for (const [why, id] of [
+    ['not a ULID', 'not-a-ulid'],
+    ['SQL NULL', null],
+  ] as const) {
+    it(`(b) a stored id that is ${why}: never settled, never run, reported — and the queue behind it drains`, async () => {
+      const broken = variant({ id, decodeError: 'id: Invalid string' });
+      const healthy = intent('provision-sibling');
+      const { client, settled } = fakeTransport([broken, healthy]);
+      const { seen, handlers } = everyKind();
+      const failures: unknown[] = [];
+
+      const report = await drainScopePlatformRequests(client, ctx, handlers, { recordFailure: (e) => failures.push(e) });
+
+      expect(seen).toEqual([healthy.id]);
+      // No settle names it: the route would refuse the id, and a caught refusal is not a decision.
+      expect(settled.map((s) => s.id)).toEqual([healthy.id]);
+      // Not drained, not an ops failure (it would be re-recorded every pass) — counted, by name.
+      expect(report).toEqual({ drained: 1, done: 1, failed: 0, pending: 0, unsettleable: { count: 1, ids: [id] } });
+      expect(failures).toEqual([]);
+    });
+  }
+
+  it('(b) counts every unsettleable row exactly, and names the first of them', async () => {
+    const many = Array.from({ length: UNSETTLEABLE_IDS + 3 }, (_, n) => variant({ id: `bad-${n}` }));
+    const { client, settled } = fakeTransport(many);
+    const report = await drainScopePlatformRequests(client, ctx, everyKind().handlers);
+    expect(settled).toEqual([]);
+    expect(report.unsettleable).toEqual({ count: UNSETTLEABLE_IDS + 3, ids: many.slice(0, UNSETTLEABLE_IDS).map((v) => v.id) });
+    expect(report.drained).toBe(0);
+  });
+
+  it('a healthy queue reports no unsettleable at all (the positive twin)', async () => {
+    const { client } = fakeTransport([intent('provision-sibling'), intent('provision-sibling')]);
+    const report = await drainScopePlatformRequests(client, ctx, everyKind().handlers);
+    expect(report).toEqual({ drained: 2, done: 2, failed: 0, pending: 0 });
+    expect(report).not.toHaveProperty('unsettleable');
+  });
+
+  it("(a)'s settle is an ordinary settle: a vertical answering 503 surfaces, never swallowed", async () => {
+    const { client } = fakeTransport([variant()]);
+    const down = {
+      ...client,
+      settlePlatformRequest: async () => {
+        throw new ControlPlaneError(503, 'vertical unreachable');
+      },
+    } as typeof client;
+    await expect(drainScopePlatformRequests(down, ctx, everyKind().handlers)).rejects.toThrow();
+  });
+});
+
 describe('drainScopePlatformRequests — a held scope\'s intents wait (#1713)', () => {
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());

@@ -12,6 +12,8 @@ import {
   SWEEP_RUNS_KIND,
   instant,
   sweepRunsPayload,
+  isUndecodablePlatformRequest,
+  type PlatformRequest,
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scheduleMod } from '@substrat-run/contract-tests';
@@ -152,7 +154,7 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     // The two passes above (fired, then skipped) each enqueued a batch on each scope:
     // a CP-less pass's only road to _substrat_sweep_runs is its own intent journal.
     const pending = await host().listPlatformRequests(t, sA);
-    const sweeps = pending.filter((r) => r.kind === SWEEP_RUNS_KIND);
+    const sweeps = pending.filter((r): r is PlatformRequest => !isUndecodablePlatformRequest(r) && r.kind === SWEEP_RUNS_KIND);
     expect(sweeps).toHaveLength(2);
     const first = sweepRunsPayload.parse(sweeps[0]!.payload);
     const second = sweepRunsPayload.parse(sweeps[1]!.payload);

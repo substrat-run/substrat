@@ -80,6 +80,7 @@ export {
   type PlatformRequestContext,
   type PlatformRequestOutcome,
   type PlatformDrainReport,
+  type PlatformDrainUnsettleable,
   type PeerInvokeDeps,
   type ProvisionSiblingDeps,
   type ProvisionSiblingInput,

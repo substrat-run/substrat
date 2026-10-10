@@ -219,7 +219,7 @@ import {
   type ScopeId,
   connectorDispatchKind,
   type ConnectorDispatchPayload,
-  type PlatformRequest,
+  type PlatformRequestEntry,
   type PlatformRequestFilter,
   type PlatformRequestId,
   type PlatformRequestStatus,
@@ -3139,10 +3139,10 @@ export class CloudflareScopeHost implements ScopeHost {
     );
   }
 
-  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
+  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequestEntry[]> {
     await this.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    // Tolerant (#1588): one undecodable row comes back naming why, never throws for the list.
+    // Tolerant (#1588, #1637): an undecodable row comes back naming why, never throws for the list.
     return (await this.scopeStub(scopeId).pendingPlatformRequests()).map(platformRequestOf);
   }
 
@@ -3150,7 +3150,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     filter?: PlatformRequestFilter,
-  ): Promise<PlatformRequest[]> {
+  ): Promise<PlatformRequestEntry[]> {
     await this.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return (await this.scopeStub(scopeId).platformRequestHistory(filter)).map(platformRequestOf);

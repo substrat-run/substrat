@@ -1077,6 +1077,12 @@ export const platformRequestDrainTotals = z.object({
   skipped: z.number().int().nonnegative().default(0),
   /** Active scopes with no reachable deployment — their queues are not counted either. */
   unreachable: z.number().int().nonnegative().default(0),
+  /**
+   * Pending intents the drain could neither run nor settle (#1637): their stored id is not an
+   * id, so no settle can address them. They stay pending, and are counted on every pass for as
+   * long as they do. Not in `drained`.
+   */
+  unsettleable: z.number().int().nonnegative().default(0),
 });
 export type PlatformRequestDrainTotalsEntry = z.infer<typeof platformRequestDrainTotals>;
 

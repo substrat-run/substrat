@@ -3,10 +3,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Page, TimelineEntry } from '@substrat-run/contracts';
+import {
+  isUndecodablePlatformRequest,
+  type Page,
+  type PlatformRequest,
+  type PlatformRequestEntry,
+  type TimelineEntry,
+} from '@substrat-run/contracts';
 import { manualClock, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { buildDemoHost, seedDemo, type ManyfoldWorld, type EntryRow, type EntryStatus } from '../src/index.js';
+
+/** The intent queue, every row whole: nothing in this world plants an undecodable one (#1637). */
+function whole(entries: PlatformRequestEntry[]): PlatformRequest[] {
+  return entries.map((e) => {
+    if (isUndecodablePlatformRequest(e)) throw new Error(`unexpected undecodable intent row: ${e.decodeError}`);
+    return e;
+  });
+}
 
 /**
  * The Manyfold scenario (spec/concept.md §"scenario"): provision three sites →
@@ -68,7 +82,7 @@ describe('Manyfold demo scenario', () => {
 
     // The vertical can't provision itself (sandbox-clean) — it enqueues a durable platform intent
     // in this scope for the platform to drain (platform-intents.md). Owner = the requesting admin.
-    const pending = await host.listPlatformRequests(w.t1, w.cafe);
+    const pending = whole(await host.listPlatformRequests(w.t1, w.cafe));
     const mine = pending.find((r) => r.id === requestId)!;
     expect(mine.kind).toBe('provision-sibling');
     expect(mine.status).toBe('pending');
@@ -81,7 +95,7 @@ describe('Manyfold demo scenario', () => {
     await expect(sofiaCafe.invoke('manyfold/archive-site', { scopeId: w.law })).rejects.toThrow(/permission denied/);
 
     const { requestId } = await maja.invoke<{ requestId: string }>('manyfold/archive-site', { scopeId: w.law });
-    const mine = (await host.listPlatformRequests(w.t1, w.cafe)).find((r) => r.id === requestId)!;
+    const mine = whole(await host.listPlatformRequests(w.t1, w.cafe)).find((r) => r.id === requestId)!;
     expect(mine.kind).toBe('archive-scope');
     expect(mine.payload).toEqual({ scopeId: w.law }); // the platform verifies + archives the target
   });

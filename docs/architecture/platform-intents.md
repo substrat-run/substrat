@@ -152,7 +152,7 @@ it happened. An app showed a contract as "out for signature" while its `connecto
 had been `failed` for a fortnight.
 
 ```ts
-ctx.platformRequests({ kind?: string, status?: PlatformRequestStatus, limit?: number }): PlatformRequest[]
+ctx.platformRequests({ kind?: string, status?: PlatformRequestStatus, limit?: number }): PlatformRequestEntry[]
 ```
 
 Synchronous, scope-local (it is this scope's own spine table), newest first. Rule 3 already
@@ -160,6 +160,31 @@ permits a projection read of `_substrat_*`, but a hand-rolled `SELECT` pins a ve
 private schema — this is the stable shape, returning the same `PlatformRequest` the platform
 settles. Read-only by construction: the kernel owns every write to that table, so an intent's
 status is only ever the platform's answer.
+
+**A row that does not decode is named, never thrown for the list** (#1588, #1637). Every read of
+the journal returns a list, so a strict decode let one bad row hide every other intent on the
+scope. Only a restored dump can hold one: `importDump` replays rows verbatim, and no column has
+a CHECK constraint. The reads tolerate it at two depths.
+
+- **Content.** A JSON column or nullable scalar that does not decode comes back empty (`null`,
+  or the `{ system: 'undecodable' }` requester). The row is still a `PlatformRequest`, and
+  `decodeError` names the column.
+- **Identity.** An id, kind, status, attempts or `requested_at` that does not decode has no
+  honest empty value. The row comes back as an `UndecodablePlatformRequest` instead. It holds
+  those five columns as stored, as text, plus `decodeError`, and carries no content: named, not
+  carried, the same grammar as `withheldEvent`. Narrow with `isUndecodablePlatformRequest`.
+
+The drain runs no handler on either kind of bad row. It settles each one `failed`
+(`validation_failed`, platform origin), except an identity row whose stored id is not a ULID:
+the settle route parses the id, so nothing can address that row. The drain decides this on the
+id itself, never on a caught settle error, which would also swallow an outage. It leaves the row
+pending, reports it as `PlatformDrainReport.unsettleable`, and drains the rest of the queue past
+it.
+
+The pass's fleet `platform-request` sweep row reads `failed` while any such row exists, and the
+control plane logs the scope as `platform-request-unsettleable`. **The row keeps one of the
+scope's `MAX_PENDING_PLATFORM_REQUESTS` slots** until an operator repairs it, in the SQL console
+or with a corrected dump.
 
 ### 3. The drain-executor (platform / control plane)
 

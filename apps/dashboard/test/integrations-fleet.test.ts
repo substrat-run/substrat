@@ -80,6 +80,8 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
   let rows: Row[];
   let revoked: string[];
   let verified: string[];
+  // What the plane's intent journal answers; the default `[]` is a clean journal.
+  let intents: unknown[];
   let env: Record<string, unknown>;
 
   const row = (over: Partial<Row>): Row => ({
@@ -106,6 +108,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     for (const m of MODULES) host.registerModule(m);
     revoked = [];
     verified = [];
+    intents = [];
 
     const owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'bureau', name: 'Bureau' });
@@ -170,6 +173,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
             if (tail === '/credential') return Response.json({ fields: [] });
           }
           if (path === `/tenants/${tenant}/connection-grants`) return Response.json([]);
+          if (path === `/tenants/${tenant}/scopes/${appScope}/intents`) return Response.json(intents);
           if (path === '/sweep-runs') return Response.json({ entries: [], nextCursor: null });
           return Response.json({ error: `unexpected ${method} ${path}` }, { status: 500 });
         },
@@ -250,6 +254,46 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     const res = await req(`/fortnox/connections/${alfa.id}/activity`);
     expect(res.status).toBe(200);
     expect(((await res.json()) as { connection: { id: string } }).connection.id).toBe(alfa.id);
+  });
+
+  it('names an intent row whose identity did not decode, apart from the deliveries — never drops it (#1637)', async () => {
+    const delivered = {
+      id: ulid(),
+      kind: 'connector:fortnox',
+      payload: { event: { type: 'invoice.sent' } },
+      requestedBy: { system: 'connector-dispatch' },
+      impersonation: null,
+      status: 'done',
+      attempts: 1,
+      lastError: null,
+      failure: null,
+      result: null,
+      requestedAt: '2026-09-01T00:00:00.000Z',
+      settledAt: '2026-09-01T00:00:01.000Z',
+    };
+    const unreadable = {
+      undecodable: true,
+      id: 'not-a-ulid',
+      kind: 'connector:fortnox',
+      status: 'queued',
+      attempts: '0',
+      requestedAt: '1756684800',
+      decodeError: 'id: Invalid string; status: Invalid option',
+    };
+    intents = [unreadable, delivered];
+    const res = await req(`/fortnox/connections/${byLabel('Alfa AB').id}/activity`);
+    const body = (await res.json()) as { intents: { id: string }[]; unreadableIntents: unknown[] };
+    // The delivery list is exactly the rows that ARE deliveries…
+    expect(body.intents.map((i) => i.id)).toEqual([delivered.id]);
+    // …and the row that is not one is named as stored, not folded into an empty drawer.
+    expect(body.unreadableIntents).toEqual([
+      { id: 'not-a-ulid', status: 'queued', requestedAt: '1756684800', decodeError: 'id: Invalid string; status: Invalid option' },
+    ]);
+  });
+
+  it('a clean journal names nothing unreadable (the positive twin)', async () => {
+    const res = await req(`/fortnox/connections/${byLabel('Alfa AB').id}/activity`);
+    expect(((await res.json()) as { unreadableIntents: unknown[] }).unreadableIntents).toEqual([]);
   });
 
   it('every addressed route needs a signed-in member of the team', async () => {

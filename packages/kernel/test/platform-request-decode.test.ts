@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { platformRequest } from '@substrat-run/contracts';
+import {
+  isUndecodablePlatformRequest,
+  platformRequest,
+  platformRequestEntry,
+  type PlatformRequest,
+} from '@substrat-run/contracts';
 import {
   platformRequestOf,
   UNDECODED_REQUESTER,
@@ -31,6 +36,13 @@ describe('platformRequestOf — tolerant where evidence is read', () => {
     settled_at: '2026-09-01T00:05:00.000Z',
     ...over,
   });
+
+  /** A row this test expects to decode WHOLE — narrowed, and failing loudly if it did not. */
+  const whole = (row: PlatformRequestRawRow): PlatformRequest => {
+    const decoded = platformRequestOf(row);
+    if (isUndecodablePlatformRequest(decoded)) throw new Error(`read as undecodable: ${decoded.decodeError}`);
+    return decoded;
+  };
 
   /** The strict decode this replaced, verbatim — what a healthy row must still read as. */
   const strict = (r: PlatformRequestRawRow) =>
@@ -82,7 +94,7 @@ describe('platformRequestOf — tolerant where evidence is read', () => {
   for (const [column, field, empty] of jsonColumns) {
     it(`an unparseable ${column} comes back empty, named, and the rest of the row intact`, () => {
       const row = stored({ [column]: '{"not json' });
-      const decoded = platformRequestOf(row);
+      const decoded = whole(row);
       expect(decoded[field]).toEqual(empty);
       expect(decoded.decodeError).toMatch(new RegExp(`^${column}: .*JSON`));
       // Everything that DID decode is still there — the point is not losing the row.
@@ -93,7 +105,7 @@ describe('platformRequestOf — tolerant where evidence is read', () => {
   }
 
   it('JSON that parses but is not the contract shape is refused too, with the path it broke at', () => {
-    const decoded = platformRequestOf(stored({ last_failure: JSON.stringify({ origin: 'martian' }) }));
+    const decoded = whole(stored({ last_failure: JSON.stringify({ origin: 'martian' }) }));
     // A null `failure` alone would read as "nobody classified this" — a fact. With the reason
     // beside it, it reads as what it is.
     expect(decoded.failure).toBeNull();
@@ -101,13 +113,13 @@ describe('platformRequestOf — tolerant where evidence is read', () => {
   });
 
   it('an actor that is not an actor becomes the marker, never a guessed principal', () => {
-    const decoded = platformRequestOf(stored({ requested_by: JSON.stringify(42) }));
+    const decoded = whole(stored({ requested_by: JSON.stringify(42) }));
     expect(decoded.requestedBy).toEqual({ system: 'undecodable' });
     expect(decoded.decodeError).toMatch(/^requested_by: /);
   });
 
   it('a nullable scalar that breaks the contract comes back null, named — not as stored', () => {
-    const decoded = platformRequestOf(
+    const decoded = whole(
       stored({ last_error: 42 as unknown as string, settled_at: 'yesterday' }),
     );
     expect(decoded.lastError).toBeNull();
@@ -134,22 +146,65 @@ describe('platformRequestOf — tolerant where evidence is read', () => {
       { payload: 'x', requested_by: 'y', impersonation: 'z', last_failure: 'w', result: 'v', settled_at: 'u' },
     ];
     for (const over of broken) {
-      const decoded = platformRequestOf(stored(over));
+      const decoded = whole(stored(over));
       expect(decoded.decodeError).toBeDefined();
       expect(() => platformRequest.parse(decoded)).not.toThrow();
     }
   });
 
-  it('a row whose REQUIRED scalars break the contract is never returned as a PlatformRequest', () => {
-    // id, kind, status, attempts and requested_at have no empty value, so the only honest
-    // answers are a different type or a refusal — never `id: "not-a-ulid"` typed as a branded id.
-    const read = () => platformRequestOf(stored({ id: 'not-a-ulid', status: 'queued', payload: 'nope' }));
-    expect(read).toThrow(/platform request row "not-a-ulid" cannot be read as a PlatformRequest/);
-    // Every column it broke is named, required ones first — including the JSON column beside them.
-    expect(read).toThrow(/id: .*; status: .*; payload: /);
-    for (const over of [{ kind: '' }, { attempts: -1 }, { requested_at: 'yesterday' }]) {
-      expect(() => platformRequestOf(stored(over))).toThrow(/cannot be read as a PlatformRequest/);
-    }
+  /**
+   * #1637. id, kind, status, attempts and requested_at have no empty value, so a row that breaks
+   * one cannot be a `PlatformRequest` without fabricating it — `id: "not-a-ulid"` typed as a
+   * branded id. It used to throw, and every read returns a LIST, so one such row took the
+   * scope's whole journal with it. It reads as the variant now: the five columns as stored.
+   */
+  const identity = [
+    ['id', { id: 'not-a-ulid' }],
+    ['id', { id: null }],
+    ['kind', { kind: '' }],
+    ['status', { status: 'queued' }],
+    ['attempts', { attempts: -1 }],
+    ['attempts', { attempts: 'abc' }],
+    ['attempts', { attempts: 1.5 }],
+    ['requested_at', { requested_at: 'yesterday' }],
+  ] as const;
+
+  for (const [column, over] of identity) {
+    it(`a ${column} of ${JSON.stringify(Object.values(over)[0])} reads as the variant, the stored columns as text`, () => {
+      const row = stored(over as unknown as Partial<PlatformRequestRawRow>);
+      const decoded = platformRequestOf(row);
+      const text = (v: unknown) => (v === null ? null : String(v));
+      expect(decoded).toStrictEqual({
+        undecodable: true,
+        id: text(row.id),
+        kind: text(row.kind),
+        status: text(row.status),
+        attempts: text(row.attempts),
+        requestedAt: text(row.requested_at),
+        decodeError: expect.stringMatching(new RegExp(`^${column}: `)),
+      });
+      // Not the contract shape, and not passed off as one — but a value the published union accepts.
+      expect(platformRequest.safeParse(decoded).success).toBe(false);
+      expect(() => platformRequestEntry.parse(decoded)).not.toThrow();
+    });
+  }
+
+  it('the variant names every column it broke, required first, and carries none of the content', () => {
+    const decoded = platformRequestOf(stored({ id: 'not-a-ulid', status: 'queued', payload: 'nope' }));
+    if (!isUndecodablePlatformRequest(decoded)) throw new Error('expected the variant');
+    expect(decoded.decodeError).toMatch(/^id: .*; status: .*; payload: not valid JSON$/);
+    // Named but not carried: no payload, requester, error or result travels with it.
+    expect(Object.keys(decoded).sort()).toEqual(
+      ['attempts', 'decodeError', 'id', 'kind', 'requestedAt', 'status', 'undecodable'].sort(),
+    );
+    expect(JSON.stringify(decoded)).not.toContain('HTTP 409');
+  });
+
+  it('a row broken ONLY in JSON is still a PlatformRequest, never the variant (the positive twin)', () => {
+    const decoded = platformRequestOf(stored({ payload: 'nope', result: '{' }));
+    expect(isUndecodablePlatformRequest(decoded)).toBe(false);
+    expect(decoded).not.toHaveProperty('undecodable');
+    expect(() => platformRequest.parse(decoded)).not.toThrow();
   });
 
   it('names every column that failed, in column order, not only the first one reached', () => {

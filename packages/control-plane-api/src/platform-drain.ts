@@ -25,6 +25,8 @@ import {
   modelUsageLine,
   MODEL_USAGE_KIND,
   SWEEP_RUNS_KIND,
+  isUndecodablePlatformRequest,
+  platformRequestId,
   type PlatformActorId,
   type PlatformRequest,
   type PlatformRequestFailure,
@@ -133,7 +135,33 @@ export interface PlatformDrainReport {
    * none was dispatched or settled. Absent otherwise.
    */
   held?: true;
+  /**
+   * #1637: pending rows whose identity did not decode AND whose stored id is not an id — so
+   * nothing can address them: the settle route parses the id as a ULID, and that stays strict.
+   * Never executed and never settled; they stay pending (holding a backpressure slot) until an
+   * operator repairs the row, and every pass counts them again. Not in `drained`. Absent when
+   * there were none.
+   */
+  unsettleable?: PlatformDrainUnsettleable;
 }
+
+/** The rows `PlatformDrainReport.unsettleable` stepped over, named as stored. */
+export interface PlatformDrainUnsettleable {
+  /** Exact. */
+  count: number;
+  /** The stored ids, as text (`null` for SQL NULL), first {@link UNSETTLEABLE_IDS} of them. */
+  ids: (string | null)[];
+}
+
+/** How many stored ids an `unsettleable` report names; `count` stays exact. */
+export const UNSETTLEABLE_IDS = 10;
+
+/** Who refused an intent the drain would not run because its row did not decode. */
+const UNDECODED_REFUSAL: PlatformRequestFailure = { origin: 'platform', code: 'validation_failed', permission: null };
+
+/** The settled error for such an intent, naming the columns — never their stored content. */
+const undecodedRefusal = (decodeError: string): string =>
+  `not executed: the intent row could not be decoded (${decodeError})`;
 
 /**
  * How many drain passes a pending intent may burn before the platform stops retrying and
@@ -162,6 +190,8 @@ export interface PlatformDrainOptions {
  * handler for its `kind`, and settle the outcome back in the vertical. An unknown kind settles
  * `failed` (never silently dropped); a thrown handler settles `pending` (retried on the next drain);
  * a row that did not decode (`decodeError`, #1588) settles `failed` without reaching any handler.
+ * So does a row whose identity did not decode (#1637) — when its stored id is still an id; when it
+ * is not, nothing can settle it, and it is reported `unsettleable` instead.
  * The `VerticalClient` transport is narrowed so tests can pass a fake.
  */
 export async function drainScopePlatformRequests(
@@ -178,7 +208,42 @@ export async function drainScopePlatformRequests(
   }
   const report: PlatformDrainReport = { drained: pending.length, done: 0, failed: 0, pending: 0 };
   const primary = isPrimaryScope(ctx.scope);
-  for (const request of pending) {
+  for (const entry of pending) {
+    if (isUndecodablePlatformRequest(entry)) {
+      // #1637: the row's identity did not decode, so there is no kind to dispatch on and nothing
+      // a handler may be shown. Whether it can be refused is decided on the stored id ITSELF —
+      // the settle route parses it as a ULID — never on a settle's caught error, which would also
+      // swallow a transient outage.
+      const id = platformRequestId.safeParse(entry.id);
+      if (!id.success) {
+        const u = (report.unsettleable ??= { count: 0, ids: [] });
+        u.count++;
+        if (u.ids.length < UNSETTLEABLE_IDS) u.ids.push(entry.id);
+        report.drained--;
+        continue;
+      }
+      const error = undecodedRefusal(entry.decodeError);
+      opts?.recordFailure?.({
+        operation: 'intent.undecodable',
+        stage: 'terminal',
+        tenantId: ctx.tenantId,
+        scopeId: ctx.scopeId,
+        vertical: ctx.vertical,
+        version: ctx.versionId ?? null,
+        origin: UNDECODED_REFUSAL.origin,
+        code: UNDECODED_REFUSAL.code,
+        message: platformIntentFailureMessage(id.data, `failed: ${error}`),
+      });
+      await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, id.data, {
+        status: 'failed',
+        result: undefined,
+        lastError: error,
+        failure: UNDECODED_REFUSAL,
+      });
+      report.failed++;
+      continue;
+    }
+    const request = entry;
     const handler = handlers[request.kind];
     let outcome: PlatformRequestOutcome;
     // #2005: an intent a non-primary scope raised for itself is settled, never executed.
@@ -189,11 +254,7 @@ export async function drainScopePlatformRequests(
       // `null` payload, a `null` two-phase result a retry would re-mint without — and nothing
       // here may act on that with platform authority. Refused before any handler is looked at,
       // and terminal: nothing rewrites the stored columns, so the next pass would read the same.
-      outcome = {
-        status: 'failed',
-        error: `not executed: the intent row could not be decoded (${request.decodeError})`,
-        failure: { origin: 'platform', code: 'validation_failed', permission: null },
-      };
+      outcome = { status: 'failed', error: undecodedRefusal(request.decodeError), failure: UNDECODED_REFUSAL };
     } else if (inert) {
       // Settled `failed`, not left pending: nothing will ever run it. Before any handler is
       // looked up, so no kind's handler is the place that has to remember (#2005).

@@ -1461,6 +1461,11 @@ export async function reconcileOrUnsupported<T>(call: () => Promise<T>): Promise
  * (`skipped`), or no deployment could be reached for it (`unreachable`). The count is then
  * a floor, and the reader says so rather than presenting it as the fleet's whole queue.
  *
+ * Also `failed` while any queue holds an intent nothing can settle (#1637): a row whose identity
+ * did not decode and whose stored id is not an id. It is not in the totals either, and it stays
+ * until an operator repairs it, so every pass says so — a sweep row, not an `errors` entry,
+ * because the failure digest would mail a standing condition on every tick.
+ *
  * `at` is when the drain phase finished — the moment the totals describe — not when this
  * row happens to be written.
  */
@@ -1471,11 +1476,17 @@ export function platformRequestSweepRun(report: PlatformSweepReport, at: string)
   if (undrained > 0) gaps.push(`${undrained} scope drain(s) failed`);
   if (totals.skipped > 0) gaps.push(`${totals.skipped} scope(s) skipped for a failed migration`);
   if (totals.unreachable > 0) gaps.push(`${totals.unreachable} scope(s) had no reachable deployment`);
+  const errors = gaps.length > 0 ? [`${gaps.join('; ')} — their queues are not in these totals`] : [];
+  if (totals.unsettleable > 0) {
+    errors.push(
+      `${totals.unsettleable} pending intent(s) cannot be run or settled — the row did not decode and its stored id is not an id; each scope is logged as platform-request-unsettleable`,
+    );
+  }
   return {
     kind: 'platform-request',
     unit: 'fleet',
-    outcome: gaps.length > 0 ? 'failed' : 'ok',
-    error: gaps.length > 0 ? `${gaps.join('; ')} — their queues are not in these totals` : null,
+    outcome: errors.length > 0 ? 'failed' : 'ok',
+    error: errors.length > 0 ? errors.join('; ') : null,
     platformRequests: totals,
     at,
   };
@@ -1581,7 +1592,7 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
     resolveVerticalForScope,
     patchScriptBindings: patchScriptBindingsFor(env),
   };
-  return drainScopePlatformRequests(
+  const report = await drainScopePlatformRequests(
     client,
     drainContextOf(rec, vertical, await host.admin.getTenant(SWEEP_ACTOR, t)),
     {
@@ -1641,6 +1652,10 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
       },
     },
   );
+  // #1637: the pass's sweep row counts these fleet-wide; this line says WHERE, so the operator
+  // repairing the row knows which scope's journal to open.
+  if (report.unsettleable) console.log('platform-request-unsettleable', { tenantId: t, scopeId: s, ...report.unsettleable });
+  return report;
 }
 
 /**

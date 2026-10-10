@@ -34,7 +34,7 @@ import type {
   PermissionDenial,
   MigrationDiff,
   PermissionRegistry,
-  PlatformRequest,
+  PlatformRequestEntry,
   PreviewAuth,
   PrincipalId,
   PeerGrantsStatusEntry,
@@ -600,12 +600,12 @@ export class TenantNarrowedControlPlane {
   scopeIntents(
     scopeId: string,
     filter: { kind?: string; limit?: number } = {},
-  ): Promise<PlatformRequest[]> {
+  ): Promise<PlatformRequestEntry[]> {
     const q = new URLSearchParams();
     if (filter.kind) q.set('kind', filter.kind);
     if (filter.limit) q.set('limit', String(filter.limit));
     const qs = q.toString();
-    return this.call<PlatformRequest[]>(
+    return this.call<PlatformRequestEntry[]>(
       `/tenants/${this.tenantId}/scopes/${encodeURIComponent(scopeId)}/intents${qs ? `?${qs}` : ''}`,
     );
   }

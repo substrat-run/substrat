@@ -95,12 +95,12 @@ describe('sweepRunEntry.platformRequests (#1840)', () => {
   };
 
   it('carries the totals on a platform-request row', () => {
-    const totals = { scopes: 2, drained: 5, done: 3, failed: 0, pending: 2, skipped: 0, unreachable: 0 };
+    const totals = { scopes: 2, drained: 5, done: 3, failed: 0, pending: 2, skipped: 0, unreachable: 0, unsettleable: 1 };
     expect(sweepRunEntry.parse({ ...base, kind: 'platform-request', platformRequests: totals }).platformRequests).toEqual(totals);
   });
 
   it('refuses a negative count — the column is parsed, not trusted', () => {
-    const totals = { scopes: 0, drained: 0, done: 0, failed: 0, pending: -1, skipped: 0, unreachable: 0 };
+    const totals = { scopes: 0, drained: 0, done: 0, failed: 0, pending: -1, skipped: 0, unreachable: 0, unsettleable: 0 };
     expect(sweepRunEntry.safeParse({ ...base, kind: 'platform-request', platformRequests: totals }).success).toBe(false);
   });
 
@@ -110,7 +110,21 @@ describe('sweepRunEntry.platformRequests (#1840)', () => {
       ...old,
       skipped: 0,
       unreachable: 0,
+      unsettleable: 0,
     });
+  });
+
+  it('reads totals stored before unsettleable existed (#1637) as zero, the rest as stored', () => {
+    const old = { scopes: 1, drained: 2, done: 1, failed: 0, pending: 1, skipped: 1, unreachable: 2 };
+    expect(sweepRunEntry.parse({ ...base, kind: 'platform-request', platformRequests: old }).platformRequests).toEqual({
+      ...old,
+      unsettleable: 0,
+    });
+  });
+
+  it('refuses a negative unsettleable count too', () => {
+    const totals = { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0, unsettleable: -1 };
+    expect(sweepRunEntry.safeParse({ ...base, kind: 'platform-request', platformRequests: totals }).success).toBe(false);
   });
 
   it('still parses a row written before the column existed', () => {
