@@ -1624,7 +1624,7 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
 
     expect(() => assertOwned(mine, 'helpdesk')).not.toThrow();
     // billing is other's — not in acme's deployments, so a promote attempt is refused.
-    expect(() => assertOwned(mine, 'billing')).toThrow(/not one of your deployments/);
+    expect(() => assertOwned(mine, 'billing')).toThrow(expect.objectContaining({ code: 'not_found', message: "vertical 'billing' is not one of your deployments" }));
   });
 });
 

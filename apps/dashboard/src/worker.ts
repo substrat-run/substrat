@@ -2705,18 +2705,11 @@ app.post('/api/apps/:scopeId/query', async (c) => {
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const input = queryScopeInput.parse(await c.req.json());
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  try {
-    const result = await cp.queryScope(scope, input.sql);
-    if (result == null) throw new HTTPException(502, { message: 'the platform returned no data for this query' });
-    return c.json(result);
-  } catch (e) {
-    // The gate's refusal is the caller's mistake — relay the message for the console
-    // UI instead of letting it collapse into a generic 500.
-    if (e instanceof Error && e.message.includes('read-only console')) {
-      throw new HTTPException(400, { message: e.message });
-    }
-    throw e;
-  }
+  // The gate's refusal arrives as the plane's own 400 (`validation_failed`), which `onError`
+  // relays with its sentence for the console UI — the caller's mistake, never a 500.
+  const result = await cp.queryScope(scope, input.sql);
+  if (result == null) throw new HTTPException(502, { message: 'the platform returned no data for this query' });
+  return c.json(result);
 });
 
 /**
@@ -4266,6 +4259,13 @@ app.get('/api/apps/:scopeId/hostnames', async (c) => {
 });
 
 /**
+ * A refused permission, by its code (#113): the kernel's own check, or the plane's 403 relayed.
+ * Either keeps its 403 through `onError` rather than being folded into a route's 409.
+ */
+const isPermissionDenial = (e: unknown): boolean =>
+  errorCodeOf(e) === 'permission_denied' || (e instanceof ControlPlaneError && e.problemCode === 'permission_denied');
+
+/**
  * Bind a hostname to a surface of this app. A platform hostname (`domain` omitted)
  * is minted from the app's own label and lands ACTIVE — it rides the wildcard cert.
  * A custom domain lands PENDING and walks the §4.2 lifecycle. Same authority as
@@ -4294,7 +4294,7 @@ app.post('/api/apps/:scopeId/hostnames', async (c) => {
     });
     return c.json(bound, 201);
   } catch (e) {
-    if (e instanceof Error && /permission denied/.test(e.message)) throw e;
+    if (isPermissionDenial(e)) throw e;
     throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind hostname' });
   }
 });
@@ -4317,9 +4317,10 @@ app.delete('/api/apps/:scopeId/hostnames/:hostname', async (c) => {
       controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
     });
   } catch (e) {
-    if (e instanceof Error && /permission denied/.test(e.message)) throw e;
+    if (isPermissionDenial(e)) throw e;
     const message = e instanceof Error ? e.message : 'could not unbind hostname';
-    throw new HTTPException(/not bound/.test(message) ? 404 : 409, { message });
+    // `not_found` is the hostname not being bound to this app (both narrowings type it).
+    throw new HTTPException(errorCodeOf(e) === 'not_found' ? 404 : 409, { message });
   }
   return c.json({ deleted: c.req.param('hostname').toLowerCase() });
 });
@@ -5741,7 +5742,7 @@ app.get('/api/github/connect', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  // Throws "permission denied" (→ 403 via onError) if the caller may not connect providers.
+  // Throws a `permission_denied` (→ 403 via onError) if the caller may not connect providers.
   const { principal } = (await dash.invoke('dashboard/begin-connection', { provider: 'github' })) as { principal: string };
   const state = await signGithubState(c.env, { tenantId: node.tenantId, principal, provider: 'github' });
   return c.redirect(installUrl(cfg, state));
@@ -6038,11 +6039,7 @@ app.onError((err, c) => {
       'content-type': PROBLEM_CONTENT_TYPE,
     });
   }
-  const status = err instanceof HTTPException ? err.status : 400;
-  if (status === 400 && /permission denied/.test(m)) return problem(c, 403, m);
-  // A slug that isn't the caller's own deployment reads as not-found, not a leak.
-  if (status === 400 && /not one of your deployments/.test(m)) return problem(c, 404, m);
-  return problem(c, status, m);
+  return problem(c, err instanceof HTTPException ? err.status : 400, m);
 });
 
 export default app;

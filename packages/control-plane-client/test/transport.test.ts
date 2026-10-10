@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { problemForStatus, substratError, toProblem } from '@substrat-run/contracts';
 import {
   ControlPlaneError,
   ControlPlaneTransport,
@@ -419,5 +420,32 @@ describe('read(): a JSON answer that says what it was when it is not', () => {
   it('a refusal stays a refusal — not malformed', async () => {
     const { fetch } = spy(() => new Response('<html>', { status: 502 }));
     await expect(make(fetch).read2('/x')).rejects.toMatchObject({ status: 502, malformed: false });
+  });
+});
+
+describe('problemCode: the code the plane declared, read off the refusal (#113)', () => {
+  const refusedWith = async (res: () => Response): Promise<ControlPlaneError> =>
+    (await make(spy(res).fetch).send2('/x').catch((e: unknown) => e)) as ControlPlaneError;
+
+  it('is the problem document\'s code, as the plane renders a typed refusal', async () => {
+    const body = toProblem(substratError('permission_denied', 'permission denied: dashboard:read'));
+    const err = await refusedWith(() => Response.json(body, { status: 403 }));
+    expect(err.problemCode).toBe('permission_denied');
+    expect(err.message).toBe('permission denied: dashboard:read');
+  });
+
+  it('is undefined for a body that named none — the sentence alone never decides it', async () => {
+    // A route the plane does not have: Hono's plain-text 404.
+    expect((await refusedWith(() => new Response('404 Not Found', { status: 404 }))).problemCode).toBeUndefined();
+    // The same words as a typed refusal, in the pre-#113 `{ error }` shape.
+    const legacy = await refusedWith(() => Response.json({ error: 'permission denied: dashboard:read' }, { status: 403 }));
+    expect(legacy.problemCode).toBeUndefined();
+    // `about:blank`: a status relayed, with no code.
+    const relayed = await refusedWith(() => Response.json(problemForStatus(502, 'upstream'), { status: 502 }));
+    expect(relayed.problemCode).toBeUndefined();
+    // A code outside the closed taxonomy is not one.
+    expect((await refusedWith(() => Response.json({ code: 'teapot' }, { status: 418 }))).problemCode).toBeUndefined();
+    // Raised on this side, with no body at all.
+    expect(new ControlPlaneError(404, 'not here').problemCode).toBeUndefined();
   });
 });

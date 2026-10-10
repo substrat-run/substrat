@@ -348,7 +348,7 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     const adaRow = (await roster(t)).find((m) => m.email === 'ada@team.test')!;
     await expect(
       (await host.getScope(mgr, t.tenant, t.dashScope)).invoke('dashboard/remove-member', { memberId: adaRow.id }),
-    ).rejects.toThrow(/permission denied: you cannot remove a 'admin'/);
+    ).rejects.toMatchObject({ code: 'permission_denied', message: expect.stringMatching(/^permission denied: you cannot remove a 'admin'/) });
     // Nothing moved: still on the roster, still holding the role.
     expect((await roster(t)).find((m) => m.email === 'ada@team.test')?.status).toBe('active');
     expect(await canRead(t, ada)).toBe(true);
