@@ -8,7 +8,6 @@ import {
   CAPABILITY_SESSION_PREFIX,
   CAPABILITY_SESSION_TTL_MS,
   becomeCapabilityInput,
-  ENTITY_HOLDER_BOUND,
   capabilityAction,
   capabilityAuthor,
   capabilityFilter,
@@ -27,7 +26,6 @@ import {
   type Coverage,
   type CapabilityAction,
   type CapabilityAuthor,
-  type EntityHolderBoundPayload,
   type CapabilityBecomeMintedPayload,
   type CapabilityExchange,
   type CapabilityExercisedPayload,
@@ -51,7 +49,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { toBase64url } from './base64url.js';
-import { bindAtExchange, judgeBind } from './entity-binding.js';
+import { bindIn, judgeBind } from './entity-binding.js';
 import { PermissionDenied, type Holdings, type PermissionChecker } from './permission-checker.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
@@ -759,7 +757,9 @@ export async function exchangeCapability(
   )[0];
   if (!row || !capabilityExchangeable(row, deps.now)) return null;
   if (mode !== undefined && row.mode !== mode) return null;
-  if (row.mode === 'become' && typeof JSON.parse(row.minted_by) === 'string') {
+  const author = capabilityAuthor.parse(JSON.parse(row.minted_by));
+  const minter = typeof author === 'string' ? author : null;
+  if (row.mode === 'become' && minter) {
     // A principal minted it (#1686): the bound held against what its principal held THEN. If
     // that has changed in any way since — a role raised or lowered, a grant added, an org joined,
     // a role redefined — the link is revoked here, with no revoker, and refused: the one answer
@@ -776,12 +776,13 @@ export async function exchangeCapability(
   // Judged before the use is taken, so a refusal writes nothing and the link stays as it was:
   // a minter who has lost the key, or left, makes the link refuse, with the one answer.
   const action = row.mode === 'become' ? actionOf(row) : null;
-  const minter = typeof JSON.parse(row.minted_by) === 'string' ? principalIdSchema.parse(JSON.parse(row.minted_by)) : null;
-  const allowed = deps.allowed;
-  const minterAllowed = allowed && minter ? (p: PermissionKey, e: EntityRef) => allowed(minter, p, e) : null;
+  let bind: { entity: EntityRef; binding: Parameters<typeof bindIn>[1]; mintedBy: PrincipalId } | null = null;
   if (action) {
-    if (!minterAllowed) return null;
-    if (!(await judgeBind(deps.sql, minterAllowed, action.entity)).ok) return null;
+    const allowed = deps.allowed;
+    if (!allowed || !minter) return null;
+    const judged = await judgeBind(deps.sql, (p, e) => allowed(minter, p, e), action.entity);
+    if (!judged.ok) return null;
+    bind = { entity: action.entity, binding: judged.binding, mintedBy: minter };
   }
   const taken = deps.sql.exec(
     `UPDATE _substrat_capabilities SET uses = uses + 1, last_used_at = ?
@@ -794,26 +795,8 @@ export async function exchangeCapability(
 
   if (row.mode === 'become') {
     const principal = principalIdSchema.parse(row.principal);
-    if (action && minterAllowed) {
-      // The same judgement again, in the write: nothing can have moved inside this transaction, so
-      // a refusal here is a fault — thrown, so the use taken above rolls back with it.
-      const bound = await bindAtExchange(deps.sql, minterAllowed, action.entity, principal);
-      if (!bound) throw substratError('internal', `capability ${row.id}: its bind on ${action.entity.entityType} was refused after it was judged`);
-      const boundPayload: EntityHolderBoundPayload = {
-        entity: action.entity,
-        principal,
-        capabilityId: capabilityIdSchema.parse(row.id),
-        mintedBy: minter!,
-        granted: bound.binding.keys.map((k) => permissionKey.parse(k)),
-      };
-      deps.emit(capabilityIdSchema.parse(row.id), {
-        type: ENTITY_HOLDER_BOUND,
-        schemaVersion: 1,
-        entity: action.entity,
-        piiClass: 'none',
-        payload: boundPayload,
-      });
-    }
+    // In the same transaction as the use: a fault inside rolls the use back with it.
+    if (bind) bindIn(deps.sql, bind.binding, bind.entity, principal, { capabilityId: id, mintedBy: bind.mintedBy }, (event) => deps.emit(id, event));
     const payload: CapabilityExercisedPayload = {
       capabilityId: id,
       mode: 'become',
@@ -829,7 +812,7 @@ export async function exchangeCapability(
       piiClass: 'none',
       payload,
     });
-    return { kind: 'principal', capabilityId: id, principal, ...(action ? { bound: action.entity } : {}) };
+    return { kind: 'principal', capabilityId: id, principal, ...(bind ? { bound: bind.entity } : {}) };
   }
 
   const grant = capabilityGrantOf(row);
@@ -1219,14 +1202,8 @@ export async function becomeMintCheck(
   const coverage = await coversHoldings(checker, caller, held, node);
   if (coverage) return { ok: false, coverage };
   if (bind) {
-    const judged = await judgeBind(
-      deps.sql,
-      async (permission, entity) => (await checker.check({ kind: 'principal', id: caller }, permission, node, entity)).allowed,
-      bind.entity,
-    );
-    if (!judged.ok) {
-      return 'missing' in judged ? { ok: false, coverage: { covered: false, missing: [judged.missing] } } : judged;
-    }
+    const judged = await judgeBind(deps.sql, allowedFor(checker, caller, node), bind.entity);
+    if (!judged.ok) return judged;
   }
   return { ok: true, targetDigest: await holdingsDigest(held) };
 }
@@ -1240,6 +1217,12 @@ function becomeClaimed(sql: ScopedSql, principal: PrincipalId): boolean {
     ).length > 0
   );
 }
+
+/** Does `principal` hold a key on an entity at `node` now — the checker's `check`, as a binding's bound asks it (#1686). */
+export const allowedFor =
+  (checker: Pick<PermissionChecker, 'check'>, principal: PrincipalId, node: Node) =>
+  async (permission: PermissionKey, entity: EntityRef): Promise<boolean> =>
+    (await checker.check({ kind: 'principal', id: principal }, permission, node, entity)).allowed;
 
 /**
  * Does `caller` hold everything in `held` at `node`? Node-level keys compared as `covers`

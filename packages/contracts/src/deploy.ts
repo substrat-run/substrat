@@ -627,7 +627,11 @@ export type EntityGrantShape = z.infer<typeof entityGrantShape>;
  * #1686: what is wrong with a shape's `bind`, as messages — empty when nothing is. Checked where
  * {@link retiredShapeProblems} is.
  */
-export function bindShapeProblems(shape: Pick<EntityGrantShape, 'entityType' | 'permissions' | 'bootstrap' | 'holder' | 'retired' | 'bind'>): string[] {
+export function bindShapeProblems(
+  shape: Pick<EntityGrantShape, 'entityType' | 'permissions' | 'bootstrap' | 'holder' | 'retired' | 'bind'>,
+  /** The keys the modules declare, where the registry is built; a push carries none to check against. */
+  declared?: ReadonlySet<string>,
+): string[] {
   if (!shape.bind) return [];
   const problems: string[] = [];
   const where = `entityGrants '${shape.entityType}'`;
@@ -638,6 +642,8 @@ export function bindShapeProblems(shape: Pick<EntityGrantShape, 'entityType' | '
   if ([...shape.permissions, ...(shape.retired ?? [])].includes(shape.bind.permission)) {
     problems.push(`${where}: binds with ${shape.bind.permission}, which is one of the shape's own keys`);
   }
+  // A bind permission nothing declares could never be held, so no link could ever be minted.
+  if (declared && !declared.has(shape.bind.permission)) problems.push(`${where}: binds with ${shape.bind.permission}, which no module declares`);
   return problems;
 }
 
@@ -881,13 +887,7 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
     }));
   const problems = [
     ...entityGrants.flatMap(retiredShapeProblems),
-    ...entityGrants.flatMap(bindShapeProblems),
-    // A bind permission nothing declares could never be held, so no link could ever be minted.
-    ...entityGrants.flatMap((g) =>
-      g.bind && !declaredBy.has(g.bind.permission)
-        ? [`entityGrants '${g.entityType}': binds with ${g.bind.permission}, which no module declares`]
-        : [],
-    ),
+    ...entityGrants.flatMap((g) => bindShapeProblems(g, new Set(declaredBy.keys()))),
   ];
   if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
 

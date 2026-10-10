@@ -72,8 +72,7 @@ export const BIND_SHAPE: EntityGrantShape = {
 const onSubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
   const mine = ctx.sql.query<{ id: string; fate: string | null }>('SELECT id, fate FROM bind_records WHERE principal = ?', [subjectId]);
   for (const r of mine) ctx.sql.exec('INSERT INTO bind_seen (subject, record_id) VALUES (?, ?)', [subjectId, r.id]);
-  const dropped = ctx.sql.query('SELECT 1 FROM bind_records WHERE (id = ? OR principal = ?) AND fate = ?', [subjectId, subjectId, 'drop']);
-  if (dropped.length > 0) ctx.sql.exec("DELETE FROM bind_records WHERE (id = ? OR principal = ?) AND fate = 'drop'", [subjectId, subjectId]);
+  ctx.sql.exec("DELETE FROM bind_records WHERE (id = ? OR principal = ?) AND fate = 'drop'", [subjectId, subjectId]);
 };
 
 type Handler = OperationHandler<never, unknown>;

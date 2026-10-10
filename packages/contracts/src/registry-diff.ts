@@ -88,9 +88,9 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
     const isGone = !!before && !after;
     const bindFrom = before?.bind?.permission ?? null;
     const bindTo = after?.bind?.permission ?? null;
-    const bind = bindFrom !== bindTo ? { bind: { from: bindFrom, to: bindTo } } : {};
-    if (added.length || removed.length || retired.length || isNew || isGone || 'bind' in bind) {
-      grantChanges.push({ entityType, added, removed, retired, kept, ...bind, isNew, isGone });
+    const bindChanged = bindFrom !== bindTo;
+    if (added.length || removed.length || retired.length || isNew || isGone || bindChanged) {
+      grantChanges.push({ entityType, added, removed, retired, kept, ...(bindChanged ? { bind: { from: bindFrom, to: bindTo } } : {}), isNew, isGone });
     }
   }
   return {
@@ -141,11 +141,11 @@ export function registryDirection(d: RegistryDiff): RegistryDirection {
   const adds =
     d.addedKeys.length > 0 ||
     d.roleChanges.some((r) => r.isNew || r.added.length > 0) ||
-    d.grantChanges.some((g) => g.isNew || g.added.length > 0 || (g.bind?.to ?? null) !== null);
+    d.grantChanges.some((g) => g.isNew || g.added.length > 0 || !!g.bind?.to);
   const removes =
     d.removedKeys.length > 0 ||
     d.roleChanges.some((r) => r.isGone || r.removed.length > 0) ||
-    d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0 || (g.bind?.from ?? null) !== null);
+    d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0 || !!g.bind?.from);
   // A description re-worded is a change that is neither: it keeps a diff from being "only".
   const other = d.changedKeys.length > 0;
   if (!hasRegistryChange(d)) return 'none';

@@ -62,6 +62,14 @@ export interface SwitchSql {
   run(sql: string, ...params: (string | number | null)[]): void;
 }
 
+/** A `ScopedSql` as a `SwitchSql` — for kernel code holding the one and calling a writer typed on the other. */
+export const switchSqlOf = (sql: { query(q: string, p?: readonly (string | number | null)[]): unknown[]; exec(q: string, p?: readonly (string | number | null)[]): unknown }): SwitchSql => ({
+  all: (statement, ...params) => sql.query(statement, params) as Record<string, unknown>[],
+  run: (statement, ...params) => {
+    sql.exec(statement, params);
+  },
+});
+
 /**
  * Where one module's schedules stand on one scope.
  *

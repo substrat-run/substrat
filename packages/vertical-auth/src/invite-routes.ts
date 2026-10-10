@@ -507,7 +507,7 @@ export function mountUnbindRoute<E extends object, N extends { scopeId: string }
     if (!answer.success) throw new HTTPException(500, { message: 'the unbind did not answer as a bounded unbind — refusing' });
     if (!answer.data.ok) {
       if ('coverage' in answer.data) {
-        throw new HTTPException(403, { message: coverageRefusal(answer.data.coverage.missing, `${entity.data.entityType}:${entity.data.entityId}`, 'unbind the person of') });
+        throw uncovered(answer.data.coverage.missing, `${entity.data.entityType}:${entity.data.entityId}`, 'unbind the person of');
       }
       throw new HTTPException(404, { message: `'${entity.data.entityType}' is not bound to a person here` });
     }

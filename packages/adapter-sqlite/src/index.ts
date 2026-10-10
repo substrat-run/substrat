@@ -248,6 +248,7 @@ import {
   revokeBecomeCapabilityAsPrincipal,
   readBecomeLinkStates,
   ENTITY_UNBIND_OPERATION,
+  allowedFor,
   unbindEntityHolderBounded,
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
@@ -4618,7 +4619,7 @@ export class SqliteScopeHost implements ScopeHost {
                 now,
               ), event),
             holdings: this.holdingsAt(tenantId, scopeId),
-            allowed: this.allowedAt(tenantId, scopeId),
+            allowed: (principal, permission, entity) => allowedFor(this.checker, principal, { tenantId, scopeId })(permission, entity),
           },
           secret,
           options?.mode,
@@ -4880,7 +4881,6 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<BoundedUnbind> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     const by = principalId.parse(caller);
-    const allowed = this.allowedAt(tenantId, scopeId);
     const outcome = await rt.actor.turn(async (): Promise<BoundedUnbind> => {
       const now = this.clock();
       rt.db.exec('BEGIN IMMEDIATE');
@@ -4889,7 +4889,7 @@ export class SqliteScopeHost implements ScopeHost {
           {
             sql: spineSql(rt.db),
             now,
-            allowed: (permission, on) => allowed(by, permission, on),
+            allowed: allowedFor(this.checker, by, { tenantId, scopeId }),
             emit: (event) =>
               kernelEmit(this.operationContext(rt, asPrincipal(by), undefined, undefined, undefined, ENTITY_UNBIND_OPERATION, [], now), event),
           },
@@ -4907,12 +4907,6 @@ export class SqliteScopeHost implements ScopeHost {
       await this.dispatchExecutors(rt, null);
     }
     return outcome;
-  }
-
-  /** Does a principal hold a key on an entity at this scope now — a binding's bound (#1686). */
-  private allowedAt(tenantId: TenantId, scopeId: ScopeId): (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => Promise<boolean> {
-    return async (principal, permission, entity) =>
-      (await this.checker.check(asPrincipal(principal), permission, { tenantId, scopeId }, entity)).allowed;
   }
 
   /** What a principal holds at this scope, for a `become` exchange (#1686); absent with a checker that cannot say. */

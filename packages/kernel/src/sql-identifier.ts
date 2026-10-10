@@ -1,3 +1,5 @@
+import type { SwitchSql } from './system-switch.js';
+
 /**
  * The check every kernel-derived DDL runs on a name before interpolating it (#827, #811, #119).
  *
@@ -15,3 +17,7 @@ export function assertSqlIdentifier(area: string, kind: string, value: string, w
   }
   return value;
 }
+
+/** Does the scope hold a table by this name — a vertical's table a declaration names, which a module not yet migrated may lack. */
+export const tableExists = (db: SwitchSql, table: string): boolean =>
+  db.all(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, table).length > 0;

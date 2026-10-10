@@ -7,7 +7,7 @@ export { impersonationContractSuite } from './impersonation-suite.js';
 export { capabilityContractSuite } from './capability-suite.js';
 export { becomeMintContractSuite, type BecomeMintVerbs } from './become-mint-suite.js';
 export { bindingInviteContractSuite, type BindingVerbs } from './binding-invite-suite.js';
-export { BIND_INVITE, BIND_MEMBER, BIND_OLD, BIND_READ_OWN, BIND_SHAPE, bindMod } from './bind-module.js';
+export { BIND_INVITE, BIND_MEMBER, BIND_SHAPE, bindMod } from './bind-module.js';
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
 export { attachmentTextContractSuite } from './attachment-text-suite.js';
 export type { AttachmentTextHostFixture, AttachmentTextHostOptions } from './attachment-text-suite.js';

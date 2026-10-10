@@ -167,14 +167,12 @@ export function bindingInviteContractSuite(
       });
 
       it('is refused for a record that does not exist, or already names someone', async () => {
-        const before = await snapshot();
-        expect(await mint(clerk, await invitee(), rec(ulid()))).toEqual({ ok: false, refused: 'bind-record-missing' });
         const bound = await record();
         await put('UPDATE bind_records SET principal = ? WHERE id = ?', [p(), bound]);
-        const after = await snapshot();
+        const before = await snapshot();
+        expect(await mint(clerk, await invitee(), rec(ulid()))).toEqual({ ok: false, refused: 'bind-record-missing' });
         expect(await mint(clerk, await invitee(), rec(bound))).toEqual({ ok: false, refused: 'bind-record-bound' });
-        expect(before.caps).toBe(after.caps);
-        expect(await snapshot()).toEqual(after);
+        expect(await snapshot()).toEqual(before);
       });
 
       it('is refused for a minter without the key, naming it — and the clerk, who holds it, mints', async () => {
@@ -231,8 +229,8 @@ export function bindingInviteContractSuite(
 
       /** A minted link whose claim the next step makes wrong; `undo` puts it right again. */
       const refusedThenAllowed = async (
-        spoil: (ctx: { id: string; minter: PrincipalId }) => Promise<void>,
-        undo: (ctx: { id: string; minter: PrincipalId }) => Promise<void>,
+        spoil: (ctx: { id: string; minter: PrincipalId }) => Promise<unknown>,
+        undo: (ctx: { id: string; minter: PrincipalId }) => Promise<unknown>,
       ) => {
         const id = await record();
         const minter = p();
@@ -253,14 +251,14 @@ export function bindingInviteContractSuite(
 
       it('is refused, unspent, when the record was bound meanwhile — and goes through once it is free', () =>
         refusedThenAllowed(
-          ({ id }) => put('UPDATE bind_records SET principal = ? WHERE id = ?', [p(), id]).then(() => undefined),
-          ({ id }) => put('UPDATE bind_records SET principal = NULL WHERE id = ?', [id]).then(() => undefined),
+          ({ id }) => put('UPDATE bind_records SET principal = ? WHERE id = ?', [p(), id]),
+          ({ id }) => put('UPDATE bind_records SET principal = NULL WHERE id = ?', [id]),
         ));
 
       it('is refused, unspent, when the record is gone — and goes through once it is back', () =>
         refusedThenAllowed(
-          ({ id }) => put('DELETE FROM bind_records WHERE id = ?', [id]).then(() => undefined),
-          ({ id }) => put('INSERT INTO bind_records (id, principal, email, fate) VALUES (?, NULL, NULL, NULL)', [id]).then(() => undefined),
+          ({ id }) => put('DELETE FROM bind_records WHERE id = ?', [id]),
+          ({ id }) => put('INSERT INTO bind_records (id, principal, email, fate) VALUES (?, NULL, NULL, NULL)', [id]),
         ));
 
       it('is refused, unspent, when its minter has lost the key (or left) — and goes through once they hold it again', () =>
@@ -271,14 +269,14 @@ export function bindingInviteContractSuite(
 
       it('is refused, unspent, when the registry keeps the shape but no longer binds with it — and goes through once it does', () =>
         refusedThenAllowed(
-          () => reconcile([{ ...BIND_SHAPE, bind: undefined }]).then(() => undefined),
-          () => reconcile([BIND_SHAPE]).then(() => undefined),
+          () => reconcile([{ ...BIND_SHAPE, bind: undefined }]),
+          () => reconcile([BIND_SHAPE]),
         ));
 
       it('is refused, unspent, when the registry declares no shape at all — and goes through once it does', () =>
         refusedThenAllowed(
-          () => reconcile([]).then(() => undefined),
-          () => reconcile([BIND_SHAPE]).then(() => undefined),
+          () => reconcile([]),
+          () => reconcile([BIND_SHAPE]),
         ));
 
       it('is atomic: a fault inside the shape grant rolls the use back with the column', async () => {

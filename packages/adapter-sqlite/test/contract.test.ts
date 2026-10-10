@@ -758,10 +758,7 @@ bindingInviteContractSuite(
   // The scope's own connection, past `ctx.sql` — a trigger to fault the grant, a tuple only the
   // kernel could write. A statement that returns no rows is run, not read.
   async (tenant, scope, sql, params = []) => {
-    const internals = bindingHost as unknown as {
-      runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { reader: boolean; all(...a: unknown[]): unknown[]; run(...a: unknown[]): unknown } } };
-    };
-    const statement = internals.runtime(tenant, scope).db.prepare(sql);
+    const statement = scopeRuntimeOf(bindingHost, tenant, scope).db.prepare(sql);
     if (statement.reader) return statement.all(...params);
     statement.run(...params);
     return [];

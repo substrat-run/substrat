@@ -237,6 +237,7 @@ export {
   assertBecomeLinkStateIds,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
+  allowedFor,
 } from './capability.js';
 export type {
   CapabilityGrantView,
@@ -486,8 +487,7 @@ export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { delegatedRevokeSql, writeExplicitTupleIn } from './entity-grant.js';
 export { SHAPE_MARKER_INDEX_DDL, grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes } from './entity-grant-shape.js';
 export type { ShapeCursor, ShapePass } from './entity-grant-shape.js';
-export { ENTITY_UNBIND_OPERATION, entityBindingOf, unbindEntityHolderBounded } from './entity-binding.js';
-export type { EntityBinding } from './entity-binding.js';
+export { ENTITY_UNBIND_OPERATION, unbindEntityHolderBounded } from './entity-binding.js';
 export { applyScopeRoleChange, changeScopeRole, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';

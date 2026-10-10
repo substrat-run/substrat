@@ -329,6 +329,7 @@ import {
   revokeBecomeCapabilityAsPrincipal,
   readBecomeLinkStates,
   ENTITY_UNBIND_OPERATION,
+  allowedFor,
   unbindEntityHolderBounded,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
@@ -4836,7 +4837,7 @@ export function defineScopeDO(
               holdings: this.checker.holdings
                 ? (principal) => this.checker.holdings!({ kind: 'principal', id: principal }, { tenantId, scopeId })
                 : undefined,
-              allowed: this.allowedAt(tenantId, scopeId),
+              allowed: (principal, permission, entity) => allowedFor(this.checker, principal, { tenantId, scopeId })(permission, entity),
             },
             secret,
             mode,
@@ -4913,7 +4914,6 @@ export function defineScopeDO(
     ): Promise<BoundedUnbind> {
       await this.ensureMigrations();
       const by = principalId.parse(caller);
-      const allowed = this.allowedAt(tenantId, scopeId);
       return await this.queue.enqueue(async (): Promise<BoundedUnbind> => {
         const liveSince = this.liveHighWaterMark();
         const now = instant.parse(new Date().toISOString());
@@ -4923,7 +4923,7 @@ export function defineScopeDO(
             {
               sql: doSpineSql(this.sql),
               now,
-              allowed: (permission, on) => allowed(by, permission, on),
+              allowed: allowedFor(this.checker, by, { tenantId, scopeId }),
               emit: (event) =>
                 kernelEmit(this.operationContext(
                   by,
@@ -4946,12 +4946,6 @@ export function defineScopeDO(
         if (answer.ok && answer.unbound !== null) await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return answer;
       });
-    }
-
-    /** Does a principal hold a key on an entity at this scope now — a binding's bound (#1686). */
-    private allowedAt(tenantId: TenantId, scopeId: ScopeId): (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => Promise<boolean> {
-      return async (principal, permission, entity) =>
-        (await this.checker.check({ kind: 'principal', id: principal }, permission, { tenantId, scopeId }, entity)).allowed;
     }
 
     /** Where each named `become` link stands (#1686) — a pending-invite list's read. */
