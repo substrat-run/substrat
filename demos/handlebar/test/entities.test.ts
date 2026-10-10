@@ -8,7 +8,8 @@
  * `migrations.ts` as Callout does, so this reads the registration.
  */
 import { describe, expect, it } from 'vitest';
-import { handlebarEntities, handlebarModel } from '../src/entities.js';
+import { handlebarEntities } from '../src/entities.js';
+import { handlebarModel } from '../src/model.js';
 import { bikeShopModule } from '../src/module.js';
 
 function columnsFromJournal(): Map<string, Set<string>> {

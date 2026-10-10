@@ -3989,19 +3989,6 @@ const bound = operationsFor(ticket0Operations)({
 
   // --- The blocklist (#1088) -----------------------------------------------
 
-  'ticket0/list-block-rules': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
-    // Same shape as `list-signups`: an absent filter must be absent rather than an
-    // explicit undefined, which becomes a `WHERE kind IS NULL` that returns nothing.
-    const filters: Record<string, unknown> = {};
-    if (input.kind !== undefined) filters.kind = input.kind;
-    return (await ctx.page<BlockRuleRow>('blockRule', {
-      ...input,
-      filters,
-      total: true,
-    })) as CountedPage<BlockRuleRow>;
-  },
-
   /**
    * Block somebody. Idempotent on the rule rather than on the click.
    *
@@ -4166,11 +4153,6 @@ const bound = operationsFor(ticket0Operations)({
       payload: { principal: row.principal, created_at: row.created_at },
     });
     return row;
-  },
-
-  'ticket0/list-agents': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationRead));
-    return ctx.page<AgentProfileRow>('agentProfile', input);
   },
 
   // --- Knowledge base ------------------------------------------------------
@@ -4494,16 +4476,6 @@ const bound = operationsFor(ticket0Operations)({
     return pageOf(ctx.sql.query<ContactRow>(sql, params), limit, (row) => row.id);
   },
 
-  'ticket0/get-contact': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.contactRead));
-    return contactOrThrow(ctx, input.contactId);
-  },
-
-  'ticket0/list-contacts': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.contactRead));
-    return ctx.page<ContactRow>('contact', input);
-  },
-
   // --- The inbox -----------------------------------------------------------
 
   /**
@@ -4616,11 +4588,6 @@ const bound = operationsFor(ticket0Operations)({
       })),
     ).sort((a, b) => a.dueAt.localeCompare(b.dueAt) || a.conversationId.localeCompare(b.conversationId));
     return { withinMinutes: input.withinMinutes, rows: rows.slice(0, SLA_SOON_LIMIT), truncated: rows.length > SLA_SOON_LIMIT };
-  },
-
-  'ticket0/get-conversation': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
-    return conversationOrThrow(ctx, input.conversationId);
   },
 
   'ticket0/widget-session': async (ctx, input) => {
@@ -6257,11 +6224,6 @@ const bound = operationsFor(ticket0Operations)({
   },
 
   // --- Saved-reply folders -------------------------------------------------
-
-  'ticket0/list-saved-reply-folders': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
-    return ctx.page<SavedReplyFolderRow>('savedReplyFolder', input);
-  },
 
   'ticket0/create-saved-reply-folder': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.savedReplyManage));

@@ -1,4 +1,4 @@
-import { defineEntities, emitModel } from '@substrat-run/contracts';
+import { defineEntities } from '@substrat-run/contracts';
 import { z } from 'zod';
 
 /**
@@ -59,10 +59,3 @@ export const handlebarEntities = defineEntities({
     erasable: ['frame_no'],
   },
 });
-
-/**
- * The artifact of record. `tools/model-diff.mts` reads this rather than
- * importing `@substrat-run/contracts` itself — a root tool depending on the
- * packages it inspects would be a cycle.
- */
-export const handlebarModel = emitModel(handlebarEntities);

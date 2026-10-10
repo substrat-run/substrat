@@ -314,6 +314,9 @@ return mapPage(page, (c) => ({ ...c, facilities: facilitiesOf(ctx, c.id) }));
 it. Note what the page also bought you: that `facilitiesOf` call now runs once per customer
 **on the page**, where an unbounded list ran it once per customer in the scope.
 
+A page with no projection at all, the entity's own rows behind declared filters, is one the
+platform writes for you: declare [`derive: 'list'`](#derived) and drop the handler.
+
 Add the manifest fragment once, derived rather than written:
 
 ```ts
@@ -561,6 +564,63 @@ declared map: `operations` takes a `BoundOperations`, so a hand-written object d
 and `boundary-lint` (R11) refuses a cast of the whole map. A module with no declared surface says
 so with `undeclaredOperations(reason, handlers)`.
 
+## Derived handlers {#derived}
+
+Some handlers only restate their declaration: check the key, select the row, answer
+`not_found`. Each hand-written copy drifts from the others in small ways, such as a missing
+check, a `SELECT *` or a different error. When the model describes an operation completely,
+the platform writes its handler. You say so with `derive`, and write no handler:
+
+```ts
+'acme/get-customer': {
+  summary: 'One customer',
+  derive: 'get',
+  permission: { key: 'customer:read', entity: 'customer', idFrom: 'customerId' },
+  input: z.object({ customerId: z.string() }),
+  output: entities.customer.fields,
+  http: { method: 'GET', path: '/customers/{customerId}' },
+},
+```
+
+Four shapes are derivable, and each is matched exactly:
+
+| `derive` | The declaration | The handler the platform writes |
+|---|---|---|
+| `get` | served as `GET`, input is the id alone, output is the entity's own `fields`, emits nothing | the check, then the row by its declared columns, or `not_found` |
+| `list` | served as `GET`, `paged.over` the entity, output is its `fields`, emits nothing, every input a declared `filterable` column of the same type | the check, then `ctx.page` with those filters; a check narrowed to a **parent** scopes the page to that parent's rows, through the link column `<parent>_id` |
+| `update` | served as `PATCH`, narrowed to the row, `concurrency` over it, emits about it, output is its `fields` | absent fields are left alone, `null` clears a nullable column, one event whose payload is the declared fields of the row as written; nothing sent means nothing written and nothing emitted |
+| `delete` | served as `DELETE`, narrowed to the row, emits about it, answers `{ id, deleted }`, no entity declares it as parent | removes the row and emits |
+
+A derived handler checks the declared key first, so a caller without it learns nothing about
+whether the row exists. It reads and writes only the entity's declared columns, through
+`ctx.sql`. An `enum` column is never a derived write, because a change of state is a lifecycle
+edge with its own operation. A row with children is never a derived delete, because a cascade
+is your decision.
+
+`operationsFor` leaves a derived operation out of the map it requires. Handing it a handler is
+a compile error, and at load too if the map was cast.
+
+When a shape is derivable and you write the handler anyway, say why with `authored`:
+
+```ts
+'acme/list-contacts': {
+  summary: 'The contacts of one customer',
+  authored: 'answers not_found for a customer that does not exist, where the derived page would answer an empty one',
+  …
+},
+```
+
+The reason is the review artifact. It names what the derived handler would get wrong here.
+`defineOperations` refuses, at module load:
+
+- a derivable operation that declares neither `derive` nor `authored`, naming the shape;
+- a `derive` whose declaration does not match its shape, naming the clause that fails;
+- an `authored` with a blank reason, or on an operation nothing could derive;
+- both together.
+
+A later release that learns a new derivable shape (`create` is next) will flag operations that
+pass today. That is deliberate: each one gets the same choice, derive or say why not.
+
 ## The manifest, derived
 
 ```ts
@@ -647,6 +707,11 @@ carries the engine's `manifest.version` verbatim, which versions the manifest **
 than the package and is bumped only when that shape changes. The checked-in artifact is the
 field's reader, so a bump appears in the same diff as the change it announces. A vertical
 passes no `version` and its artifact carries none.
+
+Pass your operations as well, `emitModel(entities, { operations })`, and the artifact gains
+`handlers`: each operation that declares `derive` or `authored`, with the shape or the reason.
+A handler the platform takes over, or one you keep writing by hand, then shows up in the
+diff with its reason.
 
 It is **not** the input for a code generator. `z.toJSONSchema` keeps declarative constraints
 and drops programmatic ones — a `.refine()` and a `.brand()` vanish without trace — so a

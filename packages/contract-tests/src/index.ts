@@ -28,6 +28,8 @@ export { entityStateMigrationContractSuite, type RawScopeAccess } from './entity
 export { stateMod } from './entity-state-module.js';
 export { trashMod, TRASH_MODULE_ID, TBOX_PURGE_DAYS } from './entity-trash-module.js';
 export { entityTrashContractSuite } from './entity-trash-suite.js';
+export { derivedMod, DERIVED_MODULE_ID } from './derived-module.js';
+export { derivedHandlersContractSuite } from './derived-suite.js';
 export { subjectErasureContractSuite, type RawScopeQuery } from './subject-erasure-suite.js';
 export { erasureOtherMod, erasureSquatterMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';

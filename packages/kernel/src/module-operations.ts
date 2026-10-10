@@ -26,11 +26,14 @@
  * `operations` value the binder did not make (`assertBoundOperations`).
  */
 import {
+  derivationPlanOf,
   operationConcurrencyOf,
   operationIdempotencyOptOutsOf,
   operationInputsOf,
+  type DerivedKeys,
   type OperationImpl,
 } from '@substrat-run/contracts';
+import { derivedHandler } from './derived-handlers.js';
 import type { OperationContext, OperationHandler } from './scope-host.js';
 
 /** name → handler, as the host reads it. */
@@ -184,14 +187,45 @@ type Exact<Ops, H> = { readonly [K in Exclude<keyof H, keyof Ops>]: never } & ([
  */
 export function operationsFor<const Ops extends Record<string, object>>(declaration: Ops) {
   return <const H extends OperationImpl<Ops, OperationContext>>(
-    handlers: H & Exact<Ops, H>,
+    handlers: H & Exact<Omit<Ops, DerivedKeys<Ops>>, H>,
   ): { operations: BoundOperations<H> } => ({
-    operations: new BoundOperations<H>(MINT, handlers, {
+    operations: new BoundOperations<H>(MINT, withDerivedHandlers(declaration, handlers), {
       inputs: operationInputsOf(declaration),
       concurrency: operationConcurrencyOf(declaration),
       idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
     }),
   });
+}
+
+/**
+ * The authored handlers, plus one written from each `derive` declaration's plan (#1773).
+ *
+ * The type already leaves a derived key out of the map it accepts; this is the runtime half, for
+ * the map that reached here through a cast. A handler handed to a derived operation is refused
+ * rather than preferred, since a hand-written one standing in silently for the derived one is the
+ * restatement `derive` exists to remove.
+ */
+function withDerivedHandlers<H>(declaration: Readonly<Record<string, object>>, handlers: H): H & HandlerMap {
+  const out: Record<string, OperationHandler<never, unknown>> = { ...(handlers as HandlerMap) };
+  for (const [name, op] of Object.entries(declaration)) {
+    if ((op as { derive?: unknown }).derive === undefined) continue;
+    if (Object.hasOwn(out, name)) {
+      throw new Error(
+        `operationsFor: '${name}' is derived (\`derive\`) and must not be handed a handler — delete it, ` +
+          'or declare `authored` in place of `derive`',
+      );
+    }
+    const plan = derivationPlanOf(op);
+    if (plan === undefined) {
+      throw new Error(
+        `operationsFor: '${name}' declares \`derive\`, but its declaration did not pass through ` +
+          '`defineOperations`, which is what decides whether it is derivable',
+      );
+    }
+    out[name] = derivedHandler(plan);
+  }
+  // The authored handlers keep their types; the derived ones are keys `H` never named.
+  return out as H & HandlerMap;
 }
 
 /**

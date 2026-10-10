@@ -69,6 +69,7 @@ import {
   entityStateContractSuite,
   entityStateMigrationContractSuite,
   entityTrashContractSuite,
+  derivedHandlersContractSuite,
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
@@ -5423,6 +5424,17 @@ entityStateMigrationContractSuite(
       }),
   },
 );
+
+// #1773: the handlers the platform derives from a declaration, on a Durable Object's SQL. The
+// DEFAULT tuple checker, for the pure suite's reason. `derivedMod` is in `contractTestModules`.
+derivedHandlersContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
 
 // #119 PR 2: the host's trash refusal, the link refusal and the purge horizon, in workerd. The
 // DEFAULT tuple checker, for the pure suite's reason. `trashMod` is in `contractTestModules`.

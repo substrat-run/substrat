@@ -555,14 +555,6 @@ const listMappingsOp: OperationHandler<
   return ctx.page<MappingRow>('mapping', { ...input, filters: { source_key: input.sourceKey } });
 };
 
-const listSourcesOp: OperationHandler<
-  HandlerInput<(typeof tockOperations)['tock/list-sources']>,
-  HandlerOutput<(typeof tockOperations)['tock/list-sources']>
-> = async (ctx, input) => {
-  assertAllowed(await ctx.check(TOCK_PERM.reportRead));
-  return ctx.page<SourceRow>('source', input ?? {});
-};
-
 /**
  * Save the next version of a source's shape. Never edits one.
  *
@@ -1401,14 +1393,6 @@ const countRunOp: OperationHandler<
 
 // ── reads ───────────────────────────────────────────────────────────────────
 
-const getRunOp: OperationHandler<
-  HandlerInput<(typeof tockOperations)['tock/get-run']>,
-  HandlerOutput<(typeof tockOperations)['tock/get-run']>
-> = async (ctx, input) => {
-  assertAllowed(await ctx.check(TOCK_PERM.reportRead, runRef(input.runId)));
-  return runOrThrow(ctx, input.runId);
-};
-
 const listRunsOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/list-runs']>,
   HandlerOutput<(typeof tockOperations)['tock/list-runs']>
@@ -1788,14 +1772,12 @@ const bound = operationsFor(tockOperations)({
   'tock/save-mapping': saveMappingOp,
   'tock/list-mappings': listMappingsOp,
   'tock/list-variants': listVariantsOp,
-  'tock/list-sources': listSourcesOp,
   'tock/save-schema': saveSchemaOp,
   'tock/list-schemas': listSchemasOp,
   'tock/receive-run': receiveRunOp,
   'tock/profile-run': profileRunOp,
   'tock/map-run': mapRunOp,
   'tock/count-run': countRunOp,
-  'tock/get-run': getRunOp,
   'tock/list-runs': listRunsOp,
   'tock/run-rules': runRulesOp,
   'tock/list-observations': listObservationsOp,
