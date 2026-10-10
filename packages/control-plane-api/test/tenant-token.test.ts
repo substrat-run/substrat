@@ -481,23 +481,27 @@ describe('tenant tokens', () => {
       const bo = principalId.parse(ulid());
       const [asAnn, asBo] = await Promise.all([mintPerson(tA, ann), mintPerson(tA, bo)]);
       // Interleaved on ONE app: the person is per request, never a mode the app is left in.
+      // Each rename names a value no other request sets, so neither is a no-op (which is
+      // not audited) whichever order the three land in (#2138).
       const [renamed, granted, bare] = await Promise.all([
         app.request(`/tenants/${tA}`, { method: 'PATCH', headers: asAnn, body: JSON.stringify({ name: 'Acme, renamed' }) }),
         put(`/tenants/${tA}/entitlements/app`, asBo),
-        app.request(`/tenants/${tA}`, { method: 'PATCH', headers: asA, body: JSON.stringify({ name: 'Acme' }) }),
+        app.request(`/tenants/${tA}`, { method: 'PATCH', headers: asA, body: JSON.stringify({ name: 'Acme, by nobody' }) }),
       ]);
       expect([renamed.status, granted.status, bare.status]).toEqual([200, 200, 200]);
 
       const log = await host.admin.auditLog(staff, { tenantId: tA });
       const of = (p: string) => log.filter((r) => r.onBehalfOf?.principal === p);
-      expect(of(ann).map((r) => r.action)).toEqual(['setTenantName']);
+      expect(of(ann).map((r) => [r.action, r.after])).toEqual([['setTenantName', { name: 'Acme, renamed' }]]);
       expect(of(bo).map((r) => r.action)).toEqual(['grantEntitlement']);
       for (const r of [...of(ann), ...of(bo)]) {
         expect(r.actor).toBe(serviceActor);
         expect(r.onBehalfOf?.tenantId).toBe(tA);
       }
       // A token minted for nobody still writes an unattributed row, as before #977.
-      expect(log.filter((r) => r.action === 'setTenantName' && r.onBehalfOf == null)).not.toHaveLength(0);
+      expect(
+        log.filter((r) => r.action === 'setTenantName' && r.onBehalfOf == null).map((r) => [r.actor, r.after]),
+      ).toEqual([[serviceActor, { name: 'Acme, by nobody' }]]);
     });
 
     it('refuses a mint whose impersonation names nobody', async () => {
