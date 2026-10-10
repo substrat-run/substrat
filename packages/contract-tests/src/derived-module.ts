@@ -13,6 +13,7 @@ import { z } from 'zod';
 import {
   defineEntities,
   defineOperations,
+  listsDeclaredBy,
   manifestEntities,
   manifestOperations,
   moduleManifest,
@@ -122,6 +123,7 @@ export const derivedModManifest = moduleManifest.parse({
     consumes: [],
   }),
   ...manifestEntities(derivedEntities, {}),
+  lists: listsDeclaredBy(derivedOperations, derivedEntities),
   entitlementKey: 'derived',
 });
 

@@ -2,7 +2,7 @@
  * Contract suite for the handlers the platform derives from a declaration (#1773).
  *
  * What it pins: **a derived handler owes what a hand-written one owes**, on each adapter's SQL.
- * The declared check comes first, so a caller without the key learns `forbidden` and nothing about
+ * The declared check comes first, so a caller without the key learns `permission_denied` and nothing about
  * whether the row exists. A missing row is `not_found`. A PATCH writes only the fields sent, and
  * `null` clears. The host's 412 holds in front of it. Every write emits one event whose payload
  * is the declared fields of the row as written. A page is scoped to its parent and walks whole.
@@ -95,10 +95,10 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         expect(await messageOf(get(as, 'missing'))).toContain('dnote not found: missing');
       });
 
-      it('checks first: a caller without the key is forbidden, whether or not the row exists', async () => {
+      it('checks first: a caller without the key is denied, whether or not the row exists', async () => {
         const n = await addNote('fa', 'two', 2);
-        expect(await codeOf(get(asDave, n.id))).toBe('forbidden');
-        expect(await codeOf(get(asDave, 'missing'))).toBe('forbidden');
+        expect(await codeOf(get(asDave, n.id))).toBe('permission_denied');
+        expect(await codeOf(get(asDave, 'missing'))).toBe('permission_denied');
       });
     });
 
@@ -144,11 +144,11 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         expect((await get(as, n.id)).title).toBe('second');
       });
 
-      it('answers not_found for a missing row, and forbidden first to a caller without the key', async () => {
+      it('answers not_found for a missing row, and denied first to a caller without the key', async () => {
         expect(await codeOf(update(as, { noteId: 'missing', title: 'x' }))).toBe('not_found');
         const n = await addNote('fa', 'guarded', 8);
-        expect(await codeOf(update(asDave, { noteId: n.id, title: 'x' }))).toBe('forbidden');
-        expect(await codeOf(update(asDave, { noteId: 'missing', title: 'x' }))).toBe('forbidden');
+        expect(await codeOf(update(asDave, { noteId: n.id, title: 'x' }))).toBe('permission_denied');
+        expect(await codeOf(update(asDave, { noteId: 'missing', title: 'x' }))).toBe('permission_denied');
         expect((await get(as, n.id)).title).toBe('guarded');
       });
     });
@@ -165,11 +165,11 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         expect(events[0]?.payload).toEqual({ id: n.id });
       });
 
-      it('answers not_found for a missing row, and forbidden first to a caller without the key', async () => {
+      it('answers not_found for a missing row, and denied first to a caller without the key', async () => {
         expect(await codeOf(del(as, 'missing'))).toBe('not_found');
         const n = await addNote('fa', 'stays', 10);
-        expect(await codeOf(del(asDave, n.id))).toBe('forbidden');
-        expect(await codeOf(del(asDave, 'missing'))).toBe('forbidden');
+        expect(await codeOf(del(asDave, n.id))).toBe('permission_denied');
+        expect(await codeOf(del(asDave, 'missing'))).toBe('permission_denied');
         expect(await get(as, n.id)).toEqual(n);
       });
     });
@@ -213,8 +213,8 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         expect(await walk({ folderId: 'fb' }, 50)).toHaveLength(inB.length);
       });
 
-      it('is forbidden to a caller without the key', async () => {
-        expect(await codeOf(asDave.invoke('derived/list-notes', { folderId: 'fb' }))).toBe('forbidden');
+      it('is permission_denied to a caller without the key', async () => {
+        expect(await codeOf(asDave.invoke('derived/list-notes', { folderId: 'fb' }))).toBe('permission_denied');
       });
     });
   });
