@@ -1891,7 +1891,10 @@ export function readVerticalMeta(dir: string): VerticalMeta {
  * the next time, and it is the cheapest possible confirmation that the file being emitted is
  * the file being shipped.
  */
-export function formatDeclaredModel(model: IngressModel | undefined): string {
+export function formatDeclaredModel(
+  // What it counts, and no more: an emitted model and one parsed at ingress both fit.
+  model: { readonly entities: object; readonly lifecycles?: object } | undefined,
+): string {
   if (!model) {
     return (
       'note: no model.json — this version will record no entity model.\n' +
