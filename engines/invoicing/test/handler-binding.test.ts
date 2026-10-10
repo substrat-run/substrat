@@ -56,6 +56,6 @@ export const inputUndeclared: Handlers['invoicing/get'] = async (
 
 describe('#959 engine-invoicing handler binding', () => {
   it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(invoicingModule.operations ?? {}).sort()).toEqual(Object.keys(invoicingOperations).sort());
+    expect(Object.keys(invoicingModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(invoicingOperations).sort());
   });
 });

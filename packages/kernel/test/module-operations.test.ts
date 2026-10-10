@@ -49,12 +49,12 @@ describe('operationsFor (#1835)', () => {
       'notes/rename': renameOp,
     });
     const registration: ModuleRegistration = { manifest, ...bound };
-    expect(Object.keys(registration.operations ?? {})).toEqual(['notes/add', 'notes/rename']);
+    expect(Object.keys(registration.operations?.handlers ?? {})).toEqual(['notes/add', 'notes/rename']);
   });
 
   it('binds a named map as well as a literal', () => {
     const OPERATIONS = { 'notes/add': addOp, 'notes/rename': renameOp };
-    expect(Object.keys(operationsFor(notesOperations)(OPERATIONS).operations)).toHaveLength(2);
+    expect(Object.keys(operationsFor(notesOperations)(OPERATIONS).operations.handlers)).toHaveLength(2);
   });
 
   it('refuses a declared operation with no handler', () => {
@@ -94,15 +94,15 @@ describe('operationsFor (#1835)', () => {
   });
 
   it('hands the host the inputs, concurrency and opt-outs of the SAME declaration', () => {
-    const bound = operationsFor(notesOperations)({ 'notes/add': addOp, 'notes/rename': renameOp });
+    const { operations: bound } = operationsFor(notesOperations)({ 'notes/add': addOp, 'notes/rename': renameOp });
     // The very object `operationInputsOf` returns carries the declared surface (#119) — and a
     // fresh call returns an equal one, so compare what the host reads, not identity.
-    expect(Object.keys(bound.operationInputs)).toEqual(Object.keys(operationInputsOf(notesOperations)));
-    expect(bound.operationConcurrency).toEqual(operationConcurrencyOf(notesOperations));
-    expect(bound.operationIdempotencyOptOuts).toEqual(operationIdempotencyOptOutsOf(notesOperations));
-    expect(bound.operationConcurrency).toEqual({ 'notes/rename': { entity: 'note', idFrom: 'id' } });
-    expect(bound.operationIdempotencyOptOuts).toEqual(['notes/rename']);
-    expect(() => bound.operationInputs['notes/add']?.parse({})).toThrow();
+    expect(Object.keys(bound.inputs ?? {})).toEqual(Object.keys(operationInputsOf(notesOperations)));
+    expect(bound.concurrency).toEqual(operationConcurrencyOf(notesOperations));
+    expect(bound.idempotencyOptOuts).toEqual(operationIdempotencyOptOutsOf(notesOperations));
+    expect(bound.concurrency).toEqual({ 'notes/rename': { entity: 'note', idFrom: 'id' } });
+    expect(bound.idempotencyOptOuts).toEqual(['notes/rename']);
+    expect(() => bound.inputs?.['notes/add']?.parse({})).toThrow();
   });
 });
 
@@ -116,12 +116,29 @@ describe('the registration field (#1835)', () => {
     expect(registration).toBeDefined();
   });
 
+  it('refuses the derived maps handed over beside the handlers rather than with them', () => {
+    const bound = operationsFor(notesOperations)({ 'notes/add': addOp, 'notes/rename': renameOp });
+    const twin: ModuleRegistration = { manifest, ...bound };
+    expect(twin.operations?.inputs).toBeDefined();
+    const inputs = operationInputsOf(notesOperations);
+    // @ts-expect-error — `operationInputs` is not a registration field: the schemas ride with the handlers
+    const withInputs: ModuleRegistration = { manifest, ...undeclaredOperations('x', {}), operationInputs: inputs };
+    // @ts-expect-error — nor is `operationConcurrency`
+    const withConcurrency: ModuleRegistration = { manifest, ...bound, operationConcurrency: {} };
+    // @ts-expect-error — nor `operationIdempotencyOptOuts`
+    const withOptOuts: ModuleRegistration = { manifest, ...bound, operationIdempotencyOptOuts: [] };
+    // @ts-expect-error — and the bound value cannot be assembled by hand either
+    const assembled: ModuleRegistration = { manifest, operations: { handlers: {}, inputs } };
+    expect([withInputs, withConcurrency, withOptOuts, assembled]).toHaveLength(4);
+  });
+
   it('accepts the declared exception, which must give its reason', () => {
     const registration: ModuleRegistration = {
       manifest,
       ...undeclaredOperations('a fixture with no declared surface', { 'notes/add': addOp }),
     };
-    expect(Object.keys(registration.operations ?? {})).toEqual(['notes/add']);
+    expect(Object.keys(registration.operations?.handlers ?? {})).toEqual(['notes/add']);
+    expect(registration.operations?.inputs).toBeUndefined();
     expect(() => undeclaredOperations('  ', { 'notes/add': addOp })).toThrow(/reason/);
   });
 });

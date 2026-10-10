@@ -56,6 +56,6 @@ export const inputUndeclared: Handlers['absence/request'] = async (
 
 describe('#959 engine-absence handler binding', () => {
   it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(absenceModule.operations ?? {}).sort()).toEqual(Object.keys(absenceOperations).sort());
+    expect(Object.keys(absenceModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(absenceOperations).sort());
   });
 });

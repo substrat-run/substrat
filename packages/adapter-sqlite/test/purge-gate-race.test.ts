@@ -21,11 +21,11 @@ const MODULE = moduleId.parse(TRASH_MODULE_ID);
 
 /** The purge's handler, paused on an `await` until the test lets it go. */
 let paused: { entered: () => void; release: Promise<void> } | undefined;
-const original = trashMod.operations!['trash/delete-box']! as OperationHandler<unknown, unknown>;
+const original = trashMod.operations!.handlers['trash/delete-box']! as OperationHandler<unknown, unknown>;
 const pausing: ModuleRegistration = {
   ...trashMod,
   ...testOperations({
-    ...trashMod.operations,
+    ...trashMod.operations!.handlers,
     'trash/delete-box': (async (ctx, input) => {
       if (paused) {
         paused.entered();
@@ -33,7 +33,7 @@ const pausing: ModuleRegistration = {
       }
       return original(ctx, input);
     }) as OperationHandler<unknown, unknown>,
-  }),
+  }, { inputs: trashMod.operations!.inputs }),
 };
 
 describe('the purge gate, read again where no directory write can interleave (#119)', () => {

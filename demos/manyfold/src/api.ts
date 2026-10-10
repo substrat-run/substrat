@@ -161,7 +161,7 @@ export const API: ApiCatalog = {
 
 // Catalog/registration parity — checked at import time (see meridian/src/api.ts).
 {
-  const registered = Object.keys(manyfoldModule.operations ?? {});
+  const registered = Object.keys(manyfoldModule.operations?.handlers ?? {});
   const documented = new Set(Object.keys(API));
   const missing = registered.filter((op) => !documented.has(op));
   const ghosts = [...documented].filter((op) => !registered.includes(op));

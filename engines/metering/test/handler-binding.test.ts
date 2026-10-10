@@ -56,6 +56,6 @@ export const inputUndeclared: Handlers['metering/record'] = async (
 
 describe('#959 engine-metering handler binding', () => {
   it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(meteringModule.operations ?? {}).sort()).toEqual(Object.keys(meteringOperations).sort());
+    expect(Object.keys(meteringModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(meteringOperations).sort());
   });
 });

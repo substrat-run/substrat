@@ -51,7 +51,6 @@ const modOf = (withStates: boolean): ModuleRegistration => ({
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE up_notes (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);' }],
   // A trashable module declares every operation it binds (#119 PR 2); none of these narrows to an
   // entity by id, so there is nothing for the host to refuse.
-  operationInputs: operationInputsOf({ 'up/add': {}, 'up/page': {}, 'up/archive': {} }),
   ...testOperations({
     'up/add': (async (ctx, input) => {
       const id = (input as { id: string }).id;
@@ -63,7 +62,7 @@ const modOf = (withStates: boolean): ModuleRegistration => ({
       await ctx.archive({ entityType: 'upnote', entityId: (input as { id: string }).id });
       return null;
     }) as OperationHandler<never, unknown>,
-  }),
+  }, { inputs: operationInputsOf({ 'up/add': {}, 'up/page': {}, 'up/archive': {} }) }),
 });
 
 describe('declaring archive/trash on an entity with rows (#119)', () => {

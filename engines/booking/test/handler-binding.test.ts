@@ -56,6 +56,6 @@ export const inputUndeclared: Handlers['booking/get'] = async (
 
 describe('#959 engine-booking handler binding', () => {
   it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(bookingModule.operations ?? {}).sort()).toEqual(Object.keys(bookingOperations).sort());
+    expect(Object.keys(bookingModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(bookingOperations).sort());
   });
 });

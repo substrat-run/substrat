@@ -56,6 +56,6 @@ export const inputUndeclared: Handlers['protocol/get'] = async (
 
 describe('#959 engine-protocol handler binding', () => {
   it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(protocolModule.operations ?? {}).sort()).toEqual(Object.keys(protocolOperations).sort());
+    expect(Object.keys(protocolModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(protocolOperations).sort());
   });
 });

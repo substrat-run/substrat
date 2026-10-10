@@ -67,6 +67,6 @@ export const brandedInput: Handlers['invites/send'] = async (_ctx, input: SendIn
 
 describe('#959 engine-invites handler binding', () => {
   it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(invitesModule.operations ?? {}).sort()).toEqual(Object.keys(invitesOperations).sort());
+    expect(Object.keys(invitesModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(invitesOperations).sort());
   });
 });

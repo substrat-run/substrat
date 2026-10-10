@@ -56,6 +56,6 @@ export const inputUndeclared: Handlers['workorder/get'] = async (
 
 describe('#959 engine-workorder handler binding', () => {
   it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(workorderModule.operations ?? {}).sort()).toEqual(Object.keys(workorderOperations).sort());
+    expect(Object.keys(workorderModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(workorderOperations).sort());
   });
 });
