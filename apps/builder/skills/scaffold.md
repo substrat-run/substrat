@@ -83,33 +83,32 @@ timestamps, decimal/money as TEXT.
 **src/module.ts** — operations + registration:
 
 ```ts
-import { z, moneyOf, mulMoney, addDecimal, type EntityRef } from '@substrat-run/contracts';
-import { assertAllowed, operationsFor, ulid, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
+import { moneyOf, mulMoney, addDecimal, type EntityRef } from '@substrat-run/contracts';
+import { assertAllowed, operationsFor, ulid, type ModuleRegistration } from '@substrat-run/kernel';
 import { createWorkOrder, getReportedLines, completeWorkOrder, PERM as WO } from '@substrat-run/engine-workorder';
 import { APP_PERM, appManifest } from './manifest.js';
 import { appMigrations } from './migrations.js';
 import { operations } from '../spec/model.js'; // the declared surface, approved in the model phase
 
-const createJobInput = z.object({ bikeId: z.string(), title: z.string() });
-const createJobOp: OperationHandler<z.infer<typeof createJobInput>, { id: string }> = async (ctx, raw) => {
-  assertAllowed(await ctx.check(APP_PERM.customerManage));
-  const input = createJobInput.parse(raw);
-  // vertical work (price/label) + engine composition in ONE transaction:
-  const wo = await createWorkOrder(ctx, { /* … */ });
-  ctx.sql/* own side tables only */;
-  ctx.link({ entityType: 'workorder', entityId: wo.id }, { entityType: 'bike', entityId: input.bikeId });
-  ctx.emit({
-    type: 'bikeshop.job-created', schemaVersion: 1,
-    entity: { entityType: 'workorder', entityId: wo.id }, piiClass: 'none',
-    payload: { /* fat — a consumer must never need a cross-module read */ },
-  });
-  return { id: wo.id };
-};
-
 export const appModule: ModuleRegistration = {
   manifest: appManifest, migrations: appMigrations,
-  // the handlers, held to the declaration; the host parses every input against it too
-  ...operationsFor(operations)({ 'bikeshop/create-job': createJobOp /* namespaced '<app>/op-kebab' */ }),
+  // the handlers, held to the declaration: each `input` is typed from it and already parsed
+  // against it by the host — so a handler never declares or parses a schema of its own
+  ...operationsFor(operations)({
+    'bikeshop/create-job': async (ctx, input) => { // namespaced '<app>/op-kebab'
+      assertAllowed(await ctx.check(APP_PERM.customerManage));
+      // vertical work (price/label) + engine composition in ONE transaction:
+      const wo = await createWorkOrder(ctx, { /* … */ });
+      ctx.sql/* own side tables only */;
+      ctx.link({ entityType: 'workorder', entityId: wo.id }, { entityType: 'bike', entityId: input.bikeId });
+      ctx.emit({
+        type: 'bikeshop.job-created', schemaVersion: 1,
+        entity: { entityType: 'workorder', entityId: wo.id }, piiClass: 'none',
+        payload: { /* fat — a consumer must never need a cross-module read */ },
+      });
+      return { id: wo.id };
+    },
+  }),
 };
 ```
 
