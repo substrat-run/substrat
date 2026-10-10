@@ -399,9 +399,8 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'archive', 'una
  *   the id alone, checked on that row under the key the ENTITY declares for the move (archive
  *   and unarchive under its archive key, trash and restore under its trash key), answering
  *   `entityStateOutput`. It declares no `emits`: the kernel announces the move. `restore` alone
- *   declares `trashed: 'admits'`, since it is the move that reaches a binned row. Archive and
- *   unarchive declare the same shape, as do trash and restore apart from that line, so
- *   `derive` is what says which move it is.
+ *   declares `trashed: 'admits'`, since it is the move that reaches a binned row; archive and
+ *   unarchive share one shape, so `derive` names which.
  * - `trashed` — the bin: a kernel-composed page (`paged.over`) of an entity that declares
  *   `trash`, through `ctx.pageTrashed`, which checks the trash key on every row itself. So it
  *   declares `narrows` with exactly that key, and no leading check; filters as a `list`'s.

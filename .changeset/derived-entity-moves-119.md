@@ -12,7 +12,7 @@
 - `derive: 'trashed'`: the bin. A `GET` page (`paged.over`) of an entity that declares `trash`, answering its `fields`. It declares `narrows` checking exactly the trash key and no leading check, because `ctx.pageTrashed` checks the key on every row. Optional inputs are declared filters.
 - A derived `list` over an entity that declares `archive` may take one optional `view: z.enum(['active', 'archived'])` input, passed to `ctx.page`. Without it the page is the active rows.
 
-`@substrat-run/contracts` exports `entityStateOutput` and the `EntityMoveKind` type, and `DERIVED_KINDS` grows to nine. `@substrat-run/kernel` writes the five new handlers through the existing verbs, adding no `ctx` surface. `@substrat-run/contract-tests`' derived-handler suite holds them on both adapters.
+`@substrat-run/contracts` exports `entityStateOutput`, and `DERIVED_KINDS` grows to nine. `@substrat-run/kernel` writes the five new handlers through the existing verbs, adding no `ctx` surface. `@substrat-run/contract-tests`' derived-handler suite holds them on both adapters.
 
 **Compatibility.** `defineOperations` already refuses, at module load, an operation of a derivable shape that declares neither `derive` nor `authored` (#1773). The new shapes join that check. An operation that matches one exactly, including answering `entityStateOutput` itself, must now declare it. The error names the operation and the shapes it matches, for example `derivable from the model as \`archive\` or \`unarchive\``. Archive and unarchive declare the same shape, so the error offers both, and `derive` says which move it is.
 

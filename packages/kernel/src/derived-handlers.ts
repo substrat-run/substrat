@@ -18,7 +18,7 @@ import {
   type EntityRef,
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
-import type { OperationContext, OperationHandler, SqlValue } from './scope-host.js';
+import type { OperationContext, OperationHandler, PageParams, SqlValue } from './scope-host.js';
 
 type Row = Record<string, unknown>;
 type Input = Record<string, unknown> | undefined;
@@ -77,7 +77,7 @@ function bodyOf(
           ...(plan.total ? { total: true } : {}),
           // The host parsed it against `z.enum(['active', 'archived'])` (#119).
           ...(plan.viewFrom !== undefined && input?.[plan.viewFrom] !== undefined
-            ? { view: input[plan.viewFrom] as 'active' | 'archived' }
+            ? { view: input[plan.viewFrom] as PageParams['view'] }
             : {}),
         });
 

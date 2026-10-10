@@ -26,7 +26,7 @@
  */
 import { LIST_PAGE_MAX, type CountedPage, type Page } from './pagination.js';
 import { z } from 'zod';
-import { entityStateOutput } from './entity-state.js';
+import { entityStateName, entityStateOutput } from './entity-state.js';
 import {
   DERIVED_KINDS,
   primaryKeyOf,
@@ -1374,8 +1374,6 @@ export type DerivationPlan = {
     }
 );
 
-/** The derived kinds that are one kernel move of an archivable or trashable entity (#119). */
-export type EntityMoveKind = 'archive' | 'unarchive' | 'trash' | 'restore';
 
 /**
  * Every derived declaration's plan, keyed by the declaration object itself. Keyed per operation
@@ -1553,6 +1551,19 @@ function filterTypeIssue(decl: DeclarationRead, field: string, column: string, e
   return null;
 }
 
+/** One optional input as a declared filter of the page, or the clause it fails. */
+function optionalFilterOf(
+  decl: DeclarationRead,
+  field: string,
+  filterable: ReadonlySet<string>,
+  entity: EntityDef,
+): { field: string; column: string } | string {
+  const column = snakeCaseField(field);
+  if (!filterable.has(column)) return `input field '${field}' is not a declared \`filterable\` column`;
+  if (inputDefaultIssue(decl.input?.shape[field]) !== null) return `input field '${field}' has a default`;
+  return filterTypeIssue(decl, field, column, entity) ?? { field, column };
+}
+
 function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
   const over = decl.paged?.over;
   if (over === undefined) return 'it is not a kernel-composed page (`paged.over`)';
@@ -1599,12 +1610,9 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
       viewFrom = field;
       continue;
     }
-    const column = snakeCaseField(field);
-    if (!filterable.has(column)) return `input field '${field}' is not a declared \`filterable\` column`;
-    if (inputDefaultIssue(decl.input?.shape[field]) !== null) return `input field '${field}' has a default`;
-    const issue = filterTypeIssue(decl, field, column, base.def);
-    if (issue) return issue;
-    filters.push({ field, column });
+    const filter = optionalFilterOf(decl, field, filterable, base.def);
+    if (typeof filter === 'string') return filter;
+    filters.push(filter);
   }
   return {
     kind: 'list',
@@ -1619,7 +1627,7 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
 /** The input field a derived page of an archivable entity reads its view from (#119). */
 const VIEW_FIELD = 'view';
 /** The views `ctx.page` serves; the bin is its own read (`trashed`). */
-const PAGE_VIEWS = ['active', 'archived'];
+const PAGE_VIEWS = entityStateName.exclude(['trashed']).options;
 
 /** Why `view` cannot be passed to `ctx.page` as it arrives, or `null`. */
 function viewIssue(schema: unknown, filterable: ReadonlySet<string>): string | null {
@@ -1629,7 +1637,7 @@ function viewIssue(schema: unknown, filterable: ReadonlySet<string>): string | n
   if (inputDefaultIssue(schema) !== null) return `input field '${VIEW_FIELD}' has a default`;
   const base = baseDefOf(schema) as { type?: string; entries?: Record<string, unknown> } | undefined;
   const values = base?.type === 'enum' ? Object.values(base.entries ?? {}).map(String).sort() : [];
-  if (values.join() !== PAGE_VIEWS.join()) {
+  if (values.join() !== [...PAGE_VIEWS].sort().join()) {
     return `input field '${VIEW_FIELD}' is not \`z.enum(['active', 'archived'])\`, the views a page serves`;
   }
   return null;
@@ -1714,13 +1722,14 @@ function deletePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
   return { kind: 'delete', ...base.head, permission: target.permission, idFrom, emit: emitOf(decl) };
 }
 
-/** Which of the entity's declarations gates each move (#119, K-45). */
-const MOVE_GATE: Record<EntityMoveKind, 'archive' | 'trash'> = {
+/** The derived kinds that are one kernel move (#119, K-45), and which declaration gates each. */
+const MOVE_GATE = {
   archive: 'archive',
   unarchive: 'archive',
   trash: 'trash',
   restore: 'trash',
-};
+} as const satisfies Record<string, 'archive' | 'trash'>;
+type EntityMoveKind = keyof typeof MOVE_GATE;
 
 /**
  * One kernel move: a POST of the id alone, narrowed to that row under the key the entity declares
@@ -1779,12 +1788,9 @@ function trashedPlan(decl: DeclarationRead, entities: Record<string, EntityDef>)
   const { required, optional } = inputFields(decl);
   if (required.length !== 0) return `input field '${required[0]}' is required, and a page of the bin takes filters only`;
   for (const field of optional) {
-    const column = snakeCaseField(field);
-    if (!filterable.has(column)) return `input field '${field}' is not a declared \`filterable\` column`;
-    if (inputDefaultIssue(decl.input?.shape[field]) !== null) return `input field '${field}' has a default`;
-    const issue = filterTypeIssue(decl, field, column, base.def);
-    if (issue) return issue;
-    filters.push({ field, column });
+    const filter = optionalFilterOf(decl, field, filterable, base.def);
+    if (typeof filter === 'string') return filter;
+    filters.push(filter);
   }
   return { kind: 'trashed', ...base.head, permission: { key }, filters };
 }
@@ -1811,8 +1817,7 @@ function planFor(kind: DerivedKind, decl: DeclarationRead, entities: Record<stri
  * the module's entities alone — `undefined` when it matches none of `DerivedKind`. Pure: this
  * classifies, and `defineOperations` is what refuses. The first shape that matches is answered:
  * a `get` is served as GET and not paged, a `list` is paged, an `update` is a PATCH that emits, a
- * `delete` is a DELETE answering `{ id, deleted }`. The moves are the exception, because they are
- * told apart by name rather than shape (see `derivedKindsOf`).
+ * `delete` is a DELETE answering `{ id, deleted }`. The moves are the exception (`derivedKindsOf`).
  */
 export function derivationOf(decl: object, entities: Record<string, EntityDef>): DerivationPlan | undefined {
   for (const kind of DERIVED_KINDS) {

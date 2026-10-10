@@ -15,7 +15,9 @@
  * bin walked row by row under the trash key, so a key narrowed to one binned row shows that row.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { z } from 'zod';
 import {
+  entityStateOutput,
   errorCodeOf,
   etagOf,
   permissionKey,
@@ -34,7 +36,7 @@ import { derivedMod } from './derived-module.js';
 const KEYS = ['dnote:read', 'dnote:write', 'dshelf:archive', 'dshelf:trash'].map((k) => permissionKey.parse(k));
 type Note = { id: string; dfolder_id: string; title: string; body: string | null; rank: number };
 type Shelf = { id: string; label: string };
-type Moved = { id: string; state: 'active' | 'archived' | 'trashed' };
+type Moved = z.infer<typeof entityStateOutput>;
 
 export function derivedHandlersContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
   describe(`derived handlers (#1773): ${adapterName}`, () => {
