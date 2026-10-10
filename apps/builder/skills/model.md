@@ -115,6 +115,33 @@ export const model = emitModel(entities);
 If one of these fails, the model is wrong — fix the model. Do not reshape it to
 silence the compiler.
 
+## Who writes the handler: `derive` or `authored`
+
+Some operations are described completely by their declaration, and the platform
+writes their handler. There are four such shapes: a `get` of one row by its id, a
+`list` that is a `paged.over` page of the entity's own rows behind declared filters,
+an `update` that is a `PATCH` field bag with `concurrency`, and a `delete` of a row
+no entity declares as parent. Each of these operations must say who writes its handler:
+
+```ts
+'acme/get-customer': {
+  summary: 'One customer',
+  derive: 'get',
+  permission: { key: 'customer:manage', entity: 'customer', idFrom: 'customerId' },
+  input: z.object({ customerId: z.string() }),
+  output: entities.customer.fields,
+  http: { method: 'GET', path: '/customers/{customerId}' },
+},
+```
+
+`derive: '<shape>'` means the build writes no handler for it. `authored: '<reason>'`
+keeps the handler hand-written, and the reason says what the derived one would get
+wrong here (a projection, a parent-existence check, a cascade). `defineOperations`
+refuses, at load, an operation of one of these shapes that declares neither, and
+names the shape. It also refuses a `derive` that does not match its shape, and an
+`authored` on an operation nothing could derive. Prefer `derive`; write `authored`
+only with a reason a reviewer could disagree with.
+
 ## What does NOT go here
 
 **Behaviour.** State machines, pricing rules, who may do what and when, the seed
