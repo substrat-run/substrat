@@ -1,4 +1,5 @@
 import type { ModuleLog } from './module-log.js';
+import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult } from './scope-copy-ledger.js';
@@ -1784,7 +1785,11 @@ export function consumersFor<const C extends readonly EventContract[]>() {
 export interface ModuleRegistration<C extends readonly EventContract[] = []> {
   manifest: ModuleManifest;
   migrations?: SqlMigration[];
-  operations?: Record<string, OperationHandler<never, unknown>>;
+  /**
+   * name → handler, from `operationsFor(declaration)(handlers)` or, for a module with no
+   * declared surface, `undeclaredOperations(reason, handlers)` — never an object literal (#1835).
+   */
+  operations?: BoundOperations;
   /**
    * name → the schema the host parses an invocation's input against, BEFORE the
    * guards and the handler see it (#893).
