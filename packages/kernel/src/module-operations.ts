@@ -22,7 +22,8 @@
  * applied to the whole map, since `never` and `any` are assignable to anything; boundary-lint
  * **R11** refuses that at the registration.
  *
- * The brand is type-only. The host reads the same plain object it always did.
+ * The brand is type-only: at runtime `operations` is a plain `{ handlers, inputs, concurrency,
+ * idempotencyOptOuts }`, read by both adapters.
  */
 import {
   operationConcurrencyOf,
