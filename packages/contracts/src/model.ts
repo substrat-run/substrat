@@ -372,7 +372,7 @@ export interface EmittedModel {
  * The handler shapes the platform derives (#1773), in the order a declaration is classified.
  * Here rather than beside `defineOperations` because the artifact's schema reads them too.
  */
-export const DERIVED_KINDS = ['get', 'list', 'update', 'delete'] as const;
+export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'archive', 'unarchive', 'trash', 'restore', 'trashed'] as const;
 
 /**
  * The shapes the model already describes completely, so the platform writes the handler.
@@ -386,16 +386,29 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete'] as const;
  *   `fields`. Every input field is one of its declared `filterable` columns; a check narrowed to a
  *   PARENT scopes the page to that parent's rows through the link column `<parent>_id`, so the
  *   filter is the link and not merely a column of the same name as the id input. Served as GET,
- *   and emits nothing: a paged command is not a read.
+ *   and emits nothing: a paged command is not a read. Over an entity that declares `archive`, one
+ *   optional `view: z.enum(['active', 'archived'])` input picks the view (#119); without it the
+ *   page is the active rows, and the archive is unreachable.
  * - `update` — the partial `PATCH`. Absent fields are left as they are and `null` clears a
  *   nullable column; `concurrency` over the row is required, so the field bag cannot lose an
  *   update. Emits about the row, and answers with it.
  * - `delete` — removes one row with no child entity (a cascade is authored), emits, and answers
  *   `{ id, deleted: true }`.
+ * - `archive`, `unarchive`, `trash`, `restore` — one kernel move of an entity that declares
+ *   `archive` / `trash` (#119, K-45): `ctx.archive(ref)` and its siblings. A POST whose input is
+ *   the id alone, checked on that row under the key the ENTITY declares for the move (archive
+ *   and unarchive under its archive key, trash and restore under its trash key), answering
+ *   `entityStateOutput`. It declares no `emits`: the kernel announces the move. `restore` alone
+ *   declares `trashed: 'admits'`, since it is the move that reaches a binned row; archive and
+ *   unarchive share one shape, so `derive` names which.
+ * - `trashed` — the bin: a kernel-composed page (`paged.over`) of an entity that declares
+ *   `trash`, through `ctx.pageTrashed`, which checks the trash key on every row itself. So it
+ *   declares `narrows` with exactly that key, and no leading check; filters as a `list`'s.
  *
- * A derived handler checks the declared permission first, reads and writes only the entity's
- * declared columns through `ctx.sql`, and answers `not_found` for a missing row — the same steps
- * a hand-written one takes, written once.
+ * A derived handler takes the same steps a hand-written one does, written once. It checks the
+ * declared permission first — except the bin, which `ctx.pageTrashed` checks row by row. It reads
+ * and writes only the entity's declared columns, through `ctx.sql` or, for a move, the kernel verb,
+ * which also emits the move. It answers `not_found` for a missing row.
  *
  * `create` is not here yet: the id, the timestamps and the parent link it would write are not all
  * declared. Neither are hooks around a derived handler.

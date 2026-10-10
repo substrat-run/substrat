@@ -152,8 +152,23 @@
     }
   },
   "handlers": {
+    "todo/archive-list": {
+      "derive": "archive"
+    },
     "todo/list-shares": {
       "authored": "answers not_found for a list that does not exist, where the derived page would answer an empty one"
+    },
+    "todo/restore-list": {
+      "derive": "restore"
+    },
+    "todo/trash-list": {
+      "derive": "trash"
+    },
+    "todo/trashed-lists": {
+      "derive": "trashed"
+    },
+    "todo/unarchive-list": {
+      "derive": "unarchive"
     }
   }
 }
