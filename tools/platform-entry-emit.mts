@@ -4,8 +4,8 @@
  * vertical's bundle, so every deployed request is stamped by the platform rather than by
  * each vertical remembering to mount `invocationLog`.
  *
- * The bundle a vertical pushes is already built, so the entry cannot import the kernel at
- * run time: it has to be a self-contained module. It is built HERE, from the kernel's own
+ * The bundle a vertical pushes is already built, so the entry cannot import a package at
+ * run time: it has to be a self-contained module. It is built HERE, from vertical-host's own
  * `withInvocationLog`, so there is one definition of the stamp — and emitted as a string
  * constant into `packages/control-plane-api/src/platform-entry.generated.ts`, which the
  * uploader writes into the upload with the vertical's entry name filled in.
@@ -14,12 +14,12 @@
  * and exports no sweeper of its own (#1902), built the same way from adapter-cloudflare's
  * `defineScopeSweeperDO`.
  *
- *   pnpm lint:platform-entry            re-emit from the kernel source
- *   pnpm lint:platform-entry --check    CI: exit 1 on drift (a kernel change not re-emitted)
+ *   pnpm lint:platform-entry            re-emit from the source
+ *   pnpm lint:platform-entry --check    CI: exit 1 on drift (a source change not re-emitted)
  *
- * Kept small on purpose: the kernel files it pulls in import nothing at run time beyond
- * each other (`routed-node.ts` checks ids with a pattern rather than the contracts schemas
- * for exactly this reason), and a size ceiling below refuses a bundle that grew a runtime
+ * Kept small on purpose: the files it pulls in import nothing at run time beyond each other
+ * and the zero-import subpaths of contracts and the kernel (`routed-node.ts` checks ids with
+ * a pattern rather than the contracts schemas for exactly this reason), and a size ceiling below refuses a bundle that grew a runtime
  * dependency by accident — every byte here is added to every vertical's upload.
  */
 import { build } from 'esbuild';
@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = 'packages/control-plane-api/src/platform-entry.generated.ts';
-const SOURCE = 'packages/kernel/src/invocation-log.ts';
+const SOURCE = 'packages/vertical-host/src/invocation-log.ts';
 const PLACEHOLDER = '__SUBSTRAT_VERTICAL_ENTRY__';
 const SWEEPER_SOURCE = 'packages/adapter-cloudflare/src/scope-sweeper-do.ts';
 const SWEEP_HOST_SOURCE = 'packages/vertical-host/src/scope-sweep-host.ts';

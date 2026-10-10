@@ -81,8 +81,6 @@ export type {
 export { GRANT_CHILDREN_INDEX_DDL, GRANT_READ_MAX_LIMIT, GRANT_READ_WORK_BUDGET } from './grant-scoped-read.js';
 export type { GrantedEntitiesPage, GrantedEntityIdsMayRepeatPage } from './grant-scoped-read.js';
 export type {
-  /** @deprecated Import from `@substrat-run/adapter-cloudflare` (#1978); this kernel export goes in a later release. */
-  AnalyticsEngineDatasetLike,
   ConnectionUseOutcome,
   ConnectionUseTiming,
   ConnectorCallErrorType,
@@ -91,13 +89,7 @@ export type {
   CountingConnectorCallRecorder,
 } from './connector-calls.js';
 export {
-  /** @deprecated Import from `@substrat-run/adapter-cloudflare` (#1978); this kernel export goes in a later release. */
-  CONNECTOR_CALL_DATA_POINT_LAYOUT,
   CONNECTOR_CALL_ERROR_TYPES,
-  /** @deprecated Import from `@substrat-run/adapter-cloudflare` (#1978); this kernel export goes in a later release. */
-  analyticsEngineConnectorCallRecorder,
-  /** @deprecated Import from `@substrat-run/adapter-cloudflare` (#1978); this kernel export goes in a later release. */
-  connectorCallDataPoint,
   connectorCallErrorType,
   connectorCallRecord,
   noopConnectorCallRecorder,
@@ -162,7 +154,6 @@ export {
   assertRowLimit,
   assertRowOffset,
   EMITTED_REPORT_CAP,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
   isUpgradeRequest,
   isVouchedWithin,
   vouchedWithin,
@@ -173,20 +164,6 @@ export {
   LIVE_CLOSE,
   LIVE_SOCKETS_PER_PRINCIPAL,
 } from './scope-host.js';
-export {
-  /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
-  LIVE_MODE_HEADER,
-  /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
-  type LiveRefusal,
-  /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
-  PLATFORM_SECRET_HEADER,
-  /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
-  PLATFORM_REQUEST_HEADER,
-  /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
-  EXPORTED_EVENTS_HEADER,
-  /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
-  CONNECTOR_ATTACHMENT_RECORD_HEADER,
-} from '@substrat-run/contracts/wire-headers';
 export {
   isSecretBoxConfigured,
   SecretBoxUnconfiguredError,
@@ -452,28 +429,6 @@ export {
 } from './sql-limits.js';
 export { assertPermissionKey } from './check-key.js';
 export { assertModuleEnqueueableKind } from './platform-kinds.js';
-export {
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  readRoutedNode,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  RouterAssertionError,
-} from './routed-node.js';
-export type {
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  RoutedNode,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  HeaderReader,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  ReadRoutedNodeOptions,
-} from './routed-node.js';
-export {
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  assertPlatformCall,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  PlatformCallError,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  kickFlags,
-} from './platform-call.js';
 export {
   signConnectState,
   verifyConnectState,
@@ -862,16 +817,6 @@ export type {
   StartJobRunInput,
 } from './job-run.js';
 export {
-  /** @deprecated Import from `@substrat-run/control-plane-api` (#1978); this kernel export goes in a later release. */
-  isTerminalDispatchFailure,
-  /** @deprecated Import from `@substrat-run/control-plane-api` (#1978); this kernel export goes in a later release. */
-  isTerminalProviderError,
-  /** @deprecated Import from `@substrat-run/control-plane-api` (#1978); this kernel export goes in a later release. */
-  providerErrorStatus,
-  /** @deprecated Import from `@substrat-run/control-plane-api` (#1978); this kernel export goes in a later release. */
-  RETRYABLE_CLIENT_STATUSES,
-} from './provider-error.js';
-export {
   runPlatformSweep,
   startPlatformSweeper,
   SCHEDULE_STATE_DDL,
@@ -973,42 +918,14 @@ export {
   ASYNC_LINES_PER_PASS,
 } from './async-invocation-log.js';
 export type { AsyncUnit, AsyncLinePass, InvocationLineSink } from './async-invocation-log.js';
-export { invocationLine } from './invocation-log.js';
-export type { AsyncInvocationKind, AsyncOutcome, InvocationLineFields } from './invocation-log.js';
-export {
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  invocationLog,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  INVOCATION_RECORD_KEY,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  invocationStampOf,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  withInvocationLog,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  fieldCoverageArmed,
-} from './invocation-log.js';
+export { invocationLine } from './invocation-line.js';
 export type {
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
+  AsyncInvocationKind,
+  AsyncOutcome,
+  InvocationLineFields,
   InvocationLogLine,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  InvocationLogContext,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  InvocationRecord,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
   OutputFieldsReport,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  InvocationStamp,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  ModuleWorker,
-  /** @deprecated Import from `@substrat-run/vertical-host` (#1978); this kernel export goes in a later release. */
-  IncomingRequest,
-} from './invocation-log.js';
-export {
-  /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
-  invocationLevelOf,
-  /** @deprecated Import from `@substrat-run/contracts` (#1978); this kernel export goes in a later release. */
-  type InvocationLevel,
-} from '@substrat-run/contracts/invocation-record';
+} from './invocation-line.js';
 
 export {
   VERTICAL_EVENTS_DDL,

@@ -470,6 +470,9 @@ importers:
 
   apps/social-relay:
     dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../../packages/contracts
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel

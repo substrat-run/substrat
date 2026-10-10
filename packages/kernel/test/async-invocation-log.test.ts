@@ -7,7 +7,7 @@ import {
   asyncLinePass,
   type AsyncUnit,
 } from '../src/async-invocation-log.js';
-import { invocationLine, type InvocationLogLine } from '../src/invocation-log.js';
+import { invocationLine, type InvocationLogLine } from '../src/invocation-line.js';
 
 /** #1901: the async line — one grammar with the request line, ids and codes only, bounded. */
 

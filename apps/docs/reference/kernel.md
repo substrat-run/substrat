@@ -51,6 +51,19 @@ import { ulid } from '@substrat-run/kernel';
 const id = ulid(); // '01JZX6ZH2E...'
 ```
 
+Also importable from `@substrat-run/kernel/ulid`, which imports nothing at run time.
+
+## Subpaths that import nothing
+
+The platform bundles an entry module in front of every deployed vertical (#1893), and the
+package root would bring `@substrat-run/contracts`, and zod, with it. So the few things that
+entry needs have subpaths of their own, each importing nothing at run time:
+
+| Subpath | Exports |
+|---|---|
+| `@substrat-run/kernel/invocation-line` | `invocationLine` and the line's types (see [Trusting the edges](#trusting-the-edges)) |
+| `@substrat-run/kernel/ulid` | `ulid`, `createUlid`, `ulidCeiling`, `ulidFloor`, `ulidTime` |
+
 ## The other seams
 
 Everything below is in the kernel for the same reason: it is a rule two or more
@@ -85,11 +98,9 @@ package that assumed Node would break the portability claim the adapters exist t
 
 | Module | Export | What it is |
 |---|---|---|
-| `routed-node.ts` | `readRoutedNode`, `RouterAssertionError` | Moving to `@substrat-run/vertical-host`; import it from there. The vertical's side of the router contract: read the `(tenant, scope, surface)` the router asserted over its service binding. A request with **no** assertion is legitimate — that is a standalone deploy |
-| `platform-call.ts` | `assertPlatformCall`, … | Moving to `@substrat-run/vertical-host`; import it from there, and the header names it reads (`PLATFORM_SECRET_HEADER`, …) from `@substrat-run/contracts`. The opposite direction: *is the platform itself calling?* Provisioning is control-plane-driven — only the vertical can create a usable scope DO — and here there is no legitimate unauthenticated case, because an open provisioning endpoint lets a stranger mint tenants inside your vertical. So this one **fails closed with no configuration at all** |
 | `read-only-sql.ts` | `assertReadOnlyQuery` | The textual gate in front of the [scope SQL console](/platform/console). `readScopeTable` is safe by construction; a console taking user SQL is not, so read-only-ness is enforced per statement in two layers — this shared scan (both adapters, same rejections, so a query that runs in dev runs in prod) and an adapter-authoritative backstop behind it. The scan reads bare tokens *outside* comments, string literals and quoted identifiers, so a `;` inside a string never trips it |
 | `async-invocation-log.ts` | `asyncLinePass`, `asyncInvocationLine`, `asyncInvocationId`, `asyncLevelOf`, `consoleInvocationLineSink`, `ASYNC_LINES_PER_PASS`, `AsyncUnit` | The scope host's line for async work (#1901): one per consumer delivery (a module consumer, an executor, an imported event's handler) and per schedule run, built by the request line's own `invocationLine`, plus `kind: 'consumer' \| 'schedule'` — a request's line has no `kind`, and absent reads as `request`. A consumer's line carries `eventType`, `eventId`, `attempt` and an `outcome` (`delivered`, `retrying`, `dead-lettered`, `inert`, `routed`); a schedule's, `dueAt` and `latenessMs`. Ids, names and the thrown error's `errorCode` only — never a payload or an error's text. A unit in a call's tail logs under the call's id; one outside any call under an id minted for it, which its `ctx.log` lines share. A pass writes at most `ASYNC_LINES_PER_PASS` (100) lines, then one `suppressed` line counting the rest per `<kind>:<outcome>`. Both adapters write it; the SQLite host's `invocationLineSink` redirects it. It ships inside the vertical's adapter, so a vertical writes these lines after it upgrades and pushes, not on a platform deploy |
-| `invocation-log.ts` | `invocationLog`, `withInvocationLog`, `invocationStampOf`, `InvocationLogLine`, `InvocationLogContext` | Moving to `@substrat-run/vertical-host`; import it from there. One structured log line per invocation, stamped with the tenant and scope the router asserted — the two dimensions Cloudflare cannot record, because observability is keyed on the script and one vertical's script serves every tenant that installed it. A successful request otherwise emits no log event at all, so this line is what gives a tenant-facing log view any rows. The stamp is written from `readRoutedNode`'s *verified* answer, never from the header: a forged tenant would file chosen text on somebody else's dashboard, and an un-routed local invocation writes nothing. `withInvocationLog(worker, options)` is the same stamp around a whole module worker's `fetch`, and it is what the platform wraps every uploaded vertical in (#1893). Mounted as middleware, `app.use('*', invocationLog({ routerSecret }))` **first** on a Hono app, it writes the line itself when nothing outside stamped the request, and steps aside when something did: the two share one stamp per request through `invocationStampOf`, so a request is never logged twice. `pnpm lint:invocation-log` refuses a missing, late or secretless mount (#1418) |
+| `invocation-line.ts` | `invocationLine`, `InvocationLogLine`, `OutputFieldsReport`, `AsyncInvocationKind`, `AsyncOutcome` | The grammar of the one structured log line written per invocation: its fields, their defaults and their order, in one place. Two writers build through it — the request line, written by `invocationLog` / `withInvocationLog` in [`@substrat-run/vertical-host`](/reference/vertical-host) and stamped with the tenant and scope the router asserted, and the async line above — so a field added to one is added to both. A published contract: the read proxy filters on these key names, so fields are added and never renamed. Also importable from `@substrat-run/kernel/invocation-line`, which imports nothing at run time, because the platform's entry bundles it in front of every vertical (#1893) |
 
 ### Fleet arithmetic
 
@@ -102,7 +113,6 @@ can never disagree about what a number means.
 | `migration-progress.ts` | `migrationFleet`, `migrationProgress`, `migrationSummary`, `MIGRATION_FLAG_THRESHOLD` | What "487/500 migrated, 13 pending, 0 failed" means, computed once for both the sweep's report and the ops view. It reads the directory projection against the registered frontier — **no scope is woken to answer a fleet question** |
 | `meters.ts` | `foldMeterReading` | What counts as billable. Every adapter has the same three directory tables and could each write the same `GROUP BY`; they must not, because the billable rule is a *commercial* definition and two copies in two dialects is how the two fleets end up quoting different numbers for the same month |
 | `model-usage.ts` | `foldModelUsage`, `MODEL_USAGE_RETENTION_DAYS` | Meter 3's number, defined once for exactly the reason `foldMeterReading` is. Adapters list the lines in a window; this folds them, per `(tenant, vertical, model)` and in total: list price summed with `addDecimal` — an adapter summing in SQL would float the money — the platform's margin applied at read time rather than stored (D-30: meter, don't bill), and a call the rate card could not price counted as `unpriced` **beside** the money rather than folded in as $0, so an unpriced model reads as a gap in pricing instead of a free call |
-| `provider-error.ts` | `isTerminalProviderError`, `providerErrorStatus`, `RETRYABLE_CLIENT_STATUSES` | Moving to `@substrat-run/control-plane-api`; import it from there. Is a failed outbound call worth trying again? Deliberately **structural** — any error carrying a numeric `status` — so the drain never imports a provider's error class to classify it. It exists because a provider answering `409 requires valid personal number field` was once retried a hundred times over two days: that is not a fault to wait out, it is the provider telling the caller its request is wrong, and attempt 101 carries identical bytes |
 | `scope-record.ts` | `resolveScopeRecord` | The directory row `provisionScope` writes, with every optional resolved — in the kernel so the two adapters cannot default differently |
 
 ## Guarantees adapters must uphold

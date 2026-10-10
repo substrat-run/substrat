@@ -24,6 +24,10 @@
     "./wire-headers": {
       "types": "./dist/wire-headers.d.ts",
       "default": "./dist/wire-headers.js"
+    },
+    "./wire-auth": {
+      "types": "./dist/wire-auth.d.ts",
+      "default": "./dist/wire-auth.js"
     }
   },
   "files": [

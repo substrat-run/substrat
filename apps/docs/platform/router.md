@@ -35,7 +35,7 @@ will serve. Two things keep that safe, and both are required:
 1. **Vertical workers have no public route** (`workers_dev: false`, no route) — reachable only by
    service binding from the router.
 2. **`ROUTER_SECRET`**, the same value on the router and every vertical, presented as
-   `x-substrat-router` and verified in the kernel (`readRoutedNode`).
+   `x-substrat-router` and verified in `@substrat-run/vertical-host` (`readRoutedNode`).
 
 Both halves **fail closed** when the secret is missing: the router answers 500 to every
 request until its `ROUTER_SECRET` is set, and a vertical deployed without its own refuses

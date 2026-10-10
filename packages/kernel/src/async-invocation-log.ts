@@ -54,7 +54,7 @@ import {
   type AsyncInvocationKind,
   type AsyncOutcome,
   type InvocationLogLine,
-} from './invocation-log.js';
+} from './invocation-line.js';
 import type { EmittedReport } from './scope-host.js';
 
 /** One unit of async work, as the host saw it end. */

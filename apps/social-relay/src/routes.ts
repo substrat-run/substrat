@@ -26,7 +26,7 @@
  */
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { assertPlatformCall, PlatformCallError } from '@substrat-run/kernel';
+import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import type { ClientRecord, RelayStore } from './do-contract.js';
 import { providerOf, type UpstreamCredentials, type UpstreamProvider } from './providers.js';
 import { publicJwkOf, randomToken, sha256b64url, signJwt, verifyJwt } from './jwt.js';

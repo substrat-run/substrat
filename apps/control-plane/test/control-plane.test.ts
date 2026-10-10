@@ -328,7 +328,7 @@ describe('builder auth — live self-serve path', () => {
  * The router kick's landing endpoint (platform-intents.md §"router kick"). The router
  * pings `/internal/drain-scope` so a scope's just-enqueued platform intent runs in
  * seconds. It is platform-secret gated, and this deployment binds no PLATFORM_SECRET —
- * so, per the kernel's `assertPlatformCall`, an unconfigured secret is a REFUSAL, never a
+ * so, per contracts' `assertPlatformCall`, an unconfigured secret is a REFUSAL, never a
  * bypass. The security-relevant property: a deployment that never set the secret must not
  * drain scopes for an anonymous caller. The drain's own logic is unit-tested in
  * control-plane-api's platform-drain suite; here we prove the surface fails closed.

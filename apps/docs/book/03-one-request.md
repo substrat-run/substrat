@@ -78,7 +78,7 @@ things make that safe, and both are required:
 1. **Vertical workers have no public route.** `workers_dev: false`, no route; reachable
    only by service binding or dispatch from the router.
 2. **`ROUTER_SECRET`** — the same value on the router and every vertical, presented as
-   `x-substrat-router` and verified in the kernel's `readRoutedNode`.
+   `x-substrat-router` and verified by `readRoutedNode` in `@substrat-run/vertical-host`.
 
 The second exists because the first is a deployment fact and `workers.dev` is on by
 default. One forgotten toggle makes (1) false with nothing in the code noticing, and the

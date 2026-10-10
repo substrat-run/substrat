@@ -1,13 +1,11 @@
 /**
- * #1978: the wire header names moved to `@substrat-run/contracts`. The kernel re-exports them
- * for one release, and that has to be the contracts binding rather than a second definition
- * of the same string: two definitions agree only until one of them is edited.
+ * #1978: the wire header names moved to `@substrat-run/contracts`, and since #1998 the kernel
+ * no longer re-exports them — nor `invocationLevelOf`, which contracts already defined. One
+ * definition of each string: two agree only until one of them is edited.
  *
- * Which names moved is read from this package's own index, from the
- * `@deprecated Import from \`<package>\`` tag each one carries. Each new home's test reads
- * the same tags, except `@substrat-run/adapter-cloudflare`'s, which runs in workerd and
- * cannot read a source file — so its names are pinned here, against the list that test
- * asserts.
+ * The other moved names are held by their new homes' tests. What this file also pins is that
+ * no deprecation is left in the index, and that the platform-call check — which moved to
+ * contracts' `./wire-auth` (#1998) — is gone from the kernel too.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,7 +14,7 @@ import * as contracts from '@substrat-run/contracts';
 import * as wireHeaders from '@substrat-run/contracts/wire-headers';
 import * as kernel from '../src/index.js';
 
-/** Every export this index tags as moving, as `[package, name]`. */
+/** Every export the index tags as moving, as `[package, name]`. */
 function tagged(): [string, string][] {
   const index = readFileSync(join(import.meta.dirname, '../src/index.ts'), 'utf8');
   const tag = /@deprecated Import from `([^`]+)`[^*]*\*\/\s*(?:type\s+)?(\w+)/g;
@@ -25,51 +23,28 @@ function tagged(): [string, string][] {
 
 const kernelExports = kernel as Record<string, unknown>;
 const contractsExports = contracts as Record<string, unknown>;
-const TO_CONTRACTS = tagged()
-  .filter(([to]) => to === '@substrat-run/contracts')
-  .map(([, name]) => name)
-  // A type has no runtime binding to compare.
-  .filter((name) => kernelExports[name] !== undefined);
 const WIRE_HEADERS = Object.keys(wireHeaders);
 
+// @ts-expect-error moved to contracts
+export type MovedLiveRefusal = kernel.LiveRefusal;
+// @ts-expect-error moved to contracts
+export type MovedInvocationLevel = kernel.InvocationLevel;
+
 describe('wire header names, moved to contracts (#1978)', () => {
-  it('the tags name only the four new homes, and adapter-cloudflare the four names its test asserts', () => {
-    expect([...new Set(tagged().map(([to]) => to))].sort()).toEqual([
-      '@substrat-run/adapter-cloudflare',
-      '@substrat-run/contracts',
-      '@substrat-run/control-plane-api',
-      '@substrat-run/vertical-host',
-    ]);
-    expect(
-      tagged()
-        .filter(([to]) => to === '@substrat-run/adapter-cloudflare')
-        .map(([, name]) => name)
-        .sort(),
-    ).toEqual([
-      'AnalyticsEngineDatasetLike',
-      'CONNECTOR_CALL_DATA_POINT_LAYOUT',
-      'analyticsEngineConnectorCallRecorder',
-      'connectorCallDataPoint',
-    ]);
+  it('no export is still tagged as moving', () => {
+    expect(tagged()).toEqual([]);
   });
 
-  it('every wire header the kernel still exports is tagged as moving to contracts', () => {
-    const moved = WIRE_HEADERS.filter((name) => kernelExports[name] !== undefined);
-    expect(moved.length).toBeGreaterThan(0);
-    for (const name of moved) expect(TO_CONTRACTS, name).toContain(name);
-  });
-
-  // A header added after the move is born in contracts and never had a kernel binding (#1722).
-  it('a header born after the move has no kernel binding', () => {
-    for (const name of ['LOAD_STAMP_HEADER', 'WRITE_REVISION_HEADER']) {
-      expect((wireHeaders as Record<string, unknown>)[name], name).toBeDefined();
+  it.each(['assertPlatformCall', 'PlatformCallError', 'kickFlags', 'secretMatches'])(
+    'the kernel no longer exports %s',
+    (name) => {
       expect(kernelExports[name], name).toBeUndefined();
-    }
-  });
+    },
+  );
 
-  it.each(TO_CONTRACTS)("the kernel's %s is the contracts binding", (name) => {
-    expect(contractsExports[name]).toBeDefined();
-    expect(kernelExports[name]).toBe(contractsExports[name]);
+  it.each([...WIRE_HEADERS, 'invocationLevelOf'])('contracts exports %s, and the kernel does not', (name) => {
+    expect(contractsExports[name], name).toBeDefined();
+    expect(kernelExports[name], name).toBeUndefined();
   });
 
   it.each(WIRE_HEADERS)('the package root re-exports %s from the subpath', (name) => {
@@ -84,7 +59,7 @@ describe('wire header names, moved to contracts (#1978)', () => {
 
     const src = join(import.meta.dirname, '../src');
     const files = readdirSync(src).filter((f) => f.endsWith('.ts'));
-    expect(files).toContain('platform-call.ts');
+    expect(files).toContain('scope-host.ts');
     for (const file of files) {
       const text = readFileSync(join(src, file), 'utf8');
       for (const name of WIRE_HEADERS) expect(text, `${file} defines ${name}`).not.toMatch(defines(name));

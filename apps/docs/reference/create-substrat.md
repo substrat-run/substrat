@@ -114,7 +114,7 @@ front of the worker, wrapping it in the same stamp, and this middleware then ste
 than writing a second line. It stays in the template because it is the explicit, visible form
 of the stamp, and it is what places the stamp before your routes wherever the app runs.
 
-[`invocationLog`](/reference/kernel#trusting-the-edges) from `@substrat-run/vertical-host` writes one
+[`invocationLog`](/reference/vertical-host#trusting-the-edges) from `@substrat-run/vertical-host` writes one
 line per *routed* invocation, stamped with the tenant and scope the router asserted. An
 invocation whose assertion it cannot accept — an un-routed local request, a missing, malformed or
 unverifiable one — emits no line at all, deliberately: a line with no tenant is one nothing may

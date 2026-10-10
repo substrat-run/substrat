@@ -47,9 +47,9 @@ import { LIVE_MODE_HEADER, type LiveRefusal } from '@substrat-run/contracts';
 import { isUpgradeRequest, type LiveReadSurface } from '@substrat-run/kernel';
 
 /**
- * Is this request asking to be upgraded to a WebSocket? Moving here from the kernel (#1978),
- * which keeps the `LiveReadSurface` contract. For one release the definition still lives in
- * `@substrat-run/kernel` and this is that same binding. Import it from here.
+ * Is this request asking to be upgraded to a WebSocket? Defined in the kernel beside the
+ * `LiveReadSurface` contract, because the hosted adapter's door asks it too (#1978); this is
+ * that same binding, beside the route that asks it first.
  */
 export { isUpgradeRequest };
 

@@ -3,10 +3,11 @@
  *
  * ## Why module code needs one
  *
- * The invocation line (`invocation-log.ts`) is the per-request record: which operation ran,
- * who ran it, how it ended. A vertical's own `console.log` inside a handler carries none of
- * that. It is reachable only by correlating out from the stamped line, it cannot be filtered
- * by operation, and it is free text, so similar lines can only be grouped by guessing.
+ * The invocation line (`invocation-line.ts`, which vertical-host writes per request) is the
+ * per-request record: which operation ran, who ran it, how it ended. A vertical's own
+ * `console.log` inside a handler carries none of that. It is reachable only by correlating
+ * out from the stamped line, it cannot be filtered by operation, and it is free text, so
+ * similar lines can only be grouped by guessing.
  *
  * `ctx.log` writes the line with the fields already on it — tenant, scope, operation,
  * invocation, who it ran as — and with the TEMPLATE it was written from:
@@ -92,8 +93,8 @@ export const MODULE_LOG_LIMITS = {
 /** A field name the log platform indexes as it is — no dots, which would read as a path. */
 const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 
-// Runtime global, declared rather than imported, as in `invocation-log.ts`: this package
-// compiles against `lib: ["ES2023"]` with no DOM and no workers types.
+// Runtime global, declared rather than imported, as `secret-box.ts` declares `crypto`: this
+// package compiles against `lib: ["ES2023"]` with no DOM and no workers types.
 declare const console: {
   log(message: string): void;
   warn(message: string): void;
