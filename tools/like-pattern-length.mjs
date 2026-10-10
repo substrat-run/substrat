@@ -110,9 +110,9 @@ const skipQuoted = (src, i, quote) => {
 
 /**
  * A JS/TS file split into code, string, comment and regular-expression tokens, for three
- * reasons: a `'http://…'` whose `//` a comment
- * strip would take for a comment, a regexp whose quotes are ordinary characters, and a comment,
- * which is the only place an opt-out is read from. A `/` is a regexp after an operator or a
+ * reasons: a `'http://…'` whose `//` a comment strip would take for a comment, a regexp whose
+ * quotes are ordinary characters, and a comment, which is the only place an opt-out is read
+ * from. A `/` is a regexp after an operator or a
  * keyword and a division after a value.
  */
 const VALUE_BEFORE = /[\w$)\]]$/;
