@@ -90,7 +90,7 @@ export function supabaseIssuerOf(value: string): string {
 }
 
 /** base64url → bytes. Padding is optional in base64url, so it is restored before decoding. */
-function base64UrlToBytes(part: string): Uint8Array {
+function base64UrlToBytes(part: string): Uint8Array<ArrayBuffer> {
   const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
   const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
   let binary: string;
