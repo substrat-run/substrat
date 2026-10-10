@@ -1468,7 +1468,7 @@ function derivableEntity(
 ): { entity: EntityDef; primaryKey: string; columns: string[] } | string {
   const entity = entities[entityName];
   if (!entity) return `'${entityName}' is not this module's entity — a composed engine's table is the engine's to read`;
-  const primaryKey = primaryKeyOf(entity);
+  const primaryKey = primaryKeyOf(entityName, entity);
   if (primaryKey.length !== 1) return `'${entityName}' has a composite primary key, so no one id addresses a row`;
   return { entity, primaryKey: primaryKey[0] as string, columns: Object.keys(entity.fields.shape) };
 }

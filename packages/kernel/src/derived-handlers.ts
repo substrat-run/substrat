@@ -18,7 +18,7 @@ import {
   type EntityRef,
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
-import type { OperationContext, OperationHandler } from './scope-host.js';
+import type { OperationContext, OperationHandler, SqlValue } from './scope-host.js';
 
 type Row = Record<string, unknown>;
 type Input = Record<string, unknown> | undefined;
@@ -85,7 +85,8 @@ export function derivedHandler(plan: DerivationPlan): OperationHandler<never, un
         ctx.sql.exec(
           `UPDATE ${quoted(plan.table)} SET ${sent.map(({ column }) => `${quoted(column)} = ?`).join(', ')} ` +
             `WHERE ${quoted(plan.primaryKey)} = ?`,
-          [...sent.map(({ field }) => input?.[field]), id],
+          // The plan admits only string and number columns, and the host parsed the input against them.
+          [...sent.map(({ field }) => input?.[field] as SqlValue), id],
         );
         const row = rowOrThrow(ctx, id);
         ctx.emit(eventOf(plan.emit, ref(id), row));
