@@ -435,14 +435,6 @@ const bound = operationsFor(todoOperations)({
     return row;
   },
 
-  'todo/list-shares': async (ctx, input) => {
-    assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
-    listOrThrow(ctx, input.listId);
-    // The kernel composes it: `ORDER BY created_at, id` is the declared sort plus
-    // its tie-break, which is the ordering this shipped with, written once.
-    return ctx.page<ShareRow>('share', { ...input, filters: { list_id: input.listId } });
-  },
-
   'todo/revoke-share': async (ctx, input) => {
     const share = ctx.sql.query<ShareRow>('SELECT * FROM todo_shares WHERE id = ?', [
       input.shareId,

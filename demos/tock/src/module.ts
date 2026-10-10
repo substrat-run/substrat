@@ -1653,15 +1653,6 @@ const fieldCoverageOp: OperationHandler<
   };
 };
 
-const listRowsOp: OperationHandler<
-  HandlerInput<(typeof tockOperations)['tock/list-rows']>,
-  HandlerOutput<(typeof tockOperations)['tock/list-rows']>
-> = async (ctx, input) => {
-  assertAllowed(await ctx.check(TOCK_PERM.rowRead, runRef(input.runId)));
-  const run = runOrThrow(ctx, input.runId);
-  return ctx.page<RowRow>('row', { ...input, filters: { run_id: run.id } });
-};
-
 const readSourceFileOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/read-source-file']>,
   HandlerOutput<(typeof tockOperations)['tock/read-source-file']>
@@ -1784,7 +1775,6 @@ const bound = operationsFor(tockOperations)({
   'tock/deviations': deviationsOp,
   'tock/field-history': fieldHistoryOp,
   'tock/field-coverage': fieldCoverageOp,
-  'tock/list-rows': listRowsOp,
   'tock/read-source-file': readSourceFileOp,
   'tock/report': reportOp,
 });
