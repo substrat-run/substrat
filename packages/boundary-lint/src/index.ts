@@ -995,42 +995,152 @@ function expressionEnd(masked: string, from: number): number {
   return masked.length;
 }
 
-/** Does this expression assert its type at its top level — `x as T`, or `(x as T)`? */
-function castAtTop(expr: string): boolean {
-  let e = expr.trim();
-  while (e.startsWith('(') && expressionEnd(e, 1) === e.length - 1) e = e.slice(1, -1).trim();
+/** The index just past the `>` closing the `<` at `open`, counting nested angle brackets. */
+function angleEnd(e: string, open: number): number {
   let depth = 0;
-  for (let i = 0; i < e.length; i++) {
-    const c = e[i]!;
-    if (c === '(' || c === '[' || c === '{') depth++;
-    else if (c === ')' || c === ']' || c === '}') depth--;
-    else if (depth === 0 && isWord(e, i, 'as')) return true;
+  for (let i = open; i < e.length; i++) {
+    if (e[i] === '<') depth++;
+    else if (e[i] === '>' && e[i - 1] !== '=' && --depth === 0) return i + 1;
   }
-  return false;
+  return -1;
+}
+
+/** `e` with every top-level `(…)`, `[…]` and `{…}` blanked, so a test sees only its own level. */
+function topLevel(e: string): string {
+  let depth = 0;
+  let out = '';
+  for (const c of e) {
+    if (c === '(' || c === '[' || c === '{') depth++;
+    out += depth === 0 ? c : ' ';
+    if ((c === ')' || c === ']' || c === '}') && depth > 0) depth--;
+  }
+  return out;
 }
 
 /**
- * Where a handler map is handed over: the value of an `operations:` key, the argument of the
- * call `operationsFor(…)` returns, and the second argument of `undeclaredOperations`.
+ * Does this expression assert its type at its top level — `x as T`, `(x as T)`, or the
+ * angle-bracket `<T>x`? A generic arrow (`<T>(a: T) => …`) starts the same way and is not one.
  */
-const HANDLER_MAP_SITES = /\boperations\s*:|\boperationsFor\s*\(|\bundeclaredOperations\s*\(/g;
+function castAtTop(expr: string): boolean {
+  let e = expr.trim();
+  while (e.startsWith('(') && expressionEnd(e, 1) === e.length - 1) e = e.slice(1, -1).trim();
+  if (e.startsWith('<')) {
+    const end = angleEnd(e, 0);
+    if (end > 0 && !topLevel(e.slice(end)).includes('=>')) return true;
+  }
+  const flat = topLevel(e);
+  for (let i = 0; i < flat.length; i++) if (isWord(flat, i, 'as')) return true;
+  return false;
+}
+
+/** `const NAME = …` / `let` / `var` in this file: where its initializer starts, or -1. */
+function initializerOf(masked: string, name: string): number {
+  const decl = new RegExp(`\\b(?:const|let|var)\\s+${name}\\b\\s*(?::[^=;]*)?=(?!=)`, 'g');
+  const m = decl.exec(masked);
+  return m ? m.index + m[0].length : -1;
+}
+
+/**
+ * The expression a handler map is, one hop through a local name: `operations: OPERATIONS` and the
+ * shorthand `operations,` are judged by what `OPERATIONS` / `operations` was initialised with.
+ */
+function resolved(masked: string, expr: string): string {
+  const name = expr.trim();
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return expr;
+  const at = initializerOf(masked, name);
+  return at < 0 ? expr : masked.slice(at, expressionEnd(masked, at));
+}
+
+/**
+ * The end of one object-literal entry: the next top-level `,`, where a comma inside a type's angle
+ * brackets (`<OperationHandler<never, unknown>>fn`, `<T,>(…) =>`) does not count. A `<` opens one
+ * when it starts the value or follows a name, a `:`, a `,` or another `<`; a comparison inside a
+ * handler sits in its own parentheses or braces and never reaches this level.
+ */
+function entryEnd(masked: string, from: number, close: number): number {
+  let depth = 0;
+  let angle = 0;
+  let prev = '';
+  for (let i = from; i < close; i++) {
+    const c = masked[i]!;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (depth === 0 && c === '<' && (prev === '' || /[\w$:,<]/.test(prev))) angle++;
+    else if (depth === 0 && c === '>' && angle > 0 && prev !== '=') angle--;
+    else if (depth === 0 && angle === 0 && c === ',') return i;
+    if (c.trim() !== '') prev = c;
+  }
+  return close;
+}
+
+/** The top-level entries of an object literal `{ … }` in masked source: each value and where it starts. */
+function entryValues(masked: string, open: number): { at: number; value: string }[] {
+  const close = matchDelim(masked, open, '{', '}');
+  const out: { at: number; value: string }[] = [];
+  for (let at = open + 1; at < close; ) {
+    const end = entryEnd(masked, at, close);
+    const entry = masked.slice(at, end);
+    const lead = entry.length - entry.trimStart().length;
+    const body = entry.trim();
+    if (body.startsWith('...')) out.push({ at: at + lead, value: body.slice(3) });
+    else {
+      const colon = topLevel(body).indexOf(':');
+      if (colon > 0) out.push({ at: at + lead + colon + 1, value: body.slice(colon + 1) });
+    }
+    at = end + 1;
+  }
+  return out;
+}
+
+/**
+ * Where a handler map is handed over: the value of an `operations:` key or the shorthand
+ * `operations`, the argument of the call `operationsFor(…)` returns, and the second argument of
+ * `undeclaredOperations`.
+ */
+const HANDLER_MAP_SITES =
+  /\boperations\s*:|(?<=[{,]\s*)\boperations(?=\s*[,}])|\boperationsFor\s*\(|\bundeclaredOperations\s*\(/g;
+
+/** A cast whose target is the bound value itself — which nothing but the binder may make. */
+const CAST_TO_BOUND =
+  /\bas\s+(?:BoundOperations\b|ModuleRegistration\s*(?:<[^>]*>)?\s*\[\s*['"]operations['"]\s*\])|<\s*(?:BoundOperations\b[^>]*|ModuleRegistration\s*(?:<[^>]*>)?\s*\[\s*['"]operations['"]\s*\])\s*>/g;
+
+const BIND_INSTEAD =
+  'Bind with operationsFor(declaration)(handlers), or undeclaredOperations(reason, handlers) for a module ' +
+  'with no declared surface';
 
 /**
  * R11 — the handler map reaches the registration as the binder made it.
  *
- * The type refuses an entry erased with `as never` or `as any`, because it can see each entry;
- * it cannot refuse the same cast applied to the whole map, which is the one spelling that turns
- * the join back into a request. Read over the masked source, so a cast in a comment or a string
- * is not one.
+ * The type refuses a missing, extra or mistyped entry and one erased with `as never`, `as any` or
+ * an `any` signature, because it can see each entry. Three spellings it cannot see are this rule:
+ *
+ * - a cast of the WHOLE map, at an `operations:` key, the shorthand `operations`, a binder's handler
+ *   argument, or the initializer of the local name any of those hands over;
+ * - a cast on one ENTRY of the object handed to a binder — `as` or `<T>` — which the deleted
+ *   `lint:module-inputs` refused too, and which the type sees only when it erases to `any`;
+ * - a cast TO `BoundOperations` or `ModuleRegistration['operations']`, anywhere in module code.
+ *
+ * Read over the masked source, so a cast in a comment or a string is not one; the third reads the
+ * comment-stripped copy, since `['operations']` is a string literal.
  */
 function checkHandlerMapCast(rel: string, source: string, out: Violation[]): void {
-  if (!/\boperations(?:For)?\b|\bundeclaredOperations\b/.test(source)) return;
+  if (!/\boperations(?:For)?\b|\bundeclaredOperations\b|\bBoundOperations\b/.test(source)) return;
   const masked = maskSource(source);
+  const stripped = maskSource(source, { literals: false });
   let allowed: Set<number> | undefined;
+  const reported = new Set<number>(); // one finding per line: a cast to BoundOperations at the key is one cast
+  const report = (offset: number, message: string): void => {
+    const line = lineAt(source, offset);
+    allowed ??= allowedLines(source.split('\n'), stripped.split('\n'), 'R11');
+    if (allowed.has(line) || reported.has(line)) return;
+    reported.add(line);
+    out.push({ file: rel, line, rule: 'R11', message });
+  };
 
   HANDLER_MAP_SITES.lastIndex = 0;
   for (let m: RegExpExecArray | null; (m = HANDLER_MAP_SITES.exec(masked)); ) {
     let from = m.index + m[0].length;
+    const binder = m[0].startsWith('operationsFor') || m[0].startsWith('undeclaredOperations');
     if (m[0].startsWith('operationsFor')) {
       // `operationsFor(declaration)(handlers)` — skip the declaration, judge the handlers.
       const close = expressionEnd(masked, from);
@@ -1043,19 +1153,27 @@ function checkHandlerMapCast(rel: string, source: string, out: Violation[]): voi
       if (masked[reasonEnd] !== ',') continue;
       from = reasonEnd + 1;
     }
-    if (!castAtTop(masked.slice(from, expressionEnd(masked, from)))) continue;
-    const line = lineAt(source, m.index);
-    allowed ??= allowedLines(source.split('\n'), maskSource(source, { literals: false }).split('\n'), 'R11');
-    if (allowed.has(line)) continue;
-    out.push({
-      file: rel,
-      line,
-      rule: 'R11',
-      message:
-        'cast handler map — an `as` on the whole map erases the join between the handlers and the ' +
-        'declaration, which the binder exists to keep. Bind with operationsFor(declaration)(handlers), ' +
-        'or undeclaredOperations(reason, handlers) for a module with no declared surface',
-    });
+    const written = m[0].endsWith(':') || binder ? masked.slice(from, expressionEnd(masked, from)) : 'operations';
+    const expr = resolved(masked, written);
+    if (castAtTop(expr) || (expr !== written && castAtTop(written))) {
+      report(m.index, `cast handler map — a cast of the whole map erases the join between the handlers and the declaration, which the binder exists to keep. ${BIND_INSTEAD}`);
+      continue;
+    }
+    if (!binder) continue;
+    // The object handed to a binder, written here or one hop away: each entry as written.
+    const literalAt = expr === written ? from + (written.length - written.trimStart().length) : initializerOf(masked, written.trim());
+    const open = literalAt < 0 ? -1 : masked.indexOf('{', literalAt);
+    if (open < 0 || masked.slice(literalAt, open).trim() !== '') continue;
+    for (const entry of entryValues(masked, open)) {
+      if (castAtTop(entry.value)) {
+        report(entry.at, 'cast handler entry — an assertion on one handler throws away the type the binder holds it to; type the handler itself, or drop the cast (any handler fits OperationHandler<never, unknown> without one)');
+      }
+    }
+  }
+
+  CAST_TO_BOUND.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = CAST_TO_BOUND.exec(stripped)); ) {
+    report(m.index, `cast to the bound value — a BoundOperations is what the binder makes, never something asserted. ${BIND_INSTEAD}`);
   }
 }
 
