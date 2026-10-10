@@ -582,20 +582,40 @@ the platform writes its handler. You say so with `derive`, and write no handler:
 },
 ```
 
-Four shapes are derivable, and each is matched exactly:
+Five shapes are derivable, and each is matched exactly:
 
 | `derive` | The declaration | The handler the platform writes |
 |---|---|---|
 | `get` | served as `GET`, input is the id alone, output is the entity's own `fields`, emits nothing | the check, then the row by its declared columns, or `not_found` |
-| `list` | served as `GET`, `paged.over` the entity, output is its `fields`, emits nothing, every input a declared `filterable` column of the same type | the check, then `ctx.page` with those filters; a check narrowed to a **parent** scopes the page to that parent's rows, through the link column `<parent>_id` |
+| `list` | served as `GET`, `paged.over` the entity, output is its `fields`, emits nothing, every input a declared `filterable` column of the same type | the check, then `ctx.page` with those filters; a check narrowed to a **parent** scopes the page to that parent's rows, through the link column `<parent>_id`, and a parent that does not exist is `not_found` rather than an empty page |
 | `update` | served as `PATCH`, narrowed to the row, `concurrency` over it, emits about it, output is its `fields` | absent fields are left alone, `null` clears a nullable column, one event whose payload is the declared fields of the row as written; nothing sent means nothing written and nothing emitted |
 | `delete` | served as `DELETE`, narrowed to the row, emits about it, answers `{ id, deleted }`, no entity declares it as parent | removes the row and emits |
+| `create` | served as `POST`, emits about the row by its id, output is its `fields`, and every column is filled by exactly one thing the model names (below) | mints the id, inserts, links the row to its parent, emits; with a natural `key`, a row already holding that key is the answer, with no write and no event |
+
+A `create` fills each column from one place: the primary key is a minted ULID; a check narrowed
+to a **parent** fills the link column `<parent>_id` from its id, answers `not_found` if that
+parent does not exist, and links the new row to it so the parent's grants reach it; an input
+field fills the column of its snake_case name, same type; a column the entity declares in
+`stamps` is the time or the caller; and a nullable column nothing names is `NULL`. A column
+filled by none of these makes the operation a command with its own body, not a create.
+
+```ts
+savedReplyFolder: {
+  table: 'acme_folders',
+  fields: z.object({ id: z.string(), name: z.string(), created_by: z.string(), created_at: z.string() }),
+  key: ['name'],
+  // What a derived write fills from the call. `updatedAt`/`updatedBy` are written on a derived
+  // update too. A statement about derived writes only, and no migration: the columns are fields.
+  stamps: { created_by: 'createdBy', created_at: 'createdAt' },
+},
+```
 
 A derived handler checks the declared key first, so a caller without it learns nothing about
 whether the row exists. It reads and writes only the entity's declared columns, through
 `ctx.sql`. An `enum` column is never a derived write, because a change of state is a lifecycle
-edge with its own operation. A row with children is never a derived delete, because a cascade
-is your decision.
+edge with its own operation, and a row's first state is its lifecycle's. A row with children is
+never a derived delete, because a cascade is your decision. There are no hooks around a derived
+handler: an operation that needs one more step than its shape is authored, and says why.
 
 `operationsFor` leaves a derived operation out of the map it requires. Handing it a handler is
 a compile error, and at load too if the map was cast.
@@ -605,7 +625,7 @@ When a shape is derivable and you write the handler anyway, say why with `author
 ```ts
 'acme/list-contacts': {
   summary: 'The contacts of one customer',
-  authored: 'answers not_found for a customer that does not exist, where the derived page would answer an empty one',
+  authored: 'ranks the pinned contacts first, an order no declared sort expresses',
   …
 },
 ```
@@ -618,8 +638,8 @@ The reason is the review artifact. It names what the derived handler would get w
 - an `authored` with a blank reason, or on an operation nothing could derive;
 - both together.
 
-A later release that learns a new derivable shape (`create` is next) will flag operations that
-pass today. That is deliberate: each one gets the same choice, derive or say why not.
+A release that learns a new derivable shape flags operations that passed before it — `create`
+did. That is deliberate: each one gets the same choice, derive or say why not.
 
 ## The manifest, derived
 
