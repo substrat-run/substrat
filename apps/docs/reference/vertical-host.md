@@ -337,9 +337,9 @@ end closes it.
 One principal may hold 8 live sockets on a scope (`LIVE_SOCKETS_PER_PRINCIPAL`, the hosted
 adapter's own limit). The next is accepted and closed at once with `LIVE_CLOSE.tooMany`
 (`4429`), because a browser never sees a failed handshake's status, only a close code. A client
-reads the close codes from `@substrat-run/contracts/wire-headers`, which imports nothing, so a
-browser bundle can take them without the rest of the package. A client should read `4429` as "poll and stop
-asking", not as a reason to reconnect. `checkedWithin` gates are asked once per
+should read `4429` as "poll and stop asking", not as a reason to reconnect. It can import
+`LIVE_CLOSE` from `@substrat-run/contracts/wire-headers`, which imports nothing, so a browser
+bundle takes the close codes without the rest of the package. `checkedWithin` gates are asked once per
 (principal, key, root) per pass, however many of those sockets share a root, when the scope
 reads its permissions from its own storage. A scope that still reads them from the directory
 asks once per socket instead (see below).

@@ -152,7 +152,8 @@ export function decodeLiveWithin(header: string): LiveWithin | undefined {
  * fact the client can log, display, and report.
  *
  * Defined in `@substrat-run/contracts` (#1859, #1978), because the pure host's `501` names
- * it too and a vertical's dev server should not import this adapter to spell it.
+ * it too and a vertical's dev server should not import this adapter to spell it. The close
+ * codes (`LIVE_CLOSE`) live there for the same reason: a browser reads them.
  * Re-exported here so `host.ts` and `scope-do.ts` keep reading every wire name from this
  * one file.
  */
