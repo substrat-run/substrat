@@ -17,8 +17,6 @@ import {
   dataSubjectId,
   LIST_PAGE_DEFAULT,
   substratError,
-  type HandlerInput,
-  type HandlerOutput,
   z,
   type EntityRow,
   type PrincipalId,
@@ -30,7 +28,6 @@ import {
   ulid,
   type ModuleRegistration,
   type OperationContext,
-  type OperationHandler,
   operationsFor,
 } from '@substrat-run/kernel';
 import { SEARCH_OVERFETCH, todoEntities, todoOperations } from '../spec/model.js';

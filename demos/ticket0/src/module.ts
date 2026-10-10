@@ -30,8 +30,6 @@ import {
   z,
   type CountedPage,
   type EntityRow,
-  type HandlerInput,
-  type HandlerOutput,
   type PermissionKey,
   type PrincipalId,
   MODEL_USAGE_KIND,

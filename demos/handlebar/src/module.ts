@@ -38,7 +38,6 @@ import {
   readTimeline,
   ulid,
   type ModuleRegistration,
-  type OperationContext,
   type OperationHandler,
   operationsFor,
 } from '@substrat-run/kernel';
