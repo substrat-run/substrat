@@ -1,5 +1,31 @@
 # @substrat-run/demo-ticket0
 
+## 0.5.4
+
+### Patch Changes
+
+- 7eb1b3c: **Breaking:** the kernel no longer exports the live-socket close codes or the socket cap (part of #1978).
+
+  - `LIVE_CLOSE` is now defined in `@substrat-run/contracts`, and in its zero-import `./wire-headers` subpath beside `LIVE_MODE_HEADER` and `LiveRefusal`. A browser bundle can import the close codes without the rest of the package. The kernel no longer exports it; import it from `@substrat-run/contracts` instead.
+  - `LIVE_SOCKETS_PER_PRINCIPAL` is the hosted adapter's own limit, and now lives in `@substrat-run/adapter-cloudflare`. The kernel no longer exports it. The limit is unchanged: 8 sockets per principal per scope.
+  - ticket0's desk app reads the close code from `@substrat-run/contracts/wire-headers` instead of keeping its own copy of `4429`.
+
+- Updated dependencies [7eb1b3c]
+- Updated dependencies [7eb1b3c]
+- Updated dependencies [dfb653b]
+- Updated dependencies [88a4380]
+- Updated dependencies [f1c6c9a]
+- Updated dependencies [6c44d57]
+- Updated dependencies [9454e61]
+  - @substrat-run/contracts@0.143.0
+  - @substrat-run/kernel@0.143.0
+  - @substrat-run/adapter-cloudflare@0.143.0
+  - @substrat-run/adapter-sqlite@0.143.0
+  - @substrat-run/vertical-host@0.143.0
+  - @substrat-run/vertical-auth@0.22.1
+  - @substrat-run/engine-metering@0.6.27
+  - @substrat-run/dev-issuer@0.2.25
+
 ## 0.5.3
 
 ### Patch Changes

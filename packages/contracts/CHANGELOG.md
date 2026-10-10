@@ -1,5 +1,66 @@
 # @substrat-run/contracts
 
+## 0.143.0
+
+### Minor Changes
+
+- 7eb1b3c: **Breaking:** the kernel no longer exports the live-socket close codes or the socket cap (part of #1978).
+
+  - `LIVE_CLOSE` is now defined in `@substrat-run/contracts`, and in its zero-import `./wire-headers` subpath beside `LIVE_MODE_HEADER` and `LiveRefusal`. A browser bundle can import the close codes without the rest of the package. The kernel no longer exports it; import it from `@substrat-run/contracts` instead.
+  - `LIVE_SOCKETS_PER_PRINCIPAL` is the hosted adapter's own limit, and now lives in `@substrat-run/adapter-cloudflare`. The kernel no longer exports it. The limit is unchanged: 8 sockets per principal per scope.
+  - ticket0's desk app reads the close code from `@substrat-run/contracts/wire-headers` instead of keeping its own copy of `4429`.
+
+- dfb653b: An operator can revoke a capability on a hosted scope (part of #1686). Before this, the platform's `revokeCapability` refused every scope served by a vertical's own deployment, so a leaked link share could be seen in the console but not stopped.
+
+  - `HostAdmin.revokeCapability` on the shared control plane now reaches the deployment that serves the scope, through a new `capabilityDelegation` option on `CloudflareScopeHost`. The admin log row stays on the control plane, and the record names the operator as its revoker. With no delegation configured, a hosted scope is still refused `unavailable`.
+  - `HostAdmin.revokeCapability` is audited intent-then-outcome on both adapters, as the kill switches are (kernel `auditedCapabilityRevoke`; `revokeCapability` joins `AUDITED_CHANGE_ACTIONS`). An intent row lands before anything is revoked. Then the outcome is one of:
+
+    - `applied`, with the record as it stood;
+    - `refused`, when the scope holds no such capability, or the deployment refused or predates the route;
+    - nothing yet, when the answer was lost or named another capability. The scheduled settle then closes the intent as `unknown`.
+
+    So a revoke that landed is never missing from the admin log.
+
+  - `provesNothingChanged` now lives in `@substrat-run/contracts`. `@substrat-run/control-plane-client` re-exports it unchanged.
+  - `mountPlatformSurface` mounts `POST /internal/capabilities/revoke`, behind the platform secret like the rest of `/internal/*`. It answers `{ before }`: the record as it stood, or `null` when the scope holds no such capability. That answer is never a 404, because a 404 is how a deployment built before this route says so. `VerticalScopeHost` gains `revokeCapabilityLocal`.
+  - **Breaking:** `CloudflareScopeHost.revokeCapabilityLocal` now returns the record as it stood (`CapabilityRecord | null`) instead of a boolean. A check against `null` still works. A check of `=== true` does not.
+  - `VerticalClient.revokeCapability` makes the call. A deployment built before the route answers 501 "redeploy the vertical", and nothing is revoked. An answer lost in transit is a 502 that says to read the capabilities before retrying.
+  - The control-plane API gains `POST /tenants/:t/scopes/:s/capabilities/:id/revoke`, staff only like the capability read, with `revokeCapability` on the staff client. It answers 204, and again for a capability already revoked. It answers 404 for a capability the scope does not hold.
+  - `contracts` gains `capabilityRevokeRequest` and `capabilityRevokeAnswer`.
+  - The console's Capabilities card has a Revoke button, with a confirm, on every capability still acting: live ones, and used-up ones whose sessions keep acting until they expire.
+
+- 6c44d57: The control plane refuses to supply a scope sweeper to a bundle that registers no scope host for it (#1646).
+
+  The platform's sweeper runs the host a vertical's `mountPlatformSurface` registers. A bundle built on a `@substrat-run/vertical-host` from before that registration, or one that never mounts `mountPlatformSurface`, registers no host and never fills the sweeper's list of scopes. Its schedules would never run, and nothing would log an error. `substrat push` already refused this when it could find the installed vertical-host. The push route now refuses it too (422), so the check also covers a push with `--allow-unswept-schedules`, a vertical-host the CLI could not resolve, and a push from an older CLI. The fix is to update `@substrat-run/vertical-host`, or to export your own `defineScopeSweeperDO` class bound as a store. Promote, re-serve and rollback still reuse the decision recorded at push, so none of them can refuse.
+
+  New exports: `PLATFORM_SWEEP_HOST_KEY` (contracts) and `SCOPE_SWEEP_HOST_KEY` (vertical-host), the global registry key. A test holds them equal. Removed from vertical-host's package entry: `registeredScopeSweepHost`, the read half, which only the platform's own sweeper calls. A vertical that read the slot would have carried the key without registering a host.
+
+- 9454e61: **Breaking:** `ctx.platformRequests` now returns `PlatformRequestEntry[]` instead of `PlatformRequest[]`. A journal row whose id, kind, status, attempts or time does not decode comes back as an `UndecodablePlatformRequest` beside the other rows, where it used to make the whole read throw (#1637).
+
+  This is `minor` rather than `major` because the fixed group is 0.x. In 0.x semver, a minor bump is where a breaking change goes, and `major` would mint 1.0.0. Every package in the fixed group moves to the same version.
+
+  **What a vertical changes.** Narrow before reading any other field:
+
+  ```ts
+  import { isUndecodablePlatformRequest } from "@substrat-run/contracts";
+
+  for (const r of ctx.platformRequests({ kind: "connector:scrive" })) {
+    if (isUndecodablePlatformRequest(r)) continue; // or show r.decodeError
+    r.status; // 'pending' | 'done' | 'failed', as before
+  }
+  ```
+
+  The variant names the row without carrying it, in the same grammar as `withheldEvent`. It holds the five identity columns as they are stored, as text (`null` for SQL NULL), and `decodeError` names every column that did not decode. It carries no payload, requester, result or error text. A healthy journal never returns one. Only a restored dump can hold such a row, because `ctx.sql` refuses writes to `_substrat_*` tables.
+
+  - **Reads:** `ScopeHost.listPlatformRequests` and `listPlatformRequestHistory`, the vertical-host routes and `VerticalClient` return the same union.
+  - **Drain:** it never runs a handler on the variant.
+    - When the stored id is still an id, the drain settles the row `failed` (`validation_failed`, platform origin), as it already does for a row whose JSON did not decode.
+    - When the stored id is not an id, nothing can settle the row. The drain leaves it pending, reports it as `PlatformDrainReport.unsettleable` and drains the rest of the queue past it.
+    - That row keeps one of the scope's 32 pending slots until an operator repairs it.
+  - **Sweep:** `platformRequestDrainTotals` gains `unsettleable`, defaulted to 0 so stored rows still parse. While the count is above zero, the fleet `platform-request` sweep row is `failed`, and `PlatformSweepReport.platformRequestUnsettleable` names each scope, logged in the `platform-sweep` line.
+  - **Dashboard:** the integration drawer shows such a row as **Unreadable**, with the columns that broke. It used to show an empty list.
+  - **Kernel internals:** `rowDecoder` gains `finishOr`, and `platformRequestOf` returns the union.
+
 ## 0.142.0
 
 ### Minor Changes
@@ -6420,7 +6481,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

@@ -1,5 +1,41 @@
 # @substrat-run/docs
 
+## 0.1.22
+
+### Patch Changes
+
+- 7eb1b3c: **Breaking:** the kernel no longer exports the live-socket close codes or the socket cap (part of #1978).
+
+  - `LIVE_CLOSE` is now defined in `@substrat-run/contracts`, and in its zero-import `./wire-headers` subpath beside `LIVE_MODE_HEADER` and `LiveRefusal`. A browser bundle can import the close codes without the rest of the package. The kernel no longer exports it; import it from `@substrat-run/contracts` instead.
+  - `LIVE_SOCKETS_PER_PRINCIPAL` is the hosted adapter's own limit, and now lives in `@substrat-run/adapter-cloudflare`. The kernel no longer exports it. The limit is unchanged: 8 sockets per principal per scope.
+  - ticket0's desk app reads the close code from `@substrat-run/contracts/wire-headers` instead of keeping its own copy of `4429`.
+
+- 7eb1b3c: **Breaking:** the kernel's index no longer exports 133 values that nothing outside the kernel imported (part of #1978). They are internal plumbing, such as SQL fragments, batch sizes, budgets and decode helpers, and each one was published surface the additive-only rule had to freeze. Nine of them were dead code and are deleted: `isAttachmentTextRun`, `attributedHost`, `delegatedGrantSql`, `isListIndexName`, `listPlansByEntityType`, `splitCursor`, `searchPlansByEntityType`, `exportsOf` and `peerSwitchedOff`.
+
+  - `ulidFloor` and `ulidCeiling` are still exported from `@substrat-run/kernel/ulid`.
+  - `refusedTransitionOf` is still exported from `@substrat-run/contracts`, where it is defined.
+  - The kernel's index is now pinned by a test: adding or removing a value export means updating a checked-in list in the same change.
+  - The rest stay in their modules and leave only the index: `applyTableChange`, `assertAttachmentTextBounds`, `assertDirectoryTablesBuilt`, `assertEntityStateColumns`, `assertNoJournalSql`, `assertNoReservedColumnWrite`, `assertNoSpineReference`, `assertNoSpineWrite`, `assertNoStatefulDdl`, `assertQueueSafe`, `assertTablesOwned`, `assertWithinErasureReach`, `assertWithinSqlLimits`, `asyncInvocationLine`, `asyncLevelOf`, `AUDITED_OPERATIONS_BATCH`, `backfillOwnershipFromJournal`, `CANCELLED_INTENT_NOTE`, `CAPABILITY_COLUMNS`, `capabilityExchangeable`, `capabilityGrantOf`, `capabilityListQuery`, `capabilityLive`, `capabilityRecordOf`, `carriesSecret`, `changesSchema`, `combineCoverage`, `CONNECTOR_CALL_ERROR_TYPES`, `connectorCallErrorType`, `copyRestoreFenceMarginMs`, `DENIAL_COLUMNS`, `drainedEventOf`, `dumpCarriesSwitches`, `ENTITY_STATE_MOVES_TABLE`, `entityStatePlans`, `entityStateTriggerDdl`, `entityStateWhere`, `EXPORT_BREAK_REFUSAL`, `GRANT_READ_MAX_LIMIT`, `GRANT_READ_WORK_BUDGET`, `holdingsDigest`, `idempotencySubject`, `inputBoundRefusal`, `intentIdOfFailureMessage`, `isPositiveIntegerBound`, `isUnknownRoleError`, `JOB_ADMISSION_BACKOFF_BASE_MS`, `JOB_ADMISSION_BACKOFF_MAX_MS`, `JOB_DRIVE_LIMIT`, `JOB_DRIVE_SCAN_MAX`, `JOB_LEASE_ENTRY_MARGIN`, `JOB_RUN_LIST_LIMIT`, `JOB_RUN_LIST_MAX`, `JOB_RUN_REDACTION_SQL`, `JOB_STEP_REDACTION_SQL`, `JOB_STEP_REUSED`, `joinedMembershipExpiry`, `KERNEL_ACTOR`, `kernelOutboxInsertSql`, `lifecycleAfterLoad`, `LIST_INDEX_PREFIX`, `listIndexColumns`, `listIndexDdl`, `liveOrgMembership`, `mapDenialBucketRow`, `mapDenialOperationBucketRow`, `MARK_COPY_ORIGIN_SQL`, `mediaTypeOf`, `memberRemoveRequestedPayload`, `MIGRATION_DIGEST_LEGACY`, `MIGRATION_FLAG_THRESHOLD`, `migrationFleet`, `migrationSummary`, `MIN_SEARCH_TERM`, `mintCapabilitySessionToken`, `MODULE_LOG_LIMITS`, `moduleLogLine`, `moduleTableNames`, `normalizeExtractedText`, `OPERATION_SERIES_ID_SLACK_MS`, `PEER_SUBJECT_PREFIX`, `persistedText`, `PROVISION_RECONCILE_REPORTED_IDS`, `purgeCandidates`, `purgeCutoffOf`, `purgeIndexDdl`, `readCapabilities`, `REDACTED_INTENT_NOTE`, `redactedIntentPayload`, `REFUSAL_COLUMNS`, `REFUSAL_JOURNAL_PREFIX`, `REFUSALS_DDL`, `refusedTransitionOf`, `renderTemplate`, `reportKeyOf`, `rowDecoder`, `SCHEDULE_STATE_KIND_OF_OP`, `SCOPE_LIFECYCLE_KEY`, `scopeMigrationState`, `SEARCH_INDEX_PREFIX`, `searchIndexDdl`, `spineRowsInsert`, `stateColumnsOf`, `storedActor`, `subjectSwitchedOff`, `switchSubjectGrants`, `SYSTEM_SWITCH_OFF_PREDICATE`, `SYSTEM_SWITCH_OFF_RELATION`, `SYSTEM_SWITCHES_TABLE`, `TABLE_OWNERS`, `tableChangesOf`, `tablesCreatedBy`, `tableStatements`, `TELEMETRY_PRUNE_BATCH`, `TRASH_SCAN_BUDGET`, `truncateUtf8`, `ulidCeiling`, `ulidFloor`, `UNDECODED_ACTOR`, `UNDECODED_PERMISSION`, `UNDECODED_REQUESTER`, `UNDRAINED_SCAN_FACTOR`, `UNDRAINED_SKIPPED_IDS`, `WRITE_LIFECYCLE_SQL`.
+
+- dfb653b: An operator can revoke a capability on a hosted scope (part of #1686). Before this, the platform's `revokeCapability` refused every scope served by a vertical's own deployment, so a leaked link share could be seen in the console but not stopped.
+
+  - `HostAdmin.revokeCapability` on the shared control plane now reaches the deployment that serves the scope, through a new `capabilityDelegation` option on `CloudflareScopeHost`. The admin log row stays on the control plane, and the record names the operator as its revoker. With no delegation configured, a hosted scope is still refused `unavailable`.
+  - `HostAdmin.revokeCapability` is audited intent-then-outcome on both adapters, as the kill switches are (kernel `auditedCapabilityRevoke`; `revokeCapability` joins `AUDITED_CHANGE_ACTIONS`). An intent row lands before anything is revoked. Then the outcome is one of:
+
+    - `applied`, with the record as it stood;
+    - `refused`, when the scope holds no such capability, or the deployment refused or predates the route;
+    - nothing yet, when the answer was lost or named another capability. The scheduled settle then closes the intent as `unknown`.
+
+    So a revoke that landed is never missing from the admin log.
+
+  - `provesNothingChanged` now lives in `@substrat-run/contracts`. `@substrat-run/control-plane-client` re-exports it unchanged.
+  - `mountPlatformSurface` mounts `POST /internal/capabilities/revoke`, behind the platform secret like the rest of `/internal/*`. It answers `{ before }`: the record as it stood, or `null` when the scope holds no such capability. That answer is never a 404, because a 404 is how a deployment built before this route says so. `VerticalScopeHost` gains `revokeCapabilityLocal`.
+  - **Breaking:** `CloudflareScopeHost.revokeCapabilityLocal` now returns the record as it stood (`CapabilityRecord | null`) instead of a boolean. A check against `null` still works. A check of `=== true` does not.
+  - `VerticalClient.revokeCapability` makes the call. A deployment built before the route answers 501 "redeploy the vertical", and nothing is revoked. An answer lost in transit is a 502 that says to read the capabilities before retrying.
+  - The control-plane API gains `POST /tenants/:t/scopes/:s/capabilities/:id/revoke`, staff only like the capability read, with `revokeCapability` on the staff client. It answers 204, and again for a capability already revoked. It answers 404 for a capability the scope does not hold.
+  - `contracts` gains `capabilityRevokeRequest` and `capabilityRevokeAnswer`.
+  - The console's Capabilities card has a Revoke button, with a confirm, on every capability still acting: live ones, and used-up ones whose sessions keep acting until they expire.
+
 ## 0.1.21
 
 ### Patch Changes
