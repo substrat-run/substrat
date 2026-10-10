@@ -92,7 +92,7 @@ export const MIGRATION_DIGEST_FENCE_DDL = `
  * fence, or writes its own journal rows, makes the digest check say whatever it wrote. Nothing
  * legitimate in a module's migration names it, reads included.
  */
-export function assertNoJournalSql(sql: string, what: string): void {
+function assertNoJournalSql(sql: string, what: string): void {
   for (const token of tokenizeSql(sql)) {
     if (!token.text.split('.').some((part) => part.toLowerCase().startsWith('_substrat_migration'))) continue;
     throw substratError(

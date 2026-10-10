@@ -104,7 +104,7 @@ const memberAddRequested = z.object({
  * holds them at, and the org its invitation named. Fat (D-19), like the add. The executor
  * takes the role away; the org is the vertical's own vocabulary and is not touched.
  */
-export const memberRemoveRequestedPayload = z.object({
+const memberRemoveRequestedPayload = z.object({
   principal: principalId,
   orgId,
   tenantId: z.string(),

@@ -7,7 +7,6 @@ import {
   type EventId,
 } from '@substrat-run/contracts';
 import {
-  mapDenialOperationBucketRow,
   mapDenialSummaryBuckets,
   readDeadLetters,
   walkEventEffects,
@@ -15,6 +14,7 @@ import {
   type ScopedSql,
   VERTICAL_EVENTS_DDL,
 } from '../src/index.js';
+import { mapDenialOperationBucketRow } from '../src/denial-query.js';
 
 /**
  * #1643 — the three mappers #1641 left casting: `deliveryOf`, the `readDeadLetters` map and

@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, memberInviteInput, memberRoleInput, importCursorMove, findingKind, findingRuleInput, findingStatus, findingStatusInput, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, findingKind, findingRuleInput, findingStatus, findingStatusInput, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, isPrimaryScope, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -3648,7 +3648,7 @@ async function activityRoute(c: Context<{ Bindings: Env }>) {
     // #618: the platform's own record of every delivery it ran for this provider, whose
     // `lastError` is the provider's FULL refusal. The ledger above says a dispatch happened;
     // this says what became of it, which is the half a builder could not read at all.
-    cp.scopeIntents(scopeId, { kind: `connector:${spec.provider}`, limit: 20 }).catch(() => []),
+    cp.scopeIntents(scopeId, { kind: `connector:${spec.provider}`, limit: 20 }).catch((): PlatformRequestEntry[] => []),
     // #1232: the recent-runs strip — the platform's own answer to "when was this
     // connection last swept, and how did it go". listSweepRuns already tolerates a
     // plane predating the route.
@@ -3673,7 +3673,7 @@ async function activityRoute(c: Context<{ Bindings: Env }>) {
       error: r.error,
       elapsedMs: r.elapsedMs,
     })),
-    intents: intents.map((r) => ({
+    intents: intents.filter(isPlatformRequest).map((r) => ({
       id: r.id,
       status: r.status,
       attempts: r.attempts,
@@ -3690,6 +3690,14 @@ async function activityRoute(c: Context<{ Bindings: Env }>) {
         typeof r.payload === 'object' && r.payload !== null && 'event' in r.payload
           ? String((r.payload as { event?: { type?: unknown } }).event?.type ?? '')
           : '',
+    })),
+    // #1637: a journal row whose identity did not decode, named rather than dropped — kept apart
+    // from `intents` because it has no status, attempt count or error to render as a delivery.
+    unreadableIntents: intents.filter(isUndecodablePlatformRequest).map((r) => ({
+      id: r.id,
+      status: r.status,
+      requestedAt: r.requestedAt,
+      decodeError: r.decodeError,
     })),
   });
 }

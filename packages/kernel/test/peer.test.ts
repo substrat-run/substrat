@@ -12,7 +12,6 @@ import {
   actorOf,
   admitPeer,
   collectPeers,
-  idempotencySubject,
   peerSeats,
   resolvePeerInstanceFrom,
   resolveVerticalInstanceFrom,
@@ -22,6 +21,7 @@ import {
   type SwitchSql,
   type VerticalInstanceCandidate,
 } from '../src/index.js';
+import { idempotencySubject } from '../src/idempotency.js';
 
 /**
  * #1706: the kernel's half of the peer door — each rule the two adapters share, executed alone,

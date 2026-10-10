@@ -1,15 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { errorCodeOf, moduleManifest, type SubjectErasureDeclaration } from '@substrat-run/contracts';
 import {
-  assertWithinErasureReach,
   eraseSubjectFromModules,
   moduleErasurePlan,
   SECURE_DELETE_MIN_SQLITE,
-  tablesCreatedBy,
   type ModuleRegistration,
   type ScopedSql,
   type SqlValue,
 } from '../src/index.js';
+import { assertWithinErasureReach, tablesCreatedBy } from '../src/module-erasure.js';
 
 /**
  * #2068 — the registration-time refusals and the hook's reach, which the contract suite drives

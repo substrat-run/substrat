@@ -46,14 +46,14 @@
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "catalog:"
   },
   "devDependencies": {
     "@substrat-run/attachment-extractors": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
-    "hono": "^4.13.13",
+    "hono": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

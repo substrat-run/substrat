@@ -31,7 +31,7 @@ import {
   type DomainEventInput,
   type PlatformRequestInput,
   type PlatformRequestId,
-  type PlatformRequest,
+  type PlatformRequestEntry,
   type PlatformRequestFilter,
   type Coverage,
   type EntitlementView,
@@ -63,8 +63,6 @@ import {
 } from '@substrat-run/contracts';
 import {
   ulid,
-  LIVE_CLOSE,
-  LIVE_SOCKETS_PER_PRINCIPAL,
   DO_SQL_LIMITS,
   unknownRoleError,
   createUlid,
@@ -290,6 +288,8 @@ import {
   LIVE_TENANT_HEADER,
   LIVE_WITHIN_HEADER,
   LIVE_EXPIRES_HEADER,
+  LIVE_CLOSE,
+  LIVE_SOCKETS_PER_PRINCIPAL,
   decodeLiveWithin,
   liveInstant,
   type LiveRefusal,
@@ -7625,7 +7625,7 @@ export function defineScopeDO(
         },
         // The read half of `requestPlatform` (#618) — this scope's own journal, so no tenancy
         // predicate is needed or possible: the DO IS the scope.
-        platformRequests: (filter?: PlatformRequestFilter): PlatformRequest[] => {
+        platformRequests: (filter?: PlatformRequestFilter): PlatformRequestEntry[] => {
           const q = platformRequestHistoryQuery(filter);
           // The kernel's decoder, the one the coordinator maps the RPC's rows with (#1588):
           // tolerant, so one undecodable row cannot hide this scope's other intents from it.

@@ -1305,6 +1305,14 @@ export interface ConnectionIntentView {
   } | null;
 }
 
+/** A dispatch record the platform could not read whole (#1637): named as stored, never guessed at. */
+export interface UnreadableIntentView {
+  id: string | null;
+  status: string | null;
+  requestedAt: string | null;
+  decodeError: string;
+}
+
 /**
  * `GET /api/apps/:scope/integrations/:provider/activity` — activity, plus the grants the
  * connection holds and the masked credential.
@@ -1332,6 +1340,11 @@ export interface ConnectionActivityView {
    * too old to serve it (the read is best-effort so a missing journal never costs the activity).
    */
   intents: ConnectionIntentView[];
+  /**
+   * #1637: dispatch records whose stored identity did not decode — id, status or time as stored,
+   * and which columns broke. Absent on a plane too old to name them; empty on a healthy journal.
+   */
+  unreadableIntents?: UnreadableIntentView[];
   /**
    * The platform's sweep record for this connection (#1232) — newest first, empty on a
    * plane too old to serve it. "When was this last swept, and how did it go", which no

@@ -78,7 +78,7 @@ export type KernelColumnsOf = (name: string) => readonly string[] | undefined;
  * delete of a referenced row. `loadDirectoryDump` calls it first, where `assertSpineTablesBuilt`
  * is in a scope restore, with the same `columnsOf`.
  */
-export function assertDirectoryTablesBuilt(names: readonly string[], columnsOf: KernelColumnsOf): void {
+function assertDirectoryTablesBuilt(names: readonly string[], columnsOf: KernelColumnsOf): void {
   const missing = names.filter((n) => columnsOf(n) === undefined);
   if (missing.length > 0) {
     throw substratError(
@@ -174,7 +174,7 @@ const ROWID_ALIASES: ReadonlySet<string> = new Set(['rowid', 'oid', '_rowid_']);
  * below is a backstop the loader's order makes unreachable, and throws `validation_failed`
  * inside the load's transaction, so the target keeps what it held.
  */
-export function spineRowsInsert(
+function spineRowsInsert(
   table: { name: string; columns: readonly string[] },
   kernelColumns: readonly string[] | undefined,
 ): string {

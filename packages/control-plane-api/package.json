@@ -37,7 +37,7 @@
     "@substrat-run/control-plane-client": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/psl": "workspace:^",
-    "hono": "^4.13.13"
+    "hono": "catalog:"
   },
   "devDependencies": {
     "@hono/node-server": "^1.13.0",
@@ -45,9 +45,9 @@
     "@substrat-run/vertical-host": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "better-auth": "^1.7.1",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "catalog:",
     "esbuild": "^0.28.2",
-    "hono": "^4.13.13",
+    "hono": "catalog:",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
     "vitest": "catalog:"

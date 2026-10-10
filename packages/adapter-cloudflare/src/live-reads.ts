@@ -152,11 +152,20 @@ export function decodeLiveWithin(header: string): LiveWithin | undefined {
  * fact the client can log, display, and report.
  *
  * Defined in `@substrat-run/contracts` (#1859, #1978), because the pure host's `501` names
- * it too and a vertical's dev server should not import this adapter to spell it.
+ * it too and a vertical's dev server should not import this adapter to spell it. The close
+ * codes (`LIVE_CLOSE`) live there for the same reason: a browser reads them.
  * Re-exported here so `host.ts` and `scope-do.ts` keep reading every wire name from this
  * one file.
  */
-export { LIVE_MODE_HEADER, type LiveRefusal } from '@substrat-run/contracts';
+export { LIVE_CLOSE, LIVE_MODE_HEADER, type LiveRefusal } from '@substrat-run/contracts';
+
+/**
+ * How many live sockets one principal may hold on one scope (#938). A tab holds one per
+ * feed (the desk's, and one per open conversation in ticket0's portal), and each socket is
+ * work on every post-commit pass, so a principal opening more is a cost on everybody else
+ * writing to the scope. Eight covers several tabs; past it a socket is closed `4429`.
+ */
+export const LIVE_SOCKETS_PER_PRINCIPAL = 8;
 
 /**
  * Cloudflare's own per-request marker for orange-to-orange routing.

@@ -177,7 +177,7 @@ export function purgeIndexObjects(plan: EntityStatePlan): DerivedObject[] {
  * The purge index's DDL. `IF NOT EXISTS` because a dump load runs it again after the rows are
  * in; a repair that finds it wrong drops it first (`purgeIndexRepairDdl`).
  */
-export function purgeIndexDdl(plan: EntityStatePlan): string {
+function purgeIndexDdl(plan: EntityStatePlan): string {
   return purgeIndexObjects(plan)
     .map((idx) => `${idx.sql.replace(/^CREATE INDEX /, 'CREATE INDEX IF NOT EXISTS ')};`)
     .join('\n');
@@ -213,7 +213,7 @@ export const ENTITY_STATE_TRIGGER_PREFIX = '_substrat_state_';
  * throws rolls back with its operation. Shared by both adapters' `KERNEL_DDL`, like the other
  * kernel-owned spine tables, so the two cannot part company.
  */
-export const ENTITY_STATE_MOVES_TABLE = '_substrat_state_moves';
+const ENTITY_STATE_MOVES_TABLE = '_substrat_state_moves';
 export const ENTITY_STATE_MOVES_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_state_moves (
     entity_type TEXT NOT NULL,

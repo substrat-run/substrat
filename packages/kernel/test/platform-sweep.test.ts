@@ -592,7 +592,7 @@ describe('runPlatformSweep', () => {
       },
     });
     expect(drained.sort()).toEqual(scopes.map((s) => s.id).sort());
-    expect(report.platformRequestTotals).toEqual({ scopes: 2, drained: 4, done: 2, failed: 0, pending: 2, skipped: 0, unreachable: 0 });
+    expect(report.platformRequestTotals).toEqual({ scopes: 2, drained: 4, done: 2, failed: 0, pending: 2, skipped: 0, unreachable: 0, unsettleable: 0 });
   });
 
   it('skips the platform-intent phase entirely when no drain fn is supplied', async () => {
@@ -601,7 +601,7 @@ describe('runPlatformSweep', () => {
       fetch: FETCH,
       sweepers: {},
     });
-    expect(report.platformRequestTotals).toEqual({ scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0 });
+    expect(report.platformRequestTotals).toEqual({ scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0, unsettleable: 0 });
   });
 
   it('records a platform-intent drain failure per-scope and steps over it', async () => {
@@ -643,6 +643,37 @@ describe('runPlatformSweep', () => {
       drainPlatformRequestsFn: async () => ({ drained: 0, done: 0, failed: 0, pending: 0 }),
     });
     expect(report.platformRequestTotals.unreachable).toBe(0);
+  });
+
+  it('sums the intents no drain could settle across scopes (#1637)', async () => {
+    const scopes = [{ id: sid(), tenantId: T }, { id: sid(), tenantId: T }, { id: sid(), tenantId: T }];
+    const report = await runPlatformSweep(fakeHost({ scopes }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      drainPlatformRequestsFn: async (_t, s) =>
+        s === scopes[2]!.id
+          ? { drained: 1, done: 1, failed: 0, pending: 0 }
+          : { drained: 0, done: 0, failed: 0, pending: 0, unsettleable: s === scopes[0]!.id ? { count: 2, ids: ['x', null] } : { count: 1, ids: ['y'] } },
+    });
+    expect(report.platformRequestTotals).toMatchObject({ unsettleable: 3, drained: 1, done: 1 });
+    // …and WHERE, per scope, so the operator knows which journal to open.
+    expect(report.platformRequestUnsettleable?.sort((a, b) => a.count - b.count)).toEqual([
+      { tenantId: T, scopeId: scopes[1]!.id, count: 1, ids: ['y'] },
+      { tenantId: T, scopeId: scopes[0]!.id, count: 2, ids: ['x', null] },
+    ]);
+    // Not an error: a standing condition would be mailed on every tick.
+    expect(report.errors).toEqual([]);
+  });
+
+  it('a pass with nothing unsettleable carries no per-scope list at all (the twin)', async () => {
+    const report = await runPlatformSweep(fakeHost({ scopes: [{ id: sid(), tenantId: T }] }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      drainPlatformRequestsFn: async () => ({ drained: 1, done: 1, failed: 0, pending: 0 }),
+    });
+    expect(report).not.toHaveProperty('platformRequestUnsettleable');
   });
 
   it('skips revoked connections and providers with no sweeper', async () => {

@@ -458,10 +458,10 @@ export interface JobRunFilter {
 }
 
 /** Rows one `jobRuns` read returns by default. */
-export const JOB_RUN_LIST_LIMIT = 50;
+const JOB_RUN_LIST_LIMIT = 50;
 
 /** The most rows one `jobRuns` read will ever return, whatever the caller asks for. */
-export const JOB_RUN_LIST_MAX = 500;
+const JOB_RUN_LIST_MAX = 500;
 
 /**
  * The row budget for one operator read, normalised before it reaches SQL.
@@ -537,7 +537,7 @@ export function assertLeaseMs(leaseMs: number | undefined): void {
 }
 
 /** Runs one `runDueJobs` call picks up by default. */
-export const JOB_DRIVE_LIMIT = 50;
+const JOB_DRIVE_LIMIT = 50;
 
 /**
  * Rows one `runDueJobs` call will READ while looking for runnable ones.
@@ -548,7 +548,7 @@ export const JOB_DRIVE_LIMIT = 50;
  * drives what it found and returns, rather than scanning a scope's whole history on a
  * maintenance tick.
  */
-export const JOB_DRIVE_SCAN_MAX = 500;
+const JOB_DRIVE_SCAN_MAX = 500;
 
 /** What a handler says at the end of a pass. */
 export interface JobPassResult {
@@ -831,7 +831,7 @@ export interface JobRunStore {
 }
 
 /** `conflict` reason: two `step()` calls under one name in one pass. */
-export const JOB_STEP_REUSED = 'job_step_reused';
+const JOB_STEP_REUSED = 'job_step_reused';
 
 /**
  * #1834: the reason a host's system door gives a refusal that means "not now", never "no": the
@@ -909,7 +909,7 @@ function describe(value: unknown): string {
  * itself on resume, and the common shape of a step done for its effect is to return
  * nothing at all — which this would refuse.
  */
-export function assertQueueSafe(value: unknown, root: string): void {
+function assertQueueSafe(value: unknown, root: string): void {
   const open = new Set<object>();
   const reject = (path: string, what: string): never => {
     throw substratError(

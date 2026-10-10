@@ -77,11 +77,6 @@ export function explicitTupleSql(subject: string, relation: string, object: stri
   };
 }
 
-/** `ctx.grant`'s write — {@link explicitTupleSql} on a `granted:` relation. */
-export function delegatedGrantSql(principal: string, permission: string, object: string): { sql: string; params: Params } {
-  return explicitTupleSql(...refs(principal, permission, object));
-}
-
 /** Tombstone a live grant. A repeat revoke, or a revoke of a grant never made, changes nothing. */
 export function delegatedRevokeSql(
   principal: string,

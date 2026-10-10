@@ -44,6 +44,7 @@ import {
   type PrincipalId,
   type ScopeId,
   type TenantId,
+  isPlatformRequest,
 } from '@substrat-run/contracts';
 import { STORE_LOCAL_META_KEYS, runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { ATTACHMENT_TEXT_FIXTURES } from '@substrat-run/contract-tests';
@@ -188,6 +189,7 @@ describe('meridian on workerd — the deployment runs engine-absence\'s timer (#
     // …and the run is RECORDED where the platform reads a hosted scope's sweeps from: the
     // batched sweep-runs intent the pass leaves in the scope's journal (#1232).
     const runs = (await host().listPlatformRequests(standard.t, standard.s))
+      .filter(isPlatformRequest)
       .filter((r) => r.kind === SWEEP_RUNS_KIND)
       .flatMap((r) => sweepRunsPayload.parse(r.payload).entries);
     expect(runs).toContainEqual(
@@ -440,7 +442,8 @@ describe("the schedule kill switch reaches a hosted Meridian's timer (#1666)", (
     });
     const runsOf = async (): Promise<{ operation?: string; outcome: string }[]> =>
       (await host().listPlatformRequests(t, s))
-        .filter((r) => r.kind === SWEEP_RUNS_KIND)
+        .filter(isPlatformRequest)
+      .filter((r) => r.kind === SWEEP_RUNS_KIND)
         .flatMap((r) => sweepRunsPayload.parse(r.payload).entries)
         .filter((e) => e.kind === 'schedule');
 

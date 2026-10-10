@@ -100,7 +100,8 @@ export const VERTICAL_EVENTS_DDL = `
   -- and the delivery-error rewrite (#1632) reaches only this scope's OWN outbox events. If a
   -- consumer-side erasure of imported copies is ever added, it must reach \`row\` here too (a
   -- moved delivery row's \`error\` is a handler's own sentence), or the history keeps what the
-  -- live tables gave up. Follow-up: #1757.
+  -- live tables gave up. The contract suite holds the two copies to agree after an erasure
+  -- (vertical-events-suite, #1757), so widening only the live half goes red.
   CREATE TABLE IF NOT EXISTS _substrat_import_replays (
     -- The act (a ULID). The admin log's row for the replay carries the same id.
     replay_id TEXT NOT NULL,
@@ -282,15 +283,6 @@ export function exportReadPlan(
     keys.add(e.readPermission);
   }
   return { types: types.sort(), keys: [...keys].sort(), wanted, unexported };
-}
-
-/** Every (type → export) the given manifests declare. The caller's registration refuses conflicts. */
-export function exportsOf(
-  manifests: readonly { events: { exports?: readonly EventExport[] } }[],
-): Map<string, EventExport> {
-  const out = new Map<string, EventExport>();
-  for (const m of manifests) for (const e of m.events.exports ?? []) if (!out.has(e.type)) out.set(e.type, e);
-  return out;
 }
 
 /**

@@ -9,7 +9,7 @@ import type {
   ModuleId,
   PermissionKey,
   PlatformActorId,
-  PlatformRequest,
+  PlatformRequestEntry,
   PlatformRequestFilter,
   PlatformRequestId,
   PlatformRequestStatus,
@@ -669,9 +669,9 @@ export class VerticalClient {
    * the control plane's. The platform executes each with its own authority, then `settlePlatformRequest`
    * journals the outcome back in the vertical.
    */
-  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
+  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequestEntry[]> {
     const q = new URLSearchParams({ tenantId, scopeId });
-    return this.getInternal<PlatformRequest[]>(`/internal/platform-requests?${q}`);
+    return this.getInternal<PlatformRequestEntry[]>(`/internal/platform-requests?${q}`);
   }
 
   /**
@@ -684,12 +684,12 @@ export class VerticalClient {
     tenantId: TenantId,
     scopeId: ScopeId,
     filter?: PlatformRequestFilter,
-  ): Promise<PlatformRequest[]> {
+  ): Promise<PlatformRequestEntry[]> {
     const q = new URLSearchParams({ tenantId, scopeId });
     if (filter?.kind) q.set('kind', filter.kind);
     if (filter?.status) q.set('status', filter.status);
     if (filter?.limit) q.set('limit', String(filter.limit));
-    return this.getInternal<PlatformRequest[]>(`/internal/platform-requests/history?${q}`);
+    return this.getInternal<PlatformRequestEntry[]>(`/internal/platform-requests/history?${q}`);
   }
 
   /**

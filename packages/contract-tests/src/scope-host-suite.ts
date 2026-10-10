@@ -29,7 +29,10 @@ import {
   PLATFORM_REQUEST_ENTITY_TYPE,
   SEND_EMAIL_KIND,
   type OrgId,
+  isUndecodablePlatformRequest,
+  platformRequestEntry,
   type PlatformRequest,
+  type PlatformRequestEntry,
   type PlatformOutcomeEvent,
   type PlatformRequestId,
   type PrincipalId,
@@ -90,6 +93,18 @@ interface OutboxRow {
   pii_class: string;
   subject_id: string | null;
   operation?: string | null;
+}
+
+/**
+ * A journal read whose every row is whole. A test that planted nothing has no business meeting
+ * an `UndecodablePlatformRequest` (#1637), so one fails here, naming why, rather than being
+ * narrowed away — the read a vertical makes is held to the same union, and must narrow too.
+ */
+function whole(entries: PlatformRequestEntry[]): PlatformRequest[] {
+  return entries.map((e) => {
+    if (isUndecodablePlatformRequest(e)) throw new Error(`unexpected undecodable intent row: ${e.decodeError}`);
+    return e;
+  });
 }
 
 interface PlatformRequestRow {
@@ -438,7 +453,7 @@ export function scopeHostContractSuite(
       const stub = await host.getScope(alice, t1, s1);
       const id = await stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: { slug: 'padel' } });
 
-      const pending = await host.listPlatformRequests(t1, s1);
+      const pending = whole(await host.listPlatformRequests(t1, s1));
       const mine = pending.find((r) => r.id === id)!;
       expect(mine).toBeDefined();
       expect(mine.kind).toBe('provision-sibling');
@@ -448,7 +463,7 @@ export function scopeHostContractSuite(
       await host.settlePlatformRequest(t1, s1, mine.id, { status: 'done', result: { scopeId: 'NEWSITE' } });
 
       // A settled intent drops out of the pending list…
-      expect((await host.listPlatformRequests(t1, s1)).some((r) => r.id === id)).toBe(false);
+      expect((whole(await host.listPlatformRequests(t1, s1))).some((r) => r.id === id)).toBe(false);
       // …and the row now reads done with its handler result recorded.
       const rows = await stub.invoke<PlatformRequestRow[]>('platform/read-requests');
       const settled = rows.find((r) => r.id === id)!;
@@ -485,7 +500,7 @@ export function scopeHostContractSuite(
       await expect(
         host.settlePlatformRequest(t1, s1, platformRequestId.parse(id), { status: 'done', event: event(ulid()) }),
       ).rejects.toThrow();
-      expect((await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)?.attempts).toBe(0);
+      expect((whole(await host.listPlatformRequests(t1, s1))).find((r) => r.id === id)?.attempts).toBe(0);
       expect(await mine()).toEqual([]);
 
       await host.settlePlatformRequest(t1, s1, platformRequestId.parse(id), { status: 'done', event: event(id) });
@@ -506,11 +521,11 @@ export function scopeHostContractSuite(
     it('a transient failure keeps the intent pending and preserves a two-phase result (retry)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const id = await stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: {} });
-      const mine = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+      const mine = (whole(await host.listPlatformRequests(t1, s1))).find((r) => r.id === id)!;
 
       // Two-phase: record a minted id but keep the intent pending (crash-safe pre-write).
       await host.settlePlatformRequest(t1, s1, mine.id, { status: 'pending', result: { scopeId: 'MINTED' } });
-      const still = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+      const still = (whole(await host.listPlatformRequests(t1, s1))).find((r) => r.id === id)!;
       expect(still.status).toBe('pending'); // still drainable
       expect(still.result).toEqual({ scopeId: 'MINTED' });
       expect(still.attempts).toBe(1);
@@ -526,7 +541,7 @@ export function scopeHostContractSuite(
     it('reads back settled intents — the journal both the platform and the vertical see (#618)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const id = await stub.invoke<string>('platform/request', { kind: 'connector:test', payload: { doc: 1 } });
-      const row = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+      const row = (whole(await host.listPlatformRequests(t1, s1))).find((r) => r.id === id)!;
 
       // The failure this issue is about: a provider's own sentence, journaled and then
       // unreachable from anywhere a builder would look.
@@ -534,9 +549,9 @@ export function scopeHostContractSuite(
       await host.settlePlatformRequest(t1, s1, row.id, { status: 'failed', lastError: refusal });
 
       // Settled, so it is gone from the DRAIN's read…
-      expect((await host.listPlatformRequests(t1, s1)).some((r) => r.id === id)).toBe(false);
+      expect((whole(await host.listPlatformRequests(t1, s1))).some((r) => r.id === id)).toBe(false);
       // …and present, with the whole error, in the JOURNAL's.
-      const history = await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' });
+      const history = whole(await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' }));
       const settled = history.find((r) => r.id === id)!;
       expect(settled.status).toBe('failed');
       expect(settled.lastError).toBe(refusal); // verbatim, never truncated
@@ -546,15 +561,15 @@ export function scopeHostContractSuite(
       // `kind` is an exact match, so one provider's traffic reads alone.
       await stub.invoke('platform/request', { kind: 'provision-sibling', payload: {} });
       expect(
-        (await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' })).every(
+        (whole(await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' }))).every(
           (r) => r.kind === 'connector:test',
         ),
       ).toBe(true);
       // …as does `status`, and `limit` bounds the window.
       expect(
-        (await host.listPlatformRequestHistory(t1, s1, { status: 'failed' })).every((r) => r.status === 'failed'),
+        (whole(await host.listPlatformRequestHistory(t1, s1, { status: 'failed' }))).every((r) => r.status === 'failed'),
       ).toBe(true);
-      expect((await host.listPlatformRequestHistory(t1, s1, { limit: 1 })).length).toBe(1);
+      expect((whole(await host.listPlatformRequestHistory(t1, s1, { limit: 1 }))).length).toBe(1);
     });
 
     /**
@@ -567,7 +582,7 @@ export function scopeHostContractSuite(
     it('journals WHO refused beside what was refused, and survives the round trip (#841)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const id = await stub.invoke<string>('platform/request', { kind: 'connector:test', payload: { doc: 9 } });
-      const row = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+      const row = (whole(await host.listPlatformRequests(t1, s1))).find((r) => r.id === id)!;
 
       await host.settlePlatformRequest(t1, s1, row.id, {
         status: 'failed',
@@ -575,7 +590,7 @@ export function scopeHostContractSuite(
         failure: { origin: 'platform', code: 'permission_denied', permission: 'protocol:read' },
       });
 
-      const settled = (await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' })).find(
+      const settled = (whole(await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' }))).find(
         (r) => r.id === id,
       )!;
       expect(settled.failure).toEqual({
@@ -594,11 +609,11 @@ export function scopeHostContractSuite(
     it('leaves attribution null when the settling caller did not attribute (#841)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const id = await stub.invoke<string>('platform/request', { kind: 'connector:test', payload: { doc: 10 } });
-      const row = (await host.listPlatformRequests(t1, s1)).find((r) => r.id === id)!;
+      const row = (whole(await host.listPlatformRequests(t1, s1))).find((r) => r.id === id)!;
 
       await host.settlePlatformRequest(t1, s1, row.id, { status: 'failed', lastError: 'something broke' });
 
-      const settled = (await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' })).find(
+      const settled = (whole(await host.listPlatformRequestHistory(t1, s1, { kind: 'connector:test' }))).find(
         (r) => r.id === id,
       )!;
       expect(settled.lastError).toBe('something broke');
@@ -609,9 +624,9 @@ export function scopeHostContractSuite(
       const stub = await host.getScope(alice, t1, s1);
       const first = await stub.invoke<string>('platform/request', { kind: 'order-check', payload: { n: 1 } });
       const second = await stub.invoke<string>('platform/request', { kind: 'order-check', payload: { n: 2 } });
-      const rows = await host.listPlatformRequestHistory(t1, s1, { kind: 'order-check' });
+      const rows = whole(await host.listPlatformRequestHistory(t1, s1, { kind: 'order-check' }));
       expect(rows.map((r) => r.id)).toEqual([second, first]);
-      expect((await host.listPlatformRequestHistory(t1, s1, { kind: 'order-check', limit: 1 }))[0]!.id).toBe(second);
+      expect((whole(await host.listPlatformRequestHistory(t1, s1, { kind: 'order-check', limit: 1 })))[0]!.id).toBe(second);
     });
 
     it('a vertical reads the outcome of its OWN intents in scope — ctx.platformRequests (#618)', async () => {
@@ -646,8 +661,8 @@ export function scopeHostContractSuite(
     describe("a copy never runs the source's pending intents (#1686)", () => {
       let source: ScopeId;
       let id: string;
-      const pendingAt = async (s: ScopeId) => (await host.listPlatformRequests(t1, s)).map((r) => r.id);
-      const historyAt = async (s: ScopeId) => (await host.listPlatformRequestHistory(t1, s)).find((r) => r.id === id);
+      const pendingAt = async (s: ScopeId) => (whole(await host.listPlatformRequests(t1, s))).map((r) => r.id);
+      const historyAt = async (s: ScopeId) => (whole(await host.listPlatformRequestHistory(t1, s))).find((r) => r.id === id);
       /** The copy: the intent is not drainable there, and its journal says why. */
       const notCarriedAt = async (copy: ScopeId) => {
         expect(await pendingAt(copy)).not.toContain(id);
@@ -696,7 +711,7 @@ export function scopeHostContractSuite(
 
       it('a restore into the scope the backup came from keeps it pending, payload and all', async () => {
         await host.restoreScope(staff, t1, source, await host.admin.exportScope(staff, t1, source));
-        const back = (await host.listPlatformRequests(t1, source)).find((r) => r.id === id);
+        const back = (whole(await host.listPlatformRequests(t1, source))).find((r) => r.id === id);
         expect(back).toMatchObject({ status: 'pending', payload: { slug: 'copied' }, lastError: null, settledAt: null });
       });
     });
@@ -785,7 +800,7 @@ export function scopeHostContractSuite(
         expect(count('copy-unattempted')).toBe(1);
         // The consumer never ran on the copied event.
         expect(await logOf(fork)).toEqual([]);
-        expect(await host.listPlatformRequests(t1, fork)).toEqual([]);
+        expect(whole(await host.listPlatformRequests(t1, fork))).toEqual([]);
         // The retry reads settled, saying why, rather than vanishing.
         const settled = (await host.executorDeadLetters(t1, fork)).find((d) => d.executorId === 'flaky-effector');
         expect(settled?.error).toMatch(new RegExp(`^not carried: copied from scope ${source}`));
@@ -984,8 +999,8 @@ export function scopeHostContractSuite(
 
       /** All three reads, so each of the three decode sites is on the hook. */
       const readAll = async (s: ScopeId) => ({
-        pending: await host.listPlatformRequests(t1, s),
-        history: await host.listPlatformRequestHistory(t1, s),
+        pending: whole(await host.listPlatformRequests(t1, s)),
+        history: whole(await host.listPlatformRequestHistory(t1, s)),
         inScope: await (await host.getScope(alice, t1, s)).invoke<PlatformRequest[]>('platform/intents'),
       });
       const byId = (rows: PlatformRequest[], id: string) => rows.find((r) => r.id === id);
@@ -999,6 +1014,7 @@ export function scopeHostContractSuite(
         for (const row of [...pending, ...history, ...inScope]) {
           // ABSENT rather than null, so a healthy list is the shape it always was.
           expect(row).not.toHaveProperty('decodeError');
+          expect(row).not.toHaveProperty('undecodable');
         }
         expect(byId(history, healthySettled.id)).toMatchObject({
           payload: { doc: 2 },
@@ -1058,13 +1074,124 @@ export function scopeHostContractSuite(
           failure: { origin: 'platform', code: 'validation_failed', permission: null },
         });
 
-        expect((await host.listPlatformRequests(t1, s)).map((r) => r.id)).toEqual([healthyPending.id]);
-        const after = byId(await host.listPlatformRequestHistory(t1, s), brokenPendingId)!;
+        expect((whole(await host.listPlatformRequests(t1, s))).map((r) => r.id)).toEqual([healthyPending.id]);
+        const after = byId(whole(await host.listPlatformRequestHistory(t1, s)), brokenPendingId)!;
         expect(after.status).toBe('failed');
         expect(after.lastError).toBe(refusal);
         expect(after.failure).toEqual({ origin: 'platform', code: 'validation_failed', permission: null });
         // The stored payload is untouched by the settle, so the row still says it is not whole.
         expect(after.decodeError).toMatch(/^payload: /);
+      });
+
+      /**
+       * #1637: the columns #1588 could not tolerate — id, kind, status, attempts, requested_at —
+       * have no value the contract accepts that would not be fabricated, so such a row still
+       * threw, and took every read of the journal with it. It now reads as the OTHER half of
+       * the entry: those five columns as stored, as text, and why. One column at a time, each
+       * beside a healthy twin, because a restored dump can only show a column at a time.
+       */
+      describe('a row whose identity does not decode (#1637)', () => {
+        /** The healthy pending row's identity, as the variant names it: stored, as text. */
+        const asStored = {
+          undecodable: true,
+          id: brokenPendingId as string | null,
+          kind: 'connector:test' as string | null,
+          status: 'pending' as string | null,
+          attempts: '0' as string | null,
+          requestedAt: at as string | null,
+        };
+        /** One broken column each: what is planted, and the field it reads back as — written out. */
+        const broken: { column: string; over: Record<string, unknown>; reads: Partial<typeof asStored> }[] = [
+          { column: 'id', over: { id: 'not-a-ulid' }, reads: { id: 'not-a-ulid' } },
+          { column: 'id', over: { id: null }, reads: { id: null } },
+          // Oversized: read back capped, the way the decoder caps any value it quotes, so it cannot
+          // ride whole into the drain's report, the sweep log on every tick, or the dashboard card.
+          { column: 'id', over: { id: 'x'.repeat(5000) }, reads: { id: `${'x'.repeat(200)}…` } },
+          { column: 'kind', over: { kind: '' }, reads: { kind: '' } },
+          { column: 'status', over: { status: 'queued' }, reads: { status: 'queued' } },
+          { column: 'attempts', over: { attempts: -1 }, reads: { attempts: '-1' } },
+          { column: 'attempts', over: { attempts: 'abc' }, reads: { attempts: 'abc' } },
+          // An epoch, the shape a dump from another world would carry — as text, since a restore
+          // binds a JSON number as REAL and TEXT affinity would store it as `1756684800.0`.
+          { column: 'requested_at', over: { requested_at: '1756684800' }, reads: { requestedAt: '1756684800' } },
+        ];
+        /** The raw reads — no `whole`, since meeting the variant is the point. */
+        const readEntries = async (s: ScopeId) => ({
+          pending: await host.listPlatformRequests(t1, s),
+          history: await host.listPlatformRequestHistory(t1, s),
+          inScope: await (await host.getScope(alice, t1, s)).invoke<PlatformRequestEntry[]>('platform/intents'),
+        });
+
+        for (const { column, over, reads } of broken) {
+          it(`${column} = ${JSON.stringify(over[column])}: named as stored, beside the row that is whole`, async () => {
+            const clean = await readAll(await restoredWith([healthyPending]));
+            const row = { ...healthyPending, id: brokenPendingId, ...over };
+            const { pending, history, inScope } = await readEntries(await restoredWith([row, healthyPending]));
+
+            const expected = {
+              ...asStored,
+              ...reads,
+              decodeError: expect.stringMatching(new RegExp(`^${column}: `)),
+            };
+            // A stored `queued` is not pending, so the drain's queue never meets that one.
+            const queued = column === 'status' ? [] : [expected];
+            for (const [read, entries, twin, also] of [
+              ['pending', pending, clean.pending, queued],
+              ['history', history, clean.history, [expected]],
+              ['in-scope', inScope, clean.inScope, [expected]],
+            ] as const) {
+              expect(entries, read).toHaveLength(1 + also.length);
+              // The healthy row reads EXACTLY as it does with no bad neighbour.
+              const healthy = entries.filter((e) => !isUndecodablePlatformRequest(e));
+              expect(healthy, read).toEqual(twin);
+              expect(entries.filter(isUndecodablePlatformRequest), read).toEqual(also);
+              // Every entry satisfies the published union — the variant claims no branded type.
+              for (const e of entries) expect(() => platformRequestEntry.parse(e), read).not.toThrow();
+            }
+          });
+        }
+
+        it('several broken columns at once are all named, and the JSON beside them too', async () => {
+          const row = { ...healthyPending, id: 'not-a-ulid', status: 'queued', payload: 'nope' };
+          const { history } = await readEntries(await restoredWith([row, healthyPending]));
+          const variant = history.find(isUndecodablePlatformRequest)!;
+          expect(variant.decodeError.split('; ').map((part) => part.split(':')[0])).toEqual(['id', 'status', 'payload']);
+          // Named, never quoted: the payload's stored text does not travel in the reason.
+          expect(variant.decodeError).not.toContain('nope');
+        });
+
+        it('a clean journal carries no variant marker at all (the positive twin)', async () => {
+          const { pending, history, inScope } = await readEntries(await restoredWith([healthyPending, healthySettled]));
+          for (const e of [...pending, ...history, ...inScope]) {
+            expect(e).not.toHaveProperty('undecodable');
+            expect(isUndecodablePlatformRequest(e)).toBe(false);
+          }
+        });
+
+        it('a variant whose stored id is still an id can be refused: settled, out of the queue, still named', async () => {
+          // The drain's case (a) — tested there against a fake; what BOTH adapters owe it is that
+          // the settle lands on a row the read could not decode.
+          const s = await restoredWith([{ ...healthyPending, id: brokenPendingId, kind: '' }, healthyPending]);
+          const refusal = 'not executed: the intent row could not be decoded (kind: …)';
+          await host.settlePlatformRequest(t1, s, brokenPendingId, {
+            status: 'failed',
+            lastError: refusal,
+            failure: { origin: 'platform', code: 'validation_failed', permission: null },
+          });
+          const { pending, history } = await readEntries(s);
+          expect(pending.map((e) => e.id)).toEqual([healthyPending.id]);
+          // Settled — and the settle's `attempts + 1` left a number where text was — but the kind
+          // is still not a kind, so the row is still the variant, and says so.
+          expect(history.find(isUndecodablePlatformRequest)).toEqual({
+            undecodable: true,
+            id: brokenPendingId,
+            kind: '',
+            status: 'failed',
+            attempts: '1',
+            requestedAt: healthyPending.requested_at,
+            decodeError: expect.stringMatching(/^kind: /),
+          });
+        });
       });
     });
 
@@ -2997,7 +3124,7 @@ export function scopeHostContractSuite(
         };
 
         const journal = async (kind: string): Promise<PlatformRequest[]> =>
-          host.listPlatformRequestHistory(t1, s1, { kind });
+          whole(await host.listPlatformRequestHistory(t1, s1, { kind }));
 
         it('redacts the routed copy of the event, and leaves the neighbour intact', async () => {
           // A distinct kind per test: this scope's journal is shared with every other
@@ -3060,7 +3187,7 @@ export function scopeHostContractSuite(
           const kind = `connector:erasure-${ulid()}`;
           const erased = dataSubjectId.parse(ulid());
           const id = await routeIntent(kind, erased, 'Anna Ek');
-          expect((await host.listPlatformRequests(t1, s1)).some((r) => r.id === id)).toBe(true);
+          expect((whole(await host.listPlatformRequests(t1, s1))).some((r) => r.id === id)).toBe(true);
 
           await host.admin.shredSubject(staff, t1, s1, erased);
 
@@ -3071,7 +3198,7 @@ export function scopeHostContractSuite(
           expect(settled.status).toBe('failed');
           expect(settled.settledAt).not.toBeNull();
           expect(settled.lastError).toContain('subject erasure');
-          const stillPending = await host.listPlatformRequests(t1, s1);
+          const stillPending = whole(await host.listPlatformRequests(t1, s1));
           expect(stillPending.some((r) => r.id === id)).toBe(false);
         });
 
@@ -3639,7 +3766,7 @@ export function scopeHostContractSuite(
             });
             await host.settlePlatformRequest(t1, s1, template, { status: 'done' });
             const queued = async () => {
-              const rows = await host.listPlatformRequestHistory(t1, s, { kind: SWEEP_RUNS_KIND });
+              const rows = whole(await host.listPlatformRequestHistory(t1, s, { kind: SWEEP_RUNS_KIND }));
               return { mine: rows.find((r) => r.id === ids.mine)!, theirs: rows.find((r) => r.id === ids.theirs)! };
             };
             const before = await queued();

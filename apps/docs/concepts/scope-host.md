@@ -144,7 +144,7 @@ interface OperationContext {
   canAssign(roleKey: string): Promise<Coverage>;
   readonly capabilities: CapabilityVerbs;   // mint / revoke / list
   requestPlatform(request: PlatformRequestInput): PlatformRequestId;
-  platformRequests(filter?: PlatformRequestFilter): PlatformRequest[];
+  platformRequests(filter?: PlatformRequestFilter): PlatformRequestEntry[];  // narrow: isUndecodablePlatformRequest
   sealToConnection(provider: string, plaintext: string): Promise<SealedSecret>;
   atomic<T>(fn: () => T | Promise<T>): Promise<T>;
 }

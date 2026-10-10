@@ -149,6 +149,8 @@ export interface PlatformSweepOptions {
     pending: number;
     /** No deployment could be reached for this scope, so nothing was drained or counted (#1840). */
     unreachable?: boolean;
+    /** Pending intents nothing could run or settle — their stored id is not an id (#1637). */
+    unsettleable?: { count: number; ids: (string | null)[] };
   }>;
   /**
    * Re-run one scope's provision in the vertical's own deployment (#1172).
@@ -639,6 +641,12 @@ export interface PlatformSweepReport {
   /** Platform-intent drain outcomes summed across scopes (platform-intents.md). */
   platformRequestTotals: PlatformRequestDrainTotals;
   /**
+   * WHERE `platformRequestTotals.unsettleable` stands (#1637): one entry per scope whose queue
+   * holds a row nothing can settle — ABSENT when no scope's does. Like `eventDrain.skipped`, a
+   * standing condition, so it is reported on every pass and never an `errors` entry.
+   */
+  platformRequestUnsettleable?: PlatformRequestUnsettleable[];
+  /**
    * Scopes whose provision was re-run because the version running on them had moved past
    * the one it last ran against (#1172, #1653), or null when no `reconcileScopeFn` was
    * supplied.
@@ -970,6 +978,16 @@ export interface AccessLogSweepReport {
   ref: string | null;
 }
 
+/** One scope's share of `PlatformSweepReport.platformRequestUnsettleable` (#1637). */
+export interface PlatformRequestUnsettleable {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  /** Exact. */
+  count: number;
+  /** The stored ids, as text (`null` for SQL NULL); capped by the drain, so `count` may be larger. */
+  ids: (string | null)[];
+}
+
 /** Platform-intent drain counts, summed across scopes in one pass. */
 export interface PlatformRequestDrainTotals {
   /** Active scopes that had at least one intent drained. */
@@ -992,6 +1010,12 @@ export interface PlatformRequestDrainTotals {
    * drain fn returned `unreachable: true`. Their queues are not in the counts above either.
    */
   unreachable: number;
+  /**
+   * Pending intents a drain could neither run nor settle, because the stored id of a row whose
+   * identity did not decode is not an id (#1637). They stay pending, so every pass counts them
+   * again until the row is repaired. Not in `drained`.
+   */
+  unsettleable: number;
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -1064,7 +1088,7 @@ export async function runPlatformSweep(
     snapshotsReaped: 0,
     archivedScopesReaped: 0,
     tenantsReaped: 0,
-    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0 },
+    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0, unsettleable: 0 },
     provisionReconcile: null,
     migrations: null,
     schedules: null,
@@ -1225,6 +1249,10 @@ export async function runPlatformSweep(
         report.platformRequestTotals.done += r.done;
         report.platformRequestTotals.failed += r.failed;
         report.platformRequestTotals.pending += r.pending;
+        if (r.unsettleable) {
+          report.platformRequestTotals.unsettleable += r.unsettleable.count;
+          (report.platformRequestUnsettleable ??= []).push({ tenantId: s.tenantId, scopeId: s.id, ...r.unsettleable });
+        }
       } catch (err) {
         report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
       }
@@ -2062,7 +2090,7 @@ export async function exportBreaksOf(input: {
 }
 
 /** How `exportBreakRefusal` begins: what lets the promote route recognise it and add the listing. */
-export const EXPORT_BREAK_REFUSAL = 'promotion drops or re-versions';
+const EXPORT_BREAK_REFUSAL = 'promotion drops or re-versions';
 
 /** Whether a throw is the promote gate's export-break refusal (`exportBreakRefusal`). */
 export function isExportBreakRefusal(err: unknown): err is Error {
