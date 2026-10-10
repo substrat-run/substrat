@@ -1,3 +1,5 @@
+import v8 from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HTTPException } from 'hono/http-exception';
 import {
@@ -138,6 +140,25 @@ describe('classifyError announces a status it read from a sentence', () => {
     // The prefix is the identity: a different tail past the bound is the same sentence.
     isolate.classifyError(new Error(`${huge(0)}y`));
     expect(announcements()).toHaveLength(3);
+  });
+
+  it('retains the bound, not the sentence: a hundred megabyte sentences pin no megabytes', async () => {
+    // A key's LENGTH proves nothing about what it keeps alive: V8 can answer `slice` with a
+    // view onto the whole parent string. So this measures the heap once the sentences are
+    // unreachable from everything but the dedupe set.
+    v8.setFlagsFromString('--expose_gc');
+    const gc = runInNewContext('gc') as () => void;
+    vi.resetModules();
+    const isolate = await import('../src/errors.js');
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    for (let i = 0; i < 100; i++) {
+      isolate.classifyError(new Error(`order not found: ${i} ${'x'.repeat(1_000_000)}${i}`));
+    }
+    gc();
+    const retained = process.memoryUsage().heapUsed - before;
+    expect(isolate.announcedKeys()).toHaveLength(100);
+    expect(retained).toBeLessThan(10_000_000); // ~100 MB when each key pins its sentence
   });
 
   it('logs a sentence at the bound whole, unmarked', async () => {

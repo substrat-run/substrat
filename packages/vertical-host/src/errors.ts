@@ -107,9 +107,19 @@ const announced = new Set<string>();
 const ANNOUNCED_MAX = 100;
 const ANNOUNCED_PREFIX = 120;
 
+/**
+ * A sentence's first `ANNOUNCED_PREFIX` characters as a string of its own. Rebuilt, not
+ * sliced: V8 can answer `slice` of a long string with a view that keeps the WHOLE sentence
+ * alive, so a sliced copy bounds the length and none of the memory — in the dedupe set, or
+ * in whatever buffers the log line.
+ */
+function prefixOf(message: string): string {
+  return [...message.slice(0, ANNOUNCED_PREFIX)].join('');
+}
+
 /** A sentence cut to the logged bound, marked when it was cut. */
 function bounded(message: string): string {
-  return message.length > ANNOUNCED_PREFIX ? `${message.slice(0, ANNOUNCED_PREFIX)}… (truncated)` : message;
+  return message.length > ANNOUNCED_PREFIX ? `${prefixOf(message)}… (truncated)` : message;
 }
 
 /** The keys `announced` holds — for a test that the set stays bounded, not part of the package. */
@@ -123,7 +133,7 @@ function guessFromSentence(
 ): ErrorCode | undefined {
   const guess = guesses.find((g) => g.pattern.test(message));
   if (!guess) return undefined;
-  const key = `${guess.code}:${message.slice(0, ANNOUNCED_PREFIX)}`;
+  const key = `${guess.code}:${prefixOf(message)}`;
   if (!announced.has(key) && announced.size < ANNOUNCED_MAX) {
     announced.add(key);
     console.warn('vertical-host.untyped-refusal', {
