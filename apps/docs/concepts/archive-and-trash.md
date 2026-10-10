@@ -1,3 +1,7 @@
+---
+description: "Archive and trash: two reversible, separately permissioned ways to hide one entity, declared on the entity, served by derived operations, and kept apart from subject erasure."
+---
+
 # Archive and trash
 
 People mean three different things by "delete", and the platform keeps them apart:

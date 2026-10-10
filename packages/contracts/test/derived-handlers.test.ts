@@ -414,7 +414,7 @@ describe('derivationOf — the moves (#119)', () => {
   });
 
   it('not over an entity that declares no archive (or no trash)', () => {
-    const overBin = { ...ARCHIVE, permission: { key: 'note:write', entity: 'bin', idFrom: 'binId' }, input: z.object({ binId: z.string() }) };
+    const overBin = { ...ARCHIVE, permission: { key: 'note:write', entity: 'bin', idFrom: 'binId' }, input: z.object({ binId: z.string() }), http: { method: 'POST', path: '/bins/{binId}/archive' } } as const;
     expect(kindOf(overBin)).toBe('trash');
     expect(() => define({ 'b/archive': { ...overBin, derive: 'archive' } })).toThrow(
       "model: 'b/archive' declares `derive: 'archive'`, but 'bin' declares no `archive`.",
