@@ -1594,7 +1594,8 @@ export function mountPlatformSurface<Env extends object>(
   // re-encoding on either side.
   //
   // `404` means "this scope does not know that id" — a distinct answer from a
-  // refusal, which comes back as the permission check's own error. Read-gated at the
+  // refusal, which comes back as the permission check's own error: a `permission_denied`
+  // whose code survives the ScopeDO hop (#113), so it answers 403. Read-gated at the
   // far end like any other caller: the target's `readPermission`, checked against
   // this connection's delivered tuple.
   app.get('/internal/connector-attachment/:attachmentId', async (c) => {

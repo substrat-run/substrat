@@ -1,5 +1,82 @@
 # @substrat-run/docs
 
+## 0.1.22
+
+### Patch Changes
+
+- e55e06c: **Breaking:** an operation whose handler the model describes completely must say who writes that handler (#1773). After upgrading, `defineOperations` refuses at module load any operation of a derivable shape that declares neither, and the error names the operation, the shape and the remedy:
+
+  - Declare `derive: '<shape>'` and delete the handler. `operationsFor` no longer asks for it and supplies the platform's.
+  - Or keep the handler and declare `authored: '<what the derived handler would get wrong here>'`.
+
+  The derivable shapes, each matched exactly:
+
+  - `get` is served as `GET`, its input is the id alone, its output is the entity's own `fields`, and it emits nothing.
+  - `list` is a `paged.over` page of the entity's own `fields`, served as `GET` and emitting nothing. Every input is a declared `filterable` column of the same type. A check narrowed to a parent scopes the page through the link to that parent: the `<parent>_id` column, named by an `idFrom` of `<parent>Id`.
+  - `update` is a `PATCH` narrowed to the row, with `concurrency` over it, emitting about it and answering with its `fields`. Absent fields are left alone and `null` clears.
+  - `delete` is a `DELETE` narrowed to the row, emitting about it and answering `{ id, deleted }`, on an entity that no other entity declares as parent.
+
+  What changes:
+
+  - `@substrat-run/contracts` adds `derive` and `authored` to an operation declaration. They are mutually exclusive, in the type and at load. It exports `derivationOf(declaration, entities)`, which says what shape an operation could be derived as, and the `DerivedKind` type. `defineOperations` also refuses a `derive` that does not match its shape (naming the clause that fails), a blank `authored`, and an `authored` on an operation nothing could derive. `emitModel(entities, { operations })` renders a `handlers` map into `model.json`, so a handler changing hands, or an exception and its reason, shows in the reviewed diff.
+  - `@substrat-run/kernel`: `operationsFor` leaves derived operations out of the handler map it requires, and handing one a handler is a compile error. A handler that arrives for one through a cast is refused at load. A derived handler checks the declared key first, reads and writes only the entity's declared columns through `ctx.sql`, answers `not_found` for a missing row, and emits the declared event once per write. An update that sends no fields writes nothing and emits nothing.
+  - `@substrat-run/contract-tests` exports `derivedHandlersContractSuite`. Both adapters run it.
+  - The engines declare no derivable operation, so they are unchanged apart from passing their operations to `emitModel`. The `create-substrat` template's `AGENTS.md` documents the rule.
+
+  A later release that learns a new derivable shape (`create` is next) will refuse operations that pass today. That is deliberate: each one gets the same choice.
+
+- 7eb1b3c: **Breaking:** the kernel no longer exports the live-socket close codes or the socket cap (part of #1978).
+
+  - `LIVE_CLOSE` is now defined in `@substrat-run/contracts`, and in its zero-import `./wire-headers` subpath beside `LIVE_MODE_HEADER` and `LiveRefusal`. A browser bundle can import the close codes without the rest of the package. The kernel no longer exports it; import it from `@substrat-run/contracts` instead.
+  - `LIVE_SOCKETS_PER_PRINCIPAL` is the hosted adapter's own limit, and now lives in `@substrat-run/adapter-cloudflare`. The kernel no longer exports it. The limit is unchanged: 8 sockets per principal per scope.
+  - ticket0's desk app reads the close code from `@substrat-run/contracts/wire-headers` instead of keeping its own copy of `4429`.
+
+- 7eb1b3c: **Breaking:** the kernel's index no longer exports 133 values that nothing outside the kernel imported (part of #1978). They are internal plumbing, such as SQL fragments, batch sizes, budgets and decode helpers, and each one was published surface the additive-only rule had to freeze. Nine of them were dead code and are deleted: `isAttachmentTextRun`, `attributedHost`, `delegatedGrantSql`, `isListIndexName`, `listPlansByEntityType`, `splitCursor`, `searchPlansByEntityType`, `exportsOf` and `peerSwitchedOff`.
+
+  - `ulidFloor` and `ulidCeiling` are still exported from `@substrat-run/kernel/ulid`.
+  - `refusedTransitionOf` is still exported from `@substrat-run/contracts`, where it is defined.
+  - The kernel's index is now pinned by a test: adding or removing a value export means updating a checked-in list in the same change.
+  - The rest stay in their modules and leave only the index: `applyTableChange`, `assertAttachmentTextBounds`, `assertDirectoryTablesBuilt`, `assertEntityStateColumns`, `assertNoJournalSql`, `assertNoReservedColumnWrite`, `assertNoSpineReference`, `assertNoSpineWrite`, `assertNoStatefulDdl`, `assertQueueSafe`, `assertTablesOwned`, `assertWithinErasureReach`, `assertWithinSqlLimits`, `asyncInvocationLine`, `asyncLevelOf`, `AUDITED_OPERATIONS_BATCH`, `backfillOwnershipFromJournal`, `CANCELLED_INTENT_NOTE`, `CAPABILITY_COLUMNS`, `capabilityExchangeable`, `capabilityGrantOf`, `capabilityListQuery`, `capabilityLive`, `capabilityRecordOf`, `carriesSecret`, `changesSchema`, `combineCoverage`, `CONNECTOR_CALL_ERROR_TYPES`, `connectorCallErrorType`, `copyRestoreFenceMarginMs`, `DENIAL_COLUMNS`, `drainedEventOf`, `dumpCarriesSwitches`, `ENTITY_STATE_MOVES_TABLE`, `entityStatePlans`, `entityStateTriggerDdl`, `entityStateWhere`, `EXPORT_BREAK_REFUSAL`, `GRANT_READ_MAX_LIMIT`, `GRANT_READ_WORK_BUDGET`, `holdingsDigest`, `idempotencySubject`, `inputBoundRefusal`, `intentIdOfFailureMessage`, `isPositiveIntegerBound`, `isUnknownRoleError`, `JOB_ADMISSION_BACKOFF_BASE_MS`, `JOB_ADMISSION_BACKOFF_MAX_MS`, `JOB_DRIVE_LIMIT`, `JOB_DRIVE_SCAN_MAX`, `JOB_LEASE_ENTRY_MARGIN`, `JOB_RUN_LIST_LIMIT`, `JOB_RUN_LIST_MAX`, `JOB_RUN_REDACTION_SQL`, `JOB_STEP_REDACTION_SQL`, `JOB_STEP_REUSED`, `joinedMembershipExpiry`, `KERNEL_ACTOR`, `kernelOutboxInsertSql`, `lifecycleAfterLoad`, `LIST_INDEX_PREFIX`, `listIndexColumns`, `listIndexDdl`, `liveOrgMembership`, `mapDenialBucketRow`, `mapDenialOperationBucketRow`, `MARK_COPY_ORIGIN_SQL`, `mediaTypeOf`, `memberRemoveRequestedPayload`, `MIGRATION_DIGEST_LEGACY`, `MIGRATION_FLAG_THRESHOLD`, `migrationFleet`, `migrationSummary`, `MIN_SEARCH_TERM`, `mintCapabilitySessionToken`, `MODULE_LOG_LIMITS`, `moduleLogLine`, `moduleTableNames`, `normalizeExtractedText`, `OPERATION_SERIES_ID_SLACK_MS`, `PEER_SUBJECT_PREFIX`, `persistedText`, `PROVISION_RECONCILE_REPORTED_IDS`, `purgeCandidates`, `purgeCutoffOf`, `purgeIndexDdl`, `readCapabilities`, `REDACTED_INTENT_NOTE`, `redactedIntentPayload`, `REFUSAL_COLUMNS`, `REFUSAL_JOURNAL_PREFIX`, `REFUSALS_DDL`, `refusedTransitionOf`, `renderTemplate`, `reportKeyOf`, `rowDecoder`, `SCHEDULE_STATE_KIND_OF_OP`, `SCOPE_LIFECYCLE_KEY`, `scopeMigrationState`, `SEARCH_INDEX_PREFIX`, `searchIndexDdl`, `spineRowsInsert`, `stateColumnsOf`, `storedActor`, `subjectSwitchedOff`, `switchSubjectGrants`, `SYSTEM_SWITCH_OFF_PREDICATE`, `SYSTEM_SWITCH_OFF_RELATION`, `SYSTEM_SWITCHES_TABLE`, `TABLE_OWNERS`, `tableChangesOf`, `tablesCreatedBy`, `tableStatements`, `TELEMETRY_PRUNE_BATCH`, `TRASH_SCAN_BUDGET`, `truncateUtf8`, `ulidCeiling`, `ulidFloor`, `UNDECODED_ACTOR`, `UNDECODED_PERMISSION`, `UNDECODED_REQUESTER`, `UNDRAINED_SCAN_FACTOR`, `UNDRAINED_SKIPPED_IDS`, `WRITE_LIFECYCLE_SQL`.
+
+- e55e06c: **Breaking:** a module registration's handlers are bound to its declared operations by a type (#1835). Migrate in two lines:
+
+  - Replace `operationInputs: operationInputsOf(ops), operations: { … } satisfies OperationImpl<typeof ops, OperationContext>` (and any `operationConcurrency` / `operationIdempotencyOptOuts` line) with `...operationsFor(ops)({ … })`, imported from `@substrat-run/kernel`.
+  - A module with no declared operations wraps its map as `...undeclaredOperations('why it has none', { … })`. Code that reads a registration's handlers reads `registration.operations?.handlers`.
+
+  What changes:
+
+  - `ModuleRegistration.operations` is now a `BoundOperations`, one value holding the `handlers` and the three maps derived from their declaration: `inputs`, `concurrency` and `idempotencyOptOuts`. The `operationInputs`, `operationConcurrency` and `operationIdempotencyOptOuts` fields are gone, so a registration can neither forget a map nor pair its handlers with another declaration's. Only `operationsFor` and `undeclaredOperations` produce the value. It is a class with an ES-private brand, so a hand-written `operations: { … }`, a spread of a bound value or a copy with one map swapped does not compile. Both adapters also refuse such a value at registration (`assertBoundOperations`). Apart from that new refusal, what the host parses, compares and refuses is unchanged.
+  - `operationsFor(ops)(handlers)` holds the handlers exactly to the declaration. A missing, extra or mistyped handler is a compile error at that entry, and so is one whose type was erased: cast `as never` or `as any`, or typed with `any` parameters or an `any` return. From the same declaration it returns the input schemas the host parses with, the `If-Match` concurrency map and the idempotency opt-outs.
+  - `@substrat-run/boundary-lint` adds **R11**, for the casts no type can see. It refuses:
+
+    - an `as` or `<T>` on the whole map, at an `operations:` key, the shorthand `operations`, a binder's handler argument, or the initializer of the local name handed over there;
+    - a cast on any entry of the handlers a binder is given;
+    - a cast to `BoundOperations` or `ModuleRegistration['operations']` anywhere in module code.
+
+    A deliberate cast goes in a `boundary-lint-allow R11` … `boundary-lint-end R11` block. **R2** also refuses module code importing a test seam: `@substrat-run/kernel/testing`, `@substrat-run/contract-tests` or `@substrat-run/engine-test-kit`.
+
+  - `@substrat-run/contract-tests` exports `testOperations(handlers, derived?)`. With handlers only, it is the `undeclaredOperations` shorthand its fixtures use. With `derived`, it is the test seam the refusal suites use to hand the host maps that no binder made, built through the kernel's new `@substrat-run/kernel/testing` subpath.
+  - The engines and the `create-substrat` template now bind through `operationsFor`. Their behaviour is unchanged.
+
+- dfb653b: An operator can revoke a capability on a hosted scope (part of #1686). Before this, the platform's `revokeCapability` refused every scope served by a vertical's own deployment, so a leaked link share could be seen in the console but not stopped.
+
+  - `HostAdmin.revokeCapability` on the shared control plane now reaches the deployment that serves the scope, through a new `capabilityDelegation` option on `CloudflareScopeHost`. The admin log row stays on the control plane, and the record names the operator as its revoker. With no delegation configured, a hosted scope is still refused `unavailable`.
+  - `HostAdmin.revokeCapability` is audited intent-then-outcome on both adapters, as the kill switches are (kernel `auditedCapabilityRevoke`; `revokeCapability` joins `AUDITED_CHANGE_ACTIONS`). An intent row lands before anything is revoked. Then the outcome is one of:
+
+    - `applied`, with the record as it stood;
+    - `refused`, when the scope holds no such capability, or the deployment refused or predates the route;
+    - nothing yet, when the answer was lost or named another capability. The scheduled settle then closes the intent as `unknown`.
+
+    So a revoke that landed is never missing from the admin log.
+
+  - `provesNothingChanged` now lives in `@substrat-run/contracts`. `@substrat-run/control-plane-client` re-exports it unchanged.
+  - `mountPlatformSurface` mounts `POST /internal/capabilities/revoke`, behind the platform secret like the rest of `/internal/*`. It answers `{ before }`: the record as it stood, or `null` when the scope holds no such capability. That answer is never a 404, because a 404 is how a deployment built before this route says so. `VerticalScopeHost` gains `revokeCapabilityLocal`.
+  - **Breaking:** `CloudflareScopeHost.revokeCapabilityLocal` now returns the record as it stood (`CapabilityRecord | null`) instead of a boolean. A check against `null` still works. A check of `=== true` does not.
+  - `VerticalClient.revokeCapability` makes the call. A deployment built before the route answers 501 "redeploy the vertical", and nothing is revoked. An answer lost in transit is a 502 that says to read the capabilities before retrying.
+  - The control-plane API gains `POST /tenants/:t/scopes/:s/capabilities/:id/revoke`, staff only like the capability read, with `revokeCapability` on the staff client. It answers 204, and again for a capability already revoked. It answers 404 for a capability the scope does not hold.
+  - `contracts` gains `capabilityRevokeRequest` and `capabilityRevokeAnswer`.
+  - The console's Capabilities card has a Revoke button, with a confirm, on every capability still acting: live ones, and used-up ones whose sessions keep acting until they expire.
+
 ## 0.1.21
 
 ### Patch Changes

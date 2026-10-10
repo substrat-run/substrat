@@ -1,5 +1,54 @@
 # create-substrat
 
+## 0.11.3
+
+### Patch Changes
+
+- e55e06c: **Breaking:** an operation whose handler the model describes completely must say who writes that handler (#1773). After upgrading, `defineOperations` refuses at module load any operation of a derivable shape that declares neither, and the error names the operation, the shape and the remedy:
+
+  - Declare `derive: '<shape>'` and delete the handler. `operationsFor` no longer asks for it and supplies the platform's.
+  - Or keep the handler and declare `authored: '<what the derived handler would get wrong here>'`.
+
+  The derivable shapes, each matched exactly:
+
+  - `get` is served as `GET`, its input is the id alone, its output is the entity's own `fields`, and it emits nothing.
+  - `list` is a `paged.over` page of the entity's own `fields`, served as `GET` and emitting nothing. Every input is a declared `filterable` column of the same type. A check narrowed to a parent scopes the page through the link to that parent: the `<parent>_id` column, named by an `idFrom` of `<parent>Id`.
+  - `update` is a `PATCH` narrowed to the row, with `concurrency` over it, emitting about it and answering with its `fields`. Absent fields are left alone and `null` clears.
+  - `delete` is a `DELETE` narrowed to the row, emitting about it and answering `{ id, deleted }`, on an entity that no other entity declares as parent.
+
+  What changes:
+
+  - `@substrat-run/contracts` adds `derive` and `authored` to an operation declaration. They are mutually exclusive, in the type and at load. It exports `derivationOf(declaration, entities)`, which says what shape an operation could be derived as, and the `DerivedKind` type. `defineOperations` also refuses a `derive` that does not match its shape (naming the clause that fails), a blank `authored`, and an `authored` on an operation nothing could derive. `emitModel(entities, { operations })` renders a `handlers` map into `model.json`, so a handler changing hands, or an exception and its reason, shows in the reviewed diff.
+  - `@substrat-run/kernel`: `operationsFor` leaves derived operations out of the handler map it requires, and handing one a handler is a compile error. A handler that arrives for one through a cast is refused at load. A derived handler checks the declared key first, reads and writes only the entity's declared columns through `ctx.sql`, answers `not_found` for a missing row, and emits the declared event once per write. An update that sends no fields writes nothing and emits nothing.
+  - `@substrat-run/contract-tests` exports `derivedHandlersContractSuite`. Both adapters run it.
+  - The engines declare no derivable operation, so they are unchanged apart from passing their operations to `emitModel`. The `create-substrat` template's `AGENTS.md` documents the rule.
+
+  A later release that learns a new derivable shape (`create` is next) will refuse operations that pass today. That is deliberate: each one gets the same choice.
+
+- e55e06c: **Breaking:** a module registration's handlers are bound to its declared operations by a type (#1835). Migrate in two lines:
+
+  - Replace `operationInputs: operationInputsOf(ops), operations: { … } satisfies OperationImpl<typeof ops, OperationContext>` (and any `operationConcurrency` / `operationIdempotencyOptOuts` line) with `...operationsFor(ops)({ … })`, imported from `@substrat-run/kernel`.
+  - A module with no declared operations wraps its map as `...undeclaredOperations('why it has none', { … })`. Code that reads a registration's handlers reads `registration.operations?.handlers`.
+
+  What changes:
+
+  - `ModuleRegistration.operations` is now a `BoundOperations`, one value holding the `handlers` and the three maps derived from their declaration: `inputs`, `concurrency` and `idempotencyOptOuts`. The `operationInputs`, `operationConcurrency` and `operationIdempotencyOptOuts` fields are gone, so a registration can neither forget a map nor pair its handlers with another declaration's. Only `operationsFor` and `undeclaredOperations` produce the value. It is a class with an ES-private brand, so a hand-written `operations: { … }`, a spread of a bound value or a copy with one map swapped does not compile. Both adapters also refuse such a value at registration (`assertBoundOperations`). Apart from that new refusal, what the host parses, compares and refuses is unchanged.
+  - `operationsFor(ops)(handlers)` holds the handlers exactly to the declaration. A missing, extra or mistyped handler is a compile error at that entry, and so is one whose type was erased: cast `as never` or `as any`, or typed with `any` parameters or an `any` return. From the same declaration it returns the input schemas the host parses with, the `If-Match` concurrency map and the idempotency opt-outs.
+  - `@substrat-run/boundary-lint` adds **R11**, for the casts no type can see. It refuses:
+
+    - an `as` or `<T>` on the whole map, at an `operations:` key, the shorthand `operations`, a binder's handler argument, or the initializer of the local name handed over there;
+    - a cast on any entry of the handlers a binder is given;
+    - a cast to `BoundOperations` or `ModuleRegistration['operations']` anywhere in module code.
+
+    A deliberate cast goes in a `boundary-lint-allow R11` … `boundary-lint-end R11` block. **R2** also refuses module code importing a test seam: `@substrat-run/kernel/testing`, `@substrat-run/contract-tests` or `@substrat-run/engine-test-kit`.
+
+  - `@substrat-run/contract-tests` exports `testOperations(handlers, derived?)`. With handlers only, it is the `undeclaredOperations` shorthand its fixtures use. With `derived`, it is the test seam the refusal suites use to hand the host maps that no binder made, built through the kernel's new `@substrat-run/kernel/testing` subpath.
+  - The engines and the `create-substrat` template now bind through `operationsFor`. Their behaviour is unchanged.
+
+- 88a4380: **Deprecated:** a status read from an error's sentence (part of #113). `classifyError`, and with it `mountOperations`, `mountPlatformSurface` and `problemResponse`, still answers a throw that declared no code with 403 for "permission denied", 404 for "not found" or "unknown scope", and 409 for "invalid transition" or "immutable". A later release stops reading the sentence, and such a throw will answer 400 like any other unrecognised one. Until then a match logs `vertical-host.untyped-refusal` in the vertical's own logs, naming the code that keeps the status. Each worker isolate logs a given code and first 120 characters of the sentence once (a longer sentence is logged cut to those 120, marked `… (truncated)`), and goes silent after 100 such lines; the status is unaffected either way. Declare it where you throw, with the same sentence: `substratError('not_found', …)` answers the same 404 with the same `detail`, and adds `code`.
+
+  No status changes in this release. The scaffold's two missing-record refusals (`customer not found`, `bike not found`) now declare `not_found`. `ControlPlaneClient.assertScopeActive`'s unknown-scope refusal is still a `ControlPlaneError` with status 403, and now also declares `not_found` (new optional `ControlPlaneErrorDetail.code`, surfaced as `ControlPlaneError#code`), so a vertical rethrowing it keeps answering the 404 it answers today. Its `status` and its code disagree (403 against `not_found`) on purpose for this release, so neither reader's answer moves; the gate's other three refusals (unknown tenant, tenant or scope not active) declare no code yet.
+
 ## 0.11.2
 
 ### Patch Changes

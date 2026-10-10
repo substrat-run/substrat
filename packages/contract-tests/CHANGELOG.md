@@ -1,5 +1,100 @@
 # @substrat-run/contract-tests
 
+## 0.143.0
+
+### Minor Changes
+
+- e55e06c: **Breaking:** an operation whose handler the model describes completely must say who writes that handler (#1773). After upgrading, `defineOperations` refuses at module load any operation of a derivable shape that declares neither, and the error names the operation, the shape and the remedy:
+
+  - Declare `derive: '<shape>'` and delete the handler. `operationsFor` no longer asks for it and supplies the platform's.
+  - Or keep the handler and declare `authored: '<what the derived handler would get wrong here>'`.
+
+  The derivable shapes, each matched exactly:
+
+  - `get` is served as `GET`, its input is the id alone, its output is the entity's own `fields`, and it emits nothing.
+  - `list` is a `paged.over` page of the entity's own `fields`, served as `GET` and emitting nothing. Every input is a declared `filterable` column of the same type. A check narrowed to a parent scopes the page through the link to that parent: the `<parent>_id` column, named by an `idFrom` of `<parent>Id`.
+  - `update` is a `PATCH` narrowed to the row, with `concurrency` over it, emitting about it and answering with its `fields`. Absent fields are left alone and `null` clears.
+  - `delete` is a `DELETE` narrowed to the row, emitting about it and answering `{ id, deleted }`, on an entity that no other entity declares as parent.
+
+  What changes:
+
+  - `@substrat-run/contracts` adds `derive` and `authored` to an operation declaration. They are mutually exclusive, in the type and at load. It exports `derivationOf(declaration, entities)`, which says what shape an operation could be derived as, and the `DerivedKind` type. `defineOperations` also refuses a `derive` that does not match its shape (naming the clause that fails), a blank `authored`, and an `authored` on an operation nothing could derive. `emitModel(entities, { operations })` renders a `handlers` map into `model.json`, so a handler changing hands, or an exception and its reason, shows in the reviewed diff.
+  - `@substrat-run/kernel`: `operationsFor` leaves derived operations out of the handler map it requires, and handing one a handler is a compile error. A handler that arrives for one through a cast is refused at load. A derived handler checks the declared key first, reads and writes only the entity's declared columns through `ctx.sql`, answers `not_found` for a missing row, and emits the declared event once per write. An update that sends no fields writes nothing and emits nothing.
+  - `@substrat-run/contract-tests` exports `derivedHandlersContractSuite`. Both adapters run it.
+  - The engines declare no derivable operation, so they are unchanged apart from passing their operations to `emitModel`. The `create-substrat` template's `AGENTS.md` documents the rule.
+
+  A later release that learns a new derivable shape (`create` is next) will refuse operations that pass today. That is deliberate: each one gets the same choice.
+
+- e55e06c: **Breaking:** a module registration's handlers are bound to its declared operations by a type (#1835). Migrate in two lines:
+
+  - Replace `operationInputs: operationInputsOf(ops), operations: { … } satisfies OperationImpl<typeof ops, OperationContext>` (and any `operationConcurrency` / `operationIdempotencyOptOuts` line) with `...operationsFor(ops)({ … })`, imported from `@substrat-run/kernel`.
+  - A module with no declared operations wraps its map as `...undeclaredOperations('why it has none', { … })`. Code that reads a registration's handlers reads `registration.operations?.handlers`.
+
+  What changes:
+
+  - `ModuleRegistration.operations` is now a `BoundOperations`, one value holding the `handlers` and the three maps derived from their declaration: `inputs`, `concurrency` and `idempotencyOptOuts`. The `operationInputs`, `operationConcurrency` and `operationIdempotencyOptOuts` fields are gone, so a registration can neither forget a map nor pair its handlers with another declaration's. Only `operationsFor` and `undeclaredOperations` produce the value. It is a class with an ES-private brand, so a hand-written `operations: { … }`, a spread of a bound value or a copy with one map swapped does not compile. Both adapters also refuse such a value at registration (`assertBoundOperations`). Apart from that new refusal, what the host parses, compares and refuses is unchanged.
+  - `operationsFor(ops)(handlers)` holds the handlers exactly to the declaration. A missing, extra or mistyped handler is a compile error at that entry, and so is one whose type was erased: cast `as never` or `as any`, or typed with `any` parameters or an `any` return. From the same declaration it returns the input schemas the host parses with, the `If-Match` concurrency map and the idempotency opt-outs.
+  - `@substrat-run/boundary-lint` adds **R11**, for the casts no type can see. It refuses:
+
+    - an `as` or `<T>` on the whole map, at an `operations:` key, the shorthand `operations`, a binder's handler argument, or the initializer of the local name handed over there;
+    - a cast on any entry of the handlers a binder is given;
+    - a cast to `BoundOperations` or `ModuleRegistration['operations']` anywhere in module code.
+
+    A deliberate cast goes in a `boundary-lint-allow R11` … `boundary-lint-end R11` block. **R2** also refuses module code importing a test seam: `@substrat-run/kernel/testing`, `@substrat-run/contract-tests` or `@substrat-run/engine-test-kit`.
+
+  - `@substrat-run/contract-tests` exports `testOperations(handlers, derived?)`. With handlers only, it is the `undeclaredOperations` shorthand its fixtures use. With `derived`, it is the test seam the refusal suites use to hand the host maps that no binder made, built through the kernel's new `@substrat-run/kernel/testing` subpath.
+  - The engines and the `create-substrat` template now bind through `operationsFor`. Their behaviour is unchanged.
+
+- f1c6c9a: The entity-grant shape reconcile no longer scans every tuple in a scope on each pass (#2083). Before, a reconcile, which runs on every provision, read the whole `_substrat_tuples` table for each declared bootstrap shape even when nothing had changed, and on a large rollout it read it again for every batch.
+
+  - A new partial index, `_substrat_tuples_shape_marker` on `_substrat_tuples (object, subject) WHERE relation = 'bootstrap'`, holds only the shape markers. Both adapters create it in the scope schema, and an existing scope builds it once, the next time it wakes. The kernel exports it as `SHAPE_MARKER_INDEX_DDL`.
+  - Each pass reads at most ten markers per row of work its batch allows (5000 at the default batch of 500), and the next pass resumes where it stopped. A reconcile over a large scope is now a series of short transactions in which each walk reads each marker once, whether or not anyone needed a key.
+  - If an older deployment grants the old shape behind the point a running reconcile has reached, a holder missing a key the shape gained is topped up at the next reconcile. A holder given a key the shape retired is caught by the confirming walk. Each retirement now makes one more walk from the first marker before it records itself finished, and keeps walking until a walk takes nothing. A grant that lands behind that confirming walk keeps the retired key, the same as a grant made after the retirement finished.
+  - Confirming walks that take keys are capped at three per shape per reconcile, so a steady stream of new grants of a retired key cannot keep one reconcile running. At the cap, the retirement is left open without its record, and the next reconcile runs it again. `HostAdmin.reconcileEntityGrantShapes` then returns `retirementsLeftOpen`, which is present only when nonzero.
+  - The grantee and own-record backfills read only the shape's entity type, through the existing `(object, relation, subject)` index.
+  - `topUpEntityGrantShapes` takes an optional `after` cursor and returns `next` in place of `done`. `HostAdmin.reconcileEntityGrantShapes` only gains the optional `retirementsLeftOpen`.
+  - `@substrat-run/contract-tests` adds `shapeReconcilePlans`. An adapter uses it to have its own SQLite plan every statement a reconcile sends.
+
+- 9454e61: **Breaking:** `ctx.platformRequests` now returns `PlatformRequestEntry[]` instead of `PlatformRequest[]`. A journal row whose id, kind, status, attempts or time does not decode comes back as an `UndecodablePlatformRequest` beside the other rows, where it used to make the whole read throw (#1637).
+
+  This is `minor` rather than `major` because the fixed group is 0.x. In 0.x semver, a minor bump is where a breaking change goes, and `major` would mint 1.0.0. Every package in the fixed group moves to the same version.
+
+  **What a vertical changes.** Narrow before reading any other field:
+
+  ```ts
+  import { isUndecodablePlatformRequest } from "@substrat-run/contracts";
+
+  for (const r of ctx.platformRequests({ kind: "connector:scrive" })) {
+    if (isUndecodablePlatformRequest(r)) continue; // or show r.decodeError
+    r.status; // 'pending' | 'done' | 'failed', as before
+  }
+  ```
+
+  The variant names the row without carrying it, in the same grammar as `withheldEvent`. It holds the five identity columns as they are stored, as text (`null` for SQL NULL), and `decodeError` names every column that did not decode. It carries no payload, requester, result or error text. A healthy journal never returns one. Only a restored dump can hold such a row, because `ctx.sql` refuses writes to `_substrat_*` tables.
+
+  - **Reads:** `ScopeHost.listPlatformRequests` and `listPlatformRequestHistory`, the vertical-host routes and `VerticalClient` return the same union.
+  - **Drain:** it never runs a handler on the variant.
+    - When the stored id is still an id, the drain settles the row `failed` (`validation_failed`, platform origin), as it already does for a row whose JSON did not decode.
+    - When the stored id is not an id, nothing can settle the row. The drain leaves it pending, reports it as `PlatformDrainReport.unsettleable` and drains the rest of the queue past it.
+    - That row keeps one of the scope's 32 pending slots until an operator repairs it.
+  - **Sweep:** `platformRequestDrainTotals` gains `unsettleable`, defaulted to 0 so stored rows still parse. While the count is above zero, the fleet `platform-request` sweep row is `failed`, and `PlatformSweepReport.platformRequestUnsettleable` names each scope, logged in the `platform-sweep` line.
+  - **Dashboard:** the integration drawer shows such a row as **Unreadable**, with the columns that broke. It used to show an empty list.
+  - **Kernel internals:** `rowDecoder` gains `finishOr`, and `platformRequestOf` returns the union.
+
+### Patch Changes
+
+- dfcaeee: The cross-vertical events suite holds an erasure to treating an import's delivery the same in `_substrat_import_replays` as in `_substrat_deliveries`. After a subject erasure, a replayed import's moved-aside delivery error must equal its live one, on every adapter. Today no erasure reaches either. A released import is always `piiClass: 'none'`, so no subject link names the handler's error text. A withheld import, including a classified one, gets a dead letter whose error is the platform's own note, which names no one. An erasure that later reaches the live row and not the replay history fails the suite with a message that names the fix. The fixture's board module gains `board/note-member`, which emits a classified event whose local consumer fails, as the case's control.
+- Updated dependencies [e55e06c]
+- Updated dependencies [7eb1b3c]
+- Updated dependencies [7eb1b3c]
+- Updated dependencies [e55e06c]
+- Updated dependencies [dfb653b]
+- Updated dependencies [f1c6c9a]
+- Updated dependencies [6c44d57]
+- Updated dependencies [9454e61]
+  - @substrat-run/contracts@0.143.0
+  - @substrat-run/kernel@0.143.0
+
 ## 0.142.0
 
 ### Minor Changes
@@ -5629,7 +5724,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

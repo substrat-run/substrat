@@ -31,6 +31,7 @@ import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, PermissionDenied, ulid, UN
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
+  attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   type AttachmentTextHostOptions,
   capabilityContractSuite,
@@ -368,6 +369,9 @@ const attachmentHostFixture = async (options: AttachmentTextHostOptions = {}) =>
   return { host, forgetAttachmentText, cleanup: async () => host.close() };
 };
 capabilityAttachmentContractSuite('adapter-cloudflare', attachmentHostFixture);
+
+// #113: an attachment refusal crosses the ScopeDO hop as data, so it reaches the caller typed.
+attachmentRefusalContractSuite('adapter-cloudflare', attachmentHostFixture);
 
 // #1575: attachment text — the extraction job driven by the coordinator against the real
 // ScopeDO, the FTS5 table and its triggers on DO SQLite, the search gate in the DO.

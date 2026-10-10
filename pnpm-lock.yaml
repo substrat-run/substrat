@@ -764,6 +764,9 @@ importers:
       '@substrat-run/engine-invoicing':
         specifier: workspace:^
         version: link:../../engines/invoicing
+      '@substrat-run/engine-notifications':
+        specifier: workspace:^
+        version: link:../../engines/notifications
       '@substrat-run/engine-protocol':
         specifier: workspace:^
         version: link:../../engines/protocol
@@ -1597,6 +1600,43 @@ importers:
       '@substrat-run/engine-test-kit':
         specifier: workspace:^
         version: link:../../packages/engine-test-kit
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/ui@5.0.3)(jsdom@26.1.0)(vite@8.3.4(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+
+  engines/notifications:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:^
+        version: link:../../packages/kernel
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: 'catalog:'
+        version: 1.4.0(@cloudflare/workers-types@4.20260702.1)(@types/node@26.6.3)(vitest@5.0.3)
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 4.20260702.1
+      '@substrat-run/adapter-cloudflare':
+        specifier: workspace:^
+        version: link:../../packages/adapter-cloudflare
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
+      '@substrat-run/engine-test-kit':
+        specifier: workspace:^
+        version: link:../../packages/engine-test-kit
+      '@substrat-run/model-emit':
+        specifier: workspace:*
+        version: link:../../packages/model-emit
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

@@ -67,7 +67,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/engine-test-kit` | What an engine's own suite is written against | AGPL, private |
 | `packages/builder-generator` · `packages/builder-workspace` | The builder studio's agent loop and its workspace/snapshot half | AGPL, private |
 | `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
-| `engines/*` | The seven domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence` | AGPL + commercial |
+| `engines/*` | The eight domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence`, `notifications`. `notifications` is private until its first release is set up | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. `scrive`, `fortnox` and `planima` are published; `microsoft365` is private until its first release is set up | AGPL + commercial |
 | `demos/*` | Eight directories: the seven demo verticals — `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
@@ -356,7 +356,7 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   column upstream. One-time extraction handoffs use an explicit
   `boundary-lint-allow R5` … `boundary-lint-end R5` comment block (reviewable escape hatch).
 - An engine is composed **by call** or **by event**, and that decides its shape.
-  - **By call** (workorder, protocol, booking): operations are thin — the permission
+  - **By call** (workorder, protocol, booking, notifications): operations are thin — the permission
     check + one exported in-scope function. All logic lives in composable exports, so a
     vertical wraps it inside its own transaction and extends by composition, never forks.
   - **By event** (invoicing): the vertical *emits*, the engine consumes, and the vertical
