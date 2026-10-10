@@ -1178,9 +1178,12 @@ a Tier-2 sink ever lands, meter 3 becomes a new question — not a resumption of
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 
-One tenant's storage is the sum of its **scope databases**, read when someone asks and
-stored nowhere: `GET /meters/storage?tenantId=…[&cursor=…&limit=…]` (staff-only, like
-`/meters`), rendered as the **Storage** card on the console's tenant page. Each scope
+One tenant's storage is the sum of its **scope databases**, and it has two forms. The
+**live reading** is taken when someone asks and is not kept: `GET
+/meters/storage?tenantId=…[&cursor=…&limit=…]` (staff-only, like `/meters`), rendered as
+the **Storage** card on the console's tenant page. The **stored gauge** (below) is the
+daily sample the platform sweep keeps in the directory, which `/meters` reads without
+waking anything. Each scope
 answers `SqlStorage.databaseSize` on Cloudflare and `page_count × page_size` on SQLite,
 through `HostAdmin.scopeDatabaseSize` when the scope is co-located and through the
 vertical's `/internal/database-size` when a vertical's deployment holds its DO.

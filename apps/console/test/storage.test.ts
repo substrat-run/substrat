@@ -155,6 +155,20 @@ describe('gaugeView (#1524)', () => {
     expect(never.detail).toContain('The last read of 2 scopes failed');
   });
 
+  it('shows a failed read as failing even when the prior sample is stale, keeping its age', () => {
+    const v = gaugeView(
+      gauge({
+        oldestReadAt: new Date(NOW - STORAGE_STALE_AFTER_MS - 1000).toISOString() as never,
+        failing: 1,
+        lastFailedAt: '2026-09-21T11:00:00.000Z' as never,
+      }),
+      NOW,
+    );
+    expect(v.label).toBe('failing');
+    expect(v.detail).toMatch(/as of .+, which is stale\./);
+    expect(v.detail).toMatch(/The last read of 1 scope failed/);
+  });
+
   it('shows no number when nothing is sampled, or the host keeps no gauge', () => {
     expect(gaugeView(gauge({ sampled: 0, bytes: 0, oldestReadAt: null, newestReadAt: null }), NOW)).toMatchObject({
       value: '—',

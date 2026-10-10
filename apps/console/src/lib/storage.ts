@@ -124,9 +124,11 @@ export interface GaugeView {
 /**
  * The words a stored figure may be shown with. It is only ever called a total when every
  * non-reaped scope has a reading, the oldest reading is fresh and no scope's last read failed.
- * One whose oldest reading is past `STORAGE_STALE_AFTER_MS` is `stale`; one with a scope whose
- * last read failed is `failing` (its last good reading is still in the sum); one missing scopes
- * is `partial`. Every case still says how many scopes it covers, from when, and which failed.
+ * One with a scope whose last read failed is `failing` (its last good reading is still in the
+ * sum), and that wins over age: a failure is the cause an operator must act on, and staleness is
+ * usually its symptom. Otherwise one whose oldest reading is past `STORAGE_STALE_AFTER_MS` is
+ * `stale`, and one missing scopes is `partial`. Every case still says how many scopes it covers,
+ * from when — and whether that is stale — and which failed.
  */
 export function gaugeView(g: StorageGauge | undefined, nowMs: number): GaugeView {
   if (!g) return { value: '—', label: 'not recorded', detail: 'This host keeps no storage gauge.' };
@@ -146,11 +148,11 @@ export function gaugeView(g: StorageGauge | undefined, nowMs: number): GaugeView
     };
   }
   const covers = g.sampled < g.total ? `${g.sampled} of ${scopes(g.total)} sampled` : `all ${scopes(g.total)} sampled`;
-  const asOf = `as of ${new Date(g.oldestReadAt).toLocaleString()}`;
   const stale = nowMs - Date.parse(g.oldestReadAt) > STORAGE_STALE_AFTER_MS;
+  const asOf = `as of ${new Date(g.oldestReadAt).toLocaleString()}${stale ? ', which is stale' : ''}`;
   return {
     value: formatBytes(g.bytes),
-    label: stale ? 'stale' : failing ? 'failing' : g.sampled < g.total ? 'partial' : 'total',
+    label: failing ? 'failing' : stale ? 'stale' : g.sampled < g.total ? 'partial' : 'total',
     detail: `Scope databases only, ${covers}, ${asOf}.${failing}`,
   };
 }
