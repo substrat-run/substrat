@@ -1539,6 +1539,10 @@ function filterTypeIssue(decl: DeclarationRead, field: string, column: string, e
 function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
   const over = decl.paged?.over;
   if (over === undefined) return 'it is not a kernel-composed page (`paged.over`)';
+  // A page is a read, matched as exactly as a `get`: a paged command that emits, or one served
+  // as anything but GET, writes as well as reads, and its handler is its own.
+  if (decl.emits !== undefined) return 'it emits, and a read announces nothing';
+  if (decl.http?.method !== 'GET') return 'it is not served as GET, the method that says it only reads';
   const name = over.entity as string;
   if (decl.output !== entities[name]?.fields) return `its output is not '${name}'s own \`fields\``;
   const base = derivableEntity(name, entities);

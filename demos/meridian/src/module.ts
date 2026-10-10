@@ -254,6 +254,16 @@ function pageBy<T>(rows: T[], page: ListPage, key: (row: T) => string): Page<T> 
   return pageOf(rows.slice(after, after + limit), limit, key);
 }
 
+const listEmployeesOp: OperationHandler<PageParams | undefined, Page<EmployeeRow>> = async (
+  ctx,
+  page,
+) => {
+  assertAllowed(await ctx.check(HR_PERM.employeeManage));
+  // Kernel-composed (#811): the `WHERE`, `ORDER BY`, keyset tie-break, `LIMIT`
+  // and the indexes behind them come from this operation's declared `paged.over`.
+  return ctx.page<EmployeeRow>('employee', page ?? {});
+};
+
 /**
  * The manager/HR roster — employment facts only, no `national_id` and no
  * compensation (managers "see their department but never salary"). A node
@@ -987,6 +997,7 @@ export const meridianModule: ModuleRegistration = {
   migrations: meridianMigrations,
   ...operationsFor(meridianOperations)({
     'hr/create-employee': createEmployeeOp,
+    'hr/list-employees': listEmployeesOp,
     'hr/roster': rosterOp,
     'hr/whoami': whoamiOp,
     'hr/define-leave-type': defineLeaveTypeOp,

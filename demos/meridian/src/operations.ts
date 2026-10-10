@@ -149,7 +149,6 @@ export const meridianOperations = defineOperations(
 
   'hr/list-employees': {
     summary: 'Every employee, including the columns only HR may see',
-    derive: 'list',
     permission: 'employee:manage',
     output: employeeRow,
     paged: {

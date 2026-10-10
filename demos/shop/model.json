@@ -242,10 +242,5 @@
         }
       }
     }
-  },
-  "handlers": {
-    "shop/orders": {
-      "derive": "list"
-    }
   }
 }

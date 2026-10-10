@@ -227,7 +227,6 @@ export const shopOperations = defineOperations(shopEntities, SHOP_PERMISSIONS)({
   // --- orders ---------------------------------------------------------------
   'shop/orders': {
     summary: 'Every order (staff)',
-    derive: 'list',
     permission: 'order:read',
     output: orderRow,
     paged: {

@@ -136,10 +136,5 @@
         "monthly_salary"
       ]
     }
-  },
-  "handlers": {
-    "hr/list-employees": {
-      "derive": "list"
-    }
   }
 }

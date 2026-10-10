@@ -996,6 +996,12 @@ const checkoutOp: OperationHandler<
 // Orders: admin read/fulfil + the portal proof walk
 // ---------------------------------------------------------------------------
 
+const ordersOp: OperationHandler<PageParams | undefined, Page<OrderRow>> = async (ctx, page) => {
+  assertAllowed(await ctx.check(SHOP_PERM.orderRead));
+  // Kernel-composed (#811): a plain table walk, newest first as declared.
+  return ctx.page<OrderRow>('order', page ?? {});
+};
+
 const orderOp: OperationHandler<{ orderId: string }, { order: OrderRow; lines: OrderLineRow[] }> = async (
   ctx,
   input,
@@ -1156,6 +1162,7 @@ const OPERATIONS = {
   'shop/cart': cartOp,
   'shop/quote': quoteOp,
   'shop/checkout': checkoutOp,
+  'shop/orders': ordersOp,
   'shop/order': orderOp,
   'shop/portal-orders': portalOrdersOp,
   'shop/my-customer': myCustomerOp,

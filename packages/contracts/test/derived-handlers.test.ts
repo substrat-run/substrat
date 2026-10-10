@@ -155,8 +155,29 @@ describe('derivationOf — list', () => {
     ['a filter with a default', { ...LIST, input: z.object({ folderId: z.string(), status: z.enum(['draft', 'done']).default('draft') }) }],
     // The handler would bind `true` against a 0/1 column — the mapping is the handler's.
     ['a filter of another type than its column', { ...LIST, input: z.object({ folderId: z.string(), pinned: z.boolean().optional() }) }],
+    // A page is a read: matched exactly, as `get` is.
+    ['served as anything but GET', { ...LIST, http: { method: 'POST', path: '/folders/{folderId}/notes' } }],
+    ['invoke-only, which a silent transition is too', { ...LIST, http: undefined }],
+    ['emitting', { ...LIST, emits: emitsNote('n.listed') }],
   ])('not when %s', (_, decl) => {
     expect(kindOf(decl)).toBeUndefined();
+  });
+
+  it('refuses `derive: list` on a declaration that is not a read', () => {
+    const post = { ...LIST, http: { method: 'POST', path: '/folders/{folderId}/notes' }, emits: emitsNote('n.listed') };
+    expect(() => define({ 'n/list': { ...post, derive: 'list' } })).toThrow(
+      "model: 'n/list' declares `derive: 'list'`, but it emits, and a read announces nothing.\n" +
+        '  Remedy: make the declaration the shape it derives, or drop `derive` and write the handler.',
+    );
+    expect(() => define({ 'n/list': { ...LIST, http: { method: 'POST', path: '/x' }, derive: 'list' } })).toThrow(
+      "model: 'n/list' declares `derive: 'list'`, but it is not served as GET, the method that says it only reads.",
+    );
+  });
+
+  it('(a) does not call a paged POST that emits derivable — it is a command, and its handler is its own', () => {
+    const post = { ...LIST, http: { method: 'POST', path: '/folders/{folderId}/notes' }, emits: emitsNote('n.listed') };
+    expect(kindOf(post)).toBeUndefined();
+    expect(() => define({ 'n/run': post })).not.toThrow();
   });
 });
 
