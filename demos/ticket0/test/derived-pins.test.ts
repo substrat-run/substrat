@@ -8,8 +8,7 @@
  * columns than the table holds, or a page projecting differently, is red.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { errorCodeOf, primaryKeyOf, type CountedPage, type Page } from '@substrat-run/contracts';
-import { ticket0Entities } from '../spec/model.js';
+import { errorCodeOf, type CountedPage, type Page } from '@substrat-run/contracts';
 import { createKit, type Desk, type Kit } from './desk-kit.js';
 
 type Row = Record<string, unknown>;
@@ -23,21 +22,29 @@ beforeAll(async () => {
 });
 afterAll(() => kit.dispose());
 
+/** Each pinned entity's table and key, as literals: the oracle must not be read off the model it judges. */
+const TABLES = {
+  conversation: ['ticket0_conversations', 'id'],
+  contact: ['ticket0_contacts', 'id'],
+  agentProfile: ['ticket0_agent_profiles', 'principal'],
+  savedReplyFolder: ['ticket0_saved_reply_folders', 'id'],
+  blockRule: ['ticket0_block_rules', 'id'],
+} as const;
+
 /** What the replaced handler's `SELECT *` answered, by primary key. */
-function rowsOf(entity: keyof typeof ticket0Entities): Map<unknown, Row> {
-  const def = ticket0Entities[entity];
-  const [pk] = primaryKeyOf(entity, def);
-  const rows = kit.sql(desk, (db) => db.prepare(`SELECT * FROM ${def.table}`).all() as Row[]);
-  return new Map(rows.map((r) => [r[pk as string], r]));
+function rowsOf(entity: keyof typeof TABLES): Map<unknown, Row> {
+  const [table, pk] = TABLES[entity];
+  const rows = kit.sql(desk, (db) => db.prepare(`SELECT * FROM ${table}`).all() as Row[]);
+  return new Map(rows.map((r) => [r[pk], r]));
 }
 
-async function pinPage(operation: string, entity: keyof typeof ticket0Entities, input: Row = {}): Promise<Page<Row>> {
+async function pinPage(operation: string, entity: keyof typeof TABLES, input: Row = {}): Promise<Page<Row>> {
   const admin = await kit.as(desk, desk.admin);
   const page = (await admin.invoke(operation, { limit: 100, ...input })) as Page<Row>;
   const rows = rowsOf(entity);
-  const [pk] = primaryKeyOf(entity, ticket0Entities[entity]);
+  const pk = TABLES[entity][1];
   expect(page.entries.length).toBeGreaterThan(0);
-  expect(page.entries).toStrictEqual(page.entries.map((e) => rows.get(e[pk as string])));
+  expect(page.entries).toStrictEqual(page.entries.map((e) => rows.get(e[pk])));
   return page;
 }
 
