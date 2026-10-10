@@ -357,8 +357,12 @@ Each mode is held to its direction, so the acknowledgement names what actually m
 - **The history table follows no new path.** The lake drains only the outbox. Dumps, forks,
   restores and wipes enumerate tables from `sqlite_master`, so a restore rewinds the history with
   the data. Erasure's delivery-error rewrite reaches only deliveries of events in the scope's OWN
-  outbox, and an imported event never is. A future consumer-side erasure of imported copies must
-  reach this table's `row` too (#1757).
+  outbox, and an imported event never is. A delivery's `error` is a handler's own sentence and
+  can name a subject, but an imported event is always piiClass `none`, so no subject link names
+  it, live or moved aside: the unlinked free text #1632 left unreachable. A future consumer-side
+  erasure of imported copies must reach this table's `row` too, and the contract suite holds it
+  to that (#1757): after an erasure, an import's live delivery error and its moved-aside copy
+  must agree, on both adapters.
 
 ## Edge health
 
