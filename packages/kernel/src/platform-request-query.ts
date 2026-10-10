@@ -8,7 +8,7 @@ import {
   type PlatformRequestFilter,
   type UndecodablePlatformRequest,
 } from '@substrat-run/contracts';
-import { rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
+import { capped, rowDecoder, UNDECODED_ACTOR } from './row-decode.js';
 
 /**
  * The one SELECT behind every read of a scope's intent journal (#618).
@@ -136,7 +136,11 @@ export function platformRequestOf(row: PlatformRequestRawRow): PlatformRequestEn
   }));
 }
 
-/** A stored column as text, whatever SQLite's affinity left in it — `null` only for SQL NULL. */
+/**
+ * A stored column as text, whatever SQLite's affinity left in it — `null` only for SQL NULL — and
+ * capped the way the decoder caps any value it quotes: a stored id of any length would otherwise
+ * ride into the drain's `unsettleable` ids, the sweep log on every tick, and the dashboard card.
+ */
 function storedText(value: unknown): string | null {
-  return value === null || value === undefined ? null : String(value);
+  return value === null || value === undefined ? null : capped(String(value));
 }

@@ -67,6 +67,15 @@ export const UNDECODED_PERMISSION: PermissionKey = permissionKey.parse('undecoda
 /** How much of a stored scalar a `marked` field quotes back — a key, not a payload. */
 const QUOTED_MAX = 200;
 
+/**
+ * Stored text cut to {@link QUOTED_MAX}, with `…` where it was cut — for any decoder that hands a
+ * stored value back verbatim (#1637), so an oversized one cannot ride into a report, a log line
+ * that repeats every tick, or a screen.
+ */
+export function capped(text: string): string {
+  return text.length > QUOTED_MAX ? `${text.slice(0, QUOTED_MAX)}…` : text;
+}
+
 /** `column: message`, for the first issue a field's schema raised. */
 export function issueOf(
   column: string,
@@ -145,10 +154,7 @@ export function rowDecoder(subject: string, contract: string): RowDecoder {
     marked<T>(column: string, field: Field<T>, stored: unknown, marker: T): T {
       const r = field.safeParse(stored);
       if (r.success) return r.data;
-      const quoted = JSON.stringify(stored) ?? String(stored);
-      undecoded.push(
-        `${issueOf(column, r.error)} (stored ${quoted.length > QUOTED_MAX ? `${quoted.slice(0, QUOTED_MAX)}…` : quoted})`,
-      );
+      undecoded.push(`${issueOf(column, r.error)} (stored ${capped(JSON.stringify(stored) ?? String(stored))})`);
       failed.add(column);
       return marker;
     },

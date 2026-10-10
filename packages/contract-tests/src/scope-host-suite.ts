@@ -1104,6 +1104,9 @@ export function scopeHostContractSuite(
         const broken: { column: string; over: Record<string, unknown>; reads: Partial<typeof asStored> }[] = [
           { column: 'id', over: { id: 'not-a-ulid' }, reads: { id: 'not-a-ulid' } },
           { column: 'id', over: { id: null }, reads: { id: null } },
+          // Oversized: read back capped, the way the decoder caps any value it quotes, so it cannot
+          // ride whole into the drain's report, the sweep log on every tick, or the dashboard card.
+          { column: 'id', over: { id: 'x'.repeat(5000) }, reads: { id: `${'x'.repeat(200)}…` } },
           { column: 'kind', over: { kind: '' }, reads: { kind: '' } },
           { column: 'status', over: { status: 'queued' }, reads: { status: 'queued' } },
           { column: 'attempts', over: { attempts: -1 }, reads: { attempts: '-1' } },

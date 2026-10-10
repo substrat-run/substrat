@@ -190,6 +190,16 @@ describe('platformRequestOf — tolerant where evidence is read', () => {
     });
   }
 
+  it('a stored value past the quote cap reads back cut, with the decoder\'s own marker', () => {
+    const decoded = platformRequestOf(stored({ id: 'x'.repeat(5000), kind: 'k'.repeat(201) }));
+    expect(decoded).toMatchObject({ undecodable: true, id: `${'x'.repeat(200)}…`, kind: `${'k'.repeat(200)}…` });
+  });
+
+  it('a stored value AT the cap reads back whole (the twin)', () => {
+    const decoded = platformRequestOf(stored({ id: 'x'.repeat(200), kind: 'k'.repeat(200) }));
+    expect(decoded).toMatchObject({ undecodable: true, id: 'x'.repeat(200), kind: 'k'.repeat(200) });
+  });
+
   it('the variant names every column it broke, required first, and carries none of the content', () => {
     const decoded = platformRequestOf(stored({ id: 'not-a-ulid', status: 'queued', payload: 'nope' }));
     if (!isUndecodablePlatformRequest(decoded)) throw new Error('expected the variant');
