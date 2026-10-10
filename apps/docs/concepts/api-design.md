@@ -274,6 +274,19 @@ You get all of this by throwing `substratError('conflict', 'the cart is empty', 
 'cart_empty' })` and letting `problemResponse` render it. `code` is the platform's, `reason`
 is yours.
 
+::: warning A status read from the sentence is deprecated
+A throw that declares nothing still gets a status from its wording, for now: "permission
+denied" answers 403, "not found" or "unknown scope" 404, "invalid transition" or "immutable"
+409. A later release stops reading the sentence, and such a throw becomes the caller's 400
+like any other unrecognised one. Until then the vertical's own logs carry a
+`vertical-host.untyped-refusal` line, once per sentence, naming the code that keeps the
+status. This answers the same 404 with the same `detail`, and gains its `code`:
+
+```ts
+throw substratError('not_found', `customer not found: ${id}`);
+```
+:::
+
 ::: info The deprecated duplicate
 Every body also carries `error`, a copy of `detail`, because every SPA in this repo read
 `{ error }` before the model landed. It exists for one migration window and then goes —

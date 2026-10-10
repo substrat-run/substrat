@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   addMoney,
+  errorCodeOf,
   moneyOf,
   mulMoney,
   type Page,
@@ -434,5 +435,35 @@ describe('bike-shop scenario', () => {
     expect(timeline.status).toBe(200);
     expect((await timeline.json()) as unknown[]).toHaveLength(1);
     expect(nextOf(timeline)).toMatch(/^\/api\/repairs\/.+\/timeline\?limit=1&cursor=.+$/);
+  });
+
+  // #113: a missing record is a refusal that SAYS it is `not_found`, rather than a sentence
+  // the host has to recognise. Its status follows from the code, so it survives the host
+  // dropping the wording it still reads untyped throws by — and so does the sentence.
+  it('13. an unknown customer or bike is a not_found, on the operation and over HTTP', async () => {
+    const unknown = 'nonexistent';
+    const refusalOf = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
+
+    const noCustomer = await refusalOf(
+      greta.invoke('shop/register-bike', { customerId: unknown, label: 'x' }),
+    );
+    expect(errorCodeOf(noCustomer)).toBe('not_found');
+    expect((noCustomer as Error).message).toBe(`customer not found: ${unknown}`);
+
+    const noBike = await refusalOf(
+      greta.invoke('shop/create-repair', { bikeId: unknown, kind: 'puncture', title: 'x' }),
+    );
+    expect(errorCodeOf(noBike)).toBe('not_found');
+    expect((noBike as Error).message).toBe(`bike not found: ${unknown}`);
+
+    const app = new Hono();
+    mountApi(app, async () => greta);
+    const res = await app.request('/api/repairs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bikeId: unknown, kind: 'puncture', title: 'x' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: 'not_found', detail: `bike not found: ${unknown}` });
   });
 });

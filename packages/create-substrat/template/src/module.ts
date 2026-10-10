@@ -7,6 +7,7 @@ import {
   operationInputsOf,
   pageOf,
   pageVisible,
+  substratError,
   z,
   type HandlerInput,
   type HandlerOutput,
@@ -111,7 +112,7 @@ const registerBikeOp: Op<'shop/register-bike'> = async (ctx, input) => {
   const customer = ctx.sql.query<CustomerRow>('SELECT * FROM shop_customers WHERE id = ?', [
     input.customerId,
   ])[0];
-  if (!customer) throw new Error(`customer not found: ${input.customerId}`);
+  if (!customer) throw substratError('not_found', `customer not found: ${input.customerId}`);
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO shop_bikes (id, customer_id, label, frame_no, created_at) VALUES (?, ?, ?, ?, ?)`,
@@ -169,7 +170,7 @@ const priceListOp: Op<'shop/price-list'> = async (ctx, input) => {
 const createRepairOp: Op<'shop/create-repair'> = async (ctx, input) => {
   assertAllowed(await ctx.check(WO.create));
   const bike = ctx.sql.query<BikeRow>('SELECT * FROM shop_bikes WHERE id = ?', [input.bikeId])[0];
-  if (!bike) throw new Error(`bike not found: ${input.bikeId}`);
+  if (!bike) throw substratError('not_found', `bike not found: ${input.bikeId}`);
   return createWorkOrder(ctx, {
     facility: { entityType: 'bike', entityId: bike.id },
     customer: { entityType: 'customer', entityId: bike.customer_id },

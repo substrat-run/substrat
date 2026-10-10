@@ -12,8 +12,9 @@
  * Errors are recognised BY SHAPE, not by `instanceof`. A `ScopeStub` call may
  * cross a Durable Object boundary, where the error is re-created from its wire
  * form and no class survives — and even in-process, two copies of `@substrat-run/kernel`
- * make `instanceof` a coin toss. So: the class when it is there, the `name` when
- * it is not, and the message last.
+ * make `instanceof` a coin toss. So: the code a throw declared (`errorCodeOf` reads the
+ * live property, the `Substrat.<code>` name, and the legacy class names), and the message
+ * last, deprecated (`guessFromSentence`).
  */
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -26,9 +27,9 @@ import {
   problemForStatus,
   substratError,
   toProblem,
+  type ErrorCode,
   type Problem,
 } from '@substrat-run/contracts';
-import { PermissionDenied } from '@substrat-run/kernel';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 /** A classified failure: the status it deserves and the message to relay. */
@@ -66,24 +67,49 @@ export function isPlatformFault(err: unknown, message: string): boolean {
   return PLATFORM_FAULT_PATTERNS.some((p) => p.test(message));
 }
 
-/** A refused permission, however it reached us. */
-function isPermissionDenied(err: unknown, message: string): boolean {
-  return (
-    err instanceof PermissionDenied ||
-    (err as { name?: unknown } | null)?.name === 'PermissionDenied' ||
-    /permission denied/i.test(message)
-  );
+/**
+ * An input that failed to parse, read by its `issues` — Zod's own array, which nothing
+ * else in this path carries. A `ZodError` by NAME never gets here: `errorCodeOf` already
+ * read it as `validation_failed`. This is for the copy whose name did not survive.
+ */
+function isParseFailure(err: unknown): boolean {
+  return Array.isArray((err as { issues?: unknown } | null)?.issues);
 }
 
 /**
- * An input that failed to parse — a `ZodError`, read structurally for the same
- * reason `mountOperations` reads schemas structurally: `instanceof` does not
- * survive a duplicate copy of the library or a serialising boundary. `issues`
- * is Zod's own array and nothing else in this path carries one.
+ * The statuses a throw that declared NOTHING still gets from its wording — deprecated
+ * (#113), and removed in a later release.
+ *
+ * Every refusal the platform raises carries its code: the kernel's `PermissionDenied`,
+ * `assertTransition`'s `conflict`, every engine's and adapter's `not_found`. What still
+ * reaches these patterns is a vertical's own untyped `throw new Error('… not found')`.
+ * When they go, such a throw becomes the caller's 400 like any other unrecognised throw,
+ * so until then each one is announced in the vertical's own logs, once per sentence,
+ * naming the typed spelling that keeps its status.
  */
-function isParseFailure(err: unknown): boolean {
-  const e = err as { name?: unknown; issues?: unknown } | null;
-  return e?.name === 'ZodError' || Array.isArray(e?.issues);
+const SENTENCE_GUESSES: readonly { pattern: RegExp; code: ErrorCode }[] = [
+  { pattern: /permission denied/i, code: 'permission_denied' },
+  { pattern: /not found|unknown scope/i, code: 'not_found' },
+  { pattern: /invalid transition|immutable/i, code: 'conflict' },
+];
+
+/** Sentences already announced in this isolate — bounded, so a stream of distinct ones cannot grow it. */
+const announced = new Set<string>();
+const ANNOUNCED_MAX = 100;
+
+function guessFromSentence(message: string): ErrorClassification | undefined {
+  const guess = SENTENCE_GUESSES.find((g) => g.pattern.test(message));
+  if (!guess) return undefined;
+  const status = PROBLEM_CATALOG[guess.code].status as ContentfulStatusCode;
+  if (!announced.has(message) && announced.size < ANNOUNCED_MAX) {
+    announced.add(message);
+    console.warn('vertical-host.untyped-refusal', {
+      status,
+      message,
+      deprecated: `this status was read from the sentence, which a later release stops doing; throw substratError('${guess.code}', …) to keep it`,
+    });
+  }
+  return { status, message };
 }
 
 /**
@@ -116,11 +142,8 @@ export function classifyError(thrown: unknown): ErrorClassification | undefined 
     return { status: PROBLEM_CATALOG[code].status as ContentfulStatusCode, message };
   }
 
-  if (isPermissionDenied(err, message)) return { status: 403, message };
   if (isParseFailure(err)) return { status: 400, message };
-  if (/not found|unknown scope/i.test(message)) return { status: 404, message };
-  if (/invalid transition|immutable/i.test(message)) return { status: 409, message };
-  return explicit === undefined ? undefined : { status: explicit, message };
+  return guessFromSentence(message) ?? (explicit === undefined ? undefined : { status: explicit, message });
 }
 
 /**
