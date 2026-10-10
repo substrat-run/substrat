@@ -1,0 +1,215 @@
+import { z } from 'zod';
+import type { SqlExec } from './introspect.js';
+import { isBcryptHash } from './legacy-password.js';
+
+/**
+ * Bringing people over from another issuer — `POST /__admin/users/import`.
+ *
+ * The one property everything here protects is the person's ID. A relying party knows somebody
+ * by the `sub` its issuer put in their ID token, and this issuer's `sub` is `user.id`. So an
+ * imported person keeps the id the OLD issuer gave them, verbatim, and every relying party that
+ * keyed a workspace, a grant or a membership on it goes on recognising them after it changes
+ * issuer. An import that minted fresh ids would make every migrated person a stranger.
+ *
+ * What one entry may carry, and what becomes of it:
+ *
+ *  - the user row — id, email, name, whether the email was verified, when they joined;
+ *  - a password, as the old issuer's bcrypt hash. Stored as the `credential` account Better
+ *    Auth's own sign-up writes, and checked by `legacyAwarePassword` until they next set one;
+ *  - the upstream identities they signed in with (`github` + GitHub's numeric user id, …), as
+ *    `account` rows. Without them the first "Sign in with GitHub" finds the address taken and
+ *    stops at the account-linking refusal, which is exactly what a migration must not show.
+ *
+ * Re-runnable on purpose, because a migration runs twice at least — once ahead of the switch
+ * and once after it, for whoever signed up in between:
+ *
+ *  - an id already here with the SAME email is merged: a password is added if they have none,
+ *    upstream identities they lack are added. Nothing already here is overwritten — least of
+ *    all a password they set on this issuer, which is newer than any hash being imported.
+ *  - an email already here under a DIFFERENT id is a conflict, reported and untouched. Better
+ *    Auth allows one person per address, so the two have to become one, and which id survives
+ *    is a decision about who already knows them by which `sub` — not one an import can make.
+ *  - an upstream identity already linked to somebody else is skipped and reported, for the
+ *    same reason.
+ *
+ * `dryRun` answers all of that without writing, so the collisions can be read before anything
+ * moves. The admin gate in front is the whole authorisation story: this endpoint writes
+ * credentials, and only an `admin` session reaches it.
+ */
+
+export const IMPORT_BATCH_LIMIT = 500;
+
+const importedAccount = z.object({
+  providerId: z
+    .string()
+    .min(1)
+    .max(64)
+    .refine((v) => v !== 'credential', 'a password is `passwordHash`, not an account'),
+  accountId: z.string().min(1).max(255),
+});
+
+const importedUser = z.object({
+  id: z.string().min(1).max(255),
+  email: z.string().email().max(320),
+  name: z.string().max(255).optional(),
+  emailVerified: z.boolean().optional(),
+  image: z.string().url().max(2048).optional(),
+  createdAt: z.string().datetime({ offset: true }).optional(),
+  passwordHash: z
+    .string()
+    .refine(isBcryptHash, 'not a bcrypt hash ($2a$/$2b$/$2y$) — nothing else can be verified here')
+    .optional(),
+  accounts: z.array(importedAccount).max(20).optional(),
+});
+
+export const importBody = z.object({
+  users: z.array(importedUser).min(1).max(IMPORT_BATCH_LIMIT),
+  dryRun: z.boolean().optional(),
+});
+
+export type ImportBody = z.infer<typeof importBody>;
+type ImportedUser = z.infer<typeof importedUser>;
+
+export type ImportOutcome =
+  | { id: string; outcome: 'created'; password: boolean; accounts: string[]; skippedAccounts: SkippedAccount[] }
+  | { id: string; outcome: 'merged'; password: boolean; accounts: string[]; skippedAccounts: SkippedAccount[] }
+  | { id: string; outcome: 'unchanged'; skippedAccounts: SkippedAccount[] }
+  | { id: string; outcome: 'conflict'; reason: 'email-taken'; existingId: string }
+  | { id: string; outcome: 'conflict'; reason: 'email-differs'; existingEmail: string };
+
+interface SkippedAccount {
+  providerId: string;
+  accountId: string;
+  linkedTo: string;
+}
+
+export interface ImportResult {
+  dryRun: boolean;
+  results: ImportOutcome[];
+  counts: Record<ImportOutcome['outcome'], number>;
+}
+
+const localPart = (email: string): string => email.slice(0, email.indexOf('@'));
+
+export function importUsers(sql: SqlExec, body: ImportBody, now: number = Date.now()): ImportResult {
+  const dryRun = body.dryRun ?? false;
+  // Planned writes in a dry run are tracked here, so a batch naming one person twice — or two
+  // people with one GitHub id — answers the same with and without `dryRun`.
+  const planned = { users: new Map<string, string>(), accounts: new Map<string, string>(), passwords: new Set<string>() };
+
+  const results = body.users.map((entry) => importOne(sql, entry, dryRun, planned, now));
+  const counts = { created: 0, merged: 0, unchanged: 0, conflict: 0 };
+  for (const r of results) counts[r.outcome] += 1;
+  return { dryRun, results, counts };
+}
+
+function importOne(
+  sql: SqlExec,
+  entry: ImportedUser,
+  dryRun: boolean,
+  planned: { users: Map<string, string>; accounts: Map<string, string>; passwords: Set<string> },
+  now: number,
+): ImportOutcome {
+  // Better Auth stores addresses lower-cased and looks them up the same way, so an import
+  // that kept the old issuer's casing would create a row its own sign-in can never find.
+  const email = entry.email.trim().toLowerCase();
+
+  const byEmail =
+    (sql.exec('SELECT id FROM user WHERE email = ?', email).toArray()[0] as { id: string } | undefined)?.id ??
+    [...planned.users].find(([, e]) => e === email)?.[0];
+  if (byEmail !== undefined && byEmail !== entry.id) {
+    return { id: entry.id, outcome: 'conflict', reason: 'email-taken', existingId: byEmail };
+  }
+  const existingEmail =
+    (sql.exec('SELECT email FROM user WHERE id = ?', entry.id).toArray()[0] as { email: string } | undefined)?.email ??
+    planned.users.get(entry.id);
+  if (existingEmail !== undefined && existingEmail !== email) {
+    return { id: entry.id, outcome: 'conflict', reason: 'email-differs', existingEmail };
+  }
+  const exists = existingEmail !== undefined;
+
+  // A `credential` row can exist with no hash (an invitation not yet accepted, a password an
+  // administrator cleared). That row is filled in rather than joined by a second one: Better
+  // Auth reads the first credential row it finds, and two would make sign-in a coin toss.
+  const credential = sql
+    .exec(`SELECT id, password FROM account WHERE user_id = ? AND provider_id = 'credential'`, entry.id)
+    .toArray()[0] as { id: string; password: string | null } | undefined;
+  const hasPassword = planned.passwords.has(entry.id) || (credential?.password ?? null) !== null;
+  const addPassword = entry.passwordHash !== undefined && !hasPassword;
+
+  const accounts: string[] = [];
+  const skippedAccounts: SkippedAccount[] = [];
+  const toLink: { providerId: string; accountId: string }[] = [];
+  for (const account of entry.accounts ?? []) {
+    const key = `${account.providerId}\u0000${account.accountId}`;
+    const linkedTo =
+      (
+        sql
+          .exec('SELECT user_id FROM account WHERE provider_id = ? AND account_id = ?', account.providerId, account.accountId)
+          .toArray()[0] as { user_id: string } | undefined
+      )?.user_id ?? planned.accounts.get(key);
+    if (linkedTo === entry.id) continue;
+    if (linkedTo !== undefined) {
+      skippedAccounts.push({ ...account, linkedTo });
+      continue;
+    }
+    if (toLink.some((a) => a.providerId === account.providerId && a.accountId === account.accountId)) continue;
+    toLink.push(account);
+    accounts.push(account.providerId);
+  }
+
+  if (exists && !addPassword && toLink.length === 0) {
+    return { id: entry.id, outcome: 'unchanged', skippedAccounts };
+  }
+
+  if (dryRun) {
+    planned.users.set(entry.id, email);
+    if (addPassword) planned.passwords.add(entry.id);
+    for (const a of toLink) planned.accounts.set(`${a.providerId}\u0000${a.accountId}`, entry.id);
+  } else {
+    if (!exists) {
+      const joined = entry.createdAt ? Date.parse(entry.createdAt) : now;
+      sql.exec(
+        `INSERT INTO user (id, name, email, email_verified, image, created_at, updated_at, role)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'user')`,
+        entry.id,
+        entry.name?.trim() || localPart(email),
+        email,
+        entry.emailVerified ? 1 : 0,
+        entry.image ?? null,
+        joined,
+        now,
+      );
+    }
+    if (addPassword && credential) {
+      sql.exec('UPDATE account SET password = ?, updated_at = ? WHERE id = ?', entry.passwordHash, now, credential.id);
+    } else if (addPassword) {
+      // The shape Better Auth's own email sign-up writes: provider `credential`, keyed on the
+      // user's id, the hash in `password`.
+      sql.exec(
+        `INSERT INTO account (id, account_id, provider_id, user_id, password, created_at, updated_at)
+         VALUES (?, ?, 'credential', ?, ?, ?, ?)`,
+        crypto.randomUUID(),
+        entry.id,
+        entry.id,
+        entry.passwordHash,
+        now,
+        now,
+      );
+    }
+    for (const a of toLink) {
+      sql.exec(
+        `INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        crypto.randomUUID(),
+        a.accountId,
+        a.providerId,
+        entry.id,
+        now,
+        now,
+      );
+    }
+  }
+
+  return { id: entry.id, outcome: exists ? 'merged' : 'created', password: addPassword, accounts, skippedAccounts };
+}

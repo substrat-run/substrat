@@ -9,6 +9,7 @@ import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins/gener
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
 import { resetPasswordEmail, verifyEmail } from './email.js';
+import { legacyAwarePassword } from './legacy-password.js';
 import { invitationPlugin } from './invitation-plugin.js';
 import { phonePlugin } from './phone-plugin.js';
 import type { PhoneVerifier } from './twilio.js';
@@ -310,6 +311,9 @@ function betterAuthFor(deps: AuthDeps) {
       disableSignUp: !deps.allowSignup,
       autoSignIn: true,
       minPasswordLength: 8,
+      // Imported people keep the bcrypt hash their old issuer gave them until they next set a
+      // password (`src/legacy-password.ts`); everything written here is still scrypt.
+      password: legacyAwarePassword,
       // The primary ask: password reset via the email adapter. Better Auth builds the
       // one-time reset URL; we wrap it in the transactional template and send it.
       sendResetPassword: async ({ user, url }) => {

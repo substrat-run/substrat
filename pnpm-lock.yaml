@@ -648,6 +648,9 @@ importers:
       '@substrat-run/vertical-host':
         specifier: workspace:^
         version: link:../../packages/vertical-host
+      bcryptjs:
+        specifier: ^3.0.3
+        version: 3.0.3
       better-auth:
         specifier: ^1.7.3
         version: 1.7.7(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.4(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@5.0.3)(vue@3.5.43(typescript@7.0.2))
@@ -5008,6 +5011,10 @@ packages:
 
   bail@2.0.2:
     resolution: {integrity: sha512-0xO6mYd7JB2YesxDKplafRpsiOzPt9V02ddPCLbY1xYGPOX24NTyN50qnUxgCPcSoYMhKpAuBTjQoRZCAkUDRw==}
+
+  bcryptjs@3.0.3:
+    resolution: {integrity: sha512-GlF5wPWnSa/X5LKM1o0wz0suXIINz1iHRLvTS+sLyi7XPbe5ycmYI3DlZqVGZZtDgl4DmasFg7gOB3JYbphV5g==}
+    hasBin: true
 
   better-auth@1.7.7:
     resolution: {integrity: sha512-Zhgxi/c5ylmfB/sX+nwnBbsFf/j6k0L8DvL6CJXZSrXgxc5pPMC/e7j812zNd4L4B4ELmdURCPw3X8nAOUdcjw==}
@@ -9886,6 +9893,8 @@ snapshots:
   aws4fetch@1.0.20: {}
 
   bail@2.0.2: {}
+
+  bcryptjs@3.0.3: {}
 
   better-auth@1.7.7(@opentelemetry/api@1.9.0)(drizzle-orm@0.45.4(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(vitest@5.0.3)(vue@3.5.43(typescript@7.0.2)):
     dependencies:

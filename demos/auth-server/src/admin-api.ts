@@ -29,6 +29,7 @@ import { resolveIssuerEndpoints } from './provider-discovery.js';
 import { isHttpsOrLoopback, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
 import { SIGN_IN_LOG_LIMIT, readSignInLog, signInLogQuery } from './sign-in-log.js';
+import { importBody, importUsers } from './user-import.js';
 
 /**
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
@@ -817,6 +818,16 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     deps.sql.exec('DELETE FROM account WHERE id = ? AND user_id = ?', accountId, userId);
     return c.json({ removed: accountId });
+  });
+
+  /**
+   * People moved here from another issuer, keeping the ids relying parties know them by —
+   * `src/user-import.ts` has the rules. One batch is at most `IMPORT_BATCH_LIMIT` people;
+   * `dryRun: true` reports what would happen without writing, conflicts included.
+   */
+  app.post('/users/import', async (c) => {
+    const body = parsedBody(importBody, await c.req.json().catch(() => null));
+    return c.json(importUsers(deps.sql, body));
   });
 
   /* ---- what happened when people tried to sign in ---- */
