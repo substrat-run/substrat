@@ -92,3 +92,92 @@ describe('derived reads answer what the handlers they replaced answered (#1773)'
     expect(domains.total).toBe(1);
   });
 });
+
+/**
+ * #2157: `ticket0/create-saved-reply-folder` is the first derived CREATE in a production vertical.
+ * The handler it replaced, verbatim in effect:
+ *
+ *     check saved-reply:manage
+ *     SELECT * … WHERE name = ?  → that row, if any, and nothing else
+ *     INSERT (id, name, created_by, created_at) VALUES (ulid(), name, String(ctx.principal), ctx.now())
+ *     emit ticket0.saved-reply-folder-created v1, piiClass none, payload { id, name, created_by, created_at }
+ *     answer SELECT * by id
+ *
+ * Each line is pinned below against the desk's own database, with the table named as a literal.
+ */
+describe('the derived create answers what the handler it replaced answered (#2157)', () => {
+  type Folder = { id: string; name: string; created_by: string; created_at: string };
+  type Event = { type: string; schema_version: number; pii_class: string; actor: string; entity_id: string; subject_id: string | null; payload: string };
+  const folderEvents = (): Event[] =>
+    kit.sql(desk, (db) =>
+      db
+        .prepare(
+          `SELECT type, schema_version, pii_class, actor, entity_id, subject_id, payload FROM _substrat_outbox
+            WHERE entity_type = 'savedReplyFolder' ORDER BY id`,
+        )
+        .all() as Event[],
+    );
+  const folderRows = (): Folder[] =>
+    kit.sql(desk, (db) => db.prepare('SELECT * FROM ticket0_saved_reply_folders ORDER BY id').all() as Folder[]);
+
+  it('the row, its stamps, and the one event, byte for byte', async () => {
+    const admin = await kit.as(desk, desk.admin);
+    const before = folderEvents().length;
+    const folder = (await admin.invoke('ticket0/create-saved-reply-folder', { name: 'Refunds' })) as Folder;
+
+    const row = folderRows().find((r) => r.id === folder.id);
+    expect(folder).toStrictEqual(row);
+    expect(Object.keys(folder)).toEqual(['id', 'name', 'created_by', 'created_at']);
+    expect(folder.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(folder.name).toBe('Refunds');
+    expect(folder.created_by).toBe(String(desk.admin));
+    expect(new Date(folder.created_at).toISOString()).toBe(folder.created_at);
+
+    const events = folderEvents().slice(before);
+    expect(events).toStrictEqual([
+      {
+        type: 'ticket0.saved-reply-folder-created',
+        schema_version: 1,
+        pii_class: 'none',
+        // The column holds the actor as JSON, as it does for every event.
+        actor: JSON.stringify(desk.admin),
+        entity_id: folder.id,
+        subject_id: null,
+        // The payload's bytes, keys in the order the old body wrote them.
+        payload: JSON.stringify({ id: folder.id, name: 'Refunds', created_by: folder.created_by, created_at: folder.created_at }),
+      },
+    ]);
+  });
+
+  it('a name already held answers that folder unchanged — no write, no event, whoever asks', async () => {
+    const admin = await kit.as(desk, desk.admin);
+    const first = (await admin.invoke('ticket0/create-saved-reply-folder', { name: 'Escalations' })) as Folder;
+    const rows = folderRows();
+    const events = folderEvents();
+    // The input is trimmed by its schema before the lookup, as it was before.
+    const again = await admin.invoke('ticket0/create-saved-reply-folder', { name: '  Escalations  ' });
+    const agent = await kit.as(desk, desk.agents[0]!);
+    // An agent holds saved-reply:manage too, and its replay answers the admin's folder, stamps and all.
+    const byAgent = await agent.invoke('ticket0/create-saved-reply-folder', { name: 'Escalations' });
+    expect(again).toStrictEqual(first);
+    expect(byAgent).toStrictEqual(first);
+    expect(folderRows()).toStrictEqual(rows);
+    expect(folderEvents()).toStrictEqual(events);
+  });
+
+  it('refuses a caller without saved-reply:manage before anything else, and writes nothing', async () => {
+    const bot = await kit.as(desk, desk.assistant);
+    const rows = folderRows();
+    const refused = await bot.invoke('ticket0/create-saved-reply-folder', { name: 'Bot folder' }).catch((e: unknown) => e);
+    const replay = await bot.invoke('ticket0/create-saved-reply-folder', { name: 'Refunds' }).catch((e: unknown) => e);
+    expect([errorCodeOf(refused), errorCodeOf(replay)]).toEqual(['permission_denied', 'permission_denied']);
+    expect((refused as Error).message).toContain('saved-reply:manage');
+    expect(folderRows()).toStrictEqual(rows);
+  });
+
+  it('refuses a blank name at the boundary, as it did', async () => {
+    const admin = await kit.as(desk, desk.admin);
+    const blank = await admin.invoke('ticket0/create-saved-reply-folder', { name: '   ' }).catch((e: unknown) => e);
+    expect(errorCodeOf(blank)).toBe('validation_failed');
+  });
+});
