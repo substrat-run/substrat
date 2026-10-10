@@ -192,7 +192,11 @@ export const notifyInput = z.object({
   /** What the mail is about; its timeline carries the outcome. */
   about: z.object({ entityType: z.string().min(1), entityId: z.string().min(1) }).nullable().default(null),
   template: z.object({ subject: z.string().min(1), text: z.string().min(1), html: z.string().min(1).optional() }),
-  /** A required topic cannot be muted — reserve it for mail a person must not be able to miss. */
+  /**
+   * A required topic cannot be muted — reserve it for mail a person must not be able to miss.
+   * With `description`, part of the topic's ONE declaration: every call for a topic passes the
+   * same pair (see `recordTopic`).
+   */
   required: z.boolean().default(false),
 });
 export type NotifyInput = z.input<typeof notifyInput>;
@@ -281,8 +285,14 @@ const isMuted = (ctx: OperationContext, principal: string, topic: string): boole
 
 /**
  * A topic becomes known to the preferences screen the first time it is used, and follows the
- * caller's latest description and `required` from then on. Written only when it changes, so an
- * ordinary notification adds no topic event.
+ * caller's latest description and `required` from then on, so a deploy that changes them updates
+ * the row an older deploy wrote. Written only when it changes, so an ordinary notification adds
+ * no topic event.
+ *
+ * That is only coherent under **one topic, one declaration**: every call site naming a topic
+ * passes the same description and `required`. Two that disagree make the row flip with
+ * whichever ran last, and a mute be refused or allowed accordingly. Keep a topic's declaration
+ * in one constant the call sites spread, and change it there.
  */
 function recordTopic(ctx: OperationContext, topic: string, description: string, required: boolean): void {
   const changed = ctx.sql.query(

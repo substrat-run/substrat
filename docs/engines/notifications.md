@@ -23,6 +23,10 @@ vars, dedupeKey, about, required? })` in its own transaction. For each recipient
 - writes a send intent with the kernel's `requestEmail`;
 - records a delivery, unique per (dedupe key, topic, principal, channel).
 
+A topic is recorded on first use and follows its latest caller, which is coherent only under
+**one topic, one declaration**: every call site for a topic passes the same `description` and
+`required`.
+
 The engine's only consumers are the three `email.*` outcome events. They settle the deliveries
 when the platform's drain writes the outcome back.
 

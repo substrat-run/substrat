@@ -51,6 +51,8 @@ host.registerModule(notificationsModule);
   (`notifications/set-my-address`) and switches topics off (`notifications/set-my-preference`).
   A topic passed as `required` cannot be switched off. A topic is recorded the first time it
   is used, and that record is what a preferences screen lists.
+
+**One topic, one declaration.** A topic's `description` and `required` are recorded from the call that uses it, and follow the latest caller, so a deploy that changes them updates the scope. Every call site for a topic must pass the same pair: two that disagree make the topic flip with whichever ran last, and a mute be refused or allowed accordingly. Keep each topic in one constant that its call sites spread, and change it there.
 - **Delivery tracking.** There is one row per (dedupe key, topic, person, channel), unique on
   those four. It moves from `requested` to `sent`, `refused` or `dead_lettered` when the
   platform's outcome event arrives. A delivery that was not sent says why: `muted` or
