@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { capabilityId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { capabilityId, platformActorId, provesNothingChanged, scopeId, tenantId } from '@substrat-run/contracts';
+import { auditedCapabilityRevoke, ulid } from '@substrat-run/kernel';
+import { ControlPlaneError } from '@substrat-run/control-plane-api';
 import { capabilityDelegationOver } from '../src/worker.js';
 
 /**
@@ -33,9 +34,31 @@ describe('capabilityDelegationOver (#1686)', () => {
     expect(sent).toEqual([{ scopeId: s, capabilityId: id, actor }]);
   });
 
-  it('twin: a vertical the platform has no deployment for is refused, and nothing is sent', async () => {
+  it('twin: a vertical the platform has no deployment for is a 501 — it proves nothing changed — and nothing is sent', async () => {
+    const err = await capabilityDelegationOver(async () => undefined)
+      .revoke({ tenantId: t, scopeId: s, served, capabilityId: id, actor })
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect((err as ControlPlaneError).status).toBe(501);
+    expect(provesNothingChanged(err)).toBe(true);
+    expect((err as Error).message).toMatch(/no deployment serving scope .*'desk'.* was not revoked/);
+  });
+
+  // Through the audit: nothing sent reads as refused, never as an open intent.
+  it('so the audited revoke records it refused, never unknown', async () => {
+    const phases: string[] = [];
+    const logged: unknown[] = [];
+    const delegation = capabilityDelegationOver(async () => undefined);
     await expect(
-      capabilityDelegationOver(async () => undefined).revoke({ tenantId: t, scopeId: s, served, capabilityId: id, actor }),
-    ).rejects.toThrow(/no deployment serving scope .*'desk'.* was not revoked/);
+      auditedCapabilityRevoke({
+        capabilityId: id,
+        scopeId: s,
+        record: (_before, after) => void phases.push(after.phase as string),
+        revoke: () => delegation.revoke({ tenantId: t, scopeId: s, served, capabilityId: id, actor }),
+        logError: (m, f) => void logged.push([m, f]),
+      }),
+    ).rejects.toThrow(/no deployment serving scope/);
+    expect(phases).toEqual(['intent', 'refused']);
+    expect(logged).toEqual([]);
   });
 });

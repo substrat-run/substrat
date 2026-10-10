@@ -1093,8 +1093,11 @@ export function capabilityDelegationOver(
   return {
     revoke: async (a) => {
       const client = await clientFor(a.actor, { tenantId: a.tenantId, ...a.served });
+      // Nothing was sent, so the answer is one that proves nothing changed (501, as an
+      // undelegated verb's): audited `refused`, never left `unknown`.
       if (!client) {
-        throw new Error(
+        throw new ControlPlaneError(
+          501,
           `no deployment serving scope ${a.scopeId} (vertical '${a.served.vertical}') — ` +
             `capability ${a.capabilityId} was not revoked`,
         );
