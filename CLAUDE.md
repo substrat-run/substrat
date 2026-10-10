@@ -141,20 +141,22 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   reason at its call, when a node-only path legitimately exceeds a limit.
 - **`overrides:` in `pnpm-workspace.yaml` are checked at every severity** (#1601).
   Dependabot reads package.json ranges and the catalog blocks, never `overrides`, so a
-  pin there has no updater. `tools/override-advisories.mjs` (a step in
-  `.github/workflows/audit.yml`, tests via `pnpm test:override-advisories`) reads the
-  keys and the `pnpm audit --json` report and fails on any advisory whose
-  `vulnerable_versions` contains the pinned version; the rest of the tree keeps the
-  critical-only gate. Pin exactly (a range exits 2), and a consciously accepted
-  advisory is a GHSA id in `pnpm.auditConfig.ignoreGhsas`, same as the critical gate.
-  It also refuses a **stale** pin: a newer release on the pin's line (same major) out for
-  more than 30 days, read with `pnpm view <name> time`. That one fails the weekly run, a
-  push to main and a PR that changes the overrides, the lockfile or the accept file, and
-  is only a warning on any other PR, so the calendar never reddens an unrelated PR. A
-  consciously held pin is an entry in `tools/override-advisories.accept.json` (package,
-  version, reason, expiry); an expired entry fails like the stale pin it held. Prefer the
-  `catalog:` to an override whenever one version is all you need: Dependabot reads the
-  catalog, and an override only when nothing else will do.
+  pin there has no updater. An override that only needs a version says `'catalog:'`
+  (as `hono` does), so the version lives in the catalog Dependabot moves.
+  `tools/override-advisories.mjs` (a step in `.github/workflows/audit.yml`, tests via
+  `pnpm test:override-advisories`) judges every key at the version it resolves to in
+  `pnpm-lock.yaml`, against the `pnpm audit --json` report: any advisory whose
+  `vulnerable_versions` contains it fails; the rest of the tree keeps the critical-only
+  gate. A consciously accepted advisory is a GHSA id in `pnpm.auditConfig.ignoreGhsas`,
+  same as the critical gate. It also refuses a **stale** override: a newer release on its
+  line (same major) out for more than 30 days, read with `pnpm view <name> time`. That
+  one fails the weekly run, a push to main and a PR that changes what an override says
+  (catalog entry included) or the accept file, and is only a warning on any other PR, a
+  lockfile-only one included, so the calendar never reddens an unrelated PR. A
+  consciously held version is an entry in `tools/override-advisories.accept.json`
+  (package, version, reason, expiry); an expired entry fails like the pin it held. The
+  same step asserts that `hono` and `better-sqlite3` (`ONE_VERSION` in the tool) each
+  resolve to exactly one version — the guarantee the overrides used to give.
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).

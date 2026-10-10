@@ -98,32 +98,37 @@ catalog:
   # The node SQLite driver behind the pure host, the dev servers and every node suite.
   # One version: v13 ships prebuilt binaries and needs no build step, and a second copy
   # resolved beside it would not (#546). Here rather than in `overrides:`, which this
-  # line replaced (#1601), because Dependabot reads this block and never that one.
+  # line replaced (#1601), because Dependabot reads this block and never that one;
+  # `tools/override-advisories.mjs` asserts the one version in the lockfile.
   better-sqlite3: ^13.0.3
+
+  # The HTTP framework every vertical, app and host package is written on. `overrides:`
+  # below forces this same version onto every transitive copy too, by reference.
+  hono: ^4.13.13
 
 onlyBuiltDependencies:
   - esbuild
   - workerd
 
 overrides:
-  # hono is pinned EXACTLY, and on purpose: 54d3d0e6 (#510/#517) introduced it
-  # "so the mounted Hono app type matches its consumers" — vertical-host's
-  # `mountPlatformSurface` hands a Hono app across packages, and 21 workspace
-  # members declare `hono`, so two resolved versions would be two distinct types.
-  # Do not delete it; RAISE it. (#761 only relocated the line here.)
+  # hono is forced to ONE version across the whole tree, transitive copies included, on
+  # purpose: 54d3d0e6 (#510/#517) introduced it "so the mounted Hono app type matches its
+  # consumers" — vertical-host's `mountPlatformSurface` hands a Hono app across packages,
+  # so two resolved versions would be two distinct types. Do not delete it. Its version
+  # is the catalog entry above (#1601): this line says `catalog:`, so a raise is one edit
+  # there, and Dependabot, which reads the catalog and never this block, makes it.
   #
-  # Dependabot does not bump `overrides`, so a human has to move every pin in this
-  # block. The check is `tools/override-advisories.mjs`, run by audit.yml (#1601):
-  #   * an advisory of ANY severity against a pinned version fails it (the rest of the
-  #     tree only fails on critical). A consciously accepted advisory goes in
-  #     package.json's `pnpm.auditConfig.ignoreGhsas`, one id, reason in the PR.
-  #   * a pin is STALE once a newer release on its major has been out for more than
-  #     30 days. That fails the weekly run, a push to main, and a PR that changes this
-  #     block or the lockfile; any other PR gets a warning. A consciously held pin goes
-  #     in `tools/override-advisories.accept.json` with a reason and an expiry.
-  # When it goes red, raise the pin to the latest release on its major. Pin EXACTLY —
-  # a range cannot be judged and the check refuses it.
-  hono: 4.13.13
+  # Nothing else moves an override, so `tools/override-advisories.mjs` (audit.yml)
+  # judges every key here at the version it resolves to in pnpm-lock.yaml:
+  #   * an advisory of ANY severity against it fails (the rest of the tree only fails on
+  #     critical). A consciously accepted advisory goes in package.json's
+  #     `pnpm.auditConfig.ignoreGhsas`, one id, reason in the PR.
+  #   * it is STALE once a newer release on its major has been out for more than 30
+  #     days. That fails the weekly run, a push to main, and a PR that changes what an
+  #     override says; any other PR gets a warning. A consciously held version goes in
+  #     `tools/override-advisories.accept.json` with a reason and an expiry.
+  # The same step asserts that hono and better-sqlite3 each resolve to one version.
+  hono: 'catalog:'
 
 # On why `strictPeerDependencies` is NOT set here, which is a measured decision
 # rather than an omission.

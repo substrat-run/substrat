@@ -2,42 +2,55 @@
 //
 // The pins `pnpm-workspace.yaml` holds in `overrides:` have no other actor (#1601): Dependabot
 // reads package.json ranges and the `catalog:` blocks and nothing under `overrides`, so a pin
-// there stays wherever the last human left it. Two things are judged, for every key — read
-// from the block, not a list, so a pin added tomorrow is covered by construction:
+// there stays wherever the last human left it. An override may say `'catalog:'`, so its version
+// lives in the catalog Dependabot does read; either way it is judged at the version it RESOLVES
+// to in pnpm-lock.yaml, which is what is installed and what `pnpm audit` reads. Every key is
+// judged — read from the block, not a list, so a pin added tomorrow is covered by construction:
 //
-//   ADVISORY  an advisory of ANY severity whose `vulnerable_versions` contains the pinned
+//   ADVISORY  an advisory of ANY severity whose `vulnerable_versions` contains the resolved
 //             version. audit.yml's critical-only gate covers the rest of the tree and does not
 //             reach these; this reads the SAME `pnpm audit --json` report. Fails everywhere,
 //             immediately. A consciously accepted advisory is expressed exactly as the critical
 //             gate expresses it: its GHSA id in package.json's `pnpm.auditConfig.ignoreGhsas`.
-//   STALE     a newer release on the pin's line (same major; same minor on 0.x) has been out for
-//             more than GRACE_DAYS. Newer majors are migrations and prereleases are not
+//   STALE     a newer release on the version's line (same major; same minor on 0.x) has been out
+//             for more than GRACE_DAYS. Newer majors are migrations and prereleases are not
 //             releases, so neither counts. Time alone turns this red, so it FAILS only where
 //             the pins are the subject — a scheduled or manual run, a push to main, a PR that
-//             changes the overrides, the lockfile or the accept file — and is a warning on
-//             every other PR. A consciously held pin goes in ACCEPT_FILE with a reason and an
-//             expiry; an expired entry is judged like the stale pin it was holding.
+//             changes what an override says or the accept file — and is a warning on every
+//             other PR, a lockfile-only one included. A consciously held pin goes in ACCEPT_FILE
+//             with a reason and an expiry; an expired entry is judged like the pin it was holding.
+//
+// And the guarantee an override used to give by construction is asserted instead: each package
+// in ONE_VERSION resolves to exactly one version in the lockfile.
 //
 // Release dates come from `pnpm view <name> time --json`, the registry the install uses.
 //
 // Fails closed (exit 2): a report with no `advisories` map, a release lookup that fails, an
-// override that is not an exact version (a range cannot be placed against either question), and
-// an accept entry that is malformed or names no current pin — "could not tell" must not read as
-// "clean".
+// override whose version cannot be told (a range or catalog reference resolving to more or
+// fewer than one version, a catalog reference with no entry), and an accept entry that is
+// malformed or names no current pin — "could not tell" must not read as "clean".
 //
 // No dependencies on purpose: the audit workflow runs no install.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { parseLockfile } from './ci-scope.mjs';
 
-/** The `overrides:` mapping of a pnpm-workspace.yaml, as `{ key: value }`. Flat scalars only. */
-export function parseOverrides(yaml) {
+/**
+ * Packages that must resolve to exactly one version. hono: `vertical-host` hands a Hono app
+ * across packages, and two resolved versions would be two distinct types (#510/#517).
+ * better-sqlite3: v13 ships prebuilt binaries, and a second copy beside it may not (#546).
+ */
+export const ONE_VERSION = ['better-sqlite3', 'hono'];
+
+/** A top-level mapping of a pnpm-workspace.yaml (`overrides`, `catalog`), as `{ key: value }`. Flat scalars only. */
+export function parseBlock(yaml, block) {
   const out = {};
   let inBlock = false;
   for (const raw of yaml.split('\n')) {
     const line = raw.replace(/\s+#.*$/, '').trimEnd();
-    if (/^overrides:\s*$/.test(line)) {
+    if (line === `${block}:`) {
       inBlock = true;
       continue;
     }
@@ -45,10 +58,69 @@ export function parseOverrides(yaml) {
     if (line.trim() === '') continue; // comment-only and blank lines stay inside the block
     if (!/^\s/.test(line)) break; // next top-level key
     const m = line.match(/^\s+(?:'([^']+)'|"([^"]+)"|([^\s:'"][^:]*?))\s*:\s*(?:'([^']*)'|"([^"]*)"|(\S.*))\s*$/);
-    if (!m) throw new Error(`override-advisories: cannot read overrides line: ${raw}`);
+    if (!m) throw new Error(`override-advisories: cannot read ${block} line: ${raw}`);
     out[m[1] ?? m[2] ?? m[3]] = (m[4] ?? m[5] ?? m[6]).trim();
   }
   return out;
+}
+
+export const parseOverrides = (yaml) => parseBlock(yaml, 'overrides');
+
+/**
+ * What each override actually says: a `catalog:` / `catalog:default` value is replaced by the
+ * default catalog's entry for the package it overrides. Throws on a missing entry or a named
+ * catalog, which this does not read.
+ */
+export function effectiveOverrides(yaml) {
+  const catalog = parseBlock(yaml, 'catalog');
+  const out = {};
+  for (const [key, value] of Object.entries(parseOverrides(yaml))) {
+    if (!value.startsWith('catalog:')) {
+      out[key] = value;
+      continue;
+    }
+    const name = overriddenName(key);
+    if (value !== 'catalog:' && value !== 'catalog:default') throw new Error(`override-advisories: "${key}: ${value}" names a catalog this does not read`);
+    if (catalog[name] === undefined) throw new Error(`override-advisories: "${key}: ${value}" but the catalog has no ${name}`);
+    out[key] = catalog[name];
+  }
+  return out;
+}
+
+/** Every version each package resolves to in a pnpm-lock.yaml, as `name -> Set<version>`. */
+export function lockedVersions(lockfile) {
+  const out = new Map();
+  for (const key of parseLockfile(lockfile).packages.keys()) {
+    const at = key.lastIndexOf('@');
+    const name = key.slice(0, at);
+    out.set(name, (out.get(name) ?? new Set()).add(key.slice(at + 1)));
+  }
+  return out;
+}
+
+/**
+ * The version each override is judged at. An exact value is its own answer, and must be in the
+ * lockfile; anything else (a range, a catalog entry) is the one version the package resolves to.
+ * @returns {{ pins: { key, name, version }[], errors: string[] }}
+ */
+export function resolvePins(overrides, locked) {
+  const pins = [];
+  const errors = [];
+  for (const [key, spec] of Object.entries(overrides)) {
+    const name = overriddenName(key);
+    const versions = [...(locked.get(name) ?? [])];
+    if (EXACT.test(spec) ? !versions.includes(spec) : versions.length !== 1) {
+      errors.push(`"${key}: ${spec}" resolves to ${versions.length === 0 ? 'nothing' : versions.join(', ')} in pnpm-lock.yaml — expected exactly one version${EXACT.test(spec) ? `, ${spec}` : ''}`);
+      continue;
+    }
+    pins.push({ key, name, version: EXACT.test(spec) ? spec : versions[0] });
+  }
+  return { pins, errors };
+}
+
+/** The ONE_VERSION packages that resolve to more than one version, as messages. */
+export function oneVersionErrors(locked, names = ONE_VERSION) {
+  return names.filter((n) => (locked.get(n)?.size ?? 0) > 1).map((n) => `${n} resolves to ${[...locked.get(n)].join(', ')}`);
 }
 
 /**
@@ -119,33 +191,20 @@ export function inRange(version, range) {
   );
 }
 
-/**
- * @returns {{ hits: object[], unjudgeable: string[] }} `hits` are advisories against a pinned
- * version; `unjudgeable` are overrides whose value is not an exact version.
- */
-export function check(overrides, audit, ignored = []) {
+/** The advisories in a `pnpm audit --json` report against the pins, sorted by package then id. */
+export function check(pins, audit, ignored = []) {
   if (!audit || typeof audit.advisories !== 'object' || audit.advisories === null) {
-    throw new Error('override-advisories: the audit report has no `advisories` — the lookup failed, and a tree that could not be checked is not clean');
-  }
-  const pins = new Map(); // name -> [{ key, version }]
-  const unjudgeable = [];
-  for (const [key, value] of Object.entries(overrides)) {
-    if (!EXACT.test(value)) {
-      unjudgeable.push(`${key}: ${value}`);
-      continue;
-    }
-    const name = overriddenName(key);
-    pins.set(name, [...(pins.get(name) ?? []), { key, version: value }]);
+    throw new Error('the audit report has no `advisories` — the lookup failed, and a tree that could not be checked is not clean');
   }
   const hits = [];
   for (const adv of Object.values(audit.advisories)) {
     if (ignored.includes(adv.github_advisory_id)) continue;
-    for (const pin of pins.get(adv.module_name) ?? []) {
-      if (inRange(pin.version, adv.vulnerable_versions)) hits.push({ ...pin, name: adv.module_name, advisory: adv });
+    for (const pin of pins) {
+      if (pin.name === adv.module_name && inRange(pin.version, adv.vulnerable_versions)) hits.push({ ...pin, advisory: adv });
     }
   }
   hits.sort((a, b) => a.name.localeCompare(b.name) || a.advisory.github_advisory_id.localeCompare(b.advisory.github_advisory_id));
-  return { hits, unjudgeable };
+  return hits;
 }
 
 export const GRACE_DAYS = 30;
@@ -199,11 +258,13 @@ export function readAccepts(entries, pins, now) {
 
 /**
  * Whether a stale pin fails this run, or only warns. Only a PR that leaves the pins alone is let
- * through: there the passage of time is not the PR's doing. An unknown event fails closed.
+ * through: there the passage of time is not the PR's doing. The overrides compared are the
+ * effective ones, so a catalog edit to an overridden package counts; a lockfile-only change
+ * (Dependabot's included) does not. An unknown event fails closed.
  */
 export function stalenessFails({ event, changedFiles = [], baseOverrides = {}, headOverrides = {} }) {
   if (event !== 'pull_request') return true;
-  if (changedFiles.some((f) => f === 'pnpm-lock.yaml' || f === ACCEPT_FILE)) return true;
+  if (changedFiles.includes(ACCEPT_FILE)) return true;
   const sorted = (o) => JSON.stringify(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
   return sorted(baseOverrides) !== sorted(headOverrides);
 }
@@ -231,15 +292,15 @@ function main() {
   const event = opts.event ?? process.env.GITHUB_EVENT_NAME;
   const now = new Date(opts.now ?? Date.now());
   if (Number.isNaN(now.getTime())) fail(`override-advisories: --now is not a date`);
-  const overrides = parseOverrides(readFileSync('pnpm-workspace.yaml', 'utf8'));
+  const overrides = attempt('cannot read pnpm-workspace.yaml', () => effectiveOverrides(readFileSync('pnpm-workspace.yaml', 'utf8')));
+  const locked = attempt('cannot read pnpm-lock.yaml', () => lockedVersions(readFileSync('pnpm-lock.yaml', 'utf8')));
+  const { pins, errors } = resolvePins(overrides, locked);
+  if (errors.length > 0) fail(`override-advisories: cannot tell the version an override is judged at:\n  ${errors.join('\n  ')}`);
   const ignored = JSON.parse(readFileSync('package.json', 'utf8')).pnpm?.auditConfig?.ignoreGhsas ?? [];
   const audit = attempt(`cannot read ${auditPath}`, () => JSON.parse(readFileSync(auditPath, 'utf8')));
-  const result = attempt('cannot judge the audit report', () => check(overrides, audit, ignored));
-  if (result.unjudgeable.length > 0) {
-    fail(`override-advisories: not an exact version, so it cannot be checked against an advisory range:\n  ${result.unjudgeable.join('\n  ')}\nPin overrides exactly.`);
-  }
+  const hits = attempt('cannot judge the audit report', () => check(pins, audit, ignored));
+  const doubled = oneVersionErrors(locked);
 
-  const pins = Object.entries(overrides).map(([key, version]) => ({ key, version, name: overriddenName(key) }));
   const accepts = attempt(`cannot read ${ACCEPT_FILE}`, () => readAccepts(JSON.parse(readFileSync(ACCEPT_FILE, 'utf8')), pins, now));
   if (accepts.errors.length > 0) fail(`override-advisories: ${ACCEPT_FILE}:\n  ${accepts.errors.join('\n  ')}`);
 
@@ -262,15 +323,18 @@ function main() {
     event === 'pull_request'
       ? attempt(`cannot compare against ${base}`, () => ({
           changedFiles: run('git', 'diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean),
-          baseOverrides: parseOverrides(run('git', 'show', `${base}:pnpm-workspace.yaml`)),
+          baseOverrides: effectiveOverrides(run('git', 'show', `${base}:pnpm-workspace.yaml`)),
           headOverrides: overrides,
         }))
       : {};
   const staleFailing = staleLines.length > 0 && stalenessFails({ event, ...prChanges });
 
-  if (result.hits.length > 0) {
+  if (doubled.length > 0) {
+    console.error(`override-advisories: more than one resolved version of a package that must have one:\n  ${doubled.join('\n  ')}\nFind what pulls in the second copy (\`pnpm why <name>\`) and bring it onto the catalog's version.`);
+  }
+  if (hits.length > 0) {
     console.error('override-advisories: advisories against a pinned override (Dependabot cannot move these — raise the pin in pnpm-workspace.yaml):');
-    for (const h of result.hits) {
+    for (const h of hits) {
       const a = h.advisory;
       const patched = a.patched_versions === '<0.0.0' ? 'none' : a.patched_versions;
       console.error(`  ${h.name}@${h.version} (override "${h.key}") — ${a.severity} ${a.github_advisory_id}: ${a.title} · vulnerable ${a.vulnerable_versions} · patched ${patched} · ${a.url}`);
@@ -285,9 +349,9 @@ function main() {
     // what reaches its author, and the next push to main or weekly run fails on it.
     for (const line of staleLines) console.log(`::warning title=Stale pnpm override::${line}. ${how}`);
   }
-  if (result.hits.length > 0 || staleFailing) process.exit(1);
-  const names = Object.keys(overrides);
-  console.log(`override-advisories: ${names.length} override(s) (${names.join(', ')}) — no advisory of any severity against a pinned version${staleLines.length > 0 ? '; stale pins warned above' : ', and none stale'}.`);
+  if (hits.length > 0 || doubled.length > 0 || staleFailing) process.exit(1);
+  const names = pins.map((p) => `${p.key}@${p.version}`);
+  console.log(`override-advisories: ${names.length} override(s) (${names.join(', ')}), one version each of ${ONE_VERSION.join(', ')} — no advisory of any severity against a pinned version${staleLines.length > 0 ? '; stale pins warned above' : ', and none stale'}.`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main();

@@ -1,7 +1,7 @@
 // node --test tools/override-advisories.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ACCEPT_FILE, GRACE_DAYS, check, inRange, overriddenName, parseOverrides, readAccepts, staleness, stalenessFails } from './override-advisories.mjs';
+import { ACCEPT_FILE, GRACE_DAYS, check, effectiveOverrides, inRange, lockedVersions, oneVersionErrors, overriddenName, parseOverrides, readAccepts, resolvePins, staleness, stalenessFails } from './override-advisories.mjs';
 
 const yaml = `packages:
   - 'packages/*'
@@ -30,7 +30,10 @@ const adv = (over) => ({
   ...over,
 });
 const report = (...advisories) => ({ advisories: Object.fromEntries(advisories.map((a, i) => [String(i), a])) });
-const overrides = { hono: '4.13.8', 'better-sqlite3': '13.0.3' };
+const overrides = [
+  { key: 'hono', name: 'hono', version: '4.13.8' },
+  { key: 'better-sqlite3', name: 'better-sqlite3', version: '13.0.3' },
+];
 
 test('parses the overrides block and stops at the next top-level key', () => {
   assert.deepEqual(parseOverrides(yaml), { hono: '4.13.8', 'better-sqlite3': '13.0.3', '@scope/pkg': '1.2.3', 'a>b': '2.0.0' });
@@ -54,7 +57,7 @@ test('names the package an override key selects', () => {
 
 test('an exact pin under a comparator selector is still judged against its package', () => {
   for (const key of ['hono@>4', 'parent>hono@>=4']) {
-    const { hits } = check({ [key]: '4.13.8' }, report(adv()));
+    const hits = check(resolvePins({ [key]: '4.13.8' }, new Map([['hono', new Set(['4.13.8'])]])).pins, report(adv()));
     assert.deepEqual(hits.map((h) => [h.name, h.key]), [['hono', key]]);
   }
 });
@@ -80,7 +83,7 @@ test('range matching', () => {
 
 test('an advisory of ANY severity against a pinned version is a hit', () => {
   for (const severity of ['low', 'moderate', 'high', 'critical']) {
-    const { hits } = check(overrides, report(adv({ severity })));
+    const hits = check(overrides, report(adv({ severity })));
     assert.equal(hits.length, 1, severity);
     assert.equal(hits[0].name, 'hono');
     assert.equal(hits[0].version, '4.13.8');
@@ -88,7 +91,7 @@ test('an advisory of ANY severity against a pinned version is a hit', () => {
 });
 
 test('reported per package', () => {
-  const { hits } = check(
+  const hits = check(
     overrides,
     report(adv({ github_advisory_id: 'GHSA-1' }), adv({ module_name: 'better-sqlite3', vulnerable_versions: '>=13.0.0 <13.1.0', github_advisory_id: 'GHSA-2' })),
   );
@@ -96,22 +99,22 @@ test('reported per package', () => {
 });
 
 test('the pinned version is what is judged: a fixed pin is clean', () => {
-  const { hits } = check(overrides, report(adv({ vulnerable_versions: '<4.13.8' })));
+  const hits = check(overrides, report(adv({ vulnerable_versions: '<4.13.8' })));
   assert.deepEqual(hits, []);
 });
 
 test('an advisory on a package that is not overridden is ignored', () => {
-  const { hits } = check(overrides, report(adv({ module_name: 'vite', severity: 'moderate', vulnerable_versions: '<99.0.0' })));
+  const hits = check(overrides, report(adv({ module_name: 'vite', severity: 'moderate', vulnerable_versions: '<99.0.0' })));
   assert.deepEqual(hits, []);
 });
 
 test('an override with no advisory passes', () => {
-  assert.deepEqual(check(overrides, report()), { hits: [], unjudgeable: [] });
+  assert.deepEqual(check(overrides, report()), []);
 });
 
 test('an ignored GHSA id stays expressible, and only that id', () => {
   const both = report(adv({ github_advisory_id: 'GHSA-1' }), adv({ github_advisory_id: 'GHSA-2' }));
-  const { hits } = check(overrides, both, ['GHSA-1']);
+  const hits = check(overrides, both, ['GHSA-1']);
   assert.deepEqual(hits.map((h) => h.advisory.github_advisory_id), ['GHSA-2']);
 });
 
@@ -120,9 +123,69 @@ test('fails closed: no advisories map means the lookup failed', () => {
   assert.throws(() => check(overrides, null), /lookup failed/);
 });
 
-test('fails closed: a non-exact override cannot be judged and is not green', () => {
-  const r = check({ hono: '^4.13.8', 'better-sqlite3': '13.0.3' }, report());
-  assert.deepEqual(r.unjudgeable, ['hono: ^4.13.8']);
+const locked = (entries) => new Map(Object.entries(entries).map(([n, vs]) => [n, new Set(vs)]));
+
+test('an override is judged at the version it resolves to', () => {
+  const r = resolvePins({ hono: '^4.13.0', 'a>b': '2.0.0' }, locked({ hono: ['4.13.13'], b: ['1.0.0', '2.0.0'] }));
+  assert.deepEqual(r, { pins: [{ key: 'hono', name: 'hono', version: '4.13.13' }, { key: 'a>b', name: 'b', version: '2.0.0' }], errors: [] });
+});
+
+test('fails closed: a range resolving to more or fewer than one version cannot be judged', () => {
+  assert.equal(resolvePins({ hono: '^4.13.0' }, locked({ hono: ['4.13.12', '4.13.13'] })).errors.length, 1);
+  assert.equal(resolvePins({ hono: '^4.13.0' }, locked({})).errors.length, 1);
+  // an exact pin the lockfile does not hold is not installed, so it is not what is judged
+  assert.equal(resolvePins({ hono: '4.13.8' }, locked({ hono: ['4.13.13'] })).errors.length, 1);
+});
+
+const workspace = `catalog:
+  zod: ^4.4.3
+  # the version lives here
+  hono: ^4.13.13
+  '@scope/x': 1.0.0
+
+overrides:
+  hono: 'catalog:'
+  'a>@scope/x': catalog:default
+  b: 2.0.0
+`;
+
+test('a catalog reference in an override reads the catalog entry of the package it overrides', () => {
+  assert.deepEqual(effectiveOverrides(workspace), { hono: '^4.13.13', 'a>@scope/x': '1.0.0', b: '2.0.0' });
+});
+
+test('a catalog reference with no entry, or to a named catalog, throws', () => {
+  assert.throws(() => effectiveOverrides(workspace.replace('  hono: ^4.13.13\n', '')), /catalog has no hono/);
+  assert.throws(() => effectiveOverrides(workspace.replace("hono: 'catalog:'", 'hono: catalog:other')), /names a catalog/);
+});
+
+const lockfile = `lockfileVersion: '9.0'
+
+packages:
+
+  '@hono/node-server@1.19.17':
+    resolution: {integrity: sha512-a}
+
+  hono@4.13.13:
+    resolution: {integrity: sha512-b}
+
+  better-sqlite3@13.0.3:
+    resolution: {integrity: sha512-c}
+
+snapshots:
+
+  hono@4.13.13: {}
+`;
+
+test('reads every resolved version per package from the lockfile, scoped names included', () => {
+  assert.deepEqual(lockedVersions(lockfile), locked({ '@hono/node-server': ['1.19.17'], hono: ['4.13.13'], 'better-sqlite3': ['13.0.3'] }));
+});
+
+test('one version of each declared package passes; a second one planted fails', () => {
+  assert.deepEqual(oneVersionErrors(lockedVersions(lockfile)), []);
+  const planted = lockfile.replace('\n  better-sqlite3@13.0.3:', '\n  better-sqlite3@12.9.0:\n    resolution: {integrity: sha512-d}\n\n  better-sqlite3@13.0.3:');
+  assert.deepEqual(oneVersionErrors(lockedVersions(planted)), ['better-sqlite3 resolves to 12.9.0, 13.0.3']);
+  // absent is not doubled
+  assert.deepEqual(oneVersionErrors(locked({}), ['hono']), []);
 });
 
 // `pnpm view <name> time --json`, trimmed: hono's real dates around the 4.13.8 pin.
@@ -195,7 +258,8 @@ test('staleness fails every run that is not a pull request, unknown events inclu
 test('on a pull request staleness fails only when the PR touches the pins', () => {
   const same = { baseOverrides: { hono: '4.13.8' }, headOverrides: { hono: '4.13.8' } };
   assert.equal(stalenessFails({ event: 'pull_request', changedFiles: ['README.md', 'pnpm-workspace.yaml'], ...same }), false);
-  assert.equal(stalenessFails({ event: 'pull_request', changedFiles: ['pnpm-lock.yaml'], ...same }), true);
+  // a lockfile-only change, Dependabot's included, only warns
+  assert.equal(stalenessFails({ event: 'pull_request', changedFiles: ['pnpm-lock.yaml', 'packages/x/package.json'], ...same }), false);
   assert.equal(stalenessFails({ event: 'pull_request', changedFiles: [ACCEPT_FILE], ...same }), true);
   assert.equal(stalenessFails({ event: 'pull_request', baseOverrides: { hono: '4.13.8' }, headOverrides: { hono: '4.13.9' } }), true);
   assert.equal(stalenessFails({ event: 'pull_request', baseOverrides: { hono: '4.13.8' }, headOverrides: { hono: '4.13.8', x: '1.0.0' } }), true);

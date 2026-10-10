@@ -64,7 +64,7 @@
     "better-auth": "^1.7.3",
     "better-sqlite3": "catalog:",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.13",
+    "hono": "catalog:",
     "jose": "^6.2.3",
     "zod": "catalog:"
   },
