@@ -58,6 +58,14 @@ const SHARES_THE_STAMP = 'substrat.invocation-stamp';
 const isScript = (m: VerticalBundle['modules'][number]) =>
   m.contentType.includes('javascript') || /\.(m?js|cjs)$/.test(m.name);
 
+/** The text of each of the vertical's OWN script modules — never ours, never an asset. */
+function* ownScripts(bundle: Pick<VerticalBundle, 'modules'>): Generator<string> {
+  const decoder = new TextDecoder();
+  for (const m of bundle.modules) {
+    if (!PLATFORM_MODULES.has(m.name) && isScript(m)) yield decoder.decode(m.content);
+  }
+}
+
 /**
  * Why a bundle is uploaded without the platform's entry, or `undefined` when it gets one.
  * Exported for the upload's own tests and for anyone asking why a script is not wrapped.
@@ -67,12 +75,9 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
     return 'the bundle names the platform entry as its own, so the vertical entry it wraps is unknown';
   }
   if (!bundle.modules.some((m) => m.name === bundle.entry)) return 'the bundle holds no module named by its entry';
-  const decoder = new TextDecoder();
   let writes = false;
   let shares = false;
-  for (const m of bundle.modules) {
-    if (PLATFORM_MODULES.has(m.name) || !isScript(m)) continue;
-    const text = decoder.decode(m.content);
+  for (const text of ownScripts(bundle)) {
     writes ||= WRITES_THE_LINE.test(text);
     shares ||= text.includes(SHARES_THE_STAMP);
     if (writes && shares) break; // a current middleware: nothing further could change the answer
@@ -82,8 +87,7 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
 }
 
 /**
- * Whether any of the vertical's own script modules carries the scope-host registry key — the
- * one fact about the bundle's bytes the sweeper decision reads (#1646).
+ * Whether any of the vertical's own script modules carries the scope-host registry key (#1646).
  *
  * This does not contradict "the bundle's bytes are deliberately not consulted" below. That rule
  * is about IDENTITY: which class is a sweeper, which no export name or minified method says
@@ -99,10 +103,8 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
  * check — so the push route is where it holds for every push.
  */
 function registersSweepHost(bundle: Pick<VerticalBundle, 'modules'>): boolean {
-  const decoder = new TextDecoder();
-  return bundle.modules.some(
-    (m) => !PLATFORM_MODULES.has(m.name) && isScript(m) && decoder.decode(m.content).includes(PLATFORM_SWEEP_HOST_KEY),
-  );
+  for (const text of ownScripts(bundle)) if (text.includes(PLATFORM_SWEEP_HOST_KEY)) return true;
+  return false;
 }
 
 /**
