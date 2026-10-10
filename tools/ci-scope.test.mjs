@@ -1,8 +1,8 @@
 // node --test tools/ci-scope.test.mjs
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { assertPartition, assignShards, buildNames, enclosingNames, classify, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, unitsOf } from './ci-scope.mjs';
+import { assertPartition, assignShards, buildNames, enclosingNames, classify, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, READS, readersOf, unitsOf } from './ci-scope.mjs';
 
 // A lockfile in pnpm v9's shape: two workspace packages sharing one third-party
 // dependency, plus the root importer.
@@ -227,6 +227,29 @@ test('decide: lockfile importers join the pnpm selection', () => {
   assert.deepEqual(r.selected, [all[1]]);
 });
 
+test('decide: a package that reads a changed file off disk joins the selection', () => {
+  let asked;
+  const r = decide({
+    event: 'pull_request',
+    base: 'B',
+    files: ['engines/notifications/src/index.ts'],
+    lockfile: () => assert.fail('not read'),
+    all,
+    selectChanged: (extra) => ((asked = extra), [all[1]]),
+  });
+  assert.deepEqual(asked, ['@substrat-run/console']);
+  assert.deepEqual(r.readers, ['@substrat-run/console']);
+  assert.deepEqual(r.lockfileImporters, []);
+});
+test('readersOf: an engine manifest selects the console, nothing else an engine holds does', () => {
+  assert.deepEqual(readersOf(['engines/notifications/src/index.ts']), ['@substrat-run/console']);
+  assert.deepEqual(readersOf(['engines/a/src/index.ts', 'engines/b/src/index.ts']), ['@substrat-run/console']);
+  assert.deepEqual(readersOf(['engines/notifications/src/send.ts', 'engines/notifications/test/index.ts']), []);
+  assert.deepEqual(readersOf(['packages/kernel/src/index.ts', 'apps/console/src/index.ts']), []);
+});
+test('READS: every entry names a suite that exists', () => {
+  for (const r of READS) assert.ok(existsSync(r.suite), `${r.reader}: ${r.suite} does not exist`);
+});
 test('decide: package files changed but pnpm selected nothing runs everything', () => {
   const r = decide({ event: 'pull_request', base: 'B', files: ['demos/todo/src/a.ts'], lockfile: null, all, selectChanged: () => [] });
   assert.match(r.everything, /1 package file\(s\) changed but pnpm selected no package/);

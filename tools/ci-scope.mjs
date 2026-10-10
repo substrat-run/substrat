@@ -374,6 +374,22 @@ export function enclosingNames(names, all) {
   return [...new Set([...names, ...enclosing])].sort();
 }
 
+/**
+ * Suites that read another package's files off disk by path, so a change there has to
+ * test them — an edge no `package.json` can declare, because nothing is imported. Each
+ * entry names the reading package, the paths it reads, and the suite doing it.
+ * apps/console's SKU test scans every engine's `entitlementKey`, so a new engine is red
+ * in its own PR rather than on main after it (#2164 went red that way).
+ */
+export const READS = [
+  { reader: '@substrat-run/console', paths: /^engines\/[^/]+\/src\/index\.ts$/, suite: 'apps/console/test/skus.test.ts' },
+];
+
+/** The packages that read one of `files` off disk (READS), sorted. */
+export function readersOf(files) {
+  return [...new Set(READS.filter((r) => files.some((f) => r.paths.test(f))).map((r) => r.reader))].sort();
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
@@ -414,14 +430,15 @@ export function decide({ event, base, head, files, lockfile, all, selectChanged 
       // diff under a package path, which the selector below already accounts for.
     }
   }
-  const selected = selectChanged(extra);
+  const readers = readersOf(files);
+  const selected = selectChanged([...new Set([...extra, ...readers])]);
   if (inMembers > 0 && selected.length === 0) {
     // pnpm's selector answers "nothing" for reasons other than "nothing changed" — it
     // does inside a linked git worktree, for one — and a gate that skips work must
     // never mistake the two.
     return { everything: `${inMembers} package file(s) changed but pnpm selected no package` };
   }
-  return { selected, base, lockfileChanged, lockfileImporters: extra };
+  return { selected, base, lockfileChanged, lockfileImporters: extra, readers };
 }
 
 function main(argv) {
@@ -466,6 +483,7 @@ function main(argv) {
   } else {
     console.log(`scope: ${selection.length} package(s) — changed against ${base}, plus their dependents:`);
     for (const p of selection) console.log(`  ${p.dir}`);
+    if (result.readers.length > 0) console.log(`scope: a changed file is read off disk by: ${result.readers.join(', ')}`);
     if (result.lockfileImporters.length > 0) {
       console.log(`scope: ${LOCKFILE} changed the dependencies of: ${result.lockfileImporters.join(', ')}`);
     } else if (result.lockfileChanged) {
