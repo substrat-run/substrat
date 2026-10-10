@@ -53,5 +53,7 @@ declare namespace Cloudflare {
     JOURNAL_WRITE_SCOPE: DurableObjectNamespace;
     SPINE_SHADOW_SCOPE: DurableObjectNamespace;
     SPINE_DROP_SCOPE: DurableObjectNamespace;
+    /** #113: a wiped carried copy whose module set has no migrations — attachments.test.ts. */
+    WIPED_COPY_SCOPE: DurableObjectNamespace;
   }
 }

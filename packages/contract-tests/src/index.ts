@@ -9,6 +9,7 @@ export { becomeMintContractSuite, type BecomeMintVerbs } from './become-mint-sui
 export { bindingInviteContractSuite, type BindingVerbs } from './binding-invite-suite.js';
 export { BIND_INVITE, BIND_MEMBER, BIND_SHAPE, bindMod } from './bind-module.js';
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
+export { attachmentRefusalContractSuite } from './attachment-refusal-suite.js';
 export { attachmentTextContractSuite } from './attachment-text-suite.js';
 export type { AttachmentTextHostFixture, AttachmentTextHostOptions } from './attachment-text-suite.js';
 export { ATTACHMENT_TEXT_FIXTURES, DOCX_LINES, hostilePdfs } from './attachment-text-fixtures.js';

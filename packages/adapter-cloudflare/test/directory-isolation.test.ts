@@ -47,6 +47,7 @@ const SHARED_SCOPES = [
   'SPINE_DROP_SCOPE',
   'SPINE_PARENT_SCOPE',
   'SPINE_SHADOW_SCOPE',
+  'WIPED_COPY_SCOPE',
 ] as const;
 
 /** Every binding in the worker's env whose name matches, read from env rather than typed out. */
