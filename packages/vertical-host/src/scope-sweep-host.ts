@@ -54,7 +54,9 @@ export function registerScopeSweepHost(hostFor: ScopeSweepHostFactory): void {
   slot()[Symbol.for(SCOPE_SWEEP_HOST_KEY)] = hostFor;
 }
 
-/** The host builder the vertical registered, or `undefined` when its bundle registers none. */
+/** The host builder the vertical registered, or `undefined` when its bundle registers none.
+ *  The platform's sweeper module imports this file directly; the package index does not re-export
+ *  it, so a vertical's bundle carries the key only through `registerScopeSweepHost` (#1646). */
 export function registeredScopeSweepHost(): ScopeSweepHostFactory | undefined {
   return slot()[Symbol.for(SCOPE_SWEEP_HOST_KEY)];
 }

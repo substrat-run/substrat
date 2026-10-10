@@ -208,7 +208,8 @@ it:
   registration, not identity: before it supplies one, the push route refuses (422) a bundle
   whose own script modules never carry the scope-host registry key (`PLATFORM_SWEEP_HOST_KEY`,
   #1646). vertical-host evaluates the key only inside the functions that register and read the
-  host, so a bundler keeps it exactly when `mountPlatformSurface` is reachable. A bundle with
+  host, and its package entry exports only the register half (the read half is the platform's,
+  bundled from the file), so a bundler keeps it exactly when `mountPlatformSurface` is reachable. A bundle with
   no key has an older vertical-host or no mounted surface, so it would never fill the roster,
   and a supplied sweeper would never arm and never log. The decision is made ONCE, by the push route before anything is uploaded, and
   recorded with the version (the stored manifest's `platformSweeper`); promote, re-serve and

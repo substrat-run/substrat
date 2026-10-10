@@ -75,6 +75,15 @@ describe.each([false, true])('a real esbuild bundle of a vertical (minify: %s)',
     expect(decide(text)).toEqual({ refuse: expect.stringMatching(/this bundle registers none/) });
   }, 30_000);
 
+  it('cannot import the read half, so reading the slot is never mistaken for registering it', async () => {
+    // The key is the evidence of a registration only while nothing else a vertical can reach
+    // carries it. `registeredScopeSweepHost` would: kept by reachability, it holds the key and
+    // registers nothing. It is the platform's, so the package's public entry does not offer it.
+    await expect(
+      bundled(`import { registeredScopeSweepHost } from '@substrat-run/vertical-host';\nexport default { fetch: () => new Response(String(registeredScopeSweepHost())) };`, minify),
+    ).rejects.toThrow(/registeredScopeSweepHost/);
+  }, 30_000);
+
   it('that mounts the surface carries the key, and is supplied a sweeper', async () => {
     const text = await bundled(MOUNTS_SURFACE, minify);
     expect(text).toContain(PLATFORM_SWEEP_HOST_KEY);

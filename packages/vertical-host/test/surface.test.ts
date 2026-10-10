@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { NO_APPLICATION_DETAIL, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
-import { mountPlatformSurface, registeredScopeSweepHost, type VerticalScopeHost } from '../src/index.js';
+import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
+import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
 
 const SECRET = 'sekret';
 // Valid 26-char ULIDs (Crockford base32 — no I/L/O/U).

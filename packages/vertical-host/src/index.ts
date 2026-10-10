@@ -2329,7 +2329,17 @@ export * from './routed-node.js';
 export * from './rate-limit.js';
 export { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 export * from './kick-flags.js';
-export * from './scope-sweep-host.js';
+// Not `registeredScopeSweepHost`: the read half is the platform's, bundled straight from the file
+// into its own sweeper module (`tools/platform-entry-emit.mts`). Exported from here, a vertical
+// that only READ the slot would carry the registry key the control plane takes as proof of a
+// registration, and be supplied a sweeper with no host to run (#1646).
+export {
+  SCOPE_SWEEP_HOST_KEY,
+  PLATFORM_SWEEPER_VAR,
+  registerScopeSweepHost,
+  platformSweeperOf,
+  type ScopeSweepHostFactory,
+} from './scope-sweep-host.js';
 export {
   classifyError,
   isPlatformFault,
