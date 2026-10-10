@@ -84,7 +84,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->108 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->107 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
@@ -182,7 +182,6 @@ One per engine, mirroring `engines/*`.
 | [invites.md](engines/invites.md) | `built` | Invitations to an organization, and the connector seam that effects membership. |
 | [invoicing.md](engines/invoicing.md) | `built` | The invoice-basis ledger — consumes delivery events, immutable after export. |
 | [metering.md](engines/metering.md) | `built` | The billable-usage ledger. |
-| [notifications.md](engines/notifications.md) | `built` | Turning an occasion a vertical names into email — preferences, templates, tracked deliveries. |
 | [protocol.md](engines/protocol.md) | `built` | Protocol and checklist engine. OQ11 decided and logged as K-38. |
 | [workorder.md](engines/workorder.md) | `built` | The work-order state machine, with append-only time and material reporting. |
 

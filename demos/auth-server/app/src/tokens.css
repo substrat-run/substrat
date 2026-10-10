@@ -88,11 +88,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 
 .new-user { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px; width: 320px; }
 .new-user .row { display: flex; gap: 8px; }
-.import-users { width: 420px; }
-.import-users .drop { display: flex; flex-direction: column; gap: 4px; padding: 18px; margin-bottom: 10px; border: 1px dashed var(--line); border-radius: 8px; cursor: pointer; text-align: center; }
-.import-users .drop.over { border-color: var(--accent); }
-.import-users .drop .muted { font-size: 11.5px; }
-.import-problems { max-height: 180px; overflow: auto; margin: 0 0 10px; padding-left: 18px; font-size: 12px; }
 .new-user .row .btn { width: auto; margin-top: 0; }
 
 .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 14px; margin: 0 0 12px; }

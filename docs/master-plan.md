@@ -342,12 +342,9 @@ integrations hub (Fortnox, BankID-sign, EDI). The full adapter set beyond storag
   rows they protect, so a scope restore cannot un-erase anyone.*
 - **Telemetry** — OpenTelemetry is the contract; the APM vendor (Datadog/Sentry/Better
   Stack) is an adapter. Spec-first (§5.6) applied to ops.
-- **Notification transports** — the email/SMS/push provider is an adapter, per-tenant
-  selectable (enterprise tenants will demand their own SMTP/SES). *Built differently from
-  first written (K-47, #118): dispatch, templates, preferences and delivery tracking are
-  not kernel but `engine-notifications`, an engine composed by call. The kernel's part is
-  the transactional send intent (`requestEmail`) and the outcome events its settle writes
-  back; `adapter-email` is the transport behind it.*
+- **Notification transports** — dispatch, templates, preferences are kernel; the
+  email/SMS/push provider is an adapter, per-tenant selectable (enterprise tenants will
+  demand their own SMTP/SES).
 - **Search backends** — the search contract is kernel; FTS (SQLite FTS5 / D1) and vector
   index (Vectorize / sqlite-vec) are adapters, already implied by the two-adapter rule.
 
@@ -462,7 +459,7 @@ the direction the spectrum points.
 | Events / audit / reporting | **Build spine, buy engines** | Event contract (schema-versioned, tenant-tagged, PII-classified), Pipelines→Iceberg, query gateway. Audit log is a product feature, not just ops. |
 | Workflows | **Adopt + conventions** | Cloudflare Workflows for durable execution; kernel adds module-owned definitions, human-approval steps, event emission. **No visual BPMN builder — tarpit.** |
 | Jobs & scheduling | **Adopt + conventions** | Queues, cron; per-tenant scheduling conventions. |
-| Notifications | **Buy transport, build dispatch** | Transport is an adapter, per-tenant selectable (Resend/SES, Nordic SMS 46elks-class); dispatch, templates, preferences and delivery tracking are `engine-notifications`, composed by call over the kernel's send intent (§5.7, K-47). |
+| Notifications | **Buy transport, build dispatch** | Transport is an adapter, per-tenant selectable (Resend/SES, Nordic SMS 46elks-class); kernel owns dispatch, templates, preferences, delivery tracking (§5.7). |
 | Billing & entitlements | **Buy billing, build entitlements** | Three billings, three layers: (1) platform billing = kernel — entitlements are enforcement input (they gate module loading; an engine can't gate the system that loads engines), billing rail is an adapter (Stripe default, Fortnox-invoice rail for Swedish B2B, §5.7); (2) verticals billing their customers = engine territory at most (fakturaunderlag engine per §8.4; reskontra/avisering stays out per §7.5 boundary — Fortnox/Visma connectors); (3) end-customer payments = vertical domain + payment connectors (Swish, cards). |
 | GDPR machinery | **Build** | DSAR export, crypto-shredding erasure, retention policies. Nobody sells it in this shape; a genuine selling point in these markets. |
 | Certification & assurance programme | **Build** | Not a kernel component but a kernel *obligation*, and the only row whose cost is mostly not engineering — ISMS, control mapping, evidence pipeline, auditor-facing export, CUEC list, trust page, sub-processor register, DPA templates (decision 32). Placement note (decision 27): the *evidence* is guarantee-surface-coupled and therefore lives inside — it is generated from the same spine that enforces the controls, and a compliance product reading a second, reconstructed history would be the exact leak the kernel exists to prevent. The *audit* is bought (an external auditor, by definition). Compliance-automation vendors (Vanta/Drata-class) are an adapter-shaped buy for the workflow, never for the evidence. |

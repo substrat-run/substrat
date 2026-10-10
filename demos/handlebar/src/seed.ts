@@ -20,7 +20,6 @@ import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors
 import { workorderModule, PERM as WO } from '@substrat-run/engine-workorder';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
-import { notificationsModule, NOTIFICATIONS_PERM as NOTIFY } from '@substrat-run/engine-notifications';
 import { bikeShopModule, CS_PERM } from './module.js';
 import { HANDLEBAR_PERMISSIONS } from './operations.js';
 import { DEV_PROVIDER, PERSONAS, PERSONA_PRINCIPALS } from './personas.js';
@@ -63,7 +62,7 @@ export interface BikeShopWorld extends HandlebarInstance {
  * array — the emitter and the running host read the one object, so the artifact
  * cannot drift from what is actually registered.
  */
-export const MODULES = [workorderModule, invoicingModule, protocolModule, notificationsModule, bikeShopModule];
+export const MODULES = [workorderModule, invoicingModule, protocolModule, bikeShopModule];
 
 // protocol:countersign is deliberately in NO role: the counter-signature is the
 // CUSTOMER's act at pickup, granted entity-narrowed per customer via
@@ -75,8 +74,6 @@ const adminPerms = [
   WO.create, WO.read, WO.assign, WO.report, WO.complete, WO.close,
   INV.read, INV.export,
   PROTO.create, PROTO.fill, PROTO.sign, PROTO.read, PROTO.void,
-  // The workshop lead manages their own notifications and reads what became of everyone's.
-  NOTIFY.self, NOTIFY.read,
 ];
 
 /**
@@ -89,7 +86,7 @@ export const ROLES: RoleDefinition[] = [
   { key: 'workshop-admin', permissions: adminPerms, source: 'vertical' },
   // The mechanic fills the condition report; SIGNING stays with the workshop
   // lead — the fill/sign permission split (engine-protocol.md §4.6).
-  { key: 'mechanic', permissions: [WO.read, WO.report, PROTO.read, PROTO.fill, NOTIFY.self], source: 'vertical' },
+  { key: 'mechanic', permissions: [WO.read, WO.report, PROTO.read, PROTO.fill], source: 'vertical' },
 ];
 
 /**
@@ -167,7 +164,7 @@ export async function provisionHandlebar(
   });
   // Entitlements (§4.3) are default-deny, so the SKU flags for the modules this
   // vertical runs must be granted before any of its operations resolve.
-  for (const key of ['workorder', 'invoicing', 'protocol', 'notifications', 'handlebar']) {
+  for (const key of ['workorder', 'invoicing', 'protocol', 'handlebar']) {
     await host.admin.grantEntitlement(staff, input.tenantId, key);
   }
   await host.provisionScope(staff, {
@@ -334,19 +331,6 @@ export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<
   }
   // ...and topped up to the shape as it is now, which is what a deployed install's reconcile does.
   await host.admin.reconcileEntityGrantShapes(staff, { tenantId: world.t1, scopeId: world.s1 }, ENTITY_GRANTS);
-
-  // Where the workshop's staff hear about their repairs: each person's own persona address,
-  // set as that person (a notification address is a preference nobody else may set). Only
-  // where they have none, so existing demo data gains it on restart while an address a person
-  // changed survives one, and a restart writes and announces nothing. The `.test` addresses
-  // are placeholders; the dev server sends nothing.
-  for (const persona of PERSONAS) {
-    const key = PERSONA_PRINCIPALS[persona.sub];
-    if (key !== 'greta' && key !== 'mans') continue;
-    const self = await host.getScope(world[key], world.t1, world.s1);
-    const { email } = await self.invoke<{ email: string | null }>('notifications/my-preferences', {});
-    if (email === null) await self.invoke('notifications/set-my-address', { email: persona.email });
-  }
 
   return world;
 }

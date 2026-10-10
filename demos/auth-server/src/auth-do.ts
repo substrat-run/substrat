@@ -646,7 +646,6 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
           // (`console-client.ts`) judges a policy against what this runtime can actually
           // offer — BankID's mTLS binding included, which no SQL read could know about.
           offeredProviders: () => this.offeredProviders(),
-          transaction: (fn) => this.ctx.storage.transactionSync(fn),
         }),
       );
       return api.fetch(request);

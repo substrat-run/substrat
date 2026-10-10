@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { signConnectState, type ConnectStateClaim } from '@substrat-run/control-plane-api';
+import { signConnectState, type ConnectStateClaim } from '@substrat-run/kernel';
 import { signClaim, CONNECT_LINK_PURPOSE, GITHUB_STATE_PURPOSE, INVITE_TOKEN_PURPOSE } from '../src/signed-token.js';
 import {
   resolveConnectRound,

@@ -168,6 +168,38 @@ const bound = operationsFor(todoOperations)({
       { continuation: ctx.pageContinuation('list:my-lists', input) },
     ),
 
+  /**
+   * The four moves (#119). Each is the permission check and one kernel verb, which checks the
+   * same declared key on the list again, refuses a move from the wrong state with a 409, and
+   * records the move as a kernel event. The list's items and shares are untouched by all four.
+   *
+   * A binned list is `not_found` to the first three, not a 409: the host refuses it before they
+   * run, since none of them declares `trashed`. A missing one is the verb's own `not_found`.
+   */
+  'todo/archive-list': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
+    return { id: input.listId, state: await ctx.archive(listRef(input.listId)) };
+  },
+
+  'todo/unarchive-list': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listArchive, listRef(input.listId)));
+    return { id: input.listId, state: await ctx.unarchive(listRef(input.listId)) };
+  },
+
+  'todo/trash-list': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listTrash, listRef(input.listId)));
+    return { id: input.listId, state: await ctx.trash(listRef(input.listId)) };
+  },
+
+  'todo/restore-list': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listTrash, listRef(input.listId)));
+    return { id: input.listId, state: await ctx.restore(listRef(input.listId)) };
+  },
+
+  // The bin. `pageTrashed` checks `list:trash` on every list itself, so there is no per-row
+  // check here to forget — and no `pageVisible`, since the kernel already keeps the walk moving.
+  'todo/trashed-lists': async (ctx, input) => ctx.pageTrashed<ListRow>('list', { ...input }),
+
   'todo/rename-list': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
     listOrThrow(ctx, input.listId);

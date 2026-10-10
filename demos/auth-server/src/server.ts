@@ -283,7 +283,6 @@ app.route(
     effectiveCfg: config,
     auth: () => authFor().api as never,
     offeredProviders,
-    transaction: (fn) => sqlite.transaction(fn)(),
   }),
 );
 

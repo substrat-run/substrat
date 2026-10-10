@@ -323,8 +323,6 @@ beforeEach(async () => {
     // Only the console's lock-out guard reads this (`src/console-client.ts`), which no
     // case here exercises — so the issuer's own enabled upstreams are the honest answer.
     offeredProviders: () => publicProvidersFrom(readProviders(sql)),
-    // No case here imports users, the one caller that needs a real transaction.
-    transaction: (fn) => fn(),
   });
 });
 

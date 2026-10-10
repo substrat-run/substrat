@@ -118,12 +118,10 @@ silence the compiler.
 ## Who writes the handler: `derive` or `authored`
 
 Some operations are described completely by their declaration, and the platform
-writes their handler: a `get` of one row by its id, a `list` that is a `GET` page
-(`paged.over`) of the entity's own rows behind declared filters, an `update` that is a
-`PATCH` field bag with `concurrency`, a `delete` of a row no entity declares as parent,
-and, on an entity that declares `archive` / `trash`, its moves (`archive`, `unarchive`,
-`trash`, `restore`) and its bin (`trashed`). Each of these operations must say who writes
-its handler:
+writes their handler. There are four such shapes: a `get` of one row by its id, a
+`list` that is a `GET` page (`paged.over`) of the entity's own rows behind declared filters,
+an `update` that is a `PATCH` field bag with `concurrency`, and a `delete` of a row
+no entity declares as parent. Each of these operations must say who writes its handler:
 
 ```ts
 'acme/get-customer': {

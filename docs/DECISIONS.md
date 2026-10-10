@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-108 decisions · 61 plan · 47 kernel
+107 decisions · 61 plan · 46 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -119,4 +119,3 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-44](decisions/K-044-a-paged-read-is-served-in-its-declared-order-and-its-cursor.md) | 2026-10-04 | kernel | A paged read is served in its declared order, and its cursor names the walk that minted it <br>*awaiting ratification* <br>*amends K-41* | #2001 |
 | [K-45](decisions/K-045-archive-and-trash-are-two-kernel-gated-states-on-the-entity.md) | 2026-10-05 | kernel | Archive and trash are two kernel-gated states on the entity's own row, distinct from erasure and tenant deletion <br>*awaiting ratification* <br>*amends K-41* | #119 |
 | [K-46](decisions/K-046-subject-erasure-reaches-a-module-s-own-tables-by-declaration-or.md) | 2026-10-06 | kernel | Subject erasure reaches a module's own tables by declaration or by a narrow synchronous hook, in the spine's transaction <br>*awaiting ratification* <br>*amends K-37* | #2068, #37 |
-| [K-47](decisions/K-047-notifications-are-an-engine-composed-by-call-the-kernel-s-part.md) | 2026-10-10 | kernel | Notifications are an engine composed by call; the kernel's part is the send intent <br>*awaiting ratification* | #118 |

@@ -55,31 +55,3 @@ describe('SMS verification in the deployed Durable Object', () => {
     expect(twilio).toEqual([]);
   });
 });
-
-describe('a person imported with a bcrypt hash, in the deployed Durable Object', () => {
-  it('is imported through the admin route and signs in with their old password under their old id', async () => {
-    const { default: bcrypt } = await import('bcryptjs');
-    const scope = ulid();
-    const stub = env.AUTH.get(env.AUTH.idFromName(scope));
-    await runInDurableObject(stub, async (instance) => (instance as unknown as import('../../src/auth-do.js').AuthServerDO).provisionInstance({ tenantId: ulid(), scopeId: scope, slug: 'acme-auth', name: 'Acme Auth' }, [
-      { key: 'ADMIN_EMAIL', value: 'admin@example.test' },
-      { key: 'ADMIN_PASSWORD', value: 'admin-test-password' },
-    ]));
-    const post = (path: string, body: unknown, cookie = '') => stub.fetch(new Request(`https://auth-server.test${path}`, {
-      method: 'POST', headers: { origin: 'https://auth-server.test', 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
-    }));
-    const cookieOf = (res: Response) => (res.headers as unknown as { getSetCookie(): string[] }).getSetCookie().map((c) => c.split(';')[0]).filter((c) => c && !c.endsWith('=')).join('; ');
-    const admin = cookieOf(await post('/api/auth/sign-in/email', { email: 'admin@example.test', password: 'admin-test-password' }));
-
-    const id = 'auth2|6512f0c0a1b2c3d4e5f60718';
-    const imported = await post('/__admin/users/import', { users: [{ id, email: 'ada@example.test', emailVerified: true, passwordHash: bcrypt.hashSync('old-password-1', 4) }] }, admin);
-    expect(imported.status, await imported.clone().text()).toBe(200);
-    expect(((await imported.json()) as { counts: { created: number } }).counts.created).toBe(1);
-
-    expect((await post('/api/auth/sign-in/email', { email: 'ada@example.test', password: 'wrong-password' })).status).toBe(401);
-    const ok = await post('/api/auth/sign-in/email', { email: 'ada@example.test', password: 'old-password-1' });
-    expect(ok.status).toBe(200);
-    const session = await stub.fetch(new Request('https://auth-server.test/api/auth/get-session', { headers: { cookie: cookieOf(ok) } }));
-    expect(((await session.json()) as { user: { id: string } }).user.id).toBe(id);
-  });
-});

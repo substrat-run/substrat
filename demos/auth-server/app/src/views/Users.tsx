@@ -11,7 +11,6 @@ import {
 } from '../api';
 import { Field } from '../primitives';
 import { navigate } from '../console/router';
-import { ImportUsers } from './UserImport';
 
 /**
  * The directory, at `/users`. It owns its own read, which the one-page dashboard could not:
@@ -47,7 +46,6 @@ export function UsersView({ me }: { me: string }) {
         <h2>Users</h2>
         <InviteUser onInvited={reload} />
         <NewUser onCreated={reload} />
-        <ImportUsers onImported={reload} />
       </div>
       {err && <p className="error">{err}</p>}
       <UserTable users={users} me={me} onChanged={reload} />

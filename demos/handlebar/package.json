@@ -12,22 +12,19 @@
         "@substrat-run/engine-workorder",
         "@substrat-run/engine-protocol",
         "@substrat-run/engine-invoicing",
-        "@substrat-run/engine-notifications",
         "@substrat-run/contracts"
       ],
       "entities": [
         "handlebarEntities",
         "workorderEntities",
         "protocolEntities",
-        "invoicingEntities",
-        "notificationsEntities"
+        "invoicingEntities"
       ],
       "operations": [
         "handlebarOperations",
         "handlebarWorkorderRoutes",
         "handlebarProtocolRoutes",
-        "handlebarInvoicingRoutes",
-        "handlebarNotificationsRoutes"
+        "handlebarInvoicingRoutes"
       ],
       "schemas": {
         "Money": "money",
@@ -96,7 +93,6 @@
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",
-    "@substrat-run/engine-notifications": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",

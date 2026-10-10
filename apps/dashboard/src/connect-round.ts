@@ -26,7 +26,7 @@
  * signature is good is exactly the kind of thing that must be.
  */
 
-import { verifyConnectState, type ConnectStateClaim } from '@substrat-run/control-plane-api';
+import { verifyConnectState, type ConnectStateClaim } from '@substrat-run/kernel';
 import { scopeId, type ConnectLink, type ConnectLinkConsume, type ScopeId } from '@substrat-run/contracts';
 import { verifyClaim, CONNECT_LINK_PURPOSE } from './signed-token.js';
 

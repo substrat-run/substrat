@@ -29,7 +29,6 @@ import { resolveIssuerEndpoints } from './provider-discovery.js';
 import { isHttpsOrLoopback, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
 import { SIGN_IN_LOG_LIMIT, readSignInLog, signInLogQuery } from './sign-in-log.js';
-import { importBody, importUsers } from './user-import.js';
 
 /**
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
@@ -106,13 +105,6 @@ export interface AdminApiDeps {
    * legitimate policy or wave through the one that strands its author.
    */
   offeredProviders(): { id: string; label: string }[];
-  /**
-   * Run `fn` as one transaction — the DO's `storage.transactionSync`, better-sqlite3's
-   * `transaction` on node. Required rather than defaulted: the one caller today is the user
-   * import, whose promise is that a batch commits whole, and a plain call would keep that
-   * promise only until the first row threw.
-   */
-  transaction<T>(fn: () => T): T;
 }
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
@@ -825,16 +817,6 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     deps.sql.exec('DELETE FROM account WHERE id = ? AND user_id = ?', accountId, userId);
     return c.json({ removed: accountId });
-  });
-
-  /**
-   * People moved here from another issuer, keeping the ids relying parties know them by —
-   * `src/user-import.ts` has the rules. A real run is at most `IMPORT_BATCH_LIMIT` people and
-   * commits whole; `dryRun: true` checks up to `DRY_RUN_LIMIT` at once without writing.
-   */
-  app.post('/users/import', async (c) => {
-    const body = parsedBody(importBody, await c.req.json().catch(() => null));
-    return c.json(importUsers(deps.sql, body, (fn) => deps.transaction(fn)));
   });
 
   /* ---- what happened when people tried to sign in ---- */

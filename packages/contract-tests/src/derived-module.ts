@@ -8,14 +8,11 @@
  * - `dfolder` — the parent a page is scoped to.
  * - `dnote` — its child: derived get / list / update / delete. The writes that seed it, and the
  *   read of its history, are authored — none of them is a derivable shape.
- * - `dshelf` — archivable and trashable, each under its own key (#119): derived archive /
- *   unarchive / trash / restore, the bin page, and a list with the archive view.
  */
 import { z } from 'zod';
 import {
   defineEntities,
   defineOperations,
-  entityStateOutput,
   listsDeclaredBy,
   manifestEntities,
   manifestOperations,
@@ -40,17 +37,9 @@ export const derivedEntities = defineEntities({
     }),
     parents: ['dfolder'],
   },
-  dshelf: {
-    table: 'derived_shelves',
-    fields: z.object({ id: z.string(), label: z.string() }),
-    archive: { permission: 'dshelf:archive' },
-    trash: { permission: 'dshelf:trash' },
-  },
 });
 
-const PERMISSIONS = ['dnote:read', 'dnote:write', 'dshelf:archive', 'dshelf:trash'] as const;
-const shelf = (key: 'dshelf:archive' | 'dshelf:trash') => ({ key, entity: 'dshelf', idFrom: 'shelfId' }) as const;
-const byShelf = z.object({ shelfId: z.string() });
+const PERMISSIONS = ['dnote:read', 'dnote:write'] as const;
 const note = (key: (typeof PERMISSIONS)[number]) => ({ key, entity: 'dnote', idFrom: 'noteId' }) as const;
 const ok = z.object({ ok: z.boolean() });
 
@@ -116,62 +105,6 @@ export const derivedOperations = defineOperations(derivedEntities, PERMISSIONS)(
     http: { method: 'DELETE', path: '/notes/{noteId}' },
     emits: { entity: 'dnote', entityIdFrom: 'id', type: 'dnote.deleted', schemaVersion: 1, piiClass: 'none', payload: ['id'] },
   },
-  'derived/add-shelf': {
-    summary: 'Add a shelf',
-    permission: 'dnote:write',
-    input: z.object({ id: z.string(), label: z.string() }),
-    output: ok,
-  },
-  'derived/list-shelves': {
-    summary: 'The shelves, active unless the archive is asked for',
-    derive: 'list',
-    permission: 'dnote:read',
-    input: z.object({ view: z.enum(['active', 'archived']).optional() }),
-    output: derivedEntities.dshelf.fields,
-    paged: { over: { entity: 'dshelf', sortable: ['label'] } },
-    http: { method: 'GET', path: '/shelves' },
-  },
-  'derived/archive-shelf': {
-    summary: 'File a shelf away',
-    derive: 'archive',
-    permission: shelf('dshelf:archive'),
-    input: byShelf,
-    output: entityStateOutput,
-    http: { method: 'POST', path: '/shelves/{shelfId}/archive' },
-  },
-  'derived/unarchive-shelf': {
-    summary: 'Bring a shelf back from the archive',
-    derive: 'unarchive',
-    permission: shelf('dshelf:archive'),
-    input: byShelf,
-    output: entityStateOutput,
-    http: { method: 'POST', path: '/shelves/{shelfId}/unarchive' },
-  },
-  'derived/trash-shelf': {
-    summary: 'Bin a shelf',
-    derive: 'trash',
-    permission: shelf('dshelf:trash'),
-    input: byShelf,
-    output: entityStateOutput,
-    http: { method: 'POST', path: '/shelves/{shelfId}/trash' },
-  },
-  'derived/restore-shelf': {
-    summary: 'Take a shelf out of the bin',
-    derive: 'restore',
-    permission: shelf('dshelf:trash'),
-    trashed: 'admits',
-    input: byShelf,
-    output: entityStateOutput,
-    http: { method: 'POST', path: '/shelves/{shelfId}/restore' },
-  },
-  'derived/trashed-shelves': {
-    summary: 'The bin',
-    derive: 'trashed',
-    narrows: { reason: 'Only the binned shelves the caller may restore', checks: ['dshelf:trash'] },
-    output: derivedEntities.dshelf.fields,
-    paged: { over: { entity: 'dshelf', sortable: ['label'] } },
-    http: { method: 'GET', path: '/shelves/trash' },
-  },
   'derived/history': {
     summary: "A note's events, after it is gone too",
     permission: 'dnote:read',
@@ -186,12 +119,7 @@ export const derivedModManifest = moduleManifest.parse({
   kernelContract: '^0.0.1',
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   ...manifestOperations(derivedOperations, {
-    permissions: {
-      'dnote:read': 'read notes',
-      'dnote:write': 'write notes',
-      'dshelf:archive': 'archive shelves',
-      'dshelf:trash': 'bin and restore shelves',
-    },
+    permissions: { 'dnote:read': 'read notes', 'dnote:write': 'write notes' },
     consumes: [],
   }),
   ...manifestEntities(derivedEntities, {}),
@@ -210,11 +138,10 @@ export const derivedMod: ModuleRegistration = {
       version: '0001-init',
       sql: `CREATE TABLE derived_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL);
             CREATE TABLE derived_notes (id TEXT PRIMARY KEY, dfolder_id TEXT NOT NULL, title TEXT NOT NULL,
-                                        body TEXT, rank INTEGER NOT NULL);
-            CREATE TABLE derived_shelves (id TEXT PRIMARY KEY, label TEXT NOT NULL);`,
+                                        body TEXT, rank INTEGER NOT NULL);`,
     },
   ],
-  // The derived operations are absent here — and could not be present: the type refuses them.
+  // The four derived operations are absent here — and could not be present: the type refuses them.
   ...operationsFor(derivedOperations)({
     'derived/add-folder': async (ctx, i) => {
       assertAllowed(await ctx.check(WRITE));
@@ -232,11 +159,6 @@ export const derivedMod: ModuleRegistration = {
       ]);
       ctx.emit({ type: 'dnote.added', schemaVersion: 1, entity: noteRef(i.id), piiClass: 'none', payload: { id: i.id } });
       return { id: i.id };
-    },
-    'derived/add-shelf': async (ctx, i) => {
-      assertAllowed(await ctx.check(WRITE));
-      ctx.sql.exec('INSERT INTO derived_shelves (id, label) VALUES (?, ?)', [i.id, i.label]);
-      return { ok: true };
     },
     'derived/history': async (ctx, i) => {
       assertAllowed(await ctx.check(READ));

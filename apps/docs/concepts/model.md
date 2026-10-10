@@ -582,21 +582,18 @@ the platform writes its handler. You say so with `derive`, and write no handler:
 },
 ```
 
-These shapes are derivable, and each is matched exactly:
+Four shapes are derivable, and each is matched exactly:
 
 | `derive` | The declaration | The handler the platform writes |
 |---|---|---|
 | `get` | served as `GET`, input is the id alone, output is the entity's own `fields`, emits nothing | the check, then the row by its declared columns, or `not_found` |
-| `list` | served as `GET`, `paged.over` the entity, output is its `fields`, emits nothing, every input a declared `filterable` column of the same type — or, on an entity that declares `archive`, an optional `view: z.enum(['active', 'archived'])` | the check, then `ctx.page` with those filters and that view; a check narrowed to a **parent** scopes the page to that parent's rows, through the link column `<parent>_id` |
+| `list` | served as `GET`, `paged.over` the entity, output is its `fields`, emits nothing, every input a declared `filterable` column of the same type | the check, then `ctx.page` with those filters; a check narrowed to a **parent** scopes the page to that parent's rows, through the link column `<parent>_id` |
 | `update` | served as `PATCH`, narrowed to the row, `concurrency` over it, emits about it, output is its `fields` | absent fields are left alone, `null` clears a nullable column, one event whose payload is the declared fields of the row as written; nothing sent means nothing written and nothing emitted |
 | `delete` | served as `DELETE`, narrowed to the row, emits about it, answers `{ id, deleted }`, no entity declares it as parent | removes the row and emits |
-| `archive` · `unarchive` · `trash` · `restore` | served as `POST`, input is the id alone, narrowed to the row under the key the entity declares for that move, answers `entityStateOutput`, declares no `emits`; `restore` alone declares `trashed: 'admits'` | the check, then the kernel move (`ctx.archive` and its siblings), which emits it — see [archive and trash](./archive-and-trash.md) |
-| `trashed` | served as `GET`, `paged.over` an entity that declares `trash`, output is its `fields`, `narrows` checking exactly its trash key and no leading check, inputs as a `list`'s filters | `ctx.pageTrashed`, which checks the trash key on every row |
 
 A derived handler checks the declared key first, so a caller without it learns nothing about
-whether the row exists; the bin is the exception, checked on every row by `ctx.pageTrashed`
-instead. It reads and writes only the entity's declared columns, through `ctx.sql`, or for a
-move through the kernel verb, which emits the move itself. An `enum` column is never a derived write, because a change of state is a lifecycle
+whether the row exists. It reads and writes only the entity's declared columns, through
+`ctx.sql`. An `enum` column is never a derived write, because a change of state is a lifecycle
 edge with its own operation. A row with children is never a derived delete, because a cascade
 is your decision.
 
