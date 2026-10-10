@@ -107,7 +107,7 @@ function adminApi() {
         const u = s?.user as { id: string; email?: string; name?: string; role?: string } | undefined;
         return u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null;
       });
-  return createAdminApi({ sql, session, effectiveCfg: config, auth: () => authFor().api as never, offeredProviders: () => publicProvidersFrom(readProviders(sql)) });
+  return createAdminApi({ sql, session, effectiveCfg: config, auth: () => authFor().api as never, offeredProviders: () => publicProvidersFrom(readProviders(sql)), transaction: (fn) => fn() });
 }
 
 async function adminCookie(): Promise<string> {

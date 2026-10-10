@@ -126,6 +126,8 @@ beforeEach(async () => {
     effectiveCfg: () => ({}),
     auth: () => auth.api as never,
     offeredProviders: () => offered,
+    // No case here imports users, the one caller that needs a real transaction.
+    transaction: (fn) => fn(),
   });
 });
 
