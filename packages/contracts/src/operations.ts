@@ -1543,6 +1543,21 @@ function getPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): De
   return { kind: 'get', entity: name, table: base.entity.table, primaryKey: base.primaryKey, columns: base.columns, permission, idFrom };
 }
 
+/** The column kinds a derived filter binds as they arrive — a boolean filter over a 0/1 column needs encoding. */
+const DERIVED_FILTER_KINDS = new Set(['string', 'number', 'literal', 'enum']);
+
+/** A derived page binds the input value as the filter, so the two must be the same kind. */
+function filterTypeIssue(decl: DeclarationRead, field: string, column: string, entity: EntityDef): string | null {
+  const columnKind = baseDefOf(entity.fields.shape[column])?.type;
+  if (!columnKind || !DERIVED_FILTER_KINDS.has(columnKind)) {
+    return `filter column '${column}' is not a string, number or enum column`;
+  }
+  if (baseDefOf(decl.input?.shape[field])?.type !== columnKind) {
+    return `input field '${field}' is not the same type as filter column '${column}', so the handler maps it`;
+  }
+  return null;
+}
+
 function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
   const common = commonClause(decl, 'list');
   if (common) return common;
@@ -1566,6 +1581,8 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
     if (!required.includes(idFrom) || !filterable.has(column)) {
       return `the parent's id '${idFrom}' is not a required input filtering the declared \`filterable\` column '${column}'`;
     }
+    const issue = filterTypeIssue(decl, idFrom, column, base.entity);
+    if (issue) return issue;
     filters.push({ field: idFrom, column });
   }
   for (const field of required) {
@@ -1575,6 +1592,8 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
     const column = snakeCaseField(field);
     if (!filterable.has(column)) return `input field '${field}' is not a declared \`filterable\` column`;
     if (inputDefaultIssue(decl.input?.shape[field]) !== null) return `input field '${field}' has a default`;
+    const issue = filterTypeIssue(decl, field, column, base.entity);
+    if (issue) return issue;
     filters.push({ field, column });
   }
   return {
@@ -1691,13 +1710,15 @@ const PLANNERS: Record<DerivedKind, typeof getPlan> = {
 };
 
 /**
- * Which shape the platform could derive this declaration as, if any — read off the declaration
- * alone. At most one matches: a `get` is not paged and emits nothing, a `list` is paged, an
- * `update` is a PATCH that emits, a `delete` answers `{ id, deleted }`.
+ * The shape the platform could derive this operation's handler as, read off its declaration and
+ * the module's entities alone — `undefined` when it matches none of `DerivedKind`. Pure: this
+ * classifies, and `defineOperations` is what refuses. At most one shape matches: a `get` is
+ * served as GET and not paged, a `list` is paged, an `update` is a PATCH that emits, a `delete`
+ * is a DELETE answering `{ id, deleted }`.
  */
-function derivablePlanOf(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | undefined {
+export function derivationOf(decl: object, entities: Record<string, EntityDef>): DerivationPlan | undefined {
   for (const kind of DERIVED_KINDS) {
-    const plan = PLANNERS[kind](decl, entities);
+    const plan = PLANNERS[kind](decl as DeclarationRead, entities);
     if (typeof plan !== 'string') return plan;
   }
   return undefined;
@@ -1738,7 +1759,7 @@ function assertHandlersDeclared(operations: Record<string, unknown>, entities: R
       DERIVATION_PLANS.set(op as object, plan);
       continue;
     }
-    const plan = derivablePlanOf(decl, entities);
+    const plan = derivationOf(decl, entities);
     if (plan === undefined) {
       if (authored !== undefined) {
         throw new Error(
