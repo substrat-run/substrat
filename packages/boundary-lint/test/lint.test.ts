@@ -1286,6 +1286,15 @@ describe('R11 — a cast handler map (#1835)', () => {
     expect(lint(registers(`operations: FORGED,`, `const FORGED = bound.operations;`))).toEqual([]);
   });
 
+  it('follows a name carrying `$`, which is an identifier character and a regex anchor (#2155 review)', () => {
+    expect(rules(lint(registers(`operations: $ops,`, `const $ops = OPERATIONS as never;`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`operations: ops$,`, `const ops$ = OPERATIONS as never;`)))).toEqual(['R11']);
+    expect(rules(lint(registers(`...operationsFor(shopOperations)($ops),`, `const $ops = { 'shop/add': addOp as never };`)))).toEqual(['R11']);
+    // Twins: the same names, uncast — and a longer name sharing the prefix is not the one followed.
+    expect(lint(registers(`operations: $ops,`, `const $ops = bound.operations;`))).toEqual([]);
+    expect(lint(registers(`operations: ops$,`, `const ops$x = OPERATIONS as never; const ops$ = bound.operations;`))).toEqual([]);
+  });
+
   it('fires on a cast TO the bound value anywhere in module code (#2155 review)', () => {
     const anywhere = (top: string) => rules(lint(registers(`...bound,`, top)));
     expect(anywhere(`const FORGED = { handlers: {} } as unknown as BoundOperations;`)).toEqual(['R11']);

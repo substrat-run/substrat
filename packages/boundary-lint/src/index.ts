@@ -1038,9 +1038,14 @@ function castAtTop(expr: string): boolean {
   return false;
 }
 
-/** `const NAME = …` / `let` / `var` in this file: where its initializer starts, or -1. */
+/**
+ * `const NAME = …` / `let` / `var` in this file: where its initializer starts, or -1. `$` is an
+ * identifier character and a regex anchor, so the name is escaped, and its edges are judged by
+ * identifier characters rather than `\b` (which sees no boundary between `$` and a space).
+ */
 function initializerOf(masked: string, name: string): number {
-  const decl = new RegExp(`\\b(?:const|let|var)\\s+${name}\\b\\s*(?::[^=;]*)?=(?!=)`, 'g');
+  const literal = name.replace(/[$.*+?^()[\]{}|\\]/g, '\\$&');
+  const decl = new RegExp(`(?<![\\w$])(?:const|let|var)\\s+${literal}(?![\\w$])\\s*(?::[^=;]*)?=(?!=)`, 'g');
   const m = decl.exec(masked);
   return m ? m.index + m[0].length : -1;
 }
