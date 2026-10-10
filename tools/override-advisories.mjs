@@ -23,7 +23,8 @@
 // And the guarantee an override used to give by construction is asserted instead: each package
 // in ONE_VERSION resolves to exactly one version in the lockfile.
 //
-// Release dates come from `pnpm view <name> time --json`, the registry the install uses.
+// Release dates come from `pnpm view <name> time versions --json`, the registry the install
+// uses; only a version still published counts.
 //
 // Fails closed (exit 2): a report with no `advisories` map, a release lookup that fails, an
 // override whose version cannot be told (a range or catalog reference resolving to more or
@@ -218,13 +219,17 @@ function lineOf(version) {
 }
 
 /**
- * How far `version` is behind its own line, given `pnpm view <name> time --json`.
+ * How far `version` is behind its own line, given `pnpm view <name> time versions --json`.
+ * Only a version in `versions` counts: the registry keeps a `time` entry for an UNPUBLISHED
+ * version too, and a pulled patch is not a release anyone can move to. `created`/`modified`
+ * fail RELEASE and the `versions` lookup both.
  * @returns {{ latest: string, behindSince: string, stale: boolean } | null} null when nothing
  * newer exists on the line; `behindSince` is the publish date of the first release after it.
  */
-export function staleness(version, times, now) {
+export function staleness(version, { time: times, versions }, now) {
+  const published = new Set([versions].flat()); // a package with one version answers a bare string
   const newer = Object.keys(times)
-    .filter((v) => RELEASE.test(v) && lineOf(v) === lineOf(version) && cmp(v, version) > 0)
+    .filter((v) => published.has(v) && RELEASE.test(v) && lineOf(v) === lineOf(version) && cmp(v, version) > 0)
     .sort(cmp);
   if (newer.length === 0) return null;
   const behindSince = newer.map((v) => times[v]).sort()[0];
@@ -305,13 +310,13 @@ function main() {
   if (accepts.errors.length > 0) fail(`override-advisories: ${ACCEPT_FILE}:\n  ${accepts.errors.join('\n  ')}`);
 
   const run = (cmd, ...args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-  const timesOf = new Map(); // one registry lookup per package, however many keys pin it
+  const releasesOf = new Map(); // one registry lookup per package, however many keys pin it
   const staleLines = [];
   for (const pin of pins) {
-    if (!timesOf.has(pin.name)) {
-      timesOf.set(pin.name, attempt(`cannot read the release dates of ${pin.name}`, () => JSON.parse(run('pnpm', 'view', pin.name, 'time', '--json'))));
+    if (!releasesOf.has(pin.name)) {
+      releasesOf.set(pin.name, attempt(`cannot read the release dates of ${pin.name}`, () => JSON.parse(run('pnpm', 'view', pin.name, 'time', 'versions', '--json'))));
     }
-    const s = staleness(pin.version, timesOf.get(pin.name), now);
+    const s = attempt(`cannot judge the release dates of ${pin.name}`, () => staleness(pin.version, releasesOf.get(pin.name), now));
     if (s?.stale && !accepts.held.has(`${pin.name}@${pin.version}`)) {
       staleLines.push(`${pin.name}@${pin.version} (override "${pin.key}") — behind since ${s.behindSince.slice(0, 10)}, more than ${GRACE_DAYS} days; latest on its line is ${s.latest}`);
     }

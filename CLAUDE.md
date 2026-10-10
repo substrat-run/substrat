@@ -149,7 +149,8 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `vulnerable_versions` contains it fails; the rest of the tree keeps the critical-only
   gate. A consciously accepted advisory is a GHSA id in `pnpm.auditConfig.ignoreGhsas`,
   same as the critical gate. It also refuses a **stale** override: a newer release on its
-  line (same major) out for more than 30 days, read with `pnpm view <name> time`. That
+  line (same major) out for more than 30 days, read with `pnpm view <name> time versions`
+  (an unpublished version keeps its `time` entry, so only one still in `versions` counts). That
   one fails the weekly run, a push to main and a PR that changes what an override says
   (catalog entry included) or the accept file, and is only a warning on any other PR, a
   lockfile-only one included, so the calendar never reddens an unrelated PR. A

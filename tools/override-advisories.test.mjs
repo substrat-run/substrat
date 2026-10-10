@@ -188,7 +188,7 @@ test('one version of each declared package passes; a second one planted fails', 
   assert.deepEqual(oneVersionErrors(locked({}), ['hono']), []);
 });
 
-// `pnpm view <name> time --json`, trimmed: hono's real dates around the 4.13.8 pin.
+// `pnpm view <name> time versions --json`, trimmed: hono's real dates around the 4.13.8 pin.
 const times = {
   created: '2021-12-14T00:00:00.000Z',
   modified: '2026-10-04T03:53:48.117Z',
@@ -198,33 +198,46 @@ const times = {
   '5.0.0': '2026-08-01T00:00:00.000Z',
   '4.14.0-rc.1': '2026-08-01T00:00:00.000Z',
 };
+// every key but created/modified is a published version here; `released` builds the view
+const released = (time, unpublished = []) => ({
+  time,
+  versions: Object.keys(time).filter((v) => v !== 'created' && v !== 'modified' && !unpublished.includes(v)),
+});
 const at = (iso) => new Date(iso);
 const after = (iso, days) => new Date(Date.parse(iso) + days * 24 * 60 * 60 * 1000);
 
 test('stale once the first newer release on the line is more than GRACE_DAYS old', () => {
-  const s = staleness('4.13.8', times, after(times['4.13.9'], GRACE_DAYS + 1));
+  const s = staleness('4.13.8', released(times), after(times['4.13.9'], GRACE_DAYS + 1));
   assert.deepEqual(s, { latest: '4.13.13', behindSince: times['4.13.9'], stale: true });
 });
 
 test('not stale inside the grace window, counted from the FIRST newer release', () => {
-  assert.equal(staleness('4.13.8', times, after(times['4.13.9'], GRACE_DAYS - 1)).stale, false);
+  assert.equal(staleness('4.13.8', released(times), after(times['4.13.9'], GRACE_DAYS - 1)).stale, false);
   // 4.13.13 is younger; it is 4.13.9's age that says how long the pin has been behind
-  assert.equal(staleness('4.13.8', times, after(times['4.13.13'], GRACE_DAYS - 5)).stale, true);
+  assert.equal(staleness('4.13.8', released(times), after(times['4.13.13'], GRACE_DAYS - 5)).stale, true);
 });
 
 test('the latest release on the line is never stale, however old', () => {
-  assert.equal(staleness('4.13.13', times, at('2030-01-01')), null);
+  assert.equal(staleness('4.13.13', released(times), at('2030-01-01')), null);
 });
 
 test('a newer major and a prerelease are not newer releases on the line', () => {
   const only = { '4.13.13': times['4.13.13'], '5.0.0': '2020-01-01T00:00:00Z', '4.14.0-rc.1': '2020-01-01T00:00:00Z' };
-  assert.equal(staleness('4.13.13', only, at('2030-01-01')), null);
+  assert.equal(staleness('4.13.13', released(only), at('2030-01-01')), null);
+});
+
+test('an unpublished newer patch is not a release: its `time` entry outlives it', () => {
+  // event-stream's shape: 3.3.6 was pulled from the registry, and `time` still dates it
+  const es = { created: '2011-01-01T00:00:00Z', modified: '2020-01-01T00:00:00Z', '3.3.5': '2018-01-01T00:00:00Z', '3.3.6': '2018-09-01T00:00:00Z' };
+  assert.equal(staleness('3.3.5', released(es, ['3.3.6']), at('2030-01-01')), null);
+  // the twin: the same patch, published, does count
+  assert.deepEqual(staleness('3.3.5', released(es), at('2030-01-01')), { latest: '3.3.6', behindSince: es['3.3.6'], stale: true });
 });
 
 test('below 1.0.0 the minor is the line', () => {
   const zero = { '0.4.1': '2020-01-01T00:00:00Z', '0.4.2': '2020-02-01T00:00:00Z', '0.5.0': '2020-01-01T00:00:00Z' };
-  assert.equal(staleness('0.4.2', zero, at('2030-01-01')), null);
-  assert.equal(staleness('0.4.1', zero, at('2030-01-01')).latest, '0.4.2');
+  assert.equal(staleness('0.4.2', released(zero), at('2030-01-01')), null);
+  assert.equal(staleness('0.4.1', released(zero), at('2030-01-01')).latest, '0.4.2');
 });
 
 const pins = [{ key: 'hono', name: 'hono', version: '4.13.8' }];
