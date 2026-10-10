@@ -7,7 +7,8 @@
  * rule looking for a `satisfies` clause — and a `satisfies` is invisible to every test, so
  * deleting one compiled and passed exactly like keeping it (#959).
  *
- * Now the field takes `BoundOperations`, which only two functions produce:
+ * Now the field takes `BoundOperations` — the handlers and the maps derived from their
+ * declaration, as one value — which only two functions produce:
  *
  * - `operationsFor(declaration)(handlers)` — the handlers are held EXACTLY to the declaration
  *   (a missing, extra, mistyped or cast entry is a compile error), and the input schemas, the
@@ -36,18 +37,29 @@ declare const bound: unique symbol;
 /** name → handler, as the host reads it. */
 export type HandlerMap = Readonly<Record<string, OperationHandler<never, unknown>>>;
 
-/** A handler map produced by `operationsFor` or `undeclaredOperations` — never written by hand. */
-export type BoundOperations = HandlerMap & { readonly [bound]: true };
-
 /**
- * What `operationsFor` hands a registration: the map, and everything the host derives from the
- * declaration. `H` keeps each handler's own type, so a module can still call one directly.
+ * Everything a module hands the host about its operations, in one value only `operationsFor` and
+ * `undeclaredOperations` produce — never written by hand.
+ *
+ * The handlers and the three maps derived from their declaration travel together, so a
+ * registration cannot carry one without the others or pair a handler map with another
+ * declaration's schemas. `H` keeps each handler's own type, so a module can still call one.
  */
-export interface DeclaredOperations<H = HandlerMap> {
-  operations: BoundOperations & H;
-  operationInputs: Readonly<Record<string, { parse(value: unknown): unknown }>>;
-  operationConcurrency: Record<string, { entity: string; idFrom: string }>;
-  operationIdempotencyOptOuts: readonly string[];
+export interface BoundOperations<H = HandlerMap> {
+  readonly [bound]: true;
+  /** name → handler. */
+  readonly handlers: H & HandlerMap;
+  /**
+   * name → the schema the host parses an invocation's input against, before the guards and the
+   * handler (#893). The map `operationInputsOf` returned, as returned: it also carries the
+   * declared surface the host derives its trash refusal from (#119). Absent for a module that
+   * declares no operations, where nothing is parsed.
+   */
+  readonly inputs?: Readonly<Record<string, { parse(value: unknown): unknown }>>;
+  /** name → the entity whose version an `If-Match` on that operation is compared against (#129). */
+  readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
+  /** The operations that declared `idempotency: false`, and so refuse an `Idempotency-Key` (#116). */
+  readonly idempotencyOptOuts?: readonly string[];
 }
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
@@ -84,11 +96,15 @@ type Exact<Ops, H> = { readonly [K in Exclude<keyof H, keyof Ops>]: never } & ([
  * against it.
  */
 export function operationsFor<const Ops extends Record<string, object>>(declaration: Ops) {
-  return <const H extends OperationImpl<Ops, OperationContext>>(handlers: H & Exact<Ops, H>): DeclaredOperations<H> => ({
-    operations: handlers as unknown as BoundOperations & H,
-    operationInputs: operationInputsOf(declaration),
-    operationConcurrency: operationConcurrencyOf(declaration),
-    operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
+  return <const H extends OperationImpl<Ops, OperationContext>>(
+    handlers: H & Exact<Ops, H>,
+  ): { operations: BoundOperations<H> } => ({
+    operations: {
+      handlers,
+      inputs: operationInputsOf(declaration),
+      concurrency: operationConcurrencyOf(declaration),
+      idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
+    } as unknown as BoundOperations<H>,
   });
 }
 
@@ -98,5 +114,5 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
  */
 export function undeclaredOperations(reason: string, handlers: HandlerMap): { operations: BoundOperations } {
   if (reason.trim() === '') throw new Error('undeclaredOperations: give the reason this module declares no operations');
-  return { operations: handlers as BoundOperations };
+  return { operations: { handlers } as unknown as BoundOperations };
 }

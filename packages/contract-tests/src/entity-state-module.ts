@@ -15,6 +15,8 @@ import {
   listIndexPlans,
   listQuery,
   readHistory,
+  type BoundOperations,
+  type HandlerMap,
   type ModuleRegistration,
   type OperationHandler,
 } from '@substrat-run/kernel';
@@ -56,6 +58,12 @@ const ref = (input: unknown): EntityRef => {
   const i = input as { entityType?: string; id: string };
   return { entityType: i.entityType ?? 'stdoc', entityId: i.id };
 };
+
+/** These handlers, each declared with no input and no entity-narrowed check (#119 PR 2). */
+function declaredWithNoInput(handlers: HandlerMap): BoundOperations {
+  const inputs = operationInputsOf(Object.fromEntries(Object.keys(handlers).map((name) => [name, {}])));
+  return testOperations(handlers, { inputs }).operations;
+}
 
 export const stateMod: ModuleRegistration = {
   manifest: stateModManifest,
@@ -157,7 +165,7 @@ export const stateMod: ModuleRegistration = {
  * trashable module must declare everything it binds, so this one says, in the host's terms, that
  * none of them addresses an entity by id.
  */
-stateMod.operationInputs = operationInputsOf(Object.fromEntries(Object.keys(stateMod.operations!).map((name) => [name, {}])));
+stateMod.operations = declaredWithNoInput(stateMod.operations!.handlers);
 
 /**
  * The fixture behind `entityStateMigrationContractSuite` (#2090): authored migrations that
@@ -292,4 +300,4 @@ export const rebuildMod: ModuleRegistration = {
 };
 
 /** Its operations declared the same way as `stateMod`'s, so a trashable module registers (#119). */
-rebuildMod.operationInputs = operationInputsOf(Object.fromEntries(Object.keys(rebuildMod.operations!).map((name) => [name, {}])));
+rebuildMod.operations = declaredWithNoInput(rebuildMod.operations!.handlers);

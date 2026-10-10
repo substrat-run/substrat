@@ -192,8 +192,6 @@ export const trashMod: ModuleRegistration = {
             CREATE TABLE trash_keeps (id TEXT PRIMARY KEY);`,
     },
   ],
-  // The host derives each operation's target from these — the same declarations it parses with.
-  operationInputs: operationInputsOf(trashOperations),
   // Every handler checks its declared key first, as a vertical's does — the host's refusal has
   // to agree with that order, which is what the suite asserts.
   ...testOperations({
@@ -297,5 +295,6 @@ export const trashMod: ModuleRegistration = {
       assertAllowed(await ctx.check(P('box:read')));
       return { entries: readHistory({ sql: ctx.sql }, boxRef(i.boxId)).entries };
     }) as Handler,
-  }),
+  // The host derives each operation's target from these — the same declarations it parses with.
+  }, { inputs: operationInputsOf(trashOperations) }),
 };

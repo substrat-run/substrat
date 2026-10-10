@@ -2010,7 +2010,6 @@ export const listDeclaredOps = {
 
 export const listMod: ModuleRegistration = {
   manifest: listModManifest,
-  operationInputs: operationInputsOf(listDeclaredOps),
   migrations: [
     {
       version: '0001-init',
@@ -2101,7 +2100,7 @@ export const listMod: ModuleRegistration = {
       ]);
       return ctx.page<Record<string, unknown>>('listorder', { limit: 50 });
     }) as OperationHandler<never, unknown>,
-  }),
+  }, { inputs: operationInputsOf(listDeclaredOps) }),
 };
 
 export const searchModManifest = moduleManifest.parse({
@@ -2238,8 +2237,7 @@ export const parseMod: ModuleRegistration = {
     'parse/echo': echo as OperationHandler<never, unknown>,
     'parse/paged': echo as OperationHandler<never, unknown>,
     'parse/bare': echo as OperationHandler<never, unknown>,
-  }),
-  operationInputs: operationInputsOf(parseDeclaration),
+  }, { inputs: operationInputsOf(parseDeclaration) }),
 };
 
 // -- #129: the precondition the HOST compares ---------------------------------
@@ -2364,9 +2362,10 @@ export const concurrencyMod: ModuleRegistration = {
     'conc/keyless': concRead as OperationHandler<never, unknown>,
     'conc/forbidden': concForbidden as OperationHandler<never, unknown>,
     'conc/unguarded': concUnguarded as OperationHandler<never, unknown>,
+  }, {
+    inputs: operationInputsOf(concurrencyDeclaration),
+    concurrency: operationConcurrencyOf(concurrencyDeclaration),
   }),
-  operationInputs: operationInputsOf(concurrencyDeclaration),
-  operationConcurrency: operationConcurrencyOf(concurrencyDeclaration),
 };
 
 // -- #116: request idempotency ------------------------------------------------
@@ -2477,10 +2476,11 @@ export const idempotencyMod: ModuleRegistration = {
     'idem/fails': idemFails as OperationHandler<never, unknown>,
     'idem/big': idemBig as OperationHandler<never, unknown>,
     'idem/secret': idemSecret as OperationHandler<never, unknown>,
+  }, {
+    inputs: operationInputsOf(idempotencyDeclaration),
+    concurrency: operationConcurrencyOf(idempotencyDeclaration),
+    idempotencyOptOuts: operationIdempotencyOptOutsOf(idempotencyDeclaration),
   }),
-  operationInputs: operationInputsOf(idempotencyDeclaration),
-  operationConcurrency: operationConcurrencyOf(idempotencyDeclaration),
-  operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(idempotencyDeclaration),
 };
 
 // -- capabilities (#1672) ------------------------------------------------------

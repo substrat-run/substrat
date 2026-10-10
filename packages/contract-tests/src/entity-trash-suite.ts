@@ -32,7 +32,7 @@ import { PURGE_BATCH, runPlatformSweep, ulid, type FetchLike, type ScopeHost, ty
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import type { RawScopeSql } from './entity-state-suite.js';
 import { EXPLODING_BOX, TBOX_PURGE_DAYS, TRASH_MODULE_ID, trashMod, trashOperations } from './entity-trash-module.js';
-import { testOperations } from './test-operations.js';
+import { testOperations, type RawDerivedMaps } from './test-operations.js';
 
 const KEYS = ['box:read', 'box:write', 'box:archive', 'box:trash', 'box:delete'].map((k) => permissionKey.parse(k));
 const READ = permissionKey.parse('box:read');
@@ -657,20 +657,31 @@ export function entityTrashContractSuite(
     // -- registration ----------------------------------------------------------------------
 
     describe('registration', () => {
+      /** The module with its handlers kept and `inputs` as given — through the test seam. */
+      const withInputs = (m: typeof trashMod, inputs?: RawDerivedMaps['inputs']) => ({
+        ...m,
+        ...testOperations(m.operations!.handlers, { inputs }),
+      });
       const variant = (patch: (m: typeof trashMod) => typeof trashMod) => {
         const copy = patch({ ...trashMod, manifest: { ...trashMod.manifest, id: moduleId.parse(`@test/trash-${ulid().toLowerCase()}`) } });
         return () => host.registerModule(copy);
       };
 
       it('refuses a module with a trashable entity whose operations are not a declared surface', () => {
-        expect(variant(({ operationInputs: _, ...m }) => m)).toThrow(/operationInputsOf/);
+        expect(variant((m) => withInputs(m))).toThrow(/operationInputsOf/);
         // A hand-built map is not one either: there is nothing to derive the targets from.
-        expect(variant((m) => ({ ...m, operationInputs: { ...m.operationInputs } }))).toThrow(/operationInputsOf/);
+        expect(variant((m) => withInputs(m, { ...m.operations!.inputs }))).toThrow(/operationInputsOf/);
       });
 
       it('refuses a bound operation its declarations do not name — an omitted target cannot pass', () => {
         expect(
-          variant((m) => ({ ...m, ...testOperations({ ...m.operations, 'trash/sneak-rename': m.operations!['trash/rename-box']! }) })),
+          variant((m) => ({
+            ...m,
+            ...testOperations(
+              { ...m.operations!.handlers, 'trash/sneak-rename': m.operations!.handlers['trash/rename-box']! },
+              { inputs: m.operations!.inputs },
+            ),
+          })),
         ).toThrow(/trash\/sneak-rename/);
       });
 
@@ -688,13 +699,13 @@ export function entityTrashContractSuite(
 
       it('refuses a declared surface that was edited or forged — only the map operationInputsOf returned carries one', () => {
         // The pre-r2 carrier, a registered symbol, attached to a copy with every target dropped.
-        const forged = Object.defineProperty({ ...trashMod.operationInputs }, Symbol.for('substrat.declaredOperationSurface'), {
-          value: { operations: Object.keys(trashMod.operations!), targets: {} },
+        const forged = Object.defineProperty({ ...trashMod.operations!.inputs }, Symbol.for('substrat.declaredOperationSurface'), {
+          value: { operations: Object.keys(trashMod.operations!.handlers), targets: {} },
         });
-        expect(variant((m) => ({ ...m, operationInputs: forged }))).toThrow(/operationInputsOf/);
+        expect(variant((m) => withInputs(m, forged))).toThrow(/operationInputsOf/);
         // The genuine surface cannot be emptied in place.
         expect(() => {
-          (declaredSurfaceOf(trashMod.operationInputs) as { targets: unknown }).targets = {};
+          (declaredSurfaceOf(trashMod.operations!.inputs) as { targets: unknown }).targets = {};
         }).toThrow(TypeError);
       });
 
@@ -703,7 +714,7 @@ export function entityTrashContractSuite(
           ...trashOperations,
           'trash/delete-box': { ...trashOperations['trash/delete-box'], input: z.looseObject({ boxId: z.string() }) },
         });
-        expect(variant((m) => ({ ...m, operationInputs: loose }))).toThrow(/strict/);
+        expect(variant((m) => withInputs(m, loose))).toThrow(/strict/);
       });
 
       it('refuses a horizon with no purge schedule', () => {

@@ -176,8 +176,10 @@ export function inputParseContractSuite(
       expect(() =>
         host.registerModule({
           manifest: { ...parseModManifest, id: moduleId.parse('@test/parse-unbound') },
-          ...testOperations({ 'unbound/act': (() => 'ran') as never }),
-          operationInputs: { 'unbound/nope': { parse: (v: unknown) => v } },
+          ...testOperations(
+            { 'unbound/act': (() => 'ran') as never },
+            { inputs: { 'unbound/nope': { parse: (v: unknown) => v } } },
+          ),
         }),
       ).toThrow(/unbound/i);
     });
