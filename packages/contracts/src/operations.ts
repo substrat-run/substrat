@@ -26,6 +26,7 @@
  */
 import { LIST_PAGE_MAX, type CountedPage, type Page } from './pagination.js';
 import { z } from 'zod';
+import { entityStateOutput } from './entity-state.js';
 import {
   DERIVED_KINDS,
   primaryKeyOf,
@@ -1354,6 +1355,8 @@ export type DerivationPlan = {
       /** input field → the column it filters, the parent's id field included. */
       readonly filters: readonly { readonly field: string; readonly column: string }[];
       readonly total: boolean;
+      /** The input field that picks the view of an archivable entity (#119), when declared. */
+      readonly viewFrom?: string;
     }
   | {
       readonly kind: 'update';
@@ -1363,7 +1366,16 @@ export type DerivationPlan = {
       readonly emit: DerivedEmit;
     }
   | { readonly kind: 'delete'; readonly idFrom: string; readonly emit: DerivedEmit }
+  | { readonly kind: EntityMoveKind; readonly idFrom: string }
+  | {
+      readonly kind: 'trashed';
+      /** input field → the column it filters. */
+      readonly filters: readonly { readonly field: string; readonly column: string }[];
+    }
 );
+
+/** The derived kinds that are one kernel move of an archivable or trashable entity (#119). */
+export type EntityMoveKind = 'archive' | 'unarchive' | 'trash' | 'restore';
 
 /**
  * Every derived declaration's plan, keyed by the declaration object itself. Keyed per operation
@@ -1488,10 +1500,15 @@ function inputFields(decl: DeclarationRead): { required: string[]; optional: str
 
 /** Clauses every derived shape shares: no per-row walk, no per-field projection, no bin access. */
 function commonClause(decl: DeclarationRead, kind: DerivedKind): string | null {
-  if (decl.narrows !== undefined) return 'it narrows per row (`narrows`), which is a walk the handler composes';
+  // The bin page's per-row check is `ctx.pageTrashed`'s own, so its `narrows` is part of its shape.
+  if (decl.narrows !== undefined && kind !== 'trashed') {
+    return 'it narrows per row (`narrows`), which is a walk the handler composes';
+  }
   if (decl.gates !== undefined) return 'it gates fields (`gates`), a projection the handler applies';
   if (decl.inputOptional !== undefined) return 'it declares `inputOptional`';
-  if (decl.trashed !== undefined && !(kind === 'delete' && decl.trashed === 'purges')) {
+  const reachesBin =
+    (kind === 'delete' && decl.trashed === 'purges') || (kind === 'restore' && decl.trashed === 'admits');
+  if (decl.trashed !== undefined && !reachesBin) {
     return `it declares \`trashed: '${String(decl.trashed)}'\` — reaching the bin is authored`;
   }
   return null;
@@ -1574,7 +1591,14 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
   for (const field of required) {
     if (field !== permission.idFrom) return `input field '${field}' is required, and only the parent's id may be`;
   }
+  let viewFrom: string | undefined;
   for (const field of optional) {
+    if (field === VIEW_FIELD && base.def.archive !== undefined) {
+      const issue = viewIssue(decl.input?.shape[field], filterable);
+      if (issue) return issue;
+      viewFrom = field;
+      continue;
+    }
     const column = snakeCaseField(field);
     if (!filterable.has(column)) return `input field '${field}' is not a declared \`filterable\` column`;
     if (inputDefaultIssue(decl.input?.shape[field]) !== null) return `input field '${field}' has a default`;
@@ -1582,7 +1606,33 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
     if (issue) return issue;
     filters.push({ field, column });
   }
-  return { kind: 'list', ...base.head, permission, filters, total: decl.paged?.total === true };
+  return {
+    kind: 'list',
+    ...base.head,
+    permission,
+    filters,
+    total: decl.paged?.total === true,
+    ...(viewFrom !== undefined ? { viewFrom } : {}),
+  };
+}
+
+/** The input field a derived page of an archivable entity reads its view from (#119). */
+const VIEW_FIELD = 'view';
+/** The views `ctx.page` serves; the bin is its own read (`trashed`). */
+const PAGE_VIEWS = ['active', 'archived'];
+
+/** Why `view` cannot be passed to `ctx.page` as it arrives, or `null`. */
+function viewIssue(schema: unknown, filterable: ReadonlySet<string>): string | null {
+  if (filterable.has(VIEW_FIELD)) {
+    return `'${VIEW_FIELD}' is both the archive view and a declared \`filterable\` column, so the input means two things`;
+  }
+  if (inputDefaultIssue(schema) !== null) return `input field '${VIEW_FIELD}' has a default`;
+  const base = baseDefOf(schema) as { type?: string; entries?: Record<string, unknown> } | undefined;
+  const values = base?.type === 'enum' ? Object.values(base.entries ?? {}).map(String).sort() : [];
+  if (values.join() !== PAGE_VIEWS.join()) {
+    return `input field '${VIEW_FIELD}' is not \`z.enum(['active', 'archived'])\`, the views a page serves`;
+  }
+  return null;
 }
 
 /** The clauses a derived write shares: narrowed to the row it writes, announcing it, by that row's id. */
@@ -1664,11 +1714,91 @@ function deletePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
   return { kind: 'delete', ...base.head, permission: target.permission, idFrom, emit: emitOf(decl) };
 }
 
+/** Which of the entity's declarations gates each move (#119, K-45). */
+const MOVE_GATE: Record<EntityMoveKind, 'archive' | 'trash'> = {
+  archive: 'archive',
+  unarchive: 'archive',
+  trash: 'trash',
+  restore: 'trash',
+};
+
+/**
+ * One kernel move: a POST of the id alone, narrowed to that row under the key the entity declares
+ * for it, answering `entityStateOutput` and declaring no event, since the kernel emits the move.
+ */
+function movePlan(kind: EntityMoveKind) {
+  return (decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string => {
+    if (decl.http?.method !== 'POST') return 'it is not served as POST, the method a move of state is';
+    if (decl.paged !== undefined) return 'it is paged';
+    if (decl.emits !== undefined) return 'it declares `emits`, and the kernel announces the move itself';
+    if (decl.output !== entityStateOutput) return 'its output is not `entityStateOutput`';
+    const permission = plainPermission(decl.permission);
+    if (typeof permission === 'string') return permission;
+    if (permission.entity === undefined) return 'its check is scope-wide, and a move is checked on the row it moves';
+    const name = permission.entity;
+    const base = derivableEntity(name, entities);
+    if (typeof base === 'string') return base;
+    const gate = MOVE_GATE[kind];
+    const declared = base.def[gate]?.permission;
+    if (declared === undefined) return `'${name}' declares no \`${gate}\``;
+    if (permission.key !== declared) {
+      return `its check is '${permission.key}', not the key '${name}' declares for its ${gate}, '${declared}'`;
+    }
+    const idFrom = permission.idFrom as string;
+    const { required, optional } = inputFields(decl);
+    if (required.length !== 1 || required[0] !== idFrom || optional.length !== 0) return `its input is not the id '${idFrom}' alone`;
+    if (kind === 'restore' && decl.trashed !== 'admits') {
+      return "it does not declare `trashed: 'admits'`, and a restore is the move that reaches a binned row";
+    }
+    return { kind, ...base.head, permission: { key: declared, entity: name, idFrom }, idFrom };
+  };
+}
+
+/** The bin: `ctx.pageTrashed` over an entity that declares `trash`, which checks its key per row. */
+function trashedPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
+  const over = decl.paged?.over;
+  if (over === undefined) return 'it is not a kernel-composed page (`paged.over`)';
+  if (decl.emits !== undefined) return 'it emits, and a read announces nothing';
+  if (decl.http?.method !== 'GET') return 'it is not served as GET, the method that says it only reads';
+  if (decl.paged?.total !== undefined) return 'it asks for a total, and a page of the bin carries none';
+  const name = over.entity as string;
+  if (decl.output !== entities[name]?.fields) return `its output is not '${name}'s own \`fields\``;
+  const base = derivableEntity(name, entities);
+  if (typeof base === 'string') return base;
+  const key = base.def.trash?.permission;
+  if (key === undefined) return `'${name}' declares no \`trash\``;
+  // `ctx.pageTrashed` checks the trash key on every row: a leading check on top would deny the
+  // person whose key is narrowed to the rows they binned, and say nothing the walk does not.
+  if (decl.permission !== undefined) return 'it declares a leading check, and the bin is checked row by row';
+  const narrows = decl.narrows as { checks?: readonly unknown[]; noneChecked?: unknown } | undefined;
+  if (narrows?.noneChecked !== undefined || narrows?.checks?.length !== 1 || narrows.checks[0] !== key) {
+    return `it does not declare \`narrows\` checking exactly '${key}', the key the bin is walked under`;
+  }
+  const filterable = new Set(over.filterable ?? []);
+  const filters: { field: string; column: string }[] = [];
+  const { required, optional } = inputFields(decl);
+  if (required.length !== 0) return `input field '${required[0]}' is required, and a page of the bin takes filters only`;
+  for (const field of optional) {
+    const column = snakeCaseField(field);
+    if (!filterable.has(column)) return `input field '${field}' is not a declared \`filterable\` column`;
+    if (inputDefaultIssue(decl.input?.shape[field]) !== null) return `input field '${field}' has a default`;
+    const issue = filterTypeIssue(decl, field, column, base.def);
+    if (issue) return issue;
+    filters.push({ field, column });
+  }
+  return { kind: 'trashed', ...base.head, permission: { key }, filters };
+}
+
 const PLANNERS: Record<DerivedKind, typeof getPlan> = {
   get: getPlan,
   list: listPlan,
   update: updatePlan,
   delete: deletePlan,
+  archive: movePlan('archive'),
+  unarchive: movePlan('unarchive'),
+  trash: movePlan('trash'),
+  restore: movePlan('restore'),
+  trashed: trashedPlan,
 };
 
 /** The plan for one shape, or the clause the declaration fails — the shared clauses first. */
@@ -1679,9 +1809,10 @@ function planFor(kind: DerivedKind, decl: DeclarationRead, entities: Record<stri
 /**
  * The shape the platform could derive this operation's handler as, read off its declaration and
  * the module's entities alone — `undefined` when it matches none of `DerivedKind`. Pure: this
- * classifies, and `defineOperations` is what refuses. At most one shape matches: a `get` is
- * served as GET and not paged, a `list` is paged, an `update` is a PATCH that emits, a `delete`
- * is a DELETE answering `{ id, deleted }`.
+ * classifies, and `defineOperations` is what refuses. The first shape that matches is answered:
+ * a `get` is served as GET and not paged, a `list` is paged, an `update` is a PATCH that emits, a
+ * `delete` is a DELETE answering `{ id, deleted }`. The moves are the exception, because they are
+ * told apart by name rather than shape (see `derivedKindsOf`).
  */
 export function derivationOf(decl: object, entities: Record<string, EntityDef>): DerivationPlan | undefined {
   for (const kind of DERIVED_KINDS) {
@@ -1689,6 +1820,14 @@ export function derivationOf(decl: object, entities: Record<string, EntityDef>):
     if (typeof plan !== 'string') return plan;
   }
   return undefined;
+}
+
+/**
+ * Every shape a declaration matches. One, except for a move (#119): archive and unarchive declare
+ * the same shape, so a hand-written one is named as both and `derive` says which it is.
+ */
+function derivedKindsOf(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivedKind[] {
+  return DERIVED_KINDS.filter((kind) => typeof planFor(kind, decl, entities) !== 'string');
 }
 
 /**
@@ -1745,11 +1884,14 @@ function assertHandlersDeclared(operations: Record<string, unknown>, entities: R
       continue;
     }
     if (authored !== undefined) continue;
+    const kinds = derivedKindsOf(decl, entities);
+    const named = kinds.map((k) => `\`${k}\``).join(' or ');
+    const derives = kinds.map((k) => `\`derive: '${k}'\``).join(' or ');
     throw new Error(
-      `model: '${name}' is derivable from the model as \`${plan.kind}\` over '${plan.entity}', and declares neither ` +
+      `model: '${name}' is derivable from the model as ${named} over '${plan.entity}', and declares neither ` +
         '`derive` nor `authored`.\n' +
         `  A hand-written ${plan.kind} restates its declaration, and each restatement drifts (#1773).\n` +
-        `  Remedy: declare \`derive: '${plan.kind}'\` and delete its handler, or declare ` +
+        `  Remedy: declare ${derives} and delete its handler, or declare ` +
         `\`authored: '<why the derived ${plan.kind} is wrong here>'\`.`,
     );
   }

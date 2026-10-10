@@ -175,6 +175,7 @@ export function guideSidebar() {
         { text: 'Reads & scaling', link: '/concepts/reads' },
         { text: 'The model', link: '/concepts/model' },
         { text: 'Lifecycles', link: '/concepts/lifecycle' },
+        { text: 'Archive & trash', link: '/concepts/archive-and-trash' },
         { text: 'Modules & the manifest', link: '/concepts/modules' },
         { text: 'What a good API looks like', link: '/concepts/api-design' },
         { text: 'The MCP surface', link: '/concepts/mcp' },

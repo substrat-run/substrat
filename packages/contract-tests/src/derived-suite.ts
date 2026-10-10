@@ -8,7 +8,11 @@
  * is the declared fields of the row as written. A page is scoped to its parent and walks whole.
  *
  * The DEFAULT tuple checker, so a denial is a real one: `dave` holds no key at all, and every
- * refusal has its positive twin from `alice`, who holds both.
+ * refusal has its positive twin from `alice`, who holds every key.
+ *
+ * The moves and the bin (#119) owe what todo's hand-written ones did: the entity's declared key,
+ * per move, checked on the row; `conflict` for a wrong move; the active view by default; the
+ * bin walked row by row under the trash key, so a key narrowed to one binned row shows that row.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -27,8 +31,10 @@ import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { derivedMod } from './derived-module.js';
 
-const KEYS = ['dnote:read', 'dnote:write'].map((k) => permissionKey.parse(k));
+const KEYS = ['dnote:read', 'dnote:write', 'dshelf:archive', 'dshelf:trash'].map((k) => permissionKey.parse(k));
 type Note = { id: string; dfolder_id: string; title: string; body: string | null; rank: number };
+type Shelf = { id: string; label: string };
+type Moved = { id: string; state: 'active' | 'archived' | 'trashed' };
 
 export function derivedHandlersContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
   describe(`derived handlers (#1773): ${adapterName}`, () => {
@@ -215,6 +221,105 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
 
       it('is permission_denied to a caller without the key', async () => {
         expect(await codeOf(asDave.invoke('derived/list-notes', { dfolderId: 'fb' }))).toBe('permission_denied');
+      });
+    });
+
+    describe('archive and trash (#119)', () => {
+      const addShelf = async (label: string): Promise<Shelf> => {
+        const id = ulid();
+        await as.invoke('derived/add-shelf', { id, label });
+        return { id, label };
+      };
+      const move = (who: ScopeStub, verb: 'archive' | 'unarchive' | 'trash' | 'restore', shelfId: string) =>
+        who.invoke<Moved>(`derived/${verb}-shelf`, { shelfId });
+      const ids = async (who: ScopeStub, op: string, input: Record<string, unknown> = {}): Promise<string[]> =>
+        (await who.invoke<{ entries: Shelf[] }>(op, { ...input, limit: 100 })).entries.map((r) => r.id);
+      const grantOn = (principal: PrincipalId, key: string, shelfId: string) =>
+        host.admin.grant(staff, {
+          principalId: principal,
+          permission: permissionKey.parse(key),
+          node: { tenantId: t, scopeId: s },
+          entity: { entityType: 'dshelf', entityId: shelfId },
+          grantedBy: alice,
+        });
+
+      it('archives out of the active view and into the archived one, and back', async () => {
+        const sh = await addShelf('filed');
+        expect(await move(as, 'archive', sh.id)).toEqual({ id: sh.id, state: 'archived' });
+        expect(await ids(as, 'derived/list-shelves')).not.toContain(sh.id);
+        expect(await ids(as, 'derived/list-shelves', { view: 'archived' })).toContain(sh.id);
+        expect(await move(as, 'unarchive', sh.id)).toEqual({ id: sh.id, state: 'active' });
+        expect(await ids(as, 'derived/list-shelves')).toContain(sh.id);
+        expect(await ids(as, 'derived/list-shelves', { view: 'archived' })).not.toContain(sh.id);
+      });
+
+      it('bins out of every view and into the bin, and a restore puts back the archive it came from', async () => {
+        const sh = await addShelf('binned');
+        await move(as, 'archive', sh.id);
+        expect(await move(as, 'trash', sh.id)).toEqual({ id: sh.id, state: 'trashed' });
+        expect(await ids(as, 'derived/list-shelves')).not.toContain(sh.id);
+        expect(await ids(as, 'derived/list-shelves', { view: 'archived' })).not.toContain(sh.id);
+        expect(await ids(as, 'derived/trashed-shelves')).toContain(sh.id);
+        expect(await move(as, 'restore', sh.id)).toEqual({ id: sh.id, state: 'archived' });
+        expect(await ids(as, 'derived/trashed-shelves')).not.toContain(sh.id);
+      });
+
+      it('refuses a move out of the wrong state as conflict, and a missing row as not_found', async () => {
+        const sh = await addShelf('twice');
+        expect(await codeOf(move(as, 'unarchive', sh.id))).toBe('conflict');
+        expect(await codeOf(move(as, 'restore', sh.id))).toBe('conflict');
+        await move(as, 'archive', sh.id);
+        expect(await codeOf(move(as, 'archive', sh.id))).toBe('conflict');
+        expect(await codeOf(move(as, 'archive', 'missing'))).toBe('not_found');
+        expect(await codeOf(move(as, 'trash', 'missing'))).toBe('not_found');
+      });
+
+      it('lets only restore reach a binned row: the host refuses the other moves as not_found', async () => {
+        const sh = await addShelf('gone');
+        await move(as, 'trash', sh.id);
+        expect(await codeOf(move(as, 'archive', sh.id))).toBe('not_found');
+        expect(await codeOf(move(as, 'trash', sh.id))).toBe('not_found');
+        expect(await move(as, 'restore', sh.id)).toEqual({ id: sh.id, state: 'active' });
+      });
+
+      it('checks each move under its own key: archive authority is not trash authority', async () => {
+        const archivist: PrincipalId = principalId.parse(ulid());
+        const binner: PrincipalId = principalId.parse(ulid());
+        const a = await addShelf('a');
+        await grantOn(archivist, 'dshelf:archive', a.id);
+        await grantOn(binner, 'dshelf:trash', a.id);
+        const asArchivist = await host.getScope(archivist, t, s);
+        const asBinner = await host.getScope(binner, t, s);
+        expect(await codeOf(move(asBinner, 'archive', a.id))).toBe('permission_denied');
+        expect(await codeOf(move(asArchivist, 'trash', a.id))).toBe('permission_denied');
+        expect(await move(asArchivist, 'archive', a.id)).toEqual({ id: a.id, state: 'archived' });
+        expect(await move(asBinner, 'trash', a.id)).toEqual({ id: a.id, state: 'trashed' });
+        expect(await codeOf(move(asArchivist, 'restore', a.id))).toBe('permission_denied');
+        expect(await move(asBinner, 'restore', a.id)).toEqual({ id: a.id, state: 'archived' });
+      });
+
+      it('denies a caller without the key first, whether or not the row exists', async () => {
+        const sh = await addShelf('guarded');
+        for (const verb of ['archive', 'unarchive', 'trash', 'restore'] as const) {
+          expect(await codeOf(move(asDave, verb, sh.id))).toBe('permission_denied');
+          expect(await codeOf(move(asDave, verb, 'missing'))).toBe('permission_denied');
+        }
+      });
+
+      it('walks the bin row by row: a trash key narrowed to one row shows that row and no other', async () => {
+        const nell: PrincipalId = principalId.parse(ulid());
+        const mine = await addShelf('mine');
+        const theirs = await addShelf('theirs');
+        await move(as, 'trash', mine.id);
+        await move(as, 'trash', theirs.id);
+        await grantOn(nell, 'dshelf:trash', mine.id);
+        const asNell = await host.getScope(nell, t, s);
+        // A scope-wide check in front of the walk would deny nell outright.
+        const seen = await ids(asNell, 'derived/trashed-shelves');
+        expect(seen).toContain(mine.id);
+        expect(seen).not.toContain(theirs.id);
+        expect(await ids(as, 'derived/trashed-shelves')).toEqual(expect.arrayContaining([mine.id, theirs.id]));
+        expect(await ids(asDave, 'derived/trashed-shelves')).toEqual([]);
       });
     });
 

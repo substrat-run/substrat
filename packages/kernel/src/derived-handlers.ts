@@ -50,6 +50,9 @@ export function derivedHandler(plan: DerivationPlan): OperationHandler<never, un
   };
 
   const body = bodyOf(plan, rowOrThrow, ref);
+  // The bin is checked row by row, by `ctx.pageTrashed` itself (#119): a scope-wide check of the
+  // trash key in front of it would deny the person whose key is narrowed to the rows they binned.
+  if (plan.kind === 'trashed') return body as OperationHandler<never, unknown>;
   return (async (ctx: OperationContext, input: Input) => {
     await check(ctx, input);
     return body(ctx, input);
@@ -67,20 +70,16 @@ function bodyOf(
       return (ctx, input) => rowOrThrow(ctx, String(input?.[plan.idFrom]));
 
     case 'list':
-      return (ctx, input) => {
-        const filters: Row = {};
-        for (const { field, column } of plan.filters) {
-          if (input?.[field] !== undefined) filters[column] = input[field];
-        }
-        return ctx.page<Row>(plan.entity, {
-          limit: input?.limit as number | undefined,
-          cursor: input?.cursor as string | undefined,
-          sort: input?.sort as string | undefined,
-          order: input?.order as 'asc' | 'desc' | undefined,
-          filters,
+      return (ctx, input) =>
+        ctx.page<Row>(plan.entity, {
+          ...pageOf(input),
+          filters: filtersOf(plan.filters, input),
           ...(plan.total ? { total: true } : {}),
+          // The host parsed it against `z.enum(['active', 'archived'])` (#119).
+          ...(plan.viewFrom !== undefined && input?.[plan.viewFrom] !== undefined
+            ? { view: input[plan.viewFrom] as 'active' | 'archived' }
+            : {}),
         });
-      };
 
     case 'update':
       return (ctx, input) => {
@@ -110,7 +109,42 @@ function bodyOf(
         ctx.emit(eventOf(plan.emit, ref(id), result));
         return result;
       };
+
+    // One kernel move (#119): the verb checks the entity's declared key again, refuses a wrong
+    // move as `conflict` and a missing row as `not_found`, and emits the move itself.
+    case 'archive':
+    case 'unarchive':
+    case 'trash':
+    case 'restore': {
+      const move = plan.kind;
+      return async (ctx, input) => {
+        const id = String(input?.[plan.idFrom]);
+        return { id, state: await ctx[move](ref(id)) };
+      };
+    }
+
+    case 'trashed':
+      return (ctx, input) => ctx.pageTrashed<Row>(plan.entity, { ...pageOf(input), filters: filtersOf(plan.filters, input) });
   }
+}
+
+/** The page the platform supplied with the input (`limit`, `cursor`, `sort`, `order`). */
+function pageOf(input: Input) {
+  return {
+    limit: input?.limit as number | undefined,
+    cursor: input?.cursor as string | undefined,
+    sort: input?.sort as string | undefined,
+    order: input?.order as 'asc' | 'desc' | undefined,
+  };
+}
+
+/** The declared filters the caller sent, by column. */
+function filtersOf(filters: readonly { readonly field: string; readonly column: string }[], input: Input): Row {
+  const out: Row = {};
+  for (const { field, column } of filters) {
+    if (input?.[field] !== undefined) out[column] = input[field];
+  }
+  return out;
 }
 
 /** The declared event, its payload and subject drawn from what the operation answers with. */

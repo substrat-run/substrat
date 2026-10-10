@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { entityStateName, entityStateOutput } from '../src/entity-state.js';
 import { defineEntities } from '../src/model.js';
 import { defineOperations, derivationOf, derivationPlanOf } from '../src/operations.js';
 
@@ -32,13 +33,20 @@ const entities = defineEntities({
     fields: z.object({ id: z.string(), label: z.string() }),
     trash: { permission: 'note:write' },
   },
+  // #119: archivable and trashable, each under its own key.
+  shelf: {
+    table: 't_shelves',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    archive: { permission: 'note:archive' },
+    trash: { permission: 'note:write' },
+  },
   pair: {
     table: 't_pairs',
     fields: z.object({ left: z.string(), right: z.string() }),
     primaryKey: ['left', 'right'],
   },
 });
-const PERMS = ['note:read', 'note:write'] as const;
+const PERMS = ['note:read', 'note:write', 'note:archive'] as const;
 const define = defineOperations(entities, PERMS);
 const byNote = z.object({ noteId: z.string() });
 const noteRow = { entity: 'note', idFrom: 'noteId' } as const;
@@ -294,7 +302,7 @@ describe('the gate', () => {
     );
     // A kind that does not exist, through a cast, is refused by name too.
     expect(() => define({ 'n/get': { ...GET, derive: 'create' as never } })).toThrow(
-      "model: 'n/get' declares `derive: 'create'` — the derivable shapes are get, list, update, delete.\n" +
+      "model: 'n/get' declares `derive: 'create'` — the derivable shapes are get, list, update, delete, archive, unarchive, trash, restore, trashed.\n" +
         '  Remedy: declare one of them, or drop `derive` and write the handler.',
     );
   });
@@ -307,7 +315,7 @@ describe('the gate', () => {
     expect(() =>
       define({ 'n/ping': { summary: 's', permission: 'note:read', output: z.object({ ok: z.boolean() }), authored: 'habit' } }),
     ).toThrow(
-      "model: 'n/ping' declares `authored`, but nothing about it is derivable — it matches none of get, list, update, delete, " +
+      "model: 'n/ping' declares `authored`, but nothing about it is derivable — it matches none of get, list, update, delete, archive, unarchive, trash, restore, trashed, " +
         'so every handler for it is authored already.\n' +
         '  Remedy: remove `authored`.',
     );
@@ -334,5 +342,190 @@ describe('the gate', () => {
       define({ 'n/get': { ...GET, derive: 'create' } }),
     ];
     expect(declarations).toBeTypeOf('function');
+  });
+});
+
+// #119: the moves and the bin, derived from the entity's own `archive` / `trash` declaration.
+const byShelf = z.object({ shelfId: z.string() });
+const ARCHIVE = {
+  summary: 's',
+  permission: { key: 'note:archive', entity: 'shelf', idFrom: 'shelfId' },
+  input: byShelf,
+  output: entityStateOutput,
+  http: { method: 'POST', path: '/shelves/{shelfId}/archive' },
+} as const;
+const TRASH = {
+  ...ARCHIVE,
+  permission: { key: 'note:write', entity: 'shelf', idFrom: 'shelfId' },
+  http: { method: 'POST', path: '/shelves/{shelfId}/trash' },
+} as const;
+const RESTORE = { ...TRASH, trashed: 'admits', http: { method: 'POST', path: '/shelves/{shelfId}/restore' } } as const;
+const TRASHED = {
+  summary: 's',
+  narrows: { reason: 'the bin, row by row', checks: ['note:write'] },
+  output: entities.shelf.fields,
+  paged: { over: { entity: 'shelf', sortable: ['label'], filterable: ['label'] } },
+  http: { method: 'GET', path: '/shelves/trash' },
+} as const;
+const SHELVES = {
+  summary: 's',
+  permission: 'note:read',
+  input: z.object({ view: z.enum(['active', 'archived']).optional() }),
+  output: entities.shelf.fields,
+  paged: { over: { entity: 'shelf', sortable: ['label'] } },
+  http: { method: 'GET', path: '/shelves' },
+} as const;
+
+describe('derivationOf — the moves (#119)', () => {
+  it('derives a move under the key the entity declares for it', () => {
+    expect(derivationOf(ARCHIVE, entities)).toEqual({
+      kind: 'archive',
+      entity: 'shelf',
+      table: 't_shelves',
+      primaryKey: 'id',
+      columns: ['id', 'label'],
+      permission: { key: 'note:archive', entity: 'shelf', idFrom: 'shelfId' },
+      idFrom: 'shelfId',
+    });
+    expect(derivationOf(TRASH, entities)).toMatchObject({ kind: 'trash', permission: { key: 'note:write' } });
+  });
+
+  it('tells a restore from a trash by the one line that differs: `trashed: admits`', () => {
+    expect(kindOf(RESTORE)).toBe('restore');
+    expect(kindOf({ ...ARCHIVE, trashed: 'admits' })).toBeUndefined();
+  });
+
+  it.each([
+    ['served as anything but POST', { ...ARCHIVE, http: { method: 'PATCH', path: '/shelves/{shelfId}' } }],
+    ['invoke-only', { ...ARCHIVE, http: undefined }],
+    ['declaring an event the kernel already emits', { ...ARCHIVE, emits: { ...emitsNote('s.archived'), entity: 'shelf' } }],
+    // The same fields, but not THE schema: one answer shape across verticals is the point.
+    ['answering a look-alike of entityStateOutput', { ...ARCHIVE, output: z.object({ id: z.string(), state: entityStateName }) }],
+    ['scope-wide', { ...ARCHIVE, permission: 'note:archive' }],
+    // A move under the entity's ordinary read key is no move at all. (Under the OTHER move's key
+    // it is that move — which is why `derive` names one, and is refused under the wrong key.)
+    ['under a key the entity declares for nothing', { ...ARCHIVE, permission: { ...ARCHIVE.permission, key: 'note:read' } }],
+    ['an input beyond the id', { ...ARCHIVE, input: z.object({ shelfId: z.string(), why: z.string().optional() }) }],
+    ['the id under another name than the check reads', { ...ARCHIVE, input: z.object({ id: z.string() }) }],
+    ['paged', { ...ARCHIVE, paged: { over: { entity: 'shelf', sortable: ['label'] } } }],
+    ['purging', { ...TRASH, trashed: 'purges' }],
+  ])('not when %s', (_, decl) => {
+    expect(kindOf(decl)).toBeUndefined();
+  });
+
+  it('not over an entity that declares no archive (or no trash)', () => {
+    const overBin = { ...ARCHIVE, permission: { key: 'note:write', entity: 'bin', idFrom: 'binId' }, input: z.object({ binId: z.string() }) };
+    expect(kindOf(overBin)).toBe('trash');
+    expect(() => define({ 'b/archive': { ...overBin, derive: 'archive' } })).toThrow(
+      "model: 'b/archive' declares `derive: 'archive'`, but 'bin' declares no `archive`.",
+    );
+    const overNote = { ...ARCHIVE, permission: { key: 'note:write', ...noteRow }, input: byNote };
+    expect(kindOf(overNote)).toBeUndefined();
+  });
+
+  it('refuses `derive: restore` without `trashed: admits`, and `derive: trash` with it', () => {
+    expect(() => define({ 's/restore': { ...TRASH, derive: 'restore' } })).toThrow(
+      "model: 's/restore' declares `derive: 'restore'`, but it does not declare `trashed: 'admits'`, and a restore is the move that reaches a binned row.",
+    );
+    expect(() => define({ 's/trash': { ...RESTORE, derive: 'trash' } })).toThrow(
+      "model: 's/trash' declares `derive: 'trash'`, but it declares `trashed: 'admits'` — reaching the bin is authored.",
+    );
+  });
+
+  it('refuses a move checked under the wrong key, naming the key the entity declares', () => {
+    expect(() => define({ 's/archive': { ...ARCHIVE, permission: { ...ARCHIVE.permission, key: 'note:write' }, derive: 'archive' } })).toThrow(
+      "model: 's/archive' declares `derive: 'archive'`, but its check is 'note:write', not the key 'shelf' declares for its archive, 'note:archive'.",
+    );
+  });
+
+  it('records the move `derive` names: archive and unarchive are one shape, told apart by it', () => {
+    const ops = define({
+      's/archive': { ...ARCHIVE, derive: 'archive' },
+      's/unarchive': { ...ARCHIVE, http: { method: 'POST', path: '/shelves/{shelfId}/unarchive' }, derive: 'unarchive' },
+      's/restore': { ...RESTORE, derive: 'restore' },
+    });
+    expect(derivationPlanOf(ops['s/archive'])).toMatchObject({ kind: 'archive' });
+    expect(derivationPlanOf(ops['s/unarchive'])).toMatchObject({ kind: 'unarchive' });
+    expect(derivationPlanOf(ops['s/restore'])).toMatchObject({ kind: 'restore' });
+  });
+
+  it('(a) names every move a hand-written one could be, when it declares neither', () => {
+    const unarchive = { ...ARCHIVE, http: { method: 'POST', path: '/shelves/{shelfId}/unarchive' } } as const;
+    expect(() => define({ 's/unarchive': unarchive })).toThrow(
+      "model: 's/unarchive' is derivable from the model as `archive` or `unarchive` over 'shelf', and declares neither `derive` nor `authored`.\n" +
+        '  A hand-written archive restates its declaration, and each restatement drifts (#1773).\n' +
+        "  Remedy: declare `derive: 'archive'` or `derive: 'unarchive'` and delete its handler, or declare `authored: '<why the derived archive is wrong here>'`.",
+    );
+    expect(() => define({ 's/restore': RESTORE })).toThrow(
+      "model: 's/restore' is derivable from the model as `restore` over 'shelf', and declares neither `derive` nor `authored`.",
+    );
+  });
+});
+
+describe('derivationOf — the bin (#119)', () => {
+  it('derives a page of the bin, its filters as a list declares them, checked by the walk', () => {
+    expect(derivationOf(TRASHED, entities)).toEqual({
+      kind: 'trashed',
+      entity: 'shelf',
+      table: 't_shelves',
+      primaryKey: 'id',
+      columns: ['id', 'label'],
+      permission: { key: 'note:write' },
+      filters: [],
+    });
+    expect(derivationOf({ ...TRASHED, input: z.object({ label: z.string().optional() }) }, entities)).toMatchObject({
+      kind: 'trashed',
+      filters: [{ field: 'label', column: 'label' }],
+    });
+  });
+
+  it.each([
+    ['with a leading check, which would deny a key narrowed to binned rows', { ...TRASHED, permission: 'note:write' }],
+    ['narrowed under another key', { ...TRASHED, narrows: { reason: 'r', checks: ['note:read'] } }],
+    ['narrowed under more than the trash key', { ...TRASHED, narrows: { reason: 'r', checks: ['note:write', 'note:read'] } }],
+    ['narrowed under nothing', { ...TRASHED, narrows: { reason: 'r', checks: [], noneChecked: 'x' } }],
+    ['asking for a total', { ...TRASHED, paged: { ...TRASHED.paged, total: true } }],
+    ['over an entity that declares no trash', { ...TRASHED, output: entities.note.fields, paged: { over: { entity: 'note', sortable: ['rank'] } } }],
+    ['a projection', { ...TRASHED, output: z.object({ id: z.string() }) }],
+    ['served as anything but GET', { ...TRASHED, http: { method: 'POST', path: '/shelves/trash' } }],
+    ['emitting', { ...TRASHED, emits: { ...emitsNote('s.listed'), entity: 'shelf' } }],
+    ['a required input', { ...TRASHED, input: z.object({ label: z.string() }) }],
+    ['an input that is no filter', { ...TRASHED, input: z.object({ q: z.string().optional() }) }],
+    ['a filter with a default', { ...TRASHED, input: z.object({ label: z.string().default('x') }) }],
+    ['not paged over an entity', { ...TRASHED, paged: undefined }],
+  ])('not when %s', (_, decl) => {
+    expect(kindOf(decl)).toBeUndefined();
+  });
+
+  it('is still no `list`: a page with `narrows` is a walk unless it is the bin', () => {
+    expect(kindOf({ ...SHELVES, narrows: { reason: 'r', checks: ['note:read'] }, permission: undefined })).toBeUndefined();
+  });
+});
+
+describe('derivationOf — the view on a derived list (#119)', () => {
+  it('passes `view` to the page of an archivable entity', () => {
+    expect(derivationOf(SHELVES, entities)).toMatchObject({ kind: 'list', entity: 'shelf', filters: [], viewFrom: 'view' });
+    expect(derivationOf({ ...SHELVES, input: undefined }, entities)).not.toHaveProperty('viewFrom');
+  });
+
+  it.each([
+    ['naming the bin, which is its own read', z.object({ view: z.enum(['active', 'archived', 'trashed']).optional() })],
+    ['with a default', z.object({ view: z.enum(['active', 'archived']).default('active') })],
+    ['a free string', z.object({ view: z.string().optional() })],
+    ['required', z.object({ view: z.enum(['active', 'archived']) })],
+  ])('not when the view is %s', (_, input) => {
+    expect(kindOf({ ...SHELVES, input })).toBeUndefined();
+  });
+
+  it('not on an entity that declares no archive, where `view` is just an undeclared filter', () => {
+    const bins = { ...SHELVES, output: entities.bin.fields, paged: { over: { entity: 'bin', sortable: ['label'] } } };
+    expect(kindOf(bins)).toBeUndefined();
+    expect(kindOf({ ...bins, input: undefined })).toBe('list');
+  });
+
+  it('not when `view` is also a declared filterable column', () => {
+    const decl = { ...SHELVES, paged: { over: { entity: 'shelf', sortable: ['label'], filterable: ['view'] } }, derive: 'list' };
+    expect(kindOf(decl)).toBeUndefined();
+    expect(() => define({ 's/list': decl as never })).toThrow("'view' is both the archive view and a declared `filterable` column");
   });
 });

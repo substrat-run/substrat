@@ -340,8 +340,10 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   `ctx.link` refuses a trashed parent. `trash: { permission, purgeAfterDays }` derives a purge
   schedule (`schedules: purgeSchedulesOf(ops, entities)`) running the entity's
   `trashed: 'purges'` operation as the system principal, whose key is withheld from every other
-  call. Not erasure (#37) and not tenant deletion (#36) — the events stay. `demos/todo` is the
-  reference.
+  call. The moves and the bin are **derived** handlers (`derive: 'archive'|'unarchive'|'trash'|
+  'restore'|'trashed'`, output `entityStateOutput`), so a vertical writes none of them. Not erasure
+  (#37) and not tenant deletion (#36) — the events stay. `demos/todo` is the reference;
+  `apps/docs/concepts/archive-and-trash.md` explains it.
 - Every operation's first line: `assertAllowed(await ctx.check(PERM))`; per-entity
   checks (`ctx.check(perm, entityRef)`) for portal-style walks.
 - Every mutation emits a **fat** event (consumer must never need a cross-module read);
