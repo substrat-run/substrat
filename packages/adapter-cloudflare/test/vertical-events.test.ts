@@ -4,11 +4,13 @@ import { Hono } from 'hono';
 import {
   errorCodeOf,
   eventId,
+  instant,
   permissionKey,
   platformActorId,
   principalId,
   scopeId,
   tenantId,
+  type MintedCapability,
   type PrincipalId,
   type RoleDefinition,
   type Scope,
@@ -19,6 +21,7 @@ import {
   BOARD_VERTICAL,
   CRM_VERTICAL,
   adminRowFaultSql,
+  capMod,
   boardImportMod,
   crmExportMod,
   testMod,
@@ -1118,5 +1121,162 @@ describe('#2029 — a producer rewound past its consumer’s switch releases not
     const batch = await crm.hostFor().exportedEventsLocal(t, p, read);
     expect(batch).toMatchObject({ paused: null });
     expect(batch.events).toHaveLength(1);
+  });
+});
+
+/**
+ * #1686: the operator's capability revoke on the SHARED control plane, for a scope a vertical's own
+ * deployment serves. The capability directory is in that deployment's ScopeDO, so the revoke has to
+ * cross `/internal/capabilities/revoke` (`capabilityDelegation`, as `capabilityDelegationFor` wires
+ * it); the admin row stays on the control plane. The shared host's own namespace (CRM_SCOPE) is not
+ * the deployment's (SCOPE), so a revoke that skipped the delegation and wrote locally would
+ * find nothing and leave the link working, which these cases would see.
+ */
+describe('the operator’s capability revoke reaches the deployment serving the scope (#1686)', () => {
+  // The deployment's ScopeDO class is the contract suite's, which bundles `capMod`: its
+  // `cap/share` is a module minting a link share through `ctx.capabilities`.
+  const READ = key('cap:read');
+  const SHARE_OWNER: RoleDefinition = { key: 'share-owner', permissions: [READ], source: 'vertical' };
+  const SHARE_VERTICAL = 'share-vertical';
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const s2 = scopeId.parse(ulid());
+  const inAnHour = () => instant.parse(new Date(Date.now() + 3_600_000).toISOString());
+  let dep: ReturnType<typeof deployment>;
+  let shared: CloudflareScopeHost;
+  let owner: PrincipalId;
+
+  const exchange = (scope: ScopeId, secret: string, mode?: 'become') =>
+    dep.hostFor().exchangeCapability(t, scope, secret, mode ? { mode } : undefined);
+  const recordIn = async (scope: ScopeId, id: string) =>
+    (await dep.hostFor().listCapabilitiesLocal(scope, { includeRevoked: true })).entries.find((r) => r.id === id);
+  const revokeRows = async () =>
+    (await shared.admin.auditLog(staff)).filter((e) => e.action === 'revokeCapability' && e.scopeId === s);
+  const share = async (scope: ScopeId, entityId: string) =>
+    (await dep.hostFor().getScope(owner, t, scope)).invoke<MintedCapability>('cap/share', {
+      entity: { entityType: 'folder', entityId },
+      permissions: [READ],
+      label: `share ${entityId}`,
+    });
+
+  beforeAll(async () => {
+    await warmControlPlane(env.VE_CONTROL_PLANE);
+    const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
+    dep = deployment(env.SCOPE, capMod, SHARE_OWNER);
+    // The shared control plane: its own namespace, and the revoke's reach into the deployment.
+    shared = new CloudflareScopeHost({
+      scope: env.CRM_SCOPE,
+      controlPlane: env.VE_CONTROL_PLANE,
+      secretBox,
+      capabilityDelegation: {
+        revoke: async (a) => {
+          const rec = await shared.admin.getScopeRecord(staff, a.tenantId, a.scopeId);
+          if (rec?.vertical !== SHARE_VERTICAL) throw new Error(`no deployment serving scope ${a.scopeId}`);
+          return dep.client.revokeCapability({ scopeId: a.scopeId, capabilityId: a.capabilityId, actor: a.actor });
+        },
+      },
+    });
+    await shared.admin.createTenant(staff, { id: t, slug: `cap-revoke-${t.toLowerCase()}`, name: 'Capability revoke' });
+    for (const scope of [s, s2]) {
+      await shared.provisionScope(staff, { tenantId: t, scopeId: scope, vertical: SHARE_VERTICAL });
+      await shared.admin.activateScope(staff, t, scope);
+    }
+    owner = await dep.provision(t, s);
+    const owner2 = await dep.provision(t, s2);
+    expect(owner2).toBeDefined();
+  });
+
+  it('revokes a link share in the deployment: refused at the next exchange, the record names the operator, the admin row is here', async () => {
+    const link = await share(s, 'F1');
+    const sibling = await share(s, 'F2');
+    await shared.admin.revokeCapability(staff, t, s, link.id);
+
+    expect(dep.paths).toContain('/internal/capabilities/revoke');
+    expect(await recordIn(s, link.id)).toMatchObject({ revokedBy: { platform: staff } });
+    expect(await exchange(s, link.secret)).toBeNull();
+    // The twin: the link beside it, never named, still opens.
+    expect(await exchange(s, sibling.secret)).toMatchObject({ kind: 'session', capabilityId: sibling.id });
+    expect((await recordIn(s, sibling.id))!.revokedAt).toBeNull();
+
+    const [row] = (await revokeRows()).filter((e) => JSON.stringify(e.after).includes(link.id));
+    expect(row).toMatchObject({ actor: staff, vertical: SHARE_VERTICAL, after: { capabilityId: link.id, revoked: true } });
+    // `before` is the deployment's record as it stood: live, and carrying neither secret nor hash.
+    expect(row!.before).toMatchObject({ id: link.id, revokedAt: null });
+    expect(JSON.stringify(row)).not.toContain(link.secret);
+  });
+
+  it('revokes a become link too, and a second revoke of it is idempotent', async () => {
+    const claim = await dep.hostFor().mintCapabilityLocal(t, s, { principal: owner, expiresAt: inAnHour(), maxUses: 1 }, staff);
+    await shared.admin.revokeCapability(staff, t, s, claim.id);
+    await shared.admin.revokeCapability(staff, t, s, claim.id);
+    expect(await exchange(s, claim.secret, 'become')).toBeNull();
+    expect((await recordIn(s, claim.id))!.uses).toBe(0);
+    // The twin: an unrevoked become in the same scope exchanges.
+    const other = await dep.hostFor().mintCapabilityLocal(t, s, { principal: owner, expiresAt: inAnHour(), maxUses: 1 }, staff);
+    expect(await exchange(s, other.secret, 'become')).toMatchObject({ kind: 'principal', capabilityId: other.id });
+  });
+
+  it('a capability the scope does not hold is not_found with no admin row — including one held by ANOTHER scope, which keeps working', async () => {
+    const elsewhere = await dep.hostFor().mintCapabilityLocal(t, s2, { principal: owner, expiresAt: inAnHour(), maxUses: 1 }, staff);
+    const before = (await revokeRows()).length;
+    const refused = await shared.admin.revokeCapability(staff, t, s, elsewhere.id).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('not_found');
+    const unknown = await shared.admin.revokeCapability(staff, t, s, ulid() as never).catch((e: unknown) => e);
+    expect(errorCodeOf(unknown)).toBe('not_found');
+    expect((await revokeRows()).length).toBe(before);
+    expect((await recordIn(s2, elsewhere.id))!.revokedAt).toBeNull();
+    expect(await exchange(s2, elsewhere.secret, 'become')).toMatchObject({ kind: 'principal', capabilityId: elsewhere.id });
+  });
+
+  it('another tenant’s name for the scope is refused before the deployment is reached, and the link keeps working', async () => {
+    const link = await share(s, 'F5');
+    const reached = dep.paths.filter((p) => p === '/internal/capabilities/revoke').length;
+    const refused = await shared.admin.revokeCapability(staff, tenantId.parse(ulid()), s, link.id).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('not_found');
+    expect(dep.paths.filter((p) => p === '/internal/capabilities/revoke').length).toBe(reached);
+    expect(await exchange(s, link.secret)).toMatchObject({ kind: 'session' });
+    // The twin: the right tenant's name revokes the same link.
+    await shared.admin.revokeCapability(staff, t, s, link.id);
+    expect(await exchange(s, link.secret)).toBeNull();
+  });
+
+  it('a deployment built before the route: 501 "redeploy", nothing revoked, no admin row', async () => {
+    const link = await share(s, 'F3');
+    const old = new CloudflareScopeHost({
+      scope: env.CRM_SCOPE,
+      controlPlane: env.VE_CONTROL_PLANE,
+      capabilityDelegation: {
+        revoke: (a) =>
+          new VerticalClient({
+            fetch: (async () => new Response('Not Found', { status: 404 })) as typeof fetch,
+            platformSecret: PLATFORM_SECRET,
+          }).revokeCapability({ scopeId: a.scopeId, capabilityId: a.capabilityId, actor: a.actor }),
+      },
+    });
+    const before = (await revokeRows()).length;
+    const refused = await old.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ControlPlaneError);
+    expect((refused as ControlPlaneError).status).toBe(501);
+    expect(String((refused as Error).message)).toMatch(/redeploy the vertical/);
+    expect((await revokeRows()).length).toBe(before);
+    expect(await exchange(s, link.secret)).toMatchObject({ kind: 'session' });
+  });
+
+  it('with no delegation configured, a hosted scope is refused unavailable rather than revoked in the wrong namespace', async () => {
+    const link = await share(s, 'F4');
+    const noReach = new CloudflareScopeHost({
+      scope: env.CRM_SCOPE,
+      controlPlane: env.VE_CONTROL_PLANE,
+      // Any delegation stands the host up as the shared control plane; this one is never called.
+      importCursorDelegation: {
+        move: async () => {
+          throw new Error('not reached');
+        },
+      },
+    });
+    const refused = await noReach.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('unavailable');
+    expect(await exchange(s, link.secret)).toMatchObject({ kind: 'session' });
   });
 });

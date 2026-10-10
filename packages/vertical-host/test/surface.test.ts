@@ -15,6 +15,25 @@ const OWNER = '01JZ0000000000000000PRN001';
 const ENTITY = '01JZ0000000000000000WO0001';
 const EVENT = '01JZ0000000000000000EVT001';
 
+// #1686: the capability the fake scope holds, and the operator who revokes it.
+const CAPABILITY = '01JZ0000000000000000CAP001';
+const OPERATOR = '01JZ0000000000000000ACT001';
+const LIVE_LINK = {
+  id: CAPABILITY,
+  mode: 'act',
+  label: 'client review',
+  mintedBy: OWNER,
+  mintedAt: '2026-10-01T00:00:00.000Z',
+  expiresAt: null,
+  maxUses: null,
+  uses: 2,
+  lastUsedAt: '2026-10-02T00:00:00.000Z',
+  revokedAt: null,
+  entity: { entityType: 'folder', entityId: 'F1' },
+  permissions: ['doc:read'],
+  operations: null,
+} as const;
+
 type Env = { PLATFORM_SECRET: string };
 
 /** A host whose methods all record their call and return a benign value — except the ones a
@@ -83,6 +102,9 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     summarizeDenialsLocal: async (_s: unknown, filter?: unknown) =>
       note('summarizeDenialsLocal', { buckets: [filter] }) as never,
     listCapabilitiesLocal: async (_s: unknown, filter?: unknown) => note('listCapabilitiesLocal', { entries: [filter], nextCursor: null }) as never,
+    // #1686: the one capability this scope holds answers its record as it stood; any other id, null.
+    revokeCapabilityLocal: async (s: unknown, id: unknown, actor: unknown) =>
+      note('revokeCapabilityLocal', s === SCOPE && id === CAPABILITY && actor ? { ...LIVE_LINK, revokedBy: null, undeclared: 'dropped' } : null) as never,
     listPlatformRequests: async () => note('listPlatformRequests', []),
     listPlatformRequestHistory: async (_t: unknown, _s: unknown, filter?: unknown) =>
       note('listPlatformRequestHistory', [filter]) as never,
@@ -930,6 +952,70 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
         expect([bad, res.status]).toEqual([bad, 400]);
       }
       expect(host.calls).not.toContain('listCapabilitiesLocal');
+    });
+  });
+
+  describe('the operator’s capability revoke (#1686)', () => {
+    const revoke = (
+      body: unknown,
+      headers: Record<string, string> = authed({ 'content-type': 'application/json' }),
+      host = fakeHost(),
+    ) => {
+      const res = appWith(host).request(
+        '/internal/capabilities/revoke',
+        { method: 'POST', headers, body: JSON.stringify(body) },
+        ENV,
+      );
+      return { host, res };
+    };
+
+    it('revokes in the host and answers the record as it stood, naming the operator to the host', async () => {
+      const args: unknown[][] = [];
+      const host = fakeHost();
+      const original = host.revokeCapabilityLocal.bind(host);
+      host.revokeCapabilityLocal = async (...a) => {
+        args.push(a);
+        return original(...a);
+      };
+      const { res } = revoke({ scopeId: SCOPE, capabilityId: CAPABILITY, actor: OPERATOR }, undefined, host);
+      const answer = await res;
+      expect(answer.status).toBe(200);
+      expect(args).toEqual([[SCOPE, CAPABILITY, OPERATOR]]);
+      // The answer is parsed on the way out: the record, and nothing a record does not declare.
+      expect(await answer.json()).toEqual({ before: { ...LIVE_LINK, revokedBy: null } });
+    });
+
+    it('a capability the scope does not hold is `{ before: null }` with a 200, never a 404', async () => {
+      const { res } = revoke({ scopeId: SCOPE, capabilityId: '01JZ0000000000000000CAP999', actor: OPERATOR });
+      const answer = await res;
+      expect(answer.status).toBe(200);
+      expect(await answer.json()).toEqual({ before: null });
+    });
+
+    it('is behind the platform secret, and revokes nothing without it', async () => {
+      const body = { scopeId: SCOPE, capabilityId: CAPABILITY, actor: OPERATOR };
+      for (const headers of [{ 'content-type': 'application/json' }, { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: 'nope' }]) {
+        const { host, res } = revoke(body, headers);
+        expect((await res).status).toBe(403);
+        expect(host.calls).not.toContain('revokeCapabilityLocal');
+      }
+      // The twin: the same body with the secret does reach the host.
+      const { host, res } = revoke(body);
+      expect((await res).status).toBe(200);
+      expect(host.calls).toContain('revokeCapabilityLocal');
+    });
+
+    it('refuses a malformed body before the host is reached', async () => {
+      for (const body of [
+        { scopeId: SCOPE, capabilityId: CAPABILITY },
+        { scopeId: SCOPE, capabilityId: 'nope', actor: OPERATOR },
+        { scopeId: 'nope', capabilityId: CAPABILITY, actor: OPERATOR },
+        { scopeId: SCOPE, capabilityId: CAPABILITY, actor: OPERATOR, tenantId: TENANT },
+      ]) {
+        const { host, res } = revoke(body);
+        expect([body, (await res).status]).toEqual([body, 400]);
+        expect(host.calls).not.toContain('revokeCapabilityLocal');
+      }
     });
   });
 

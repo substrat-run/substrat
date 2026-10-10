@@ -65,6 +65,7 @@ import {
   type EventDrainDelegation,
   type PeerSwitchDelegation,
   type ImportCursorDelegation,
+  type CapabilityDelegation,
   type SystemSwitchDelegation,
   type LifecycleDelegation,
   analyticsEngineConnectorCallRecorder,
@@ -1051,6 +1052,42 @@ function importCursorDelegationFor(env: Env): ImportCursorDelegation | undefined
 }
 
 /**
+ * The operator's capability revoke, platform half (#1686): `HostAdmin.revokeCapability` lands on
+ * the host below, whose own `SCOPE` namespace is the module-less placeholder — a hosted scope's
+ * capability directory lives in its vertical's dispatch deployment. This is the reach, over
+ * `/internal/capabilities/revoke` and the same ladder the switches use. Undefined without
+ * DISPATCH/PLATFORM_SECRET, and then the host refuses a scope served elsewhere outright, never a
+ * leaked link reported revoked while it still opens.
+ */
+function capabilityDelegationFor(env: Env): CapabilityDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  return capabilityDelegationOver(
+    (t, s) => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE }).admin.getScopeRecord(SWEEP_ACTOR, t, s),
+    resolveVerticalForScopeFor(env),
+  );
+}
+
+/** `capabilityDelegationFor`'s body over its two reads, testable without a dispatch namespace. */
+export function capabilityDelegationOver(
+  scopeRecord: (tenantId: TenantId, scopeId: ScopeId) => Promise<Scope | undefined>,
+  clientFor: (scope: Scope) => Promise<Pick<VerticalClient, 'revokeCapability'> | undefined>,
+): CapabilityDelegation {
+  return {
+    revoke: async (a) => {
+      const rec = await scopeRecord(a.tenantId, a.scopeId);
+      const client = rec?.vertical ? await clientFor(rec) : undefined;
+      if (!client) {
+        throw new Error(
+          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+            `capability ${a.capabilityId} was not revoked`,
+        );
+      }
+      return client.revokeCapability({ scopeId: a.scopeId, capabilityId: a.capabilityId, actor: a.actor });
+    },
+  };
+}
+
+/**
  * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
  * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
  * module-less placeholder — a hosted scope's outbox lives in its vertical's dispatch
@@ -1183,6 +1220,8 @@ function hostFor(env: Env): CloudflareScopeHost {
     lifecycleDelegation: lifecycleDelegationFor(env),
     // The replay lever (#1705 PR 3): a hosted consumer's watermark moves where it lives.
     importCursorDelegation: importCursorDelegationFor(env),
+    // The operator's capability revoke (#1686): a leaked link is revoked where its row lives.
+    capabilityDelegation: capabilityDelegationFor(env),
     // #1691: one data point per connector call, beside the health line. Absent binding ⇒
     // the host's no-op default.
     ...(env.CONNECTOR_ANALYTICS

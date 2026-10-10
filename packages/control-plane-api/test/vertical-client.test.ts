@@ -716,6 +716,100 @@ describe('VerticalClient.setLifecycle (#1713)', () => {
   });
 });
 
+/**
+ * The operator's capability revoke (#1686), its hop to the deployment serving the scope. The skew
+ * rule is `systemSwitch`'s: only a 404 is the deployment's proof that it predates the route, and
+ * only that says "redeploy … Nothing was revoked". A capability the scope does not hold is the
+ * route's `{ before: null }` with a 200, so it can never be mistaken for that 404.
+ */
+describe('VerticalClient.revokeCapability (#1686)', () => {
+  const actor = platformActorId.parse(ulid());
+  const input = { scopeId: s, capabilityId: ulid() as never, actor };
+  const before = {
+    mode: 'become',
+    id: input.capabilityId,
+    label: 'owner claim link',
+    mintedBy: { platform: actor },
+    mintedAt: '2026-10-01T00:00:00.000Z',
+    expiresAt: '2026-10-01T00:15:00.000Z',
+    maxUses: 1,
+    uses: 0,
+    lastUsedAt: null,
+    revokedAt: null,
+    revokedBy: null,
+    principal: ulid(),
+  };
+  const answering = (res: () => Response, seen: { path: string; headers: Headers; body: unknown }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string, init?: RequestInit) => {
+        seen.push({ path: new URL(u).pathname, headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+  const ok = (body: unknown) => () => new Response(JSON.stringify(body), { status: 200 });
+  const failure = (client: VerticalClient, req: typeof input = input) =>
+    client.revokeCapability(req).then(() => null, (e: unknown) => e as ControlPlaneError);
+
+  it('posts the scope, the capability and the operator behind the platform secret, and returns the record', async () => {
+    const seen: { path: string; headers: Headers; body: unknown }[] = [];
+    await expect(answering(ok({ before }), seen).revokeCapability(input)).resolves.toEqual(before);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.path).toBe('/internal/capabilities/revoke');
+    expect(seen[0]!.headers.get(PLATFORM_SECRET_HEADER)).toBe('secret');
+    expect(seen[0]!.body).toEqual({ scopeId: s, capabilityId: input.capabilityId, actor });
+  });
+
+  it('a capability the scope does not hold is null, not an error', async () => {
+    await expect(answering(ok({ before: null })).revokeCapability(input)).resolves.toBeNull();
+  });
+
+  it('drops anything but the record: a hash a vertical sent never reaches the caller', async () => {
+    const hash = 'ab'.repeat(32);
+    const got = await answering(ok({ before: { ...before, token_hash: hash } })).revokeCapability(input);
+    expect(got).toEqual(before);
+    expect(JSON.stringify(got)).not.toContain(hash);
+  });
+
+  it('a deployment without the route (404) is a 501 that says to redeploy, and that nothing was revoked', async () => {
+    const err = await failure(answering(() => new Response('404 Not Found', { status: 404 })));
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err!.status).toBe(501);
+    expect(err!.message).toMatch(/predates the capability revoke.*redeploy the vertical.*Nothing was revoked/);
+  });
+
+  // The twin of the 404: an answer that may have landed never claims nothing happened.
+  it.each([
+    ['truncated JSON', truncated('{"before":')],
+    ['a body whose stream fails mid-read', brokenStream],
+    ["the app shell an old deployment's asset layer serves", spaShell],
+    ['a 200 JSON of the wrong shape', ok({ revoked: true })],
+    ['a bare record, not wrapped in `before`', ok(before)],
+  ])('%s is a 502 that says to read the directory first — never "Nothing was revoked"', async (_name, res) => {
+    const err = await failure(answering(res));
+    expect(err!.status).toBe(502);
+    expect(err!.message).toMatch(/may or may not be revoked\. Read the scope's capabilities before retrying/);
+    expect(err!.message).not.toMatch(/Nothing was revoked|redeploy/i);
+  });
+
+  it('a transport failure is the 502 it is, and a refusal is the vertical\'s own status', async () => {
+    const down = new VerticalClient({
+      fetch: (() => Promise.reject(new Error('Network connection lost'))) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const err = await failure(down);
+    expect(err!.status).toBe(502);
+    expect(err!.message).not.toMatch(/Nothing was revoked/);
+    expect((await failure(answering(() => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }))))!.status).toBe(403);
+  });
+
+  it('refuses to send a malformed request rather than letting the far end guess', async () => {
+    const seen: { path: string; headers: Headers; body: unknown }[] = [];
+    await expect(answering(ok({ before }), seen).revokeCapability({ ...input, capabilityId: 'nope' as never })).rejects.toThrow();
+    expect(seen).toHaveLength(0);
+  });
+});
+
 describe('VerticalClient.systemSwitch (#1666)', () => {
   const input = { scopeId: s, moduleId: '@test/sched' as never, to: 'off' as const };
   const answering = (res: () => Response, seen: { path: string; body: unknown }[] = []) =>

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { capabilityStatus, type CapabilityRecord, type Scope } from '@substrat-run/contracts';
-import { Badge, Button, Card, Checkbox, Table } from '../components';
+import { Badge, Button, Card, Checkbox, Dialog, Table } from '../components';
 import type { Api } from '../lib/api';
-import { switchCardState } from '../lib/schedules';
+import { errorMessage, switchCardState } from '../lib/schedules';
 import {
   STATUS_LABEL,
   appendPage,
@@ -11,6 +11,7 @@ import {
   grantLine,
   operationsLine,
   capabilityTone,
+  revocable,
   usesLine,
 } from '../lib/capabilities';
 
@@ -19,13 +20,23 @@ const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
 
 /**
  * The scope's capability directory (#1686): every link share and claim link that opens this
- * scope, what each may do, when it dies, how often it has been used. Read-only — a revoke is
- * `HostAdmin.revokeCapability`, a separate and audited act that this card does not front.
+ * scope, what each may do, when it dies, how often it has been used — and the revoke for a
+ * leaked one (`HostAdmin.revokeCapability`, audited on the admin log), behind an in-page
+ * confirm. Every revoke attempt re-reads the directory afterwards, whatever it answered: a
+ * failure whose answer was lost may still have revoked, and the card shows what is true now.
  *
  * Records only. A secret is stored nowhere and its hash is never selected, so there is
  * nothing here to copy a link from; the id is the handle for a revoke.
  */
-export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
+export function CapabilitiesCard({
+  api,
+  scope,
+  onToast,
+}: {
+  api: Api;
+  scope: Scope;
+  onToast: (title: string, detail?: string, status?: 'success' | 'danger') => void;
+}) {
   const [rows, setRows] = useState<CapabilityRecord[] | null>(null);
   // Where the next page starts: null once the walk is complete, so "more" is never a guess.
   const [next, setNext] = useState<string | null>(null);
@@ -33,6 +44,13 @@ export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
   const [moreError, setMoreError] = useState<unknown>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [revoked, setRevoked] = useState(false);
+  // The capability the confirm is open for, and whether its revoke is in flight.
+  const [confirming, setConfirming] = useState<CapabilityRecord | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Bumped after a revoke so the read below runs again. A ref guards a double click, which a
+  // `useState` flag cannot: both clicks would see it false before the setter lands.
+  const [reload, setReload] = useState(0);
+  const revoking = useRef(false);
   // Which read the screen is waiting on, so a page that lands after the filter moved is dropped.
   const generation = useRef(0);
 
@@ -57,7 +75,7 @@ export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
       // Invalidates this read's answer if it is still in flight.
       generation.current++;
     };
-  }, [api, scope.tenantId, scope.id, revoked]);
+  }, [api, scope.tenantId, scope.id, revoked, reload]);
 
   async function loadMore() {
     if (next === null || loadingMore) return;
@@ -73,6 +91,24 @@ export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
       if (generation.current === mine) setMoreError(e);
     } finally {
       if (generation.current === mine) setLoadingMore(false);
+    }
+  }
+
+  async function confirmRevoke() {
+    if (!confirming || revoking.current) return;
+    const target = confirming;
+    revoking.current = true;
+    setBusy(true);
+    try {
+      await api.revokeCapability(scope.tenantId, scope.id, target.id as never);
+      onToast('Capability revoked', `${target.label ?? target.id} on ${scope.slug}`);
+    } catch (e) {
+      onToast('Revoke failed', errorMessage(e), 'danger');
+    } finally {
+      revoking.current = false;
+      setBusy(false);
+      setConfirming(null);
+      setReload((n) => n + 1);
     }
   }
 
@@ -151,6 +187,15 @@ export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
                 );
               },
             },
+            {
+              header: '',
+              render: (r) =>
+                revocable(capabilityStatus(r, now)) ? (
+                  <Button size="sm" variant="secondary" onClick={() => setConfirming(r)}>
+                    Revoke
+                  </Button>
+                ) : null,
+            },
           ]}
         />
       )}
@@ -171,6 +216,21 @@ export function CapabilitiesCard({ api, scope }: { api: Api; scope: Scope }) {
           )}
         </div>
       )}
+      <Dialog
+        open={confirming !== null}
+        title={confirming ? `Revoke ${confirming.label ?? confirming.id}?` : ''}
+        description={
+          confirming?.mode === 'become'
+            ? 'Its secret stops working at once: nobody can claim the seat with it. Anyone it has already bound keeps that binding. This cannot be undone; a new link has to be minted.'
+            : 'Its secret stops working at once, and every session it handed out is refused from its next call. This cannot be undone; a new link has to be shared.'
+        }
+        danger
+        confirmLabel="Revoke"
+        width={480}
+        busy={busy}
+        onConfirm={confirmRevoke}
+        onCancel={() => setConfirming(null)}
+      />
     </Card>
   );
 }

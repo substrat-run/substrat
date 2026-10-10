@@ -63,6 +63,7 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
   denialSummary: [(c) => c.denialSummary(T as never, S as never, { actor: 'a' } as never), 'GET', `/tenants/${T}/scopes/${S}/denials/summary?actor=a`],
   listDenials: [(c) => c.listDenials(T as never, S as never), 'GET', `/tenants/${T}/scopes/${S}/denials`],
   listCapabilities: [(c) => c.listCapabilities(T as never, S as never, { includeRevoked: true, limit: 5 }), 'GET', `/tenants/${T}/scopes/${S}/capabilities?includeRevoked=true&limit=5`],
+  revokeCapability: [(c) => c.revokeCapability(T as never, S as never, 'C' as never), 'POST', `/tenants/${T}/scopes/${S}/capabilities/C/revoke`],
   systemGrantsStatus: [(c) => c.systemGrantsStatus(T as never, S as never), 'GET', `/tenants/${T}/scopes/${S}/system-grants`],
   switchScheduleOff: [(c) => c.switchScheduleOff(T as never, S as never, 'm' as never, 'why'), 'DELETE', `/tenants/${T}/scopes/${S}/system-grants`, { moduleId: 'm', reason: 'why' }],
   switchScheduleOn: [(c) => c.switchScheduleOn(T as never, S as never, 'm' as never, 'why'), 'POST', `/tenants/${T}/scopes/${S}/system-grants`, { moduleId: 'm', reason: 'why' }],

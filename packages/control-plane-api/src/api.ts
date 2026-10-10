@@ -105,6 +105,7 @@ import {
   migrationsOnTop,
   errorCodeOf,
   capabilityFilterQuery,
+  capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
 } from '@substrat-run/contracts';
@@ -4442,6 +4443,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         (r) => r.entries.length,
       ),
     );
+  });
+
+  // The operator's revoke of one capability (#1686): the lever for a leaked link, beside the
+  // read above and gated the same way, in the handler as well as by the builder default-deny.
+  // `HostAdmin.revokeCapability` reaches the deployment serving a hosted scope (its
+  // `capabilityDelegation`) and writes the admin row on this side; the record names the actor as
+  // its revoker. Idempotent: revoking a revoked capability answers 204 again. A capability the
+  // scope does not hold is 404; a deployment built before the far end answers 501 "redeploy".
+  app.post('/tenants/:tenantId/scopes/:scopeId/capabilities/:capabilityId/revoke', async (c) => {
+    if (confinedTenant(c.get('principal')) !== null) {
+      return c.json({ error: 'forbidden: revoking a capability is staff-only' }, 403);
+    }
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const capability = capabilityIdSchema.parse(c.req.param('capabilityId'));
+    const actor = c.get('actor');
+    if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    await c.var.admin.revokeCapability(actor, tenantId, scopeId, capability);
+    return c.body(null, 204);
   });
 
   // The owner seat (#925). Both reads go to the VERTICAL — the seat lives in its identity

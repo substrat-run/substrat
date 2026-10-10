@@ -448,8 +448,8 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
       <DenialLog api={api} scope={scope} />
 
       {/* The scope's link-share and claim-link directory (#1686): staff-only read, records
-          only — never a secret, never a hash. */}
-      <CapabilitiesCard api={api} scope={scope} />
+          only — never a secret, never a hash — and the revoke for a leaked link. */}
+      <CapabilitiesCard api={api} scope={scope} onToast={onToast} />
 
       {/* The #1666 kill switch (#1675): one module's scheduled work, on or off, on
           THIS scope — pulled today by a curl on staff routes the console now fronts. */}
