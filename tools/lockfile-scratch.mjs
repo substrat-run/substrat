@@ -158,8 +158,7 @@ const outcome = (v) => {
 
 /**
  * The predicate, judged against every shape it exists to tell apart, on every run and before
- * the real lockfile is read — the same guard `lint:vite-proxy` and `lint:module-inputs`
- * carry, for the same reason: a text rule drifts silently when a regex is tidied, and a
+ * the real lockfile is read — the same guard `lint:vite-proxy` carries, for the same reason: a text rule drifts silently when a regex is tidied, and a
  * check that has stopped checking is green.
  *
  * The fixtures are lockfiles rather than inline strings because that is what this reads, and

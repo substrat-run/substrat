@@ -42,7 +42,7 @@
  * in a COMMENT — a JS comment, or a `--` or block comment in a `.sql` file — on the line the
  * literal starts or ends on, or on the line above. The marker is read from comment tokens
  * only, with the delimiters stripped before the reason is tested, so a string that mentions it
- * opts nothing out and an opt-out with nothing after the colon is an empty reason, as in `lint:module-inputs`.
+ * opts nothing out and an opt-out with nothing after the colon is an empty reason.
  *
  * Not read: `test/` (a suite may hold a long pattern on purpose — a split guard's oracle
  * is one), the browser apps (`web`, `app`: no SQL runs there), and build output.
@@ -109,8 +109,8 @@ const skipQuoted = (src, i, quote) => {
 };
 
 /**
- * A JS/TS file split into code, string, comment and regular-expression tokens — the same
- * reading `lint:module-inputs` does, for the same reasons: a `'http://…'` whose `//` a comment
+ * A JS/TS file split into code, string, comment and regular-expression tokens, for three
+ * reasons: a `'http://…'` whose `//` a comment
  * strip would take for a comment, a regexp whose quotes are ordinary characters, and a comment,
  * which is the only place an opt-out is read from. A `/` is a regexp after an operator or a
  * keyword and a division after a value.
