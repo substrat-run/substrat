@@ -1945,8 +1945,10 @@ export interface HostAdmin {
    * something was fully shared with as a holder.
    *
    * Bounded: `batch` rows of work (default 500, an integer from 1 to 5000, or `validation_failed`)
-   * per scope transaction, backfill included, and at most ten markers read per row of work, read
-   * on their own index (#2083). Each pass resumes where the last one stopped, until one finds
+   * per scope transaction, backfill included, and at most ten rows read per row of work: markers
+   * on their own index (#2083), and the backfill's candidates in an index order (#2154; a table
+   * holder's `idColumn` must lead an index for that, and a scope where it does not writes a
+   * `shape-backfill-unbounded` warn line). Each pass resumes where the last one stopped, until one finds
    * nothing left, so it is safe on a large scope whether or not anything changed, and finishes on
    * a re-run if interrupted. A holder an older deployment grants the shape to while it runs, behind
    * the point it has reached: if they lack a key the shape gained, the next reconcile tops them up.

@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import { errorCodeOf } from '@substrat-run/contracts';
 import { SHAPE_MARKER_READS_PER_ROW, SHAPE_RETIRE_CONFIRMS_MAX } from '../src/entity-grant-shape.js';
@@ -833,12 +833,272 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       const stale = who();
       t.shape(stale, id(1)); // a holder of the first shape, behind the cursor
       const second = step(t, shapes, 1, first.next);
-      // The backfill marked anna with the whole budget, so it is where the next pass starts again.
-      expect([second.toppedUp, second.next]).toEqual([0, { shape: 1, step: 'backfill', marker: null }]);
+      // The backfill marked anna with the whole budget and read to the end of its range in the same
+      // window (#2154), so it is done: the next pass starts the shape's top-up.
+      expect([second.toppedUp, second.next]).toEqual([0, { shape: 1, step: 'topUp', marker: null }]);
       const third = step(t, shapes, 1, second.next);
       expect([third.toppedUp, third.next]).toEqual([1, null]);
       expect(t.db.prepare('SELECT count(*) AS n FROM _substrat_tuples WHERE object = ? AND relation = ?').get(`owner:${anna}`, 'granted:list:share')).toEqual({ n: 1 });
       expect(t.keysOf(stale, id(1))).toEqual(OLD);
+    });
+  });
+
+  /**
+   * #2154: the backfill reads in windows too. A pass reads at most `limit × SHAPE_MARKER_READS_PER_ROW`
+   * rows for candidates (tuples of the type, or the holder table's rows), in an index order, and the
+   * next pass seeks past the last row it read. Marking each holder once and missing none, whichever
+   * budget ended a pass, and the run-once record only once the read reaches the end.
+   */
+  describe('the backfill reads a bounded window and resumes from the cursor (#2154)', () => {
+    const pad = (i: number) => String(i).padStart(3, '0');
+    const BACKFILL_READ = /\(t\.object, t\.relation, t\.subject\) > \(\?, \?, \?\)|FROM "hr_employees" e/;
+    const WALK_READ = '(m.object, m.subject) > (?, ?)';
+    /** One pass, with the rows its backfill and walk reads fetched and the markers it wrote. */
+    const step = (t: ReturnType<typeof fresh>, shapes: unknown[], limit: number, after: ShapeCursor | null) => {
+      let [backfillRead, walkRead, marks] = [0, 0, 0];
+      const sql: SwitchSql = {
+        all: (q, ...p) => {
+          const rows = t.sql.all(q, ...p);
+          if (!q.startsWith('EXPLAIN') && BACKFILL_READ.test(q)) backfillRead += rows.length;
+          if (q.includes(WALK_READ)) walkRead += rows.length;
+          return rows;
+        },
+        run: (q, ...p) => {
+          if (q.startsWith('INSERT OR IGNORE') && p[1] === 'bootstrap') marks++;
+          t.sql.run(q, ...p);
+        },
+      };
+      const r = topUpEntityGrantShapes(sql, { tenantId: T, scopeId: S, shapes: shapes as never, now: NOW, limit, after, mintEventId: () => ulid(), version: null });
+      return { ...r, backfillRead, walkRead, marks };
+    };
+    const record = (t: ReturnType<typeof fresh>, entityType: string) =>
+      (t.db.prepare("SELECT count(*) AS n FROM _substrat_tuples WHERE subject = ? AND relation = 'shape-backfilled'").get(`shape:${entityType}`) as { n: number }).n;
+    const markersOf = (t: ReturnType<typeof fresh>, entityType: string) =>
+      (t.db.prepare("SELECT subject, object FROM _substrat_tuples WHERE relation = 'bootstrap' AND object >= ? AND object < ? ORDER BY 1, 2").all(`${entityType}:`, `${entityType};`) as {
+        subject: string;
+        object: string;
+      }[]).map((r) => `${r.subject} ${r.object}`);
+    const insert = (t: ReturnType<typeof fresh>, subject: string, relation: string, object: string, revokedAt: string | null = null) =>
+      t.db.prepare('INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, revoked_at) VALUES (?, ?, ?, ?)').run(subject, relation, object, revokedAt);
+    /** A sort key is later than another: the cursor only moves forward. */
+    const later = (a: readonly (string | number)[], b: readonly (string | number)[]) => {
+      for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) return String(a[i]) > String(b[i]);
+      return false;
+    };
+
+    /** Each holder kind, seeded with holders to mark and with everything that must not be marked. */
+    const worlds = {
+      self: {
+        shapes: [{ entityType: 'owner', permissions: ['list:manage', 'list:share'], bootstrap: true, holder: 'self' }],
+        entityType: 'owner',
+        seed(t: ReturnType<typeof fresh>, n: number) {
+          const expected: string[] = [];
+          for (let i = 0; i < n; i++) {
+            const [p, sharee] = [who(), who()];
+            insert(t, `principal:${p}`, 'granted:list:manage', `owner:${p}`);
+            if (i % 2 === 0) insert(t, `principal:${p}`, 'granted:list:share', `owner:${p}`, NOW); // a second row for the pair
+            insert(t, `principal:${sharee}`, 'granted:list:manage', `owner:${p}`); // a sharee: never marked
+            insert(t, `principal:${p}`, 'granted:other:key', `owner:${p}`); // not a key of the shape
+            expected.push(`principal:${p} owner:${p}`);
+          }
+          return expected.sort();
+        },
+      },
+      grantee: {
+        shapes: [{ entityType: 'desk', permissions: ['desk:use'], retired: ['desk:old'], bootstrap: true, holder: 'grantee' }],
+        entityType: 'desk',
+        seed(t: ReturnType<typeof fresh>, n: number) {
+          const expected: string[] = [];
+          for (let i = 0; i < n; i++) {
+            const [p, gone, live] = [who(), who(), who()];
+            insert(t, `principal:${p}`, 'granted:desk:use', `desk:d${pad(i)}`);
+            if (i % 3 === 0) insert(t, `principal:${p}`, 'granted:desk:old', `desk:d${pad(i)}`); // a second row for the pair
+            insert(t, `principal:${gone}`, 'granted:desk:use', `desk:d${pad(i)}`, NOW); // tombstoned: no evidence
+            insert(t, `org:${p}`, 'granted:desk:use', `desk:d${pad(i)}`); // not a principal
+            if (i % 4 === 0) {
+              insert(t, `principal:${live}`, 'granted:desk:use', `desk:d${pad(i)}`); // two holders of one desk
+              expected.push(`principal:${live} desk:d${pad(i)}`);
+            }
+            expected.push(`principal:${p} desk:d${pad(i)}`);
+          }
+          return expected.sort();
+        },
+      },
+      table: {
+        shapes: [{ entityType: 'employee', permissions: OLD, bootstrap: true, holder: { table: 'hr_employees', idColumn: 'id', principalColumn: 'principal_ref' } }],
+        entityType: 'employee',
+        seed(t: ReturnType<typeof fresh>, n: number) {
+          t.db.exec('CREATE TABLE hr_employees (id TEXT PRIMARY KEY, principal_ref TEXT)');
+          const expected: string[] = [];
+          for (let i = 0; i < n; i++) {
+            const [p, manager] = [who(), who()];
+            const id = `e${pad(i)}`;
+            // Every third record names a person who holds nothing there, and every fifth none at all.
+            t.db.prepare('INSERT INTO hr_employees (id, principal_ref) VALUES (?, ?)').run(id, i % 5 === 0 ? null : p);
+            insert(t, `principal:${manager}`, 'granted:emp:read', `employee:${id}`); // a manager: never marked
+            if (i % 5 !== 0 && i % 3 !== 0) {
+              insert(t, `principal:${p}`, 'granted:emp:read', `employee:${id}`);
+              expected.push(`principal:${p} employee:${id}`);
+            }
+          }
+          return expected.sort();
+        },
+      },
+    } as const;
+
+    for (const [kind, world] of Object.entries(worlds)) {
+      describe(`holder: ${kind}`, () => {
+        /** Every pass to the end, at `limit` 1: a window of ten rows, one mark. */
+        const reconcile = (t: ReturnType<typeof fresh>, limit = 1) => {
+          const passes: ReturnType<typeof step>[] = [];
+          let after: ShapeCursor | null = null;
+          do {
+            const r = step(t, world.shapes as unknown as unknown[], limit, after);
+            passes.push(r);
+            after = r.next;
+          } while (after && passes.length < 2000);
+          return passes;
+        };
+
+        it('each pass reads at most its window, and every holder is marked exactly once, nobody else', () => {
+          const t = fresh();
+          const expected = world.seed(t, 40);
+          const passes = reconcile(t);
+          expect(passes.at(-1)!.next).toBeNull();
+          for (const p of passes) expect(p.backfillRead + p.walkRead).toBeLessThanOrEqual(SHAPE_MARKER_READS_PER_ROW);
+          expect(markersOf(t, world.entityType)).toEqual(expected);
+          // Marked once each: no pass wrote a marker an earlier pass had written.
+          expect(passes.reduce((n, p) => n + p.marks, 0)).toBe(expected.length);
+          expect(record(t, world.entityType)).toBe(1);
+        });
+
+        it('a pass hands back where its read stopped, and the next one reads on from there', () => {
+          const t = fresh();
+          world.seed(t, 40);
+          const cursors = reconcile(t)
+            .map((p) => p.next)
+            .filter((c): c is ShapeCursor => c?.step === 'backfill' && !!c.row)
+            .map((c) => c.row!);
+          expect(cursors.length).toBeGreaterThan(5);
+          for (let i = 1; i < cursors.length; i++) expect(later(cursors[i]!, cursors[i - 1]!)).toBe(true);
+        });
+
+        it('the rows fetched do not grow with the scope: four times the holders, the same window per pass', () => {
+          const max = (n: number) => {
+            const t = fresh();
+            world.seed(t, n);
+            return Math.max(...reconcile(t, 5).map((p) => p.backfillRead));
+          };
+          expect(max(320)).toBe(max(80));
+          expect(max(80)).toBeLessThanOrEqual(5 * SHAPE_MARKER_READS_PER_ROW);
+        });
+
+        it('a cursor from before #2154 (a backfill with no row) reads the backfill again from the start, marking nobody twice', () => {
+          const t = fresh();
+          const expected = world.seed(t, 30);
+          const first = step(t, world.shapes as unknown as unknown[], 3, null);
+          expect(first.next).toMatchObject({ shape: 0, step: 'backfill', row: expect.any(Array) });
+          let after: ShapeCursor | null = { shape: 0, step: 'backfill', marker: null };
+          let marks = first.marks;
+          for (let n = 0; after && n < 500; n++) {
+            const r = step(t, world.shapes as unknown as unknown[], 3, after);
+            marks += r.marks;
+            after = r.next;
+          }
+          expect(after).toBeNull();
+          expect(markersOf(t, world.entityType)).toEqual(expected);
+          expect(marks).toBe(expected.length);
+        });
+      });
+    }
+
+    it('the run-once record waits for the read to reach the end, though a pass marked fewer than it could', () => {
+      const t = fresh();
+      const shapes = worlds.self.shapes as unknown as unknown[];
+      const anna = who();
+      insert(t, `principal:${anna}`, 'granted:list:manage', `owner:${anna}`);
+      const late = 'ZZZZZZZZZZZZZZZZZZZZZZZZZZ'; // an owner whose record sorts after anna's
+      // Thirty sharees on anna's record, read after her own row (`list:share` sorts after `list:manage`).
+      for (let i = 0; i < 30; i++) insert(t, `principal:${who()}`, 'granted:list:share', `owner:${anna}`);
+      insert(t, `principal:${late}`, 'granted:list:manage', `owner:${late}`);
+      const first = step(t, shapes, 1, null);
+      expect([first.marks, record(t, 'owner')]).toEqual([1, 0]);
+      // A window of sharees: nothing to mark, so a short batch. Before #2154 that ended the backfill.
+      const second = step(t, shapes, 1, first.next);
+      expect([second.marks, second.next?.step, record(t, 'owner')]).toEqual([0, 'backfill', 0]);
+      let after = second.next;
+      for (let n = 0; after && n < 20; n++) after = step(t, shapes, 1, after).next;
+      expect(after).toBeNull();
+      expect(markersOf(t, 'owner')).toEqual([`principal:${anna} owner:${anna}`, `principal:${late} owner:${late}`].sort());
+      expect(record(t, 'owner')).toBe(1);
+    });
+
+    it('a holder granted behind the cursor while the backfill runs is not marked: the cut-off is the cursor', () => {
+      const t = fresh();
+      const shapes = worlds.self.shapes as unknown as unknown[];
+      const owners = [who(), who(), who()].sort();
+      for (const p of owners) insert(t, `principal:${p}`, 'granted:list:manage', `owner:${p}`);
+      const first = step(t, shapes, 1, null);
+      const early = '0000000000000000000000000A'; // an owner whose record sorts before the cursor
+      insert(t, `principal:${early}`, 'granted:list:manage', `owner:${early}`);
+      let after = first.next;
+      for (let n = 0; after && n < 20; n++) after = step(t, shapes, 1, after).next;
+      expect(markersOf(t, 'owner')).toEqual(owners.map((p) => `principal:${p} owner:${p}`));
+      expect(record(t, 'owner')).toBe(1);
+    });
+
+    /**
+     * A table holder is bounded only where `idColumn` leads an index. Its schema is the vertical's,
+     * so the first window asks SQLite for the read's plan and warns, once per reconcile, if it sorts.
+     */
+    describe("a table holder whose idColumn leads no index is reported, once per reconcile", () => {
+      const run = (ddl: string) => {
+        const t = fresh();
+        t.db.exec(ddl);
+        for (let i = 0; i < 25; i++) t.db.prepare('INSERT INTO hr_employees (id, principal_ref) VALUES (?, ?)').run(i + 1, who());
+        const lines: string[] = [];
+        const warn = vi.spyOn(console, 'warn').mockImplementation((line: string) => void lines.push(line));
+        try {
+          let after: ShapeCursor | null = null;
+          let passes = 0;
+          do {
+            after = step(t, worlds.table.shapes as unknown as unknown[], 1, after).next;
+            passes++;
+          } while (after && passes < 100);
+          expect(passes).toBeGreaterThan(1);
+        } finally {
+          warn.mockRestore();
+        }
+        return lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+      };
+
+      it('an id with no index: one structured warn line', () => {
+        expect(run('CREATE TABLE hr_employees (id TEXT, principal_ref TEXT)')).toEqual([
+          {
+            substrat: 'shape-backfill-unbounded',
+            level: 'warn',
+            tenantId: T,
+            scopeId: S,
+            entityType: 'employee',
+            table: 'hr_employees',
+            idColumn: 'id',
+            message: expect.stringContaining('sorts all of "hr_employees" on every pass'),
+          },
+        ]);
+      });
+
+      it('...an id in second place of an index is no better', () => {
+        expect(run('CREATE TABLE hr_employees (id TEXT, principal_ref TEXT); CREATE INDEX hr_by_principal ON hr_employees (principal_ref, id)')).toHaveLength(1);
+      });
+
+      it.each([
+        ['a TEXT primary key', 'CREATE TABLE hr_employees (id TEXT PRIMARY KEY, principal_ref TEXT)'],
+        ['an INTEGER primary key (the rowid)', 'CREATE TABLE hr_employees (id INTEGER PRIMARY KEY, principal_ref TEXT)'],
+        ['an index leading with it', 'CREATE TABLE hr_employees (id TEXT, principal_ref TEXT); CREATE INDEX hr_by_id ON hr_employees (id)'],
+        ['a WITHOUT ROWID primary key', 'CREATE TABLE hr_employees (id TEXT PRIMARY KEY, principal_ref TEXT) WITHOUT ROWID'],
+      ])('%s: no line', (_name, ddl) => {
+        expect(run(ddl)).toEqual([]);
+      });
     });
   });
 

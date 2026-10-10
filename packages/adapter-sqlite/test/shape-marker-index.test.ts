@@ -76,8 +76,15 @@ function expectOnIndexes(db: InstanceType<typeof Database>, ids: { tenantId: str
   for (const plan of report.walks) expect(plan).toMatch(new RegExp(`SEARCH m USING (COVERING )?INDEX ${INDEX} \\(\\(object,subject\\)>\\(\\?,\\?\\) AND object<\\?\\)`));
   // The index order IS the walk's order: no sort, which would read the whole range first.
   for (const plan of report.walks) expect(plan).not.toMatch(/TEMP B-TREE FOR ORDER BY/);
-  expect(report.backfills.length).toBeGreaterThan(0);
-  for (const plan of report.backfills) expect(plan).toMatch(/SEARCH t USING (COVERING )?INDEX _substrat_tuples_object_relation_subject \(object>\? AND object<\?\)/);
+  // #2154: the backfill reads each holder kind in its index order, a window per pass, and marks each
+  // legacy holder exactly once.
+  for (const plan of [...report.backfills.self, ...report.backfills.grantee]) {
+    expect(plan).toMatch(/SEARCH t USING (COVERING )?INDEX _substrat_tuples_object_relation_subject \(\(object,relation,subject\)>\(\?,\?,\?\) AND object<\?\)/);
+  }
+  for (const plan of report.backfills.table) expect(plan).toMatch(/SEARCH e USING (COVERING )?INDEX sqlite_autoindex_shape_plan_badge_1 \(id>\?\)/);
+  for (const kind of ['self', 'grantee', 'table'] as const) expect(report.backfills[kind].length, kind).toBeGreaterThan(0);
+  for (const plan of Object.values(report.backfills).flat()) expect(plan).not.toMatch(/TEMP B-TREE FOR ORDER BY/);
+  expect([report.marks, report.maxFetched <= report.window]).toEqual([report.holders, true]);
   expect(report.scans).toEqual([]);
 }
 
