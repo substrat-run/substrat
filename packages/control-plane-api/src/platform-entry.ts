@@ -33,6 +33,7 @@ import {
   PLATFORM_SWEEPER_BINDING,
   PLATFORM_SWEEPER_CLASS,
   PLATFORM_SWEEPER_VAR,
+  PLATFORM_SWEEP_HOST_KEY,
   sweeperConflict,
   type DeployManifest,
 } from '@substrat-run/contracts';
@@ -57,6 +58,14 @@ const SHARES_THE_STAMP = 'substrat.invocation-stamp';
 const isScript = (m: VerticalBundle['modules'][number]) =>
   m.contentType.includes('javascript') || /\.(m?js|cjs)$/.test(m.name);
 
+/** The text of each of the vertical's OWN script modules — never ours, never an asset. */
+function* ownScripts(bundle: Pick<VerticalBundle, 'modules'>): Generator<string> {
+  const decoder = new TextDecoder();
+  for (const m of bundle.modules) {
+    if (!PLATFORM_MODULES.has(m.name) && isScript(m)) yield decoder.decode(m.content);
+  }
+}
+
 /**
  * Why a bundle is uploaded without the platform's entry, or `undefined` when it gets one.
  * Exported for the upload's own tests and for anyone asking why a script is not wrapped.
@@ -66,18 +75,36 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
     return 'the bundle names the platform entry as its own, so the vertical entry it wraps is unknown';
   }
   if (!bundle.modules.some((m) => m.name === bundle.entry)) return 'the bundle holds no module named by its entry';
-  const decoder = new TextDecoder();
   let writes = false;
   let shares = false;
-  for (const m of bundle.modules) {
-    if (PLATFORM_MODULES.has(m.name) || !isScript(m)) continue;
-    const text = decoder.decode(m.content);
+  for (const text of ownScripts(bundle)) {
     writes ||= WRITES_THE_LINE.test(text);
     shares ||= text.includes(SHARES_THE_STAMP);
     if (writes && shares) break; // a current middleware: nothing further could change the answer
   }
   if (writes && !shares) return 'the bundle writes the invocation line with a kernel that predates the platform stamp';
   return undefined;
+}
+
+/**
+ * Whether any of the vertical's own script modules carries the scope-host registry key (#1646).
+ *
+ * This does not contradict "the bundle's bytes are deliberately not consulted" below. That rule
+ * is about IDENTITY: which class is a sweeper, which no export name or minified method says
+ * reliably, so it comes from the push's declaration. This is about REGISTRATION: the supplied
+ * sweeper runs the host `mountPlatformSurface` puts under `Symbol.for(PLATFORM_SWEEP_HOST_KEY)`,
+ * and that key is a string literal every build keeps — the same kind of fact as
+ * `SHARES_THE_STAMP` above. A bundler drops it with the registration itself, so a bundle on a
+ * vertical-host that predates it, or one that never mounts `mountPlatformSurface`, has none.
+ * Such a bundle's roster is never filled either, so its supplied sweeper would never arm and
+ * never log: the schedules would go unrun with no error anywhere, which is #1646 itself.
+ * The CLI refuses the same case from the installed package (`platformCanSupplySweeper`), but only
+ * when it can find it, only without `--allow-unswept-schedules`, and only from a CLI that has the
+ * check — so the push route is where it holds for every push.
+ */
+function registersSweepHost(bundle: Pick<VerticalBundle, 'modules'>): boolean {
+  for (const text of ownScripts(bundle)) if (text.includes(PLATFORM_SWEEP_HOST_KEY)) return true;
+  return false;
 }
 
 /**
@@ -102,7 +129,9 @@ export function platformEntrySkipReason(bundle: Pick<VerticalBundle, 'entry' | '
  * half-matches it cannot tell apart, rather than guessing either way: a wrong "it has one"
  * leaves the schedules unrun, and a wrong "it has none" runs them twice. Last, a bundle the
  * platform entry would not wrap (`platformEntrySkipReason`) cannot carry the sweeper the entry
- * re-exports, and recording "supplied" for it would be a lie every later upload repeats.
+ * re-exports, and recording "supplied" for it would be a lie every later upload repeats — and
+ * neither can a bundle that registers no scope host for that sweeper to run
+ * (`registersSweepHost`, #1646).
  */
 export function platformSweeperDecision(
   /** The push's manifest, or the part of it the decision reads: only whether it declares schedules. */
@@ -156,6 +185,14 @@ export function platformSweeperDecision(
     return refuse(
       `the platform supplies a sweeper through its entry module, and this bundle cannot take one (${skip}). ` +
         `Update @substrat-run/kernel and @substrat-run/vertical-host, or export your own sweeper`,
+    );
+  }
+  if (!registersSweepHost(bundle)) {
+    return refuse(
+      `the platform supplies a sweeper that runs the scope host your mountPlatformSurface registers, and this ` +
+        `bundle registers none — its @substrat-run/vertical-host predates that registration, or the worker never ` +
+        `mounts mountPlatformSurface. Update @substrat-run/vertical-host, or export your own defineScopeSweeperDO ` +
+        `class bound as a store`,
     );
   }
   return { supply: true };

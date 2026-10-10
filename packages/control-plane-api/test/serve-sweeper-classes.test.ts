@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, tenantId } from '@substrat-run/contracts';
+import { PLATFORM_SWEEP_HOST_KEY, platformActorId, tenantId } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   createWfpUploader,
@@ -86,7 +86,9 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
     const fd = new FormData();
     fd.set('manifest', JSON.stringify(manifest(version, extra)));
     fd.set('tenant', 'sweep-serve');
-    fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
+    // The entry registers the scope host the supplied sweeper runs, as a current vertical-host's does (#1646).
+    const entry = `globalThis[Symbol.for("${PLATFORM_SWEEP_HOST_KEY}")] = () => null; export default {}`;
+    fd.set('worker.js', new Blob([entry], { type: 'application/javascript+module' }), 'worker.js');
     const res = await app.request('/verticals/crm/deploy', { method: 'POST', headers: auth, body: fd });
     expect(res.status, await res.clone().text()).toBe(201);
     return res.json();

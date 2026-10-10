@@ -153,6 +153,16 @@ export const PLATFORM_SWEEPER_CLASS = 'SweeperDO';
 export const PLATFORM_SWEEPER_BINDING = 'SWEEPER';
 export const PLATFORM_SWEEPER_VAR = 'SUBSTRAT_SCOPE_SWEEPER';
 
+/**
+ * The `Symbol.for` key vertical-host's `mountPlatformSurface` registers the vertical's scope
+ * host under (`registerScopeSweepHost`), which is the host the platform's sweeper runs (#1902).
+ * A bundle with no copy of it has a vertical-host that predates the registration, or mounts no
+ * `mountPlatformSurface`, so a supplied sweeper would have no host and no roster: the control
+ * plane refuses to supply one to it (#1646). vertical-host spells it out, since that file
+ * imports nothing; control-plane-api's `platform-entry.test.ts` holds the two equal.
+ */
+export const PLATFORM_SWEEP_HOST_KEY = 'substrat.scope-sweep-host';
+
 /** Why a vertical's sweeper wiring cannot work, as {@link sweeperConflict} reads it. */
 export type SweeperConflict =
   /** It exports its own sweeper class(es), and no Durable Object binding names one. */

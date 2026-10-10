@@ -10,9 +10,13 @@ import {
   PLATFORM_SWEEPER_BINDING,
   PLATFORM_SWEEPER_CLASS,
   PLATFORM_SWEEPER_VAR,
+  PLATFORM_SWEEP_HOST_KEY,
   type DeployManifest,
 } from '@substrat-run/contracts';
-import { PLATFORM_SWEEPER_VAR as VERTICAL_HOST_SWEEPER_VAR } from '@substrat-run/vertical-host';
+import {
+  PLATFORM_SWEEPER_VAR as VERTICAL_HOST_SWEEPER_VAR,
+  SCOPE_SWEEP_HOST_KEY as VERTICAL_HOST_SWEEP_HOST_KEY,
+} from '@substrat-run/vertical-host';
 import {
   PLATFORM_ENTRY_MODULE,
   PLATFORM_SWEEPER_MODULE,
@@ -222,9 +226,11 @@ describe('the platform supplies the scope sweeper (#1902)', () => {
   const ownSweeper = { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'SweeperDO' };
   const SCHEDULES: DeployManifest['schedules'] = [{ moduleId: 'm', operation: 'm/tick', cadence: { everyMinutes: 5 }, permissions: [] }];
   type Declared = Parameters<typeof platformSweeperDecision>[0];
+  /** A vertical's module as a current vertical-host builds it: `mountPlatformSurface` registers its host. */
+  const registers = js('worker.js', `const HOSTS = Symbol.for("${PLATFORM_SWEEP_HOST_KEY}"); export default {}`);
   /** What a push declared; `scheduled` stands in for `schedules` so a case reads as the old facts did. */
   const decide = ({ scheduled, ...f }: Partial<Declared> & { scheduled?: boolean } = {}) =>
-    platformSweeperDecision({ bindings: [scope], ...(scheduled ? { schedules: SCHEDULES } : {}), ...f }, bundle());
+    platformSweeperDecision({ bindings: [scope], ...(scheduled ? { schedules: SCHEDULES } : {}), ...f }, bundle([registers]));
   const refusal = (f: Parameters<typeof decide>[0]) => {
     const decided = decide(f);
     if (!('refuse' in decided)) throw new Error(`expected a refusal, got ${JSON.stringify(decided)}`);
@@ -234,6 +240,7 @@ describe('the platform supplies the scope sweeper (#1902)', () => {
 
   it('spells the platform’s names one way, here and in the vertical-host copy that must import nothing', () => {
     expect(VERTICAL_HOST_SWEEPER_VAR).toBe(PLATFORM_SWEEPER_VAR);
+    expect(VERTICAL_HOST_SWEEP_HOST_KEY).toBe(PLATFORM_SWEEP_HOST_KEY);
   });
 
   describe('the decision, from the push’s declaration', () => {
@@ -289,8 +296,11 @@ describe('the platform supplies the scope sweeper (#1902)', () => {
       });
     });
 
-    it('never reads the bytes: a bundle full of sweeper code changes nothing', () => {
-      const code = js('worker.js', 'class S { noteScope(){} forgetScope(){} sweepNow(){} ensureArmed(){} } export default {}');
+    it('never reads the bytes for identity: a bundle full of sweeper code changes nothing', () => {
+      const code = js(
+        'worker.js',
+        `Symbol.for("${PLATFORM_SWEEP_HOST_KEY}"); class S { noteScope(){} forgetScope(){} sweepNow(){} ensureArmed(){} } export default {}`,
+      );
       expect(platformSweeperDecision({ bindings: [scope], schedules: SCHEDULES }, bundle([code]))).toEqual({ supply: true });
     });
 
@@ -300,6 +310,48 @@ describe('the platform supplies the scope sweeper (#1902)', () => {
       expect(decision).toEqual({ refuse: expect.stringMatching(/cannot take one \(the bundle writes the invocation line/) });
       // …and a bundle that needs nothing from the platform is not refused for it.
       expect(platformSweeperDecision({ bindings: [scope] }, old)).toEqual({ supply: false });
+    });
+
+    describe('a bundle that registers no scope host for the supplied sweeper (#1646)', () => {
+      const unregistered = bundle();
+      const NONE = /bundle registers none — its @substrat-run\/vertical-host predates that registration/;
+
+      it('is refused, from a current CLI and from one that predates sweeperClasses', () => {
+        for (const sweeperClasses of [[], undefined]) {
+          const decision = platformSweeperDecision(
+            { bindings: [scope], schedules: SCHEDULES, ...(sweeperClasses ? { sweeperClasses } : {}) },
+            unregistered,
+          );
+          expect(decision).toEqual({ refuse: expect.stringMatching(NONE) });
+        }
+      });
+
+      it('is supplied once a module of its own registers one', () => {
+        expect(platformSweeperDecision({ bindings: [scope], schedules: SCHEDULES, sweeperClasses: [] }, bundle([registers]))).toEqual({
+          supply: true,
+        });
+      });
+
+      it('is not refused when it needs nothing from the platform: no schedules, or an own sweeper bound', () => {
+        expect(platformSweeperDecision({ bindings: [scope], sweeperClasses: [] }, unregistered)).toEqual({ supply: false });
+        expect(
+          platformSweeperDecision({ bindings: [scope, ownSweeper], schedules: SCHEDULES, sweeperClasses: ['SweeperDO'] }, unregistered),
+        ).toEqual({ supply: false });
+      });
+
+      it('does not count the key in the platform’s own sweeper module, or in a module that is not script', () => {
+        // A re-served archive holds our sweeper module, which carries the key itself.
+        const ours = bundle([...unregistered.modules, js(PLATFORM_SWEEPER_MODULE, `Symbol.for("${PLATFORM_SWEEP_HOST_KEY}")`)]);
+        const asset = bundle([
+          ...unregistered.modules,
+          { name: 'notes.txt', content: new TextEncoder().encode(PLATFORM_SWEEP_HOST_KEY), contentType: 'text/plain' },
+        ]);
+        for (const b of [ours, asset]) {
+          expect(platformSweeperDecision({ bindings: [scope], schedules: SCHEDULES, sweeperClasses: [] }, b)).toEqual({
+            refuse: expect.stringMatching(NONE),
+          });
+        }
+      });
     });
   });
 

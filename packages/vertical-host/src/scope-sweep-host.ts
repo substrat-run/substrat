@@ -23,7 +23,23 @@
  * platform's sweeper module, which is added to every such upload.
  */
 
-const HOSTS = Symbol.for('substrat.scope-sweep-host');
+/** The global registry key. Contracts' `PLATFORM_SWEEP_HOST_KEY`, spelled out because this file
+ *  imports nothing: the control plane looks for it in a pushed bundle to tell that the bundle
+ *  registers a host for the sweeper it would supply (#1646). */
+export const SCOPE_SWEEP_HOST_KEY = 'substrat.scope-sweep-host';
+
+/**
+ * The registry slot, looked up per call and never at module top level. That placement is what
+ * the control plane's check relies on (#1646): the key reaches a bundle only when a function
+ * that registers or reads the host is reachable, so tree-shaking drops it from a bundle that
+ * imports vertical-host and never mounts `mountPlatformSurface`, and no purity annotation is
+ * involved. A top-level `Symbol.for(SCOPE_SWEEP_HOST_KEY)` would stay in every bundle that
+ * pulls in the package index, because esbuild only treats `Symbol.for` of a literal as pure.
+ * `sweep-host-bundle.test.ts` in control-plane-api holds this against a real build.
+ */
+function slot(): Record<symbol, ScopeSweepHostFactory | undefined> {
+  return globalThis as unknown as Record<symbol, ScopeSweepHostFactory | undefined>;
+}
 
 /** The env var the uploader sets to the binding of the sweeper it supplied (#1902). Contracts'
  *  `PLATFORM_SWEEPER_VAR`, spelled out because this file imports nothing; control-plane-api's
@@ -35,12 +51,14 @@ export type ScopeSweepHostFactory = (env: never) => unknown;
 
 /** Record the vertical's host builder for the platform's sweeper. The last call wins. */
 export function registerScopeSweepHost(hostFor: ScopeSweepHostFactory): void {
-  (globalThis as unknown as Record<symbol, ScopeSweepHostFactory | undefined>)[HOSTS] = hostFor;
+  slot()[Symbol.for(SCOPE_SWEEP_HOST_KEY)] = hostFor;
 }
 
-/** The host builder the vertical registered, or `undefined` when its bundle registers none. */
+/** The host builder the vertical registered, or `undefined` when its bundle registers none.
+ *  The platform's sweeper module imports this file directly; the package index does not re-export
+ *  it, so a vertical's bundle carries the key only through `registerScopeSweepHost` (#1646). */
 export function registeredScopeSweepHost(): ScopeSweepHostFactory | undefined {
-  return (globalThis as unknown as Record<symbol, ScopeSweepHostFactory | undefined>)[HOSTS];
+  return slot()[Symbol.for(SCOPE_SWEEP_HOST_KEY)];
 }
 
 /** The slice of a sweeper stub the surface calls. */

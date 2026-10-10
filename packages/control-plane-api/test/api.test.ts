@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { PLATFORM_SWEEP_HOST_KEY, assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import { denialLogQuery } from '../src/api.js';
 import {
   createControlPlaneApi,
@@ -4855,9 +4855,11 @@ describe('control-plane API — deploy', () => {
   const recorded = async (slug: string, id: string) =>
     JSON.parse((await host.admin.versionManifest(staff, slug, id))!) as { platformSweeper?: boolean };
   const schedules = [{ moduleId: 'fsm', operation: 'fsm/tick', cadence: { everyMinutes: 5 } }];
+  /** An entry as a current vertical-host builds it: `mountPlatformSurface` registers the scope host. */
+  const registers = `globalThis[Symbol.for("${PLATFORM_SWEEP_HOST_KEY}")] = () => null; export default {}`;
 
   it('decides the platform sweeper at push, uploads it, and records the decision (#1902)', async () => {
-    const res = await push('fsm-sweep', form(manifest({ schedules, sweeperClasses: [] })));
+    const res = await push('fsm-sweep', form(manifest({ schedules, sweeperClasses: [] }), 'worker.js', registers));
     expect(res.status).toBe(201);
     const v = await res.json();
     expect(deployed.at(-1)!.bundle.supplySweeper).toBe(true);
@@ -4877,7 +4879,7 @@ describe('control-plane API — deploy', () => {
     expect('supplySweeper' in deployed.at(-1)!.bundle).toBe(false);
     expect(await recorded(v.verticalSlug, (await own.json()).id)).toMatchObject({ platformSweeper: false });
     // An older CLI's push, neither name bound: the convention says it has none.
-    expect((await push('fsm-sweep', form(manifest({ version: '0.1.2', schedules })))).status).toBe(201);
+    expect((await push('fsm-sweep', form(manifest({ version: '0.1.2', schedules }), 'worker.js', registers))).status).toBe(201);
     expect(deployed.at(-1)!.bundle.supplySweeper).toBe(true);
     // No schedules, nothing owed.
     expect((await push('fsm-sweep', form(manifest({ version: '0.1.3', sweeperClasses: [] })))).status).toBe(201);
@@ -4932,6 +4934,16 @@ describe('control-plane API — deploy', () => {
       ),
     );
     expect(half.status).toBe(422);
+    expect(deployed.length).toBe(before);
+  });
+
+  it('refuses to supply a sweeper to a bundle that registers no scope host for it, 422, uploading nothing (#1646)', async () => {
+    const before = deployed.length;
+    // A bundle on a vertical-host that predates the registry: the supplied sweeper would get no
+    // host and no roster, so the schedules would go unrun with no error anywhere.
+    const res = await push('fsm-sweep-hostless', form(manifest({ schedules, sweeperClasses: [] })));
+    expect(res.status, await res.clone().text()).toBe(422);
+    expect(JSON.stringify(await res.json())).toMatch(/this bundle registers none/);
     expect(deployed.length).toBe(before);
   });
 
@@ -6927,11 +6939,11 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
   // A staff push pinned to a tenant registers `<tenantSlug>/crm` owned + auto-admitted
   // (private) — a dispatch-backed vertical, so `deploymentRef` is set and the serve path
   // engages. The pin isolates each test on its own prefixed vertical.
-  const push = (pinTenantSlug: string, m: Record<string, unknown>) => {
+  const push = (pinTenantSlug: string, m: Record<string, unknown>, body = 'export default {}') => {
     const fd = new FormData();
     fd.set('manifest', JSON.stringify(m));
     fd.set('tenant', pinTenantSlug);
-    fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
+    fd.set('worker.js', new Blob([body], { type: 'application/javascript+module' }), 'worker.js');
     return app.request('/verticals/crm/deploy', { method: 'POST', headers: auth, body: fd });
   };
   const promote = (slug: string, versionId: string) =>
@@ -6991,7 +7003,9 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     const t = tenantId.parse(ulid());
     await host.admin.createTenant(staff, { id: t, slug: 'sweep-co', name: 'sweep-co' });
     const schedules = [{ moduleId: 'crm', operation: 'crm/tick', cadence: { everyMinutes: 5 } }];
-    const pushed = await (await push('sweep-co', manifest({ schedules, sweeperClasses: [] }))).json();
+    // Its bundle registers the scope host the supplied sweeper runs (#1646).
+    const registers = `globalThis[Symbol.for("${PLATFORM_SWEEP_HOST_KEY}")] = () => null; export default {}`;
+    const pushed = await (await push('sweep-co', manifest({ schedules, sweeperClasses: [] }), registers)).json();
     expect(uploads.at(-1)).toMatchObject({ ref: pushed.deploymentRef, supplySweeper: true });
     expect((await promote(pushed.verticalSlug, pushed.id)).status).toBe(200);
     // The serving upload: the same answer, or the stable script would lose the sweeper the archive has.
