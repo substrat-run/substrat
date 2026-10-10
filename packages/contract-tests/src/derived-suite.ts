@@ -5,7 +5,10 @@
  * The declared check comes first, so a caller without the key learns `permission_denied` and nothing about
  * whether the row exists. A missing row is `not_found`. A PATCH writes only the fields sent, and
  * `null` clears. The host's 412 holds in front of it. Every write emits one event whose payload
- * is the declared fields of the row as written. A page is scoped to its parent and walks whole.
+ * is the declared fields of the row as written. A page is scoped to its parent and walks whole,
+ * and a parent that does not exist is `not_found` (#2157). A create mints the id, fills the parent
+ * link and links the row to it, stamps the time and the caller, and answers the row that already
+ * holds its natural key without writing (#2157).
  *
  * The DEFAULT tuple checker, so a denial is a real one: `dave` holds no key at all, and every
  * refusal has its positive twin from `alice`, who holds both.
@@ -29,6 +32,16 @@ import { derivedMod } from './derived-module.js';
 
 const KEYS = ['dnote:read', 'dnote:write'].map((k) => permissionKey.parse(k));
 type Note = { id: string; dfolder_id: string; title: string; body: string | null; rank: number };
+type Tag = {
+  id: string;
+  dfolder_id: string;
+  label: string;
+  note: string | null;
+  created_at: string;
+  created_by: string;
+  updated_at: string;
+  updated_by: string;
+};
 
 export function derivedHandlersContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
   describe(`derived handlers (#1773): ${adapterName}`, () => {
@@ -39,8 +52,10 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
     const staff = platformActorId.parse(ulid());
     const alice: PrincipalId = principalId.parse(ulid());
     const dave: PrincipalId = principalId.parse(ulid());
+    const carl: PrincipalId = principalId.parse(ulid());
     let as: ScopeStub;
     let asDave: ScopeStub;
+    let asCarl: ScopeStub;
     /** Every version the host reported, newest last — what an HTTP mount would set as `ETag`. */
     let tags: (string | null)[] = [];
     const sink = { onEntityVersion: (version: string | null) => tags.push(version) };
@@ -72,12 +87,15 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
       await host.admin.grantEntitlement(staff, t, 'derived');
       await host.admin.defineRole(staff, t, { key: 'derived-admin', permissions: KEYS, source: 'vertical' });
       await host.admin.assignRole(staff, { principalId: alice, roleKey: 'derived-admin', node: { tenantId: t, scopeId: null } });
+      await host.admin.assignRole(staff, { principalId: carl, roleKey: 'derived-admin', node: { tenantId: t, scopeId: null } });
       await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'derived-vertical' });
       await host.admin.activateScope(staff, t, s);
       as = await host.getScope(alice, t, s);
       asDave = await host.getScope(dave, t, s);
+      asCarl = await host.getScope(carl, t, s);
       await as.invoke('derived/add-folder', { id: 'fa', name: 'A' });
       await as.invoke('derived/add-folder', { id: 'fb', name: 'B' });
+      await as.invoke('derived/add-folder', { id: 'fc', name: 'C, empty' });
     });
 
     afterAll(async () => {
@@ -215,6 +233,106 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
 
       it('is permission_denied to a caller without the key', async () => {
         expect(await codeOf(asDave.invoke('derived/list-notes', { dfolderId: 'fb' }))).toBe('permission_denied');
+      });
+
+      it('answers not_found for a parent that does not exist, and an empty page for one with no rows (#2157)', async () => {
+        const list = (who: ScopeStub, dfolderId: string) => who.invoke<CountedPage<Note>>('derived/list-notes', { dfolderId });
+        expect(await codeOf(list(as, 'nope'))).toBe('not_found');
+        expect(await messageOf(list(as, 'nope'))).toContain('dfolder not found: nope');
+        expect(await list(as, 'fc')).toMatchObject({ entries: [], nextCursor: null, total: 0 });
+        // Checked first: a caller without the key learns nothing about whether the parent exists.
+        expect(await codeOf(list(asDave, 'nope'))).toBe('permission_denied');
+      });
+    });
+
+    describe('create (#2157)', () => {
+      const create = (who: ScopeStub, input: Record<string, unknown>) => who.invoke<Tag>('derived/create-tag', input);
+      const getTag = (who: ScopeStub, tagId: string) => who.invoke<Tag>('derived/get-tag', { tagId });
+      const isoNow = (value: string) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+
+      it('inserts the row: a minted id, the parent link, the input, NULL for what was left out, the stamps', async () => {
+        const tag = await create(as, { dfolderId: 'fa', label: 'red' });
+        expect(tag).toEqual({
+          id: expect.any(String),
+          dfolder_id: 'fa',
+          label: 'red',
+          note: null,
+          created_at: expect.any(String),
+          created_by: alice,
+          updated_at: tag.created_at,
+          updated_by: alice,
+        });
+        expect(isoNow(tag.created_at)).toBe(true);
+        expect(tag.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+        expect(await getTag(as, tag.id)).toEqual(tag);
+      });
+
+      it('emits one event about the new row, its payload the declared fields as written', async () => {
+        const tag = await create(as, { dfolderId: 'fa', label: 'green', note: 'n' });
+        const events = (await history(tag.id)).filter((e) => e.type === 'dtag.created');
+        expect(events).toHaveLength(1);
+        expect(events[0]?.payload).toEqual({
+          id: tag.id,
+          dfolder_id: 'fa',
+          label: 'green',
+          created_at: tag.created_at,
+          created_by: alice,
+        });
+      });
+
+      it('answers the row already holding the natural key, unchanged, with no write and no event', async () => {
+        const first = await create(as, { dfolderId: 'fa', label: 'blue', note: 'first' });
+        const again = await create(asCarl, { dfolderId: 'fa', label: 'blue', note: 'second' });
+        expect(again).toEqual(first);
+        expect((await history(first.id)).filter((e) => e.type === 'dtag.created')).toHaveLength(1);
+        // The key is the pair: the same label under another folder is another row.
+        const elsewhere = await create(as, { dfolderId: 'fb', label: 'blue' });
+        expect(elsewhere.id).not.toBe(first.id);
+      });
+
+      it('answers not_found for a parent that does not exist, and denied first to a caller without the key', async () => {
+        expect(await codeOf(create(as, { dfolderId: 'nope', label: 'x' }))).toBe('not_found');
+        expect(await messageOf(create(as, { dfolderId: 'nope', label: 'x' }))).toContain('dfolder not found: nope');
+        expect(await codeOf(create(asDave, { dfolderId: 'nope', label: 'x' }))).toBe('permission_denied');
+        expect(await codeOf(create(asDave, { dfolderId: 'fa', label: 'daves' }))).toBe('permission_denied');
+        // Nothing was written by the refusals: the label is still free in that folder.
+        expect((await create(as, { dfolderId: 'fa', label: 'daves' })).created_by).toBe(alice);
+      });
+
+      it('links the new row to its parent, so a grant on the folder reaches the tag', async () => {
+        const reader: PrincipalId = principalId.parse(ulid());
+        await host.admin.grant(staff, {
+          principalId: reader,
+          permission: permissionKey.parse('dnote:read'),
+          node: { tenantId: t, scopeId: s },
+          entity: { entityType: 'dfolder', entityId: 'fa' },
+          grantedBy: alice,
+        });
+        const asReader = await host.getScope(reader, t, s);
+        const inA = await create(as, { dfolderId: 'fa', label: 'linked' });
+        const inB = await create(as, { dfolderId: 'fb', label: 'linked' });
+        expect(await getTag(asReader, inA.id)).toEqual(inA);
+        expect(await codeOf(getTag(asReader, inB.id))).toBe('permission_denied');
+      });
+
+      it('creates scope-wide with no parent, and without a natural key every call is a new row', async () => {
+        const one = await as.invoke<{ id: string; name: string }>('derived/create-label', { name: 'same' });
+        const two = await as.invoke<{ id: string; name: string }>('derived/create-label', { name: 'same' });
+        expect(one).toEqual({ id: expect.any(String), name: 'same' });
+        expect(two.id).not.toBe(one.id);
+        expect(await codeOf(asDave.invoke('derived/create-label', { name: 'x' }))).toBe('permission_denied');
+      });
+
+      it('a derived update stamps the time and the new author, and leaves the create stamps alone', async () => {
+        const tag = await create(as, { dfolderId: 'fa', label: 'restamped' });
+        const changed = await asCarl.invoke<Tag>('derived/update-tag', { tagId: tag.id, note: 'by carl' });
+        expect(changed).toEqual({ ...tag, note: 'by carl', updated_at: changed.updated_at, updated_by: carl });
+        expect(isoNow(changed.updated_at)).toBe(true);
+        expect(changed.updated_at >= tag.created_at).toBe(true);
+        const events = (await history(tag.id)).filter((e) => e.type === 'dtag.updated');
+        expect(events[0]?.payload).toEqual({ id: tag.id, note: 'by carl', updated_at: changed.updated_at, updated_by: carl });
+        // Nothing sent is nothing written — the stamps do not move either.
+        expect(await asCarl.invoke<Tag>('derived/update-tag', { tagId: tag.id })).toEqual(changed);
       });
     });
 
