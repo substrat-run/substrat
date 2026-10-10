@@ -16,6 +16,7 @@ import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { externalJson, mountOperations, problemResponse } from '@substrat-run/vertical-host';
 import {
   handlebarInvoicingRoutes,
+  handlebarNotificationsRoutes,
   handlebarOperations,
   handlebarProtocolRoutes,
   handlebarWorkorderRoutes,
@@ -152,6 +153,7 @@ mountOperations(
     ...handlebarWorkorderRoutes,
     ...handlebarProtocolRoutes,
     ...handlebarInvoicingRoutes,
+    ...handlebarNotificationsRoutes,
   },
   stub,
 );

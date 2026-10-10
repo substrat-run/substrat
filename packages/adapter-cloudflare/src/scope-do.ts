@@ -1065,6 +1065,15 @@ function toRpcError(err: unknown): Error {
   return new Error(String(err));
 }
 
+/** A throwing RPC kept for a coordinator from before #113: `fn`'s refusal, as `toRpcError` rebuilds it. */
+async function thrownForRpc<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    throw toRpcError(err);
+  }
+}
+
 /** The check subject for an attachment gate (#476): the connection when the connector door
  *  set one, else the principal — mirrors the invoke path's subject selection. */
 /**
@@ -3741,8 +3750,59 @@ export function defineScopeDO(
       return row ? attachmentRecordOfRow(row) : null;
     }
 
+    // The attachment verbs (#473) each have two doors onto one private body. The `…Reply`
+    // door answers a refusal as DATA, so its code and extensions survive the hop (#113); the
+    // plain one throws it as the bare `Error` `toRpcError` rebuilds, and is kept for a
+    // coordinator from before #113.
+
+    attachmentAdd(...args: Parameters<ScopeDO['addAttachment']>): Promise<AttachmentRecord> {
+      return thrownForRpc(() => this.addAttachment(...args));
+    }
+
+    attachmentAddReply(...args: Parameters<ScopeDO['addAttachment']>): Promise<DoReply<AttachmentRecord>> {
+      return replyOf(() => this.addAttachment(...args));
+    }
+
+    attachmentList(...args: Parameters<ScopeDO['listAttachments']>): Promise<AttachmentRecord[]> {
+      return thrownForRpc(() => this.listAttachments(...args));
+    }
+
+    attachmentListReply(...args: Parameters<ScopeDO['listAttachments']>): Promise<DoReply<AttachmentRecord[]>> {
+      return replyOf(() => this.listAttachments(...args));
+    }
+
+    attachmentAuthorize(...args: Parameters<ScopeDO['authorizeAttachment']>): Promise<AttachmentRecord | null> {
+      return thrownForRpc(() => this.authorizeAttachment(...args));
+    }
+
+    attachmentAuthorizeReply(
+      ...args: Parameters<ScopeDO['authorizeAttachment']>
+    ): Promise<DoReply<AttachmentRecord | null>> {
+      return replyOf(() => this.authorizeAttachment(...args));
+    }
+
+    systemAttachmentAuthorize(
+      ...args: Parameters<ScopeDO['authorizeSystemAttachment']>
+    ): Promise<AttachmentRecord | null | SystemDoorMoved> {
+      return thrownForRpc(() => this.authorizeSystemAttachment(...args));
+    }
+
+    systemAttachmentAuthorizeReply(
+      ...args: Parameters<ScopeDO['authorizeSystemAttachment']>
+    ): Promise<DoReply<AttachmentRecord | null | SystemDoorMoved>> {
+      return replyOf(() => this.authorizeSystemAttachment(...args));
+    }
+
+    attachmentRemove(...args: Parameters<ScopeDO['removeAttachment']>): Promise<AttachmentRecord | null> {
+      return thrownForRpc(() => this.removeAttachment(...args));
+    }
+
+    attachmentRemoveReply(...args: Parameters<ScopeDO['removeAttachment']>): Promise<DoReply<AttachmentRecord | null>> {
+      return replyOf(() => this.removeAttachment(...args));
+    }
+
     /** Record an uploaded attachment: write gate + row + `attachment.added`, one txn. */
-    async attachmentAdd(
+    private async addAttachment(
       record: AttachmentRecord,
       principal: PrincipalId,
       tenantId: TenantId,
@@ -3797,7 +3857,7 @@ export function defineScopeDO(
           if (err instanceof PermissionDenied) {
             this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.upload', err, null);
           }
-          throw toRpcError(err);
+          throw err;
         }
         // #1525: null. An attachment RPC carries no invocation, exactly as its denial
         // records none — so the deliveries it drains name no call rather than a wrong one.
@@ -3807,7 +3867,7 @@ export function defineScopeDO(
     }
 
     /** Records for one entity, newest first — read gate first. */
-    async attachmentList(
+    private async listAttachments(
       entity: EntityRef,
       principal: PrincipalId,
       tenantId: TenantId,
@@ -3826,7 +3886,7 @@ export function defineScopeDO(
         if (err instanceof PermissionDenied) {
           this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.list', err, null);
         }
-        throw toRpcError(err);
+        throw err;
       }
       const rows = this.sql
         .exec(
@@ -3843,7 +3903,7 @@ export function defineScopeDO(
      * Authorize one attachment (`read` before bytes are served, `write` before a remove is
      * attempted elsewhere) and return its record — null for an id this scope does not know.
      */
-    async attachmentAuthorize(
+    private async authorizeAttachment(
       attachmentId: string,
       mode: 'read' | 'write',
       principal: PrincipalId,
@@ -3874,7 +3934,7 @@ export function defineScopeDO(
               null,
             );
           }
-          throw toRpcError(err);
+          throw err;
         }
         return record;
       }
@@ -3889,13 +3949,13 @@ export function defineScopeDO(
         if (err instanceof PermissionDenied) {
           this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.open', err, null);
         }
-        throw toRpcError(err);
+        throw err;
       }
       return record;
     }
 
     /** Authorize a job's read as its registered module, never as a person. */
-    async systemAttachmentAuthorize(
+    private async authorizeSystemAttachment(
       attachmentId: string,
       moduleId: ModuleId,
       tenantId: TenantId,
@@ -3909,10 +3969,10 @@ export function defineScopeDO(
         systemDoor = this.assertSystemDoor(moduleId, systemDoorInstance)!;
       } catch (err) {
         if (err instanceof SystemDoorMovedError) return SYSTEM_DOOR_MOVED;
-        throw toRpcError(err);
+        throw err;
       }
       if (!this.modules.has(moduleId)) {
-        throw toRpcError(substratError('not_found', `module not registered in this scope: ${moduleId}`));
+        throw substratError('not_found', `module not registered in this scope: ${moduleId}`);
       }
       const record = this.attachmentRow(attachmentId);
       if (!record) return null;
@@ -3927,13 +3987,13 @@ export function defineScopeDO(
         if (err instanceof PermissionDenied) {
           this.recordDenial({ kind: 'system', id: moduleId }, tenantId, 'attachments.open', err, null);
         }
-        throw toRpcError(err);
+        throw err;
       }
       return record;
     }
 
     /** Remove an attachment's metadata fact: write gate + delete + `attachment.removed`. */
-    async attachmentRemove(
+    private async removeAttachment(
       attachmentId: string,
       principal: PrincipalId,
       tenantId: TenantId,
@@ -3967,7 +4027,7 @@ export function defineScopeDO(
           if (err instanceof PermissionDenied) {
             this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.remove', err, null);
           }
-          throw toRpcError(err);
+          throw err;
         }
         // #1525: null. An attachment RPC carries no invocation, exactly as its denial
         // records none — so the deliveries it drains name no call rather than a wrong one.
@@ -6139,12 +6199,8 @@ export function defineScopeDO(
 
     /** A bounded page of one table. Unknown table names throw — never queried blind. Kept for a
      *  coordinator from before #113; the current one calls `introspectTableReply`. */
-    introspectTable(table: string, limit: number, offset: number): ScopeTablePage {
-      try {
-        return this.tablePage(table, limit, offset);
-      } catch (e) {
-        throw toRpcError(e);
-      }
+    introspectTable(table: string, limit: number, offset: number): Promise<ScopeTablePage> {
+      return thrownForRpc(async () => this.tablePage(table, limit, offset));
     }
 
     /** `introspectTable`, its refusal answered as DATA so its code survives the hop (#113). */
@@ -6184,12 +6240,8 @@ export function defineScopeDO(
      * at SCOPE_QUERY_ROW_MAX with `truncated` set, never an error.
      * Kept for a coordinator from before #113; the current one calls `introspectQueryReply`.
      */
-    async introspectQuery(sql: string): Promise<ScopeQueryResult> {
-      try {
-        return await this.readOnlyQuery(sql);
-      } catch (e) {
-        throw toRpcError(e);
-      }
+    introspectQuery(sql: string): Promise<ScopeQueryResult> {
+      return thrownForRpc(() => this.readOnlyQuery(sql));
     }
 
     /** `introspectQuery`, its refusal answered as DATA so its code survives the hop (#113). */

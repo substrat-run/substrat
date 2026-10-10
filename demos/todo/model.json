@@ -152,8 +152,23 @@
     }
   },
   "handlers": {
+    "todo/archive-list": {
+      "derive": "archive"
+    },
     "todo/list-shares": {
       "derive": "list"
+    },
+    "todo/restore-list": {
+      "derive": "restore"
+    },
+    "todo/trash-list": {
+      "derive": "trash"
+    },
+    "todo/trashed-lists": {
+      "derive": "trashed"
+    },
+    "todo/unarchive-list": {
+      "derive": "unarchive"
     }
   }
 }

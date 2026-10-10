@@ -14,6 +14,7 @@ import {
   defineEntities,
   defineOperations,
   emitModel,
+  entityStateOutput,
   z,
 } from '@substrat-run/contracts';
 import { MAX_SEARCH_LIMIT } from '@substrat-run/kernel';
@@ -150,9 +151,6 @@ export const TODO_PERMISSIONS = [
   'list:trash',
 ] as const;
 
-/** Where a list is, as the archive and trash operations report it (#119). */
-const listState = z.object({ id: z.string(), state: z.enum(['active', 'archived', 'trashed']) });
-
 export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   /**
    * Claim your account in this scope — the row every list hangs off.
@@ -239,20 +237,25 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
    * File a list away (#119). It leaves `my-lists` and stays readable — through the archive
    * view, and by anyone it is shared with. The kernel checks `list:archive` on the list itself,
    * so this cannot be done under `list:manage`.
+   *
+   * The four moves and the bin are DERIVED (#1773): each is the check and one kernel verb, so the
+   * platform writes them from the `archive` / `trash` declaration on `list`, and todo writes none.
    */
   'todo/archive-list': {
     summary: 'Archive a list',
+    derive: 'archive',
     permission: { key: 'list:archive', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string() }),
-    output: listState,
+    output: entityStateOutput,
     http: { method: 'POST', path: '/lists/{listId}/archive' },
   },
 
   'todo/unarchive-list': {
     summary: 'Bring an archived list back',
+    derive: 'unarchive',
     permission: { key: 'list:archive', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string() }),
-    output: listState,
+    output: entityStateOutput,
     http: { method: 'POST', path: '/lists/{listId}/unarchive' },
   },
 
@@ -263,21 +266,23 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
    */
   'todo/trash-list': {
     summary: 'Move a list to the trash',
+    derive: 'trash',
     permission: { key: 'list:trash', entity: 'list', idFrom: 'listId' },
     input: z.object({ listId: z.string() }),
-    output: listState,
+    output: entityStateOutput,
     http: { method: 'POST', path: '/lists/{listId}/trash' },
   },
 
   /** Take a list out of the bin, back to where it was — archived, if it was archived. */
   'todo/restore-list': {
     summary: 'Restore a list from the trash',
+    derive: 'restore',
     permission: { key: 'list:trash', entity: 'list', idFrom: 'listId' },
     // The one operation besides the delete that reaches a binned list; every other is refused
     // `not_found` by the host before it runs.
     trashed: 'admits',
     input: z.object({ listId: z.string() }),
-    output: listState,
+    output: entityStateOutput,
     http: { method: 'POST', path: '/lists/{listId}/restore' },
   },
 
@@ -287,6 +292,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
    */
   'todo/trashed-lists': {
     summary: 'The lists in your trash',
+    derive: 'trashed',
     narrows: {
       reason: 'Returns only binned lists the caller may restore',
       checks: ['list:trash'],

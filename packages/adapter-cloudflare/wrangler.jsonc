@@ -73,6 +73,8 @@
       { "name": "JOURNAL_WRITE_SCOPE", "class_name": "JournalWriteScopeDO" },
       { "name": "SPINE_SHADOW_SCOPE", "class_name": "SpineShadowScopeDO" },
       { "name": "SPINE_DROP_SCOPE", "class_name": "SpineDropScopeDO" },
+      // #113: a wiped carried copy whose module set has no migrations — attachments.test.ts.
+      { "name": "WIPED_COPY_SCOPE", "class_name": "WipedCopyScopeDO" },
       // #1686: vertical-auth's real identity directory, for the owner claim link suite — the
       // claim link is a capability in a ScopeDO and a record in this, and both are held here.
       { "name": "AUTH", "class_name": "IdentityDO" }
@@ -137,6 +139,10 @@
     {
       "tag": "v14",
       "new_sqlite_classes": ["SpineShadowScopeDO", "SpineDropScopeDO"]
+    },
+    {
+      "tag": "v15",
+      "new_sqlite_classes": ["WipedCopyScopeDO"]
     }
   ]
 }

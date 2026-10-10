@@ -31,6 +31,7 @@ import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { DurableObject } from 'cloudflare:workers';
+import { wipedCopyMod } from './wiped-copy-module.js';
 
 export const ScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
 
@@ -270,6 +271,9 @@ export const JournalFenceDropScopeDO = defineScopeDO([journalFenceDropMod], {});
 export const JournalWriteScopeDO = defineScopeDO([journalWriteMod], {});
 export const SpineShadowScopeDO = defineScopeDO([spineShadowMod], {});
 export const SpineDropScopeDO = defineScopeDO([spineDropMod], {});
+
+/** #113: a migration-free module set, so a wiped copy's writes reach `WriteRevision` (test/wiped-copy-module.ts). */
+export const WipedCopyScopeDO = defineScopeDO([wipedCopyMod], {});
 
 export { ControlPlaneDO };
 
