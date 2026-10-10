@@ -6,6 +6,7 @@ import {
   principalId,
   scopeId,
   tenantId,
+  isUndecodablePlatformRequest,
 } from '@substrat-run/contracts';
 import { intentPayloadCarriesSubject, ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
@@ -68,6 +69,7 @@ describe('CP-less connector routing (#574 phase 3)', () => {
     const pending = await host.listPlatformRequests(t, s);
     expect(pending).toHaveLength(1);
     const intent = pending[0]!;
+    if (isUndecodablePlatformRequest(intent)) throw new Error(intent.decodeError);
     expect(intent.kind).toBe('connector:signer');
     expect(intent.requestedBy).toEqual({ system: 'connector-dispatch' });
     const payload = connectorDispatchPayload.parse(intent.payload);
@@ -116,7 +118,8 @@ describe('CP-less connector routing (#574 phase 3)', () => {
   it('a settled intent leaves the pending surface and the delivery stays terminal', async () => {
     const host = hostFor();
     const [intent] = await host.listPlatformRequests(t, s);
-    await host.settlePlatformRequest(t, s, intent!.id, {
+    if (!intent || isUndecodablePlatformRequest(intent)) throw new Error('expected one whole intent');
+    await host.settlePlatformRequest(t, s, intent.id, {
       status: 'done',
       result: { eventId: 'routed' },
     });

@@ -60,6 +60,7 @@ describe('the scheduled pass records the drain as a platform-request row (#1840)
       pending: expect.any(Number),
       skipped: expect.any(Number),
       unreachable: expect.any(Number),
+      unsettleable: expect.any(Number),
     });
 
     // A second pass writes a second row — an idle pass included, or an older count would
@@ -73,7 +74,7 @@ describe('the scheduled pass records the drain as a platform-request row (#1840)
 
 describe('platformRequestSweepRun (#1840)', () => {
   const AT = '2026-09-27T12:00:00.000Z';
-  const totals = { scopes: 2, drained: 6, done: 3, failed: 1, pending: 2, skipped: 0, unreachable: 0 };
+  const totals = { scopes: 2, drained: 6, done: 3, failed: 1, pending: 2, skipped: 0, unreachable: 0, unsettleable: 0 };
   const report = (over: Partial<PlatformSweepReport> = {}): PlatformSweepReport =>
     ({ platformRequestTotals: totals, errors: [], migrations: null, ...over }) as PlatformSweepReport;
 
@@ -115,6 +116,21 @@ describe('platformRequestSweepRun (#1840)', () => {
     expect(run.error).toMatch(/2 scope\(s\) had no reachable deployment/);
   });
 
+  it('an intent no drain could settle fails the row on every pass, and says where to look (#1637)', () => {
+    const run = platformRequestSweepRun(report({ platformRequestTotals: { ...totals, unsettleable: 2 } }), AT);
+    expect(run.outcome).toBe('failed');
+    expect(run.error).toBe(
+      '2 pending intent(s) cannot be run or settled — the row did not decode and its stored id is not an id; the platform-sweep log names each scope',
+    );
+    // Not a floor: those intents are counted, not missing, so the queue wording stays out of it.
+    expect(run.error).not.toMatch(/not in these totals/);
+  });
+
+  it('beside a floor, both are said', () => {
+    const run = platformRequestSweepRun(report({ platformRequestTotals: { ...totals, unreachable: 1, unsettleable: 1 } }), AT);
+    expect(run.error).toMatch(/^1 scope\(s\) had no reachable deployment — their queues are not in these totals; 1 pending intent\(s\) cannot be run or settled/);
+  });
+
   it("another phase's error does not — it says nothing about the drain's reach", () => {
     expect(platformRequestSweepRun(report({ errors: [{ kind: 'sweep', id: 'c1', error: 'boom' }] }), AT).outcome).toBe('ok');
   });
@@ -122,7 +138,7 @@ describe('platformRequestSweepRun (#1840)', () => {
 
 describe('recordPlatformRequestPass (#1840)', () => {
   const report = {
-    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0 },
+    platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0, skipped: 0, unreachable: 0, unsettleable: 0 },
     errors: [],
     migrations: null,
   } as unknown as PlatformSweepReport;

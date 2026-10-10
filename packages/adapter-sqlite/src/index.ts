@@ -150,7 +150,7 @@ import {
   type EventAuthorization,
   type PlatformRequestInput,
   type PlatformRequestId,
-  type PlatformRequest,
+  type PlatformRequestEntry,
   type PlatformRequestFilter,
   type PlatformRequestStatus,
   type PlatformRequestFailure,
@@ -6385,7 +6385,7 @@ export class SqliteScopeHost implements ScopeHost {
     }));
   }
 
-  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
+  async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequestEntry[]> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     const rows = this.readDb(rt)
@@ -6394,7 +6394,7 @@ export class SqliteScopeHost implements ScopeHost {
            FROM _substrat_platform_requests WHERE status = 'pending' ORDER BY id`,
       )
       .all() as PlatformRequestRawRow[];
-    // Tolerant (#1588): one undecodable row comes back naming why, never throws for the list.
+    // Tolerant (#1588, #1637): an undecodable row comes back naming why, never throws for the list.
     return rows.map(platformRequestOf);
   }
 
@@ -6402,7 +6402,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     filter?: PlatformRequestFilter,
-  ): Promise<PlatformRequest[]> {
+  ): Promise<PlatformRequestEntry[]> {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     const q = platformRequestHistoryQuery(filter);
@@ -12551,7 +12551,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // The read half of `requestPlatform` (#618) — this scope's own journal, so no tenancy
       // predicate is needed or possible: the runtime IS the scope.
-      platformRequests: (filter?: PlatformRequestFilter): PlatformRequest[] => {
+      platformRequests: (filter?: PlatformRequestFilter): PlatformRequestEntry[] => {
         const q = platformRequestHistoryQuery(filter);
         return (rt.db.prepare(q.sql).all(...q.params) as PlatformRequestRawRow[]).map(
           platformRequestOf,

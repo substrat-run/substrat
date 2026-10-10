@@ -9,6 +9,7 @@ import {
   type ConnectionActivityView,
   type ConnectionFact,
   type ConnectionIntentView,
+  type UnreadableIntentView,
   type ConnectionProbeView,
   type ConnectionView,
   type SweepRunView,
@@ -149,17 +150,20 @@ function IntentAttribution({
  * the platform is not coming back to it — and a 4xx now settles that way on the first attempt
  * rather than after two days of identical retries.
  */
-function IntentLedger({
+export function IntentLedger({
   intents,
+  unreadable,
   providerName,
   grants,
 }: {
   intents: ConnectionIntentView[];
+  /** #1637: records the platform could not read whole — named, so none goes missing silently. */
+  unreadable: UnreadableIntentView[];
   providerName: string;
   /** The live grants rendered directly above — the other half of the join. */
   grants: string[];
 }) {
-  if (intents.length === 0) return null;
+  if (intents.length === 0 && unreadable.length === 0) return null;
   const held = new Set(grants);
   const failed = intents.filter((i) => i.status === 'failed').length;
   // Only a delivery the drain actually attributed to the provider may be quoted as their
@@ -203,6 +207,22 @@ function IntentLedger({
             </div>
           );
         })}
+        {unreadable.map((u, n) => (
+          <div key={`unreadable-${n}`} style={{ ...card, padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <Pill kind="danger">Unreadable</Pill>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                stored as {u.id ?? 'no id'} · status {u.status ?? 'none'} · sent {u.requestedAt ?? 'at an unknown time'}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, lineHeight: 1.5, fontFamily: 'var(--font-mono)', wordBreak: 'break-word' }}>
+              {u.decodeError}
+            </div>
+            <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+              This record could not be read whole, so it is shown as stored. The platform never runs a record it cannot read.
+            </div>
+          </div>
+        ))}
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
         {failed === 0
@@ -434,6 +454,7 @@ function IntegrationDetail({
         {activity && (
           <IntentLedger
             intents={activity.intents ?? []}
+            unreadable={activity.unreadableIntents ?? []}
             providerName={provider.name}
             grants={activity.grants}
           />

@@ -60,7 +60,7 @@ import type {
   DomainEventInput,
   PlatformRequestInput,
   PlatformRequestId,
-  PlatformRequest,
+  PlatformRequestEntry,
   PlatformRequestFilter,
   PlatformRequestStatus,
   PlatformRequestFailure,
@@ -378,8 +378,14 @@ export interface OperationContext {
    *
    * Read-only by construction: the kernel owns every write to this table (rule 3 forbids module
    * code writing `_substrat_*`), so an intent's status is only ever the platform's answer.
+   *
+   * **A row whose identity does not decode comes back as an `UndecodablePlatformRequest`**
+   * (#1637) — its id, kind, status, attempts or time as stored, and why — beside every other row,
+   * instead of throwing for the whole list. Narrow with `isUndecodablePlatformRequest` before
+   * reading anything else. Only a restored dump can hold such a row; a healthy journal never
+   * returns one.
    */
-  platformRequests(filter?: PlatformRequestFilter): PlatformRequest[];
+  platformRequests(filter?: PlatformRequestFilter): PlatformRequestEntry[];
   /**
    * This entity's version (#901) — the ULID of the last event about it, or
    * `null` if nothing has ever been emitted about it.
@@ -5915,8 +5921,11 @@ export interface ScopeHost {
    * `ctx.requestPlatform` awaiting the platform's drain. Fleet maintenance, no actor (the same
    * class as `drainDue`). The platform reads these, executes each with `HostAdmin` authority, and
    * journals the outcome via `settlePlatformRequest` — the read-here/effect-there executor shape.
+   *
+   * A row whose identity does not decode is returned as an `UndecodablePlatformRequest` (#1637),
+   * never thrown for the queue; the drain runs no handler on one.
    */
-  listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]>;
+  listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequestEntry[]>;
 
   /**
    * The scope's intent JOURNAL — every intent in whatever state it settled, newest first (#618).
@@ -5928,13 +5937,15 @@ export interface ScopeHost {
    * SQL. This is the read that surfaces it: `kind` narrows to one intent family
    * (`connector:scrive`), `status` to one outcome, `limit` to a recency window.
    *
-   * Fleet maintenance, no actor — same class as the pending read it complements.
+   * Fleet maintenance, no actor — same class as the pending read it complements. Returns an
+   * `UndecodablePlatformRequest` for a row whose identity does not decode (#1637), as the
+   * pending read does.
    */
   listPlatformRequestHistory(
     tenantId: TenantId,
     scopeId: ScopeId,
     filter?: PlatformRequestFilter,
-  ): Promise<PlatformRequest[]>;
+  ): Promise<PlatformRequestEntry[]>;
 
   /**
    * Journal a platform-request outcome after the coordinator ran it: `done`, `failed` (terminal),

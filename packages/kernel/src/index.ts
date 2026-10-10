@@ -836,6 +836,7 @@ export type {
   EventSink,
   EventDrainReport,
   EventDrainSkipped,
+  PlatformRequestUnsettleable,
   AccessLogSweepReport,
   ConnectorSweeper,
   MigrationSweepReport,
