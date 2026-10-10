@@ -106,6 +106,13 @@ export interface AdminApiDeps {
    * legitimate policy or wave through the one that strands its author.
    */
   offeredProviders(): { id: string; label: string }[];
+  /**
+   * Run `fn` as one transaction — the DO's `storage.transactionSync`, better-sqlite3's
+   * `transaction` on node. Required rather than defaulted: the one caller today is the user
+   * import, whose promise is that a batch commits whole, and a plain call would keep that
+   * promise only until the first row threw.
+   */
+  transaction<T>(fn: () => T): T;
 }
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
@@ -822,12 +829,12 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
 
   /**
    * People moved here from another issuer, keeping the ids relying parties know them by —
-   * `src/user-import.ts` has the rules. One batch is at most `IMPORT_BATCH_LIMIT` people;
-   * `dryRun: true` reports what would happen without writing, conflicts included.
+   * `src/user-import.ts` has the rules. A real run is at most `IMPORT_BATCH_LIMIT` people and
+   * commits whole; `dryRun: true` checks up to `DRY_RUN_LIMIT` at once without writing.
    */
   app.post('/users/import', async (c) => {
     const body = parsedBody(importBody, await c.req.json().catch(() => null));
-    return c.json(importUsers(deps.sql, body));
+    return c.json(importUsers(deps.sql, body, (fn) => deps.transaction(fn)));
   });
 
   /* ---- what happened when people tried to sign in ---- */

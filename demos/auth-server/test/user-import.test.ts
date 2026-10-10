@@ -11,7 +11,7 @@ import { createAdminApi } from '../src/admin-api.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
 import { publicProvidersFrom, readProviders } from '../src/providers.js';
-import type { ImportResult } from '../src/user-import.js';
+import type { ImportResult } from '../src/user-import-wire.js';
 
 /**
  * Moving people here from another issuer (`src/user-import.ts`).
@@ -134,6 +134,7 @@ beforeEach(async () => {
     effectiveCfg: () => ({}),
     auth: () => auth.api as never,
     offeredProviders: () => publicProvidersFrom(readProviders(sql)),
+    transaction: (fn) => db.transaction(fn)(),
   });
   adminCookie = cookieOf(await signIn(ADMIN.email, ADMIN.password));
 });
@@ -295,4 +296,49 @@ describe('the gate and the shape', () => {
     });
     expect(res.status).toBe(400);
   });
+});
+
+describe('a real batch commits whole or not at all', () => {
+  it('a row that throws past the checks takes the rows before it with it', async () => {
+    // Something no pre-check can see: the database itself refusing the third person.
+    db.exec(`CREATE TRIGGER refuse_third BEFORE INSERT ON user WHEN NEW.email = 'third@example.test'
+             BEGIN SELECT RAISE(ABORT, 'refused by the test'); END`);
+    const before = userCount();
+    const res = await importAs(adminCookie, {
+      users: [
+        { id: 'auth2|one', email: 'one@example.test', passwordHash: bcryptOf('one-password-1') },
+        { id: 'auth2|two', email: 'two@example.test', accounts: [{ providerId: 'github', accountId: '2' }] },
+        { id: 'auth2|three', email: 'third@example.test' },
+      ],
+    });
+    expect(res.status).not.toBe(200);
+    expect(userCount()).toBe(before);
+    expect(db.prepare(`SELECT count(*) AS n FROM account WHERE user_id IN ('auth2|one', 'auth2|two')`).get()).toEqual({ n: 0 });
+  });
+});
+
+describe('batch limits', () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `auth2|${i}`, email: `p${i}@example.test` }));
+
+  it('checks a whole file in one dry run, so a duplicate 540 rows apart is seen', async () => {
+    const users = many(600);
+    users[550] = { id: 'auth2|10', email: 'p10@example.test' };
+    const dry = await imported({ users, dryRun: true });
+    expect(dry.results[550]).toEqual({ id: 'auth2|10', outcome: 'unchanged', skippedAccounts: [] });
+    expect(dry.counts).toEqual({ created: 599, merged: 0, unchanged: 1, conflict: 0 });
+  });
+
+  it('refuses a real run over the write batch size', async () => {
+    const res = await importAs(adminCookie, { users: many(501) });
+    expect(res.status).toBe(400);
+    expect(userCount()).toBe(2);
+  });
+});
+
+it('refuses a bcrypt cost the issuer could not afford to verify', async () => {
+  const cost13 = `$2b$13$${bcrypt.hashSync('x-password-1', 4).slice('$2b$04$'.length)}`;
+  const res = await importAs(adminCookie, { users: [{ id: LEGACY_ID, email: 'ada@example.test', passwordHash: cost13 }] });
+  expect(res.status).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toMatch(/cost 4–12/);
+  expect(userCount()).toBe(2);
 });

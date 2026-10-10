@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import { isBcryptHash } from './legacy-password.js';
+import {
+  DRY_RUN_LIMIT,
+  IMPORT_BATCH_LIMIT,
+  emptyCounts,
+  type ImportEntry,
+  type ImportOutcome,
+  type ImportResult,
+  type SkippedAccount,
+} from './user-import-wire.js';
 
 /**
  * Bringing people over from another issuer — `POST /__admin/users/import`.
@@ -33,11 +42,15 @@ import { isBcryptHash } from './legacy-password.js';
  *    same reason.
  *
  * `dryRun` answers all of that without writing, so the collisions can be read before anything
- * moves. The admin gate in front is the whole authorisation story: this endpoint writes
- * credentials, and only an `admin` session reaches it.
+ * moves — for a whole file at once (`DRY_RUN_LIMIT`), so a duplicate on row 10 and row 550 is
+ * seen together, exactly as the real run's second batch will see what its first one wrote.
+ * A real run is at most `IMPORT_BATCH_LIMIT` and commits whole or not at all: the caller hands
+ * in its runtime's transaction (the DO's `transactionSync`, better-sqlite3's `transaction`),
+ * so a row that throws past the checks takes its batch with it instead of leaving half of it.
+ *
+ * The admin gate in front is the whole authorisation story: this endpoint writes credentials,
+ * and only an `admin` session reaches it.
  */
-
-export const IMPORT_BATCH_LIMIT = 500;
 
 const importedAccount = z.object({
   providerId: z
@@ -57,37 +70,30 @@ const importedUser = z.object({
   createdAt: z.string().datetime({ offset: true }).optional(),
   passwordHash: z
     .string()
-    .refine(isBcryptHash, 'not a bcrypt hash ($2a$/$2b$/$2y$) — nothing else can be verified here')
+    .refine(isBcryptHash, 'not a bcrypt hash of cost 4–12 ($2a$/$2b$/$2y$) — nothing else can be verified here')
     .optional(),
   accounts: z.array(importedAccount).max(20).optional(),
 });
 
-export const importBody = z.object({
-  users: z.array(importedUser).min(1).max(IMPORT_BATCH_LIMIT),
-  dryRun: z.boolean().optional(),
-});
+export const importBody = z
+  .object({
+    users: z.array(importedUser).min(1).max(DRY_RUN_LIMIT),
+    dryRun: z.boolean().optional(),
+  })
+  .refine((b) => b.dryRun === true || b.users.length <= IMPORT_BATCH_LIMIT, {
+    message: `a real run writes at most ${IMPORT_BATCH_LIMIT} people per call; a dry run may check up to ${DRY_RUN_LIMIT}`,
+    path: ['users'],
+  });
 
 export type ImportBody = z.infer<typeof importBody>;
 type ImportedUser = z.infer<typeof importedUser>;
 
-export type ImportOutcome =
-  | { id: string; outcome: 'created'; password: boolean; accounts: string[]; skippedAccounts: SkippedAccount[] }
-  | { id: string; outcome: 'merged'; password: boolean; accounts: string[]; skippedAccounts: SkippedAccount[] }
-  | { id: string; outcome: 'unchanged'; skippedAccounts: SkippedAccount[] }
-  | { id: string; outcome: 'conflict'; reason: 'email-taken'; existingId: string }
-  | { id: string; outcome: 'conflict'; reason: 'email-differs'; existingEmail: string };
-
-interface SkippedAccount {
-  providerId: string;
-  accountId: string;
-  linkedTo: string;
-}
-
-export interface ImportResult {
-  dryRun: boolean;
-  results: ImportOutcome[];
-  counts: Record<ImportOutcome['outcome'], number>;
-}
+// The wire module is what the admin screen compiles against; these two lines are what keep the
+// schema and it from drifting apart in either direction.
+const _toWire = (u: ImportedUser): ImportEntry => u;
+const _fromWire = (u: ImportEntry): ImportedUser => u;
+void _toWire;
+void _fromWire;
 
 // boundary-lint-allow R6
 // Not a Substrat row's stamp: `created_at`/`updated_at` on `user` and `account` are Better
@@ -98,39 +104,50 @@ const wallClock = (): number => Date.now();
 // boundary-lint-end R6
 
 const localPart = (email: string): string => email.slice(0, email.indexOf('@'));
+const accountKey = (providerId: string, accountId: string): string => `${providerId}\u0000${accountId}`;
 
-export function importUsers(sql: SqlExec, body: ImportBody, now: number = wallClock()): ImportResult {
+/**
+ * What a dry run has decided to write so far, so a later entry in the same call answers as it
+ * will once those writes exist. Both directions of the user map are kept: one lookup by id, one
+ * by address, neither a scan.
+ */
+interface Planned {
+  emailById: Map<string, string>;
+  idByEmail: Map<string, string>;
+  accounts: Map<string, string>;
+  passwords: Set<string>;
+}
+
+export function importUsers(
+  sql: SqlExec,
+  body: ImportBody,
+  transaction: <T>(fn: () => T) => T,
+  now: number = wallClock(),
+): ImportResult {
   const dryRun = body.dryRun ?? false;
-  // Planned writes in a dry run are tracked here, so a batch naming one person twice — or two
-  // people with one GitHub id — answers the same with and without `dryRun`.
-  const planned = { users: new Map<string, string>(), accounts: new Map<string, string>(), passwords: new Set<string>() };
-
-  const results = body.users.map((entry) => importOne(sql, entry, dryRun, planned, now));
-  const counts = { created: 0, merged: 0, unchanged: 0, conflict: 0 };
+  const planned: Planned = { emailById: new Map(), idByEmail: new Map(), accounts: new Map(), passwords: new Set() };
+  const run = (): ImportOutcome[] => body.users.map((entry) => importOne(sql, entry, dryRun, planned, now));
+  const results = dryRun ? run() : transaction(run);
+  const counts = emptyCounts();
   for (const r of results) counts[r.outcome] += 1;
   return { dryRun, results, counts };
 }
 
-function importOne(
-  sql: SqlExec,
-  entry: ImportedUser,
-  dryRun: boolean,
-  planned: { users: Map<string, string>; accounts: Map<string, string>; passwords: Set<string> },
-  now: number,
-): ImportOutcome {
+function importOne(sql: SqlExec, entry: ImportedUser, dryRun: boolean, planned: Planned, now: number): ImportOutcome {
   // Better Auth stores addresses lower-cased and looks them up the same way, so an import
   // that kept the old issuer's casing would create a row its own sign-in can never find.
   const email = entry.email.trim().toLowerCase();
 
-  const byEmail =
-    (sql.exec('SELECT id FROM user WHERE email = ?', email).toArray()[0] as { id: string } | undefined)?.id ??
-    [...planned.users].find(([, e]) => e === email)?.[0];
+  // One read answers both questions: who holds this id, and who holds this address.
+  const rows = sql.exec('SELECT id, email FROM user WHERE id = ? OR email = ?', entry.id, email).toArray() as {
+    id: string;
+    email: string;
+  }[];
+  const byEmail = rows.find((r) => r.email === email)?.id ?? planned.idByEmail.get(email);
   if (byEmail !== undefined && byEmail !== entry.id) {
     return { id: entry.id, outcome: 'conflict', reason: 'email-taken', existingId: byEmail };
   }
-  const existingEmail =
-    (sql.exec('SELECT email FROM user WHERE id = ?', entry.id).toArray()[0] as { email: string } | undefined)?.email ??
-    planned.users.get(entry.id);
+  const existingEmail = rows.find((r) => r.id === entry.id)?.email ?? planned.emailById.get(entry.id);
   if (existingEmail !== undefined && existingEmail !== email) {
     return { id: entry.id, outcome: 'conflict', reason: 'email-differs', existingEmail };
   }
@@ -149,7 +166,7 @@ function importOne(
   const skippedAccounts: SkippedAccount[] = [];
   const toLink: { providerId: string; accountId: string }[] = [];
   for (const account of entry.accounts ?? []) {
-    const key = `${account.providerId}\u0000${account.accountId}`;
+    const key = accountKey(account.providerId, account.accountId);
     const linkedTo =
       (
         sql
@@ -161,7 +178,7 @@ function importOne(
       skippedAccounts.push({ ...account, linkedTo });
       continue;
     }
-    if (toLink.some((a) => a.providerId === account.providerId && a.accountId === account.accountId)) continue;
+    if (toLink.some((a) => accountKey(a.providerId, a.accountId) === key)) continue;
     toLink.push(account);
     accounts.push(account.providerId);
   }
@@ -171,9 +188,10 @@ function importOne(
   }
 
   if (dryRun) {
-    planned.users.set(entry.id, email);
+    planned.emailById.set(entry.id, email);
+    planned.idByEmail.set(email, entry.id);
     if (addPassword) planned.passwords.add(entry.id);
-    for (const a of toLink) planned.accounts.set(`${a.providerId}\u0000${a.accountId}`, entry.id);
+    for (const a of toLink) planned.accounts.set(accountKey(a.providerId, a.accountId), entry.id);
   } else {
     if (!exists) {
       const joined = entry.createdAt ? Date.parse(entry.createdAt) : now;

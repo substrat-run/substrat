@@ -20,8 +20,16 @@ import { hashPassword, verifyPassword } from 'better-auth/crypto';
  * alike, and a hand-rolled bcrypt would be the thing the repo's rules forbid.
  */
 
-/** `$2a$10$` + 53 characters of salt and digest — the only legacy shape this issuer accepts. */
-const BCRYPT = /^\$2[aby]\$(0[4-9]|[12]\d|3[01])\$[./A-Za-z0-9]{53}$/;
+/**
+ * `$2a$10$` + 53 characters of salt and digest — the only legacy shape this issuer accepts.
+ *
+ * The cost is capped at 12, and that cap is a denial-of-service guard, not a style choice:
+ * `bcrypt.compare` runs in pure JS inside the issuer's single-threaded Durable Object, so a
+ * cost-25 hash would let anybody who knows that address stall sign-in for the whole issuer by
+ * posting wrong passwords at it. Cost 12 is a few hundred milliseconds; every common issuer
+ * default (10, 12) fits under it. A hash above it is refused at import, never stored.
+ */
+const BCRYPT = /^\$2[aby]\$(0[4-9]|1[0-2])\$[./A-Za-z0-9]{53}$/;
 
 export function isBcryptHash(hash: string): boolean {
   return BCRYPT.test(hash);
