@@ -240,9 +240,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   z, defineEntities, defineOperations, errorCodeOf, manifestOperations, moduleManifest,
-  operationInputsOf, peersDeclaredBy, permissionKey, platformActorId, scopeId, tenantId,
+  peersDeclaredBy, permissionKey, platformActorId, scopeId, tenantId,
 } from '@substrat-run/contracts';
-import { assertAllowed, ulid } from '@substrat-run/kernel';
+import { assertAllowed, operationsFor, ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { createLocalVerticalBroker } from '@substrat-run/adapter-sqlite/vertical-broker';
 
@@ -271,13 +271,13 @@ const boardScope = scopeId.parse(ulid());
 
 try {
   crm.registerModule({
-    manifest, migrations: [], operationInputs: operationInputsOf(operations),
-    operations: {
+    manifest, migrations: [],
+    ...operationsFor(operations)({
       'customer/list': async (ctx) => {
         assertAllowed(await ctx.check(permissionKey.parse('customer:read')));
         return { items: [{ id: 'example', name: 'Example company' }] };
       },
-    },
+    }),
   });
   for (const host of [crm, board]) {
     await host.admin.createTenant(staff, { id: tenant, slug: 'example', name: 'Example' });

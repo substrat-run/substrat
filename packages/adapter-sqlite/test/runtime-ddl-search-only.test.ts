@@ -13,6 +13,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, UNSAFE_allowAllChecker, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 type Handler = OperationHandler<never, unknown>;
 
@@ -29,7 +30,7 @@ const searchOnly: ModuleRegistration = {
     searchables: [{ entityType: 'sodoc', fields: ['title'], table: 'so_docs', idColumn: 'id' }],
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE so_docs (id TEXT PRIMARY KEY, title TEXT NOT NULL);' }],
-  operations: {
+  ...testOperations({
     'so/add': (async (ctx, input) => {
       const i = input as { id: string; title: string };
       ctx.sql.exec('INSERT INTO so_docs (id, title) VALUES (?, ?)', [i.id, i.title]);
@@ -45,7 +46,7 @@ const searchOnly: ModuleRegistration = {
       for (const statement of (input as { statements: string[] }).statements) ctx.sql.exec(statement);
       return null;
     }) as Handler,
-  },
+  }),
 };
 
 describe('runtime DDL on a scope with a search index and no archive/trash state (#2090)', () => {

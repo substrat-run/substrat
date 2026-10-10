@@ -1,4 +1,5 @@
 import type { ModuleLog } from './module-log.js';
+import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult } from './scope-copy-ledger.js';
@@ -1784,81 +1785,28 @@ export function consumersFor<const C extends readonly EventContract[]>() {
 export interface ModuleRegistration<C extends readonly EventContract[] = []> {
   manifest: ModuleManifest;
   migrations?: SqlMigration[];
-  operations?: Record<string, OperationHandler<never, unknown>>;
   /**
-   * name → the schema the host parses an invocation's input against, BEFORE the
-   * guards and the handler see it (#893).
-   *
-   * Derived from the declared operation surface — `operationInputsOf(ops)` — and
-   * never written a second time. A module that declares its operations gets the
-   * parse by handing the same object over:
+   * The module's operations: its handlers and, derived from their declaration, the input schemas
+   * the host parses with, the `If-Match` concurrency map and the idempotency opt-outs (#1835).
+   * From `operationsFor(declaration)(handlers)` or, for a module with no declared surface,
+   * `undeclaredOperations(reason, handlers)` — never an object literal:
    *
    * ```ts
-   * operations: { 'rally/book': bookOp, … },
-   * operationInputs: operationInputsOf(rallyOperations),
+   * ...operationsFor(rallyOperations)({ 'rally/book': bookOp, … }),
    * ```
    *
-   * **This is where "parse, don't trust" is kept, rather than in 85 handlers.**
-   * `OperationShape.input` calls itself *"the SAME Zod object the handler
-   * parses"* and across the fleet it mostly was not — rally declared 32 inputs
-   * and parsed 2. One place that cannot be forgotten beats a rule every new
-   * operation has to remember, which is the same argument `mountOperations`
-   * already makes for the page trio.
+   * **This is where "parse, don't trust" is kept, rather than in 85 handlers** (#893).
+   * `OperationShape.input` calls itself *"the SAME Zod object the handler parses"* and across
+   * the fleet it mostly was not — rally declared 32 inputs and parsed 2. The schemas, the
+   * concurrency the host compares between `BEGIN` and the guards (#129) and the opt-outs (#116)
+   * used to be three more optional fields beside the handlers, so a module could hand over the
+   * handlers and forget the rest, or pair them with another declaration's. One value closes both.
    *
-   * A name here that no operation binds is an error: it is a schema enforcing
-   * nothing, and it reads as coverage. A bound operation with no entry is
-   * allowed and means what it always meant — nothing was declared to parse.
-   *
-   * **It also carries the declared surface (#119).** `operationInputsOf` records, for the frozen
-   * map it returns, every declared operation and the entity each addresses by id. The host DERIVES
-   * its trash refusal from that — nothing else is handed over — and a module with a trashable
-   * entity must pass that map as returned, with every operation it binds declared in it.
-   *
-   * Typed structurally rather than as `z.ZodType` so the kernel keeps its single
-   * dependency and no zod version is pinned by the scope-host contract. The
-   * shape is the whole surface the host uses: throw to refuse, return the value
-   * to accept.
+   * A schema or a concurrency entry naming no bound operation is an error: it enforces nothing
+   * and reads as coverage. The inputs also carry the declared surface (#119) the host derives
+   * its trash refusal from, so a module with a trashable entity must bind through `operationsFor`.
    */
-  operationInputs?: Record<string, { parse(value: unknown): unknown }>;
-  /**
-   * name → the entity whose version this operation's `If-Match` is compared
-   * against, and the input field carrying its id (#129).
-   *
-   * Derived from the declared operation surface — `operationConcurrencyOf(ops)` —
-   * and never written a second time, exactly as `operationInputs` is:
-   *
-   * ```ts
-   * operations: { 'callout/update-customer': updateCustomerOp, … },
-   * operationInputs: operationInputsOf(calloutOperations),
-   * operationConcurrency: operationConcurrencyOf(calloutOperations),
-   * ```
-   *
-   * **The host compares, not the handler.** A precondition a handler evaluates is
-   * a precondition a handler can forget, and the one that is forgotten is
-   * indistinguishable from one that passed. Here the comparison happens between
-   * `BEGIN` and the guards for every caller and every transport, or the operation
-   * does not claim to have it.
-   *
-   * A name here that no operation binds is an error, for the same reason it is on
-   * `operationInputs`: it reads as coverage while enforcing nothing.
-   */
-  operationConcurrency?: Record<string, { entity: string; idFrom: string }>;
-  /**
-   * The operations that declared `idempotency: false` (#116) — the ones whose
-   * response must not be recorded, and which therefore refuse an
-   * `Idempotency-Key` instead of honouring it.
-   *
-   * Derived like the two above, and never written a second time:
-   *
-   * ```ts
-   * operationIdempotencyOptOuts: operationIdempotencyOptOutsOf(calloutOperations),
-   * ```
-   *
-   * A list of refusals rather than a list of participants, because that is what
-   * the declaration is. Absent means every operation honours a key, which is the
-   * default and the reason there is nothing to remember.
-   */
-  operationIdempotencyOptOuts?: readonly string[];
+  operations?: BoundOperations;
   /**
    * eventType → handler; the types must appear in manifest.events.consumes.
    *

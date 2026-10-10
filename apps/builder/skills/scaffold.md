@@ -11,7 +11,7 @@ operation surface are **decided** — transcribe them, never re-derive them:
 | `parents` | `entityRelations` — spread from `manifestEntities`, never hand-written |
 | `defineOperations` | one registered operation per key, each checking its declared `permission` |
 | `input` | the schema the handler parses — **import it, do not restate it** |
-| `output` | the handler's return type, bound with `satisfies OperationImpl<typeof operations, OperationContext>` |
+| `output` | the handler's return type, bound with `...operationsFor(operations)({ … })` in the registration |
 | `emits` | the `ctx.emit` call, using `entityIdFrom` for the entity id |
 
 Do not add an operation the model does not declare, rename one, or change an
@@ -83,31 +83,32 @@ timestamps, decimal/money as TEXT.
 **src/module.ts** — operations + registration:
 
 ```ts
-import { z, moneyOf, mulMoney, addDecimal, type EntityRef } from '@substrat-run/contracts';
-import { assertAllowed, ulid, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
+import { moneyOf, mulMoney, addDecimal, type EntityRef } from '@substrat-run/contracts';
+import { assertAllowed, operationsFor, ulid, type ModuleRegistration } from '@substrat-run/kernel';
 import { createWorkOrder, getReportedLines, completeWorkOrder, PERM as WO } from '@substrat-run/engine-workorder';
 import { APP_PERM, appManifest } from './manifest.js';
 import { appMigrations } from './migrations.js';
-
-const createJobInput = z.object({ bikeId: z.string(), title: z.string() });
-const createJobOp: OperationHandler<z.infer<typeof createJobInput>, { id: string }> = async (ctx, raw) => {
-  assertAllowed(await ctx.check(APP_PERM.customerManage));
-  const input = createJobInput.parse(raw);
-  // vertical work (price/label) + engine composition in ONE transaction:
-  const wo = await createWorkOrder(ctx, { /* … */ });
-  ctx.sql/* own side tables only */;
-  ctx.link({ entityType: 'workorder', entityId: wo.id }, { entityType: 'bike', entityId: input.bikeId });
-  ctx.emit({
-    type: 'bikeshop.job-created', schemaVersion: 1,
-    entity: { entityType: 'workorder', entityId: wo.id }, piiClass: 'none',
-    payload: { /* fat — a consumer must never need a cross-module read */ },
-  });
-  return { id: wo.id };
-};
+import { operations } from '../spec/model.js'; // the declared surface, approved in the model phase
 
 export const appModule: ModuleRegistration = {
   manifest: appManifest, migrations: appMigrations,
-  operations: { 'bikeshop/create-job': createJobOp /* namespaced '<app>/op-kebab' */ },
+  // the handlers, held to the declaration: each `input` is typed from it and already parsed
+  // against it by the host — so a handler never declares or parses a schema of its own
+  ...operationsFor(operations)({
+    'bikeshop/create-job': async (ctx, input) => { // namespaced '<app>/op-kebab'
+      assertAllowed(await ctx.check(APP_PERM.customerManage));
+      // vertical work (price/label) + engine composition in ONE transaction:
+      const wo = await createWorkOrder(ctx, { /* … */ });
+      ctx.sql/* own side tables only */;
+      ctx.link({ entityType: 'workorder', entityId: wo.id }, { entityType: 'bike', entityId: input.bikeId });
+      ctx.emit({
+        type: 'bikeshop.job-created', schemaVersion: 1,
+        entity: { entityType: 'workorder', entityId: wo.id }, piiClass: 'none',
+        payload: { /* fat — a consumer must never need a cross-module read */ },
+      });
+      return { id: wo.id };
+    },
+  }),
 };
 ```
 

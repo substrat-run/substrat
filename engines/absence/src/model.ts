@@ -1,6 +1,7 @@
 import { emitModel } from '@substrat-run/contracts';
 import { absenceEntities } from './entities.js';
 import { absenceManifest } from './index.js';
+import { absenceOperations } from './operations.js';
 
 /**
  * The artifact of record for this engine (#697/#844, #976).
@@ -16,4 +17,7 @@ import { absenceManifest } from './index.js';
  * field's reader: a bump has to appear in the same diff as the shape change it
  * announces.
  */
-export const absenceModel = emitModel(absenceEntities, { version: absenceManifest.version });
+export const absenceModel = emitModel(absenceEntities, {
+  version: absenceManifest.version,
+  operations: absenceOperations,
+});

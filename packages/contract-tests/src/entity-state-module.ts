@@ -15,9 +15,12 @@ import {
   listIndexPlans,
   listQuery,
   readHistory,
+  type BoundOperations,
+  type HandlerMap,
   type ModuleRegistration,
   type OperationHandler,
 } from '@substrat-run/kernel';
+import { testOperations } from './test-operations.js';
 
 export const stateModManifest = moduleManifest.parse({
   id: '@test/state',
@@ -56,6 +59,12 @@ const ref = (input: unknown): EntityRef => {
   return { entityType: i.entityType ?? 'stdoc', entityId: i.id };
 };
 
+/** These handlers, each declared with no input and no entity-narrowed check (#119 PR 2). */
+function declaredWithNoInput(handlers: HandlerMap): BoundOperations {
+  const inputs = operationInputsOf(Object.fromEntries(Object.keys(handlers).map((name) => [name, {}])));
+  return testOperations(handlers, { inputs }).operations;
+}
+
 export const stateMod: ModuleRegistration = {
   manifest: stateModManifest,
   migrations: [
@@ -66,7 +75,7 @@ export const stateMod: ModuleRegistration = {
             CREATE TABLE state_plain (id TEXT PRIMARY KEY, title TEXT NOT NULL);`,
     },
   ],
-  operations: {
+  ...testOperations({
     'state/add': (async (ctx, input) => {
       const i = input as { entityType?: string; id: string; title: string; owner?: string };
       const table = { stdoc: 'state_docs', stnote: 'state_notes', stplain: 'state_plain' }[i.entityType ?? 'stdoc'];
@@ -146,7 +155,7 @@ export const stateMod: ModuleRegistration = {
         .query<{ detail: string }>(`EXPLAIN QUERY PLAN ${q.sql}`, q.params as (string | number)[])
         .map((row) => row.detail);
     }) as Handler,
-  },
+  }),
 };
 
 /**
@@ -156,7 +165,7 @@ export const stateMod: ModuleRegistration = {
  * trashable module must declare everything it binds, so this one says, in the host's terms, that
  * none of them addresses an entity by id.
  */
-stateMod.operationInputs = operationInputsOf(Object.fromEntries(Object.keys(stateMod.operations!).map((name) => [name, {}])));
+stateMod.operations = declaredWithNoInput(stateMod.operations!.handlers);
 
 /**
  * The fixture behind `entityStateMigrationContractSuite` (#2090): authored migrations that
@@ -254,7 +263,7 @@ export const rebuildMod: ModuleRegistration = {
             ALTER TABLE rb_search_new RENAME TO rb_search;`,
     },
   ],
-  operations: {
+  ...testOperations({
     'rb/add': (async (ctx, input) => {
       const i = input as { entityType: keyof typeof RB_TABLES; id: string; title: string };
       ctx.sql.exec(`INSERT INTO ${RB_TABLES[i.entityType]} (id, title) VALUES (?, ?)`, [i.id, i.title]);
@@ -287,8 +296,8 @@ export const rebuildMod: ModuleRegistration = {
       ctx.sql
         .query<{ title: string }>(`SELECT title FROM ${RB_TABLES[(input as { entityType: keyof typeof RB_TABLES }).entityType]} ORDER BY title`)
         .map((r) => r.title)) as Handler,
-  },
+  }),
 };
 
 /** Its operations declared the same way as `stateMod`'s, so a trashable module registers (#119). */
-rebuildMod.operationInputs = operationInputsOf(Object.fromEntries(Object.keys(rebuildMod.operations!).map((name) => [name, {}])));
+rebuildMod.operations = declaredWithNoInput(rebuildMod.operations!.handlers);

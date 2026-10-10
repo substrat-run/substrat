@@ -22,6 +22,7 @@ import {
   type OperationHandler,
 } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 /**
  * Reading an attachment from INSIDE a connector dispatch (#711).
@@ -70,7 +71,7 @@ describe('connector attachment reads during dispatch (#711)', () => {
       ],
       entitlementKey: 'doc',
     }),
-    operations: {
+    ...testOperations({
       // The mutation whose event the connector answers — the shape every outbound
       // connector rides: an operation commits, and the delivery goes out after it.
       // Holds the scope's actor open until the test releases it — the way to see
@@ -91,7 +92,7 @@ describe('connector attachment reads during dispatch (#711)', () => {
         });
         return { ok: true };
       }) as OperationHandler<never, unknown>,
-    },
+    }),
   };
 
   /**

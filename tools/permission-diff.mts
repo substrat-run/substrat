@@ -67,8 +67,8 @@ interface ModuleLike {
     peers?: PeerLike[];
     events?: EventsLike;
   };
-  /** A registration's operation map — present on a ModuleRegistration, absent on a bare manifest. */
-  operations?: Record<string, unknown>;
+  /** A registration's operations — present on a ModuleRegistration, absent on a bare manifest (#1835). */
+  operations?: { handlers: Record<string, unknown> };
 }
 interface RoleLike {
   key: string;
@@ -286,7 +286,7 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
   // only when every module here carries its operation map, so a bare manifest cannot
   // make a registered operation look missing.
   const opsKnown = modules.length > 0 && modules.every((m) => m.operations !== undefined);
-  const registeredOps = new Set(modules.flatMap((m) => Object.keys(m.operations ?? {})));
+  const registeredOps = new Set(modules.flatMap((m) => Object.keys(m.operations?.handlers ?? {})));
   for (const m of modules) {
     for (const peer of m.manifest.peers ?? []) {
       for (const p of peer.permissions) {

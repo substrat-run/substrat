@@ -22,14 +22,12 @@ import {
   CURSOR_FIELD_SEPARATOR,
   entityRef,
   moduleManifest,
-  operationInputsOf,
   pageOverFold,
   permissionKey,
   type EntityRef,
   type ListPage,
   type Page,
   substratError,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -60,6 +58,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -866,9 +865,7 @@ const periodLinesOp: OperationHandler<{ periodId: string } & ListPage, Page<Peri
 export const meteringModule: ModuleRegistration = {
   manifest: meteringManifest,
   migrations: meteringMigrations,
-  // Parse, don't trust: the HOST applies the declared schemas, on every path in.
-  operationInputs: operationInputsOf(meteringOperations),
-  operations: {
+  ...operationsFor(meteringOperations)({
     'metering/configure-meter': configureMeterOp,
     'metering/list-meters': listMetersOp,
     'metering/record': recordOp,
@@ -877,5 +874,5 @@ export const meteringModule: ModuleRegistration = {
     'metering/close-period': closePeriodOp,
     'metering/list-periods': listPeriodsOp,
     'metering/period-lines': periodLinesOp,
-  } satisfies OperationImpl<typeof meteringOperations, OperationContext>,
+  }),
 };

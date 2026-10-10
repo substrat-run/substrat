@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { journalColumns } from '@substrat-run/model-emit';
-import { meridianEntities, meridianModel } from '../src/entities.js';
+import { meridianEntities } from '../src/entities.js';
+import { meridianModel } from '../src/model.js';
 import { meridianMigrations } from '../src/migrations.js';
 
 const journal = journalColumns(meridianMigrations.map((m) => m.sql).join('\n'));

@@ -14,12 +14,11 @@ import { bikeShopEntities } from './entities.js';
 // HTTP API.
 //
 // This is one declaration, not documentation of another one. `src/module.ts`
-// binds its handlers to this object with `satisfies OperationImpl<…>`, so four
-// things become compile errors at the exact method: a handler whose input
+// binds its handlers to this object with `operationsFor(bikeShopOperations)`, so
+// four things become compile errors at the exact method: a handler whose input
 // disagrees with `input`, one whose return disagrees with `output`, an
 // operation declared and not implemented, and one implemented and not declared.
-// `operationInputsOf(bikeShopOperations)` hands the host the same schemas, so
-// every invocation is parsed before the guards and the handler — and
+// The same call hands the host the declared schemas, so every invocation is parsed before the guards and the handler — and
 // `mountOperations` (src/routes.ts) derives the route table from the `http`
 // each operation declares, so a `{var}` in a path that names no input field is
 // a compile error too, and there is no second list of routes to drift.

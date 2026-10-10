@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid, webCryptoSecretBox, type OperationHandler } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox, type OperationHandler, undeclaredOperations } from '@substrat-run/kernel';
 import {
   dataSubjectId,
   moduleManifest,
@@ -114,7 +114,7 @@ describe('subject erasure (#37)', () => {
         entitlementKey: 'people',
       }),
       migrations: [{ version: '0001-init', sql: 'CREATE TABLE people_notes (id TEXT PRIMARY KEY)' }],
-      operations: {
+      ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
         'people/note': ((ctx, input: { subject: string; secret: string }) => {
           ctx.emit({
             type: 'people.noted',
@@ -127,7 +127,7 @@ describe('subject erasure (#37)', () => {
             payload: { secret: input.secret },
           });
         }) as OperationHandler<never, unknown>,
-      },
+      }),
     });
 
     await host.admin.createTenant(staff, { id: t, slug: 'shred-co', name: 'Shred Co' });

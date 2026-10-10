@@ -1,6 +1,7 @@
 import { emitModel } from '@substrat-run/contracts';
 import { protocolEntities } from './entities.js';
 import { protocolManifest } from './index.js';
+import { protocolOperations } from './operations.js';
 import { protocolLifecycles } from './lifecycle.js';
 
 /**
@@ -24,4 +25,5 @@ import { protocolLifecycles } from './lifecycle.js';
 export const protocolModel = emitModel(protocolEntities, {
   lifecycles: protocolLifecycles,
   version: protocolManifest.version,
+  operations: protocolOperations,
 });

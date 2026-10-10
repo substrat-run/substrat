@@ -471,6 +471,7 @@ import {
   assertNoCallerPurge,
   purgeReportOf,
   purgeStillDue,
+  assertBoundOperations,
   registerTrashTargets,
   type PurgePass,
   type AsyncLinePass,
@@ -3802,12 +3803,14 @@ export class CloudflareScopeHost implements ScopeHost {
       }
       this.predicateNames.set(name, manifest.id);
     }
+    // #1835: a forged `operations` is refused at construction too, before its scope ever wakes.
+    assertBoundOperations(manifest.id, registration.operations);
     // #119: the trash rules, refused here too so a bad module fails at construction, not at its
     // scope's first wake. The scope holds the targets; the coordinator only needs the verdict.
     registerTrashTargets(
       manifest.id,
-      new Set(Object.keys(registration.operations ?? {})),
-      registration.operationInputs,
+      new Set(Object.keys(registration.operations?.handlers ?? {})),
+      registration.operations?.inputs,
       manifest.entityStates,
       manifest.schedules,
     );
@@ -3824,7 +3827,7 @@ export class CloudflareScopeHost implements ScopeHost {
       this.moduleFreshness.set(manifest.id, manifest.freshness);
     }
     this.migrationTotal += migrations.length;
-    const ownOperations = new Set(Object.keys(registration.operations ?? {}));
+    const ownOperations = new Set(Object.keys(registration.operations?.handlers ?? {}));
     for (const name of manifest.withdraws ?? []) {
       if (ownOperations.has(name)) {
         throw new Error(
@@ -3838,12 +3841,12 @@ export class CloudflareScopeHost implements ScopeHost {
     // #893: the facade validates what the DO will enforce. A schema declared for
     // an operation this module does not bind enforces nothing while reading as
     // coverage — refused here so it is caught at registration rather than never.
-    const unboundInputs = Object.keys(registration.operationInputs ?? {}).filter(
+    const unboundInputs = Object.keys(registration.operations?.inputs ?? {}).filter(
       (name) => !ownOperations.has(name),
     );
     if (unboundInputs.length > 0) {
       throw new Error(
-        `${manifest.id} declares operationInputs for unbound operation(s): ` +
+        `${manifest.id} declares operations.inputs for unbound operation(s): ` +
           `${unboundInputs.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
       );
     }
@@ -3852,7 +3855,7 @@ export class CloudflareScopeHost implements ScopeHost {
       entitlementKey: manifest.entitlementKey,
       scheduledOperations: new Set((manifest.schedules ?? []).map((sch) => sch.operation)),
     };
-    for (const name of Object.keys(registration.operations ?? {})) {
+    for (const name of Object.keys(registration.operations?.handlers ?? {})) {
       this.bindOperation(name);
       this.operationEntitlement.set(name, binding);
     }

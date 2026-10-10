@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { assertAllowed, ulid, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
+import { assertAllowed, ulid, type ModuleRegistration, type OperationHandler, undeclaredOperations } from '@substrat-run/kernel';
 import {
   moduleManifest,
   platformActorId,
@@ -57,12 +57,12 @@ const deskModule: ModuleRegistration = {
     ],
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE desks (id TEXT PRIMARY KEY)' }],
-  operations: {
+  ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
     'desk/list': (async (ctx) => {
       assertAllowed(await ctx.check('desk:read' as PermissionKey));
       return ctx.sql.query('SELECT id FROM desks');
     }) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 describe('the peer switch routes (#1706)', () => {

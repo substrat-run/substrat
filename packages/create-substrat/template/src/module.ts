@@ -4,22 +4,20 @@ import {
   listLimitOf,
   moneyOf,
   mulMoney,
-  operationInputsOf,
   pageOf,
   pageVisible,
   substratError,
   z,
   type HandlerInput,
   type HandlerOutput,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
   readTimeline,
   ulid,
   type ModuleRegistration,
-  type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 import {
   closeWorkOrder,
@@ -47,7 +45,7 @@ import { bikeShopMigrations } from './migrations.js';
 //
 // WHAT EACH OPERATION IS is declared in `src/operations.ts`, against the
 // entities in `src/entities.ts` — this file holds only the bodies. The binding
-// at the bottom is `satisfies OperationImpl<…>`, so a handler that disagrees
+// at the bottom is `operationsFor(bikeShopOperations)`, so a handler that disagrees
 // with its declaration is a compile error at the exact method.
 // ============================================================================
 
@@ -295,12 +293,13 @@ const timelineOp: Op<'shop/timeline'> = async (ctx, input) => {
 };
 
 /**
- * The handlers, bound to `bikeShopOperations`. `satisfies` is the drift
+ * The handlers, bound to `bikeShopOperations`. `operationsFor` is the drift
  * detector: change a declared input or return and tsc names the method whose
  * handler no longer agrees. An operation declared but not implemented, or
- * implemented but not declared, is an error here too.
+ * implemented but not declared, is an error here too — and the schemas the
+ * host parses every invocation with come from the same declaration.
  */
-const declaredOperations = {
+const bound = operationsFor(bikeShopOperations)({
   'shop/create-customer': createCustomerOp,
   'shop/list-customers': listCustomersOp,
   'shop/register-bike': registerBikeOp,
@@ -311,21 +310,10 @@ const declaredOperations = {
   'shop/close-repair': closeRepairOp,
   'shop/portal-repairs': portalRepairsOp,
   'shop/timeline': timelineOp,
-} satisfies OperationImpl<typeof bikeShopOperations, OperationContext>;
+});
 
 export const bikeShopModule: ModuleRegistration = {
   manifest: bikeShopManifest,
   migrations: bikeShopMigrations,
-  // The host parses every invocation against the DECLARED input schemas before
-  // the guards, the permission check and the handler — so "parse, don't trust"
-  // holds on every path in (HTTP, test, seed, schedule) rather than in the
-  // handlers that remembered to do it themselves.
-  operationInputs: operationInputsOf(bikeShopOperations),
-  operations: {
-    // All ten bound to the declaration: input and return are checked against
-    // `bikeShopOperations` at the exact method. The `as never` casts this map
-    // used to carry were never necessary — `OperationHandler<never, unknown>`
-    // accepts any handler by contravariance — they simply threw the types away.
-    ...(declaredOperations as Record<string, OperationHandler<never, unknown>>),
-  },
+  ...bound,
 };

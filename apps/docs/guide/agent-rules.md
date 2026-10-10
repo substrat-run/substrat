@@ -156,15 +156,21 @@ export const bikeShopOperations = defineOperations(bikeShopEntities, SHOP_PERMIS
 Then `src/module.ts` holds only the **bodies**, bound to that declaration:
 
 ```ts
-} satisfies OperationImpl<typeof bikeShopOperations, OperationContext>;
+const bound = operationsFor(bikeShopOperations)({
+  'shop/create-customer': createCustomerOp,
+  …
+});
+export const bikeShopModule: ModuleRegistration = { manifest, migrations, ...bound };
 ```
 
-Four things are now compile errors at the exact method: a handler whose input
+Five things are now compile errors at the exact method: a handler whose input
 disagrees with the declared `input`, one whose return disagrees with `output`, an
-operation declared and not implemented, and one implemented and not declared. The
-same object feeds `operationInputs: operationInputsOf(bikeShopOperations)`, so the
-schemas the host parses with are the ones the declaration states — they cannot drift,
-because there is only one of them.
+operation declared and not implemented, one implemented and not declared, and one
+whose type was thrown away with `as never` or `as any`. The same call hands the host
+the schemas it parses with (`operationInputsOf(bikeShopOperations)`), so they are the
+ones the declaration states — they cannot drift, because there is only one of them.
+A registration takes no other kind of map: a hand-written `operations: { … }` does not
+compile, and `boundary-lint` refuses a cast of the whole map.
 
 The permission list works the same way. `SHOP_PERMISSIONS`, the array handed to
 `defineOperations`, is also the `keys` that `src/provision.ts` hands
@@ -195,6 +201,18 @@ to do both by hand — forget the first and the endpoint is pinned to page one n
 matter what the operation supports, forget the second and it answers with an
 envelope where it used to answer with an array. That is the case for not
 hand-mounting anything an operation can declare.
+
+**An operation the model describes completely says who writes its handler.** Four
+shapes are derivable: a `GET` of one row by its id, a `GET` that is a `paged.over` page of the
+entity's own rows behind declared filters, a `PATCH` field bag with `concurrency`, and
+a `DELETE` of a row nothing declares as parent. Declare `derive: 'get'` (or `'list'`,
+`'update'`, `'delete'`) and write no handler: `operationsFor` leaves it out of the map
+it requires and supplies the platform's handler, which checks the declared key first,
+reads and writes only declared columns and emits the declared event. Keep a handler
+only with `authored: '<what the derived one would get wrong here>'`. `defineOperations`
+refuses at module load a derivable operation that declares neither, a `derive` whose
+declaration is not that shape, and an `authored` on an operation nothing could derive.
+Each refusal names its remedy.
 
 ## The rules (non-negotiable)
 
@@ -245,11 +263,11 @@ consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
    (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
 10. **Web-standard APIs always** — `globalThis.crypto`, `TextEncoder`, `URL`. Never
     hand-roll a hash to dodge an import ban.
-11. **Parse, don't trust** — and the **host** is what parses. A module passes
-    `operationInputs: operationInputsOf(ops)` beside its `operations`, and every invocation
-    is parsed against the declared schema before the guards and the handler, on every path
-    in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared input nobody
-    parses stops being possible rather than merely discouraged. Import `z` from
+11. **Parse, don't trust** — and the **host** is what parses. A module binds its
+    handlers with `operationsFor(ops)(…)`, which hands the host the declared schemas with
+    them, and every invocation is parsed against them before the guards and the handler,
+    on every path in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared
+    input nobody parses stops being possible rather than merely discouraged. Import `z` from
     `@substrat-run/contracts`, **never from `zod`**. Zod schemas don't compose across
     copies or majors; composing a contracts schema into one built from a separate `zod`
     fails at *runtime* (`expected a Zod schema`) with an error pointing nowhere near the

@@ -1,6 +1,7 @@
 import { emitModel } from '@substrat-run/contracts';
 import { manyfoldEntities } from './entities.js';
 import { manyfoldLifecycles } from './module.js';
+import { manyfoldOperations } from './operations.js';
 
 /**
  * The artifact of record for this vertical (#697/#844).
@@ -9,4 +10,4 @@ import { manyfoldLifecycles } from './module.js';
  * `entities.ts` — `module.ts` imports the entities, so emitting from there would
  * close a cycle. Nothing imports this file back.
  */
-export const manyfoldModel = emitModel(manyfoldEntities, { lifecycles: manyfoldLifecycles });
+export const manyfoldModel = emitModel(manyfoldEntities, { lifecycles: manyfoldLifecycles, operations: manyfoldOperations });

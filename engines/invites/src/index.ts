@@ -13,14 +13,12 @@
 import {
   entityRef,
   moduleManifest,
-  operationInputsOf,
   pageOverFold,
   permissionKey,
   substratError,
   type ListPage,
   type OrgId,
   type Page,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -73,6 +71,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -510,12 +509,10 @@ const revokeOp: OperationHandler<{ invitationId: string }, void> = async (ctx, i
 export const invitesModule: ModuleRegistration = {
   manifest: invitesManifest,
   migrations: invitesMigrations,
-  // Parse, don't trust: the HOST applies the declared schemas, on every path in.
-  operationInputs: operationInputsOf(invitesOperations),
-  operations: {
+  ...operationsFor(invitesOperations)({
     'invites/send': sendOp,
     'invites/accept': acceptOp,
     'invites/list': listOp,
     'invites/revoke': revokeOp,
-  } satisfies OperationImpl<typeof invitesOperations, OperationContext>,
+  }),
 };

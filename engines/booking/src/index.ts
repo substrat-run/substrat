@@ -35,9 +35,6 @@ import {
   type Money,
   type Page,
   substratError,
-  operationConcurrencyOf,
-  operationInputsOf,
-  type OperationImpl,
 } from '@substrat-run/contracts';
 
 /**
@@ -170,6 +167,7 @@ import {
   type OperationContext,
   type OperationHandler,
   type PageParams,
+  operationsFor,
 } from '@substrat-run/kernel';
 
 // ============================================================================
@@ -1349,22 +1347,11 @@ const OPERATIONS = {
   'booking/get': getOp,
   'booking/list': listOp,
   'booking/availability': availabilityOp,
-} satisfies OperationImpl<typeof bookingOperations, OperationContext>;
+};
 
 export const bookingModule: ModuleRegistration = {
   manifest: bookingManifest,
   migrations: bookingMigrations,
-  operations: OPERATIONS,
-  /**
-   * #893: the host parses each operation's declared `input` before the guards
-   * and the handler see it. Derived from the same declaration that produces the
-   * manifest and the routes — the schema is written once, in `operations.ts`.
-   */
-  operationInputs: operationInputsOf(bookingOperations),
-  /**
-   * #129: the host compares `If-Match` against the reservation's version for the
-   * operations that declare `concurrency` — `booking/move` since #961 — from the
-   * same declaration, so the guard cannot be forgotten by a handler.
-   */
-  operationConcurrency: operationConcurrencyOf(bookingOperations),
+  // `booking/move` declares `concurrency` (#961), so the host compares its `If-Match` (#129).
+  ...operationsFor(bookingOperations)(OPERATIONS),
 };

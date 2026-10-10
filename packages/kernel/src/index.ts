@@ -158,6 +158,13 @@ export {
   type CheckedWithin,
 } from './scope-host.js';
 export {
+  assertBoundOperations,
+  operationsFor,
+  undeclaredOperations,
+  type BoundOperations,
+  type HandlerMap,
+} from './module-operations.js';
+export {
   isSecretBoxConfigured,
   SecretBoxUnconfiguredError,
   unconfiguredSecretBox,
