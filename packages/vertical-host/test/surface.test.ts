@@ -994,7 +994,11 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
 
     it('is behind the platform secret, and revokes nothing without it', async () => {
       const body = { scopeId: SCOPE, capabilityId: CAPABILITY, actor: OPERATOR };
-      for (const headers of [{ 'content-type': 'application/json' }, { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: 'nope' }]) {
+      const unauthed: Record<string, string>[] = [
+        { 'content-type': 'application/json' },
+        { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: 'nope' },
+      ];
+      for (const headers of unauthed) {
         const { host, res } = revoke(body, headers);
         expect((await res).status).toBe(403);
         expect(host.calls).not.toContain('revokeCapabilityLocal');
