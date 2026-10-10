@@ -191,7 +191,7 @@ describe('ControlPlaneDO.importDump builds the spine from its own DDL (#1898)', 
         const crafted = craft(
           withTable(before, '_substrat_tenant_tuples', (t) => ({ ...t, rows: t.rows.map((r) => r.map((v) => (v === 'principal:Hal' ? 'principal:Ivy' : v))) })),
         );
-        await expect(dir.importDump(crafted)).rejects.toThrow(message);
+        await expect(() => dir.importDump(crafted)).rejects.toThrow(message);
         expect(await dir.exportDump()).toEqual(before);
       });
     }

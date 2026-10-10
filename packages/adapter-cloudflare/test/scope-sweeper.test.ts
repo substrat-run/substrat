@@ -315,8 +315,8 @@ describe('#1902 — the sweeper’s id check, without contracts at run time', ()
 
   it('refuses a malformed id over RPC and leaves the roster as it was', async () => {
     const before = await runInDurableObject(sweeperStub(), async (_i, state) => (await state.storage.list({ prefix: 'scope:' })).size);
-    await expect(sweeperStub().noteScope('nope' as TenantId, scopeId.parse(ulid()))).rejects.toThrow(/tenantId must be a ULID/);
-    await expect(sweeperStub().forgetScope('nope' as ScopeId)).rejects.toThrow(/scopeId must be a ULID/);
+    await expect(() => sweeperStub().noteScope('nope' as TenantId, scopeId.parse(ulid()))).rejects.toThrow(/tenantId must be a ULID/);
+    await expect(() => sweeperStub().forgetScope('nope' as ScopeId)).rejects.toThrow(/scopeId must be a ULID/);
     const after = await runInDurableObject(sweeperStub(), async (_i, state) => (await state.storage.list({ prefix: 'scope:' })).size);
     expect(after).toBe(before);
   });

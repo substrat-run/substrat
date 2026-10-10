@@ -67,7 +67,7 @@ describe('ControlPlaneDO: a registry the dump would widen past the column cap (#
     const ownWidth = before.find((t) => t.name === 'tenants')!.columns.length;
     // At the cap in the dump itself, so `assertReplayableDump` lets it through.
     const extra = 100 - own.length;
-    await expect(dir.importDump(widened(before, extra))).rejects.toThrow(new RegExp(`tenants would hold ${ownWidth + extra} columns.*at most 100`));
+    await expect(() => dir.importDump(widened(before, extra))).rejects.toThrow(new RegExp(`tenants would hold ${ownWidth + extra} columns.*at most 100`));
     expect(await dir.exportDump()).toEqual(before);
   });
 

@@ -52,6 +52,8 @@
     "scopes:mark-copies": "node scripts/mark-copies.mjs",
     "todo-demo": "pnpm --filter @substrat-run/demo-todo",
     "lint:tests": "node tools/test-independence.mjs",
+    "lint:floating-promises": "node tools/floating-promises.mjs",
+    "test:workerd-rejections": "node --test tools/vitest/workerd-rejections.test.mjs",
     "lint:docs": "node tools/lint-docs.mjs",
     "lint:docs:drift": "node tools/docs-drift.mjs",
     "lint:docs:structure": "node tools/docs-structure.mjs",
@@ -88,6 +90,8 @@
     "concurrently": "^9.0.0",
     "esbuild": "^0.28.2",
     "npm-package-arg": "^13.0.2",
+    "oxlint": "1.85.0",
+    "oxlint-tsgolint": "7.0.2003",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
     "wrangler": "^4.146.0"

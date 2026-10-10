@@ -44,9 +44,7 @@ export default defineConfig({
     testTimeout: 30_000,
     // One file at a time, as the old pool's `singleWorker` ran them.
     fileParallelism: false,
-    // workerd reports a Durable Object RPC rejection as "Uncaught (in promise)" on the server side
-    // even when the caller awaits it and asserts `.rejects`; the plugin's node-compat `process`
-    // events now hand those reports to vitest. Printed, not failed: parity with the old pool (#2131).
-    dangerouslyIgnoreUnhandledErrors: true,
+    // A rejection nobody handles fails its test; one an RPC caller awaited does not (#2131).
+    setupFiles: ['../../tools/vitest/workerd-rejections.mjs'],
   },
 });

@@ -1463,10 +1463,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         const p = await legacy('bookkeeping-refuses');
         expect(await v1stub(p.scopeId).markCopy()).toBe(true);
         const before = await hostFor('v1').loadMarkerLocal(p.scopeId);
-        await expect(
+        await expect(() =>
           v1stub(p.scopeId).testBookkeepingWrite('INSERT INTO pv_notes (id, body) VALUES (?, ?)', 'n-unrevised', 'unrevised'),
         ).rejects.toThrow(/takes only the copy-marker insert/);
-        await expect(v1stub(p.scopeId).testBookkeepingWrite('DELETE FROM _substrat_copy_origin WHERE id = 1')).rejects.toThrow(
+        await expect(() => v1stub(p.scopeId).testBookkeepingWrite('DELETE FROM _substrat_copy_origin WHERE id = 1')).rejects.toThrow(
           /takes only the copy-marker insert/,
         );
         expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual(['legacy data']);

@@ -37,7 +37,7 @@ describe("a ScopeDO restore's replayed DDL naming the spine in REFERENCES (#1898
       await scope.importDump(own);
       const before = await scope.exportDump();
       const crafted = before.map((t) => (t.name === 'notes' ? { ...t, ddl, rows: [['x']] } : t));
-      await expect(scope.importDump(crafted)).rejects.toThrow(/foreign key to the platform spine/);
+      await expect(() => scope.importDump(crafted)).rejects.toThrow(/foreign key to the platform spine/);
       expect(await scope.exportDump()).toEqual(before);
     });
   }

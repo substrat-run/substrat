@@ -399,7 +399,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
             await dir.restore(withTable(fresh, 'tenants', (t) => ({ ...t, rows: [rowOf(t.columns, { ...LIVE_TENANT, slug: 'kept', name: 'Kept' })] })));
             const before = await dir.snapshot();
             const attempt = craft(withTable(before, 'tenants', (t) => ({ ...t, rows: t.rows.map((r) => r.map((v) => (v === 'Kept' ? 'Changed' : v))) })));
-            await expect(dir.restore(attempt)).rejects.toThrow(message);
+            await expect(() => dir.restore(attempt)).rejects.toThrow(message);
             expect(await dir.snapshot()).toEqual(before);
           });
         });

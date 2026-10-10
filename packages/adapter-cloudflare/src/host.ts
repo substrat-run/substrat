@@ -8588,7 +8588,7 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
 
-      connectionSealingKey: (id: ConnectionId) => this.ensureSealingKey(id),
+      connectionSealingKey: async (id: ConnectionId) => this.ensureSealingKey(id),
 
       connectionSealingKeys: async (tenantId: TenantId, vertical: string) => {
         // LIVE connections only. A revoked connection's key is KEPT (its pending
@@ -8889,7 +8889,9 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows;
       },
       /** #2064: settle an intent with no outcome — one unit in the directory DO. */
-      settleUnrecordedOutcome: (actor, input) =>
+      // `async`, like every other method here: a bare stub call hands the caller workerd's RPC
+      // promise, which is callable (for pipelining) where `Promise<boolean>` is not (#2131).
+      settleUnrecordedOutcome: async (actor, input) =>
         this.cp.settleUnrecordedOutcome({ actor, intentId: input.intentId, error: input.error }),
       /** #2005: one change to a scope's copy marker, written around the vertical's own change. */
       recordCopyMark: async (actor, entry) => {
