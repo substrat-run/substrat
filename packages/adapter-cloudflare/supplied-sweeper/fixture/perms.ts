@@ -11,7 +11,12 @@ import {
   type PermissionKey,
   type RoleDefinition,
 } from '@substrat-run/contracts';
-import { assertAllowed, type ModuleRegistration, type OperationHandler } from '@substrat-run/kernel';
+import {
+  assertAllowed,
+  undeclaredOperations,
+  type ModuleRegistration,
+  type OperationHandler,
+} from '@substrat-run/kernel';
 
 const TICK = 'fixture:tick' as PermissionKey;
 
@@ -28,14 +33,14 @@ export const fixtureModule: ModuleRegistration = {
     schedules: [{ operation: 'fixture/tick', cadence: { everyMinutes: 60 }, permissions: [TICK] }],
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE fixture_ticks (n INTEGER NOT NULL)' }],
-  operations: {
+  ...undeclaredOperations('a fixture vertical that exists to be swept, with no declared surface', {
     'fixture/tick': (async (ctx) => {
       assertAllowed(await ctx.check(TICK));
       ctx.sql.exec('INSERT INTO fixture_ticks (n) VALUES (1)');
     }) as OperationHandler<never, unknown>,
     'fixture/count': ((ctx) =>
       ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM fixture_ticks')[0]!.n) as OperationHandler<never, unknown>,
-  },
+  }),
 };
 
 export const MODULES = [fixtureModule];
