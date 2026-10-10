@@ -184,7 +184,7 @@ describe('engine-notifications', () => {
     expect(await intents()).toEqual([]);
   });
 
-    it('a recipient that is not a principal id throws rather than mailing nobody quietly', async () => {
+  it('a recipient that is not a principal id throws rather than mailing nobody quietly', async () => {
     await expect(send(assigned(['bob']))).rejects.toMatchObject({ code: 'validation_failed' });
   });
 
