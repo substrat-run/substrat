@@ -147,6 +147,14 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `vulnerable_versions` contains the pinned version; the rest of the tree keeps the
   critical-only gate. Pin exactly (a range exits 2), and a consciously accepted
   advisory is a GHSA id in `pnpm.auditConfig.ignoreGhsas`, same as the critical gate.
+  It also refuses a **stale** pin: a newer release on the pin's line (same major) out for
+  more than 30 days, read with `pnpm view <name> time`. That one fails the weekly run, a
+  push to main and a PR that changes the overrides, the lockfile or the accept file, and
+  is only a warning on any other PR, so the calendar never reddens an unrelated PR. A
+  consciously held pin is an entry in `tools/override-advisories.accept.json` (package,
+  version, reason, expiry); an expired entry fails like the stale pin it held. Prefer the
+  `catalog:` to an override whenever one version is all you need: Dependabot reads the
+  catalog, and an override only when nothing else will do.
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
