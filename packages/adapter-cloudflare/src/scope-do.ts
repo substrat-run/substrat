@@ -2385,28 +2385,47 @@ export function defineScopeDO(
      * One bounded pass of a declared shape's reconcile (#2071), with its events, in ONE
      * transaction: how many it topped up, how many it took retired keys from (#2082), and where
      * the next pass resumes (#2083), `null` once the scope is done.
+     *
+     * A host from before #2083 passes no `after` at all (a new one passes `null` to start) and
+     * loops until `done`, starting each call over. A bounded pass started over never gets past a
+     * window of finished markers, so that host would call forever; for it, this call runs the
+     * whole reconcile here instead, a transaction per pass, and answers `done: true`. Drop the
+     * branch and `done` once no host that predates the cursor can address a ScopeDO built from this.
      */
     async topUpEntityGrantShapes(
       tenantId: string,
       scopeId: string,
       shapes: readonly EntityGrantShape[],
       limit: number,
-      after: ShapeCursor | null,
-    ): Promise<{ toppedUp: number; retired: number; next: ShapeCursor | null }> {
-      return this.queue.enqueue(() =>
-        this.revision.transactionSync(() =>
-          topUpEntityGrantShapes(this.switchSql(), {
-            tenantId,
-            scopeId,
-            shapes,
-            now: new Date().toISOString(),
-            limit,
-            after,
-            mintEventId: (ms) => this.mintEventId(ms),
-            version: this.env.SUBSTRAT_VERSION_ID ?? null,
-          }),
-        ),
-      );
+      after?: ShapeCursor | null,
+    ): Promise<{ toppedUp: number; retired: number; next: ShapeCursor | null; done: boolean }> {
+      const pass = (from: ShapeCursor | null) =>
+        this.queue.enqueue(() =>
+          this.revision.transactionSync(() =>
+            topUpEntityGrantShapes(this.switchSql(), {
+              tenantId,
+              scopeId,
+              shapes,
+              now: new Date().toISOString(),
+              limit,
+              after: from,
+              mintEventId: (ms) => this.mintEventId(ms),
+              version: this.env.SUBSTRAT_VERSION_ID ?? null,
+            }),
+          ),
+        );
+      if (after !== undefined) {
+        const one = await pass(after);
+        return { ...one, done: one.next === null };
+      }
+      let [toppedUp, retired, from] = [0, 0, null as ShapeCursor | null];
+      do {
+        const one = await pass(from);
+        toppedUp += one.toppedUp;
+        retired += one.retired;
+        from = one.next;
+      } while (from);
+      return { toppedUp, retired, next: null, done: true };
     }
 
     /**

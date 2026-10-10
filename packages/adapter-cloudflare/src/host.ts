@@ -1515,14 +1515,17 @@ interface ScopeStubRpc {
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
   /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
   grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
-  /** One bounded pass of the shape reconcile with its events (#2071, retirements #2082), resuming at `after` (#2083). */
+  /**
+   * One bounded pass of the shape reconcile with its events (#2071, retirements #2082), resuming
+   * at `after` (#2083). A DO from before the cursor ignores `after`, answers `done` and no `next`.
+   */
   topUpEntityGrantShapes(
     tenantId: string,
     scopeId: string,
     shapes: readonly EntityGrantShape[],
     limit: number,
     after: ShapeCursor | null,
-  ): Promise<{ toppedUp: number; retired: number; next: ShapeCursor | null }>;
+  ): Promise<{ toppedUp: number; retired: number; next?: ShapeCursor | null; done: boolean }>;
   /** The EXPLICIT grant: `INSERT OR REPLACE`, so it clears a tombstone. */
   writeTuple(
     subject: string,
@@ -10589,14 +10592,16 @@ export class CloudflareScopeHost implements ScopeHost {
     let retired = 0;
     if (shapes.length === 0) return { toppedUp, retired };
     const stub = this.scopeStub(scopeId);
-    // Each pass resumes where the last one stopped (#2083), until one reports nothing left.
+    // Each pass resumes where the last one stopped (#2083), until one reports nothing left. A DO
+    // from before the cursor answers no `next`: its passes each start over, until it says `done`.
     let after: ShapeCursor | null = null;
-    do {
+    for (let more = true; more; ) {
       const pass = await stub.topUpEntityGrantShapes(tenantId, scopeId, shapes, limit, after);
       toppedUp += pass.toppedUp;
       retired += pass.retired;
-      after = pass.next;
-    } while (after);
+      after = pass.next ?? null;
+      more = pass.next === undefined ? !pass.done : pass.next !== null;
+    }
     return { toppedUp, retired };
   }
 
