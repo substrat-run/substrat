@@ -35,6 +35,7 @@ import {
   type OperationHandler,
 } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 interface CauseRow {
   id: string;
@@ -88,7 +89,7 @@ const causeConsumer: ConsumerHandler = async (ctx, event) => {
 const causeMod: ModuleRegistration = {
   manifest: causeManifest,
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE cause_log (v TEXT NOT NULL)' }],
-  operations: {
+  ...testOperations({
     'cause/produce': ((ctx) => {
       ctx.emit({
         type: 'cause.first',
@@ -102,7 +103,7 @@ const causeMod: ModuleRegistration = {
       ctx.sql.query(
         `SELECT id, type, scope_id, caused_by FROM _substrat_outbox ORDER BY id`,
       )) as OperationHandler<never, unknown>,
-  },
+  }),
   consumers: { 'cause.first': causeConsumer },
 };
 

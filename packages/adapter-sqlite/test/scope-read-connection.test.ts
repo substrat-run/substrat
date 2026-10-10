@@ -47,6 +47,7 @@ import {
   type OperationHandler,
 } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
+import { testOperations } from '@substrat-run/contract-tests';
 
 const VERTICAL = 'reader-vertical';
 const READER = '@test/reader';
@@ -64,7 +65,7 @@ const readerMod: ModuleRegistration = {
     schedules: [{ operation: 'reader/tick', cadence: { everyMinutes: 60 }, permissions: ['reader:tick'] }],
   }),
   migrations: [],
-  operations: { 'reader/tick': (() => undefined) as OperationHandler<never, unknown> },
+  ...testOperations({ 'reader/tick': (() => undefined) as OperationHandler<never, unknown> }),
 };
 
 /** What the host keeps per scope — reached into only to plant rows and to see the handles. */
