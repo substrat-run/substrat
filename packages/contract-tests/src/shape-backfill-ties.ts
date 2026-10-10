@@ -107,6 +107,8 @@ export function shapeBackfillTies(raw: SwitchSql, ids: { tenantId: string; scope
       after = topUpEntityGrantShapes(raw, { ...ids, shapes, now: new Date().toISOString(), limit: 1, after, mintEventId: () => ulid(), version: null }).next;
       passes++;
     } while (after && passes < 100);
+    // A cursor that never ends is a failure of its own, whatever happened to be marked by the cap.
+    if (after) throw new Error(`${name}: the reconcile did not finish in ${passes} passes`);
     const marked = raw
       .all("SELECT subject || ' ' || object AS pair FROM _substrat_tuples WHERE relation = 'bootstrap' AND object >= ? AND object < ? ORDER BY 1", `${type}:`, `${type};`)
       .map((r) => String(r['pair']));
