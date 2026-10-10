@@ -234,6 +234,26 @@ test('an unpublished newer patch is not a release: its `time` entry outlives it'
   assert.deepEqual(staleness('3.3.5', released(es), at('2030-01-01')), { latest: '3.3.6', behindSince: es['3.3.6'], stale: true });
 });
 
+test('a registry answer it cannot read throws (exit 2), never "none stale"', () => {
+  const now = after(times['4.13.9'], GRACE_DAYS + 1);
+  const { time, versions } = released(times);
+  // the valid twin: the same answer, whole, is read and is stale
+  assert.equal(staleness('4.13.8', { time, versions }, now).stale, true);
+  assert.equal(staleness('4.13.13', { time: { '4.13.13': times['4.13.13'] }, versions: '4.13.13' }, now), null);
+  for (const [why, bad] of [
+    ['missing versions', { time }],
+    ['object versions', { time, versions: Object.fromEntries(versions.map((v) => [v, {}])) }],
+    ['empty versions', { time, versions: [] }],
+    ['non-string version', { time, versions: [...versions, 4] }],
+    ['missing time', { versions }],
+    ['array time', { time: [], versions }],
+    ['null answer', null],
+  ]) {
+    assert.throws(() => staleness('4.13.8', bad, now), /registry answer/, why);
+  }
+  assert.throws(() => staleness('4.13.8', { time: { ...time, '4.13.9': 'soon' }, versions }, now), /unreadably/);
+});
+
 test('below 1.0.0 the minor is the line', () => {
   const zero = { '0.4.1': '2020-01-01T00:00:00Z', '0.4.2': '2020-02-01T00:00:00Z', '0.5.0': '2020-01-01T00:00:00Z' };
   assert.equal(staleness('0.4.2', released(zero), at('2030-01-01')), null);

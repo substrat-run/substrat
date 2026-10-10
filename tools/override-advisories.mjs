@@ -225,13 +225,25 @@ function lineOf(version) {
  * fail RELEASE and the `versions` lookup both.
  * @returns {{ latest: string, behindSince: string, stale: boolean } | null} null when nothing
  * newer exists on the line; `behindSince` is the publish date of the first release after it.
+ * Throws on an answer it cannot read: a missing `versions` would filter out every release and
+ * read as "none stale", and could-not-tell is not clean.
  */
-export function staleness(version, { time: times, versions }, now) {
-  const published = new Set([versions].flat()); // a package with one version answers a bare string
+export function staleness(version, release, now) {
+  const { time: times, versions } = release ?? {};
+  const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+  const isVersion = (v) => typeof v === 'string' && v !== '';
+  if (!isObject(times)) throw new Error('the registry answer has no `time` map');
+  // a package with one version answers `versions` as a bare string
+  if (!(isVersion(versions) || (Array.isArray(versions) && versions.length > 0 && versions.every(isVersion)))) {
+    throw new Error('the registry answer has no `versions` list');
+  }
+  const published = new Set([versions].flat());
   const newer = Object.keys(times)
     .filter((v) => published.has(v) && RELEASE.test(v) && lineOf(v) === lineOf(version) && cmp(v, version) > 0)
     .sort(cmp);
   if (newer.length === 0) return null;
+  const unreadable = newer.find((v) => typeof times[v] !== 'string' || Number.isNaN(Date.parse(times[v])));
+  if (unreadable) throw new Error(`the registry answer dates ${unreadable} unreadably: ${JSON.stringify(times[unreadable])}`);
   const behindSince = newer.map((v) => times[v]).sort()[0];
   return { latest: newer.at(-1), behindSince, stale: now.getTime() - Date.parse(behindSince) > GRACE_DAYS * DAY };
 }
