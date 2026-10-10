@@ -945,9 +945,10 @@ export function verticalEventsContractSuite(
     });
 
     // #1757: a replay keeps an import's delivery row in `_substrat_import_replays`, `error`
-    // included. That text is a handler's own sentence and can name a subject, but no erasure
-    // reaches it, live or moved aside: an imported event is piiClass 'none' (a classified one is
-    // withheld before any handler runs), so no subject link names its delivery. The control is
+    // included. On a released import that text is a handler's own sentence and can name a
+    // subject, but no erasure reaches it, live or moved aside: a released event is piiClass
+    // 'none', so no subject link names its delivery. (A withheld one, a classified one included,
+    // gets a dead letter whose error is the platform's own note, which names no one.) The control is
     // the scope's OWN classified event, whose failed delivery the same erasure does rewrite.
     // What is held is that the two copies of an import's delivery agree after an erasure, so a
     // later erasure that reaches the live row cannot leave the replayed one behind.
