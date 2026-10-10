@@ -131,7 +131,8 @@ describe('the derived create answers what the handler it replaced answered (#215
     expect(folder.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(folder.name).toBe('Refunds');
     expect(folder.created_by).toBe(String(desk.admin));
-    expect(new Date(folder.created_at).toISOString()).toBe(folder.created_at);
+    // `ctx.now()`, which on this desk is the kit's clock.
+    expect(folder.created_at).toBe(kit.clock.read());
 
     const events = folderEvents().slice(before);
     expect(events).toStrictEqual([

@@ -249,9 +249,16 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
       const create = (who: ScopeStub, input: Record<string, unknown>) => who.invoke<Tag>('derived/create-tag', input);
       const getTag = (who: ScopeStub, tagId: string) => who.invoke<Tag>('derived/get-tag', { tagId });
       const isoNow = (value: string) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+      /** Neither adapter's fixture moves its clock, so `ctx.now()` is the wall clock around the call. */
+      const during = async <T>(call: () => Promise<T>): Promise<{ result: T; from: string; to: string }> => {
+        const from = new Date().toISOString();
+        const result = await call();
+        return { result, from, to: new Date().toISOString() };
+      };
 
       it('inserts the row: a minted id, the parent link, the input, NULL for what was left out, the stamps', async () => {
-        const tag = await create(as, { dfolderId: 'fa', label: 'red' });
+        const { result: tag, from, to } = await during(() => create(as, { dfolderId: 'fa', label: 'red' }));
+        expect(tag.created_at >= from && tag.created_at <= to).toBe(true);
         expect(tag).toEqual({
           id: expect.any(String),
           dfolder_id: 'fa',
@@ -325,7 +332,10 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
 
       it('a derived update stamps the time and the new author, and leaves the create stamps alone', async () => {
         const tag = await create(as, { dfolderId: 'fa', label: 'restamped' });
-        const changed = await asCarl.invoke<Tag>('derived/update-tag', { tagId: tag.id, note: 'by carl' });
+        const { result: changed, from, to } = await during(() =>
+          asCarl.invoke<Tag>('derived/update-tag', { tagId: tag.id, note: 'by carl' }),
+        );
+        expect(changed.updated_at >= from && changed.updated_at <= to).toBe(true);
         expect(changed).toEqual({ ...tag, note: 'by carl', updated_at: changed.updated_at, updated_by: carl });
         expect(isoNow(changed.updated_at)).toBe(true);
         expect(changed.updated_at >= tag.created_at).toBe(true);
