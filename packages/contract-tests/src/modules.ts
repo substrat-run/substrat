@@ -33,6 +33,7 @@ import { rebuildMod, stateMod } from './entity-state-module.js';
 import { trashMod } from './entity-trash-module.js';
 import { derivedMod } from './derived-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
+import { bindMod } from './bind-module.js';
 import { commentedDdlMod } from './migration-comments.js';
 import {
   assertAllowed,
@@ -3038,6 +3039,10 @@ export const contractTestModules: ModuleRegistration[] = [
   // module half is harmless where it holds nothing.
   erasureMod,
   erasureOtherMod,
+  // #1686: the binding-invite suite's record type. Every scope carries it, so every erasure in
+  // every suite also runs its capture and release — over no recorded binding unless the binding
+  // suite reconciled one onto that scope, and a hook that touches only `bind_*` tables.
+  bindMod,
   // #2068 r5: a module whose migrations comment their DDL and then drop the last column. Every
   // scope in the kit migrates it, so a regression fails loudly everywhere.
   commentedDdlMod,

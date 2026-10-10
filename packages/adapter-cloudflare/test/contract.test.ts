@@ -35,6 +35,7 @@ import {
   type AttachmentTextHostOptions,
   capabilityContractSuite,
   becomeMintContractSuite,
+  bindingInviteContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
   connectLinkContractSuite,
@@ -274,6 +275,25 @@ becomeMintContractSuite('adapter-cloudflare', async () => {
   });
   return { host, verbs: host, cleanup: async () => host.close() };
 });
+
+// #1686: binding invites, on the DO path — the claim's bind and shape grant inside the ScopeDO's
+// exchange transaction, the DEFAULT tuple checker judging the minter there.
+bindingInviteContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    return { host, verbs: host, cleanup: async () => host.close() };
+  },
+  // The scope DO's own storage, past `ctx.sql`.
+  async (_tenant, scope, sql, params = []) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) =>
+      state.storage.sql.exec(sql, ...(params as SqlStorageValue[])).toArray(),
+    ),
+);
 
 // #1706: the peer door, on the DO path — the coordinator threads the platform's `caller` to the
 // ScopeDO, which admits it inside its queue on every invoke and acknowledges it; and the

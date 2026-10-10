@@ -70,6 +70,8 @@ import {
   mintedCapability,
   boundedBecomeMint,
   boundedBecomeRevoke,
+  boundedUnbind,
+  entityRef,
   becomeLinkState,
   principalBecomeCapabilityInput,
   capabilityGrant,
@@ -188,6 +190,7 @@ import {
   type BecomeCapabilityInput,
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
+  type BoundedUnbind,
   type BecomeLinkState,
   type PrincipalBecomeCapabilityInput,
   type CapabilityExchange,
@@ -1344,6 +1347,8 @@ interface ScopeStubRpc {
   ): Promise<BoundedBecomeMint>;
   /** Revoke a `become` a principal minted (#1686); false for any other capability. */
   revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke>;
+  /** A principal's bounded unbind of a binding shape's record (#1686). */
+  unbindEntityHolderBoundedFor(tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, entity: EntityRef): Promise<BoundedUnbind>;
   /** Where each named `become` link stands (#1686). */
   becomeLinkStatesFor(tenantId: TenantId, scopeId: ScopeId, ids: string[]): Promise<BecomeLinkState[]>;
   /** The operator's read of this scope's capabilities (#1686) — records, never a hash. */
@@ -5056,6 +5061,20 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.scopeRoleGate(tenantId, scopeId, 'revokeBecomeCapability');
     return boundedBecomeRevoke.parse(
       await this.scopeStub(scopeId).revokeBecomeCapabilityFor(tenantId, scopeId, capabilityId, principalId.parse(by)),
+    );
+  }
+
+  /**
+   * Unbind a binding shape's record (#1686) — the lever beside a binding invite: its column
+   * cleared and the shape its person held there through it taken back. The kernel bounds `caller`
+   * in the same ScopeDO task (the binding's key on the record); a refusal writes nothing.
+   */
+  async unbindEntityHolderBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, entity: EntityRef,
+  ): Promise<BoundedUnbind> {
+    await this.scopeRoleGate(tenantId, scopeId, 'unbindEntityHolderBounded');
+    return boundedUnbind.parse(
+      await this.scopeStub(scopeId).unbindEntityHolderBoundedFor(tenantId, scopeId, principalId.parse(caller), entityRef.parse(entity)),
     );
   }
 
@@ -10658,7 +10677,9 @@ export class CloudflareScopeHost implements ScopeHost {
     let toppedUp = 0;
     let retired = 0;
     let retirementsLeftOpen = 0;
-    if (shapes.length === 0) return { toppedUp, retired };
+    // No early return for an empty registry: a pass with no shapes still makes the scope's record
+    // of them match it (#1686), so a version that drops its last grantee or binding shape stops
+    // refusing direct grants of its keys and stops binding — as the pure host's pass does.
     const stub = this.scopeStub(scopeId);
     // Each pass resumes where the last one stopped (#2083), until one reports nothing left. A DO
     // from before the cursor answers no `next`: its passes each start over, until it says `done`.

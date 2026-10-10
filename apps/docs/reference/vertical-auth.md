@@ -237,6 +237,21 @@ including the two OIDC ones where Better Auth stays dormant:
   through untouched. The grant and the invite row live in two Durable Objects, so when the
   row cannot be written after the role was granted the mount revokes the link and the grant
   before reporting the failure, which is what `revokeScopeRole` is for.
+- `mountUnbindRoute(app, deps)`, from the same subpath, is the lever beside a **binding
+  invite** (#1686). That is a member invite whose link also carries `bind: { entity }`: whoever
+  claims it is bound to their own record. In the exchange's one transaction, the record's
+  declared principal column is set to them and they get the record's declared shape. That
+  shape is an `ENTITY_GRANTS` entry with a table holder and `bind: { permission }`, and the
+  rights come from it, not from the link. The minter must hold the bind key on the record,
+  both at mint and again at the claim, so a link whose minter has lost the key, or left, is
+  refused with the one refusal and stays unspent. A record that already names someone refuses
+  the link; nothing is ever re-bound. `POST /api/bindings/:entityType/:entityId/unbind` calls
+  the host's `unbindEntityHolderBounded`. It clears the column and takes back the shape the
+  person held there through it, answering `{ unbound: <principal> | null }`, or 403 naming the
+  bind key the caller lacks on that record, or 404 for a type the scope does not bind. A
+  vertical supplies `nodeFor`, `callerOf` (who is asking, 401 for nobody) and the host verb.
+  There is no admin gate, because the kernel's bound is the key on the record. An erasure of
+  the record, or of its person, unbinds too.
 - `membersHook({ roles, directory })`, from the same subpath, is what a vertical hands
   [`vertical-host`](/reference/vertical-host)'s `members` to let the dashboard manage its
   members. `roles` is the list it gives `mountInviteRoutes`. Both doors mint an invite with

@@ -8,6 +8,8 @@ import {
   CAPABILITY_SESSION_PREFIX,
   CAPABILITY_SESSION_TTL_MS,
   becomeCapabilityInput,
+  ENTITY_HOLDER_BOUND,
+  capabilityAction,
   capabilityAuthor,
   capabilityFilter,
   capabilityId as capabilityIdSchema,
@@ -23,7 +25,9 @@ import {
   type BecomeMintRefusal,
   type BoundedBecomeRevoke,
   type Coverage,
+  type CapabilityAction,
   type CapabilityAuthor,
+  type EntityHolderBoundPayload,
   type CapabilityBecomeMintedPayload,
   type CapabilityExchange,
   type CapabilityExercisedPayload,
@@ -47,6 +51,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { toBase64url } from './base64url.js';
+import { bindAtExchange, judgeBind } from './entity-binding.js';
 import { PermissionDenied, type Holdings, type PermissionChecker } from './permission-checker.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
@@ -121,6 +126,9 @@ export const CAPABILITY_DDL = `
     target_digest TEXT,
     -- #1686: why the kernel itself revoked it ('holdings-changed'); NULL for any other revoke.
     revoked_reason TEXT,
+    -- #1686: JSON capabilityAction — what a principal-minted 'become' also does at its exchange
+    -- ({"kind":"bind","entity":…}, a binding invite). NULL = a plain become, or an 'act' row.
+    action TEXT,
     -- JSON capabilityAuthor: a principal id (a module minted it, and its authority is
     -- re-checked on every use) or {"platform": …} (HostAdmin minted it).
     minted_by TEXT NOT NULL,
@@ -180,12 +188,14 @@ export interface CapabilityRow {
   target_digest?: string | null;
   /** #1686: why the kernel itself revoked it; NULL otherwise. */
   revoked_reason?: string | null;
+  /** #1686: a `become`'s carried action (JSON `capabilityAction`); NULL otherwise. */
+  action?: string | null;
 }
 
 /** Every column a read returns — everything but `token_hash`, which no reader has a use for. */
 const CAPABILITY_COLUMNS =
   'id, mode, label, entity_type, entity_id, permissions, operations, attachments, principal, minted_by, ' +
-  'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by, target_digest, revoked_reason';
+  'minted_at, expires_at, max_uses, uses, last_used_at, revoked_at, revoked_by, target_digest, revoked_reason, action';
 
 /** The row the permission checker reads for a capability subject (`ScopeTupleReader.capability`). */
 export function capabilityByIdQuery(id: string): { sql: string; params: SqlValue[] } {
@@ -330,7 +340,7 @@ export function capabilityRecordOf(row: CapabilityRow): CapabilityRecord {
   };
   return capabilityRecord.parse(
     row.mode === 'become'
-      ? { mode: 'become', ...common, principal: row.principal }
+      ? { mode: 'become', ...common, principal: row.principal, action: actionOf(row) }
       : {
           mode: 'act',
           ...common,
@@ -340,6 +350,11 @@ export function capabilityRecordOf(row: CapabilityRow): CapabilityRecord {
           attachments: row.attachments === null ? null : 'read',
         },
   );
+}
+
+/** A `become` row's carried action (#1686), or null for a plain one. */
+function actionOf(row: CapabilityRow): CapabilityAction | null {
+  return row.action ? capabilityAction.parse(JSON.parse(row.action)) : null;
 }
 
 /** A fresh capability secret: 256 bits, base64url, prefixed. Only its hash is ever stored. */
@@ -721,6 +736,12 @@ export async function exchangeCapability(
      * one recorded at mint; absent, such a link is refused.
      */
     holdings?: (principal: PrincipalId) => Promise<Holdings>;
+    /**
+     * Does `principal` hold `permission` on `entity` now (#1686) — the checker's `check`. A link
+     * carrying a `bind` is exchanged only while its minter still holds the binding's key on the
+     * record; absent, such a link is refused.
+     */
+    allowed?: (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => Promise<boolean>;
   },
   secret: unknown,
   /**
@@ -750,6 +771,18 @@ export async function exchangeCapability(
       return null;
     }
   }
+  // A binding invite (#1686): the record must still be bindable by this link's minter — the
+  // binding declared, the record there and naming nobody, the minter still holding the key on it.
+  // Judged before the use is taken, so a refusal writes nothing and the link stays as it was:
+  // a minter who has lost the key, or left, makes the link refuse, with the one answer.
+  const action = row.mode === 'become' ? actionOf(row) : null;
+  const minter = typeof JSON.parse(row.minted_by) === 'string' ? principalIdSchema.parse(JSON.parse(row.minted_by)) : null;
+  const allowed = deps.allowed;
+  const minterAllowed = allowed && minter ? (p: PermissionKey, e: EntityRef) => allowed(minter, p, e) : null;
+  if (action) {
+    if (!minterAllowed) return null;
+    if (!(await judgeBind(deps.sql, minterAllowed, action.entity)).ok) return null;
+  }
   const taken = deps.sql.exec(
     `UPDATE _substrat_capabilities SET uses = uses + 1, last_used_at = ?
      WHERE id = ? AND uses = ?`,
@@ -761,6 +794,26 @@ export async function exchangeCapability(
 
   if (row.mode === 'become') {
     const principal = principalIdSchema.parse(row.principal);
+    if (action && minterAllowed) {
+      // The same judgement again, in the write: nothing can have moved inside this transaction, so
+      // a refusal here is a fault — thrown, so the use taken above rolls back with it.
+      const bound = await bindAtExchange(deps.sql, minterAllowed, action.entity, principal);
+      if (!bound) throw substratError('internal', `capability ${row.id}: its bind on ${action.entity.entityType} was refused after it was judged`);
+      const boundPayload: EntityHolderBoundPayload = {
+        entity: action.entity,
+        principal,
+        capabilityId: capabilityIdSchema.parse(row.id),
+        mintedBy: minter!,
+        granted: bound.binding.keys.map((k) => permissionKey.parse(k)),
+      };
+      deps.emit(capabilityIdSchema.parse(row.id), {
+        type: ENTITY_HOLDER_BOUND,
+        schemaVersion: 1,
+        entity: action.entity,
+        piiClass: 'none',
+        payload: boundPayload,
+      });
+    }
     const payload: CapabilityExercisedPayload = {
       capabilityId: id,
       mode: 'become',
@@ -776,7 +829,7 @@ export async function exchangeCapability(
       piiClass: 'none',
       payload,
     });
-    return { kind: 'principal', capabilityId: id, principal };
+    return { kind: 'principal', capabilityId: id, principal, ...(action ? { bound: action.entity } : {}) };
   }
 
   const grant = capabilityGrantOf(row);
@@ -947,14 +1000,16 @@ async function insertBecome(
   now: Instant,
   /** A principal's mint only: the target's `holdingsDigest` now. */
   targetDigest: string | null = null,
+  /** A principal's mint only (#1686): the action the exchange also does. */
+  action: CapabilityAction | null = null,
 ): Promise<MintedCapability> {
   const id = capabilityIdSchema.parse(ulid());
   const secret = mintCapabilitySecret();
   sql.exec(
     `INSERT INTO _substrat_capabilities
        (id, token_hash, mode, label, entity_type, entity_id, permissions, operations, attachments,
-        principal, minted_by, minted_at, expires_at, max_uses, uses, target_digest)
-     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0, ?)`,
+        principal, minted_by, minted_at, expires_at, max_uses, uses, target_digest, action)
+     VALUES (?, ?, 'become', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, 0, ?, ?)`,
     [
       id,
       await capabilityTokenHash(secret),
@@ -965,6 +1020,7 @@ async function insertBecome(
       input.expiresAt ?? null,
       input.maxUses,
       targetDigest,
+      action === null ? null : JSON.stringify(action),
     ],
   );
   return { id, secret, expiresAt: input.expiresAt ?? null };
@@ -1146,6 +1202,12 @@ export async function becomeMintCheck(
   caller: PrincipalId,
   target: PrincipalId,
   node: Node,
+  /**
+   * #1686: the record a binding invite binds its claimant to. The caller must hold the binding's
+   * key on it, and it must exist and name nobody (`judgeBind`) — the same judgement the exchange
+   * makes again.
+   */
+  bind?: { entity: EntityRef },
 ): Promise<BecomeMintRefusal | { ok: true; targetDigest: string }> {
   const { checker } = deps;
   if (becomeClaimed(deps.sql, target)) return { ok: false, refused: 'target-already-claimed' };
@@ -1155,7 +1217,18 @@ export async function becomeMintCheck(
   const held = await checker.holdings({ kind: 'principal', id: target }, node);
   if (held.permissions.length === 0) return { ok: false, refused: 'target-holds-nothing' };
   const coverage = await coversHoldings(checker, caller, held, node);
-  return coverage ? { ok: false, coverage } : { ok: true, targetDigest: await holdingsDigest(held) };
+  if (coverage) return { ok: false, coverage };
+  if (bind) {
+    const judged = await judgeBind(
+      deps.sql,
+      async (permission, entity) => (await checker.check({ kind: 'principal', id: caller }, permission, node, entity)).allowed,
+      bind.entity,
+    );
+    if (!judged.ok) {
+      return 'missing' in judged ? { ok: false, coverage: { covered: false, missing: [judged.missing] } } : judged;
+    }
+  }
+  return { ok: true, targetDigest: await holdingsDigest(held) };
 }
 
 /** Has any `become` capability for `principal` been exchanged in this scope — platform-minted or not? */
@@ -1205,7 +1278,8 @@ export async function mintBecomeCapabilityAsPrincipal(
   if (input.expiresAt !== undefined && input.expiresAt <= deps.now) {
     throw substratError('validation_failed', `mintBecomeCapability: expiresAt ${input.expiresAt} is not in the future`);
   }
-  const minted = await insertBecome(deps.sql, input, minter, deps.now, targetDigest);
+  const action: CapabilityAction | null = input.bind ? { kind: 'bind', entity: input.bind.entity } : null;
+  const minted = await insertBecome(deps.sql, input, minter, deps.now, targetDigest, action);
   const payload: CapabilityBecomeMintedPayload = {
     capabilityId: minted.id,
     principal: input.principal,
@@ -1213,6 +1287,7 @@ export async function mintBecomeCapabilityAsPrincipal(
     maxUses: input.maxUses,
     label: input.label ?? null,
     mintedBy: minter,
+    ...(action ? { action } : {}),
   };
   deps.emit({
     type: CAPABILITY_BECOME_MINTED,

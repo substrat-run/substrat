@@ -602,8 +602,44 @@ export const entityGrantShape = z.object({
    * empty, so a registry that retires nothing keeps the permission digest it had.
    */
   retired: z.array(permissionKey).optional(),
+  /**
+   * #1686: a BINDING shape — the record's own principal column decides who holds it, and a
+   * `become` link may carry "on claim, set that column to the claimant" (a binding invite).
+   * `permission` is an ordinary key: who holds it on a record may mint such a link for it and
+   * may unbind its person. Checked at mint, again at the claim, and at an unbind.
+   *
+   * Only on a `bootstrap` shape whose `holder` is the table form, and never one of the shape's
+   * own current or retired keys (a key that let you hand out itself would be no bound). The
+   * column the holder names must be one of the entity's erasure SUBJECTS rather than an
+   * `erasable` field: an erasure of the record or of its person unbinds it (the kernel clears the
+   * column and takes the shape back, after the module's erasure hook has read the rows).
+   *
+   * Its keys are refused to every grant but the shape's own, as a `'grantee'` shape's are, so
+   * holding them on such a record means the column names you, or named you once — a person given
+   * the shape before the column was written (a legacy holder) keeps it, and an unbind cannot
+   * reach them. Omitted when unset, so a registry that binds nothing keeps its digest.
+   */
+  bind: z.object({ permission: permissionKey }).optional(),
 });
 export type EntityGrantShape = z.infer<typeof entityGrantShape>;
+
+/**
+ * #1686: what is wrong with a shape's `bind`, as messages — empty when nothing is. Checked where
+ * {@link retiredShapeProblems} is.
+ */
+export function bindShapeProblems(shape: Pick<EntityGrantShape, 'entityType' | 'permissions' | 'bootstrap' | 'holder' | 'retired' | 'bind'>): string[] {
+  if (!shape.bind) return [];
+  const problems: string[] = [];
+  const where = `entityGrants '${shape.entityType}'`;
+  if (!shape.bootstrap) problems.push(`${where}: \`bind\` is only for a bootstrap shape; a sharing shape is reached through ctx.grant`);
+  if (typeof shape.holder !== 'object') {
+    problems.push(`${where}: \`bind\` needs a table holder ({ table, idColumn, principalColumn }) — the column a claim writes`);
+  }
+  if ([...shape.permissions, ...(shape.retired ?? [])].includes(shape.bind.permission)) {
+    problems.push(`${where}: binds with ${shape.bind.permission}, which is one of the shape's own keys`);
+  }
+  return problems;
+}
 
 /**
  * #2082: what is wrong with a shape's `retired`, as messages — empty when nothing is. Checked
@@ -686,6 +722,7 @@ export const pushedPermissionRegistry = permissionRegistry.extend({
     .array(
       entityGrantShape.extend({ entityType: declaredEntityType }).superRefine((shape, ctx) => {
         for (const message of retiredShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['retired'], message });
+        for (const message of bindShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['bind'], message });
       }),
     )
     .default([]),
@@ -840,8 +877,18 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
       ...(g.bootstrap ? { bootstrap: true as const } : {}),
       ...(g.holder ? { holder: g.holder } : {}),
       ...(g.retired?.length ? { retired: sortKeys(g.retired) } : {}),
+      ...(g.bind ? { bind: { permission: g.bind.permission } } : {}),
     }));
-  const problems = entityGrants.flatMap(retiredShapeProblems);
+  const problems = [
+    ...entityGrants.flatMap(retiredShapeProblems),
+    ...entityGrants.flatMap(bindShapeProblems),
+    // A bind permission nothing declares could never be held, so no link could ever be minted.
+    ...entityGrants.flatMap((g) =>
+      g.bind && !declaredBy.has(g.bind.permission)
+        ? [`entityGrants '${g.entityType}': binds with ${g.bind.permission}, which no module declares`]
+        : [],
+    ),
+  ];
   if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
 
   // #1705: the edges. Keyed so two modules declaring the same flow collapse into one row

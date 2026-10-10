@@ -485,6 +485,42 @@ export const entityGrantsRetiredPayload = z.object({
 export type EntityGrantsRetiredPayload = z.infer<typeof entityGrantsRetiredPayload>;
 
 /**
+ * A person was BOUND to their own record (#1686): a `become` link carrying a bind action was
+ * exchanged, the record's declared principal column now names them, and they were given the
+ * record's declared shape on it — all in the exchange's one transaction. Entity: the record.
+ * Actor: the capability, as on the exchange's `capability.exercised`.
+ */
+export const ENTITY_HOLDER_BOUND = 'entity.holder-bound';
+
+export const entityHolderBoundPayload = z.object({
+  entity: entityRef,
+  principal: principalId,
+  /** The link whose exchange bound them. */
+  capabilityId,
+  /** Who minted that link — whose bind permission on the record was checked at mint and here. */
+  mintedBy: principalId,
+  /** The shape's keys they now hold on the record, sorted. */
+  granted: z.array(permissionKey),
+});
+export type EntityHolderBoundPayload = z.infer<typeof entityHolderBoundPayload>;
+
+/**
+ * A record's bound person was UNBOUND (#1686): its declared principal column was cleared and the
+ * shape they held there through it — the marker and every key of the shape, current and retired —
+ * was tombstoned (K-21). Entity: the record. Actor: whoever unbound it. An erasure that unbinds
+ * writes no event: an event naming the erased subject would be a new copy of what is erased.
+ */
+export const ENTITY_HOLDER_UNBOUND = 'entity.holder-unbound';
+
+export const entityHolderUnboundPayload = z.object({
+  entity: entityRef,
+  principal: principalId,
+  /** The keys this person no longer holds on the record through the shape, sorted. */
+  removed: z.array(permissionKey),
+});
+export type EntityHolderUnboundPayload = z.infer<typeof entityHolderUnboundPayload>;
+
+/**
  * The marker a declared shape's grant leaves beside its keys (#2071):
  * `(principal:<id>, bootstrap, <entityType>:<id>)`. It says "this person was given the
  * declared shape on this entity", which no set of keys can say — someone ctx.granted one of

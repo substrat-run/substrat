@@ -42,6 +42,7 @@ import {
   type SubjectErasureDeclaration,
   type UnreachedEntity,
 } from '@substrat-run/contracts';
+import { captureBoundOf, releaseBound } from './entity-binding.js';
 import type { ModuleRegistration, ScopedSql, SqlValue } from './scope-host.js';
 import type { SearchIndexPlan } from './search-index.js';
 import { guardSpine } from './spine-guard.js';
@@ -342,7 +343,8 @@ const ident = (name: string): string => assertSqlIdentifier('erasure', 'an ident
  * transaction the spine redaction runs in, so a throw from here rolls both back.
  *
  * Order between the two halves: declared first, hooks after, so a hook reading a declared
- * entity sees it already blank and a hook that deletes cannot strand a declared blank. Order
+ * entity sees it already blank and a hook that deletes cannot strand a declared blank. A record a
+ * binding shape binds (#1686) is released LAST, from rows read before either half ran. Order
  * between modules is registration order, which nothing here depends on: each touches its own
  * tables only.
  */
@@ -365,6 +367,10 @@ export function eraseSubjectFromModules(input: {
   if (plans.some((p) => p.ownTables.size > 0)) {
     assertNoTempShadow(sql, new Set(plans.flatMap((p) => [...p.ownTables])));
   }
+  // #1686: every record bound to the subject, or that IS the subject, read before anything below
+  // blanks or deletes it — a hook may look the rows up by the binding column, and a `delete` or a
+  // hook may remove the row, so the release after the hooks works from this capture.
+  const bound = captureBoundOf(sql, subjectId);
 
   // FTS5 keeps a deleted row's terms in the older index segments until they merge, so an
   // erased word stays in the database file after search stops finding it. `secure-delete`
@@ -497,6 +503,11 @@ export function eraseSubjectFromModules(input: {
     }
     out.hookRows.push({ module: plan.moduleId, rows });
   }
+
+  // #1686: the erased record no longer names its person, and the erased person holds nothing
+  // through a record — the column cleared where the row survived, the shape taken back either way.
+  for (const { binding } of bound) secure(binding.table);
+  releaseBound(sql, bound, at);
 
   for (const idx of secured) sql.exec(`INSERT INTO ${idx}(${idx}, rank) VALUES('secure-delete', 0)`);
   return out;

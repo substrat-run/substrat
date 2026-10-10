@@ -111,6 +111,7 @@ import {
   type BecomeCapabilityInput,
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
+  type BoundedUnbind,
   type BecomeLinkState,
   type PrincipalBecomeCapabilityInput,
   principalBecomeCapabilityInput,
@@ -246,6 +247,8 @@ import {
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
   readBecomeLinkStates,
+  ENTITY_UNBIND_OPERATION,
+  unbindEntityHolderBounded,
   capabilityAttachmentWriteRefused,
   capabilityTokenHash,
   createCapabilityVerbs,
@@ -4615,6 +4618,7 @@ export class SqliteScopeHost implements ScopeHost {
                 now,
               ), event),
             holdings: this.holdingsAt(tenantId, scopeId),
+            allowed: this.allowedAt(tenantId, scopeId),
           },
           secret,
           options?.mode,
@@ -4799,7 +4803,7 @@ export class SqliteScopeHost implements ScopeHost {
     const minter = principalId.parse(caller);
     const parsed = principalBecomeCapabilityInput.parse(input);
     const outcome = await rt.actor.turn(async (): Promise<BoundedBecomeMint> => {
-      const checked = await becomeMintCheck({ sql: spineSql(rt.db), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
+      const checked = await becomeMintCheck({ sql: spineSql(rt.db), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId }, parsed.bind);
       if (!checked.ok) return checked;
       const now = this.clock();
       rt.db.exec('BEGIN IMMEDIATE');
@@ -4860,6 +4864,55 @@ export class SqliteScopeHost implements ScopeHost {
   async becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.enqueue(() => readBecomeLinkStates(spineSql(rt.db), ids, this.clock(), this.holdingsAt(tenantId, scopeId)));
+  }
+
+  /**
+   * Unbind a binding shape's record (#1686) — its column cleared, and the shape its person held
+   * there through it taken back — as `caller`, who must hold the binding's key on the record. The
+   * kernel's bound and the write in ONE scope turn and one transaction; a refusal writes nothing.
+   * On the spine as `entity.holder-unbound`, the caller its actor.
+   */
+  async unbindEntityHolderBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    entity: EntityRef,
+  ): Promise<BoundedUnbind> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const by = principalId.parse(caller);
+    const allowed = this.allowedAt(tenantId, scopeId);
+    const outcome = await rt.actor.turn(async (): Promise<BoundedUnbind> => {
+      const now = this.clock();
+      rt.db.exec('BEGIN IMMEDIATE');
+      try {
+        const answer = await unbindEntityHolderBounded(
+          {
+            sql: spineSql(rt.db),
+            now,
+            allowed: (permission, on) => allowed(by, permission, on),
+            emit: (event) =>
+              kernelEmit(this.operationContext(rt, asPrincipal(by), undefined, undefined, undefined, ENTITY_UNBIND_OPERATION, [], now), event),
+          },
+          entity,
+        );
+        rt.db.exec('COMMIT');
+        return answer;
+      } catch (err) {
+        rt.db.exec('ROLLBACK');
+        throw err;
+      }
+    });
+    if (outcome.ok && outcome.unbound !== null) {
+      await this.dispatch(rt, null);
+      await this.dispatchExecutors(rt, null);
+    }
+    return outcome;
+  }
+
+  /** Does a principal hold a key on an entity at this scope now — a binding's bound (#1686). */
+  private allowedAt(tenantId: TenantId, scopeId: ScopeId): (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => Promise<boolean> {
+    return async (principal, permission, entity) =>
+      (await this.checker.check(asPrincipal(principal), permission, { tenantId, scopeId }, entity)).allowed;
   }
 
   /** What a principal holds at this scope, for a `become` exchange (#1686); absent with a checker that cannot say. */
@@ -13114,6 +13167,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #1686: NULL on every row already there — none is a principal-minted become.
     this.ensureColumn(db, '_substrat_capabilities', 'target_digest', 'target_digest TEXT');
     this.ensureColumn(db, '_substrat_capabilities', 'revoked_reason', 'revoked_reason TEXT');
+    // #1686: NULL on every row already there — none carries an action.
+    this.ensureColumn(db, '_substrat_capabilities', 'action', 'action TEXT');
     db.exec(GRANT_CHILDREN_INDEX_DDL);
     // Executor retry state (#100), same reasoning: scopes provisioned before it
     // already have the table. Defaults read as "terminal", which is exactly right

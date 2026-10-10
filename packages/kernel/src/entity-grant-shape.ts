@@ -595,27 +595,68 @@ function backfill(db: SwitchSql, pass: ShapePass, shape: EntityGrantShape, prefi
 }
 
 /**
- * The current and retired keys of every `holder: 'grantee'` bootstrap shape, recorded so the
- * explicit tuple writer can refuse them to every non-shape grant. A reconcile carries the
- * reached version's whole reviewed registry,
- * so the records are made to match it exactly: a declaration a later version drops stops
- * refusing. Bounded by the declared keys, so it runs in every pass without a budget.
+ * A BINDING shape's record (#1686), on the scope's tuple spine beside the grantee keys: which
+ * table column names the record's person (`<table>.<idColumn>.<principalColumn>`), the key that
+ * lets someone bind or unbind them, and the shape's current keys — what a binding invite's claim
+ * gives. The claim and an unbind read these, never the vertical's code: the shape is the reviewed
+ * registry the platform last reconciled this scope with. Each identifier is a SQL identifier, so
+ * `.` cannot occur inside one.
+ */
+export const BIND_HOLDER_RELATION = 'shape-bind-holder';
+export const BIND_PERMISSION_RELATION = 'shape-bind-permission';
+export const BIND_KEY_RELATION = 'shape-bind-key';
+
+/** A shape the reconcile records as binding: bootstrap, a table holder, and a `bind`. */
+const binds = (s: EntityGrantShape): s is EntityGrantShape & { holder: { table: string; idColumn: string; principalColumn: string }; bind: { permission: string } } =>
+  !!s.bootstrap && !!s.bind && typeof s.holder === 'object';
+
+/**
+ * The registry facts a pass records for the explicit tuple writer and a binding claim, made to
+ * match the reached version's whole reviewed registry exactly, so a declaration a later version
+ * drops stops counting:
+ * - every current and retired key of each `holder: 'grantee'` or BINDING bootstrap shape
+ *   (`shape-grantee-key`), which every non-shape grant then refuses on that entity type;
+ * - each binding shape's holder column, bind key and current keys (#1686).
+ * Bounded by the declared shapes, so it runs in every pass without a budget.
  */
 function recordGranteeKeys(db: SwitchSql, shapes: readonly EntityGrantShape[]): void {
-  const rows = shapes
-    .filter((s) => s.bootstrap && s.holder === 'grantee')
-    .flatMap((s) => keysOf([...s.permissions, ...(s.retired ?? [])]).map((k): [string, string] => [`shape:${s.entityType}`, `granted:${k}`]));
-  db.run(
-    // The subject range keeps it on the primary key: `shape:` rows only, never the whole table.
-    `DELETE FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?
-        AND NOT EXISTS (SELECT 1 FROM json_each(?) r
-                         WHERE json_extract(r.value, '$[0]') = _substrat_tuples.subject
-                           AND json_extract(r.value, '$[1]') = _substrat_tuples.object)`,
-    GRANTEE_KEY_RELATION,
-    JSON.stringify(rows),
-  );
-  for (const [subject, object] of rows) {
-    db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', subject, GRANTEE_KEY_RELATION, object);
+  const reconciled = shapes.filter((s) => s.bootstrap);
+  const facts: [relation: string, rows: [string, string][]][] = [
+    [
+      GRANTEE_KEY_RELATION,
+      reconciled
+        .filter((s) => s.holder === 'grantee' || binds(s))
+        .flatMap((s) => keysOf([...s.permissions, ...(s.retired ?? [])]).map((k): [string, string] => [`shape:${s.entityType}`, `granted:${k}`])),
+    ],
+    [
+      BIND_HOLDER_RELATION,
+      reconciled.filter(binds).map((s): [string, string] => {
+        const { table, idColumn, principalColumn } = s.holder;
+        for (const name of [table, idColumn, principalColumn]) {
+          assertSqlIdentifier('reconcileEntityGrantShapes', 'an identifier', name, `entityGrants bind of '${s.entityType}'`);
+        }
+        return [`shape:${s.entityType}`, `${table}.${idColumn}.${principalColumn}`];
+      }),
+    ],
+    [BIND_PERMISSION_RELATION, reconciled.filter(binds).map((s): [string, string] => [`shape:${s.entityType}`, s.bind.permission])],
+    [
+      BIND_KEY_RELATION,
+      reconciled.filter(binds).flatMap((s) => keysOf(s.permissions).map((k): [string, string] => [`shape:${s.entityType}`, `granted:${k}`])),
+    ],
+  ];
+  for (const [relation, rows] of facts) {
+    db.run(
+      // The subject range keeps it on the primary key: `shape:` rows only, never the whole table.
+      `DELETE FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?
+          AND NOT EXISTS (SELECT 1 FROM json_each(?) r
+                           WHERE json_extract(r.value, '$[0]') = _substrat_tuples.subject
+                             AND json_extract(r.value, '$[1]') = _substrat_tuples.object)`,
+      relation,
+      JSON.stringify(rows),
+    );
+    for (const [subject, object] of rows) {
+      db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', subject, relation, object);
+    }
   }
 }
 
