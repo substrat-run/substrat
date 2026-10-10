@@ -35,6 +35,14 @@ import { permissionKey } from './ids.js';
 export const entityStateName = z.enum(['active', 'archived', 'trashed']);
 export type EntityStateName = z.infer<typeof entityStateName>;
 
+/**
+ * What an archive, unarchive, trash or restore operation answers: the entity's id and the state
+ * the move left it in. A derived move (`derive: 'archive'` and its siblings) declares exactly this
+ * schema as its output, so the answer is one shape across every vertical rather than one per
+ * adopter.
+ */
+export const entityStateOutput = z.object({ id: z.string(), state: entityStateName });
+
 /** The kernel-owned column that records an archive. */
 export const ARCHIVED_AT_COLUMN = '_substrat_archived_at';
 /** The kernel-owned column that records a trash. */
