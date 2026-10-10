@@ -2,6 +2,7 @@ import { createAuthClient } from 'better-auth/client';
 import { adminClient } from 'better-auth/client/plugins';
 import { isIssuerState, isSessionOrNull, readIssuerJson } from './wire';
 import { isPlacesAnswer, placesOf, type Place } from './places';
+import type { ImportEntry, ImportResult } from '../../src/user-import-wire.js';
 
 export type { Place } from './places';
 
@@ -259,6 +260,15 @@ export async function adminRemoveSignInMethod(userId: string, accountId: string)
     `/users/${encodeURIComponent(userId)}/sign-in-methods/${encodeURIComponent(accountId)}`,
     { method: 'DELETE' },
   );
+}
+
+/**
+ * Bring people over from another issuer, keeping their ids. A real call writes one batch of at
+ * most `IMPORT_BATCH_LIMIT`, whole or not at all; a `dryRun` checks up to `DRY_RUN_LIMIT` and
+ * writes nothing. The server holds every rule — this only carries them.
+ */
+export function importUsers(users: ImportEntry[], dryRun: boolean): Promise<ImportResult> {
+  return admin<ImportResult>('/users/import', { method: 'POST', body: JSON.stringify({ users, dryRun }) });
 }
 
 /** One row of `account`, minus everything that is a credential. */
