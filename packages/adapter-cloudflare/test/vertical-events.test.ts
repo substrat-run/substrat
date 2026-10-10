@@ -1303,6 +1303,50 @@ describe('the operator’s capability revoke reaches the deployment serving the 
     expect(await settle(link.id)).toEqual(['intent', 'unknown']);
   });
 
+  // CodeRabbit on #2152: the call to the deployment is held to AUDITED_CALL_DEADLINE_MS, and its 504
+  // (VerticalClient's deadline test pins the 504 itself) may have landed, so it must never read as refused.
+  it('a revoke past the deadline (504) may have landed: the intent stays open for the settle, which closes it unknown', async () => {
+    const link = await share(s, 'F11');
+    const late = sharedWith(async (a) => {
+      await realRevoke(a);
+      throw new ControlPlaneError(504, 'the vertical did not answer capability-revoke within 60 s; it may have stopped part-way');
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(((await late.admin.revokeCapability(staff, t, s, link.id).catch((e: unknown) => e)) as ControlPlaneError).status).toBe(504);
+    } finally {
+      log.mockRestore();
+    }
+    expect(await exchange(s, link.secret)).toBeNull();
+    expect(await phasesOf(link.id)).toEqual(['intent']);
+    expect(await settle(link.id)).toEqual(['intent', 'unknown']);
+  });
+
+  it('a REAPED scope is refused conflict before the audit opens or the deployment is reached; the live scope beside it revokes', async () => {
+    const gone = scopeId.parse(ulid());
+    await shared.provisionScope(staff, { tenantId: t, scopeId: gone, vertical: SHARE_VERTICAL });
+    await shared.admin.activateScope(staff, t, gone);
+    const goneOwner = await dep.provision(t, gone);
+    const link = await (await dep.hostFor().getScope(goneOwner, t, gone)).invoke<MintedCapability>('cap/share', {
+      entity: { entityType: 'folder', entityId: 'G1' },
+      permissions: [READ],
+    });
+    await shared.admin.archiveScope(staff, t, gone);
+    await shared.admin.reapScope(staff, t, gone, { force: true });
+    const reached = dep.paths.filter((p) => p === '/internal/capabilities/revoke').length;
+    const refused = await shared.admin.revokeCapability(staff, t, gone, link.id).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('conflict');
+    expect(String((refused as Error).message)).toMatch(/reaped/);
+    expect(dep.paths.filter((p) => p === '/internal/capabilities/revoke').length).toBe(reached);
+    const goneRows = (await shared.admin.auditLog(staff)).filter((e) => e.action === 'revokeCapability' && e.scopeId === gone);
+    expect(goneRows).toEqual([]);
+    // The twin: the same call against a live scope reaches the deployment and revokes.
+    const live = await share(s, 'G2');
+    await shared.admin.revokeCapability(staff, t, s, live.id);
+    expect(dep.paths.filter((p) => p === '/internal/capabilities/revoke').length).toBe(reached + 1);
+    expect(await exchange(s, live.secret)).toBeNull();
+  });
+
   it('twin: a refusal from the deployment proves nothing changed, and is recorded refused', async () => {
     const link = await share(s, 'F7');
     const refusing = sharedWith(async () => {

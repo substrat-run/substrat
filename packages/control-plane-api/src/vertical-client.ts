@@ -615,12 +615,16 @@ export class VerticalClient {
     };
     // Parsed before anything is sent: a malformed request is the caller's error, never a far-end one.
     const body = JSON.stringify(capabilityRevokeRequest.parse(input));
-    const answer = await this.parsedAnswer(verb, rule, capabilityRevokeAnswer, () =>
-      this.options.fetch(`${base}/internal/capabilities/revoke`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
-        body,
-      }),
+    // Audited intent-then-outcome like a switch call (#2089), so held to the deadline the settle waits out.
+    const answer = await withDeadline(verb, AUDITED_CALL_DEADLINE_MS, (signal) =>
+      this.parsedAnswer(verb, rule, capabilityRevokeAnswer, () =>
+        this.options.fetch(`${base}/internal/capabilities/revoke`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+          body,
+          signal,
+        }),
+      ),
     );
     return answer.before;
   }

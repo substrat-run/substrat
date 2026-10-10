@@ -5199,11 +5199,14 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeStub(scopeId);
   }
 
-  /** The directory's record of a scope a platform capability verb addresses, or `not_found`. */
+  /**
+   * The directory's record of a scope a platform capability verb addresses: `not_found`, or
+   * `conflict` for a REAPED scope (`scopeRecordForRead`'s refusal). Its row is a tombstone and its
+   * storage is gone, so addressing its DO — here or in the deployment — would construct an empty
+   * one. An archived scope still answers: its bytes, and the capabilities in them, are there.
+   */
   private async capabilityScopeRecord(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRow> {
-    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-    if (!rec) throw unknownScopeForTenant(tenantId, scopeId);
-    return rec;
+    return this.scopeRecordForRead(tenantId, scopeId);
   }
 
   /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */

@@ -482,7 +482,7 @@ describe('the audited call deadline (#2064)', () => {
     }
   });
 
-  it("the kill switches' delegated calls are held to it too (#2089): a switch is settled by the same sweep", async () => {
+  it("the kill switches' delegated calls and the capability revoke are held to it too (#2089, #1686): each is settled by the same sweep", async () => {
     vi.useFakeTimers();
     try {
       const signals: AbortSignal[] = [];
@@ -497,12 +497,14 @@ describe('the audited call deadline (#2064)', () => {
         hanging.systemSwitch({ scopeId: s, moduleId: moduleId.parse('@test/sched'), to: 'off' }),
         hanging.peerSwitch({ scopeId: s, vertical: 'acme/crm', to: 'off' }),
         hanging.switchFence({ scopeId: s }),
+        // #1686: the operator's capability revoke is audited the same way, and settled by the same sweep.
+        hanging.revokeCapability({ scopeId: s, capabilityId: ulid() as never, actor: platformActorId.parse(ulid()) }),
       ].map((call) => expect(call).rejects.toMatchObject({ status: 504 }));
       await vi.advanceTimersByTimeAsync(AUDITED_CALL_DEADLINE_MS - 1);
-      expect(signals.map((x) => x.aborted)).toEqual([false, false, false]);
+      expect(signals.map((x) => x.aborted)).toEqual([false, false, false, false]);
       await vi.advanceTimersByTimeAsync(1);
       await Promise.all(calls);
-      expect(signals.map((x) => x.aborted)).toEqual([true, true, true]);
+      expect(signals.map((x) => x.aborted)).toEqual([true, true, true, true]);
 
       // Twin: a switch answered in time is its answer.
       const prompt = new VerticalClient({
