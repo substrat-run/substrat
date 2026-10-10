@@ -24,7 +24,12 @@ describe('render', () => {
   });
 
   it('a message whose every word was a blank variable is refused, not sent empty', () => {
-    expect(render({ subject: '{{a}}', text: 'x' }, { a: '' })).toEqual({ ok: false, reason: 'empty_message' });
+    expect(render({ subject: '{{a}}', text: 'x' }, { a: '' })).toEqual({ ok: false, reason: 'empty_message:subject' });
+    expect(render({ subject: 's', text: '{{a}}' }, { a: ' ' })).toEqual({ ok: false, reason: 'empty_message:text' });
+  });
+
+  it('a declared html part that renders empty is refused too, naming it', () => {
+    expect(render({ subject: 's', text: 't', html: '{{b}}' }, { b: '' })).toEqual({ ok: false, reason: 'empty_message:html' });
   });
 
   it('a variable is filled once: a value that looks like a placeholder stays literal', () => {

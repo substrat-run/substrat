@@ -174,7 +174,17 @@ describe('engine-notifications', () => {
     expect(await tech.stub.invoke('notifications/my-preferences', {})).toMatchObject({ topics: [] });
   });
 
-  it('a recipient that is not a principal id throws rather than mailing nobody quietly', async () => {
+  it("a declared html part that renders empty is the engine's refusal, naming the topic and the part", async () => {
+    await expect(
+      send(assigned([tech.principal], { template: { subject: 's', text: 't', html: '{{title}}' }, vars: { title: '' } })),
+    ).rejects.toMatchObject({
+      code: 'validation_failed',
+      message: expect.stringMatching(/topic 'order-assigned'.*empty_message:html/),
+    });
+    expect(await intents()).toEqual([]);
+  });
+
+    it('a recipient that is not a principal id throws rather than mailing nobody quietly', async () => {
     await expect(send(assigned(['bob']))).rejects.toMatchObject({ code: 'validation_failed' });
   });
 

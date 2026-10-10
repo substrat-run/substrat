@@ -23,9 +23,9 @@ interface RenderedMessage {
 }
 
 /**
- * Why a render refused: a placeholder with no variable, or a message that came out empty
- * (every word of it was a variable, and each was blank) — the platform refuses an empty
- * subject or body, so it is caught here, where the reason can still be recorded.
+ * Why a render refused: a placeholder with no variable, or a part — subject, text or a
+ * declared html — that came out empty because every word of it was a blank variable. The
+ * platform refuses an empty part, so it is caught here, where the reason names the part.
  */
 type RenderResult = { ok: true; message: RenderedMessage } | { ok: false; reason: string };
 
@@ -61,15 +61,10 @@ export function render(template: NotificationTemplate, vars: Readonly<Record<str
   // A header: a line break in a value would end it. Collapse rather than refuse — the
   // subject is still the right one, on one line.
   const subject = fill(template.subject, (v) => v.replace(/[\r\n]+/g, ' ')).trim();
-  if (subject === '' || text.trim() === '') return { ok: false, reason: 'empty_message' };
-  return {
-    ok: true,
-    message: {
-      subject,
-      text,
-      html: template.html !== undefined ? fill(template.html, escapeHtml) : htmlOfText(text),
-    },
-  };
+  const html = template.html !== undefined ? fill(template.html, escapeHtml) : htmlOfText(text);
+  const empty = Object.entries({ subject, text, html }).find(([, part]) => part.trim() === '');
+  if (empty) return { ok: false, reason: `empty_message:${empty[0]}` };
+  return { ok: true, message: { subject, text, html } };
 }
 
 /** The text part as HTML: escaped, paragraphs at blank lines, `<br>` at single breaks. */
