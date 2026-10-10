@@ -379,10 +379,24 @@ export function enclosingNames(names, all) {
  * test them — an edge no `package.json` can declare, because nothing is imported. Each
  * entry names the reading package, the paths it reads, and the suite doing it.
  * apps/console's SKU test scans every engine's `entitlementKey`, so a new engine is red
- * in its own PR rather than on main after it (#2164 went red that way).
+ * in its own PR rather than on main after it (#2164 went red that way). A suite that runs
+ * a script under tools/ needs no entry: a change there already runs everything.
  */
 export const READS = [
   { reader: '@substrat-run/console', paths: /^engines\/[^/]+\/src\/index\.ts$/, suite: 'apps/console/test/skus.test.ts' },
+  // The platform's worker script names, held to every deployed wrangler config.
+  {
+    reader: '@substrat-run/contracts',
+    paths: /^(apps\/[^/]+|demos\/auth-server)\/wrangler\.jsonc$/,
+    suite: 'packages/contracts/test/script-names.test.ts',
+  },
+  // Drives the router's own worker against the adapter. The router depends on the adapter,
+  // so the import cannot be declared the other way without a cycle.
+  {
+    reader: '@substrat-run/adapter-cloudflare',
+    paths: /^apps\/router\/src\//,
+    suite: 'packages/adapter-cloudflare/test/hostname-lifecycle.test.ts',
+  },
 ];
 
 /** The packages that read one of `files` off disk (READS), sorted. */
