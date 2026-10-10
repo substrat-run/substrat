@@ -1489,7 +1489,7 @@ export function defineScopeDO(
       const unbound = Object.keys(declaredInputs).filter((name) => !ownOps.has(name));
       if (unbound.length > 0) {
         throw new Error(
-          `${manifest.id} declares operationInputs for unbound operation(s): ` +
+          `${manifest.id} declares operations.inputs for unbound operation(s): ` +
             `${unbound.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
         );
       }
@@ -1499,7 +1499,7 @@ export function defineScopeDO(
       const unguarded = Object.keys(declaredConcurrency).filter((name) => !ownOps.has(name));
       if (unguarded.length > 0) {
         throw new Error(
-          `${manifest.id} declares operationConcurrency for unbound operation(s): ` +
+          `${manifest.id} declares operations.concurrency for unbound operation(s): ` +
             `${unguarded.sort().join(', ')} — a precondition on nothing reads as a guard that is not there`,
         );
       }

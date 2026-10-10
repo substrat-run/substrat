@@ -3805,7 +3805,7 @@ export class CloudflareScopeHost implements ScopeHost {
     );
     if (unboundInputs.length > 0) {
       throw new Error(
-        `${manifest.id} declares operationInputs for unbound operation(s): ` +
+        `${manifest.id} declares operations.inputs for unbound operation(s): ` +
           `${unboundInputs.sort().join(', ')} — a schema on nothing reads as a parse that is not there`,
       );
     }

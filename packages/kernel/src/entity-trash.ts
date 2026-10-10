@@ -442,7 +442,7 @@ export function purgeReportOf(
  * The targets are DERIVED, never handed over: `operationInputsOf(ops)` records the declared
  * surface of the frozen map it returns (`declaredSurfaceOf`, which nothing else can write), and the
  * host reads each operation's target off the same declaration it parses with. A module with a trashable entity must therefore
- * - pass `operationInputs` built by `operationInputsOf`, so there is a declared surface to read;
+ * - bind through `operationsFor`, whose `operations.inputs` is built by `operationInputsOf`, so there is a declared surface to read;
  * - declare every operation it binds there — an undeclared one could address a binned entity and
  *   the host could not see which;
  * - declare a `trashed: 'purges'` operation whose input is a strict object holding the id and nothing else.
@@ -454,17 +454,17 @@ export function purgeReportOf(
 export function registerTrashTargets(
   moduleId: string,
   ownOps: ReadonlySet<string>,
-  operationInputs: Readonly<Record<string, unknown>> | undefined,
+  inputs: Readonly<Record<string, unknown>> | undefined,
   entityStates: readonly EntityStateDeclaration[] | undefined,
   schedules: readonly ScheduleSpec[] | undefined,
 ): Map<string, OperationTarget> {
   const trashable = new Map((entityStates ?? []).filter((d) => d.trashPermission).map((d) => [d.entityType, d]));
-  const surface = declaredSurfaceOf(operationInputs);
+  const surface = declaredSurfaceOf(inputs);
   if (trashable.size > 0) {
     const where = `${moduleId} declares trashable entities (${[...trashable.keys()].sort().join(', ')})`;
     if (!surface) {
       throw new Error(
-        `${where} but its \`operationInputs\` is not a map \`operationInputsOf\` returned — the host could not see which ` +
+        `${where} but its \`operations.inputs\` is not a map \`operationInputsOf\` returned — the host could not see which ` +
           'operations address a binned one. A copy, a spread or an edited map is not one, and nor is a map built by a ' +
           'second copy of @substrat-run/contracts.\n  Remedy: bind with `...operationsFor(ops)({ … })`, which hands the map over as returned.',
       );
@@ -481,7 +481,7 @@ export function registerTrashTargets(
   for (const [name, target] of Object.entries(surface?.targets ?? {})) {
     if (!ownOps.has(name)) continue; // declared and not bound here: nothing to refuse
     if (target.trashed === 'purges') {
-      const schema = operationInputs?.[name];
+      const schema = inputs?.[name];
       const fields = Object.keys((schema as { shape?: Record<string, unknown> } | undefined)?.shape ?? {});
       if (fields.length !== 1 || fields[0] !== target.idFrom) {
         throw new Error(
