@@ -27,7 +27,10 @@
  *                      the one import that turns the scope boundary from
  *                      physical into advisory. Harness code (worker.ts,
  *                      *-do.ts) legitimately imports `DurableObject` from it
- *                      and is exempt, as it is for `node:*`.
+ *                      and is exempt, as it is for `node:*`. The test seams
+ *                      (`@substrat-run/kernel/testing`, `contract-tests`,
+ *                      `engine-test-kit`) are refused too: they build what module
+ *                      code must not hold — operations no binder made (#1835).
  *   R3 no network      module code never calls fetch() or imports an HTTP client
  *   R4 spine is sacred module operations never write _substrat_* tables (reads are
  *                      fine — timelines are projections). A generated, versioned SQL
@@ -118,9 +121,11 @@
  *                      binder refuses a missing, extra, mistyped or cast ENTRY by
  *                      type. What no type can refuse is a cast of the WHOLE map —
  *                      `never` and `any` are assignable to anything — so that is
- *                      this rule: an `as` at the top of an `operations:` value or of
- *                      the handler argument to either binder. Casts inside an entry
- *                      are the type's business, not this rule's. A deliberate cast
+ *                      this rule: an `as` or `<T>` at the top of an `operations:`
+ *                      value (or the shorthand, or the local name it hands over),
+ *                      of a binder's handler argument, or of any ENTRY of the
+ *                      handlers a binder is given — and a cast TO `BoundOperations`
+ *                      or `ModuleRegistration['operations']` anywhere. A deliberate cast
  *                      sits in a `boundary-lint-allow R11` … `boundary-lint-end R11`
  *                      block, where a reviewer reads it.
  *
@@ -1177,6 +1182,13 @@ function checkHandlerMapCast(rel: string, source: string, out: Violation[]): voi
   }
 }
 
+/**
+ * R2's test seams (#2155 review): the packages that hand a test what module code must never hold —
+ * `@substrat-run/kernel/testing` mints a `BoundOperations` over any maps, and the two kits wrap it
+ * and drive a host from outside. A subpath of one is refused as the package itself is.
+ */
+const TEST_SEAMS = new Set(['@substrat-run/kernel/testing', '@substrat-run/contract-tests', '@substrat-run/engine-test-kit']);
+
 function checkModuleFile(
   file: string,
   rel: string,
@@ -1197,7 +1209,15 @@ function checkModuleFile(
       out.push({ file: rel, rule: 'R1', message: `star topology — engine imports sibling engine '${spec}'` });
     }
     const bare = spec.startsWith('node:') ? spec.slice(5) : spec;
-    if (spec === 'better-sqlite3' || spec.startsWith('@substrat-run/adapter-')) {
+    if ([...TEST_SEAMS].some((seam) => spec === seam || spec.startsWith(`${seam}/`))) {
+      out.push({
+        file: rel,
+        rule: 'R2',
+        message:
+          `test seam — module code imports '${spec}', which exists to build what a module must not: ` +
+          'operations no binder made, a host driven from outside. Keep it in test/',
+      });
+    } else if (spec === 'better-sqlite3' || spec.startsWith('@substrat-run/adapter-')) {
       out.push({ file: rel, rule: 'R2', message: `raw data access — module code imports '${spec}' (use ctx.sql)` });
     } else if (spec === 'cloudflare:workers') {
       out.push({

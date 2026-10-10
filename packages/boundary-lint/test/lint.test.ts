@@ -250,6 +250,20 @@ describe('R2 / R3', () => {
 
     expect(lint(root2)).toEqual([]);
   });
+
+  it('flags a test seam imported by module code (#2155 review)', () => {
+    // `@substrat-run/kernel/testing` mints operations over any maps, which is everything the
+    // binder exists to stop; the kits wrap it. A test file is not walked, so it needs no exemption.
+    const seams = (imports: string) =>
+      rules(lint(project({ 'package.json': VERTICAL_PKG, ...engine('engine-workorder', ['workorder_orders']), 'src/module.ts': imports })));
+    expect(seams(`import { forgeBoundOperationsForTest } from '@substrat-run/kernel/testing';`)).toEqual(['R2']);
+    expect(seams(`import { testOperations } from '@substrat-run/contract-tests';`)).toEqual(['R2']);
+    expect(seams(`import { createEngineTestKit } from '@substrat-run/engine-test-kit';`)).toEqual(['R2']);
+    expect(seams(`export * from '@substrat-run/contract-tests/anything';`)).toEqual(['R2']);
+    // Twins: the kernel itself, and a package that only shares the prefix.
+    expect(seams(`import { operationsFor } from '@substrat-run/kernel';`)).toEqual([]);
+    expect(seams(`import { x } from '@substrat-run/contract-tests-extra';`)).toEqual([]);
+  });
 });
 
 describe('harness exemption', () => {
