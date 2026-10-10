@@ -378,8 +378,8 @@ export interface EmittedEntity {
   readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number };
   /** How a subject erasure reaches it (#2068), when declared. `subjects` sorted. */
   readonly erasure?: { readonly mode: 'blank' | 'delete' | 'custom'; readonly subjects?: readonly string[] };
-  /** The columns a derived write stamps (#2157), keyed sorted. A string kind, for `emittedHandler`'s reason. */
-  readonly stamps?: Readonly<Record<string, string>>;
+  /** The columns a derived write stamps (#2157), keyed sorted. */
+  readonly stamps?: Readonly<Record<string, StampKind>>;
 }
 
 export interface EmittedModel {
@@ -465,12 +465,9 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'create'] as co
 export type DerivedKind = (typeof DERIVED_KINDS)[number];
 
 /** Who writes one operation's handler (#1773). */
-/**
- * Who writes one operation's handler (#1773), as the artifact carries it. The kind is a string,
- * not `DerivedKind`: a reader may hold a model a newer emitter wrote (#2157, `emittedHandler`).
- */
+/** Who writes one operation's handler (#1773), as this release emits it. */
 export type EmittedHandler =
-  | { readonly derive: string }
+  | { readonly derive: DerivedKind }
   | { readonly authored: string };
 
 /** One exported event type in the model (#1705 PR 3). */
@@ -550,6 +547,13 @@ export const emittedHandler = z.union([
   z.looseObject({ derive: z.string().min(1) }),
   z.looseObject({ authored: z.string().min(1) }),
 ]);
+
+/**
+ * What a READER holds once it has parsed a model at a trust boundary — the control plane's deploy
+ * parse, `substrat push`'s pre-flight. Not `EmittedModel`: a newer emitter may have written a kind
+ * this release does not know, which the reader carries as a string (#2157, `emittedHandler`).
+ */
+export type IngressModel = z.infer<typeof emittedModel>;
 
 export const emittedModel = z.object({
   version: z.string().min(1).optional(),

@@ -30,7 +30,7 @@ import {
   type AssetsNeed,
   type DeclaredBinding,
   type DeclaredOperationOutput,
-  type EmittedModel,
+  type IngressModel,
   type EnvVarSpec,
   type PermissionRegistry,
   type PermissionsInput,
@@ -1891,7 +1891,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
  * the next time, and it is the cheapest possible confirmation that the file being emitted is
  * the file being shipped.
  */
-export function formatDeclaredModel(model: EmittedModel | undefined): string {
+export function formatDeclaredModel(model: IngressModel | undefined): string {
   if (!model) {
     return (
       'note: no model.json — this version will record no entity model.\n' +
@@ -1908,7 +1908,7 @@ export function formatDeclaredModel(model: EmittedModel | undefined): string {
   );
 }
 
-export function readDeclaredModel(dir: string): EmittedModel | undefined {
+export function readDeclaredModel(dir: string): IngressModel | undefined {
   const file = join(dir, 'model.json');
   if (!existsSync(file)) return undefined;
   let parsed: unknown;
