@@ -6225,6 +6225,29 @@ const bound = operationsFor(ticket0Operations)({
 
   // --- Saved-reply folders -------------------------------------------------
 
+  'ticket0/create-saved-reply-folder': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+    const existing = ctx.sql.query<SavedReplyFolderRow>(
+      'SELECT * FROM ticket0_saved_reply_folders WHERE name = ?',
+      [input.name],
+    )[0];
+    if (existing) return existing;
+    const id = ulid();
+    ctx.sql.exec(
+      'INSERT INTO ticket0_saved_reply_folders (id, name, created_by, created_at) VALUES (?, ?, ?, ?)',
+      [id, input.name, String(ctx.principal), ctx.now()],
+    );
+    const row = savedReplyFolderOrThrow(ctx, id);
+    ctx.emit({
+      type: 'ticket0.saved-reply-folder-created',
+      schemaVersion: 1,
+      entity: { entityType: 'savedReplyFolder', entityId: row.id },
+      piiClass: 'none',
+      payload: { id: row.id, name: row.name, created_by: row.created_by, created_at: row.created_at },
+    });
+    return row;
+  },
+
   'ticket0/rename-saved-reply-folder': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
     const existing = savedReplyFolderOrThrow(ctx, input.folderId);

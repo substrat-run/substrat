@@ -94,18 +94,18 @@ describe('derived reads answer what the handlers they replaced answered (#1773)'
 });
 
 /**
- * #2157: `ticket0/create-saved-reply-folder` is the first derived CREATE in a production vertical.
- * The handler it replaced, verbatim in effect:
+ * #2157/#2165: `ticket0/create-saved-reply-folder` matches the derived CREATE shape and stays
+ * authored until the deployed control plane parses a model carrying `derive: 'create'` (#2165).
+ * These pins hold the authored handler today, and the derived one after the flip, unchanged —
+ * each step of the body, against the desk's own database with the table named as a literal:
  *
  *     check saved-reply:manage
  *     SELECT * … WHERE name = ?  → that row, if any, and nothing else
  *     INSERT (id, name, created_by, created_at) VALUES (ulid(), name, String(ctx.principal), ctx.now())
  *     emit ticket0.saved-reply-folder-created v1, piiClass none, payload { id, name, created_by, created_at }
  *     answer SELECT * by id
- *
- * Each line is pinned below against the desk's own database, with the table named as a literal.
  */
-describe('the derived create answers what the handler it replaced answered (#2157)', () => {
+describe('create-saved-reply-folder answers the same before and after it derives (#2165)', () => {
   type Folder = { id: string; name: string; created_by: string; created_at: string };
   type Event = { type: string; schema_version: number; pii_class: string; actor: string; entity_id: string; subject_id: string | null; payload: string };
   const folderEvents = (): Event[] =>
