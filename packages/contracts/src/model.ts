@@ -405,9 +405,10 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'archive', 'una
  *   `trash`, through `ctx.pageTrashed`, which checks the trash key on every row itself. So it
  *   declares `narrows` with exactly that key, and no leading check; filters as a `list`'s.
  *
- * A derived handler checks the declared permission first, reads and writes only the entity's
- * declared columns through `ctx.sql`, and answers `not_found` for a missing row — the same steps
- * a hand-written one takes, written once.
+ * A derived handler takes the same steps a hand-written one does, written once. It checks the
+ * declared permission first — except the bin, which `ctx.pageTrashed` checks row by row. It reads
+ * and writes only the entity's declared columns, through `ctx.sql` or, for a move, the kernel verb,
+ * which also emits the move. It answers `not_found` for a missing row.
  *
  * `create` is not here yet: the id, the timestamps and the parent link it would write are not all
  * declared. Neither are hooks around a derived handler.

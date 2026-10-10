@@ -594,8 +594,9 @@ These shapes are derivable, and each is matched exactly:
 | `trashed` | served as `GET`, `paged.over` an entity that declares `trash`, output is its `fields`, `narrows` checking exactly its trash key and no leading check, inputs as a `list`'s filters | `ctx.pageTrashed`, which checks the trash key on every row |
 
 A derived handler checks the declared key first, so a caller without it learns nothing about
-whether the row exists. It reads and writes only the entity's declared columns, through
-`ctx.sql`. An `enum` column is never a derived write, because a change of state is a lifecycle
+whether the row exists; the bin is the exception, checked on every row by `ctx.pageTrashed`
+instead. It reads and writes only the entity's declared columns, through `ctx.sql`, or for a
+move through the kernel verb, which emits the move itself. An `enum` column is never a derived write, because a change of state is a lifecycle
 edge with its own operation. A row with children is never a derived delete, because a cascade
 is your decision.
 

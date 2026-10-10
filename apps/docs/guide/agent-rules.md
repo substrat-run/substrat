@@ -210,7 +210,8 @@ entity's own rows behind declared filters, a `PATCH` field bag with `concurrency
 `'delete'`, `'archive'`, `'unarchive'`, `'trash'`, `'restore'`, `'trashed'`) and write no
 handler: `operationsFor` leaves it out of the map it requires and supplies the platform's
 handler, which checks the declared key first, reads and writes only declared columns and
-emits the declared event. Keep a handler
+emits the declared event (the bin is checked row by row instead, and a move's event is the
+kernel's). Keep a handler
 only with `authored: '<what the derived one would get wrong here>'`. `defineOperations`
 refuses at module load a derivable operation that declares neither, a `derive` whose
 declaration is not that shape, and an `authored` on an operation nothing could derive.
