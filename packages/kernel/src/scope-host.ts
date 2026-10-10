@@ -2000,8 +2000,11 @@ export interface HostAdmin {
    * per scope transaction, backfill included, and at most ten markers read per row of work, read
    * on their own index (#2083). Each pass resumes where the last one stopped, until one finds
    * nothing left, so it is safe on a large scope whether or not anything changed, and finishes on
-   * a re-run if interrupted. A holder an older deployment grants the shape to behind the point a
-   * running reconcile has reached waits for the next reconcile. Each (person, entity) topped up is
+   * a re-run if interrupted. A holder an older deployment grants the shape to while it runs, behind
+   * the point it has reached: if they lack a key the shape gained, the next reconcile tops them up.
+   * If they hold a key the shape retired, a confirming walk from the first marker, which every
+   * retirement runs before it records itself finished, takes it back. Only a grant landing behind
+   * that confirming walk keeps the key, as one landing after the retirement finished does. Each (person, entity) topped up is
    * an `entity.grants-topped-up` event on the entity, and each one retired keys were taken from an
    * `entity.grants-retired` event. Audited as `reconcileEntityGrantShapes` when it changed
    * anything. Returns how many (person, entity) it topped up, and how many it retired keys from.

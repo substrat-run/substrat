@@ -156,15 +156,25 @@ export function grantEntityShapeIn(db: SwitchSql, principal: PrincipalId, entity
  * Skipping what lies behind it is safe because a walk leaves every marker it passes finished:
  * topped up (each key now has a row) or with its retired keys tombstoned. A marker written behind
  * it mid-run is complete when a shape grant writes it, and the backfill finishes before its
- * shape's walks begin. The one exception: a shape grant by an OLDER deployment, carrying the
- * shape before it grew, landing behind the cursor while the reconcile runs. That holder is caught
- * at the next reconcile, the same as a grant landing just after this one finished.
+ * shape's walks begin. The exception is a shape grant by an OLDER deployment, carrying the shape
+ * as it was, landing behind the cursor while the reconcile runs:
+ *
+ * - Missing a key the shape gained: the top-up keeps no record, so the next reconcile's top-up
+ *   reaches that holder.
+ * - Holding a key the shape retired: a retirement ends in a run-once record, so a holder it never
+ *   saw would never be reached. The first walk therefore never writes that record. Once it reaches
+ *   the last marker, a CONFIRMING walk starts again from the first (`clean`), and the record is
+ *   written only when a confirming walk reaches the last marker having taken nothing; one that
+ *   took keys starts another. A grant landing behind the confirming walk itself is the gap left,
+ *   the same as one landing after the retirement finished.
  */
 export interface ShapeCursor {
   shape: number;
   step: 'backfill' | 'retire' | 'topUp';
   /** The last marker a walk read; `null` resumes the step from its start. */
   marker: { object: string; subject: string } | null;
+  /** A retire walk only: it is a confirming walk, and has taken nothing so far. */
+  clean?: boolean;
 }
 
 /** Where a pass runs and how its events are stamped — the facts only the adapter holds. */
@@ -217,7 +227,11 @@ export function topUpEntityGrantShapes(
     const resume = from?.shape === i ? from : null;
     const at = resume?.step ?? 'backfill';
     const marker = (step: ShapeCursor['step']) => (resume?.step === step ? resume.marker : null);
-    const stop = (step: ShapeCursor['step'], last: ShapeCursor['marker']) => ({ toppedUp, retired, next: { shape: i, step, marker: last } });
+    const stop = (step: ShapeCursor['step'], last: ShapeCursor['marker'], clean?: boolean) => ({
+      toppedUp,
+      retired,
+      next: { shape: i, step, marker: last, ...(clean === undefined ? {} : { clean }) },
+    });
     const prefix = `${shape.entityType}:`;
     if (at === 'backfill') {
       // A live retired key still identifies a legacy holder so this pass can retire it.
@@ -227,9 +241,18 @@ export function topUpEntityGrantShapes(
     }
     if (at !== 'topUp') {
       reopenRetirements(db, pass, shape.entityType, keys);
-      const took = retire(db, pass, shape.entityType, prefix, gone, marker('retire'), room);
-      retired += took.found.length;
-      if (!took.done) return stop('retire', took.at);
+      let start = marker('retire');
+      // The first walk is never a confirming one; nor is a resumed walk that does not say it is.
+      let clean = resume?.step === 'retire' && resume.clean === true;
+      for (;;) {
+        const took = retire(db, pass, shape.entityType, prefix, gone, start, room, clean);
+        retired += took.found.length;
+        clean &&= took.found.length === 0;
+        if (!took.done) return stop('retire', took.at, clean);
+        if (clean) break; // `retire` recorded the retirement finished
+        // A confirming walk from the first marker, for what landed behind this one.
+        [start, clean] = [null, true];
+      }
     }
     if (keys.length === 0) continue;
     const gave = topUp(db, pass, shape.entityType, prefix, keys, marker('topUp'), room);
@@ -367,8 +390,8 @@ function topUp(
 /**
  * One bounded walk of a shape's retirement: each live marker still holding a retired key live
  * there has its retired keys tombstoned, with one event. Keys whose retirement already finished
- * on this scope are skipped, and a walk that reaches the shape's last marker records the rest
- * finished.
+ * on this scope are skipped. The rest are recorded finished only by a `clean` (confirming) walk
+ * that reaches the shape's last marker having taken nothing.
  */
 function retire(
   db: SwitchSql,
@@ -378,6 +401,7 @@ function retire(
   gone: readonly string[],
   after: ShapeCursor['marker'],
   room: Room,
+  clean: boolean,
 ): Walk {
   if (gone.length === 0) return NOTHING_TO_WALK;
   const [shapeRef, scopeRef] = recordRefs(entityType, pass.scopeId);
@@ -433,7 +457,7 @@ function retire(
     );
     db.run(st.sql, ...st.params);
   }
-  if (walk.done) {
+  if (walk.done && clean && walk.found.length === 0) {
     for (const k of open) {
       db.run(
         'INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)',

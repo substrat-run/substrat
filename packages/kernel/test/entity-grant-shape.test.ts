@@ -733,19 +733,53 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
       expect(t.keysOf(stale, 'a0')).toEqual(['emp:cancel', 'emp:read', 'emp:report']);
     });
 
-    it("a retirement's run-once record waits until its walk has read the shape's last marker", () => {
+    /** Passes from `after` until one hands back no cursor, at most `cap` of them. */
+    const finish = (t: ReturnType<typeof fresh>, shapes: unknown[], limit: number, after: ShapeCursor | null, cap = 50) => {
+      for (let n = 0; after && n < cap; n++) after = step(t, shapes, limit, after).next;
+      return after;
+    };
+    const RETIRING = [{ entityType: 'employee', permissions: OLD, retired: ['emp:cancel'], bootstrap: true }];
+    const retiredRecord = (t: ReturnType<typeof fresh>) =>
+      t.db.prepare("SELECT count(*) AS n FROM _substrat_tuples WHERE relation = 'shape-retired:emp:cancel'").get();
+
+    it("a retirement's run-once record waits for a confirming walk to read every marker and take nothing", () => {
       const t = fresh();
-      const shapes = [{ entityType: 'employee', permissions: OLD, retired: ['emp:cancel'], bootstrap: true }];
       for (let i = 0; i < 14; i++) t.shape(who(), id(i), OLD);
       const last = who();
       t.shape(last, id(14), GROWN); // the only holder of the retired key, past the first window
-      const record = () => t.db.prepare("SELECT count(*) AS n FROM _substrat_tuples WHERE relation = 'shape-retired:emp:cancel'").get();
-      const first = step(t, shapes, 1, null);
-      expect([first.retired, first.next?.step, record()]).toEqual([0, 'retire', { n: 0 }]);
-      const second = step(t, shapes, 1, first.next);
-      // Its budget spent on the retirement, the pass leaves the top-up to the next one.
-      expect([second.retired, second.next, record()]).toEqual([1, { shape: 0, step: 'topUp', marker: null }, { n: 1 }]);
+      const first = step(t, RETIRING, 1, null);
+      expect([first.retired, first.next, retiredRecord(t)]).toEqual([0, { shape: 0, step: 'retire', marker: expect.any(Object), clean: false }, { n: 0 }]);
+      const second = step(t, RETIRING, 1, first.next);
+      // It took a key, so the walk it finished confirms nothing: the next starts at the first marker.
+      expect([second.retired, second.next, retiredRecord(t)]).toEqual([1, { shape: 0, step: 'retire', marker: null, clean: true }, { n: 0 }]);
+      expect(finish(t, RETIRING, 1, second.next)).toBeNull();
+      expect(retiredRecord(t)).toEqual({ n: 1 });
       expect(t.keysOf(last, id(14))).toEqual(OLD);
+    });
+
+    it('a holder an older deployment grants the retired key BEHIND the first walk is retired by the confirming walk', () => {
+      const t = fresh();
+      for (let i = 0; i < 25; i++) t.shape(who(), id(i), OLD);
+      const first = step(t, RETIRING, 1, null);
+      expect(first.next).toMatchObject({ step: 'retire', clean: false });
+      const stale = who();
+      t.shape(stale, 'a0', GROWN); // the shape as it was, cancel included, sorting before the cursor
+      expect(finish(t, RETIRING, 1, first.next)).toBeNull();
+      expect(t.keysOf(stale, 'a0')).toEqual(OLD);
+      expect(retiredRecord(t)).toEqual({ n: 1 });
+    });
+
+    it('...while one landing behind the CONFIRMING walk is the gap left, as one landing after the retirement finished is', () => {
+      const t = fresh();
+      for (let i = 0; i < 25; i++) t.shape(who(), id(i), OLD);
+      let after = step(t, RETIRING, 1, null).next;
+      for (let n = 0; after && !(after.step === 'retire' && after.clean && after.marker) && n < 50; n++) after = step(t, RETIRING, 1, after).next;
+      expect(after).toMatchObject({ step: 'retire', clean: true });
+      const stale = who();
+      t.shape(stale, 'a0', GROWN); // behind the confirming walk's cursor
+      expect(finish(t, RETIRING, 1, after)).toBeNull();
+      expect(retiredRecord(t)).toEqual({ n: 1 });
+      expect(t.keysOf(stale, 'a0')).toEqual(GROWN.slice().sort());
     });
 
     it('a cursor at a later shape skips the shapes before it, and a backfill cut short resumes at its shape', () => {
