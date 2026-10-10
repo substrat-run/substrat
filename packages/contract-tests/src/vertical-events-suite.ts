@@ -21,6 +21,7 @@ import {
   assertAllowed,
   crossVerticalHealth,
   INERT_SCOPE_REASON,
+  REDACTED_DELIVERY_NOTE,
   runPlatformSweep,
   ulid,
   type CrossVerticalReach,
@@ -217,8 +218,11 @@ export const boardImportModManifest = moduleManifest.parse({
     emits: [
       { type: 'board.association-created', schemaVersion: 1 },
       { type: 'board.association-linked', schemaVersion: 1 },
+      // #1757: board's OWN classified event, whose local consumer fails quoting the subject.
+      { type: 'board.member-noted', schemaVersion: 1 },
     ],
     consumes: [
+      { type: 'board.member-noted', schemaVersion: 1 },
       { from: CRM_VERTICAL, type: 'crm.customer-created', schemaVersion: 1 },
       // crm emits this and does not export it. Declaring it must not be enough to receive it.
       { from: CRM_VERTICAL, type: 'crm.customer-noted', schemaVersion: 1 },
@@ -243,8 +247,8 @@ interface BoardView {
   imports: { event_id: string; source_vertical: string; source_scope_id: string; type: string; hops: number; withheld: string | null }[];
   deliveries: { event_id: string; consumer_module: string; error: string | null }[];
   outbox: { id: string; type: string; caused_by: string | null; actor: string }[];
-  /** #1705 PR 3: what a replay moved aside, never deleted. */
-  replays: { replay_id: string; kind: string; event_id: string; consumer_module: string }[];
+  /** #1705 PR 3: what a replay moved aside, never deleted. `error` is a moved delivery row's (#1757). */
+  replays: { replay_id: string; kind: string; event_id: string; consumer_module: string; error: string | null }[];
 }
 
 const boardRead: OperationHandler<undefined, BoardView> = async (ctx) => {
@@ -261,9 +265,23 @@ const boardRead: OperationHandler<undefined, BoardView> = async (ctx) => {
     ),
     outbox: ctx.sql.query('SELECT id, type, caused_by, actor FROM _substrat_outbox ORDER BY id'),
     replays: ctx.sql.query(
-      'SELECT replay_id, kind, event_id, consumer_module FROM _substrat_import_replays ORDER BY kind, event_id',
+      `SELECT replay_id, kind, event_id, consumer_module, json_extract(row, '$.error') AS error
+         FROM _substrat_import_replays ORDER BY kind, event_id`,
     ),
   };
+};
+
+/** #1757: emits board's own classified event about one subject. */
+const boardNoteMember: OperationHandler<{ subjectId: string }, void> = async (ctx, input) => {
+  assertAllowed(await ctx.check(key('association:read')));
+  ctx.emit({
+    type: 'board.member-noted',
+    schemaVersion: 1,
+    entity: { entityType: 'member', entityId: input.subjectId },
+    piiClass: 'direct',
+    subjectId: dataSubjectId.parse(input.subjectId),
+    payload: { subjectId: input.subjectId },
+  });
 };
 
 export const boardImportMod: ModuleRegistration = {
@@ -277,13 +295,23 @@ export const boardImportMod: ModuleRegistration = {
       `,
     },
   ],
-  operations: { 'board/read': boardRead as OperationHandler<never, unknown> },
+  operations: {
+    'board/read': boardRead as OperationHandler<never, unknown>,
+    'board/note-member': boardNoteMember as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    // #1757: fails quoting the subject, so its delivery row holds the subject's id as text.
+    'board.member-noted': async (_ctx, event) => {
+      throw new Error(`board cannot note member ${event.subjectId}`);
+    },
+  },
   imports: {
     [CRM_VERTICAL]: {
       'crm.customer-created': async (ctx, event) => {
         assertAllowed(await ctx.check(key('association:sync')));
         const c = customerCreated.parse(event.payload);
-        if (c.name === 'poison') throw new Error('board refuses the poison customer');
+        // The name is quoted, so a handler's own sentence can carry a subject's id (#1757).
+        if (c.name.startsWith('poison')) throw new Error(`board refuses the poison customer ${c.name}`);
         ctx.sql.exec(
           `INSERT INTO board_associations (crm_id, name) VALUES (?, ?)
            ON CONFLICT (crm_id) DO UPDATE SET name = excluded.name`,
@@ -914,6 +942,50 @@ export function verticalEventsContractSuite(
         view.outbox.filter((o) => o.type === 'board.association-created' && o.caused_by === id).length;
       expect(createdFor(first!.event_id)).toBe(1);
       expect(createdFor(second!.event_id)).toBe(2);
+    });
+
+    // #1757: a replay keeps an import's delivery row in `_substrat_import_replays`, `error`
+    // included. On a released import that text is a handler's own sentence and can name a
+    // subject, but no erasure reaches it, live or moved aside: a released event is piiClass
+    // 'none', so no subject link names its delivery. (A withheld one, a classified one included,
+    // gets a dead letter whose error is the platform's own note, which names no one.) The control is
+    // the scope's OWN classified event, whose failed delivery the same erasure does rewrite.
+    // What is held is that the two copies of an import's delivery agree after an erasure, so a
+    // later erasure that reaches the live row cannot leave the replayed one behind.
+    it('an erasure treats an import\'s moved-aside delivery exactly as its live one (#1757)', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      const subject = dataSubjectId.parse(ulid());
+      await create(t, p, `poison ${subject}`);
+      await sweep();
+      await lever(t, c, replay(null));
+      // The redelivery fails again, so the live table and the replay history each hold the text.
+      await sweep();
+      await (await fx.consumer.getScope(reader, t, c)).invoke('board/note-member', { subjectId: subject });
+
+      const receipt = await fx.consumer.admin.shredSubject(staff, t, c, subject);
+      expect(receipt).toMatchObject({ subjectId: subject, eventsRedacted: 1 });
+
+      const view = await board(t, c);
+      const [own] = view.outbox.filter((o) => o.type === 'board.member-noted');
+      expect(view.deliveries.find((d) => d.event_id === own!.id)?.error).toBe(REDACTED_DELIVERY_NOTE);
+      const [imported] = view.imports;
+      const live = view.deliveries.find((d) => d.event_id === imported!.event_id)?.error;
+      const archived = view.replays.find((r) => r.kind === 'delivery' && r.event_id === imported!.event_id)?.error;
+      // Both copies exist, so the comparison below cannot pass on two absences.
+      expect(typeof live).toBe('string');
+      expect(typeof archived).toBe('string');
+      expect(
+        archived,
+        '#1757: an erasure changed an imported delivery\'s live error but not its copy in ' +
+          '_substrat_import_replays (or the reverse). Whatever reaches _substrat_deliveries.error for an ' +
+          'imported event must rewrite json_extract(row, \'$.error\') of its kind=\'delivery\' rows too, in ' +
+          'the same transaction, or the replay history keeps what the live table gave up.',
+      ).toBe(live);
+      // Today no erasure reaches either copy. When one does, this line changes, and the one above
+      // is what holds the replay history to it.
+      expect(live).toContain(subject);
     });
 
     it('skip to now: nothing before the skip is delivered, what comes after is, and a replay reaches back', async () => {
