@@ -478,7 +478,6 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'create', 'arch
  */
 export type DerivedKind = (typeof DERIVED_KINDS)[number];
 
-/** Who writes one operation's handler (#1773). */
 /** Who writes one operation's handler (#1773), as this release emits it. */
 export type EmittedHandler =
   | { readonly derive: DerivedKind }
