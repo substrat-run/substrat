@@ -4458,11 +4458,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const capability = capabilityIdSchema.parse(c.req.param('capabilityId'));
-    const actor = c.get('actor');
-    if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) {
-      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    }
-    await c.var.admin.revokeCapability(actor, tenantId, scopeId, capability);
+    // An unknown scope, another tenant's included, is the verb's own `not_found`: a 404.
+    await c.var.admin.revokeCapability(c.get('actor'), tenantId, scopeId, capability);
     return c.body(null, 204);
   });
 

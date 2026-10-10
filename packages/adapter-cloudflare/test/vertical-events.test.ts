@@ -1171,8 +1171,7 @@ describe('the operator’s capability revoke reaches the deployment serving the 
       secretBox,
       capabilityDelegation: {
         revoke: async (a) => {
-          const rec = await shared.admin.getScopeRecord(staff, a.tenantId, a.scopeId);
-          if (rec?.vertical !== SHARE_VERTICAL) throw new Error(`no deployment serving scope ${a.scopeId}`);
+          if (a.served.vertical !== SHARE_VERTICAL) throw new Error(`no deployment serving scope ${a.scopeId}`);
           return dep.client.revokeCapability({ scopeId: a.scopeId, capabilityId: a.capabilityId, actor: a.actor });
         },
       },

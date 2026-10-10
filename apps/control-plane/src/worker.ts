@@ -1061,24 +1061,22 @@ function importCursorDelegationFor(env: Env): ImportCursorDelegation | undefined
  */
 function capabilityDelegationFor(env: Env): CapabilityDelegation | undefined {
   if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
-  return capabilityDelegationOver(
-    (t, s) => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE }).admin.getScopeRecord(SWEEP_ACTOR, t, s),
-    resolveVerticalForScopeFor(env),
-  );
+  return capabilityDelegationOver(resolveVerticalForScopeFor(env));
 }
 
-/** `capabilityDelegationFor`'s body over its two reads, testable without a dispatch namespace. */
+/**
+ * `capabilityDelegationFor`'s body over the deployment ladder, testable without a dispatch
+ * namespace. The host hands it the directory's record of where the scope runs, read once.
+ */
 export function capabilityDelegationOver(
-  scopeRecord: (tenantId: TenantId, scopeId: ScopeId) => Promise<Scope | undefined>,
-  clientFor: (scope: Scope) => Promise<Pick<VerticalClient, 'revokeCapability'> | undefined>,
+  clientFor: (served: Parameters<CapabilityDelegation['revoke']>[0]['served']) => Promise<Pick<VerticalClient, 'revokeCapability'> | undefined>,
 ): CapabilityDelegation {
   return {
     revoke: async (a) => {
-      const rec = await scopeRecord(a.tenantId, a.scopeId);
-      const client = rec?.vertical ? await clientFor(rec) : undefined;
+      const client = await clientFor(a.served);
       if (!client) {
         throw new Error(
-          `no deployment serving scope ${a.scopeId} (vertical '${rec?.vertical ?? 'none'}') — ` +
+          `no deployment serving scope ${a.scopeId} (vertical '${a.served.vertical}') — ` +
             `capability ${a.capabilityId} was not revoked`,
         );
       }

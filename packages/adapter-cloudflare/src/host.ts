@@ -195,7 +195,6 @@ import {
   type CapabilityFilter,
   type CapabilityPage,
   type CapabilityRecord,
-  capabilityRecord,
   type MintedCapability,
   type PrincipalId,
   type PromotionAcknowledgement,
@@ -2036,13 +2035,15 @@ export interface ImportCursorDelegation {
  * control plane's own `SCOPE` namespace is the module-less placeholder: a revoke written there
  * would revoke nothing while the leaked link kept working. So it crosses the platform-secret
  * `/internal/*` seam the switches cross (`/internal/capabilities/revoke`), and the admin log
- * stays on this side. The far end answers the record as it stood before, or `null` when the
- * scope holds no such capability. Set only on the shared control plane's host.
+ * stays on this side. `served` is the directory's record of where the scope runs, read once by
+ * the host, so the reach resolves the deployment without reading it again. The far end answers
+ * the record as it stood before, or `null` when the scope holds no such capability. Set only on
+ * the shared control plane's host.
  */
 export interface CapabilityDelegation {
   revoke(args: {
-    tenantId: TenantId;
     scopeId: ScopeId;
+    served: { vertical: string; verticalVersionId: string | null; servingRef: string | null };
     capabilityId: CapabilityId;
     actor: PlatformActorId;
   }): Promise<CapabilityRecord | null>;
@@ -3342,8 +3343,7 @@ export class CloudflareScopeHost implements ScopeHost {
     capabilityId: CapabilityId,
     actor: PlatformActorId,
   ): Promise<CapabilityRecord | null> {
-    const before = await this.scopeStub(scopeId).revokeCapabilityAsPlatform(capabilityId, actor);
-    return before === null ? null : capabilityRecord.parse(before);
+    return this.scopeStub(scopeId).revokeCapabilityAsPlatform(capabilityId, actor);
   }
 
   /**
@@ -5180,47 +5180,27 @@ export class CloudflareScopeHost implements ScopeHost {
    * loudly, on the shared control plane for a scope bound to a vertical, whose storage lives
    * in that vertical's deployment. Writing through `this.scopeStub` there would mint into
    * an empty DO of the wrong namespace, a capability nobody could ever exchange. The revoke
-   * reaches the serving deployment through `capabilityDelegation` (`capabilityRevoker`); the
-   * mint has no such reach and no caller needing one, since an owner claim link is minted by
-   * the deployment itself behind `/internal/owner-claim`.
+   * reaches a hosted scope through `capabilityDelegation` instead and asks here only when none is
+   * configured; the mint has no such reach and no caller needing one, since an owner claim link
+   * is minted by the deployment itself behind `/internal/owner-claim`.
    */
-  private async capabilityScopeStub(tenantId: TenantId, scopeId: ScopeId, verb: string) {
-    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-    if (!rec) throw unknownScopeForTenant(tenantId, scopeId);
+  private async capabilityScopeStub(rec: ScopeRow, scopeId: ScopeId, verb: string) {
     if (this.servesScopesElsewhereNow && rec.vertical !== null) {
       throw substratError(
         'unavailable',
         `${verb} cannot reach scope ${scopeId}: it is served by the '${rec.vertical}' ` +
-          'deployment, and this verb is not delegated there',
+          'deployment, and this host has no reach into it',
       );
     }
     await this.migrateAndRecord(scopeId);
-    return { stub: this.scopeStub(scopeId), vertical: rec.vertical };
+    return this.scopeStub(scopeId);
   }
 
-  /**
-   * Where the platform's capability revoke lands (#1686): the deployment serving a hosted scope,
-   * through `capabilityDelegation`, or this host's own ScopeDO — `capabilityScopeStub`'s refusal
-   * when the scope is served elsewhere and no delegation is configured. The answer is the record
-   * as it stood before, or `null` for a capability the scope does not hold.
-   */
-  private async capabilityRevoker(
-    tenantId: TenantId,
-    scopeId: ScopeId,
-  ): Promise<{ vertical: string | null; revoke: (id: CapabilityId, actor: PlatformActorId) => Promise<CapabilityRecord | null> }> {
-    const delegation = this.capabilityDelegation;
-    if (delegation) {
-      const rec = await this.cp.getScopeRecord(tenantId, scopeId);
-      if (!rec) throw unknownScopeForTenant(tenantId, scopeId);
-      if (rec.vertical !== null) {
-        return {
-          vertical: rec.vertical,
-          revoke: (capabilityId, actor) => delegation.revoke({ tenantId, scopeId, capabilityId, actor }),
-        };
-      }
-    }
-    const { stub, vertical } = await this.capabilityScopeStub(tenantId, scopeId, 'revokeCapability');
-    return { vertical, revoke: (capabilityId, actor) => stub.revokeCapabilityAsPlatform(capabilityId, actor) };
+  /** The directory's record of a scope a platform capability verb addresses, or `not_found`. */
+  private async capabilityScopeRecord(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRow> {
+    const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+    if (!rec) throw unknownScopeForTenant(tenantId, scopeId);
+    return rec;
   }
 
   /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
@@ -6780,9 +6760,10 @@ export class CloudflareScopeHost implements ScopeHost {
         // two sides cannot disagree about what a valid mint is.
         checkBecomeInput(input, new Date().toISOString() as Instant);
         await this.validateScopeAccess(tenantId, scopeId);
-        const { stub, vertical } = await this.capabilityScopeStub(tenantId, scopeId, 'mintCapability');
+        const rec = await this.capabilityScopeRecord(tenantId, scopeId);
+        const stub = await this.capabilityScopeStub(rec, scopeId, 'mintCapability');
         const minted = await stub.mintBecomeCapability(input, actor);
-        await this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId, vertical }, null, {
+        await this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId, vertical: rec.vertical }, null, {
           capabilityId: minted.id,
           mode: 'become',
           principal: input.principal,
@@ -6798,8 +6779,20 @@ export class CloudflareScopeHost implements ScopeHost {
         scopeId: ScopeId,
         capabilityId: CapabilityId,
       ): Promise<void> => {
-        const { revoke, vertical } = await this.capabilityRevoker(tenantId, scopeId);
-        const before = await revoke(capabilityId, actor);
+        // #1686: a hosted scope's directory is in the deployment serving it, reached through the
+        // delegation; this host's own ScopeDO otherwise.
+        const rec = await this.capabilityScopeRecord(tenantId, scopeId);
+        const { vertical } = rec;
+        const delegation = this.capabilityDelegation;
+        const before =
+          vertical !== null && delegation
+            ? await delegation.revoke({
+                scopeId,
+                served: { vertical, verticalVersionId: rec.vertical_version_id, servingRef: rec.serving_ref },
+                capabilityId,
+                actor,
+              })
+            : await (await this.capabilityScopeStub(rec, scopeId, 'revokeCapability')).revokeCapabilityAsPlatform(capabilityId, actor);
         if (!before) {
           throw substratError('not_found', `no capability ${capabilityId} in scope ${scopeId}`);
         }

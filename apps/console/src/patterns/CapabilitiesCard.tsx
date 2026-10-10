@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { capabilityStatus, type CapabilityRecord, type Scope } from '@substrat-run/contracts';
+import { capabilityId, capabilityStatus, type CapabilityPage, type CapabilityRecord, type Scope } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Table } from '../components';
 import type { Api } from '../lib/api';
-import { errorMessage, switchCardState } from '../lib/schedules';
+import { errorMessage, performSwitch, submitSwitch, switchCardState } from '../lib/schedules';
 import {
   STATUS_LABEL,
   appendPage,
@@ -22,8 +22,9 @@ const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
  * The scope's capability directory (#1686): every link share and claim link that opens this
  * scope, what each may do, when it dies, how often it has been used — and the revoke for a
  * leaked one (`HostAdmin.revokeCapability`, audited on the admin log), behind an in-page
- * confirm. Every revoke attempt re-reads the directory afterwards, whatever it answered: a
- * failure whose answer was lost may still have revoked, and the card shows what is true now.
+ * confirm. The revoke and the re-read after it are the switch cards' two steps
+ * (`performSwitch`): only a failure that proves nothing changed reads as refused, and a lost
+ * answer re-reads the directory and says the outcome is unknown.
  *
  * Records only. A secret is stored nowhere and its hash is never selected, so there is
  * nothing here to copy a link from; the id is the handle for a revoke.
@@ -47,9 +48,7 @@ export function CapabilitiesCard({
   // The capability the confirm is open for, and whether its revoke is in flight.
   const [confirming, setConfirming] = useState<CapabilityRecord | null>(null);
   const [busy, setBusy] = useState(false);
-  // Bumped after a revoke so the read below runs again. A ref guards a double click, which a
-  // `useState` flag cannot: both clicks would see it false before the setter lands.
-  const [reload, setReload] = useState(0);
+  // A ref guards a double click, which a `useState` flag cannot (`submitSwitch`).
   const revoking = useRef(false);
   // Which read the screen is waiting on, so a page that lands after the filter moved is dropped.
   const generation = useRef(0);
@@ -75,7 +74,7 @@ export function CapabilitiesCard({
       // Invalidates this read's answer if it is still in flight.
       generation.current++;
     };
-  }, [api, scope.tenantId, scope.id, revoked, reload]);
+  }, [api, scope.tenantId, scope.id, revoked]);
 
   async function loadMore() {
     if (next === null || loadingMore) return;
@@ -94,21 +93,60 @@ export function CapabilitiesCard({
     }
   }
 
+  /** Show a freshly read first page, dropping any read still in flight for the old one. */
+  function showPage(p: CapabilityPage) {
+    generation.current++;
+    setRows(p.entries);
+    setNext(p.nextCursor);
+    setError(null);
+    setMoreError(null);
+  }
+
   async function confirmRevoke() {
-    if (!confirming || revoking.current) return;
-    const target = confirming;
-    revoking.current = true;
+    if (!confirming) return;
+    const name = `${confirming.label ?? confirming.id} on ${scope.slug}`;
+    const id = confirming.id;
     setBusy(true);
     try {
-      await api.revokeCapability(scope.tenantId, scope.id, target.id as never);
-      onToast('Capability revoked', `${target.label ?? target.id} on ${scope.slug}`);
-    } catch (e) {
-      onToast('Revoke failed', errorMessage(e), 'danger');
-    } finally {
-      revoking.current = false;
-      setBusy(false);
+      const attempt = await submitSwitch(revoking, () =>
+        performSwitch(
+          () => api.revokeCapability(scope.tenantId, scope.id, capabilityId.parse(id)),
+          () => api.listCapabilities(scope.tenantId, scope.id, { includeRevoked: revoked }),
+        ),
+      );
+      if (attempt === null) return; // a revoke was already in flight — this click was skipped
+      if (attempt.kind === 'refused') {
+        onToast('Refused', errorMessage(attempt.error), 'danger');
+        return;
+      }
       setConfirming(null);
-      setReload((n) => n + 1);
+      if (attempt.kind === 'unknown') {
+        if (attempt.entries) showPage(attempt.entries);
+        else {
+          generation.current++;
+          setRows(null);
+          setError(attempt.readError);
+        }
+        onToast(
+          'Not confirmed — the link may or may not be revoked',
+          `${name} · ${errorMessage(attempt.error)} · ` +
+            (attempt.entries ? 'The list shows its status, read just now.' : 'Read its status before trying again.'),
+          'danger',
+        );
+        return;
+      }
+      if (attempt.kind === 'unconfirmed') {
+        // Revoked, but the list cannot vouch for anything now: show the read failure, never the stale "Live".
+        generation.current++;
+        setRows(null);
+        setError(attempt.error);
+        onToast('Revoked, but the list could not be re-read', `${name} · ${errorMessage(attempt.error)}`, 'danger');
+        return;
+      }
+      showPage(attempt.entries);
+      onToast('Capability revoked', name);
+    } finally {
+      setBusy(false);
     }
   }
 
