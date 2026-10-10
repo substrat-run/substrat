@@ -170,6 +170,21 @@ export function inputParseContractSuite(
       expect(await received('parse/bare')).toBeNull();
     });
 
+    it('cannot be edited in place once bound — the registered module still parses (#2155 review)', async () => {
+      // An edit in place would keep the brand, so the runtime check could not see it. The value is
+      // frozen to what the adapters read, so each edit throws (this file is an ES module: strict).
+      const bound = parseMod.operations!;
+      const edits: Record<string, () => unknown> = {
+        'schemas dropped': () => Object.assign(bound, { inputs: undefined }),
+        'schemas swapped': () => Object.assign(bound, { inputs: {} }),
+        'handler added': () => Object.assign(bound.handlers, { 'parse/sneak': () => null }),
+        'schema removed': () => delete (bound.inputs as Record<string, unknown>)['parse/echo'],
+      };
+      for (const [edit, run] of Object.entries(edits)) expect(run, edit).toThrow(TypeError);
+      // Twin: the module registered from that value refuses the malformed call, as before.
+      await expect(stub.invoke('parse/echo', { name: 42 })).rejects.toThrow();
+    });
+
     it('refuses operations the binder did not make — a copy, a spread, a literal (#1835)', () => {
       // The brand is an ES-private field, so none of these carries it, whatever its shape. Each
       // would otherwise register handlers beside maps nothing bound to them: here, no schemas.

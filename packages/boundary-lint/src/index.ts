@@ -1127,6 +1127,16 @@ const BIND_INSTEAD =
  *
  * Read over the masked source, so a cast in a comment or a string is not one; the third reads the
  * comment-stripped copy, since `['operations']` is a string literal.
+ *
+ * **Deliberately out of reach** (#2155 review), because each is a deliberate act rather than
+ * drift, and following it would need the type checker this rule does not carry:
+ *
+ * - a name TWO hops away — `const A = X as never; const B = A; operations: B` — since one hop is
+ *   what the shorthand and a named map need, and a chain of renames is not written by accident;
+ * - a value that is `any` with no cast in sight — `function forge(): any { … }`, then
+ *   `operations: forge()` — since there is no assertion for a text rule to see.
+ *
+ * Both still meet the adapters' run-time check, which refuses any value the binder did not make.
  */
 function checkHandlerMapCast(rel: string, source: string, out: Violation[]): void {
   if (!/\boperations(?:For)?\b|\bundeclaredOperations\b|\bBoundOperations\b/.test(source)) return;
