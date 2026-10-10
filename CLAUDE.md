@@ -354,7 +354,7 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   column upstream. One-time extraction handoffs use an explicit
   `boundary-lint-allow R5` … `boundary-lint-end R5` comment block (reviewable escape hatch).
 - An engine is composed **by call** or **by event**, and that decides its shape.
-  - **By call** (workorder, protocol, booking): operations are thin — the permission
+  - **By call** (workorder, protocol, booking, notifications): operations are thin — the permission
     check + one exported in-scope function. All logic lives in composable exports, so a
     vertical wraps it inside its own transaction and extends by composition, never forks.
   - **By event** (invoicing): the vertical *emits*, the engine consumes, and the vertical
