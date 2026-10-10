@@ -1,6 +1,6 @@
 import v8 from 'node:v8';
 import { runInNewContext } from 'node:vm';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { HTTPException } from 'hono/http-exception';
 import {
   fromWireFailure,
@@ -76,9 +76,12 @@ describe('classifyError reads the taxonomy first', () => {
 describe('classifyError announces a status it read from a sentence', () => {
   let n = 0;
   const fresh = (sentence: string): string => `${sentence} #${++n}-${Math.random()}`;
+  let warn: MockInstance<typeof console.warn>;
   const announcements = () => warn.mock.calls.filter(([tag]) => tag === 'vertical-host.untyped-refusal');
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  afterEach(() => warn.mockClear());
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
 
   it.each([
     ['permission denied: invoice:void', 403, 'permission_denied'],
