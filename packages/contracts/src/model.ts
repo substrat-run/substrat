@@ -378,8 +378,8 @@ export interface EmittedEntity {
   readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number };
   /** How a subject erasure reaches it (#2068), when declared. `subjects` sorted. */
   readonly erasure?: { readonly mode: 'blank' | 'delete' | 'custom'; readonly subjects?: readonly string[] };
-  /** The columns a derived write stamps (#2157), keyed sorted. */
-  readonly stamps?: Readonly<Record<string, StampKind>>;
+  /** The columns a derived write stamps (#2157), keyed sorted. A string kind, for `emittedHandler`'s reason. */
+  readonly stamps?: Readonly<Record<string, string>>;
 }
 
 export interface EmittedModel {
@@ -462,8 +462,12 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'create'] as co
 export type DerivedKind = (typeof DERIVED_KINDS)[number];
 
 /** Who writes one operation's handler (#1773). */
+/**
+ * Who writes one operation's handler (#1773), as the artifact carries it. The kind is a string,
+ * not `DerivedKind`: a reader may hold a model a newer emitter wrote (#2157, `emittedHandler`).
+ */
 export type EmittedHandler =
-  | { readonly derive: DerivedKind }
+  | { readonly derive: string }
   | { readonly authored: string };
 
 /** One exported event type in the model (#1705 PR 3). */
