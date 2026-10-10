@@ -178,6 +178,41 @@ describe('attachment surface (cloudflare host)', () => {
     await expect(viewer.remove(rec.id)).rejects.toThrow();
   });
 
+  it('keeps the throwing verbs for a coordinator from before #113: the bare sentence, no code', async () => {
+    // A coordinator isolate still running older code calls the plain verbs during a deploy,
+    // and reads what they always threw. The `…Reply` door answers the same refusal as data.
+    const { host, t, s, editor, reader } = await world();
+    const rec = await (await host.attachments(editor, t, s)).upload({
+      entity: { entityType: 'item', entityId: 'i1' },
+      filename: 'note.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: bytes('hello'),
+    });
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
+      attachmentRemove(id: string, principal: string, tenantId: string, scopeId: string): Promise<unknown>;
+      attachmentRemoveReply(
+        id: string,
+        principal: string,
+        tenantId: string,
+        scopeId: string,
+      ): Promise<{ failure?: { code?: string; message: string; extensions?: Record<string, unknown> } }>;
+    };
+    const thrown = await stub.attachmentRemove(rec.id, reader, t, s).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe('permission denied: perm:use');
+    expect(errorCodeOf(thrown)).toBeUndefined();
+    // The twin: the reply door carries the code and the declared permission.
+    expect((await stub.attachmentRemoveReply(rec.id, reader, t, s)).failure).toMatchObject({
+      code: 'permission_denied',
+      message: 'permission denied: perm:use',
+      extensions: { permission: 'perm:use' },
+    });
+  });
+
   it('opens bytes for a registered system module only after its read grant', async () => {
     const { host, t, s, editor } = await world();
     const rec = await (await host.attachments(editor, t, s)).upload({
@@ -384,12 +419,16 @@ describe('attachment surface (cloudflare host)', () => {
     const { host, t, s, editor, rec } = await dispatchReading({ grantRead: true });
 
     let outcome: unknown = 'never ran';
+    let refused: unknown;
     host.registerConnector(
       'signer',
       'perm.acted',
       async (ctx) => {
         const conn = await ctx.connection('signer');
-        outcome = await conn.openAttachment(rec.id).catch((e: unknown) => `refused: ${String(e)}`);
+        outcome = await conn.openAttachment(rec.id).catch((e: unknown) => {
+          refused = e;
+          return `refused: ${String(e)}`;
+        });
       },
       { provider: 'signer' },
     );
@@ -406,6 +445,9 @@ describe('attachment surface (cloudflare host)', () => {
     expect(String(outcome)).toMatch(/item\/i1/);
     expect(String(outcome)).toMatch(/item\/i2/);
     expect(outcome).not.toBeNull();
+    // #113: a denial by its code. Its sentence names no permission, so a reader guessing from
+    // the words could not tell it from any other untyped failure.
+    expect(errorCodeOf(refused)).toBe('permission_denied');
   });
 
   it('refuses loudly when no R2 client / bucket resolver is configured', async () => {

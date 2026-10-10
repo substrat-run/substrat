@@ -186,10 +186,28 @@ want. `instanceof PermissionDenied` stays false on this path and always will. Th
 the wrong question; `errorCodeOf` is the right one, and every consumer in the repo asks
 it that way.
 
-**Still to convert.** `invoke` carries the envelope; the five other throwing RPC methods
-(`attachmentAdd`, `attachmentList`, `attachmentAuthorize`, `attachmentRemove`,
-`introspectQuery`) still throw across the hop and lose their structure. Same pattern,
-mechanical, lower traffic.
+**Converted since: every RPC a caller's refusal crosses.** `invoke` carries the envelope as
+an opt-in flag; the other caller-facing ScopeDO verbs answer it through a sibling method that
+returns a `DoReply` (`replyOf` DO-side, `unwrapReply` in the coordinator): the console's
+`introspectTableReply` / `introspectQueryReply`, and the attachment verbs `attachmentAddReply`,
+`attachmentListReply`, `attachmentAuthorizeReply`, `attachmentRemoveReply` and
+`systemAttachmentAuthorizeReply`. Before the attachment verbs moved, a gate refusal reached a
+vertical on Cloudflare as a bare `Error`. "permission denied: …" was then 403 only because
+`vertical-host` read the sentence, while a delivery-admitted read's refusal, whose sentence
+names no permission, answered 400. On the pure adapter both were thrown in-process with their
+code. `attachmentRefusalContractSuite` now holds the two adapters to the same answer.
+
+**Kept for the deploy-skew window, then deleted.** Each converted verb keeps its throwing
+original — `introspectTable`, `introspectQuery`, `attachmentAdd`, `attachmentList`,
+`attachmentAuthorize`, `attachmentRemove`, `systemAttachmentAuthorize` — for a coordinator
+isolate from before #113, which calls them while a deploy rolls out and reads the bare
+sentence it always read. No current coordinator calls them. They go with the release that
+deletes `vertical-host`'s sentence patterns (§5, phase 4), since both exist for the same old
+callers.
+
+Still throwing, deliberately: the platform-internal verbs `runPurgeSweep`, `importDumpChecked`,
+`discardKeptCopy` and `wipeCarried`. No caller-facing refusal crosses them, and the carry verbs
+already answer their expected refusal as a value.
 
 ## 4. Where it lands
 

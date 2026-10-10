@@ -1551,22 +1551,23 @@ interface ScopeStubRpc {
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
   hasEffectiveRoleGrantFor(tenantId: string, subject: string): Promise<boolean>;
   /** Attachment surface, metadata half (#473) — see the ScopeDO methods of the same names.
-   *  `connectionId` (#476) gates as a connection instead of `principal` when set. */
-  attachmentAdd(
+   *  `connectionId` (#476) gates as a connection instead of `principal` when set. Each answers
+   *  its refusal as data (#113), so its code survives the hop. */
+  attachmentAddReply(
     record: AttachmentRecord,
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
     connectionId?: string,
-  ): Promise<AttachmentRecord>;
-  attachmentList(
+  ): Promise<DoReply<AttachmentRecord>>;
+  attachmentListReply(
     entity: EntityRef,
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
     connectionId?: string,
-  ): Promise<AttachmentRecord[]>;
-  attachmentAuthorize(
+  ): Promise<DoReply<AttachmentRecord[]>>;
+  attachmentAuthorizeReply(
     attachmentId: string,
     mode: 'read' | 'write',
     principal: PrincipalId,
@@ -1575,23 +1576,23 @@ interface ScopeStubRpc {
     connectionId?: string,
     /** #726 remedy B: admit by ownership of THIS delivery's entity, resolved here. */
     forEventId?: string,
-  ): Promise<AttachmentRecord | null>;
+  ): Promise<DoReply<AttachmentRecord | null>>;
   /** Read-only attachment gate for a registered module's system principal. */
-  systemAttachmentAuthorize(
+  systemAttachmentAuthorizeReply(
     attachmentId: string,
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
     /** #1834: the instance the system door's gate read; on any other it answers `SystemDoorMoved`. */
     systemDoorInstance?: string,
-  ): Promise<AttachmentRecord | null | SystemDoorMoved>;
-  attachmentRemove(
+  ): Promise<DoReply<AttachmentRecord | null | SystemDoorMoved>>;
+  attachmentRemoveReply(
     attachmentId: string,
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
     connectionId?: string,
-  ): Promise<AttachmentRecord | null>;
+  ): Promise<DoReply<AttachmentRecord | null>>;
   /**
    * #1686: the capability session's reads — `sessionHash` resolved inside the DO's queue.
    * Each answers an envelope whose failure is DATA (`invoke`'s discipline): a throw across
@@ -4136,8 +4137,8 @@ export class CloudflareScopeHost implements ScopeHost {
     const stub = this.scopeStub(scopeId);
     return {
       open: async (attachmentId) => {
-        const record = await door.through<AttachmentRecord | null>((instance) =>
-          stub.systemAttachmentAuthorize(attachmentId, moduleId, tenantId, scopeId, instance),
+        const record = await door.through<AttachmentRecord | null>(async (instance) =>
+          unwrapReply(await stub.systemAttachmentAuthorizeReply(attachmentId, moduleId, tenantId, scopeId, instance)),
         );
         return record ? this.openAttachmentBytes(store, scopeId, record) : null;
       },
@@ -4308,32 +4309,23 @@ export class CloudflareScopeHost implements ScopeHost {
         // (harmless, GC-able), never a row without bytes; a refused gate compensates.
         await store.put(key, input.body, { contentType: input.contentType });
         try {
-          return await stub.attachmentAdd(record, asPrincipalId, tenantId, scopeId, connectionId);
+          return unwrapReply(await stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId));
         } catch (err) {
           await store.delete(key).catch(() => {});
           throw err;
         }
       },
-      list: (entity) => stub.attachmentList(entity, asPrincipalId, tenantId, scopeId, connectionId),
+      list: async (entity) =>
+        unwrapReply(await stub.attachmentListReply(entity, asPrincipalId, tenantId, scopeId, connectionId)),
       open: async (attachmentId) => {
-        const record = await stub.attachmentAuthorize(
-          attachmentId,
-          'read',
-          asPrincipalId,
-          tenantId,
-          scopeId,
-          connectionId,
-          forEvent?.eventId,
+        const record = unwrapReply(
+          await stub.attachmentAuthorizeReply(attachmentId, 'read', asPrincipalId, tenantId, scopeId, connectionId, forEvent?.eventId),
         );
         return record ? this.openAttachmentBytes(store, scopeId, record) : null;
       },
       remove: async (attachmentId) => {
-        const removed = await stub.attachmentRemove(
-          attachmentId,
-          asPrincipalId,
-          tenantId,
-          scopeId,
-          connectionId,
+        const removed = unwrapReply(
+          await stub.attachmentRemoveReply(attachmentId, asPrincipalId, tenantId, scopeId, connectionId),
         );
         if (removed) await store.delete(attachmentBlobKey(scopeId, removed.id)).catch(() => {});
         return removed;
