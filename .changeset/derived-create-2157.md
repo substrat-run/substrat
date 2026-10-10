@@ -17,7 +17,7 @@ A create matches when it is served as `POST`, emits about the row by its id, ans
 - the link column `<parent>_id`, from the id of the parent the check is narrowed to;
 - an input field, filling the column of its snake_case name, of the same type (string or number);
 - a declared stamp (below);
-- `NULL`, for a nullable column nothing else names.
+- the column's default (`NULL` unless the table sets one), for a nullable column nothing else names: it is left out of the insert. An optional input the caller leaves out is written as `NULL`.
 
 The derived create checks the declared key first. With a parent, it answers `not_found` for a parent that does not exist and links the new row to the parent, so the parent's grants reach it. On an entity with a natural `key`, a row already holding that key is the answer, with no write and no event. Under a parent, that key must include the link column, or the create is not derivable. A replay answers on the write key alone, as a hand-written idempotent create does. Otherwise it inserts the row and emits the declared event once.
 

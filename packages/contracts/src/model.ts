@@ -448,7 +448,8 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'create'] as co
  *   exactly one place the model names: the primary key is minted (`ulid()`), a check narrowed to a
  *   PARENT fills the link column `<parent>_id` (the parent must exist, and the new row is linked
  *   to it), a declared `stamps` column is the time or the caller, an input field fills the column
- *   of its snake_case name, and a nullable column no input names is `NULL`. An entity with a
+ *   of its snake_case name, and a nullable column nothing names is left out of the insert, to the
+ *   column's default (`NULL` unless the table sets one). An entity with a
  *   natural `key` is created idempotently: a row already holding that key is the answer, with no
  *   write and no event. Under a parent, the key must include the link column, or a replay could
  *   answer another parent's row. A replay answers on the write key alone, deliberately — as a

@@ -596,7 +596,9 @@ A `create` fills each column from one place: the primary key is a minted ULID; a
 to a **parent** fills the link column `<parent>_id` from its id, answers `not_found` if that
 parent does not exist, and links the new row to it so the parent's grants reach it; an input
 field fills the column of its snake_case name, same type; a column the entity declares in
-`stamps` is the time or the caller; and a nullable column nothing names is `NULL`. A column
+`stamps` is the time or the caller; and a nullable column nothing names is left out of the
+insert, to the column's default (`NULL` unless the table sets one). An optional input the caller
+leaves out is written as `NULL`. A column
 filled by none of these makes the operation a command with its own body, not a create.
 
 A natural `key` makes the create idempotent, and under a parent the key must include the link
