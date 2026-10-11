@@ -107,9 +107,6 @@ export const conformance = declareEntityChecks({
         'ctx.revoke takes the same guardrail as ctx.grant — a caller may only withdraw ' +
         'a grant it could have made, so it must hold the key on that entity too',
     },
-    // The macro rule (#1087), met by the kit exactly as it is met by a person: a
-    // macro needs every key its parts need, and a public reply is a part. The kit's
-    // saved reply carries no actions, so reply-public is the whole of the rest.
     // The kit's saved reply is the desk's, shared (#2161): changing, binning, restoring or
     // deleting one is curation, so the probe needs the curator's key on it as well.
     'ticket0/update-saved-reply': {
@@ -128,6 +125,9 @@ export const conformance = declareEntityChecks({
       permissions: ['saved-reply:manage'],
       because: 'a shared reply is restored only by the holder of saved-reply:manage, checked on that reply',
     },
+    // The macro rule (#1087), met by the kit exactly as it is met by a person: a
+    // macro needs every key its parts need, and a public reply is a part. The kit's
+    // saved reply carries no actions, so reply-public is the whole of the rest.
     'ticket0/apply-saved-reply': {
       permissions: ['conversation:reply-public'],
       because:

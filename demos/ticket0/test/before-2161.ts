@@ -21,7 +21,10 @@ import { defineEntities, defineOperations } from '@substrat-run/contracts';
 import { operationsFor, type ModuleRegistration } from '@substrat-run/kernel';
 import { TICKET0_PERMISSIONS, ticket0Entities, ticket0Operations } from '../spec/model.js';
 
-/** The two moves this PR added. Their `authored` says why a derivable shape is hand-written, and without a trash no shape is. */
+/**
+ * The two moves #2161 added. Their `authored` says why a derivable shape is hand-written, and
+ * without a trash no shape is derivable, so an `authored` there is refused.
+ */
 const MOVES = new Set(['ticket0/trash-saved-reply', 'ticket0/restore-saved-reply']);
 
 export function withoutTheBin(m: ModuleRegistration): ModuleRegistration {

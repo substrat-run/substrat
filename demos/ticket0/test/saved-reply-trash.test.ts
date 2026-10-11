@@ -18,7 +18,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import type { Page, PrincipalId } from '@substrat-run/contracts';
-import type { ScopeStub } from '@substrat-run/kernel';
 import { mountApi } from '../src/routes.js';
 import { createKit, TICKET0, type Desk } from './desk-kit.js';
 
@@ -41,14 +40,12 @@ async function freshDesk(): Promise<Named> {
   return { ...desk, anna: desk.agents[0]!, bo: desk.agents[1]! };
 }
 
-const as = (desk: Desk, who: PrincipalId): Promise<ScopeStub> => kit.as(desk, who);
-
 async function create(desk: Desk, who: PrincipalId, input: Record<string, unknown>): Promise<SavedReply> {
-  return (await (await as(desk, who)).invoke('ticket0/create-saved-reply', { body: 'Hi {{contact.name}}.', ...input })) as SavedReply;
+  return (await (await kit.as(desk, who)).invoke('ticket0/create-saved-reply', { body: 'Hi {{contact.name}}.', ...input })) as SavedReply;
 }
 
 const call = async (desk: Desk, who: PrincipalId, op: string, input: Record<string, unknown>) =>
-  (await as(desk, who)).invoke(`ticket0/${op}`, input);
+  (await kit.as(desk, who)).invoke(`ticket0/${op}`, input);
 
 const titles = async (desk: Desk, who: PrincipalId, op: 'list-saved-replies' | 'trashed-saved-replies') =>
   ((await call(desk, who, op, {})) as Page<SavedReply>).entries.map((r) => r.title);
@@ -306,20 +303,20 @@ describe('over HTTP, as the settings screen calls it', () => {
     let caller: PrincipalId = desk.anna;
     const app = new Hono();
     mountApi(app, async () => kit.host.getScope(caller, desk.tenant, desk.scope));
-    const json = (method: string, path: string) => app.request(`/api${path}`, { method });
+    const req = (method: string, path: string) => app.request(`/api${path}`, { method });
 
     const reply = await create(desk, desk.anna, { title: 'Over the wire', personal: true });
-    expect(await (await json('POST', `/saved-replies/${reply.id}/trash`)).json()).toEqual({ id: reply.id, state: 'trashed' });
+    expect(await (await req('POST', `/saved-replies/${reply.id}/trash`)).json()).toEqual({ id: reply.id, state: 'trashed' });
     // A static segment, so the bin is never read as a reply whose id is "trash".
-    const listed = (await (await json('GET', '/saved-replies/trash')).json()) as SavedReply[];
+    const listed = (await (await req('GET', '/saved-replies/trash')).json()) as SavedReply[];
     expect(listed.map((r) => r.id)).toEqual([reply.id]);
-    expect((await json('GET', `/saved-replies/${reply.id}`)).status).toBe(404);
+    expect((await req('GET', `/saved-replies/${reply.id}`)).status).toBe(404);
 
     caller = desk.bo;
-    expect((await json('POST', `/saved-replies/${reply.id}/restore`)).status).toBe(404);
+    expect((await req('POST', `/saved-replies/${reply.id}/restore`)).status).toBe(404);
 
     caller = desk.anna;
-    expect((await json('POST', `/saved-replies/${reply.id}/restore`)).status).toBe(200);
-    expect((await json('GET', `/saved-replies/${reply.id}`)).status).toBe(200);
+    expect((await req('POST', `/saved-replies/${reply.id}/restore`)).status).toBe(200);
+    expect((await req('GET', `/saved-replies/${reply.id}`)).status).toBe(200);
   });
 });

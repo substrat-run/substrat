@@ -133,6 +133,7 @@ const threadRef = (conversationId: string) => ({ entityType: 'publicThread', ent
 const messageRef = (id: string) => ({ entityType: 'message', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
 const sourceRef = (id: string) => ({ entityType: 'kbSource', entityId: id });
+const savedReplyRef = (id: string) => ({ entityType: 'savedReply', entityId: id });
 
 /** The desk is a singleton per scope, and this is its id. */
 const DESK = 'desk';
@@ -444,22 +445,22 @@ function titleTaken(ctx: OperationContext, owner: string, title: string, exceptI
   )[0];
 }
 
+/** Is this reply, as `SELECT *` read it, in the trash? The kernel's column rides every such row. */
+const inTrash = (row: SavedReplyRow): boolean =>
+  (row as SavedReplyRow & { [TRASHED_AT_COLUMN]?: string | null })[TRASHED_AT_COLUMN] != null;
+
 /**
  * The `conflict` for a title another reply holds (#2161). One held by a reply in the trash
  * says so, with reason `title_in_trash`, because the caller cannot see that reply in the
  * library and would otherwise be told about a name nothing seems to hold.
  */
-function titleConflict(ctx: OperationContext, holder: SavedReplyRow, message: string): Error {
-  return ctx.entityState(savedReplyRef(holder.id)) === 'trashed'
-    ? substratError('conflict', `${message} — it is in the trash: restore it, or delete it for good, first`, {
-        reason: 'title_in_trash',
-      })
-    : substratError('conflict', message);
-}
-
-/** A saved reply as an `EntityRef` — what the trash verbs and the state read take. */
-function savedReplyRef(id: string): { entityType: 'savedReply'; entityId: string } {
-  return { entityType: 'savedReply', entityId: id };
+function titleConflict(holder: SavedReplyRow, message: string): Error {
+  const binned = inTrash(holder);
+  return substratError(
+    'conflict',
+    binned ? `${message} — it is in the trash: restore it, or delete it for good, first` : message,
+    binned ? { reason: 'title_in_trash' } : undefined,
+  );
 }
 
 /**
@@ -6083,9 +6084,7 @@ const bound = operationsFor(ticket0Operations)({
     if (existing) {
       // The same title from the same owner answers the reply holding it — unless that reply
       // is in the trash, which is not something to hand back as if it were in the library.
-      if (ctx.entityState(savedReplyRef(existing.id)) === 'trashed') {
-        throw titleConflict(ctx, existing, `a saved reply is already called "${input.title}"`);
-      }
+      if (inTrash(existing)) throw titleConflict(existing, `a saved reply is already called "${input.title}"`);
       return savedReplyPublic(existing);
     }
     const folderId = folderFrom(ctx, input.folderId, null);
@@ -6100,7 +6099,7 @@ const bound = operationsFor(ticket0Operations)({
     ctx.emit({
       type: 'ticket0.saved-reply-created',
       schemaVersion: 2,
-      entity: { entityType: 'savedReply', entityId: row.id },
+      entity: savedReplyRef(row.id),
       piiClass: 'none',
       payload: savedReplyPayload(row),
     });
@@ -6136,7 +6135,7 @@ const bound = operationsFor(ticket0Operations)({
     const title = input.title ?? existing.title;
     const body = input.body ?? existing.body;
     const holder = titleTaken(ctx, existing.owner, title, existing.id);
-    if (holder) throw titleConflict(ctx, holder, `another saved reply is already called "${title}"`);
+    if (holder) throw titleConflict(holder, `another saved reply is already called "${title}"`);
     const actions =
       input.actions !== undefined ? storedActions(input.actions) : existing.actions;
     const folderId = folderFrom(ctx, input.folderId, existing.folder_id);
@@ -6156,7 +6155,7 @@ const bound = operationsFor(ticket0Operations)({
     ctx.emit({
       type: 'ticket0.saved-reply-updated',
       schemaVersion: 2,
-      entity: { entityType: 'savedReply', entityId: row.id },
+      entity: savedReplyRef(row.id),
       piiClass: 'none',
       payload: savedReplyPayload(row),
     });
@@ -6231,12 +6230,12 @@ const bound = operationsFor(ticket0Operations)({
     const existing = savedReplyOrThrow(ctx, input.savedReplyId);
     if (existing.owner === SHARED_OWNER) return savedReplyPublic(existing);
     const holder = titleTaken(ctx, SHARED_OWNER, existing.title);
-    if (holder) throw titleConflict(ctx, holder, `the desk already has a saved reply called "${existing.title}"`);
+    if (holder) throw titleConflict(holder, `the desk already has a saved reply called "${existing.title}"`);
     ctx.sql.exec('UPDATE ticket0_saved_replies SET owner = ? WHERE id = ?', [SHARED_OWNER, existing.id]);
     ctx.emit({
       type: 'ticket0.saved-reply-shared',
       schemaVersion: 1,
-      entity: { entityType: 'savedReply', entityId: existing.id },
+      entity: savedReplyRef(existing.id),
       piiClass: 'none',
       payload: { id: existing.id, created_by: existing.created_by },
     });
@@ -6324,7 +6323,7 @@ const bound = operationsFor(ticket0Operations)({
     ctx.emit({
       type: 'ticket0.saved-reply-applied',
       schemaVersion: 2,
-      entity: { entityType: 'savedReply', entityId: reply.id },
+      entity: savedReplyRef(reply.id),
       piiClass: 'none',
       // Not the action types: the caller is told what ran, the desk's trail is not, since
       // the macro may be personal. Each action's own event already says what it did.

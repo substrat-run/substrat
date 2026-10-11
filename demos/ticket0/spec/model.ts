@@ -3972,7 +3972,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: { method: 'POST', path: '/saved-replies/{savedReplyId}/trash' },
   },
 
-  /** Take a canned answer out of the trash, back into the library. Who may is who binned it. */
+  /** Take a canned answer out of the trash, back into the library. Who may is who may change it. */
   'ticket0/restore-saved-reply': {
     summary: 'Restore a canned answer from the trash',
     authored:
