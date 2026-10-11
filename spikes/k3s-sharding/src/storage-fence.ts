@@ -76,6 +76,9 @@ export const FENCE_REFUSAL = 'k3s fence: stale holder';
  */
 export class StampBusy extends Error {}
 
+/** A newer epoch is already stamped in the file: the caller's grant has been superseded. */
+export class StaleStamp extends Error {}
+
 /** How long one stamp waits for a file's write lock before giving up with {@link StampBusy}. */
 export const STAMP_LOCK_WAIT_MS = 1_000;
 
@@ -103,6 +106,12 @@ export function stampFence(dir: string, epoch: number): void {
     try {
       db.exec('BEGIN IMMEDIATE');
       db.exec('CREATE TABLE IF NOT EXISTS _k3s_fence (epoch INTEGER NOT NULL)');
+      // Only ever upward. A takeover that lost the race to a newer one learns here that it is
+      // stale, instead of lowering the epoch under the newer holder's feet.
+      const current = db.prepare<[], { epoch: number }>('SELECT MAX(epoch) AS epoch FROM _k3s_fence').get()?.epoch ?? null;
+      if (current !== null && current > epoch) {
+        throw new StaleStamp(`${join(dir, name)} is already fenced at epoch ${current}, newer than ${epoch}`);
+      }
       db.exec('DELETE FROM _k3s_fence');
       db.prepare('INSERT INTO _k3s_fence (epoch) VALUES (?)').run(epoch);
       const rows = db

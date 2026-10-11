@@ -12,7 +12,7 @@ import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { principalId, scopeId as scopeIdOf, tenantId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { FENCE_REFUSAL, holdEpoch, installEpochFunction, stampFence } from '../src/storage-fence.js';
+import { FENCE_REFUSAL, holdEpoch, installEpochFunction, StaleStamp, stampFence } from '../src/storage-fence.js';
 import { scopeDir, seedScope, type ScopeWorld } from '../src/todo-scope.js';
 
 installEpochFunction();
@@ -51,6 +51,20 @@ function todoFile(): string {
   throw new Error('no file holds todo_items');
 }
 
+/** The epoch stamped in each SQLite file of the scope. */
+function fenceEpochs(): number[] {
+  return readdirSync(dir)
+    .filter((n) => n.endsWith('.sqlite'))
+    .map((n) => {
+      const db = new Database(join(dir, n), { readonly: true });
+      try {
+        return db.prepare<[], { epoch: number }>('SELECT epoch FROM _k3s_fence').get()!.epoch;
+      } finally {
+        db.close();
+      }
+    });
+}
+
 /** A write that emits nothing, on its own connection to the scope's file. */
 function silentWrite(): void {
   const db = new Database(todoFile());
@@ -79,5 +93,11 @@ describe('storage fence', () => {
     holdEpoch(scope, 2);
     await expect(add('c')).resolves.toMatchObject({ text: 'c' });
     expect(() => silentWrite()).not.toThrow();
+  });
+
+  it('stamps only upward: an older takeover is refused and the newer epoch stays', async () => {
+    expect(() => stampFence(dir, 1)).toThrow(StaleStamp);
+    expect(fenceEpochs()).toEqual([2, 2]);
+    await expect(add('d')).resolves.toMatchObject({ text: 'd' });
   });
 });

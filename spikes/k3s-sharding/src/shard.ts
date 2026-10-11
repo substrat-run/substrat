@@ -40,7 +40,7 @@ import { readJson, send, serveLocal } from './http.js';
 import { copyScope, openScope, scopeDir, seedScope, type ScopeWorld } from './todo-scope.js';
 import { exitWithParent } from './process.js';
 import { home } from './placement.js';
-import { holdEpoch, installEpochFunction, isFenceRefusal, StampBusy, stampFence } from './storage-fence.js';
+import { holdEpoch, installEpochFunction, isFenceRefusal, StaleStamp, StampBusy, stampFence } from './storage-fence.js';
 
 const node = process.env.NODE ?? 'todo-0';
 const port = Number(process.env.PORT ?? 0);
@@ -341,6 +341,8 @@ serveLocal(node, port, async (req, res, path) => {
     if (e instanceof PlacementRefused) return send(res, 409, { error: e.message, node });
     // Nothing was placed or invoked: a 421 naming no holder, which the router retries here.
     if (e instanceof StampBusy) return send(res, 421, { error: e.message, retryAfterMs: 250, node });
+    // A newer takeover already stamped the files: this grant is superseded. Re-resolve.
+    if (e instanceof StaleStamp) return send(res, 421, { error: e.message, retryAfterMs: 50, node });
     return send(res, 500, { error: e instanceof Error ? e.message : String(e), node });
   }
 });
