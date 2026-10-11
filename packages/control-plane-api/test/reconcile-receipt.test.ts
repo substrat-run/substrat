@@ -232,6 +232,7 @@ describe('the retirements a receipt records as finished (#2185)', () => {
       return { tenantId: T, scopeId: input.scopeId, owner, ...answer };
     },
     provisionInstance: async (input: { scopeId: string }) => ({ tenantId: T, scopeId: input.scopeId, owner }),
+    restoreScope: async () => ({ tables: 0 }),
   } as unknown as VerticalClient;
   const app = () => createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { [SLUG]: client } });
 
@@ -334,6 +335,50 @@ describe('the retirements a receipt records as finished (#2185)', () => {
       expect(res.status).toBe(201);
       expect(await finished(s)).toEqual({ provisioned: version, finished: expected });
     }
+  });
+
+  /**
+   * Review of #2218, round 1: a governed restore replays a dump that may predate a finished
+   * retirement. Its tuples bring the retired key back and its spine has no record the retirement
+   * ran, so the directory must stop saying it finished, or a later drop strands the holder. The
+   * bare receipt of #2181 had the same gap; the restore now clears it, as the rewind does.
+   */
+  it('a restore of a pre-retirement dump clears the receipt and the finished version, so the drop waits for the sweep', async () => {
+    const binding = { ...keeps, holder: HOLDER, bind: { permission: 'contact:invite' } };
+    const pubShaped = async (version: string, entityGrants: object[]) => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: SLUG, version, manifestDigest: `m-${version}`, permissionDigest: `p-${version}`, migrationDigest: 'g',
+        deploymentRef: `${SLUG}-${version}`,
+        manifestJson: JSON.stringify({
+          version, entry: 'worker.js', compatibilityDate: '2025-01-01',
+          digests: { manifest: `m-${version}`, permission: `p-${version}`, migration: 'g' },
+          registry: { permissions: [], roles: [], entityGrants },
+        }),
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const binds = await pubShaped('3.0.0', [binding]);
+    const retiresAll = await pubShaped('3.1.0', [{ ...binding, permissions: [], retired: ['contact:read-own'] }]);
+    const dropped = await pubShaped('3.2.0', []);
+    const s = await scopeOn(binds);
+    // The backup, taken before the retirement.
+    const backup = await host.admin.exportScope(staff, T, s);
+    await host.admin.bindScopeVersion(staff, T, s, retiresAll);
+    await reconcile(s, { retirementsLeftOpen: 0 });
+    expect(await finished(s)).toEqual({ provisioned: retiresAll, finished: retiresAll });
+    // The tenant restores the backup.
+    const res = await app().request(`/tenants/${T}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(backup) });
+    expect(res.status).toBe(200);
+    expect(await finished(s)).toEqual({ provisioned: null, finished: null });
+    // So the drop is refused until the install reconciles again…
+    const refused = await host.admin.bindScopeVersion(staff, T, s, dropped).then(() => null, (e: unknown) => e as Error);
+    expect(refused?.message).toMatch(/drops the shape.*no reconcile receipt/);
+    // …and passes once it has, with its retirements finished.
+    await reconcile(s, { retirementsLeftOpen: 0 });
+    await host.admin.bindScopeVersion(staff, T, s, dropped);
+    expect((await host.admin.getScopeRecord(staff, T, s))?.verticalVersionId).toBe(dropped);
   });
 
   it('reads only a count the deployment actually sent', () => {

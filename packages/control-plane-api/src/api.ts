@@ -5916,6 +5916,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // directory's record puts it back off now, not at the next reconcile. Where the
       // deployment already did (#1742), this finds it done and audits what it reported.
       await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored?.switchedOff });
+      // #2185: the dump may predate what a reconcile did here, a finished retirement included: its
+      // tuples bring a retired key back and its spine has no record that the retirement ran. So the
+      // receipt is cleared, as the rewind clears it, and with it the version whose retirements
+      // finished: the install reads as not reconciled, and the sweep's next pass reconciles it.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
@@ -6318,6 +6323,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       expect: liveMarker,
     });
     await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
+    // #2185: the kept copy is an older store's data, which may predate a reconcile the live store
+    // ran (a finished retirement included), so the receipt is cleared as after a restore.
+    await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
     // Still routed there once the data landed? If not, the move that re-pointed the scope keeps
     // what this restore put in that store (its source wipe protects a copy changed since its
     // export), and the kept copy here stays kept too: nothing is lost, nothing is discarded.
