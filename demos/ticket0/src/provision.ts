@@ -195,7 +195,9 @@ export const CONTACT_PORTAL: PermissionKey[] = [T0_PERM.conversationReadOwn];
  * and may unbind its person (`POST /api/bindings/contact/:id/unbind`), and an erasure of
  * the contact or of its person unbinds too. `ctx.grant` cannot give these keys on a contact,
  * so on a contact the column decides who holds them. A customer invited before #1686 holds
- * the shape with the column still empty, and an unbind cannot reach them (#2175).
+ * the shape with the column still empty: a new invite to that contact is refused until it is
+ * unbound, and the unbind — which releases by the shape's marker, not the column — releases
+ * them with everyone else holding the portal there.
  *
  * The second is a FOLLOWER (#1086), and it is the one shape here whose key a role
  * also holds. That is deliberate rather than a duplicate: `conversation:read` is held
