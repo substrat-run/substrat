@@ -15,7 +15,7 @@ import {
 import { bindingShapeBreaks, diffRegistries, grantShapeHolderNotes, registryDirection } from '../src/registry-diff.js';
 
 const holder = { table: 'desk_contacts', idColumn: 'id', principalColumn: 'principal' };
-const shape = (over: Partial<EntityGrantShape> = {}) =>
+const shape = (over: Partial<Record<keyof EntityGrantShape, unknown>> = {}) =>
   ({ entityType: 'contact', permissions: ['desk:read-own'], bootstrap: true, holder, bind: { permission: 'contact:invite' }, ...over }) as EntityGrantShape;
 /** Only what the registry builder reads off a module: its id and its declared keys. */
 const manifest = {
