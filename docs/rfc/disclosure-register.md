@@ -301,16 +301,18 @@ as argued; where this section disagrees with one of them, it says so.
 
 ### 8.1 What changed since revision 1
 
-- **§7 item 1 is done.** #1600 was fixed by #1618 and widened by #1697 (#1632). `shredSubject`
+- **§7 item 1 is done.** #1600 was fixed by #1618 and widened by #1697, under #1632
+  (which has follow-ups of its own). `shredSubject`
   now redacts `_substrat_platform_requests` in the same pass as the outbox, replacing `payload`
   and a non-NULL `result` with the tombstone `{"_substratRedacted": {reason, subjectId, at}}`
   and keeping the row ([kernel-design.md §13.1](../architecture/kernel-design.md), "Tier 1 is
   two tables, not one").
 - **§13.1 now states twelve limits, not six.** Limit 3 still names no processor, so §3.2 holds.
 - **`CONNECTORS` is four, not three**: scrive, fortnox, planima and microsoft365
-  (`apps/control-plane/src/connectors.ts:431`). Fortnox declares no `dispatch`, so it never
-  receives an event. microsoft365 also declares `mail` (#2098) and so can send a vertical's
-  message as the tenant.
+  (`apps/control-plane/src/connectors.ts:431`). **Only Scrive declares `dispatch`**
+  (`connectors.ts:252`). Fortnox, Planima and microsoft365 each say "no dispatch" in their own
+  headers, so they never receive an event. microsoft365 declares `mail` (#2098) instead, and
+  sends a vertical's message as the tenant through the email relay, outside the event journal.
 - **The email relay still writes no subject-keyed row** (`/internal/email/send`,
   `apps/control-plane/src/worker.ts`). F4's finding stands.
 
@@ -329,12 +331,16 @@ as argued; where this section disagrees with one of them, it says so.
 `(provider, subjectId, eventId, occurredAt, deliveredAt, status)`, and it is read from tables
 that already exist and that the erasure already keeps as envelope:
 
-- `_substrat_deliveries` holds one row per `(event_id, consumer_module)`, which is the executor
-  id, on both the in-process and the routed path. The routed path writes it atomically with the
-  intent (`packages/adapter-cloudflare/src/host.ts:2951`–`:2967`).
+- `_substrat_deliveries` holds one row per `(event_id, consumer_module)` on both the in-process
+  and the routed path. For an executor the key is `executor:<id>` (`host.ts:2901`), and
+  non-connector executors (membership, for one) write to the same table, so the read keeps only
+  the ids the host's registry marks `kind: 'connector'`. The routed path writes the row
+  atomically with the intent (`packages/adapter-cloudflare/src/host.ts:2951`–`:2967`).
 - `_substrat_outbox` gives that event's `subject_id` and `pii_class`, which redaction keeps.
-- The host's executor registration names the executor's `provider` (`host.ts:589`). On the
-  hosted path the `connector:<provider>` intent adds how the delivery settled.
+- The host's executor registration names the executor's `provider` (`host.ts:589`). That map
+  lives in the host, not in the scope database, so the read takes it as a parameter. On the
+  hosted path the `connector:<provider>` intent adds how the delivery settled and, in
+  `last_failure.origin` (#841), who refused.
 
 The join survives an erasure: the payload is gone, and the edge is all envelope. It also covers
 history already written, which a new table would not.
@@ -347,19 +353,32 @@ and `sendsMail`. An edge joined to it reads "may have received at most these cla
 superset is the only class-level claim made. The observed half stays out (§8.7).
 
 **F2, taken: name it what it is.** The read is called **connector deliveries about a subject**,
-never "what the processor holds". `status: done` means our call returned. A delivery that failed
-after the provider was reached counts as *possibly disclosed*, not as nothing, because a 5xx
-says nothing about whether the provider stored the request.
+never "what the processor holds". `status: done` means our call returned. A failed delivery is
+judged by `last_failure.origin`, which the drain writes from the throw itself
+(`packages/contracts/src/platform-request.ts:51`). `platform` is our own refusal before egress
+(no connection, a missing grant), so nothing crossed and it is not an edge. `provider` and
+`unknown` count as *possibly disclosed*, because a 5xx says nothing about whether the provider
+stored the request. A NULL origin also counts as possibly disclosed. That covers a row settled
+before #841, and every row an erasure has already passed over, because the redaction nulls
+`last_failure` (#1632). The bias is deliberate: over-reporting a disclosure is the safe error
+in a DSAR answer, and under-reporting one is not.
 
 **F4, taken: connector deliveries only, and the read says what it does not cover.** The result
 carries a fixed `uncovered` list naming every other path by which a subject's data can leave:
-the email relay, a vertical's declared `substrat.outbound` hosts, and a vertical's own
-model-provider calls (D-59). An answer that is silent about those paths would read as complete.
-Making the issue's rule ("PII leaves only through a connection") a gate is a separate decision
-and is not taken here.
+the email relay (including mail sent as the tenant through a microsoft365 connection), a
+connector's own calls that no event drove (a sweep, a callback), a vertical's declared
+`substrat.outbound` hosts, and a vertical's own model-provider calls (D-59). An answer that is
+silent about those paths would read as complete. Making the issue's rule ("PII leaves only
+through a connection") a gate is a separate decision and is not taken here.
 
-**Costs, stated.** It answers *handed to*, not *sent* and not *kept*. It covers the connectors
-we write (three of the four receive events) and nothing a vertical reaches on its own. Its
+**Costs, stated.** It answers *handed to*, not *sent* and not *kept*. **Today it covers one
+provider**: Scrive is the only connector that receives events, so the derived edges name Scrive
+or nothing. That is the strongest argument against building more than the read. A table, a
+writer or a gate for one connector would cost more than the answer it improves, and the
+`uncovered` list is the larger half of an honest answer. The read is still worth having, because
+it costs no migration and already covers the history. A second dispatching connector is what
+would make the register more than a Scrive lookup, and that connector should arrive with
+`discloses` already declared (Q4). It covers nothing a vertical reaches on its own. Its
 precision is limit 1's: one subject per event, so an event about a meeting with five people is
 an edge for one of them. It adds no migration and no write on any outbound path, which is why it
 is cheap, and the same fact is why it can never be more truthful than the journals it reads.
@@ -390,10 +409,24 @@ person was handed to Scrive on these dates". Three positions:
 **Recommendation: 1, for now.** Keyed hashing (2) protects nothing while `_substrat_outbox`
 keeps the same id beside the same timestamp, and stripping it from every envelope (3) is a
 change to K-37's Tier-1 line for *every* table, not a register question. If the human wants
-the id gone after erasure, that is a K-37 amendment, and the register follows it. The register
-adds no retention of its own: it holds nothing beyond the journals it reads, and those are kept
-indefinitely today (the only `DELETE` on any of them is an import rollback removing
-deliveries of the imported events).
+the id gone after erasure, that is a K-37 amendment, and the register follows it. The *read*
+adds no retention of its own: it holds nothing beyond the journals it reads. As far as
+non-test source shows, those journals are kept indefinitely. A search for `DELETE` against the
+three tables in `packages/*/src` finds one: an import rollback removing deliveries of the
+imported events (`packages/kernel/src/vertical-events.ts:475`). No test pins the absence.
+
+**The notify path does add retention, and that row is part of Q2.** Each
+`connector-erase:<provider>` intent (§8.5) is a new row in `_substrat_platform_requests`,
+written *after* the redaction, and nothing deletes that table. While pending, it must carry the
+provider's reference for the person's record, because the drain cannot retry without it. Kept
+as written, it would be a second durable record linking that reference to the date the person
+was erased, the very kind of copy §8.5 refuses to make with PII. **Recommendation: on settle,
+the drain replaces the erase intent's payload with the same tombstone #1600 uses.** The row
+then keeps the provider, the request time, the outcome and the pseudonymous `subjectId` (as
+every other tombstone does under option 1), and loses the reference. The cost is that a later
+"which record did we ask about" has no answer on our side, only "we asked Scrive on this date,
+and it answered 2xx". A pending row still holds the reference while the provider keeps answering
+5xx. That window lasts as long as the drain keeps retrying, not as long as the erasure.
 
 ### 8.5 Notify on shred
 
@@ -439,11 +472,14 @@ honestly hand over, and it is more than §13.1 limit 3's silence.
 
 Two things, both on `HostAdmin`, neither on `OperationContext`:
 
-1. **One read**, `listSubjectDisclosures(subjectId)`: the §8.3 join, implemented once in the
-   kernel with a one-line shim per adapter, as `redactSubjectJobRuns` is, and held by a contract
-   suite with its twin (the edges read before a shred equal the edges read after it, because
-   every column the join reads is envelope). Staff and platform only; no module ever calls it.
-   No table, no migration, so it is not a migration checkpoint.
+1. **One read**, `listSubjectDisclosures(subjectId, connectors)`: the §8.3 join, implemented
+   once in the kernel with a one-line shim per adapter, as `redactSubjectJobRuns` is. The
+   second parameter is the host's `executor id → provider` map for its connector executors,
+   because the scope database does not hold it. A contract suite holds it with two twins: the
+   edges read before a shred equal the edges read after it, because every column the join reads
+   is envelope; and a non-connector executor's delivery (membership) is never an edge. Staff
+   and platform only; no module ever calls it. No table, no migration, so it is not a migration
+   checkpoint.
 2. **One receipt field**, `disclosures`, defaulted so an older receipt parses. A coordinator
    refuses a ScopeDO that predates it before touching the key, as it already refuses the
    pre-#1600 and pre-#1632 replies.
@@ -454,7 +490,8 @@ not learn what a connector is.
 ### 8.7 Out of scope
 
 The observed half of F3 (each connector reporting what it actually sent). The email relay,
-raw outbound hosts and model-provider calls, which are listed as uncovered rather than covered.
+a connector's calls that no event drove, raw outbound hosts and model-provider calls, which are
+listed as uncovered rather than covered.
 Enforcing "PII leaves only through a connection". Tracing (#858), which can find egress the
 declarations missed but is not a record. The Tier-2 lake (limit 6). Tenant deletion (#36).
 Multi-subject events (limit 1). Whether Substrat is processor or sub-processor per deployment
@@ -469,15 +506,20 @@ trajectory and not claim until it ships.
    differ.
 2. **Retention (§8.4).** Is a pseudonymous `subjectId` surviving its own erasure acceptable,
    now that it keys a list of processors? The recommendation is yes, as K-37 already holds; a
-   no is a K-37 amendment.
+   no is a K-37 amendment. The same question covers the **`connector-erase:<provider>` intent
+   row** the notify path writes after the redaction. Should it be tombstoned on settle, as §8.4
+   recommends, giving up "which record did we ask about"? Or should it keep the provider's
+   reference as evidence, making a durable link from that reference to the erasure date?
 3. **Automatic or confirmed notice.** Should a shred send erase requests by itself, or should
    the receipt list the edges and the controller confirm before anything is sent? Art. 17(2)
    binds the controller, which argues for confirmation; an unsent request helps nobody, which
    argues against it.
 4. **Is `discloses` a gate?** Should `lint:connector-grants` refuse a connector without one
    from phase 2, or warn only until all four declare it?
-5. **Failed deliveries.** This section counts them as *possibly disclosed*. Is that the line,
-   or should only a provider-acknowledged delivery count?
+5. **Failed deliveries.** §8.3 drops a failure whose `last_failure.origin` is `platform` and
+   counts `provider`, `unknown` and NULL as *possibly disclosed*. NULL includes every row an
+   erasure has already passed over, so after a shred every failure reads as possibly disclosed.
+   Is that over-reporting acceptable, or should only a provider-acknowledged delivery count?
 
 ### 8.9 Phased plan
 
@@ -491,6 +533,8 @@ Each phase is its own PR, and each phase is useful if the next never ships.
   and rendered at the dashboard door. It does not depend on P1.
 - **P3:** the receipt's `disclosures` field, with `not-notifiable` and `uncovered` only. This
   ships the honest list before any request is ever sent.
-- **P4, after Q3 is answered:** `erase` for one connector whose provider supports delete by
-  reference, the `connector-erase:<provider>` drain, and `notified` on the receipt. It starts by
-  establishing which provider that is, which this RFC did not verify.
+- **P4, after Q3 is answered:** `erase` for Scrive, the only connector that has edges today,
+  together with the `connector-erase:<provider>` drain, its tombstone on settle (§8.4), and
+  `notified` on the receipt. It starts by establishing whether Scrive supports delete by
+  reference, which this RFC did not verify. If it does not, P4 has no first connector, and P3's
+  `not-notifiable` is the whole answer until a dispatching connector that can be asked arrives.
