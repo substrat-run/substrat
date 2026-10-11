@@ -27,7 +27,7 @@ type Row = Record<string, unknown>;
 type Input = Record<string, unknown> | undefined;
 
 /** `"col"` — a declared column is an identifier, quoted so a keyword-named one still reads as a column. */
-const quoted = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
+export const quoted = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
 
 /** The handler a plan describes. */
 export function derivedHandler(plan: DerivationPlan): OperationHandler<never, unknown> {

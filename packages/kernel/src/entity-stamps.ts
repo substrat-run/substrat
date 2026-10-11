@@ -29,6 +29,7 @@ import {
   type PrincipalId,
   type UpdatedStampDeclaration,
 } from '@substrat-run/contracts';
+import { quoted } from './derived-handlers.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { OUTBOX_MARK_SQL } from './vertical-events.js';
 
@@ -68,8 +69,6 @@ export interface UpdatedStampWatch {
 
 /** The ids one `IN (…)` names — under the 100-parameter limit a Durable Object enforces. */
 const ID_CHUNK = 90;
-
-const quoted = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
 
 /**
  * Mark the outbox before a call, so `assertHeld` can read what the call emitted. `undefined` — and
