@@ -148,10 +148,13 @@ only with a reason a reviewer could disagree with.
 
 **An updated stamp binds every handler, not only the derived ones.** When an entity
 declares `updatedAt`/`updatedBy`, the host checks, after each operation and consumer,
-that every row it emitted about holds that call's `ctx.now()` and principal, and fails
-the call `internal` otherwise. So an authored handler that writes such a row (insert
-included) sets `updated_at = ctx.now()` and `updated_by = String(ctx.principal)` in
-the same statement. Declare the pair only where every writer can honour it.
+that every row it named in a `ctx.emit` holds that call's `ctx.now()` and principal,
+and fails the call `internal` otherwise. It reads the emits, not the writes, so:
+an authored handler that writes such a row (insert included) sets
+`updated_at = ctx.now()` and `updated_by = String(ctx.principal)` in the same
+statement and emits about that row, not only about its parent; and a handler that
+emits about such a row it did not otherwise change still stamps it. Declare the pair
+only where every writer can honour it.
 
 ## What does NOT go here
 

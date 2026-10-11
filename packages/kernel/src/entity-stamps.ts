@@ -2,7 +2,9 @@
  * The updated stamps, held true by the host (#2166).
  *
  * An entity that declares `updatedAt`/`updatedBy` (`EntityDef.stamps`) says so in `model.json`,
- * and that is a claim about every row of it — not only the rows a derived write touched. A derived
+ * and that claim is held on every row a call names in `ctx.emit` — not only the rows a derived
+ * write touched. What is read is the emits, not the writes: an emit about a stamped row counts as
+ * a write to it, and a write that emits only about another entity is not seen. A derived
  * create and a derived update write the pair themselves; an authored handler is trusted to, and
  * this is what holds it to that. Both adapters run it around every operation and every consumer
  * delivery, inside the same transaction:
@@ -120,7 +122,7 @@ export function watchUpdatedStamps(
             throw substratError(
               'internal',
               `${who}: it emitted about ${entityType} ${String(row.id)}, and ${stale} — '${entityType}' declares ` +
-                'its updated stamps, so every write to it sets them to ctx.now() and the calling principal (#2166)',
+                'its updated stamps, so a call that emits about one of its rows sets them to ctx.now() and the calling principal (#2166)',
             );
           }
         }

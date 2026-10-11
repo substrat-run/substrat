@@ -644,19 +644,31 @@ savedReplyFolder: {
 |---|---|---|
 | `createdAt` | `ctx.now()` | on insert |
 | `createdBy` | the calling principal | on insert |
-| `updatedAt` | `ctx.now()` | on insert and on every write |
-| `updatedBy` | the calling principal | on insert and on every write |
+| `updatedAt` | `ctx.now()` | on insert, and whenever the row is written and emitted about |
+| `updatedBy` | the calling principal | on insert, and whenever the row is written and emitted about |
 
 A derived `create` writes all of them and a derived `update` writes the updated pair. No derived
 body field may write a stamped column.
 
-The declaration lands in `model.json`, so it has to be true of every row, not only the rows a
-derived handler wrote. The **host** holds the updated pair. After an operation, a consumer or an
-imported-event handler runs, and inside its transaction, every row it emitted about with
-`ctx.emit` whose entity declares the pair must hold that call's `ctx.now()` and principal. If not,
-the call fails `internal` and everything it wrote rolls back. A consumer's principal is its own,
-not the caller's whose event it reacts to. **An authored handler on such an entity that forgets to
-stamp fails**, which is the point. Write the pair wherever you write the row:
+The declaration lands in `model.json`, so the host holds it, not only the derived handlers. The
+host reads what a call **emitted**, not what it wrote. After an operation, a consumer or an
+imported-event handler runs, and inside its transaction, every row it named in a `ctx.emit`, if
+that row's entity declares the pair, must hold the call's `ctx.now()` and principal. If not, the
+call fails `internal` and everything it wrote rolls back. A consumer's principal is its own, not
+the principal of the caller whose event it reacts to.
+
+That rule cuts both ways:
+
+- **An emit about a stamped row counts as a write to it.** A handler that announces a row (a
+  share, a link, an audit-style event) must stamp that row too, even if it changed nothing else in
+  it.
+- **A write with no emit about the row is not checked.** A handler that changes a stamped row and
+  emits only about another entity, such as its parent, leaves the pair as it wrote it, and the host
+  does not notice. The platform's rule that every mutation emits a fat event about what it changed
+  is what closes that gap: emit about the row you wrote.
+
+**An authored handler on such an entity that forgets to stamp a row it emits about fails**, which
+is the point. Write the pair wherever you write the row:
 
 ```ts
 ctx.sql.exec('UPDATE acme_folders SET name = ?, updated_at = ?, updated_by = ? WHERE id = ?', [
@@ -668,8 +680,9 @@ ctx.sql.exec('UPDATE acme_folders SET name = ?, updated_at = ?, updated_by = ? W
 ctx.emit({ type: 'acme.folder-renamed', /* … */ entity: { entityType: 'savedReplyFolder', entityId: input.id } });
 ```
 
-Four things are not checked:
+Five things are not checked:
 
+- **A write that emits about another entity.** See above: the host holds the rows a call names.
 - **A row that is gone.** A delete has nothing left to stamp.
 - **Kernel writes.** `ctx.archive`, `ctx.trash`, `ctx.restore`, a link, an attachment or a grant
   change only the platform's own state. They emit the kernel's own event types, and they leave the

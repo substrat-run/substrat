@@ -163,8 +163,8 @@ export interface EntityDef<Names extends string = string> {
    *
    * - `createdAt` — `ctx.now()`, on insert.
    * - `createdBy` — the calling principal, on insert.
-   * - `updatedAt` — `ctx.now()`, on insert and on every write.
-   * - `updatedBy` — the calling principal, on insert and on every write.
+   * - `updatedAt` — `ctx.now()`, on insert and whenever a call writes the row and emits about it.
+   * - `updatedBy` — the calling principal, likewise.
    *
    * What makes a `create` derivable: every column of the row has to come from somewhere the
    * model names, and the time and the caller are the two sources no input carries. A stamped
@@ -175,8 +175,9 @@ export interface EntityDef<Names extends string = string> {
    * the updated pair. A row is inserted once, so the created pair stays true without help. The
    * updated pair is held by the HOST (#2166): after any operation or consumer, every row it
    * emitted about (by `ctx.emit`) whose entity declares the pair must carry this invocation's
-   * `ctx.now()` and principal, or the call is refused `internal` and rolls back. A deleted row
-   * is not checked, and neither is a kernel move (archive, trash, restore), which changes only
+   * `ctx.now()` and principal, or the call is refused `internal` and rolls back. The host reads
+   * the emits, not the writes: an emit about a stamped row counts as a write to it, and a write
+   * that emits only about another entity is not checked. A deleted row is not checked, and neither is a kernel move (archive, trash, restore), which changes only
    * the platform's own columns. So an entity with an updated stamp needs a single-column primary
    * key: that is what an event can point at. Adds no column and no migration — the column is
    * declared in `fields` like any other.
@@ -188,7 +189,7 @@ export interface EntityDef<Names extends string = string> {
 export const STAMP_KINDS = ['createdAt', 'createdBy', 'updatedAt', 'updatedBy'] as const;
 export type StampKind = (typeof STAMP_KINDS)[number];
 
-/** The pair every write moves (#2166); the created pair is written once, on insert. */
+/** The pair a write moves (#2166); the created pair is written once, on insert. */
 export const isUpdatedStamp = (kind: string): boolean => kind === 'updatedAt' || kind === 'updatedBy';
 
 /** An entity's `erasure` declaration, as authored. */
@@ -937,7 +938,7 @@ function enrichSearchables(
 
 /**
  * The `updatedStamps` manifest entries (#2166), derived from each entity's own `stamps` — the
- * entities whose updated pair the host holds on every write. `stampsOf` has already refused one on
+ * entities whose updated pair the host holds on every row a call emits about. `stampsOf` has already refused one on
  * a composite key, so the id column is the key's only column.
  */
 export function updatedStampsOf(entities: Record<string, EntityDef>): UpdatedStampDeclaration[] {

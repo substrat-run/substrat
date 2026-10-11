@@ -2,10 +2,10 @@
  * The updated stamps the host holds true (#2166) — the vocabulary the model and the host share.
  *
  * An entity declares `stamps: { updated_at: 'updatedAt', updated_by: 'updatedBy' }` in its model
- * (`EntityDef.stamps`), and `model.json` says so. That is a claim about every row, not only the
- * rows a derived write touched, so the host checks it: after an operation or a consumer, each row
- * it emitted about whose entity declares the pair must hold this invocation's `ctx.now()` and
- * principal. `manifestEntities()` derives one of these per such entity; the kernel's
+ * (`EntityDef.stamps`), and `model.json` says so. The host holds that claim on every row a call
+ * names in `ctx.emit`, not only the rows a derived write touched: after an operation or a
+ * consumer, each such row whose entity declares the pair must hold this invocation's `ctx.now()`
+ * and principal. `manifestEntities()` derives one of these per such entity; the kernel's
  * `entity-stamps.ts` is the check.
  */
 import { z } from 'zod';
