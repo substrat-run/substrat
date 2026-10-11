@@ -104,10 +104,26 @@ files**, not merely unacknowledged.
   to register the function on a connection's first statement, the way
   `tools/vitest/like-pattern-limit.cjs` installs its limit. That demonstrates the mechanism a
   real adapter would build into its own connection. It is not a drop-in.
-- **Where it holds.** The fence lives in the file, so it applies however the file is reached:
-  copied between node-local volumes (what is tested), reattached to another node, or shared.
-  Only the first was run. The other two rely on the same row and trigger, plus a storage
-  layer that honours SQLite's write lock across the nodes involved.
+- **The fence row guards itself.** `_k3s_fence` carries its own INSERT, UPDATE and DELETE
+  triggers. They refuse any change from a connection the stamp did not open (a second
+  function, `k3s_stamping()`), so a stale holder cannot write its own epoch into the row and
+  then write past it. The stamp only ever raises the epoch, and an older takeover is told it
+  is stale. No trigger stops DDL: code that drops the triggers or the table. A real adapter
+  reserves the name, as `ctx.sql` reserves `_substrat_*`. The spike does not.
+- **Where it was shown: one filesystem, and only there.** Every "node-local volume" here is a
+  directory on the same filesystem, so the new holder can open the old holder's *live* files
+  and take their write lock. That is the shared-storage case with working locks, and it is
+  the only case the fence was shown in. **In a cluster with genuinely node-local volumes, a
+  live old holder's volume is not reachable from the new node, so the stamp never reaches the
+  stale holder.** The copy would come from a reattach, which needs the old node off the
+  volume first, or from a replica, where the stamp lands on the replica and not on the
+  zombie's file. In that shape the fence as built protects nothing. Safety there rests on the
+  lease, on the holder withholding its acknowledgement, and on the stale commit landing in a
+  copy nobody serves. The "source is quiescent during the copy" argument (§4) does not apply.
+  What such a deployment would need, and this spike did not prove: a fence at the storage
+  the holder actually writes to. Either the volume is revoked before it is reattached
+  elsewhere (detach, or multi-attach protection, at the storage layer), or every commit is
+  checked against the lease where the data lives.
 
 **The holder also checks its own lease, twice per invocation** (`src/fence.ts`). Before the
 invocation it admits only under a grant whose `validUntil` has not passed. `validUntil` is
@@ -135,16 +151,28 @@ through every router.
 - Removing the holder's after-check made the kill test red before the storage fence existed.
   Removing its before-check alone does not, because the background renewal fires as soon as
   the holder wakes and drops the grant first. `test/lease.test.ts` holds that check on its own.
+- **A holder frozen INSIDE its write transaction** (fault point `in-tx`, between the
+  kernel's `BEGIN IMMEDIATE` and its insert) holds the scope file's write lock for as long as
+  it is frozen. The takeover's stamp cannot take that lock: it waits 1 s, gives up with a
+  retryable `421`, and the router asks again. In the test variant, frozen for 8 s (four
+  TTLs), nothing is lost or doubled. The woken transaction commits before the stamp can run.
+  Its acknowledgement is withheld because its lease ran out, and the copy taken after the
+  stamp carries it, so the retry under its key is a replay. **But the scope is unavailable
+  for the whole freeze (8093 ms), not one TTL.** Safety holds; liveness is bounded only by
+  how long the old holder keeps the lock, which only stopping it can bound. Without the
+  retryable answer, the client got the stamp's 500 instead (red).
 - **A SIGKILL alone cannot make this test fail on one machine.** A dead process writes
   nothing, `SqliteScopeHost`'s `_host.lock` already refuses a second process on the same
   directory (and dies with the process), and the retry is recognised by its idempotency key.
   The hazard the lease closes is a holder that is *not* dead: frozen, partitioned, or
   force-deleted and still running.
 
-**Unavailability on a holder failure is the lease TTL.** In the kill test, the write that hit
-the frozen holder and the one that hit the killed holder were each answered in about 2.0 s
-with a 2 s TTL. The TTL is the dial: shorter means faster failover, more renewal traffic, and
-a tighter clock requirement.
+**Unavailability on a holder failure is the lease TTL, unless the holder is frozen holding a
+write lock.** In the kill test, the write that hit the frozen holder and the one that hit
+the killed holder were each answered in about 2.0 s with a 2 s TTL. A holder frozen *inside*
+a write transaction keeps the scope unavailable for as long as it stays frozen (above). The
+TTL is the dial for the rest: shorter means faster failover, more renewal traffic, and a
+tighter clock requirement.
 
 **Exactly-once needs the client's idempotency key, end to end.** A router that retries a
 write after no answer cannot know whether it committed. Only the kernel's idempotency record
@@ -164,7 +192,8 @@ top weight is the new pod: about 1/(N+1) of them, all to the new pod (measured f
 move and 16 that do not). Routers learn the new member list, and each shard releases the
 scopes whose home moved: it finishes what is queued, releases the lease, and closes the
 scope. The new home takes each scope on its next request (no TTL to wait out after a
-release), stamps its epoch into the old copy, and copies it from the volume `data_on` names.
+release), stamps its epoch into the old copy (reachable here because it is on the same
+filesystem, §2), and copies it from the volume `data_on` names.
 Moved scopes answer from `todo-2` at epoch + 1 with every write; unmoved ones keep their shard
 and epoch.
 
@@ -172,8 +201,13 @@ and epoch.
 each SQLite file through the online backup API, which snapshots each file consistently even
 when its process was killed with a WAL never checkpointed. It carries everything in the
 scope's directory without the kernel interpreting any of it. The backup API is consistent
-per file, not per directory. The directory as a whole is consistent because the source was
-stamped before the copy, so no holder can write any of its files while they are read.
+per file, not per directory. On one filesystem the directory as a whole is consistent,
+because the source was stamped before the copy and no holder can write any of its files while
+they are read. Where the stamp cannot reach the source (§2), that argument is gone. The copy
+never deletes anything: it is written into a directory `copyScope` creates and renamed into
+place, and the stale copy it replaces is renamed aside (`<id>.superseded-<ms>`). It refuses a
+source and destination that are, or contain, one another. Superseded copies accumulate; a
+cleanup policy is not part of the spike.
 `exportScope` / `importScope` remain the right tool across adapters (a Durable Object to
 SQLite and back), where there is no file to copy. Between two SQLite shards they are a
 slower, lossier path to the same bytes. Two things this does not settle: in a cluster the
@@ -223,13 +257,18 @@ What the guarantees above rest on. A real adapter has to make each one true, not
   epochs and of `data_on`. The spike fails closed when it is lost
   (`test/control-plane-loss.test.ts`). A scope with no row is refused (`404`), never read as
   "new scope". A scope is created only by an explicit provision. A shard seeds only where its
-  volume has nothing, and deletes a directory only when the control plane names another node
-  as holding the latest copy. Failing closed protects the data but not availability: every
+  volume has nothing, opens its own copy only when the control plane names it and the copy is
+  whole (an incomplete one is refused, `409`), and deletes no data directory at all: a copy it
+  replaces is moved aside. Failing closed protects the data but not availability: every
   scope is unwritable until the table is restored. In production the table needs its own
   replication and backup, which belongs to questions 3 and 5.
-- **SQLite's write lock is honoured by the storage under the files.** The stamp and the stale
-  holder's write meet on that lock. On one machine it is. On a network filesystem or a shared
-  volume it has to be checked.
+- **Both holders reach the same files, under a write lock both honour.** That is what the
+  storage fence needs, and it is what one filesystem gives. On a network filesystem or a
+  shared volume it has to be checked. With node-local volumes in a cluster it is not true at
+  all, and the fence as built does not apply (§2).
+- **A frozen holder is eventually stopped.** The lease bounds how long a frozen holder keeps
+  the scope only while it is frozen outside a write transaction. Inside one, it keeps the
+  lock, and only stopping it ends the unavailability.
 - **Writes carry idempotency keys.** See §2: a keyless write is applied at most once, and its
   outcome can be unknown to its caller.
 
@@ -263,10 +302,14 @@ than on every PR. Both sets were run 20 times in a row for #2202.
 ## Changes to `platform-neutral-surface.md`
 
 §5 says "a per-scope leader lease + a single-consumer queue + SQLite-on-a-PV satisfies" the
-single-writer requirement. The amendment narrows that to what was run here (node-local
-volumes with copy-on-takeover). It names what the run needed: the holder as a process
-incarnation, a fencing epoch checked inside the scope's own transaction on every table,
-idempotency keys carried end to end, and the clock and durability assumptions above.
+single-writer requirement. The amendment narrows that to what was run here: copy-on-takeover
+between scope directories on **one filesystem**, where the new holder can lock the old holder's
+live files. It names what the run needed: the holder as a process incarnation, a fencing
+epoch checked inside the scope's own transaction on every table, and idempotency keys carried
+end to end. It also gives the clock and durability assumptions above. It says that node-local
+volumes in a cluster need a fence at the storage the holder writes to, which the spike did not
+show, and that a holder frozen inside a write transaction keeps the scope unavailable for as
+long as it is frozen.
 
 ## Estimate for the real adapter
 

@@ -35,7 +35,10 @@ over the workspace kernel, adapter and contract suites.
 
 A shard serves the real `todo` vertical (`demos/todo`) through a `SqliteScopeHost` per scope,
 behind the lease checks in `src/fence.ts`. Each scope file carries the storage-side fence of
-`src/storage-fence.ts`, which refuses a stale holder's write inside its own transaction. `test/cluster.ts` spawns all of them on localhost and also plays the
+`src/storage-fence.ts`, which refuses a stale holder's write inside its own transaction.
+That works here because every "volume" is a directory on one filesystem, so a takeover can
+reach and lock the previous holder's live files. FINDINGS.md §2 says what node-local volumes
+across nodes would need instead. `test/cluster.ts` spawns all of them on localhost and also plays the
 scheduler's part (`restart()` brings a pod back under the same name, port and volume).
 
 ## Tests
@@ -44,14 +47,15 @@ scheduler's part (`restart()` brings a pod back under the same name, port and vo
 |---|---|---|---|
 | `test/placement.test.ts` | test | 1, 4 | rendezvous hashing: agreement, spread, 1/(N+1) moved on scale-up |
 | `test/lease.test.ts` | test | 2 | the lease table and the guard, against the control-plane process, on manual clocks |
-| `test/storage-fence.test.ts` | test | 2 | a stale epoch's writes refused in-transaction, emitting or not |
+| `test/storage-fence.test.ts` | test | 2 | a stale epoch's writes refused in-transaction, emitting or not; the stamp only raises the epoch; the fence row guards itself |
+| `test/copy-scope.test.ts` | test | 4 | a copy never lands on its own source (symlinks too) and deletes nothing |
 | `test/process.test.ts` | test | — | the sentinel kills a child frozen when its runner dies |
 | `test/contract.test.ts` | test | — | `scopeHostContractSuite`, unchanged, through the lease layer (in-process; see FINDINGS.md) |
-| `test/kill.test.ts` | cluster | 2 | freeze, failover, wake, SIGKILL mid-write: no acknowledged write lost or doubled, and the woken holder's commit refused by its own files; plus the `LEASES=off` control, which must lose writes |
+| `test/kill.test.ts` | cluster | 2 | freeze, failover, wake, SIGKILL mid-write: no acknowledged write lost or doubled, and the woken holder's commit refused by its own files; a holder frozen inside its transaction (unavailable for the freeze, nothing lost); plus the `LEASES=off` control, which must lose writes |
 | `test/router.test.ts` | cluster | 1, 2 | a keyless write is never replayed; a holder paused for less than its lease is asked again |
 | `test/background.test.ts` | cluster | 6 | per-scope background slots exactly once across a freeze, a handover and a SIGKILL |
 | `test/reshard.test.ts` | cluster | 4 | 2 → 3: only the scopes whose home moved move, with all their writes |
-| `test/control-plane-loss.test.ts` | cluster | — | the lease table lost: writes refused, nothing reseeded or deleted |
+| `test/control-plane-loss.test.ts` | cluster | — | the lease table lost, or the copy on record incomplete: writes refused, nothing reseeded or deleted |
 
 Every fault is fired by the shard on itself at an exact point (`arm()` in the harness), so
 no sleep decides the order of a run. Every spawned process exits with its parent and within

@@ -1,7 +1,9 @@
 /**
  * One scope-host shard: the pod `todo-<i>` of the issue's StatefulSet, as a process.
  *
- * It owns a node-local volume (`<VOLUME>/<NODE>/`, the pod's PVC) and serves any scope it
+ * It owns a volume (`<VOLUME>/<NODE>/`, standing for the pod's PVC; here every volume is a
+ * directory on one filesystem, which is what lets a takeover reach and fence the previous
+ * holder's live files, FINDINGS.md §2) and serves any scope it
  * holds the lease on. A request for a scope it does not hold makes it ask the control plane;
  * when granted, the scope's data is placed first — seeded if new, opened if this volume
  * already has the latest copy, copied from the previous holder's volume otherwise — and

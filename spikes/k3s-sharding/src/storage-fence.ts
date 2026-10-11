@@ -1,6 +1,9 @@
 /**
  * The storage-side fence (#1638 Q2): a stale holder's write is refused INSIDE its own
- * transaction, by the scope's files, whoever wrote the code that made it.
+ * transaction, by the scope's files, whatever SQL made it (short of DDL that removes the
+ * fence, below). It needs the new holder to reach the stale holder's live files under a
+ * write lock both honour, which one filesystem gives and node-local volumes across nodes do
+ * not (FINDINGS.md §2).
  *
  * Each SQLite file of a scope carries one row, `_k3s_fence(epoch)`, and on every table a
  * trigger for INSERT, UPDATE and DELETE:
