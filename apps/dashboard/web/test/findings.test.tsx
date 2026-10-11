@@ -523,6 +523,45 @@ describe('Findings view', () => {
   });
 });
 
+describe('the preview client applies a rule like the plane', () => {
+  const exp = new Date(Date.now() + 86_400_000).toISOString();
+  const statusOf = async (c: FindingsClient) =>
+    Object.fromEntries((await c.listFindings({})).entries.map((e) => [e.id, e.status]));
+
+  it('a kind-scoped rule suppresses only that kind', async () => {
+    const c = mockFindingsClient();
+    const { suppressed } = await c.createFindingRule({ kind: 'drift', expiresAt: exp, reason: 'r' });
+    expect(suppressed).toBe(1);
+    const s = await statusOf(c);
+    expect(s.F2).toBe('suppressed'); // drift
+    expect(s.F1).toBe('open'); // recurring
+  });
+
+  it('a subject-scoped rule suppresses only that subject, exactly', async () => {
+    const c = mockFindingsClient();
+    const { suppressed } = await c.createFindingRule({ subject: 'helpdesk/sync-mailbox', expiresAt: exp, reason: 'r' });
+    expect(suppressed).toBe(1);
+    expect((await statusOf(c)).F2).toBe('suppressed');
+    const d = mockFindingsClient();
+    expect((await d.createFindingRule({ subject: 'helpdesk/sync', expiresAt: exp, reason: 'r' })).suppressed).toBe(0);
+  });
+
+  it('every field a rule carries must match', async () => {
+    const c = mockFindingsClient();
+    const { suppressed } = await c.createFindingRule({ kind: 'drift', operation: 'helpdesk/assign-ticket', expiresAt: exp, reason: 'r' });
+    expect(suppressed).toBe(0); // F1 has the operation but is not drift; F2 is drift but has no operation
+  });
+
+  it('an operation+code rule and a rule with no scope behave as before', async () => {
+    const c = mockFindingsClient();
+    expect((await c.createFindingRule({ operation: 'helpdesk/assign-ticket', code: 'conflict', expiresAt: exp, reason: 'r' })).suppressed).toBe(1);
+    const all = mockFindingsClient();
+    const s = await all.createFindingRule({ expiresAt: exp, reason: 'r' });
+    expect(s.suppressed).toBe(4); // everything but the resolved F4
+    expect((await statusOf(all)).F4).toBe('resolved');
+  });
+});
+
 describe('the generated client the view is built on', () => {
   it('speaks the paths and verbs the plane serves', async () => {
     const seen: { url: string; method: string; body: unknown }[] = [];

@@ -54,7 +54,15 @@ export function mockFindingsClient(): FindingsClient {
       rules = [...rules, rule];
       let suppressed = 0;
       entries = entries.map((e) => {
-        const hit = e.status !== 'resolved' && e.status !== 'suppressed' && (!rule.operation || e.operation === rule.operation) && (!rule.code || e.codes.includes(rule.code));
+        // The plane's UPDATE (kernel findings.ts createFindingRule): every scope field a rule carries must
+        // match, an absent one is a wildcard, `code` is membership in the finding's codes, `subject` is
+        // exact. Only a resolved finding is left alone; an already suppressed one moves to the new rule.
+        const hit =
+          e.status !== 'resolved' &&
+          (rule.kind === null || e.kind === rule.kind) &&
+          (rule.operation === null || e.operation === rule.operation) &&
+          (rule.code === null || e.codes.includes(rule.code)) &&
+          (rule.subject === null || e.subject === rule.subject);
         if (hit) suppressed += 1;
         return hit ? { ...e, status: 'suppressed', ruleId: rule.id } : e;
       });
