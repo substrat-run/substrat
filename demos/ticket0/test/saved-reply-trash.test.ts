@@ -19,6 +19,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { permissionKey, platformActorId, type Page, type PrincipalId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
+import { createClient } from '../app/src/api.generated.js';
+import { moveSavedReply } from '../app/src/saved-reply-moves.js';
 import { mountApi } from '../src/routes.js';
 import { createKit, TICKET0, type Desk } from './desk-kit.js';
 
@@ -343,5 +345,50 @@ describe('over HTTP, as the settings screen calls it', () => {
     caller = desk.anna;
     expect((await req('POST', `/saved-replies/${reply.id}/restore`)).status).toBe(200);
     expect((await req('GET', `/saved-replies/${reply.id}`)).status).toBe(200);
+  });
+});
+
+describe('through the generated client, as the picker holds it', () => {
+  /** The client the app builds, wired to the real routes, as one person. */
+  const clientFor = (desk: Desk, who: PrincipalId) => {
+    const app = new Hono();
+    mountApi(app, async () => kit.host.getScope(who, desk.tenant, desk.scope));
+    return createClient({ fetch: ((url: string, init?: RequestInit) => app.request(url, init)) as typeof fetch });
+  };
+
+  it('deletes for good a reply it edited and then moved to the trash, with no 412', async () => {
+    const desk = await freshDesk();
+    const api = clientFor(desk, desk.anna);
+    const reply = await api.createSavedReply({ title: 'Edited, then binned', body: 'Hi.', personal: true });
+    // Edit: the read arms the guard, the save moves the tag the client holds.
+    await api.getSavedReply({ savedReplyId: reply.id });
+    await api.updateSavedReply({ savedReplyId: reply.id, body: 'Hello.' });
+    // The picker's Move to trash, which drops the tag the move made stale.
+    await moveSavedReply(api, 'trash', reply.id);
+    // Delete for good from the trash pane.
+    await expect(api.deleteSavedReply({ savedReplyId: reply.id })).resolves.toEqual({ id: reply.id, title: 'Edited, then binned' });
+  });
+
+  it('edits a reply restored after an edit, with no 412', async () => {
+    const desk = await freshDesk();
+    const api = clientFor(desk, desk.anna);
+    const reply = await api.createSavedReply({ title: 'Back again', body: 'Hi.', personal: true });
+    await api.getSavedReply({ savedReplyId: reply.id });
+    await api.updateSavedReply({ savedReplyId: reply.id, body: 'Hello.' });
+    await moveSavedReply(api, 'trash', reply.id);
+    await moveSavedReply(api, 'restore', reply.id);
+    await expect(api.updateSavedReply({ savedReplyId: reply.id, body: 'Hello again.' })).resolves.toMatchObject({ body: 'Hello again.' });
+  });
+
+  it('still refuses a delete over a colleague’s edit when nothing was moved: only a move drops the tag', async () => {
+    const desk = await freshDesk();
+    const anna = clientFor(desk, desk.anna);
+    const bo = clientFor(desk, desk.bo);
+    const reply = await anna.createSavedReply({ title: 'Shared, edited twice', body: 'Hi.' });
+    await anna.getSavedReply({ savedReplyId: reply.id });
+    await bo.getSavedReply({ savedReplyId: reply.id });
+    await bo.updateSavedReply({ savedReplyId: reply.id, body: 'Bo’s wording.' });
+    await expect(anna.deleteSavedReply({ savedReplyId: reply.id })).rejects.toMatchObject({ status: 412 });
+    expect((await bo.getSavedReply({ savedReplyId: reply.id })).body).toBe('Bo’s wording.');
   });
 });
