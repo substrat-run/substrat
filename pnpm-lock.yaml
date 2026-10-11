@@ -2333,6 +2333,43 @@ importers:
         specifier: 'catalog:'
         version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/ui@5.0.3)(jsdom@26.1.0)(vite@8.3.4(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
 
+  spikes/k3s-sharding:
+    dependencies:
+      '@substrat-run/adapter-sqlite':
+        specifier: workspace:^
+        version: link:../../packages/adapter-sqlite
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../../packages/contracts
+      '@substrat-run/demo-todo':
+        specifier: workspace:*
+        version: link:../../demos/todo
+      '@substrat-run/kernel':
+        specifier: workspace:^
+        version: link:../../packages/kernel
+      better-sqlite3:
+        specifier: 'catalog:'
+        version: 13.0.3
+    devDependencies:
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.5
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.15
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(@vitest/ui@5.0.3)(jsdom@26.1.0)(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+
 packages:
 
   '@ai-sdk/anthropic@3.0.128':
@@ -9715,7 +9752,7 @@ snapshots:
       pathe: 2.0.3
       sirv: 3.0.2
       tinyrainbow: 3.2.0
-      vitest: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@26.6.3)(@vitest/ui@5.0.3)(jsdom@26.1.0)(vite@8.3.4(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+      vitest: 5.0.3(@opentelemetry/api@1.9.0)(@types/node@22.20.5)(@vitest/ui@5.0.3)(jsdom@26.1.0)(vite@8.3.4(@types/node@22.20.5)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
 
   '@vitest/utils@5.0.3':
     dependencies:
