@@ -17,7 +17,7 @@
  * capability, an accept asking the directory before it spends a use, a withdrawal revoking the
  * link — and that an invite minted before #1686 still accepts by its hash.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
@@ -32,7 +32,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { mintCapabilitySecret, ulid, unknownRoleError } from '@substrat-run/kernel';
-import { LEGACY_INVITES_LIST_REPORT_MS, legacyInvitesLine, mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
+import { LEGACY_INVITES_LIST_REPORT_MS, legacyInviteListReporter, legacyInvitesLine, mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
 import { sha256Hex } from '../src/owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from '../src/provider.js';
 
@@ -63,9 +63,9 @@ class MemoryDirectory implements InviteDirectory {
   async listInvites() {
     return [...this.invites.values()].map(({ tokenHash: _hash, ...row }) => row);
   }
-  async legacyInviteCount() {
+  legacyInviteCount: () => Promise<number> = async () => {
     return [...this.invites.values()].filter((r) => r.capabilityId === null).length;
-  }
+  };
   async getInvite(_scopeId: string, principal: string) {
     const row = this.invites.get(principal);
     if (!row) return null;
@@ -958,9 +958,51 @@ describe('legacy invite measurement (#2175)', () => {
     expect(lines).toEqual([]);
   });
 
-  it('the legacy accept writes a line even when the accept finds nothing, and the count is null when the door cannot count', async () => {
+  it('a failed claim or a garbage token writes no line, and neither does a replayed legacy accept', async () => {
     expect((await accept('ef'.repeat(32))).status).toBe(400);
-    expect(parsed()).toEqual([legacyInvitesLine('scope-1', 0, 'accept')]);
-    expect(legacyInvitesLine('scope-1', null, 'accept').pending).toBeNull();
+    expect((await accept('short')).status).toBe(400);
+    const { token } = await legacy();
+    expect((await accept(token)).status).toBe(200);
+    lines.length = 0;
+    expect((await accept(token)).status).toBe(400);
+    expect(lines).toEqual([]);
+  });
+
+  describe('when the count cannot be read', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    beforeEach(() => {
+      warn.mockClear();
+      directory.legacyInviteCount = async () => {
+        throw new Error('no such method on this Durable Object class');
+      };
+    });
+
+    it('the list still answers, and the claim of a legacy accept stands', async () => {
+      const { principal, token } = await legacy();
+      expect((await list()).status).toBe(200);
+      const ok = await accept(token);
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ ok: true, principal });
+      expect(directory.bound.get('sub-newcomer')).toBe(principal);
+      // The accept line still says the branch served, with a count it could not read.
+      expect(parsed()).toEqual([legacyInvitesLine('scope-1', null, 'accept')]);
+      // The failure left one warn each, carrying no data.
+      expect(warn.mock.calls.flat().join(' ')).not.toMatch(/no such method|acme|[0-9a-f]{64}/);
+    });
+  });
+
+  it('writes no line for a desk that names no scope', async () => {
+    const report = legacyInviteListReporter({ log: (l) => lines.push(l) });
+    await report('', async () => 3);
+    expect(lines).toEqual([]);
+  });
+
+  it('forgets a scope once its hour has passed, so the throttle map does not grow', async () => {
+    const report = legacyInviteListReporter({ log: (l) => lines.push(l), now: () => clock });
+    await report('scope-a', async () => 1);
+    clock += LEGACY_INVITES_LIST_REPORT_MS;
+    await report('scope-b', async () => 1);
+    await report('scope-a', async () => 1);
+    expect(lines).toHaveLength(3);
   });
 });

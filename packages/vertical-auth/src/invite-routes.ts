@@ -110,16 +110,33 @@ export const LEGACY_INVITES_LIST_REPORT_MS = 60 * 60 * 1000;
  * isolate — a restart reports again), and a line is written only when it is above zero, so a
  * settled scope writes nothing and is not throttled. Make one per mount, not per request.
  */
+/**
+ * Ask for a count without letting the measurement break what it measures: the identity stub is an
+ * RPC proxy, so a DO class from before #2175 (mid-deploy) or any throw rejects here. Swallowed —
+ * never rethrown — leaving one line that carries no data. Null when it could not be read.
+ */
+async function countOrNull(count: () => Promise<number>): Promise<number | null> {
+  try {
+    return await count();
+  } catch {
+    console.warn('legacy-invites-pending: the count could not be read');
+    return null;
+  }
+}
+
 export function legacyInviteListReporter(opts: { log?: (line: string) => void; now?: () => number } = {}) {
   const log = opts.log ?? ((line: string) => console.warn(line));
   const now = opts.now ?? Date.now;
   const reported = new Map<string, number>();
   return async (scopeId: string, count: (() => Promise<number>) | undefined): Promise<void> => {
-    if (!count) return;
+    // No id, no line: a measurement that cannot name its scope is noise.
+    if (!count || !scopeId) return;
     const last = reported.get(scopeId);
     if (last !== undefined && now() - last < LEGACY_INVITES_LIST_REPORT_MS) return;
-    const pending = await count();
-    if (pending === 0) return;
+    const pending = await countOrNull(count);
+    if (!pending) return;
+    // Evict what has aged out, so the map stays the size of the scopes reported this hour.
+    for (const [id, at] of reported) if (now() - at >= LEGACY_INVITES_LIST_REPORT_MS) reported.delete(id);
     reported.set(scopeId, now());
     log(JSON.stringify(legacyInvitesLine(scopeId, pending, 'list')));
   };
@@ -337,9 +354,13 @@ export async function acceptMemberInvite(
   if (!plausibleCapabilitySecret(token)) {
     // LEGACY — a hash-only invite (see `claimInvite`).
     const principal = await deps.directory.claimInvite(scopeId, sub, await sha256Hex(token));
-    // #2175: reaching this branch at all is the signal it still serves; the count is what is left.
-    const left = (await deps.directory.legacyInviteCount?.(scopeId)) ?? null;
-    (deps.log ?? ((line) => console.warn(line)))(JSON.stringify(legacyInvitesLine(scopeId, left, 'accept')));
+    // #2175: a legacy claim that SUCCEEDED proves the branch still serves; the count is what is left.
+    // A failed claim or a garbage token writes nothing, so a line always means a real invite.
+    const count = deps.directory.legacyInviteCount;
+    if (principal && scopeId) {
+      const left = count ? await countOrNull(() => count.call(deps.directory, scopeId)) : null;
+      (deps.log ?? ((line) => console.warn(line)))(JSON.stringify(legacyInvitesLine(scopeId, left, 'accept')));
+    }
     return principal;
   }
   return redeemBecomeLink(

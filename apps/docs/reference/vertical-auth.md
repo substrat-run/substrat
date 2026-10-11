@@ -213,7 +213,7 @@ including the two OIDC ones where Better Auth stays dormant:
   `link` (`open`, `used`, `expired`, or `revoked` with its reason), so a dead link never
   reads as open. Withdrawing the invite revokes the link first, then removes
   the row. An invite
-  minted before this (a hash-only row) is still accepted by its hash through `claimInvite`, and is measured (#2175): `legacyInviteCount(scopeId)` counts a scope's unclaimed hash-only invites, and the routes write a `legacy-invites-pending` warn line (a scope id and a count, nothing identifying) — from the list only while that count is above zero, at most hourly per isolate, and from every accept through the legacy branch. No such line for a settled period means the branch has nothing left to serve. The four HTTP routes over these — `GET`/`POST /api/invites`,
+  minted before this (a hash-only row) is still accepted by its hash through `claimInvite`, and is measured (#2175): `legacyInviteCount(scopeId)` counts a scope's unclaimed hash-only invites, and the routes write a `legacy-invites-pending` warn line (a scope id and a count, nothing identifying) — from the list only while that count is above zero, at most hourly per isolate, and from every accept that claims an invite through the legacy branch. No such line for a settled period means the branch has nothing left to serve. The four HTTP routes over these — `GET`/`POST /api/invites`,
   `POST /api/invites/:principal/revoke`, `POST /api/accept-invite` — are written once as
   `mountInviteRoutes(app, deps)` from `@substrat-run/vertical-auth/invite-routes` — a
   subpath, because it is the one module here that imports `hono` at runtime, and the root
