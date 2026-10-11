@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-108 decisions · 61 plan · 47 kernel
+109 decisions · 61 plan · 48 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -48,7 +48,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-24](decisions/D-024-name.md) | 2026-07-13 | plan | Name <br>*supersedes D-12* |  |
 | [D-25](decisions/D-025-dual-licensing-implemented-per-9.md) | 2026-07-13 | plan | Dual licensing implemented (per §9) |  |
 | [K-11](decisions/K-011-module-storage-model-7-3.md) | 2026-07-13 | kernel | Module storage model (§7.3) |  |
-| [K-12](decisions/K-012-permission-evaluation-constrained-relationship-tuple-engine-.md) | 2026-07-13 | kernel | Permission evaluation = constrained relationship-tuple engine (§4.2) |  |
+| [K-12](decisions/K-012-permission-evaluation-constrained-relationship-tuple-engine-.md) | 2026-07-13 | kernel | Permission evaluation = constrained relationship-tuple engine (§4.2) <br>*amended by K-48* |  |
 | [K-13](decisions/K-013-attachment-items-carry-mandatory-visibility.md) | 2026-07-13 | kernel | Attachment items carry mandatory visibility |  |
 | [K-14](decisions/K-014-shared-money-schema-in-substrat-run-contracts.md) | 2026-07-13 | kernel | Shared money schema in @substrat-run/contracts |  |
 | [K-15](decisions/K-015-ui-composition-7-4.md) | 2026-07-13 | kernel | UI composition (§7.4) |  |
@@ -120,3 +120,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-45](decisions/K-045-archive-and-trash-are-two-kernel-gated-states-on-the-entity.md) | 2026-10-05 | kernel | Archive and trash are two kernel-gated states on the entity's own row, distinct from erasure and tenant deletion <br>*awaiting ratification* <br>*amends K-41* | #119 |
 | [K-46](decisions/K-046-subject-erasure-reaches-a-module-s-own-tables-by-declaration-or.md) | 2026-10-06 | kernel | Subject erasure reaches a module's own tables by declaration or by a narrow synchronous hook, in the spine's transaction <br>*awaiting ratification* <br>*amends K-37* | #2068, #37 |
 | [K-47](decisions/K-047-notifications-are-an-engine-composed-by-call-the-kernel-s-part.md) | 2026-10-10 | kernel | Notifications are an engine composed by call; the kernel's part is the send intent <br>*awaiting ratification* | #118 |
+| [K-48](decisions/K-048-a-shape-protected-key-reaches-its-record-only-through-the-record.md) | 2026-10-11 | kernel | A key a declared shape protects reaches a record of the shape's type only through the record <br>*awaiting ratification* <br>*amends K-12* | #2177 |
