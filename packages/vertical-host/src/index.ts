@@ -221,7 +221,8 @@ export interface VerticalScopeHost {
   }): Promise<void | {
     switchedOff?: SwitchedOff[];
     /** #2185: with `entityGrants`, how many shapes' retirements the reconcile left open (0: all
-     *  finished). A host built before it answers none, and the platform counts them not finished. */
+     *  finished). The hosted host (`adapter-cloudflare`) counts them; one built before it answers none,
+     *  and the platform counts them not finished. */
     retirementsLeftOpen?: number;
   }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.

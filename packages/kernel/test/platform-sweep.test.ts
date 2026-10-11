@@ -356,6 +356,25 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
       expect(old.retirementsFinishedVersionId).toBeNull();
     });
 
+    it('fills the window with installs whose receipt is behind first, and gives only what is left to retirements alone', async () => {
+      const retirementsOnly = [0, 1, 2].map((): FakeScope => ({ id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v2', retirementsFinishedVersionId: null }));
+      const receipt = [0, 1].map((): FakeScope => ({ id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1' }));
+      const { host } = hostWithScopes([...retirementsOnly, ...receipt]);
+      const seen: string[] = [];
+      const report = await sweepAs(
+        host,
+        async (_t, s) => {
+          seen.push(s as string);
+          return { retirementsFinished: false };
+        },
+        { provisionReconcileBatch: 3, provisionReconcileRng: () => 0.99 },
+      );
+      expect(report.provisionReconcile).toMatchObject({ behind: 5, reconciled: 3, deferred: 2 });
+      // Both receipt-behind installs, whatever the window's random start, and one slot left over.
+      expect(seen.filter((id) => receipt.some((r) => r.id === id))).toHaveLength(2);
+      expect(seen.filter((id) => retirementsOnly.some((r) => r.id === id))).toHaveLength(1);
+    });
+
     it("writes neither half for an 'unsupported' reconcile, so the install stays as it was (limitation c)", async () => {
       const unsupported: FakeScope = { id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1', retirementsFinishedVersionId: 'v1' };
       const { host, marked } = hostWithScopes([unsupported]);
@@ -2462,11 +2481,12 @@ describe('installs judged from their receipt and retirements (#2185)', () => {
     expect(one(null, null)).toBe(false);
   });
 
-  it('names what an unfinished group waits for, and what an old vertical-host must do', () => {
+  it('names what an unfinished group waits for, and what a vertical built on packages that cannot report must do', () => {
     expect(installsReconciledNote({ versionId: 'v3', retirementsFinished: false, installs: 2, example: 's1' })).toBe(
       '2 install(s) that reconciled v3 with its retirements not finished (one is s1); the drop waits for their retirements to finish: ' +
-        'the sweep reconciles them again each pass. An install whose vertical was built on a vertical-host that does not report ' +
-        'retirements stays here: push a version built on a current vertical-host',
+        "the sweep reconciles them again each pass. An install whose vertical's @substrat-run/adapter-cloudflare or " +
+        '@substrat-run/vertical-host predates the retirement report (#2185) stays here: push a version built on current ' +
+        'releases of both packages',
     );
     expect(installsReconciledNote({ versionId: 'v3', retirementsFinished: true, installs: 1, example: 's1' })).toMatch(
       /^1 install\(s\) that last reconciled v3 \(one is s1\); the drop waits for their reconcile/,

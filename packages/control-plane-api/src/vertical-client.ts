@@ -471,7 +471,8 @@ export interface ReconciledInstance {
   switchedOff?: SwitchedOffInUnit[];
   /**
    * #2185: with `entityGrants`, how many shapes' retirements the reconcile left open; 0 when every
-   * one finished. Absent from a vertical-host that predates the report, and from an answer that
+   * one finished. Absent from a deployment whose `adapter-cloudflare` (which counts) or `vertical-host`
+   * (which answers) predates the report, and from an answer that
    * does not parse: both count as not finished (`reconcileOutcomeOf`).
    */
   retirementsLeftOpen?: number;

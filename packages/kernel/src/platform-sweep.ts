@@ -1299,7 +1299,7 @@ export async function runPlatformSweep(
       (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
     );
     const serving = await servingPointersFor(host.admin, options.actor, scopes);
-    const behind: { id: ScopeId; tenantId: TenantId; target: string }[] = [];
+    const behind: { id: ScopeId; tenantId: TenantId; target: string; receiptBehind: boolean }[] = [];
     for (const s of scopes) {
       const running = runningVersionOf(s, s.vertical ? serving.get(s.vertical) : null);
       // No running version ⇒ nothing to compare, and nothing a reconcile could target.
@@ -1312,11 +1312,16 @@ export async function runPlatformSweep(
       // too, so a retirement left open is run again, as the kernel's reconcile expects. A row from
       // before the column reads null here, so every existing install is reconciled once more.
       if (s.provisionedVersionId === running && s.retirementsFinishedVersionId === running) continue;
-      behind.push({ id: s.id, tenantId: s.tenantId, target: running });
+      behind.push({ id: s.id, tenantId: s.tenantId, target: running, receiptBehind: s.provisionedVersionId !== running });
     }
     provisionReconcile.behind = behind.length;
     const batch = options.provisionReconcileBatch ?? PROVISION_RECONCILE_BATCH;
-    const window = reconcileWindow(behind, batch, options.provisionReconcileRng ?? Math.random);
+    // #2185: installs whose receipt is behind what they run go first, and only the slots they leave
+    // go to installs behind on their retirements alone. One of those may never finish (a vertical
+    // built on packages that cannot report), and it must not take a provision repair's slot.
+    const rng = options.provisionReconcileRng ?? Math.random;
+    const first = reconcileWindow(behind.filter((b) => b.receiptBehind), batch, rng);
+    const window = [...first, ...reconcileWindow(behind.filter((b) => !b.receiptBehind), batch - first.length, rng)];
     provisionReconcile.deferred = behind.length - window.length;
     await mapBounded(window, concurrency, async (s) => {
       try {
@@ -2175,7 +2180,7 @@ export function scopeMoveOf(
  * a switch clears the receipt (#2045), a rewind does, and a new install has none until its first
  * reconcile. The sweep reconciles every unfinished or receiptless install on its next pass, so a
  * refusal they cause is transient unless that reconcile keeps failing, answers 'unsupported', or
- * cannot report its retirements (a vertical-host that predates the report). Binds
+ * cannot report its retirements (an `adapter-cloudflare` or `vertical-host` that predates the report). Binds
  * `(vertical, servingRef, ownerTenant)`; a null matches nothing. The directory has no index on
  * `vertical`, so this scans its scopes table: once per promote or serve.
  */
@@ -2228,8 +2233,8 @@ export function installsReconciledNote(g: InstallsReconciled): string {
     return (
       `${g.installs} install(s) that reconciled ${g.versionId} with its retirements not finished (one is ${g.example}); ` +
       'the drop waits for their retirements to finish: the sweep reconciles them again each pass. ' +
-      'An install whose vertical was built on a vertical-host that does not report retirements stays here: ' +
-      'push a version built on a current vertical-host'
+      "An install whose vertical's @substrat-run/adapter-cloudflare or @substrat-run/vertical-host predates the " +
+      'retirement report (#2185) stays here: push a version built on current releases of both packages'
     );
   }
   const which = g.versionId === null ? 'with no reconcile receipt (a switch or a rewind cleared it, or none was written yet)' : `that last reconciled ${g.versionId}`;

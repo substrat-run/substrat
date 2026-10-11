@@ -69,8 +69,8 @@ export async function reviewedEntityGrants(
 /**
  * #2185: what the receipt of a reconcile or provision records beside it. Its retirements count as
  * finished when the shapes it carried retire nothing (`retiredKeysOf`), or when the deployment
- * answered that it left none open. Anything else, an answer without the count (a vertical-host
- * that predates it) included, is not finished: the install is judged as still holding the keys its
+ * answered that it left none open. Anything else, an answer without the count (a deployment whose
+ * `adapter-cloudflare` or `vertical-host` predates it) included, is not finished: the install is judged as still holding the keys its
  * version retires, and the sweep reconciles it again.
  */
 export function reconcileOutcomeOf(
