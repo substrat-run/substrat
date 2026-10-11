@@ -266,6 +266,18 @@ describe('screensSection', () => {
 	it('answers null when the concept names no screens', () => {
 		expect(screensSection('# X\n\n## 8. The scenario the test replays\nsteps')).toBeNull();
 	});
+
+	it('matches a heading whose title IS the screens, numbered or not', () => {
+		for (const h of ['## 8. The screens', '## Screens', '### the screens per persona', '## 8. Screens']) {
+			expect(screensSection(`# X\n\n${h}\n- Office: list`), h).toBe(`${h}\n- Office: list`);
+		}
+	});
+
+	it('does not take a heading that merely mentions a screen', () => {
+		const c = '# X\n\n## 2. The thing\n### Login screen\nflows\n\n## 8. The screens\n- Office: list';
+		expect(screensSection(c)).toBe('## 8. The screens\n- Office: list');
+		expect(screensSection('# X\n\n## Screenshots\nnone')).toBeNull();
+	});
 });
 
 describe('the gap ledger is bounded before it reaches a context', () => {
@@ -319,12 +331,22 @@ describe('planLanes — what each lane is given', () => {
 		expect(ui?.context).not.toContain('replay steps');
 	});
 
-	it('skips the UI lane when the concept names no screens, or says API-only', async () => {
+	it('runs the turn UNLANED when there are no screens to build — never an API lane alone', async () => {
+		// An API lane alone refuses app/** with nobody after it; unlaned, a concept
+		// whose screens the heuristic missed still gets its app built.
 		const none = '# Fx\n\n## 9. The scenario\nsteps';
 		const apiOnly = '# Fx\n\n## 8. The screens\nAPI-only for now.';
 		for (const concept of [none, apiOnly]) {
+			expect(await planLanes(ws({ 'spec/concept.md': concept, 'spec/model.ts': 'M' }), 'iterate')).toEqual([]);
+		}
+	});
+
+	it('reads API-only as an opt-out only when it is the section\'s whole answer', async () => {
+		const mixed = '# Fx\n\n## 8. The screens\nThe export is API-only; admins get a dashboard.\n- Admin: dashboard';
+		const listed = '# Fx\n\n## 8. The screens\nAPI-only for the export.\n- Office: list of things';
+		for (const concept of [mixed, listed]) {
 			const plans = await planLanes(ws({ 'spec/concept.md': concept, 'spec/model.ts': 'M' }), 'iterate');
-			expect(plans.map((p) => p.lane)).toEqual(['api']);
+			expect(plans.map((p) => p.lane), concept).toEqual(['api', 'ui']);
 		}
 	});
 

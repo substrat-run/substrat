@@ -365,13 +365,19 @@ function modelBlock(model: string, note: string): string {
 type ContextWorkspace = Parameters<typeof buildContext>[0];
 
 /**
- * The concept's screens section, or null when it names none. Matched by heading
- * rather than by section number: the interview template numbers it, a
+ * The concept's screens section, or null when it names none. Matched by a
+ * heading whose title IS the screens — "8. The screens", "Screens" — not one
+ * that merely mentions a screen ("### Login screen" under another section).
+ * Section numbers are optional: the interview template numbers it, a
  * hand-written concept may not.
+ *
+ * A heuristic, and its miss is safe: no screens section means no UI lane, and a
+ * build with no UI lane runs UNLANED (planLanes) — main's guard and skills, so
+ * `app/` is still built if the concept asks for it in other words.
  */
 export function screensSection(concept: string): string | null {
 	const lines = concept.split('\n');
-	const start = lines.findIndex((l) => /^#{1,6}\s.*\bscreens?\b/i.test(l));
+	const start = lines.findIndex((l) => /^#{1,6}\s+(?:\d+\.\s*)?(?:the\s+)?screens\b/i.test(l));
 	if (start === -1) return null;
 	const level = /^(#+)/.exec(lines[start] ?? '')?.[1]?.length ?? 2;
 	let end = lines.length;
@@ -385,8 +391,16 @@ export function screensSection(concept: string): string | null {
 	return lines.slice(start, end).join('\n').trim();
 }
 
-/** "API-only for now" is a valid screens section (interview.md §8) and means no app. */
-const apiOnly = (section: string): boolean => /\bapi[- ]only\b/i.test(section);
+/**
+ * "API-only for now" is a valid screens section (interview.md §8) and means no
+ * app — when it is the section's whole answer: its body opens with "API-only"
+ * and lists no screens. "The export is API-only; admins get a dashboard" is a
+ * screen, not an opt-out.
+ */
+function apiOnly(section: string): boolean {
+	const body = section.split('\n').slice(1).join('\n').trim();
+	return /^api[- ]only\b/i.test(body) && !/^\s*(?:[-*]|\d+\.)\s/m.test(body);
+}
 
 /** The recorded gaps as a context block, bounded by `parseContractGaps`. */
 function gapsBlock({ gaps, dropped }: ReturnType<typeof parseContractGaps>, heading: string): string {
@@ -407,19 +421,20 @@ export interface LanePlan {
 }
 
 /**
- * The lanes a build turn runs, in order, each with its context (#682). Empty for
- * a phase that is not laned.
+ * The lanes a build turn runs, in order, each with its context (#682). Empty —
+ * the turn runs unlaned — for a phase that is not laned, and for a concept with
+ * no screens to build (none named, or API-only): a UI lane with nothing to build
+ * still costs a prefix, and an API lane alone would refuse `app/**` with nobody
+ * after it.
  *
  * The API lane sees what an unlaned build sees, plus the gaps the UI lane
  * recorded. A gap naming an operation the model declares is the API lane's to
  * implement; one that needs a NEW operation is a model change, which a build
  * turn cannot make (buildWriteGuard) — so it says so and stops.
  *
- * The UI lane sees the concept's screens section and the declared model (the
- * operations, their inputs and their returns) and nothing else: no engine
- * coverage, migrations or scenario. It is skipped when the concept names no
- * screens or says the app is API-only, because a pass with nothing to build
- * still costs a prefix.
+ * The UI lane's context is the concept's screens section and the declared model
+ * (the operations, their inputs and their returns): no engine coverage,
+ * migrations or scenario. Its history is narrowed to match (historyForLane).
  */
 export async function planLanes(ws: ContextWorkspace, phase: BuildPhase): Promise<LanePlan[]> {
 	if (!isLanedPhase(phase)) return [];
@@ -434,9 +449,10 @@ export async function planLanes(ws: ContextWorkspace, phase: BuildPhase): Promis
 		);
 	const concept = await ws.readFile('spec/concept.md');
 	const screens = screensSection(concept);
-	if (screens === null || apiOnly(screens) || !(await ws.exists('spec/model.ts'))) {
-		return [{ lane: 'api', context: apiContext }];
-	}
+	// No screens to build means no UI lane, and then no lanes at all: an API lane
+	// alone would refuse app/** with nobody after it, which strands a concept
+	// whose screens the heuristic above missed. Unlaned, the turn is main's.
+	if (screens === null || apiOnly(screens) || !(await ws.exists('spec/model.ts'))) return [];
 	const model = await ws.readFile('spec/model.ts');
 	return [
 		{
