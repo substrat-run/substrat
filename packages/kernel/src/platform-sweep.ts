@@ -2203,13 +2203,15 @@ export function scopeMoveOf(
  *
  * #2184: and which binding shapes the reconcile reported the installs have bound through a link
  * (`bound_shapes`, JSON `{version, types}`), counted only while its version is the receipt's, else
- * null (unknown). Grouped by it too, so the rows are at most (versions × 2 × distinct type sets),
- * still independent of how many installs there are: each set is a subset of one version's
- * table-held bootstrap shapes, sorted, so a fleet of one vertical has a handful.
+ * null (unknown). Grouped by it too: each set is a subset of one version's table-held bootstrap
+ * shapes, sorted, so a fleet of one vertical has a handful.
  *
  * Review of #2220: and by the version each install RUNS (`runningVersionOf`: the served version on
  * the serving script, else its pointer), since a receipt behind it speaks for neither the bindings
  * nor the retirements of what it runs now. Bind its parameters with {@link provisionedVersionsParams}.
+ *
+ * So the rows are at most (receipt versions × running versions × 2 × distinct type sets), still
+ * independent of how many installs there are.
  */
 export const PROVISIONED_VERSIONS_SQL = `SELECT provisioned_version_id AS version_id,
     CASE WHEN serving_ref = ? THEN ? ELSE vertical_version_id END AS running_version_id,
