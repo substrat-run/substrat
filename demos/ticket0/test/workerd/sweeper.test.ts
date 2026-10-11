@@ -39,8 +39,9 @@
  * runtime's own, so the DST answers are proven where a hosted desk computes them.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
+  errorCodeOf,
   moduleId,
   permissionKey,
   principalId,
@@ -2708,5 +2709,99 @@ describe('ticket0 on workerd — the saved-reply trash (#2161)', () => {
     await sweep();
     expect(await titlesOf('ticket0/trashed-saved-replies')).toEqual(['Binned today']);
     await expect(admin.invoke('ticket0/restore-saved-reply', { savedReplyId: old.id })).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
+/**
+ * #2035 (condition 2): a load never leaves a desk the door cannot hold a (tenant, scope) pair
+ * against. On a control-plane-less host each door reads the scope's own tenant record (#2016);
+ * a store holding neither that record nor role rows is admitted only as a compatibility state,
+ * which #2035 will refuse. A dump from a world that keeps its roles elsewhere lands with no role
+ * rows, so it is the platform's tenant, sent on the restore and the snapshot, that records the
+ * copy's tenant. The routes now require it: a body without one is refused before any store is
+ * touched, so the refusal itself writes nothing. Driven through the deployed worker's own
+ * `/internal/*` routes, on the Durable Object's SQLite.
+ */
+describe('ticket0 on workerd — every load names its tenant, so none leaves a tenant-unrecorded desk (#2035)', () => {
+  const tenant = tenantId.parse(ulid());
+  const foreign = tenantId.parse(ulid());
+  const source = scopeId.parse(ulid());
+  const moduleOfDesk = moduleId.parse(ticket0Manifest.id);
+
+  const sqlOf = (s: ScopeId, query: string) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), async (_instance, state) => [...state.storage.sql.exec(query)]);
+  const receiptOf = async (s: ScopeId) =>
+    ((await sqlOf(s, `SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`))[0]?.value as string | undefined) ?? null;
+  const roleTenantsOf = async (s: ScopeId) =>
+    [...new Set((await sqlOf(s, 'SELECT tenant_id FROM _substrat_roles')).map((r) => String(r.tenant_id)))];
+  const exportOf = async (s: ScopeId) => (await platform(`/internal/export?scopeId=${s}`)).json();
+  /** The dump of a world that keeps its role rows outside the scope: no `_substrat_roles`. */
+  const rolesKeptElsewhere = async () =>
+    ((await exportOf(source)) as { name: string }[]).filter((t) => t.name !== '_substrat_roles');
+  /** The door a schedule or job run takes; resolves for an admitted pair, throws K-3's refusal otherwise. */
+  const door = (x: typeof tenant, s: ScopeId) => host().getSystemScope(moduleOfDesk, x, s).then(() => 'admitted', (e: unknown) => e);
+  const isPairRefusal = (e: unknown, x: typeof tenant, s: ScopeId) =>
+    e instanceof Error && errorCodeOf(e) === 'not_found' && e.message.includes(`unknown scope for tenant: (${x}, ${s})`);
+  const MISSING_TENANT = { code: 'validation_failed', errors: [{ path: 'tenantId', message: 'Invalid input: expected string, received undefined' }] };
+
+  let warn: MockInstance<typeof console.warn>;
+  const unrecorded = () => warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"substrat":"tenant-unrecorded"'));
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: tenant, scopeId: source, owner, entitlements })).status).toBe(201);
+    warn = vi.spyOn(console, 'warn');
+  });
+  afterEach(() => warn.mockClear());
+  afterAll(() => warn.mockRestore());
+
+  it('a restore that names the tenant records it on a copy that arrives with no role rows: the door admits it and refuses another', async () => {
+    const copy = scopeId.parse(ulid());
+    const dump = await rolesKeptElsewhere();
+    expect((await platform('/internal/restore', { tenantId: tenant, scopeId: copy, tables: dump })).status).toBe(200);
+    expect(await receiptOf(copy)).toBe(tenant);
+    // The route's repair re-projected the desk's roles for that tenant, and only for it.
+    expect(await roleTenantsOf(copy)).toEqual([tenant]);
+    expect(await door(tenant, copy)).toBe('admitted');
+    expect(isPairRefusal(await door(foreign, copy), foreign, copy)).toBe(true);
+    expect(unrecorded()).toEqual([]);
+  });
+
+  it('twin: a restore that names no tenant is refused and loads nothing, onto a fresh store or a live one', async () => {
+    const copy = scopeId.parse(ulid());
+    const untouched = scopeId.parse(ulid());
+    const refused = await platform('/internal/restore', { scopeId: copy, tables: await rolesKeptElsewhere() });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject(MISSING_TENANT);
+    // The fresh store reads exactly as one nothing was ever loaded into.
+    expect(await exportOf(copy)).toEqual(await exportOf(untouched));
+    // A live desk keeps its data, its record and its door.
+    const before = await exportOf(source);
+    expect((await platform('/internal/restore', { scopeId: source, tables: [] })).status).toBe(400);
+    expect(await exportOf(source)).toEqual(before);
+    expect(await receiptOf(source)).toBe(tenant);
+    expect(await door(tenant, source)).toBe('admitted');
+  });
+
+  it('a restore naming a tenant the desk is not recorded for is still refused (409) with the desk untouched', async () => {
+    const before = await exportOf(source);
+    const res = await platform('/internal/restore', { tenantId: foreign, scopeId: source, tables: await rolesKeptElsewhere() });
+    expect(res.status).toBe(409);
+    expect(await exportOf(source)).toEqual(before);
+    expect(await receiptOf(source)).toBe(tenant);
+  });
+
+  it('a snapshot that names the tenant records it on the copy; one that names none is refused and copies nothing', async () => {
+    const snap = scopeId.parse(ulid());
+    expect((await platform('/internal/snapshot', { sourceScopeId: source, newScopeId: snap, tenantId: tenant })).status).toBe(201);
+    expect(await receiptOf(snap)).toBe(tenant);
+    expect(await door(tenant, snap)).toBe('admitted');
+    expect(isPairRefusal(await door(foreign, snap), foreign, snap)).toBe(true);
+
+    const unnamed = scopeId.parse(ulid());
+    const untouched = scopeId.parse(ulid());
+    const refused = await platform('/internal/snapshot', { sourceScopeId: source, newScopeId: unnamed });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject(MISSING_TENANT);
+    expect(await exportOf(unnamed)).toEqual(await exportOf(untouched));
+    expect(unrecorded()).toEqual([]);
   });
 });

@@ -1175,8 +1175,9 @@ export class VerticalClient {
   async snapshotScope(input: {
     sourceScopeId: ScopeId;
     newScopeId: ScopeId;
-    /** #2016: the tenant snapshotted for — the source must be its, and the copy records it. */
-    tenantId?: TenantId;
+    /** #2016: the tenant snapshotted for — the source must be its, and the copy records it.
+     *  Required (#2035): a load that names no tenant could leave a copy with no tenant record. */
+    tenantId: TenantId;
   }): Promise<{ tables: number }> {
     return this.postInternal<{ tables: number }>('/internal/snapshot', input, 'snapshot');
   }
