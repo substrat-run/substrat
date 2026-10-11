@@ -138,7 +138,7 @@ export function findingsError(e: unknown, doing: 'read' | 'change', target: 'fin
         ? 'You do not have access to this team’s findings.'
         : 'You can read findings but not change them. Ask a team admin for access.';
     }
-    if (e.status === 404) return `That ${target} is gone. The list has been refreshed.`;
+    if (e.status === 404) return `That ${target} no longer exists.`;
     return `${e.message || 'The request failed'} (${e.status})`;
   }
   return 'Findings could not be reached right now.';

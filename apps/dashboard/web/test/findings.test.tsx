@@ -104,8 +104,8 @@ describe('findings, pure', () => {
     const forbidden = new ApiError(403, 'forbidden', null);
     expect(findingsError(forbidden, 'read')).toMatch(/do not have access/);
     expect(findingsError(forbidden, 'change')).toMatch(/read findings but not change/);
-    expect(findingsError(new ApiError(404, 'no', null), 'change', 'rule')).toBe('That rule is gone. The list has been refreshed.');
-    expect(findingsError(new ApiError(404, 'no', null), 'change')).toBe('That finding is gone. The list has been refreshed.');
+    expect(findingsError(new ApiError(404, 'no', null), 'change', 'rule')).toBe('That rule no longer exists.');
+    expect(findingsError(new ApiError(404, 'no', null), 'change')).toBe('That finding no longer exists.');
     expect(findingsError(new ApiError(500, 'boom', null), 'change')).toBe('boom (500)');
     expect(findingsError(new TypeError('x'), 'read')).toMatch(/could not be reached/);
   });
@@ -415,7 +415,7 @@ describe('Findings view', () => {
     };
     await mount(client);
     await click(button('Resolve', row('o')));
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('That finding is gone. The list has been refreshed.');
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('That finding no longer exists.');
     expect(host.textContent).not.toContain('open one');
   });
 
@@ -490,6 +490,28 @@ describe('Findings view', () => {
     } finally {
       globalThis.fetch = real;
     }
+  });
+
+  it('drops an older read that answers after a newer one', async () => {
+    const client = fake([]);
+    const release: Array<() => void> = [];
+    let calls = 0;
+    client.listFindings = () => {
+      const n = ++calls;
+      return new Promise((resolve) => {
+        release[n] = () => resolve({ available: true, entries: [finding({ id: `r${n}`, title: `read ${n}` })] });
+      });
+    };
+    const render = (nonce: number) => act(async () => root.render(<Findings client={client} tab="open" canManage nonce={nonce} onTab={vi.fn()} />));
+    await render(0); // read 1 is in flight
+    await render(1); // Refresh: read 2 starts
+    await act(async () => release[2]!());
+    await settle();
+    expect(host.textContent).toContain('read 2');
+    await act(async () => release[1]!()); // the older answer lands last
+    await settle();
+    expect(host.textContent).toContain('read 2');
+    expect(host.textContent).not.toContain('read 1');
   });
 
   it('works end to end on the preview client', async () => {
