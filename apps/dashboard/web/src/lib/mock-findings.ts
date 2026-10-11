@@ -43,11 +43,17 @@ export function mockFindingsClient(): FindingsClient {
   ];
   return {
     listFindings: async ({ status, limit = 100, cursor }) => {
-      // Like the plane: filtered, most recent first, and a cursor names a place in that order.
-      const all = entries.filter((e) => status === undefined || e.status === status).sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen));
-      const from = cursor === undefined ? 0 : Number(cursor);
-      const page = all.slice(from, from + limit);
-      return { available: true, entries: page, nextCursor: page.length >= limit ? String(from + limit) : null, cut: false };
+      // Like the plane: keyset-paged. Filtered, `lastSeen` descending with `id` ascending on a tie, and a
+      // cursor names the last row read by its sort key, so a row that moved tab between pages shifts nothing.
+      const sep = String.fromCharCode(0);
+      const after = cursor === undefined ? null : (cursor.split(sep) as [string, string]);
+      const page = entries
+        .filter((e) => status === undefined || e.status === status)
+        .sort((a, b) => (a.lastSeen === b.lastSeen ? (a.id < b.id ? -1 : 1) : a.lastSeen < b.lastSeen ? 1 : -1))
+        .filter((e) => after === null || e.lastSeen < after[0] || (e.lastSeen === after[0] && e.id > after[1]))
+        .slice(0, limit);
+      const last = page[page.length - 1];
+      return { available: true, entries: page, nextCursor: page.length >= limit && last ? `${last.lastSeen}${sep}${last.id}` : null, cut: false };
     },
     setFindingStatus: async ({ id, status }) => {
       const next = { ...entries.find((e) => e.id === id)!, status };

@@ -698,6 +698,32 @@ describe('Findings view', () => {
   });
 });
 
+describe('the preview client pages like the plane (keyset)', () => {
+  it('walks a status by cursor, ties on lastSeen broken by id, each once', async () => {
+    const c = mockFindingsClient();
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await c.listFindings({ status: 'open', limit: 1, ...(cursor === undefined ? {} : { cursor }) });
+      seen.push(...page.entries.map((e) => e.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    // The two open rows share a lastSeen, so the id tiebreak decides; the walk is the unpaged order, no repeats.
+    expect(seen).toEqual((await c.listFindings({ status: 'open' })).entries.map((e) => e.id));
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('does not skip a row when the row before the cursor leaves the tab between pages', async () => {
+    const c = mockFindingsClient();
+    const first = await c.listFindings({ status: 'open', limit: 1 });
+    // The offset-paged mock skipped the next row here: the first one left Open, shifting everything up.
+    await c.setFindingStatus({ id: first.entries[0]!.id, status: 'acked' });
+    const rest = await c.listFindings({ status: 'open', limit: 1, cursor: first.nextCursor! });
+    expect(first.entries.map((e) => e.id)).toEqual(['F1']);
+    expect(rest.entries.map((e) => e.id)).toEqual(['F2']);
+  });
+});
+
 describe('the preview client applies a rule like the plane', () => {
   const exp = new Date(Date.now() + 86_400_000).toISOString();
   const statusOf = async (c: FindingsClient) =>
