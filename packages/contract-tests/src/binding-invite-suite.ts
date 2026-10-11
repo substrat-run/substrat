@@ -51,7 +51,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { BIND_INVITE, BIND_MEMBER, BIND_OLD, BIND_READ_OWN, BIND_SHAPE, bindMod } from './bind-module.js';
+import { BIND_DUP_SHAPE, BIND_INVITE, BIND_MEMBER, BIND_OLD, BIND_READ_OWN, BIND_SHAPE, bindMod } from './bind-module.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import type { RawScopeQuery } from './subject-erasure-suite.js';
 
@@ -296,6 +296,35 @@ export function bindingInviteContractSuite(
         // The twin: with the fault gone the same link binds.
         expect((await exchange(link.secret))?.kind).toBe('principal');
         expect((await rowOf(id))?.principal).toBe(target);
+      });
+    });
+
+    describe('an id column two rows share', () => {
+      const dup = (key: string): EntityRef => ({ entityType: 'bdup', entityId: key });
+      const rowsOf = async (key: string) => (await sql('SELECT holder FROM bind_dups WHERE key = ? ORDER BY holder', [key])).map((r) => r.holder);
+      beforeAll(() => reconcile([BIND_SHAPE, BIND_DUP_SHAPE]));
+      afterAll(() => reconcile([BIND_SHAPE]));
+
+      it('a record any of whose rows names someone is bound: refused at mint', async () => {
+        const key = ulid();
+        await put('INSERT INTO bind_dups (key, holder) VALUES (?, NULL), (?, ?)', [key, key, p()]);
+        expect(await mint(clerk, await invitee(), dup(key))).toEqual({ ok: false, refused: 'bind-record-bound' });
+      });
+
+      it('two rows naming nobody are no one record: the claim refuses and rolls back, leaving the link unspent', async () => {
+        const key = ulid();
+        await put('INSERT INTO bind_dups (key, holder) VALUES (?, NULL), (?, NULL)', [key, key]);
+        const link = await minted(clerk, await invitee(), dup(key));
+        await expect(() => exchange(link.secret)).rejects.toThrow();
+        expect((await capOf(link.id))?.uses).toBe(0);
+        expect(await rowsOf(key)).toEqual([null, null]);
+      });
+
+      it('an unbind clears every row carrying the id', async () => {
+        const key = ulid();
+        await put('INSERT INTO bind_dups (key, holder) VALUES (?, ?), (?, ?)', [key, p(), key, p()]);
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, dup(key))).toEqual({ ok: true, unbound: [] });
+        expect(await rowsOf(key)).toEqual([null, null]);
       });
     });
 

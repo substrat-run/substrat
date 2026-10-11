@@ -111,14 +111,19 @@ function entityBindingsOf(sql: ScopedSql): EntityBinding[] {
   return [...bySubject].flatMap(([subject, rows]) => bindingFrom(subject.slice('shape:'.length), rows) ?? []);
 }
 
-/** The record as the binding sees it: whether it exists, and whom its column names. */
+/**
+ * The record as the binding sees it: whether any row carries its id, and whom the first row that
+ * names someone names. Every row is read: the id column should be unique, and when it is not, a
+ * record any of whose rows names someone is bound — the claim then writes exactly one row or
+ * none, never a second person beside the first.
+ */
 function boundRecord(sql: ScopedSql, b: EntityBinding, entityId: string): { exists: boolean; principal: string | null } {
   if (!tableExists(switchSqlOf(sql), b.table)) return { exists: false, principal: null };
-  const row = sql.query<{ principal: string | null }>(
+  const rows = sql.query<{ principal: string | null }>(
     `SELECT "${b.principalColumn}" AS principal FROM "${b.table}" WHERE "${b.idColumn}" = ?`,
     [entityId],
-  )[0];
-  return row ? { exists: true, principal: row.principal } : { exists: false, principal: null };
+  );
+  return { exists: rows.length > 0, principal: rows.find((r) => r.principal !== null)?.principal ?? null };
 }
 
 /** The bind key's refusal, in the shape every bounded verb answers a missing key with. */
@@ -168,7 +173,8 @@ export function bindIn(
   emit: (event: DomainEventInput) => void,
 ): void {
   // Counted by RETURNING, never by `changes`: on a Durable Object that is `rowsWritten`, which
-  // counts index entries too, so an index on the principal column reads one row as two.
+  // counts index entries too, so an index on the principal column reads one row as two. Exactly one
+  // row: an id two rows carry is no one record, and the claim refuses it rather than bind both.
   const set = sql.query(
     `UPDATE "${binding.table}" SET "${binding.principalColumn}" = ? WHERE "${binding.idColumn}" = ? AND "${binding.principalColumn}" IS NULL RETURNING 1 AS one`,
     [principal, entity.entityId],

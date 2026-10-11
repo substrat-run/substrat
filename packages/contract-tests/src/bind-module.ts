@@ -69,6 +69,15 @@ export const BIND_SHAPE: EntityGrantShape = {
   bind: { permission: BIND_INVITE },
 };
 
+/** A binding shape over `bind_dups`, whose `key` two rows may share. */
+export const BIND_DUP_SHAPE: EntityGrantShape = {
+  entityType: 'bdup',
+  permissions: [BIND_READ_OWN],
+  bootstrap: true,
+  holder: { table: 'bind_dups', idColumn: 'key', principalColumn: 'holder' },
+  bind: { permission: BIND_INVITE },
+};
+
 const onSubjectErased: OnSubjectErased = (ctx, { subjectId }) => {
   const mine = ctx.sql.query<{ id: string; fate: string | null }>('SELECT id, fate FROM bind_records WHERE principal = ?', [subjectId]);
   for (const r of mine) ctx.sql.exec('INSERT INTO bind_seen (subject, record_id) VALUES (?, ?)', [subjectId, r.id]);
@@ -86,6 +95,8 @@ export const bindMod: ModuleRegistration = {
       // rows by it — and the one that makes a Durable Object's write count read one row as two.
       sql: `CREATE TABLE bind_records (id TEXT PRIMARY KEY, principal TEXT, email TEXT, fate TEXT);
             CREATE INDEX bind_records_by_principal ON bind_records (principal);
+            -- A holder table whose id is NOT unique: what a careless declaration can point at.
+            CREATE TABLE bind_dups (key TEXT NOT NULL, holder TEXT);
             CREATE TABLE bind_seen (subject TEXT NOT NULL, record_id TEXT NOT NULL, PRIMARY KEY (subject, record_id));`,
     },
   ],

@@ -609,7 +609,9 @@ export const entityGrantShape = z.object({
    * may unbind its person. Checked at mint, again at the claim, and at an unbind.
    *
    * Only on a `bootstrap` shape whose `holder` is the table form, and never one of the shape's
-   * own current or retired keys (a key that let you hand out itself would be no bound). The
+   * own current or retired keys (a key that let you hand out itself would be no bound). The holder's
+   * `idColumn` should be unique: a claim binds exactly one row, so an id two rows carry is refused,
+   * and an unbind clears every row with it. The
    * column the holder names must be one of the entity's erasure SUBJECTS rather than an
    * `erasable` field: an erasure of the record or of its person unbinds it (the kernel clears the
    * column and takes the shape back, after the module's erasure hook has read the rows).
