@@ -695,7 +695,8 @@ export const entityGrantShape = z.object({
    * unbind. Dropping `bind` is allowed (it stops new links), and the people it leaves bound are
    * still guarded (#2184): each install's reconcile reports the types it has ever bound, and the
    * gate below counts a bootstrap shape with a table holder as binding wherever an install bound
-   * it, or did not report (`boundShapes`), as well as wherever the registry says `bind`. A version that removes the shape, moves its holder, drops `bootstrap` or drops a key
+   * it, or did not report (`boundShapes`), as well as wherever the registry says `bind`. A version
+   * that removes the shape, moves its holder, drops `bootstrap` or drops a key
    * from `permissions` without listing it in `retired` is refused
    * wherever it would come to run where the shape binds — a promote, a bind, a route onto a serving
    * script — unless it retires every key (`bindingShapeBreaks`, #2178); a rollback to a version from

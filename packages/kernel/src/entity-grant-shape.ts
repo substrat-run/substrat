@@ -318,7 +318,7 @@ export function topUpEntityGrantShapes(
  * #2184: every entity type this scope has ever bound (`shape-bound`, sticky), sorted. One read of
  * the `shape:` range of the spine, bounded by the types ever declared.
  */
-export function boundEverTypes(db: SwitchSql): string[] {
+function boundEverTypes(db: SwitchSql): string[] {
   return (
     db.all(`SELECT subject FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ? ORDER BY subject`, BOUND_EVER_RELATION) as {
       subject: string;
