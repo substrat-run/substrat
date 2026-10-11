@@ -9,7 +9,7 @@
  * survived — a leftover process on a shared machine is a failure of the run, not noise.
  */
 import { fork, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,6 +108,7 @@ export class Cluster {
   }
 
   async start(): Promise<this> {
+    mkdirSync(join(this.dir, 'faults'));
     const cp = await this.spawn(
       'control-plane',
       'control-plane.ts',
@@ -133,6 +134,7 @@ export class Cluster {
             LEASE_MARGIN_MS: String(this.opts.leaseMarginMs ?? 400),
             LEASES: this.opts.leases ?? 'on',
             BG_PERIOD_MS: String(this.opts.bgPeriodMs ?? 0),
+            FAULT_DIR: join(this.dir, 'faults'),
           },
         );
         urls[name] = `http://127.0.0.1:${shard.port}`;
@@ -198,7 +200,7 @@ export class Cluster {
   }
 
   /** Arm a fault: when the write with `text` reaches `point` on `name`, it signals itself. */
-  arm(name: string, fault: { text: string; point: 'pre-write' | 'post-commit'; signal: NodeJS.Signals }): void {
+  arm(name: string, fault: { text: string; point: 'pre-write' | 'in-tx' | 'post-commit'; signal: NodeJS.Signals }): void {
     this.proc(name).child.send({ arm: fault });
   }
 
@@ -208,6 +210,9 @@ export class Cluster {
     while (Date.now() < until) {
       const hit = this.proc(name).faults.find((f) => f.text === text);
       if (hit) return hit;
+      // `in-tx` reports by marker file: inside a synchronous transaction an IPC message is not
+      // flushed before the shard signals itself.
+      if (existsSync(join(this.dir, 'faults', `${name}--in-tx--${text}`))) return { at: 'in-tx', text, node: name };
       await sleep(10);
     }
     throw new Error(`${name} never reached the fault for ${text}: ${this.log(name)}`);

@@ -166,4 +166,46 @@ describe('kill mid-write', () => {
       expect(d.doubled).toEqual([]);
     }
   });
+
+  // A holder frozen INSIDE its write transaction (round 2, finding 3): it holds the scope
+  // file's write lock, so the takeover's stamp cannot run until it wakes. Safe — nothing lost
+  // or doubled — but the scope is unavailable for as long as the freeze, not one TTL.
+  it('a holder frozen inside its transaction holds the scope until it wakes, and loses nothing', async () => {
+    const c = (cluster = await new Cluster({ shards: 2, routerTimeoutsMs: [1500, 20_000] }).start());
+    const scope = scopeHomedOn('todo-0', c.members);
+    await c.provision(scope);
+    const by: Record<string, unknown> = {};
+    const write = async (router: string, text: string) => {
+      const r = await c.write(router, scope, text);
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      by[text] = r.json.node;
+    };
+    await write('router-0', 'w0');
+    await write('router-1', 'w1');
+
+    c.arm('todo-0', { text: 'w2', point: 'in-tx', signal: 'SIGSTOP' });
+    const w2 = write('router-1', 'w2');
+    await c.reached('todo-0', 'w2');
+    const frozenAt = Date.now();
+    const w3 = write('router-0', 'w3');
+    // Frozen for four TTLs: the lease runs out, `todo-1` is granted the scope, and its
+    // stamp waits on the frozen transaction's lock, answering 421 until it can take it.
+    await new Promise((r) => setTimeout(r, FREEZE_MS));
+    c.signal('todo-0', 'SIGCONT');
+    await Promise.all([w2, w3]);
+    const unavailableMs = Date.now() - frozenAt;
+
+    expect(unavailableMs).toBeGreaterThanOrEqual(FREEZE_MS);
+    // The frozen transaction committed when it woke, before the stamp could run, so it is in
+    // the zombie's files and in the copy; its acknowledgement was withheld, and the retry
+    // under its key was a replay on `todo-1`.
+    expect(c.itemsOnVolume('todo-0', scope)).toContain('w2');
+    expect(by).toEqual({ w0: 'todo-0', w1: 'todo-0', w2: 'todo-1', w3: 'todo-1' });
+    for (const router of ['router-0', 'router-1']) {
+      expect((await c.read(router, scope)).texts).toEqual(['w0', 'w1', 'w2', 'w3']);
+    }
+    console.log(`frozen inside the transaction for ${FREEZE_MS} ms: unavailable ${unavailableMs} ms`);
+  });
 });
+
+const FREEZE_MS = 8_000;

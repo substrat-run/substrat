@@ -29,7 +29,8 @@
  * with that text reaches `point`, the shard reports it and sends itself `signal`. Signalling
  * itself is what makes the kill land at exactly that point, every run.
  */
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync } from 'node:fs';
+import Database from 'better-sqlite3';
 import { join } from 'node:path';
 import { principalId, scopeId as scopeIdOf, tenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
@@ -39,7 +40,7 @@ import { readJson, send, serveLocal } from './http.js';
 import { copyScope, openScope, scopeDir, seedScope, type ScopeWorld } from './todo-scope.js';
 import { exitWithParent } from './process.js';
 import { home } from './placement.js';
-import { holdEpoch, installEpochFunction, isFenceRefusal, stampFence } from './storage-fence.js';
+import { holdEpoch, installEpochFunction, isFenceRefusal, StampBusy, stampFence } from './storage-fence.js';
 
 const node = process.env.NODE ?? 'todo-0';
 const port = Number(process.env.PORT ?? 0);
@@ -49,7 +50,7 @@ const fencing = process.env.LEASES !== 'off';
 if (fencing) installEpochFunction();
 const leases = new LeaseClient(process.env.CP_URL ?? 'http://127.0.0.1:0', node, Number(process.env.LEASE_MARGIN_MS ?? 400));
 
-type FaultPoint = 'pre-write' | 'post-commit';
+type FaultPoint = 'pre-write' | 'in-tx' | 'post-commit';
 interface Fault {
   text: string;
   point: FaultPoint;
@@ -67,6 +68,34 @@ async function fault(point: FaultPoint, text: string): Promise<void> {
   // Report first, and only then signal: the message must be out before a SIGSTOP or SIGKILL.
   await new Promise<void>((resolve) => process.send!({ at: point, text, node }, () => resolve()));
   process.kill(process.pid, f!.signal);
+}
+
+/**
+ * The `in-tx` point: inside the kernel's write transaction, holding the scope file's write
+ * lock, just before the item row is inserted. better-sqlite3 is synchronous there, so the
+ * report cannot be an IPC message (which is flushed asynchronously): it is a marker file the
+ * harness watches, written synchronously before the signal.
+ */
+const faultDir = process.env.FAULT_DIR;
+{
+  const proto = Database.prototype as unknown as { prepare: (this: Database.Database, sql: string) => Database.Statement };
+  const prepare = proto.prepare;
+  proto.prepare = function (this: Database.Database, sql: string) {
+    const stmt = prepare.call(this, sql);
+    if (!/^\s*INSERT INTO todo_items/i.test(sql)) return stmt;
+    const run = stmt.run.bind(stmt);
+    (stmt as { run: (...a: unknown[]) => Database.RunResult }).run = (...args: unknown[]) => {
+      const text = (args.flat() as unknown[]).find((a) => typeof a === 'string' && faults.some((f) => f.point === 'in-tx' && f.text === a));
+      const i = faults.findIndex((f) => f.point === 'in-tx' && f.text === text);
+      if (i >= 0 && faultDir) {
+        const [f] = faults.splice(i, 1);
+        writeFileSync(join(faultDir, `${node}--in-tx--${String(text)}`), '');
+        process.kill(process.pid, f!.signal);
+      }
+      return run(...(args as []));
+    };
+    return stmt;
+  };
 }
 
 /**
@@ -310,6 +339,8 @@ serveLocal(node, port, async (req, res, path) => {
     }
     if (e instanceof UnknownScope) return send(res, 404, { error: e.message, node });
     if (e instanceof PlacementRefused) return send(res, 409, { error: e.message, node });
+    // Nothing was placed or invoked: a 421 naming no holder, which the router retries here.
+    if (e instanceof StampBusy) return send(res, 421, { error: e.message, retryAfterMs: 250, node });
     return send(res, 500, { error: e instanceof Error ? e.message : String(e), node });
   }
 });

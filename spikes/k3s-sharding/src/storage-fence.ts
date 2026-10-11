@@ -70,6 +70,15 @@ export function installEpochFunction(): void {
 
 export const FENCE_REFUSAL = 'k3s fence: stale holder';
 
+/**
+ * The stamp could not take a file's write lock in time: a holder is inside a write
+ * transaction there. Retryable: the caller has placed nothing and served nothing.
+ */
+export class StampBusy extends Error {}
+
+/** How long one stamp waits for a file's write lock before giving up with {@link StampBusy}. */
+export const STAMP_LOCK_WAIT_MS = 1_000;
+
 /** Whether `e` is the fence refusing a write. */
 export function isFenceRefusal(e: unknown): boolean {
   return e instanceof Error && e.message.includes(FENCE_REFUSAL);
@@ -80,10 +89,17 @@ export function isFenceRefusal(e: unknown): boolean {
  * carries the fence triggers. One `BEGIN IMMEDIATE` per file, so it waits for, and then
  * excludes, any write in flight there. After it returns, a write by a holder of an older
  * epoch aborts.
+ *
+ * A holder frozen INSIDE a write transaction keeps that lock for as long as it is frozen, so
+ * the stamp cannot complete until it wakes or dies. The stamp waits {@link STAMP_LOCK_WAIT_MS}
+ * and then throws {@link StampBusy}; the takeover is retried, and the scope is unavailable for
+ * as long as the freeze lasts. That is safe — the frozen transaction commits before the stamp
+ * or not at all, its acknowledgement is withheld, and the copy taken after the stamp carries
+ * it — but it is not bounded by the lease TTL. Only stopping the old holder bounds it.
  */
 export function stampFence(dir: string, epoch: number): void {
   for (const name of readdirSync(dir).filter((n) => n.endsWith('.sqlite'))) {
-    const db = new Database(join(dir, name), { fileMustExist: true, timeout: 5_000 });
+    const db = new Database(join(dir, name), { fileMustExist: true, timeout: STAMP_LOCK_WAIT_MS });
     try {
       db.exec('BEGIN IMMEDIATE');
       db.exec('CREATE TABLE IF NOT EXISTS _k3s_fence (epoch INTEGER NOT NULL)');
@@ -109,6 +125,9 @@ export function stampFence(dir: string, epoch: number): void {
       db.exec('COMMIT');
     } catch (e) {
       if (db.inTransaction) db.exec('ROLLBACK');
+      if ((e as { code?: string }).code === 'SQLITE_BUSY') {
+        throw new StampBusy(`${join(dir, name)} is locked by a write in flight; the takeover waits for it`);
+      }
       throw e;
     } finally {
       db.close();
