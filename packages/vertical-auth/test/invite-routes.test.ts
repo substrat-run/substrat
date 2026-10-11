@@ -986,7 +986,8 @@ describe('legacy invite measurement (#2175)', () => {
       expect(directory.bound.get('sub-newcomer')).toBe(principal);
       // The accept line still says the branch served, with a count it could not read.
       expect(parsed()).toEqual([legacyInvitesLine('scope-1', null, 'accept')]);
-      // The failure left one warn each, carrying no data.
+      // The failure left one warn per door, carrying no data.
+      expect(warn.mock.calls.filter((c) => String(c[0]).startsWith('legacy-invites-pending'))).toHaveLength(2);
       expect(warn.mock.calls.flat().join(' ')).not.toMatch(/no such method|acme|[0-9a-f]{64}/);
     });
   });
@@ -997,12 +998,32 @@ describe('legacy invite measurement (#2175)', () => {
     expect(lines).toEqual([]);
   });
 
-  it('forgets a scope once its hour has passed, so the throttle map does not grow', async () => {
+  it('forgets a scope once its hour has passed, so the throttle map stays bounded', async () => {
     const report = legacyInviteListReporter({ log: (l) => lines.push(l), now: () => clock });
     await report('scope-a', async () => 1);
-    clock += LEGACY_INVITES_LIST_REPORT_MS;
     await report('scope-b', async () => 1);
+    expect(report.tracked()).toBe(2);
+    clock += LEGACY_INVITES_LIST_REPORT_MS;
+    await report('scope-c', async () => 1);
+    // a and b aged out when c was written; only c is remembered.
+    expect(report.tracked()).toBe(1);
     await report('scope-a', async () => 1);
-    expect(lines).toHaveLength(3);
+    expect(lines).toHaveLength(4);
+  });
+
+  it('throttles an unreadable count too: one warn per scope per hour, no line, then again', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const report = legacyInviteListReporter({ log: (l) => lines.push(l), now: () => clock });
+    const broken = async () => {
+      throw new Error('older Durable Object class');
+    };
+    await report('scope-a', broken);
+    await report('scope-a', broken);
+    expect(warn).toHaveBeenCalledTimes(1);
+    clock += LEGACY_INVITES_LIST_REPORT_MS;
+    await report('scope-a', broken);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(lines).toEqual([]);
+    warn.mockRestore();
   });
 });

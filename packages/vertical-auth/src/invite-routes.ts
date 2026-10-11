@@ -128,18 +128,22 @@ export function legacyInviteListReporter(opts: { log?: (line: string) => void; n
   const log = opts.log ?? ((line: string) => console.warn(line));
   const now = opts.now ?? Date.now;
   const reported = new Map<string, number>();
-  return async (scopeId: string, count: (() => Promise<number>) | undefined): Promise<void> => {
+  const report = async (scopeId: string, count: (() => Promise<number>) | undefined): Promise<void> => {
     // No id, no line: a measurement that cannot name its scope is noise.
     if (!count || !scopeId) return;
     const last = reported.get(scopeId);
     if (last !== undefined && now() - last < LEGACY_INVITES_LIST_REPORT_MS) return;
     const pending = await countOrNull(count);
-    if (!pending) return;
+    // Absence is the signal: a settled scope writes nothing and is not throttled.
+    if (pending === 0) return;
     // Evict what has aged out, so the map stays the size of the scopes reported this hour.
     for (const [id, at] of reported) if (now() - at >= LEGACY_INVITES_LIST_REPORT_MS) reported.delete(id);
+    // An unreadable count is throttled too (it warned once): a mid-deploy list does not retry per read.
     reported.set(scopeId, now());
-    log(JSON.stringify(legacyInvitesLine(scopeId, pending, 'list')));
+    if (pending !== null) log(JSON.stringify(legacyInvitesLine(scopeId, pending, 'list')));
   };
+  /** Scopes currently remembered — what the eviction keeps bounded. */
+  return Object.assign(report, { tracked: () => reported.size });
 }
 
 /** The label every member invite's capability carries — what an operator's capability read shows. */
