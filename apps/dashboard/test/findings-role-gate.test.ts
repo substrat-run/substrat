@@ -151,6 +151,80 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
       expect(body.entries.map((f) => [f.tenantId, f.operation])).toEqual([[tenant, 'deploy.mine']]);
     }
   });
+  describe('paging (#2198): the read gate is the paging gate', () => {
+    type Page = { available: boolean; entries: { id: string; operation: string }[]; nextCursor: string | null };
+    const page = async (role: keyof typeof subs, query = ''): Promise<Page> => {
+      const res = await asRole(role, 'GET', `/api/teams/${tenant}/findings${query}`);
+      expect(res.status, `${role} ${query}`).toBe(200);
+      return (await res.json()) as Page;
+    };
+
+    beforeEach(async () => {
+      for (const x of ['a', 'b', 'c', 'd']) {
+        await host.admin.recordOpsFailure({ actor: staff, operation: `deploy.paged-${x}`, tenantId: tenant, message: 'x' });
+      }
+      planeCalls = [];
+    });
+
+    it('a read that sends no limit or cursor gets today’s page, plus a null cursor old clients ignore', async () => {
+      const body = await page('viewer');
+      expect(body.available).toBe(true);
+      expect(body.entries).toHaveLength(5);
+      expect(body.nextCursor).toBeNull();
+      // Nothing about paging was asked of the plane.
+      const reads = planeCalls.filter((c) => c.startsWith('GET /findings?'));
+      expect(reads.map((c) => new URL(c.slice(4), 'http://x').searchParams.has('cursor'))).toEqual([false]);
+    });
+
+    it('any role holding read-findings walks the list by cursor, every finding once', async () => {
+      for (const role of ['owner', 'member', 'viewer'] as const) {
+        const whole = (await page(role)).entries.map((f) => f.id);
+        const seen: string[] = [];
+        let cursor: string | null = null;
+        do {
+          const next: Page = await page(role, `?limit=2${cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`}`);
+          seen.push(...next.entries.map((f) => f.id));
+          cursor = next.nextCursor;
+        } while (cursor !== null);
+        expect(seen, role).toEqual(whole);
+      }
+    });
+
+    it('a person with no role is refused a paged read too, before the plane is asked', async () => {
+      const first = await page('owner', '?limit=1');
+      planeCalls = [];
+      await refused('nobody', 'GET', `/api/teams/${tenant}/findings?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`);
+    });
+
+    it('a limit out of bounds is a 400 from the declaration, before the plane is asked', async () => {
+      for (const q of ['limit=0', 'limit=-3', 'limit=501', 'limit=1.5', 'cursor=']) {
+        expect((await asRole('owner', 'GET', `/api/teams/${tenant}/findings?${q}`)).status, q).toBe(400);
+      }
+      expect(planeCalls).toEqual([]);
+      expect((await asRole('owner', 'GET', `/api/teams/${tenant}/findings?limit=500`)).status).toBe(200);
+    });
+
+    it('a cursor the plane refuses is answered as a client error, not as an empty inbox', async () => {
+      const res = await asRole('owner', 'GET', `/api/teams/${tenant}/findings?cursor=garbage`);
+      expect(res.status).toBe(400);
+    });
+
+    it('a plane that predates paging answers entries alone: the walk ends, it is never replayed', async () => {
+      const plain = env.CONTROL_PLANE_SVC as { fetch: (u: string | URL | Request, i?: RequestInit) => Promise<Response> };
+      env.CONTROL_PLANE_SVC = {
+        fetch: async (u: string | URL | Request, i?: RequestInit) => {
+          const res = await plain.fetch(u, i);
+          if (!new URL(String(u)).pathname.endsWith('/findings')) return res;
+          const { entries } = (await res.json()) as { entries: unknown[] };
+          return Response.json({ entries });
+        },
+      };
+      const body = await page('owner', '?limit=2');
+      expect(body.available).toBe(true);
+      expect(body.nextCursor).toBeNull();
+    });
+  });
+
   it('reads: a person with no role is refused the inbox and its rules', async () => {
     await refused('nobody', 'GET', `/api/teams/${tenant}/findings`);
     await refused('nobody', 'GET', `/api/teams/${tenant}/findings/rules`);
