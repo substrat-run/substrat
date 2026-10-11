@@ -201,7 +201,8 @@ async function emitArtifact(
 /**
  * A WARNING, never a failure (#119 PR 2): each operation on a trashable entity that the host
  * cannot refuse on a trashed one, because it cannot see which entity the operation reaches — a
- * check `resolved` in the handler, say. Its handler must ask `ctx.entityState` itself, and this
+ * check `resolved` in the handler, or a scope-wide key over an id `concurrency` names
+ * (#2161). Its handler must ask `ctx.entityState` itself, and this
  * is where the author of a new vertical finds that out rather than in review.
  *
  * The operations are found structurally — any export whose values are all shaped like a
@@ -217,8 +218,12 @@ function warnTrashGaps(src: string, mod: Record<string, unknown>, model: Emitted
       continue;
     }
     for (const gap of trashRefusalGapsOf(value as Record<string, object>, entities)) {
+      const reach =
+        gap.via === 'check'
+          ? `checks trashable '${gap.entity}' resolved in the handler`
+          : `addresses trashable '${gap.entity}' by id (its \`concurrency\`) under a check not on that entity`;
       console.warn(
-        `model-diff: warning — ${src}: '${gap.operation}' checks trashable '${gap.entity}' resolved in the handler, ` +
+        `model-diff: warning — ${src}: '${gap.operation}' ${reach}, ` +
           'so the host cannot refuse it on a trashed one — its handler must check `ctx.entityState` itself',
       );
     }

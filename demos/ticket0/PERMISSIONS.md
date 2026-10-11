@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-ticket0
 
-27 keys · 2 modules · 9 roles
+28 keys · 2 modules · 9 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -35,6 +35,7 @@
 | `metering:record` | Record usage entries against a meter | `@substrat-run/engine-metering` |
 | `notification:read-own` | See and dismiss your own notifications | `@substrat-run/demo-ticket0` |
 | `saved-reply:manage` | Add, change and remove the desk’s shared saved replies and their folders, and share a personal reply with the desk | `@substrat-run/demo-ticket0` |
+| `saved-reply:purge` | Delete a saved reply for good once it has been in the trash for 30 days — held by no role: the desk’s purge sweep alone uses it | `@substrat-run/demo-ticket0` |
 | `signup:read` | See the waiting list and the newsletter list — real addresses, so it sits with the money rather than with the inbox | `@substrat-run/demo-ticket0` |
 | `signup:submit` | Take a signup from a public form, and spend a confirm or unsubscribe token — held by the desk’s signup service alone; which row is decided by the token, not by this key | `@substrat-run/demo-ticket0` |
 | `usage:read` | See token usage, prices and what the desk has spent | `@substrat-run/demo-ticket0` |
@@ -83,6 +84,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `metering:record` | `assistant`, `assistant-autonomous`, `desk-admin` |
 | `notification:read-own` | `agent`, `customer`, `desk-admin` |
 | `saved-reply:manage` | `agent`, `desk-admin` |
+| `saved-reply:purge` | — no role — |
 | `signup:read` | `desk-admin` |
 | `signup:submit` | `signup` |
 | `usage:read` | `desk-admin` |
@@ -110,8 +112,13 @@ schedule can do exactly this and no more.
 | `ticket0/auto-tag` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:assign` |
 | `ticket0/escalate-sla-breaches` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:escalate` |
 | `ticket0/notify-no-reply` | every 15 min | `system:@substrat-run/demo-ticket0` | `conversation:escalate` |
+| `ticket0/purge-saved-reply` — purges a trashed `savedReply` after 30 days | every 60 min | `system:@substrat-run/demo-ticket0` | `saved-reply:purge` |
 | `ticket0/reap-abandoned` | every 60 min | `system:@substrat-run/demo-ticket0` | `conversation:resolve` |
 | `ticket0/wake-snoozed` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:assign` |
+
+A purge horizon's grant is scope-wide, and narrower than it reads: a key the system
+principal holds only for a purge is refused to it everywhere except the purge sweep's own
+call of that operation, one entity at a time, on an entity still in the bin past its horizon.
 
 ## 6. Not covered by this artifact
 

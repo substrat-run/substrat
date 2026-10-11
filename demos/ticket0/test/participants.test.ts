@@ -45,6 +45,7 @@ import { HANDED_TO_A_PERSON, ORPHAN_CONTACTS_DELETE } from '../src/module.js';
 import { MODULES } from '../src/provision.js';
 import { PARTICIPANTS_MAX } from '../spec/model.js';
 import { listsBefore0027 } from './before-0027.js';
+import { withoutTheBin } from './before-2161.js';
 import { createKit, type Desk } from './desk-kit.js';
 
 const kit = createKit('ticket0-participants-');
@@ -811,12 +812,12 @@ describe('migration 0022 on an existing desk', () => {
     for (const m of MODULES)
       previous.registerModule(
         m.manifest.id === ticket0Manifest.id
-          ? {
+          ? withoutTheBin({
               ...m,
               manifest: { ...m.manifest, erasure: undefined, lists: listsBefore0027(m.manifest.lists ?? []) },
               onSubjectErased: undefined,
               migrations: (m.migrations ?? []).filter((x) => x.version <= '0021'),
-            }
+            })
           : m,
       );
     const old = await provision(previous, 1);

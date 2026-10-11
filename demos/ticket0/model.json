@@ -1427,6 +1427,10 @@
         "body",
         "title"
       ],
+      "trash": {
+        "permission": "conversation:draft",
+        "purgeAfterDays": 30
+      },
       "erasure": {
         "mode": "delete",
         "subjects": [
@@ -2109,7 +2113,7 @@
   },
   "handlers": {
     "ticket0/create-saved-reply-folder": {
-      "authored": "the derived create is this handler, but the deployed control plane refuses a model carrying it until it parses kinds structurally (#2165)"
+      "derive": "create"
     },
     "ticket0/get-contact": {
       "derive": "get"
@@ -2128,6 +2132,12 @@
     },
     "ticket0/list-saved-reply-folders": {
       "derive": "list"
+    },
+    "ticket0/restore-saved-reply": {
+      "authored": "who may restore a reply is who may change it — its owner, or saved-reply:manage for a shared one — decided on the row; one key on the row cannot say that"
+    },
+    "ticket0/trash-saved-reply": {
+      "authored": "who may bin a reply is who may change it — its owner, or saved-reply:manage for a shared one — decided on the row; one key on the row cannot say that"
     }
   }
 }
