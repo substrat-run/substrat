@@ -23,12 +23,14 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, findingKind, findingRuleInput, findingStatus, findingStatusInput, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, isPrimaryScope, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
+import { dashboardRoutes } from './routes.js';
+import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
@@ -5311,59 +5313,62 @@ async function assertMay(
   await dash.invoke(gate, {});
 }
 
+// ---------------------------------------------------------------------------
+// The declared, team-scoped surface (#2170).
+// ---------------------------------------------------------------------------
+
+/** What every declared route runs against: the caller, resolved in the team its URL names. */
+interface TeamContext {
+  readonly c: Context<{ Bindings: Env }>;
+  readonly host: ScopeHost;
+  readonly node: DashboardNode;
+}
+
 /**
- * The findings routes' common head (#1748): the caller's session, then the gate — which person
- * may read the inbox (`dashboard:read-findings`) or act on it (`dashboard:manage-findings`) —
- * and only then the team's control plane. The plane confines the credential to the team; the
- * gate is what tells the people in it apart, so a refusal never reaches the plane.
+ * Resolve the team a declared route's PATH names, as the caller (#2170).
+ *
+ * `resolveAccount` falls back to the caller's first team when the one asked for is not
+ * theirs — right for the cookie, which is only a default, and wrong here: a URL naming a
+ * team is a statement about which team, and answering it from another would be the
+ * cross-tab bug this surface exists to remove. So anything but that exact team is a 404,
+ * which also declines to confirm that a team the caller is not in exists.
  */
-async function findingsPlane(c: Context<{ Bindings: Env }>, may: 'read' | 'manage') {
+async function teamContext(c: Context<{ Bindings: Env }>): Promise<TeamContext> {
+  const teamId = c.req.param('teamId');
   const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), teamId);
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  if (node.tenantId !== teamId) throw new HTTPException(404, { message: 'no such team' });
+  return { c, host, node };
+}
+
+/**
+ * The findings routes' common head (#1748): the gate — which person may read the inbox
+ * (`dashboard:read-findings`) or act on it (`dashboard:manage-findings`) — and only then the
+ * team's control plane. The plane confines the credential to the team; the gate is what tells
+ * the people in it apart, so a refusal never reaches the plane.
+ */
+async function findingsPlane({ c, host, node }: TeamContext, may: 'read' | 'manage') {
   await assertMay(host, node, may === 'read' ? 'dashboard/authorize-findings-read' : 'dashboard/authorize-findings-change');
   return controlPlaneFor(c.env, node.tenantId, node.principal);
 }
 
-const findingsListQuery = z.object({
-  status: findingStatus.optional(),
-  kind: findingKind.optional(),
-});
+/** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
+const routeHandlers = {
+  'dashboard/list-findings': async (ctx, filter) => {
+    const entries = await (await findingsPlane(ctx, 'read')).listFindings(filter);
+    return entries === null ? { available: false, entries: [] } : { available: true, entries };
+  },
+  'dashboard/set-finding-status': async (ctx, { id, status }) =>
+    (await findingsPlane(ctx, 'manage')).setFindingStatus(id, status),
+  'dashboard/list-finding-rules': async (ctx, { active }) => ({
+    entries: await (await findingsPlane(ctx, 'read')).listFindingRules(active === true),
+  }),
+  'dashboard/create-finding-rule': async (ctx, rule) => (await findingsPlane(ctx, 'manage')).createFindingRule(rule),
+  'dashboard/revoke-finding-rule': async (ctx, { ruleId }) => (await findingsPlane(ctx, 'manage')).revokeFindingRule(ruleId),
+} satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
 
-/**
- * The Findings inbox (#1748): this team's findings, most recently seen first. `available:
- * false` is a plane that predates findings — said as such, never as an empty inbox.
- */
-app.get('/api/findings', async (c) => {
-  const cp = await findingsPlane(c, 'read');
-  const entries = await cp.listFindings(findingsListQuery.parse({ status: c.req.query('status'), kind: c.req.query('kind') }));
-  return c.json(entries === null ? { available: false, entries: [] } : { available: true, entries });
-});
-
-/** Acknowledge, resolve or reopen one of this team's findings (#1748). */
-app.put('/api/findings/:id/status', async (c) => {
-  const cp = await findingsPlane(c, 'manage');
-  const { status } = z.object({ status: findingStatusInput }).parse(await c.req.json());
-  return c.json(await cp.setFindingStatus(c.req.param('id'), status));
-});
-
-/** This team's suppress rules (#1748); `?active=true` keeps the unexpired ones. */
-app.get('/api/findings/rules', async (c) => {
-  const cp = await findingsPlane(c, 'read');
-  return c.json({ entries: await cp.listFindingRules(c.req.query('active') === 'true') });
-});
-
-/** Suppress with a rule: a scope plus an expiry, audited by the plane (#1748). */
-app.post('/api/findings/rules', async (c) => {
-  const cp = await findingsPlane(c, 'manage');
-  return c.json(await cp.createFindingRule(findingRuleInput.parse(await c.req.json())), 201);
-});
-
-/** End a suppress rule now (#1748). */
-app.delete('/api/findings/rules/:ruleId', async (c) => {
-  const cp = await findingsPlane(c, 'manage');
-  return c.json(await cp.revokeFindingRule(c.req.param('ruleId')));
-});
+mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: teamContext })(routeHandlers);
 
 /**
  * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-
