@@ -1179,10 +1179,10 @@ export const ticket0Entities = defineEntities({
      * (`assertMayCurate` in `src/module.ts`). That is also why the moves and the bin are
      * authored rather than derived.
      *
-     * `purgeEarly: false` (#2214): the 30 days are a promise, not only a deadline. The person's
-     * delete-for-good is `delete-saved-reply`; `purge-saved-reply` is the horizon's, and the
-     * kernel refuses it on a reply that is not in the bin or has been there less than 30 days,
-     * whoever calls it.
+     * `purgeEarly: false` (#2214): `purge-saved-reply` is the horizon's alone. The kernel refuses
+     * it on a reply that is not in the bin or has been there less than 30 days, whoever calls it.
+     * That floor is the purge operation's, not the bin's: the person's delete-for-good,
+     * `delete-saved-reply` (`trashed: 'admits'`), still empties the bin at any time.
      */
     trash: { permission: 'conversation:draft', purgeAfterDays: 30, purgeEarly: false },
   },

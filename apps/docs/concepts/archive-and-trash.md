@@ -137,12 +137,17 @@ any other schedule.
 Purging is your delete, run on a timer. It is not erasure: the events about the entity stay.
 
 The purge operation is also the entity's permanent delete, so by default a person holding its
-key can empty the bin at any time. If the horizon is a promise ("kept for 30 days, whatever
-happens"), declare `trash: { permission, purgeAfterDays, purgeEarly: false }`. The host then
-refuses the purge operation with `not_found` on an entity that is not in the bin or was binned
-less recently than the horizon, for every caller, and checks the declared key first so the
-refusal reveals nothing. Your handler needs no date comparison of its own. Give people a
-separate delete (`trashed: 'admits'`) if they should still be able to empty the bin.
+key can empty the bin at any time. If the purge operation must only ever run on what has sat in
+the bin for the whole horizon, declare `trash: { permission, purgeAfterDays, purgeEarly: false }`.
+The host then refuses the purge operation with `not_found`, for every caller, on an entity that
+is not in the bin or was binned less than `purgeAfterDays` ago (and on one that does not exist,
+with the same answer). It checks the declared key first, so the refusal reveals nothing. Your
+handler needs no date comparison of its own.
+
+The floor holds the purge operation, not the bin. An operation declared `trashed: 'admits'`
+whose handler deletes the row still removes a binned entity at any time, and so does a
+handler's own `ctx.sql`. That is how you give people a delete-for-good alongside a floored
+purge; if nothing may remove a binned entity early, declare no such operation.
 
 ## What it does not do
 

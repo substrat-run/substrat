@@ -146,11 +146,13 @@ export interface EntityDef<Names extends string = string> {
    * empties it. A purge removes the row the way that operation always has; the events about the
    * entity stay, which is what separates it from erasure (#37).
    *
-   * `purgeEarly: false` (#2214) makes the horizon a FLOOR as well: the `trashed: 'purges'`
-   * operation is then refused `not_found`, for every caller, on an entity not in the bin or
-   * binned less than `purgeAfterDays` ago — the bin keeps what it holds at least that long, and
-   * the handler needs no clock rule of its own. Absent, the purge operation is also the delete a
-   * person empties the bin with, at any time. Requires `purgeAfterDays`.
+   * `purgeEarly: false` (#2214) makes the horizon a FLOOR for the purge operation as well: the
+   * `trashed: 'purges'` operation is then refused `not_found`, for every caller, on an entity not
+   * in the bin or binned less than `purgeAfterDays` ago, and its handler needs no clock rule of its
+   * own. It holds that operation, not the bin: an operation declared `trashed: 'admits'` that
+   * deletes the row, or a handler's own `ctx.sql`, still removes a binned entity at any time.
+   * Absent, the purge operation is also the delete a person empties the bin with, at any time.
+   * Requires `purgeAfterDays`.
    */
   readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number; readonly purgeEarly?: boolean };
   /**
