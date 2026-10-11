@@ -298,8 +298,13 @@ describe('the bin’s 30-day horizon', () => {
     await expect(call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: active.id })).rejects.toMatchObject(notFound);
     expect(await library(desk, desk.anna)).toEqual(['Still in use']);
 
-    // A binned one past its horizon is, as the sweep deletes it.
-    kit.clock.advance(31 * DAY);
+    // A binned one inside its horizon is not: one day in the bin is nowhere near thirty.
+    kit.clock.advance(1 * DAY);
+    await expect(call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: binned.id })).rejects.toMatchObject(notFound);
+    expect(await bin(desk, desk.anna)).toEqual(['Binned']);
+
+    // Past its horizon it is, as the sweep deletes it.
+    kit.clock.advance(30 * DAY);
     expect(await call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: binned.id })).toEqual({ id: binned.id, title: 'Binned' });
     expect(await bin(desk, desk.anna)).toEqual([]);
     expect(await library(desk, desk.anna)).toEqual(['Still in use']);

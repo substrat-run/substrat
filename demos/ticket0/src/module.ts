@@ -39,6 +39,7 @@ import {
   assertAllowed,
   DEFAULT_SEARCH_LIMIT,
   MAX_SEARCH_LIMIT,
+  purgeCutoffOf,
   ulid,
   type ModuleRegistration,
   type OnSubjectErased,
@@ -446,8 +447,9 @@ function titleTaken(ctx: OperationContext, owner: string, title: string, exceptI
 }
 
 /** Is this reply, as `SELECT *` read it, in the trash? The kernel's column rides every such row. */
-const inTrash = (row: SavedReplyRow): boolean =>
-  (row as SavedReplyRow & { [TRASHED_AT_COLUMN]?: string | null })[TRASHED_AT_COLUMN] != null;
+const trashedAtOf = (row: SavedReplyRow): string | null =>
+  (row as SavedReplyRow & { [TRASHED_AT_COLUMN]?: string | null })[TRASHED_AT_COLUMN] ?? null;
+const inTrash = (row: SavedReplyRow): boolean => trashedAtOf(row) != null;
 
 /**
  * The `conflict` for a title another reply holds (#2161). One held by a reply in the trash
@@ -6211,17 +6213,20 @@ const bound = operationsFor(ticket0Operations)({
    * under `saved-reply:purge` (held by no role); the host has already held the entity to
    * its cutoff. Any reply, shared or personal: the horizon is the desk's, not a person's.
    *
-   * Only ever a reply IN THE TRASH, whoever calls it. The host holds the sweep to that, and
-   * withholds the key from the system principal everywhere else, but neither reaches a
-   * caller granted the key directly — so an active reply is `not_found` here, as it is to
-   * every other operation that reaches the bin only.
+   * Only ever a reply IN THE TRASH and past its horizon, whoever calls it. The host holds the
+   * sweep to both, and withholds the key from the system principal everywhere else, but
+   * neither reaches a caller granted the key directly — so an active reply, or one binned
+   * less than `purgeAfterDays` ago, is `not_found` here, by the kernel's own cutoff.
    */
   'ticket0/purge-saved-reply': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.savedReplyPurge, savedReplyRef(input.savedReplyId)));
     const row = ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
       input.savedReplyId,
     ])[0];
-    if (!row || !inTrash(row)) throw substratError('not_found', `saved reply not in the trash: ${input.savedReplyId}`);
+    const trashedAt = row ? trashedAtOf(row) : null;
+    if (!row || trashedAt === null || trashedAt > purgeCutoffOf(ctx.now(), ticket0Entities.savedReply.trash.purgeAfterDays)) {
+      throw substratError('not_found', `saved reply not in the trash past its horizon: ${input.savedReplyId}`);
+    }
     return deleteSavedReplyRow(ctx, row);
   },
 
