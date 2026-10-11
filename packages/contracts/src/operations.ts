@@ -2189,23 +2189,37 @@ export function purgeSchedulesOf(
 
 /**
  * The operations on a trashable entity the HOST cannot refuse on a trashed one (#119), because
- * their check names the entity but not the input field carrying its id — it is `resolved` in the
- * handler. Each keeps its own `ctx.entityState` check. `lint:model` prints them as warnings, so
- * the gap is seen when a vertical is built rather than found in review.
+ * it cannot see which one they reach. Each keeps its own `ctx.entityState` check. `lint:model`
+ * prints them as warnings, so the gap is seen when a vertical is built rather than found in
+ * review. Two declared signals name one, and `via` says which:
  *
- * What it cannot name, and K-45 states: an operation that reaches a trashable entity with no
- * entity in its check at all — a `narrows` walk, a `refFrom` check, a node-level key.
+ * - `'check'` — the check names the entity but not the input field carrying its id: it is
+ *   `resolved` in the handler.
+ * - `'concurrency'` — the check is not on the entity (a scope-wide key, or another entity), but
+ *   `concurrency: { over, idFrom }` says the operation addresses one by an input id (#2161). The
+ *   general form of a scope-key read or edit by id; the remedy is usually a check on the row.
+ *
+ * What it cannot name, and K-45 states: an operation that reaches a trashable entity with
+ * neither signal — a `narrows` walk, a `refFrom` check, a node-level key with no concurrency.
  */
 export function trashRefusalGapsOf(
   operations: Readonly<Record<string, object>>,
   entities: Readonly<Record<string, EntityDef>>,
-): { operation: string; entity: string }[] {
+): { operation: string; entity: string; via: 'check' | 'concurrency' }[] {
   const targets = operationTargetsOf(operations);
-  const out: { operation: string; entity: string }[] = [];
+  const out: { operation: string; entity: string; via: 'check' | 'concurrency' }[] = [];
   for (const [name, op] of Object.entries(operations).sort(([a], [b]) => a.localeCompare(b))) {
-    const checked = (op as { permission?: { entity?: unknown } }).permission?.entity;
-    if (typeof checked !== 'string' || !entities[checked]?.trash || targets[name]) continue;
-    out.push({ operation: name, entity: checked });
+    // The entity the host already refuses this operation on, if any.
+    const target = targets[name]?.entity;
+    const decl = op as { permission?: { entity?: unknown }; concurrency?: { over?: unknown } };
+    const checked = decl.permission?.entity;
+    if (typeof checked === 'string' && checked !== target && entities[checked]?.trash) {
+      out.push({ operation: name, entity: checked, via: 'check' });
+    }
+    const over = decl.concurrency?.over;
+    if (typeof over === 'string' && over !== checked && over !== target && entities[over]?.trash) {
+      out.push({ operation: name, entity: over, via: 'concurrency' });
+    }
   }
   return out;
 }
