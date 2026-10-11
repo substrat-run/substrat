@@ -235,6 +235,8 @@ export type MintedCapability = z.infer<typeof mintedCapability>;
  * is a `coverage` naming that key:
  * - `bind-not-declared` — no shape of the scope's reconciled registry binds this entity type;
  * - `bind-record-missing` — the scope holds no such record;
+ * - `bind-record-ambiguous` — more than one row of the holder table carries the record's id (the
+ *   id column should be unique), so there is no one record a claim could bind;
  * - `bind-record-bound` — the record already names a person. Refused, never re-bound: moving
  *   someone's portal is an unbind and a new invite, never a side effect of a link;
  * - `bind-record-held` — the column names nobody, but someone already holds the record's shape
@@ -250,6 +252,7 @@ export const becomeMintRefusal = z.union([
       'target-already-claimed',
       'bind-not-declared',
       'bind-record-missing',
+      'bind-record-ambiguous',
       'bind-record-bound',
       'bind-record-held',
     ]),

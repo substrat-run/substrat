@@ -115,18 +115,17 @@ function entityBindingsOf(sql: ScopedSql): EntityBinding[] {
 }
 
 /**
- * The record as the binding sees it: whether any row carries its id, and whom the first row that
- * names someone names. Every row is read: the id column should be unique, and when it is not, a
- * record any of whose rows names someone is bound — the claim then writes exactly one row or
- * none, never a second person beside the first.
+ * The record as the binding sees it: how many rows carry its id, and whom the first row that names
+ * someone names. Every row is read: the id column should be unique, and a record any of whose rows
+ * names someone is bound.
  */
-function boundRecord(sql: ScopedSql, b: EntityBinding, entityId: string): { exists: boolean; principal: string | null } {
-  if (!tableExists(switchSqlOf(sql), b.table)) return { exists: false, principal: null };
+function boundRecord(sql: ScopedSql, b: EntityBinding, entityId: string): { rows: number; principal: string | null } {
+  if (!tableExists(switchSqlOf(sql), b.table)) return { rows: 0, principal: null };
   const rows = sql.query<{ principal: string | null }>(
     `SELECT "${b.principalColumn}" AS principal FROM "${b.table}" WHERE "${b.idColumn}" = ?`,
     [entityId],
   );
-  return { exists: rows.length > 0, principal: rows.find((r) => r.principal !== null)?.principal ?? null };
+  return { rows: rows.length, principal: rows.find((r) => r.principal !== null)?.principal ?? null };
 }
 
 /** Does anyone hold a live shape marker on `object`? */
@@ -156,15 +155,17 @@ export async function judgeBind(
   entity: EntityRef,
 ): Promise<
   | { ok: true; binding: EntityBinding }
-  | { ok: false; refused: 'bind-not-declared' | 'bind-record-missing' | 'bind-record-bound' | 'bind-record-held' }
+  | { ok: false; refused: 'bind-not-declared' | 'bind-record-missing' | 'bind-record-ambiguous' | 'bind-record-bound' | 'bind-record-held' }
   | ReturnType<typeof lacking>
 > {
   entityObjectRef(entity, 'bind');
   const binding = entityBindingOf(sql, entity.entityType);
   if (!binding) return { ok: false, refused: 'bind-not-declared' };
   const record = boundRecord(sql, binding, entity.entityId);
-  if (!record.exists) return { ok: false, refused: 'bind-record-missing' };
+  if (record.rows === 0) return { ok: false, refused: 'bind-record-missing' };
   if (record.principal !== null) return { ok: false, refused: 'bind-record-bound' };
+  // Two rows carrying one id are no one record: there is nothing a claim could bind exactly once.
+  if (record.rows > 1) return { ok: false, refused: 'bind-record-ambiguous' };
   // The spine as well as the column: someone already holding the record's shape there — given it
   // before the column was written, or left by a holder column a later version moved — is a holder
   // a new link would bind a second person beside. Unbind them first.

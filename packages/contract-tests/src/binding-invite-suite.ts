@@ -341,13 +341,20 @@ export function bindingInviteContractSuite(
         expect(await mint(clerk, await invitee(), dup(key))).toEqual({ ok: false, refused: 'bind-record-bound' });
       });
 
-      it('two rows naming nobody are no one record: the claim refuses and rolls back, leaving the link unspent', async () => {
+      it('two rows naming nobody are no one record: refused at mint, and at the claim when a second row appears', async () => {
         const key = ulid();
         await put('INSERT INTO bind_dups (key, holder) VALUES (?, NULL), (?, NULL)', [key, key]);
-        const link = await minted(clerk, await invitee(), dup(key));
-        await expect(() => exchange(link.secret)).rejects.toThrow();
+        const before = await snapshot();
+        expect(await mint(clerk, await invitee(), dup(key))).toEqual({ ok: false, refused: 'bind-record-ambiguous' });
+        expect(await snapshot()).toEqual(before);
+        // One row at mint, two by the claim: refused with the one answer, the link unspent.
+        const one = ulid();
+        await put('INSERT INTO bind_dups (key, holder) VALUES (?, NULL)', [one]);
+        const link = await minted(clerk, await invitee(), dup(one));
+        await put('INSERT INTO bind_dups (key, holder) VALUES (?, NULL)', [one]);
+        expect(await exchange(link.secret)).toBeNull();
         expect((await capOf(link.id))?.uses).toBe(0);
-        expect(await rowsOf(key)).toEqual([null, null]);
+        expect(await rowsOf(one)).toEqual([null, null]);
       });
 
       it('an unbind clears every row carrying the id', async () => {
