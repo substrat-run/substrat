@@ -46,4 +46,26 @@ describe('control-plane state loss', () => {
     expect(String(reseed.json.error)).toMatch(/refusing to seed over it/);
     expect(c.itemsOnVolume('todo-0', scope)).toEqual(kept);
   });
+
+  it('refuses, and deletes nothing, when its own volume is the copy on record but is incomplete', async () => {
+    const c = (cluster = await new Cluster({ shards: 2 }).start());
+    let scope = ulid();
+    while (home(scope, c.members) !== 'todo-0') scope = ulid();
+    await c.provision(scope);
+    expect((await c.write('router-0', scope, 'w0')).json).toMatchObject({ node: 'todo-0' });
+
+    // todo-0 dies; its volume, which the control plane names as holding the latest copy, comes
+    // back without the file the shard opens a scope by.
+    c.signal('todo-0', 'SIGKILL');
+    await c.exited('todo-0');
+    c.removeFromVolume('todo-0', scope, 'world.json');
+    const before = c.filesOnVolume('todo-0', scope);
+    await c.restart('todo-0');
+
+    const answer = await c.write('router-0', scope, 'w1');
+    expect(answer.status, JSON.stringify(answer.json)).toBe(409);
+    expect(String(answer.json.error)).toMatch(/incomplete/);
+    expect(c.filesOnVolume('todo-0', scope)).toEqual(before);
+    expect(c.itemsOnVolume('todo-0', scope)).toEqual(['w0']);
+  });
 });

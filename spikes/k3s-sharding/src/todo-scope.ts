@@ -12,8 +12,22 @@
  * refused, and the lock dies with the process. That is a real fence, but only on one
  * node — see FINDINGS.md §2.
  */
-import { closeSync, copyFileSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import Database from 'better-sqlite3';
 import { platformActorId, principalId, scopeId as scopeIdOf, tenantId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
@@ -71,7 +85,10 @@ export async function seedScope(dir: string, id: string): Promise<{ host: ScopeH
 
 /**
  * Take a scope over from another node's volume. Every SQLite file goes through the online
- * backup API, everything else is copied, and the lock file never.
+ * backup API, everything else is copied, and the lock file never. It refuses a source and a
+ * destination that are, or contain, one another (symlinks resolved), and it deletes nothing:
+ * the copy lands in a directory this call creates and is then renamed into place, and any
+ * copy it replaces is renamed aside (`<dir>.superseded-<ms>`), never removed.
  *
  * The backup API makes each FILE a consistent snapshot, even of one whose process was killed
  * with a WAL never checkpointed. It does not make the directory consistent as a whole: a
@@ -88,15 +105,38 @@ export async function seedScope(dir: string, id: string): Promise<{ host: ScopeH
  * the scope (FINDINGS.md §4).
  */
 export async function copyScope(from: string, to: string): Promise<void> {
-  rmSync(to, { recursive: true, force: true });
-  mkdirSync(to, { recursive: true });
+  const source = realpathSync(from);
+  const target = resolve(to);
+  const targetReal = realThroughAncestor(target);
+  const inside = (a: string, b: string) => a === b || a.startsWith(b + sep);
+  if (inside(source, targetReal) || inside(targetReal, source)) {
+    throw new Error(`refusing to copy a scope onto itself: ${from} and ${to} overlap`);
+  }
+  // Copied into a directory this call creates, and only then swapped in. The copy it replaces
+  // is moved aside, never deleted: nothing here removes a directory it did not create.
+  mkdirSync(dirname(target), { recursive: true });
+  const incoming = mkdtempSync(`${target}.incoming-`);
+  await copyFiles(source, incoming);
+  if (existsSync(target)) renameSync(target, `${target}.superseded-${Date.now()}`);
+  renameSync(incoming, target);
+}
+
+/** `path` with symlinks resolved, through its nearest existing ancestor if it does not exist yet. */
+function realThroughAncestor(path: string): string {
+  if (existsSync(path)) return realpathSync(path);
+  const parent = dirname(path);
+  return parent === path ? path : join(realThroughAncestor(parent), basename(path));
+}
+
+async function copyFiles(from: string, to: string): Promise<void> {
   for (const name of readdirSync(from)) {
     const src = join(from, name);
     if (name.startsWith('_host.lock')) continue;
     if (name.endsWith('-wal') || name.endsWith('-shm') || name.endsWith('-journal')) continue;
     const stat = statSync(src);
     if (stat.isDirectory()) {
-      await copyScope(src, join(to, name));
+      mkdirSync(join(to, name));
+      await copyFiles(src, join(to, name));
       continue;
     }
     if (stat.size >= 16 && isSqlite(src)) {

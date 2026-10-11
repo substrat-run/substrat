@@ -111,9 +111,10 @@ class PlacementRefused extends Error {}
  * A new grant: put the scope's latest state on this node's volume before anything runs on
  * it. Called by the guard inside `admit`, so always inside the scope's queue.
  *
- * It fails closed. It deletes a directory only when the control plane names ANOTHER node as
- * holding the latest copy (so this one is a stale duplicate), and it seeds only where nothing
- * exists. A grant with no `data_on` over an existing directory means the control plane's
+ * It fails closed. It deletes nothing: a copy from ANOTHER node (the one the control plane
+ * names as holding the latest state) lands beside this node's stale duplicate, which is moved
+ * aside (`copyScope`). It seeds only where nothing exists, and it opens this node's own copy
+ * only when it is whole. A grant with no `data_on` over an existing directory means the control plane's
  * record and the volume disagree, and that is refused and reported, never repaired.
  */
 async function place(scope: string, grant: Grant): Promise<void> {
@@ -141,7 +142,13 @@ async function place(scope: string, grant: Grant): Promise<void> {
     }
     placed = await seedScope(dir, scope);
     stamp(dir);
-  } else if (grant.dataOn === node && existsSync(join(dir, 'world.json'))) {
+  } else if (grant.dataOn === node) {
+    // This volume is the copy on record: open it, or refuse — never "repair" it from itself.
+    if (!existsSync(join(dir, 'world.json'))) {
+      throw new PlacementRefused(
+        `scope ${scope}: the control plane names ${node} as holding the latest copy, but it is incomplete here; refusing to place it`,
+      );
+    }
     stamp(dir);
     placed = openScope(dir);
   } else {
@@ -224,7 +231,8 @@ const bgNext = new Map<string, number>();
 
 function ownVolumeScopes(): string[] {
   const dir = join(volume, node, 'scopes');
-  return existsSync(dir) ? readdirSync(dir) : [];
+  // Scope ids only: `copyScope` leaves `<id>.incoming-…` and `<id>.superseded-…` beside them.
+  return existsSync(dir) ? readdirSync(dir).filter((n) => !n.includes('.')) : [];
 }
 
 async function runDue(scope: string): Promise<void> {

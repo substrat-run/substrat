@@ -303,6 +303,17 @@ export class Cluster {
     await this.restart('control-plane');
   }
 
+  /** The SQLite files (and `world.json`) in `node`'s directory for `scope`, sorted; WAL side files left out. */
+  filesOnVolume(node: string, scope: string): string[] {
+    const dir = join(this.dir, 'volumes', node, 'scopes', scope);
+    return existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith('.sqlite') || n === 'world.json').sort() : [];
+  }
+
+  /** Damage a volume: remove one file from `node`'s directory for `scope`. */
+  removeFromVolume(node: string, scope: string, name: string): void {
+    rmSync(join(this.dir, 'volumes', node, 'scopes', scope, name));
+  }
+
   /** The control plane loses its lease table: killed, its files deleted, started again. */
   async loseControlPlaneState(): Promise<void> {
     this.signal('control-plane', 'SIGKILL');

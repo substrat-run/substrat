@@ -17,6 +17,7 @@ export default defineConfig({
       'test/placement.test.ts',
       'test/lease.test.ts',
       'test/storage-fence.test.ts',
+      'test/copy-scope.test.ts',
       'test/process.test.ts',
       'test/contract.test.ts',
     ],
