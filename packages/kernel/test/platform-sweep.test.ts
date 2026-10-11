@@ -356,7 +356,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
       expect(old.retirementsFinishedVersionId).toBeNull();
     });
 
-    it('fills the window with installs whose receipt is behind first, and gives only what is left to retirements alone', async () => {
+    it('gives a small window to installs whose receipt is behind, beyond the one slot retirements alone are owed', async () => {
       const retirementsOnly = [0, 1, 2].map((): FakeScope => ({ id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v2', retirementsFinishedVersionId: null }));
       const receipt = [0, 1].map((): FakeScope => ({ id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1' }));
       const { host } = hostWithScopes([...retirementsOnly, ...receipt]);
