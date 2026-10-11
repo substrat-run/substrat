@@ -28,6 +28,7 @@ import {
 	buildWriteGuard,
 	CONTRACT_GAPS_FILE,
 	guardPath,
+	historyForLane,
 	interviewWriteGuard,
 	isLanedPhase,
 	LANES,
@@ -340,6 +341,38 @@ describe('reportForLane — each lane gets the part of a red report it can fix',
 	});
 });
 
+describe('historyForLane — the UI lane reads its own passes, nothing else', () => {
+	const durable = [
+		{ role: 'user' as const, text: 'interview: which engines, which tenants' },
+		{ role: 'assistant' as const, text: 'concept: workorder engine, scenario …' },
+	];
+	const turn = [
+		{ role: 'user' as const, text: 'build it', lane: 'api' as const },
+		{ role: 'assistant' as const, text: 'api: wrote migrations and routes', lane: 'api' as const },
+		{ role: 'user' as const, text: 'build it', lane: 'ui' as const },
+		{ role: 'assistant' as const, text: 'ui: started the list view', lane: 'ui' as const },
+	];
+
+	it('gives the UI lane only its own passes this turn — no interview, no API lane', () => {
+		expect(historyForLane('ui', durable, turn)).toEqual([
+			{ role: 'user', text: 'build it' },
+			{ role: 'assistant', text: 'ui: started the list view' },
+		]);
+		expect(historyForLane('ui', durable, turn.slice(0, 2))).toEqual([]);
+	});
+
+	it('gives the API lane and an unlaned pass what a build turn always saw', () => {
+		const all = [...durable, ...turn].map(({ role, text }) => ({ role, text }));
+		expect(historyForLane('api', durable, turn)).toEqual(all);
+		expect(historyForLane(undefined, durable, turn)).toEqual(all);
+		expect(historyForLane(undefined, durable, turn, 1)).toEqual(all.slice(1));
+	});
+
+	it('hands the generator plain turns, without the lane tag', () => {
+		for (const t of historyForLane(undefined, durable, turn)) expect(Object.keys(t).sort()).toEqual(['role', 'text']);
+	});
+});
+
 // ── the laned build, driven end to end through the eval harness ─────────────
 
 const roots: string[] = [];
@@ -355,6 +388,7 @@ interface PassLog {
 	readonly message: string;
 	readonly context: string;
 	readonly gateReport: string | undefined;
+	readonly history: readonly { readonly role: string; readonly text: string }[];
 	readonly answers: Record<string, string>;
 }
 
@@ -379,7 +413,14 @@ function laneAgent(
 					await tools.write_file.execute!({ path, content }, { toolCallId: path, messages: [] }),
 				);
 			}
-			log.push({ lane, message: input.message, context: input.concept, gateReport: input.gateReport, answers });
+			log.push({
+				lane,
+				message: input.message,
+				context: input.concept,
+				gateReport: input.gateReport,
+				history: input.history ?? [],
+				answers,
+			});
 			yield { type: 'assistant-text', text: `${lane} pass ${turn}` };
 		},
 	};
@@ -459,6 +500,14 @@ describe('a laned build turn (eval harness, mocked agent)', () => {
 		expect(ui1?.context).toContain('declared ops');
 		expect(ui1?.context).not.toContain('## 1. What');
 		expect(api1?.context).toContain('## 1. What');
+		// What the UI lane's prompt holds beyond its context: no history on its first
+		// pass, and on turn 2 still none of turn 1 or of the API lane's prose —
+		// the interview and the engine talk never reach it (#2200 r1).
+		expect(ui1?.history).toEqual([]);
+		expect(ui2?.history).toEqual([]);
+		// Positive twin: the API lane does carry the durable history forward.
+		expect(api2?.history.map((h) => h.text)).toContain('api pass 1');
+		expect(api2?.history.map((h) => h.text)).toContain('ui pass 1');
 		// The gap the UI lane recorded is in the API lane's context on the next turn.
 		expect(api1?.context).not.toContain('thing/list-mine');
 		expect(api2?.context).toContain('- thing/list-mine: day view');

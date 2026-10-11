@@ -70,8 +70,10 @@ import {
 	type BuildLane,
 	type BuildPhase,
 	buildContext,
+	historyForLane,
 	planLanes,
 	reportForLane,
+	type LaneTurn,
 	writeGuardFor,
 	type LanePlan,
 } from './phase.js';
@@ -317,7 +319,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		// prompts are recorded verbatim as user turns — the transcript stays
 		// truthful about who said what, and alternation survives for providers
 		// that require it.
-		const transcript: { role: 'user' | 'assistant'; text: string }[] = [];
+		const transcript: LaneTurn[] = [];
 
 		/**
 		 * One generator pass; returns whether the step ceiling cut it mid-work.
@@ -334,7 +336,8 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 				message: text,
 				workspaceBrief: await workspaceBrief(ws, cur.entry.dir).catch(() => undefined),
 				...(carriedReport ? { gateReport: carriedReport } : {}),
-				history: [...cur.state.history.slice(-24), ...transcript],
+				// The UI lane sees its own passes only (phase.ts historyForLane).
+				history: historyForLane(lane?.lane, cur.state.history, transcript),
 				signal,
 			})) {
 				if (event.type === 'project-named') await applyAiName(event.name);
@@ -346,8 +349,8 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 				const marker = historyMarker(event);
 				if (marker) prose += `${prose ? '\n\n' : ''}${marker}`;
 			}
-			transcript.push({ role: 'user', text });
-			if (prose) transcript.push({ role: 'assistant', text: prose });
+			transcript.push({ role: 'user', text, lane: lane?.lane });
+			if (prose) transcript.push({ role: 'assistant', text: prose, lane: lane?.lane });
 			return truncated;
 		};
 
@@ -390,7 +393,9 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		const after = await detectPhase(cur.projectWs);
 		if (after !== phase) emit({ type: 'phase', phase: after });
 
-		cur.state.history.push(...transcript);
+		// Durable history is every lane's exchanges, untagged: the record of the
+		// turn stays whole even though the UI lane read only its own.
+		cur.state.history.push(...transcript.map(({ role, text }) => ({ role, text })));
 	} catch (err) {
 		emit({
 			type: 'error',

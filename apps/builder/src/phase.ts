@@ -497,3 +497,31 @@ export function reportForLane(report: string, lane: BuildLane): string | undefin
 	}
 	return kept.length ? kept.join('\n\n') : undefined;
 }
+
+/** A transcript entry, tagged with the lane that spoke it (#682). */
+export interface LaneTurn {
+	readonly role: 'user' | 'assistant';
+	readonly text: string;
+	readonly lane?: BuildLane | undefined;
+}
+
+/**
+ * The history a pass is given. The UI lane gets its OWN passes from this turn
+ * and nothing else: not the durable history (on a first scaffold, the whole
+ * interview — engines, tenancy, the scenario) and not what the API lane said.
+ * Narrowing only the concept block left both in the prompt, which is the thing
+ * #630 is meant to measure (#2200 r1). Its own passes stay, because a continued
+ * pass is told to resume and needs what it wrote before the cut.
+ *
+ * The API lane and an unlaned pass (every repair) see what a build turn always
+ * saw: the last `keep` durable entries and this turn so far.
+ */
+export function historyForLane(
+	lane: BuildLane | undefined,
+	durable: readonly LaneTurn[],
+	turn: readonly LaneTurn[],
+	keep = 24,
+): { role: 'user' | 'assistant'; text: string }[] {
+	const entries = lane === 'ui' ? turn.filter((t) => t.lane === 'ui') : [...durable.slice(-keep), ...turn];
+	return entries.map(({ role, text }) => ({ role, text }));
+}

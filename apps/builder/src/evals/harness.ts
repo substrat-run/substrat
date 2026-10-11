@@ -35,11 +35,20 @@ import {
 } from '@substrat-run/builder-workspace';
 import type {
 	BuildEvent,
-	GeneratorTurn,
 	StepUsage,
 	VerticalGenerator,
 } from '@substrat-run/builder-generator';
-import { buildContext, detectPhase, planLanes, reportForLane, type BuildLane, type BuildPhase } from '../phase.js';
+import {
+	buildContext,
+	detectPhase,
+	historyForLane,
+	planLanes,
+	reportForLane,
+	type BuildLane,
+	type BuildPhase,
+	type LanePlan,
+	type LaneTurn,
+} from '../phase.js';
 import { runProbe, type ProbeFn, type ProbeResult } from './probe.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -399,7 +408,9 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	const emit = opts.onEvent ?? (() => {});
 	const started = Date.now();
 
-	const history: GeneratorTurn[] = [];
+	const history: LaneTurn[] = [];
+	/** Where the current turn's entries begin in `history` — a lane's history is cut there. */
+	let turnStart = 0;
 	const stepUsage: StepUsage[] = [];
 	let totals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, steps: 0 };
 	let turns = 0;
@@ -419,7 +430,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		text: string,
 		phase: BuildPhase,
 		carriedReport?: string,
-		laneContext?: string,
+		plan?: LanePlan,
 	): Promise<void> => {
 		let prose = '';
 		for await (const event of generator.run({
@@ -428,11 +439,16 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			// `buildContext`, not a raw read of spec/concept.md — the same seam
 			// server.ts uses, and the only one that answers during the interview
 			// phase, where the file does not exist yet.
-			concept: laneContext ?? (await buildContext(projectWs, phase)),
+			concept: plan?.context ?? (await buildContext(projectWs, phase)),
 			message: text,
 			workspaceBrief: await workspaceBrief(ws, projectDir).catch(() => undefined),
 			...(carriedReport ? { gateReport: carriedReport } : {}),
-			history: [...history.slice(-24)],
+			// Unlaned and API-lane passes keep the harness's history as it was; the
+			// UI lane sees its own passes this turn only, as in server.ts.
+			history:
+				plan?.lane === 'ui'
+					? historyForLane('ui', [], history.slice(turnStart))
+					: history.slice(-24).map(({ role, text }) => ({ role, text })),
 			...(opts.signal ? { signal: opts.signal } : {}),
 		})) {
 			emit(event);
@@ -458,8 +474,8 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 				if (event.stepUsage) stepUsage.push(...event.stepUsage);
 			}
 		}
-		history.push({ role: 'user', text });
-		if (prose) history.push({ role: 'assistant', text: prose });
+		history.push({ role: 'user', text, lane: plan?.lane });
+		if (prose) history.push({ role: 'assistant', text: prose, lane: plan?.lane });
 	};
 
 	const runChecks = async (label: string) =>
@@ -495,6 +511,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			}
 			questionsThisTurn = 0;
 			turns += 1;
+			turnStart = history.length;
 
 			const lanes = opts.lanes ? await planLanes(projectWs, phase) : [];
 			if (lanes.length === 0) {
@@ -504,7 +521,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 				if (fatal || opts.signal?.aborted) break;
 				// Each lane gets the part of the carried report it owns, as in runTurnLoop.
 				const carried = lastGateReport === undefined ? undefined : reportForLane(lastGateReport, plan.lane);
-				await runPass(await opts.makeGenerator(phase, plan.lane), message, phase, carried, plan.context);
+				await runPass(await opts.makeGenerator(phase, plan.lane), message, phase, carried, plan);
 			}
 			let turn = await runChecks(`eval ${fixture.name} · turn ${turnNo}`);
 			for (

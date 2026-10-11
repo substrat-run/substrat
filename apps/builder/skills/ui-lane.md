@@ -1,8 +1,9 @@
 # The UI lane
 
 This build turn runs in two lanes. The API lane ran first; you are the UI lane,
-and you build the screens. Your context is the concept's screens section and
-`spec/model.ts`.
+and you build the screens. You see the concept's screens section, `spec/model.ts`,
+the project map, and your own passes this turn, not the interview or what the
+API lane said. To know what the API built, read its files.
 
 The operations in `spec/model.ts` are the surface you build against: call them
 through the routes, with the inputs and returns the model declares. Never invent
