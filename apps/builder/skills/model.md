@@ -121,9 +121,11 @@ Some operations are described completely by their declaration, and the platform
 writes their handler: a `get` of one row by its id, a `list` that is a `GET` page
 (`paged.over`) of the entity's own rows behind declared filters, an `update` that is a
 `PATCH` field bag with `concurrency`, a `delete` of a row no entity declares as parent,
-and, on an entity that declares `archive` / `trash`, its moves (`archive`, `unarchive`,
-`trash`, `restore`) and its bin (`trashed`). Each of these operations must say who writes
-its handler:
+a `create` that is a `POST` whose every column comes from the input, the parent its check
+narrows to, a minted id, or the entity's `stamps` (`created_at: 'createdAt'`,
+`created_by: 'createdBy'`), and, on an entity that declares `archive` / `trash`, its moves
+(`archive`, `unarchive`, `trash`, `restore`) and its bin (`trashed`). Each of these
+operations must say who writes its handler:
 
 ```ts
 'acme/get-customer': {
@@ -138,7 +140,7 @@ its handler:
 
 `derive: '<shape>'` means the build writes no handler for it. `authored: '<reason>'`
 keeps the handler hand-written, and the reason says what the derived one would get
-wrong here (a projection, a parent-existence check, a cascade). `defineOperations`
+wrong here (a projection, a normalised input, a cascade). `defineOperations`
 refuses, at load, an operation of one of these shapes that declares neither, and
 names the shape. It also refuses a `derive` that does not match its shape, and an
 `authored` on an operation nothing could derive. Prefer `derive`; write `authored`

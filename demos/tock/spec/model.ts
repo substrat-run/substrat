@@ -1254,7 +1254,7 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   /** The rows one run produced. `row:read`, and the reason the role list has four entries. */
   'tock/list-rows': {
     summary: 'The mapped rows of one run',
-    authored: 'answers not_found for a run that does not exist, where the derived page would answer an empty one',
+    derive: 'list',
     permission: { key: 'row:read', entity: 'run', idFrom: 'runId' },
     input: z.object({ runId: z.string() }),
     output: tockEntities.row.fields,
