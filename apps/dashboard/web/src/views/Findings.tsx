@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
-import type { FindingEntry, FindingRuleEntry } from '../lib/api.generated';
+import { ApiError, type FindingEntry, type FindingRuleEntry } from '../lib/api.generated';
 import { relativeTime, untilTime } from '../lib/format';
 import { card } from '../components/ui';
 import {
@@ -8,6 +8,7 @@ import {
   FINDING_TABS,
   canSuppress,
   LIST_LIMIT,
+  REASON_MAX,
   countByStatus,
   draftFor,
   draftNarrows,
@@ -62,7 +63,9 @@ export function Findings({
   const [load, setLoad] = useState<Load>({ state: 'loading' });
   // One message for the last action that failed, over the list it failed on.
   const [actionError, setActionError] = useState('');
-  const [busy, setBusy] = useState<string | null>(null);
+  // Every finding or rule with a request in flight: one row's work never frees or spins another's.
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  const latest = useRef(0);
   const [suppressing, setSuppressing] = useState<FindingEntry | null>(null);
   const [notice, setNotice] = useState('');
 
@@ -75,44 +78,66 @@ export function Findings({
     }
   }, [client]);
 
+  // Only the newest read may land: a slow answer to an older one is dropped.
   useEffect(() => {
-    let live = true;
+    const mine = ++latest.current;
     setLoad({ state: 'loading' });
-    void read().then((l) => live && setLoad(l));
+    void read().then((l) => mine === latest.current && setLoad(l));
     return () => {
-      live = false;
+      latest.current += 1;
     };
   }, [read, nonce]);
 
-  const reload = async () => setLoad(await read());
+  /**
+   * Re-read after a change that already succeeded. A failure here must not blank the list the
+   * person is looking at, so it keeps it and says it may be stale.
+   */
+  const reload = async () => {
+    const mine = ++latest.current;
+    const next = await read();
+    if (mine !== latest.current) return;
+    if (next.state === 'ready') setLoad(next);
+    else setActionError('The list could not be refreshed, so what is shown may be out of date.');
+  };
 
-  const move = async (f: FindingEntry, to: FindingMove) => {
-    setBusy(f.id);
+  const working = async (id: string, work: () => Promise<void>) => {
+    setBusy((b) => new Set(b).add(id));
     setActionError('');
     setNotice('');
     try {
-      const next = await client.setFindingStatus({ id: f.id, status: to });
-      setLoad((l) => (l.state === 'ready' ? { ...l, entries: l.entries.map((e) => (e.id === f.id ? next : e)) } : l));
-    } catch (e) {
-      setActionError(findingsError(e, 'change'));
+      await work();
     } finally {
-      setBusy(null);
+      setBusy((b) => {
+        const rest = new Set(b);
+        rest.delete(id);
+        return rest;
+      });
     }
   };
 
-  const revoke = async (r: FindingRuleEntry) => {
-    setBusy(r.id);
-    setActionError('');
-    setNotice('');
-    try {
-      await client.revokeFindingRule({ ruleId: r.id });
-      await reload();
-    } catch (e) {
-      setActionError(findingsError(e, 'change'));
-    } finally {
-      setBusy(null);
-    }
-  };
+  const move = (f: FindingEntry, to: FindingMove) =>
+    working(f.id, async () => {
+      try {
+        const next = await client.setFindingStatus({ id: f.id, status: to });
+        setLoad((l) => (l.state === 'ready' ? { ...l, entries: l.entries.map((e) => (e.id === f.id ? next : e)) } : l));
+      } catch (e) {
+        setActionError(findingsError(e, 'change'));
+        if (e instanceof ApiError && e.status === 404) await reload();
+      }
+    });
+
+  const revoke = (r: FindingRuleEntry) =>
+    working(r.id, async () => {
+      try {
+        await client.revokeFindingRule({ ruleId: r.id });
+        // Its findings stay suppressed until their next occurrence, which then opens them.
+        setNotice('Rule revoked. Its findings stay suppressed until their next occurrence, which then opens them.');
+        await reload();
+      } catch (e) {
+        setActionError(findingsError(e, 'change', 'rule'));
+        if (e instanceof ApiError && e.status === 404) await reload();
+      }
+    });
 
   const quiet = { ...card, padding: 16, fontSize: 13, color: 'var(--text-tertiary)' } as const;
   if (load.state === 'loading') return <div style={quiet} role="status">Loading findings…</div>;
@@ -152,7 +177,7 @@ export function Findings({
               key={f.id}
               f={f}
               canManage={canManage}
-              busy={busy === f.id}
+              busy={busy.has(f.id)}
               onMove={(to) => void move(f, to)}
               onSuppress={() => { setActionError(''); setSuppressing(f); }}
             />
@@ -173,7 +198,7 @@ export function Findings({
                 </div>
               </div>
               {canManage && (
-                <Button variant="secondary" size="sm" loading={busy === r.id} onClick={() => void revoke(r)}>
+                <Button variant="secondary" size="sm" loading={busy.has(r.id)} onClick={() => void revoke(r)}>
                   Revoke rule
                 </Button>
               )}
@@ -185,7 +210,7 @@ export function Findings({
         finding={suppressing}
         onCancel={() => setSuppressing(null)}
         onSubmit={async (draft, f) => {
-          const out = await client.createFindingRule(ruleInput(draft, f.kind, Date.now()));
+          const out = await client.createFindingRule(ruleInput(draft, Date.now()));
           setSuppressing(null);
           setNotice(
             `Rule created. ${out.suppressed} ${out.suppressed === 1 ? 'finding' : 'findings'} suppressed; matching anomalies are still recorded.`,
@@ -307,6 +332,12 @@ function SuppressDialog({
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <Select
+          label="Kind"
+          options={[{ value: '', label: 'Any kind' }, { value: finding.kind, label: KIND_LABEL[finding.kind] }]}
+          value={draft.kind}
+          onChange={(e) => set({ kind: e.target.value as SuppressDraft['kind'] })}
+        />
+        <Select
           label="Operation"
           options={[{ value: '', label: 'Any operation' }, ...(finding.operation ? [{ value: finding.operation, label: finding.operation }] : [])]}
           value={draft.operation}
@@ -330,9 +361,9 @@ function SuppressDialog({
           value={draft.days}
           onChange={(e) => set({ days: e.target.value })}
         />
-        <Input label="Reason" value={draft.reason} onChange={(e) => set({ reason: e.target.value })} style={{ width: '100%' }} />
+        <Input label="Reason" maxLength={REASON_MAX} value={draft.reason} onChange={(e) => set({ reason: e.target.value })} style={{ width: '100%' }} />
         {!draftNarrows(draft) && (
-          <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Pick at least one of operation, code or subject, or the rule would match everything.</div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Pick at least one of kind, operation, code or subject, or the rule would match everything.</div>
         )}
         {error && <div role="alert" style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
       </div>
@@ -340,4 +371,4 @@ function SuppressDialog({
   );
 }
 
-const emptyDraft: SuppressDraft = { operation: '', code: '', subject: '', days: '7', reason: '' };
+const emptyDraft: SuppressDraft = { kind: '', operation: '', code: '', subject: '', days: '7', reason: '' };

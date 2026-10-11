@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Findings } from '../src/views/Findings';
+import { Observability } from '../src/views/Observability';
 import { ApiError, createClient, type FindingEntry, type FindingRuleEntry } from '../src/lib/api.generated';
 import { mockFindingsClient, type FindingsClient } from '../src/lib/mock-findings';
 import {
@@ -14,6 +15,8 @@ import {
   inTab,
   mayManageFromRole,
   movesFrom,
+  REASON_MAX,
+  canManageFindings,
   ruleInput,
   tabOf,
 } from '../src/lib/findings';
@@ -79,7 +82,7 @@ describe('findings, pure', () => {
   it('builds the rule body from the set dimensions only, expiring at the chosen distance', () => {
     const d = { ...draftFor(finding({})), code: 'conflict', days: '7', reason: ' known retry storm ' };
     expect(draftReady(d)).toBe(true);
-    expect(ruleInput(d, 'recurring', Date.parse('2026-10-01T00:00:00.000Z'))).toEqual({
+    expect(ruleInput(d, Date.parse('2026-10-01T00:00:00.000Z'))).toEqual({
       kind: 'recurring',
       operation: 'tickets/create',
       code: 'conflict',
@@ -90,7 +93,10 @@ describe('findings, pure', () => {
 
   it('refuses a rule that narrows nothing or has no reason', () => {
     const open = finding({ operation: null });
-    expect(draftReady({ ...draftFor(open), reason: 'x' })).toBe(false); // would match everything
+    expect(draftReady({ ...draftFor(open), reason: 'x' })).toBe(true); // the kind still narrows it
+    expect(draftReady({ ...draftFor(open), kind: '', reason: 'x' })).toBe(false); // would match everything
+    expect(draftReady({ ...draftFor(finding({})), reason: 'x'.repeat(REASON_MAX + 1) })).toBe(false);
+    expect(draftReady({ ...draftFor(finding({})), reason: 'x'.repeat(REASON_MAX) })).toBe(true);
     expect(draftReady({ ...draftFor(finding({})), reason: '  ' })).toBe(false);
   });
 
@@ -98,6 +104,8 @@ describe('findings, pure', () => {
     const forbidden = new ApiError(403, 'forbidden', null);
     expect(findingsError(forbidden, 'read')).toMatch(/do not have access/);
     expect(findingsError(forbidden, 'change')).toMatch(/read findings but not change/);
+    expect(findingsError(new ApiError(404, 'no', null), 'change', 'rule')).toBe('That rule is gone. The list has been refreshed.');
+    expect(findingsError(new ApiError(404, 'no', null), 'change')).toBe('That finding is gone. The list has been refreshed.');
     expect(findingsError(new ApiError(500, 'boom', null), 'change')).toBe('boom (500)');
     expect(findingsError(new TypeError('x'), 'read')).toMatch(/could not be reached/);
   });
@@ -106,6 +114,11 @@ describe('findings, pure', () => {
     expect(mayManageFromRole('viewer')).toBe(false);
     expect(mayManageFromRole('member')).toBe(true);
     expect(mayManageFromRole(undefined)).toBe(true);
+    // The lookup App makes: this principal's row in the roster.
+    const roster = [{ principal: 'p1', role_key: 'viewer' }, { principal: 'p2', role_key: 'member' }, { principal: null, role_key: 'admin' }];
+    expect(canManageFindings(roster, 'p1')).toBe(false);
+    expect(canManageFindings(roster, 'p2')).toBe(true);
+    expect(canManageFindings(roster, 'p3')).toBe(true); // not loaded: drawn, the plane decides
   });
 
   it('is the fourth Observability child, addressed by ?view=findings&tab=', () => {
@@ -307,6 +320,176 @@ describe('Findings view', () => {
     // The visible outcome: the rule leaves the active list instead of lingering as "expired".
     expect(host.textContent).not.toContain('conflict on tickets/create');
     expect(host.textContent).not.toContain('Revoke rule');
+  });
+
+  const typeReason = async (text: string) => {
+    const input = document.body.querySelector('input')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const pick = async (label: string, value: string) => {
+    const sel = [...document.body.querySelectorAll('label')].find((l) => l.textContent?.startsWith(label))?.querySelector('select');
+    expect(sel).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(sel, value);
+      sel!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  };
+  const rule1: FindingRuleEntry = { id: 'R1', tenantId: 'T', kind: null, operation: 'tickets/create', code: 'conflict', subject: null, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), reason: 'noise', createdBy: 'me', createdAt: 'then' };
+
+  it('keeps the dialog’s confirm disabled while the rule would match everything, and enables it once something narrows it', async () => {
+    await mount(fake([finding({ id: 'x', operation: null })]));
+    await click(button('Suppress…'));
+    await typeReason('why');
+    expect(button('Suppress', document.body)!.disabled).toBe(false); // the kind narrows it
+    await pick('Kind', '');
+    expect(button('Suppress', document.body)!.disabled).toBe(true);
+    expect(document.body.textContent).toContain('Pick at least one of kind');
+    await pick('Error code', 'conflict');
+    expect(button('Suppress', document.body)!.disabled).toBe(false);
+  });
+
+  it('sends the kind the dialog shows, and caps the reason at the server’s length', async () => {
+    const client = fake(entries);
+    await mount(client);
+    await click(button('Suppress…', row('o')));
+    expect(document.body.querySelector('input')!.getAttribute('maxlength')).toBe(String(REASON_MAX));
+    await pick('Kind', '');
+    await typeReason('why');
+    await click(button('Suppress', document.body));
+    expect(client.calls.create![0]).not.toHaveProperty('kind');
+  });
+
+  it('shows a refused create in the dialog and leaves it open', async () => {
+    const client = fake(entries);
+    client.createFindingRule = async () => {
+      throw new ApiError(403, 'forbidden', null);
+    };
+    await mount(client);
+    await click(button('Suppress…', row('o')));
+    await typeReason('why');
+    await click(button('Suppress', document.body));
+    expect(document.body.textContent).toContain('Suppress matching anomalies');
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toMatch(/read findings but not change/);
+    expect(host.textContent).not.toContain('Rule created');
+  });
+
+  it('draws no Revoke rule for a non-manager — and the twin does', async () => {
+    await mount(fake(entries, [rule1]), 'suppressed', false);
+    expect(host.textContent).toContain('conflict on tickets/create');
+    expect(button('Revoke rule')).toBeUndefined();
+    await mount(fake(entries, [rule1]), 'suppressed', true);
+    expect(button('Revoke rule')).toBeTruthy();
+  });
+
+  it('keeps the rule listed and says why when the plane refuses a revoke', async () => {
+    const client = fake(entries, [rule1]);
+    client.revokeFindingRule = async () => {
+      throw new ApiError(403, 'forbidden', null);
+    };
+    await mount(client, 'suppressed');
+    await click(button('Revoke rule'));
+    expect(host.querySelector('[role="alert"]')?.textContent).toMatch(/read findings but not change/);
+    expect(host.textContent).toContain('conflict on tickets/create');
+  });
+
+  it('says what a revoke does to the findings it held', async () => {
+    await mount(fake(entries, [rule1]), 'suppressed');
+    await click(button('Revoke rule'));
+    expect(host.textContent).toContain('stay suppressed until their next occurrence');
+  });
+
+  it('names a vanished finding, refreshes, and drops it from the list', async () => {
+    const client = fake(entries);
+    const list = client.listFindings;
+    let gone = false;
+    client.listFindings = async (i) => {
+      const out = await list(i);
+      return gone ? { ...out, entries: out.entries.filter((e) => e.id !== 'o') } : out;
+    };
+    client.setFindingStatus = async () => {
+      gone = true;
+      throw new ApiError(404, 'no such finding', null);
+    };
+    await mount(client);
+    await click(button('Resolve', row('o')));
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('That finding is gone. The list has been refreshed.');
+    expect(host.textContent).not.toContain('open one');
+  });
+
+  it('keeps the list and the notice when the refresh after a successful create fails', async () => {
+    const client = fake(entries);
+    const list = client.listFindings;
+    let fail = false;
+    client.listFindings = async (i) => {
+      if (fail) throw new TypeError('offline');
+      return list(i);
+    };
+    client.createFindingRule = async (input) => {
+      fail = true;
+      return { rule: { ...rule1, ...input, id: 'R9', kind: input.kind ?? null, operation: input.operation ?? null, code: input.code ?? null, subject: input.subject ?? null }, suppressed: 1 };
+    };
+    await mount(client);
+    await click(button('Suppress…', row('o')));
+    await typeReason('why');
+    await click(button('Suppress', document.body));
+    expect(host.textContent).toContain('Rule created. 1 finding suppressed');
+    expect(host.textContent).toContain('open one'); // not blanked
+    expect(host.querySelector('[role="alert"]')?.textContent).toMatch(/may be out of date/);
+  });
+
+  it('guards each row on its own: a second row finishing does not free or spin the first', async () => {
+    const client = fake([finding({ id: 'a', title: 'row a' }), finding({ id: 'b', title: 'row b', lastSeen: '2026-10-01T09:00:00.000Z' })]);
+    const waiting: Record<string, () => void> = {};
+    client.setFindingStatus = (input) =>
+      new Promise((resolve) => {
+        waiting[input.id] = () => resolve(finding({ id: input.id, title: `row ${input.id}`, status: input.status }));
+      });
+    await mount(client);
+    const busyOf = (id: string) => button('Acknowledge', row(id))?.getAttribute('aria-busy');
+    await click(button('Acknowledge', row('a')));
+    await click(button('Acknowledge', row('b')));
+    expect([busyOf('a'), busyOf('b')]).toEqual(['true', 'true']);
+    await act(async () => waiting.b!());
+    await settle();
+    expect(busyOf('a')).toBe('true'); // b's finishing did not clear a's guard
+    await act(async () => waiting.a!());
+    await settle();
+    expect(host.textContent).not.toContain('row a');
+  });
+
+  it('reads findings and rules from the team the URL names, through Observability (?tab=)', async () => {
+    const urls: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      urls.push(String(url));
+      const body = String(url).includes('/findings/rules') ? { entries: [] } : { available: true, entries };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const onNav = vi.fn();
+      const render = (canManageFindings: boolean) =>
+        act(async () =>
+          root.render(
+            <Observability apps={[]} query="?view=findings&tab=acked" scopeId={null} view="findings" focusEventType={null} cursor={null} onNav={onNav} teamId="T1" canManageFindings={canManageFindings} />,
+          ),
+        );
+      await render(false);
+      await settle();
+      expect(host.textContent).toContain('acked one');
+      expect(host.textContent).not.toContain('open one');
+      expect(button('Resolve')).toBeUndefined(); // the viewer's page
+      expect(urls.sort()).toEqual(['/api/teams/T1/findings', '/api/teams/T1/findings/rules?active=true']);
+      await click([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Resolved')));
+      expect(onNav).toHaveBeenCalledWith({ view: 'findings', tab: 'resolved' });
+      await render(true);
+      await settle();
+      expect(button('Resolve')).toBeTruthy();
+    } finally {
+      globalThis.fetch = real;
+    }
   });
 
   it('works end to end on the preview client', async () => {

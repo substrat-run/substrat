@@ -77,6 +77,8 @@ export const EXPIRY_CHOICES = [
 
 /** What the dialog collects. `''` is "any" for the three scope dimensions. */
 export interface SuppressDraft {
+  /** The finding's kind, or `''` for a rule over every kind. */
+  kind: '' | FindingEntry['kind'];
   operation: string;
   code: string;
   subject: string;
@@ -86,23 +88,26 @@ export interface SuppressDraft {
 
 /** The dialog's starting point: the finding's own scope, a week, no reason yet. */
 export function draftFor(f: FindingEntry): SuppressDraft {
-  return { operation: f.operation ?? '', code: '', subject: '', days: '7', reason: '' };
+  return { kind: f.kind, operation: f.operation ?? '', code: '', subject: '', days: '7', reason: '' };
 }
+
+/** The server's cap on a rule's reason (`findingRuleInput`). */
+export const REASON_MAX = 500;
 
 /** A rule that narrows nothing would silence every finding, so the dialog refuses it. */
 export function draftNarrows(d: SuppressDraft): boolean {
-  return d.operation !== '' || d.code !== '' || d.subject !== '';
+  return d.kind !== '' || d.operation !== '' || d.code !== '' || d.subject !== '';
 }
 
 export function draftReady(d: SuppressDraft): boolean {
-  return draftNarrows(d) && d.reason.trim() !== '' && EXPIRY_CHOICES.some((c) => c.value === d.days);
+  return draftNarrows(d) && d.reason.trim() !== '' && d.reason.length <= REASON_MAX && EXPIRY_CHOICES.some((c) => c.value === d.days);
 }
 
 /** The `createFindingRule` body for a draft: only the set dimensions, and the expiry as an instant. */
-export function ruleInput(d: SuppressDraft, kind: FindingEntry['kind'], now: number) {
+export function ruleInput(d: SuppressDraft, now: number) {
   const days = EXPIRY_CHOICES.find((c) => c.value === d.days)?.days ?? 7;
   return {
-    kind,
+    ...(d.kind ? { kind: d.kind } : {}),
     ...(d.operation ? { operation: d.operation } : {}),
     ...(d.code ? { code: d.code as FindingCode } : {}),
     ...(d.subject ? { subject: d.subject } : {}),
@@ -126,14 +131,14 @@ export function ruleScope(r: FindingRuleEntry): string {
  * What a failed call says. A 403 is the permission model answering — the person may read
  * the inbox and not act on it, or neither — and says so instead of the plane's wording.
  */
-export function findingsError(e: unknown, doing: 'read' | 'change'): string {
+export function findingsError(e: unknown, doing: 'read' | 'change', target: 'finding' | 'rule' = 'finding'): string {
   if (e instanceof ApiError) {
     if (e.status === 403) {
       return doing === 'read'
         ? 'You do not have access to this team’s findings.'
         : 'You can read findings but not change them. Ask a team admin for access.';
     }
-    if (e.status === 404) return 'That finding is gone. Refresh to see the current list.';
+    if (e.status === 404) return `That ${target} is gone. The list has been refreshed.`;
     return `${e.message || 'The request failed'} (${e.status})`;
   }
   return 'Findings could not be reached right now.';
@@ -146,4 +151,9 @@ export function findingsError(e: unknown, doing: 'read' | 'change'): string {
  */
 export function mayManageFromRole(role: string | undefined): boolean {
   return role !== 'viewer';
+}
+
+/** The caller's team role, from the loaded roster: `undefined` while they are not in it (yet). */
+export function canManageFindings(members: readonly { principal: string | null; role_key: string }[], principal: string): boolean {
+  return mayManageFromRole(members.find((m) => m.principal === principal)?.role_key);
 }
