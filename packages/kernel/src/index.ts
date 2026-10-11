@@ -477,7 +477,7 @@ export {
   type FindingObservation,
 } from './findings.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
-export { delegatedRevokeSql, writeExplicitTupleIn } from './entity-grant.js';
+export { SHAPE_PROTECTED_TYPES_QUERY, delegatedRevokeSql, writeExplicitTupleIn } from './entity-grant.js';
 export { SHAPE_MARKER_INDEX_DDL, SHAPE_MARKER_READS_PER_ROW, grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes } from './entity-grant-shape.js';
 export type { ShapeCursor, ShapePass } from './entity-grant-shape.js';
 export { ENTITY_UNBIND_OPERATION, unbindEntityHolderBounded } from './entity-binding.js';

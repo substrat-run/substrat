@@ -8,8 +8,12 @@
  *   can see that the erasure's unbind waited for it; a record whose `fate` is `'drop'` is
  *   DELETED by it, so the suite can see a record the hook removed still released.
  *
+ * - `bgroup` — `bind_groups (id)`, a record's declared parent: what a grant on a parent of the
+ *   shape's type is made on (#2177).
+ *
  * Operations are thin pass-throughs and check nothing themselves, except `bind/read`, which is
- * the portal read a bound person makes: `bind:read-own` on that one record.
+ * the portal read a bound person makes: `bind:read-own` on that one record, and `bind/allowed`,
+ * which answers the caller's own check of a key on an entity.
  */
 import { z } from 'zod';
 import {
@@ -18,6 +22,8 @@ import {
   moduleManifest,
   permissionKey,
   type EntityGrantShape,
+  type EntityRef,
+  type PermissionKey,
 } from '@substrat-run/contracts';
 import { assertAllowed, type ModuleRegistration, type OnSubjectErased, type OperationHandler } from '@substrat-run/kernel';
 import { testOperations } from './test-operations.js';
@@ -34,6 +40,12 @@ export const bindEntities = defineEntities({
     fields: z.object({ id: z.string(), principal: z.string().nullable(), email: z.string().nullable(), fate: z.string().nullable() }),
     erasable: ['email'],
     erasure: { subjects: ['id', 'principal'] },
+    /** A record may sit in a group — what a grant on a parent is made on (#2177). */
+    parents: ['bgroup'],
+  },
+  bgroup: {
+    table: 'bind_groups',
+    fields: z.object({ id: z.string() }),
   },
   /** What the erasure hook saw, by principal — written only by the hook. */
   bseen: {
@@ -99,6 +111,7 @@ export const bindMod: ModuleRegistration = {
             CREATE TABLE bind_dups (key TEXT NOT NULL, holder TEXT);
             CREATE TABLE bind_seen (subject TEXT NOT NULL, record_id TEXT NOT NULL, PRIMARY KEY (subject, record_id));`,
     },
+    { version: '0002-groups', sql: 'CREATE TABLE bind_groups (id TEXT PRIMARY KEY);' },
   ],
   ...testOperations({
     /** Write a fixture row: `{ sql, params }` against the module's own tables. */
@@ -107,6 +120,13 @@ export const bindMod: ModuleRegistration = {
     }) as Handler,
     /** Read rows back, the spine included: `{ sql, params }`. */
     'bind/sql': ((ctx, input: { sql: string; params?: (string | null)[] }) => ctx.sql.query(input.sql, input.params ?? [])) as Handler,
+    /** File a record under a group: `{ child, parent }`, entity refs. */
+    'bind/link': ((ctx, input: { child: EntityRef; parent: EntityRef }) => {
+      ctx.link(input.child, input.parent);
+    }) as Handler,
+    /** Whether the caller holds `{ permission }` on `{ entity }`, by the ordinary check. */
+    'bind/allowed': (async (ctx, input: { permission: PermissionKey; entity: EntityRef }) =>
+      (await ctx.check(input.permission, input.entity)).allowed) as Handler,
     /** The bound person's portal read: their own record, and nobody else's. */
     'bind/read': (async (ctx, input: { id: string }) => {
       assertAllowed(await ctx.check(BIND_READ_OWN, { entityType: 'brecord', entityId: input.id }));

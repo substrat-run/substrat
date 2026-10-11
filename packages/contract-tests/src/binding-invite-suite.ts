@@ -403,6 +403,53 @@ export function bindingInviteContractSuite(
       });
     });
 
+    describe('a grant on a parent of the shape\'s type (#2177)', () => {
+      const group = (id: string): EntityRef => ({ entityType: 'bgroup', entityId: id });
+      /** A record filed under a fresh group, in `scope`. */
+      const filed = async (scope: ScopeId = s1) => {
+        const g = ulid();
+        const id = ulid();
+        const at = await host.getScope(clerk, t1, scope);
+        await at.invoke('bind/put', { sql: 'INSERT INTO bind_groups (id) VALUES (?)', params: [g] });
+        await at.invoke('bind/put', { sql: 'INSERT INTO bind_records (id, principal, email, fate) VALUES (?, NULL, NULL, NULL)', params: [id] });
+        await at.invoke('bind/link', { child: rec(id), parent: group(g) });
+        return { g, id };
+      };
+      const allowed = async (who: PrincipalId, permission: string, entity: EntityRef, scope: ScopeId = s1) =>
+        (await host.getScope(who, t1, scope)).invoke<boolean>('bind/allowed', { permission, entity });
+
+      it("is written, and reaches the group, but a binding shape's key never reaches a record through it", async () => {
+        const { g, id } = await filed();
+        const who = await invitee();
+        await host.admin.grant(staff, { principalId: who, permission: BIND_READ_OWN, node: node(), entity: group(g), grantedBy: clerk });
+        expect(await allowed(who, BIND_READ_OWN, group(g))).toBe(true);
+        expect(await allowed(who, BIND_READ_OWN, rec(id))).toBe(false);
+        expect(await reads(who, id)).toBe(false);
+        // A key the shape does not protect still climbs past the record's type to the group.
+        await host.admin.grant(staff, { principalId: who, permission: BIND_INVITE, node: node(), entity: group(g), grantedBy: clerk });
+        expect(await allowed(who, BIND_INVITE, rec(id))).toBe(true);
+        // And the record's own shape still reaches its person, filed under the group or not.
+        const target = await invitee();
+        expect((await exchange((await minted(clerk, target, rec(id))).secret))?.kind).toBe('principal');
+        expect(await reads(target, id)).toBe(true);
+        expect(await reads(who, id)).toBe(false);
+      });
+
+      it('made before the scope recorded the shape, stops reaching the record once it is recorded', async () => {
+        const scope = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: scope, vertical: 'bind-vertical' });
+        await host.admin.activateScope(staff, t1, scope);
+        await host.admin.assignRole(staff, { principalId: clerk, roleKey: 'clerk', node: node(scope) });
+        const { g, id } = await filed(scope);
+        const who = await invitee(scope);
+        await host.admin.grant(staff, { principalId: who, permission: BIND_READ_OWN, node: node(scope), entity: group(g), grantedBy: clerk });
+        expect(await allowed(who, BIND_READ_OWN, rec(id), scope)).toBe(true);
+        await host.admin.reconcileEntityGrantShapes(staff, node(scope), [BIND_SHAPE]);
+        expect(await allowed(who, BIND_READ_OWN, rec(id), scope)).toBe(false);
+        expect(await allowed(who, BIND_READ_OWN, group(g), scope)).toBe(true);
+      });
+    });
+
     describe('a binding declared in a scope, never claimed there', () => {
       /** A scope of its own, so nothing another case did there — no claim, no reconcile — counts. */
       const fresh = async () => {

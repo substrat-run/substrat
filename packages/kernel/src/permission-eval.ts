@@ -124,6 +124,13 @@ export interface ScopeTupleReader {
   /** The declared `parent` edges out of `object`. */
   parents(object: string): MaybePromise<PermissionTupleRow[]>;
   /**
+   * The entity types whose declared shape protects `relation` (`granted:<key>`) in this scope —
+   * `SHAPE_PROTECTED_TYPES_QUERY`, the spelling the explicit writer refuses by (#2083, #1686).
+   * The entity walk stops climbing at a record of such a type for that key (#2177). Required, so
+   * no reader can leave it out and let a grant on a parent reach through the record.
+   */
+  shapeProtectedTypes(relation: string): MaybePromise<string[]>;
+  /**
    * The capability row a `{ kind: 'capability' }` subject names (#1672), read with
    * `capabilityByIdQuery` — capabilities live in the scope's own spine beside the entities
    * they reach. Optional so a reader written before capabilities still compiles; ABSENT
@@ -225,12 +232,17 @@ async function switchedOff(subject: CheckSubject, node: Node, scope: ScopeTupleR
  * capability subject — so both subjects travel exactly the same edges, to exactly the same
  * depth, skipping exactly the same revoked edges. A capability that reached further than an
  * entity grant (or less far) would be a second algebra.
+ *
+ * `stopsAt`, when given, names the refs the walk probes but never climbs past — the records a
+ * protected key reaches only through their own grant (`protectedStop`). Asked only of a ref the
+ * walk would expand, so a hit at the start costs nothing.
  */
 async function walkParents<R>(
   scope: Pick<ScopeTupleReader, 'parents'>,
   start: string,
   now: string,
   probe: (ref: string, chain: RelationTuple[]) => Promise<R | undefined>,
+  stopsAt?: (ref: string) => Promise<boolean>,
 ): Promise<R | undefined> {
   type Frontier = { ref: string; chain: RelationTuple[] };
   let frontier: Frontier[] = [{ ref: start, chain: [] }];
@@ -251,6 +263,7 @@ async function walkParents<R>(
     if (depth === ENTITY_WALK_DEPTH) break;
     const next: Frontier[] = [];
     for (const candidate of frontier) {
+      if (stopsAt && (await stopsAt(candidate.ref))) continue;
       for (const p of await scope.parents(candidate.ref)) {
         // A revoked parent edge stops expanding. Without this the tombstone would work
         // for grants and membership but silently NOT for entity edges — which is the
@@ -267,6 +280,28 @@ async function walkParents<R>(
     frontier = next;
   }
   return undefined;
+}
+
+/**
+ * Where a walk for `permission` stops climbing (#2177): a record whose type's declared shape
+ * protects the key. Such a key is given on such a record only by the shape's own grant — the
+ * explicit writer refuses it there — so a grant of it on an ANCESTOR must not reach the record
+ * either, or anything beneath it through the record. The record itself is still probed, which is
+ * where the shape's grant sits; a grant on an ancestor still reaches the ancestor's other
+ * descendants by any path that does not pass through such a record.
+ *
+ * The protecting types are read once per walk, and only when it first tries to climb, so a check
+ * that never walks, or hits at its start, reads nothing more.
+ */
+function protectedStop(
+  scope: Pick<ScopeTupleReader, 'shapeProtectedTypes'>,
+  permission: PermissionKey,
+): (ref: string) => Promise<boolean> {
+  let types: Promise<Set<string>> | undefined;
+  return async (ref) => {
+    const protecting = await (types ??= Promise.resolve(scope.shapeProtectedTypes(`granted:${permission}`)).then((t) => new Set(t)));
+    return protecting.size > 0 && protecting.has(ref.slice(0, ref.indexOf(':')));
+  };
 }
 
 /**
@@ -401,6 +436,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       now,
       async (ref, walked) =>
         ref === root ? [...walked, t(self, `granted:${permission}`, root)] : undefined,
+      protectedStop(scope, permission),
     );
     if (!chain) return deny;
     const minter = await check(
@@ -506,6 +542,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
           }
           return undefined;
         },
+        protectedStop(scope, permission),
       );
       if (found) return found;
     }
