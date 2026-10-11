@@ -69,6 +69,32 @@ const entities = defineEntities({
     stamps: { created_at: 'createdAt' },
   },
   counter: { table: 't_counters', fields: z.object({ id: z.number(), label: z.string() }) },
+  // A natural key on an entity the kernel hides rows of (#119): binned, archived, and both.
+  binnedKeyed: {
+    table: 't_binned_keyed',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    key: ['label'],
+    trash: { permission: 'note:write' },
+  },
+  filedKeyed: {
+    table: 't_filed_keyed',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    key: ['label'],
+    archive: { permission: 'note:write' },
+  },
+  hiddenKeyed: {
+    table: 't_hidden_keyed',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    key: ['label'],
+    archive: { permission: 'note:write' },
+    trash: { permission: 'note:write' },
+  },
+  filed: {
+    table: 't_filed',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    archive: { permission: 'note:write' },
+  },
+  keyed: { table: 't_keyed', fields: z.object({ id: z.string(), label: z.string() }), key: ['label'] },
   // A folder's child whose natural key leaves the folder out: a label is unique scope-wide.
   sticker: {
     table: 't_stickers',
@@ -458,6 +484,37 @@ describe('derivationOf — create (#2157)', () => {
     // Its positive twin: the same create, scope-wide, has no parent to cross.
     const scoped = { ...sticker, permission: 'note:write', input: z.object({ folderId: z.string(), label: z.string() }) } as const;
     expect(kindOf(scoped)).toBe('create');
+  });
+
+  describe('a natural key on an entity the kernel hides rows of (#119) — a replay would answer one', () => {
+    const scopeCreate = (entity: 'binnedKeyed' | 'filedKeyed' | 'hiddenKeyed' | 'filed' | 'keyed' | 'bin') =>
+      ({
+        ...CREATE,
+        permission: 'note:write',
+        input: z.object({ label: z.string() }),
+        output: entities[entity].fields,
+        http: { method: 'POST', path: '/things' },
+        emits: { ...emitsTag, entity },
+      }) as const;
+    const refusal = (entity: string, hides: string) =>
+      `model: 'x/new' declares \`derive: 'create'\`, but '${entity}' declares ${hides} and a natural key, so a replay could ` +
+      "answer a row the kernel hides — whether re-creating one restores it, unarchives it or refuses is the vertical's call, so its handler is written by hand.";
+
+    it.each([
+      ['binnedKeyed', '`trash`'],
+      ['filedKeyed', '`archive`'],
+      ['hiddenKeyed', '`trash` and `archive`'],
+    ] as const)('refuses %s, naming %s', (entity, hides) => {
+      expect(kindOf(scopeCreate(entity))).toBeUndefined();
+      expect(() => define({ 'x/new': { ...scopeCreate(entity), derive: 'create' } })).toThrow(refusal(entity, hides));
+      // Not a derivable shape, so its hand-written handler needs no `authored` either: the gate
+      // takes it as it is, and refuses an `authored` there as noise.
+      expect(() => define({ 'x/new': scopeCreate(entity) })).not.toThrow();
+    });
+
+    it.each(['bin', 'filed', 'keyed'] as const)('derives %s: trash, archive or a key, but not a key with either', (entity) => {
+      expect(kindOf(scopeCreate(entity))).toBe('create');
+    });
   });
 
   it('(a) refuses a create that matches and declares neither', () => {

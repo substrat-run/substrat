@@ -397,6 +397,40 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
           grantedBy: alice,
         });
 
+      // The round-3 review's reproduction (#2162): with a natural key, a derived create on a
+      // trashable entity replayed a BINNED row — its contents included — to a caller who got
+      // `not_found` reading it, and "succeeded" with nothing to show. Such a declaration no
+      // longer loads, for `archive` too; without a key the create derives, and is seen.
+      it('a keyed derived create over an entity that hides rows is refused at load; without the key it derives', async () => {
+        for (const hides of [{ trash: { permission: 'dshelf:trash' } }, { archive: { permission: 'dshelf:archive' } }]) {
+          const keyed = defineEntities({
+            xshelf: { table: 'x_shelves', fields: z.object({ id: z.string(), label: z.string() }), key: ['label'], ...hides },
+          });
+          const declare = () =>
+            defineOperations(keyed, ['dshelf:write', 'dshelf:trash', 'dshelf:archive'] as const)({
+              'x/create-shelf': {
+                summary: 'Add a shelf',
+                derive: 'create',
+                permission: 'dshelf:write',
+                input: z.object({ label: z.string() }),
+                output: keyed.xshelf.fields,
+                http: { method: 'POST', path: '/shelves' },
+                emits: { entity: 'xshelf', entityIdFrom: 'id', type: 'x.shelf-created', schemaVersion: 1, piiClass: 'none', payload: ['id'] },
+              },
+            });
+          expect(declare).toThrow('and a natural key, so a replay could answer a row the kernel hides');
+        }
+        const made = await as.invoke<Shelf>('derived/create-shelf', { label: 'minted' });
+        expect(made).toEqual({ id: expect.any(String), label: 'minted' });
+        expect(await ids(as, 'derived/list-shelves')).toContain(made.id);
+        await move(as, 'trash', made.id);
+        // No key, no replay: the same label again is a new, visible shelf, never the binned one.
+        const again = await as.invoke<Shelf>('derived/create-shelf', { label: 'minted' });
+        expect(again.id).not.toBe(made.id);
+        expect(await ids(as, 'derived/list-shelves')).toEqual(expect.arrayContaining([again.id]));
+        expect(await ids(as, 'derived/list-shelves')).not.toContain(made.id);
+      });
+
       it('archives out of the active view and into the archived one, and back', async () => {
         const sh = await addShelf('filed');
         expect(await move(as, 'archive', sh.id)).toEqual({ id: sh.id, state: 'archived' });

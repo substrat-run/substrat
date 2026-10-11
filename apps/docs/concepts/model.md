@@ -609,6 +609,12 @@ link would let the replay answer another parent's row. The replay answers on the
 alone, deliberately, as a hand-written idempotent create does. A caller who may create the row
 is answered with the row already holding its key, whether or not they may read it otherwise.
 
+An entity that declares `trash` or `archive` cannot pair a natural key with a derived create.
+The replay would answer a row the kernel hides: a binned row to a caller who may not see the bin,
+or an archived row the active view leaves out. Leaving hidden rows out of the lookup only moves
+the clash to the insert. Whether re-creating such a row restores it, unarchives it or refuses is
+your decision, so that create is written by hand. Without a key it derives as usual.
+
 ```ts
 savedReplyFolder: {
   table: 'acme_folders',

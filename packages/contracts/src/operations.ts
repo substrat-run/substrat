@@ -1870,6 +1870,13 @@ function createPlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
   if (parent && key.length > 0 && !key.includes(parent.column)) {
     return `its natural key does not include the link to '${parent.entity}' ('${parent.column}'), so a replay could answer another ${parent.entity}'s row`;
   }
+  // A replay would also answer a row the kernel hides (#119, K-45): a binned one to a caller who
+  // may not see the bin, or an archived one the active view leaves out — and skipping hidden rows
+  // only moves the clash to the insert. What re-creating one means is the vertical's to decide.
+  const hides = [base.def.trash ? '`trash`' : null, base.def.archive ? '`archive`' : null].filter(Boolean);
+  if (key.length > 0 && hides.length > 0) {
+    return `'${name}' declares ${hides.join(' and ')} and a natural key, so a replay could answer a row the kernel hides — whether re-creating one restores it, unarchives it or refuses is the vertical's call, so its handler is written by hand`;
+  }
   return {
     kind: 'create',
     ...base.head,

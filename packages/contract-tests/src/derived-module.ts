@@ -190,6 +190,17 @@ export const derivedOperations = defineOperations(derivedEntities, PERMISSIONS)(
     input: z.object({ id: z.string(), label: z.string() }),
     output: ok,
   },
+  // A derived create on an archivable, trashable entity with no natural key (#2162): there is no
+  // replay to answer a hidden row, so it derives. With a key it would not (`createPlan`).
+  'derived/create-shelf': {
+    summary: 'Add a shelf, its id minted',
+    derive: 'create',
+    permission: 'dnote:write',
+    input: z.object({ label: z.string() }),
+    output: derivedEntities.dshelf.fields,
+    http: { method: 'POST', path: '/shelves' },
+    emits: { entity: 'dshelf', entityIdFrom: 'id', type: 'dshelf.created', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] },
+  },
   'derived/list-shelves': {
     summary: 'The shelves, active unless the archive is asked for',
     derive: 'list',

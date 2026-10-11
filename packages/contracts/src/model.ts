@@ -456,7 +456,9 @@ export const DERIVED_KINDS = ['get', 'list', 'update', 'delete', 'create', 'arch
  *   write and no event. Under a parent, the key must include the link column, or a replay could
  *   answer another parent's row. A replay answers on the write key alone, deliberately — as a
  *   hand-written idempotent create does — so a caller holding the write key reads the row it
- *   names. Emits about the new row.
+ *   names. An entity that declares `trash` or `archive` cannot have a derived create with a key:
+ *   the replay would answer a binned or archived row the kernel hides, and what re-creating one
+ *   means is the vertical's call. Emits about the new row.
  * - `archive`, `unarchive`, `trash`, `restore` — one kernel move of an entity that declares
  *   `archive` / `trash` (#119, K-45): `ctx.archive(ref)` and its siblings. A POST whose input is
  *   the id alone, checked on that row under the key the ENTITY declares for the move (archive
