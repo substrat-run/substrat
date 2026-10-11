@@ -221,13 +221,25 @@ describe('the config is per scope: sites of one tenant (#2201)', () => {
     expect((await get(b, '/api/auth/login')).headers.get('location')).toMatch(/^https:\/\/team-auth\.test\//);
   });
 
-  it('a site picked with x-site on the home hostname keeps the home\'s identity, whatever it was delivered', async () => {
+  it.each([
+    ['x-scope', (o: Install, _slug: string) => ({ 'x-scope': o.s })],
+    ['x-site', (_o: Install, slug: string) => ({ 'x-site': slug })],
+  ])('a site picked with %s keeps the ROUTED site\'s identity, on /api/session and on /api/me', async (_name, select) => {
+    // Routed home A has a delivery; the selected sibling B has none. The login is the routed site's,
+    // so who you are cannot depend on which site you look at; only the principal is B's.
     const home = await install();
     const other = await install(home.t);
-    expect((await deliver(other, choice('https://team-auth.test', other))).status).toBe(200);
-    // Auth is read by the routed site: selecting `other` does not change which issuer serves.
-    expect(await sessionOf(home, await binding.mint('sub-ann'))).toMatchObject({ sub: 'sub-ann' });
-    const res = await get(home, '/api/session', { 'x-scope': other.s, authorization: `Bearer ${await perInstall.mint('sub-ann')}` });
-    expect(await res.json()).toBeNull();
+    expect((await deliver(home, choice('https://team-auth.test', home))).status).toBe(200);
+    const slug = (await env.AUTH.get(env.AUTH.idFromName(home.t)).listSites()).find((x) => x.scopeId === other.s)!.slug;
+    const sel = select(other, slug);
+    const bearer = (token: string) => ({ authorization: `Bearer ${token}`, ...sel });
+    const me = async (token: string) => (await (await get(home, '/api/me', bearer(token))).json()) as { key?: string; status?: string };
+    // The home's issuer signs in, and the first sign-in claims the SELECTED site's open owner seat.
+    expect((await (await get(home, '/api/session', bearer(await perInstall.mint('sub-ann')))).json())).toMatchObject({ sub: 'sub-ann' });
+    expect((await me(await perInstall.mint('sub-ann'))).key).toBeDefined();
+    // The selected site's binding default is NOT consulted: its issuer's token resolves to nobody.
+    expect(await (await get(home, '/api/session', bearer(await binding.mint('sub-bob')))).json()).toBeNull();
+    const bob = await me(await binding.mint('sub-bob'));
+    expect(bob.key).toBeUndefined();
   });
 });
