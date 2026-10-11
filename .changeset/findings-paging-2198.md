@@ -12,3 +12,4 @@ The findings read pages (#2198).
 - contracts: `FINDINGS_LIMIT_DEFAULT`, `FINDINGS_LIMIT_MAX`, `findingCursorOf` and `parseFindingCursor`; `FindingFilter` gains `cursor`.
 - kernel: `listFindings` refuses a `limit` over `FINDINGS_LIMIT_MAX` (it accepted any positive number before; the HTTP route already stopped at 500).
 - contract-tests: the findings suite walks a tenant by cursor on both adapters.
+- kernel: `observeFinding` stores `first_seen` / `last_seen` in the canonical instant form (`toISOString`), the spelling a cursor is minted in, and refuses an `at` that is not an instant. Every in-repo writer already stamped that form.
