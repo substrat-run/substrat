@@ -71,6 +71,7 @@ import {
 	type BuildPhase,
 	buildContext,
 	planLanes,
+	reportForLane,
 	writeGuardFor,
 	type LanePlan,
 } from './phase.js';
@@ -378,7 +379,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 				lastGateReport: cur.state.lastGateReport,
 				lanes,
 			},
-			{ runPass, runChecks, signal },
+			{ runPass, runChecks, signal, carriedFor: (report, lane) => reportForLane(report, lane.lane) },
 		);
 
 		// Whatever survived the loop is the report the NEXT turn opens with —

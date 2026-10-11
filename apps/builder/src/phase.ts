@@ -430,3 +430,58 @@ export async function planLanes(ws: ContextWorkspace, phase: BuildPhase): Promis
 	};
 	return [api, ui];
 }
+
+/**
+ * A path a gate report names, as the project sees it: tsc prints
+ * `app/src/main.tsx(3,5)`, other checkers print the path from the monorepo root
+ * (`.builder/projects/<p>/app/…`) or absolute. The project prefix is cut so the
+ * lane rule judges the path inside the project.
+ */
+const REPORT_PATH = /(?:^|[\s('"`:])((?:\/|\.\/)?[\w.@-]+(?:\/[\w.@-]+)+\.[a-z][a-z0-9]{0,4})\b/gi;
+const PROJECT_PREFIX = /^(?:.*\/)?\.builder\/projects\/[^/]+\//;
+
+function linePaths(line: string): string[] {
+	return [...line.matchAll(REPORT_PATH)].map((m) => guardPath((m[1] ?? '').replace(PROJECT_PREFIX, '')));
+}
+
+/**
+ * The part of a carried gate report a lane can act on (#682), by path
+ * ownership: a line naming an `app/` path is the UI lane's, a line naming any
+ * other path is the API lane's, and a line naming none (a continuation, a
+ * summary) goes with the line before it. A gate section goes to every lane that
+ * owns a line of it, header included. A section that names no path at all is
+ * the API lane's — everything outside `app/` is — so a report with no `app/`
+ * path reaches the API lane exactly as it did before lanes.
+ *
+ * Text matching, so it has limits: a path printed without an extension, or one
+ * spelled from a directory the prefix rule does not know, is judged by the line
+ * around it. A misrouted line goes to the lane that cannot fix it, which is what
+ * every line did before this existed.
+ */
+export function reportForLane(report: string, lane: BuildLane): string | undefined {
+	const kept: string[] = [];
+	for (const section of report.split(/\n\n(?=── )/)) {
+		const [header = '', ...lines] = section.split('\n');
+		// A path-naming line sets the owners; the lines after it inherit them.
+		// Lines before the first path belong to both.
+		let owners = new Set<BuildLane>(['api', 'ui']);
+		let named = false;
+		let mine = false;
+		const keptLines: string[] = [];
+		for (const line of lines) {
+			const paths = linePaths(line);
+			if (paths.length > 0) {
+				owners = new Set(paths.map((p): BuildLane => (underUi(p) ? 'ui' : 'api')));
+				named = true;
+				if (owners.has(lane)) mine = true;
+			}
+			if (owners.has(lane)) keptLines.push(line);
+		}
+		if (!named) {
+			if (lane === 'api') kept.push(section);
+		} else if (mine) {
+			kept.push([header, ...keptLines].join('\n'));
+		}
+	}
+	return kept.length ? kept.join('\n\n') : undefined;
+}

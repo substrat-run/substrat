@@ -39,7 +39,7 @@ import type {
 	StepUsage,
 	VerticalGenerator,
 } from '@substrat-run/builder-generator';
-import { buildContext, detectPhase, planLanes, type BuildLane, type BuildPhase } from '../phase.js';
+import { buildContext, detectPhase, planLanes, reportForLane, type BuildLane, type BuildPhase } from '../phase.js';
 import { runProbe, type ProbeFn, type ProbeResult } from './probe.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -500,10 +500,10 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			if (lanes.length === 0) {
 				await runPass(generator, message, phase, lastGateReport);
 			}
-			for (const [i, plan] of lanes.entries()) {
+			for (const plan of lanes) {
 				if (fatal || opts.signal?.aborted) break;
-				// The carried report rides the first lane only, as in runTurnLoop.
-				const carried = i === 0 ? lastGateReport : undefined;
+				// Each lane gets the part of the carried report it owns, as in runTurnLoop.
+				const carried = lastGateReport === undefined ? undefined : reportForLane(lastGateReport, plan.lane);
 				await runPass(await opts.makeGenerator(phase, plan.lane), message, phase, carried, plan.context);
 			}
 			let turn = await runChecks(`eval ${fixture.name} · turn ${turnNo}`);

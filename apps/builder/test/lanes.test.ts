@@ -35,6 +35,7 @@ import {
 	parseContractGaps,
 	planLanes,
 	PHASES,
+	reportForLane,
 	screensSection,
 	SKILL_MANIFEST,
 	skillsForPhase,
@@ -252,6 +253,51 @@ describe('planLanes — what each lane is given', () => {
 	});
 });
 
+describe('reportForLane — each lane gets the part of a red report it can fix', () => {
+	const TSC =
+		'── typecheck FAILED (exit 2)\n' +
+		"app/src/main.tsx(3,5): error TS2322: Type 'number' is not assignable to type 'string'.\n" +
+		'  The expected type comes from property title.\n' +
+		"src/routes.ts(10,1): error TS2304: Cannot find name 'foo'.\n" +
+		'Found 2 errors.';
+
+	it('splits one gate section by path ownership, keeping the header and continuation lines', () => {
+		const ui = reportForLane(TSC, 'ui');
+		const api = reportForLane(TSC, 'api');
+		expect(ui).toBe(
+			'── typecheck FAILED (exit 2)\n' +
+				"app/src/main.tsx(3,5): error TS2322: Type 'number' is not assignable to type 'string'.\n" +
+				'  The expected type comes from property title.',
+		);
+		expect(api).toBe(
+			'── typecheck FAILED (exit 2)\n' + "src/routes.ts(10,1): error TS2304: Cannot find name 'foo'.\nFound 2 errors.",
+		);
+	});
+
+	it('reads a path spelled from the monorepo root or absolutely as the project path it is', () => {
+		const report = '── test FAILED (exit 1)\n FAIL  /Users/x/repo/.builder/projects/fx/app/src/view.test.tsx > renders';
+		expect(reportForLane(report, 'ui')).toContain('view.test.tsx');
+		expect(reportForLane(report, 'api')).toBeUndefined();
+	});
+
+	it('gives a section that names no path to the API lane alone — as every report went before lanes', () => {
+		const report = '── boundary-lint FAILED (exit 1)\n(no output)';
+		expect(reportForLane(report, 'api')).toBe(report);
+		expect(reportForLane(report, 'ui')).toBeUndefined();
+	});
+
+	it('routes whole sections independently, and returns nothing for a lane that owns none', () => {
+		const report = `${'── test FAILED (exit 1)\n FAIL  test/scenario.test.ts > a denial'}\n\n${'── typecheck FAILED (exit 2)\napp/x.tsx(1,1): error TS1'}`;
+		expect(reportForLane(report, 'api')).toBe('── test FAILED (exit 1)\n FAIL  test/scenario.test.ts > a denial');
+		expect(reportForLane(report, 'ui')).toBe('── typecheck FAILED (exit 2)\napp/x.tsx(1,1): error TS1');
+		expect(reportForLane('── test FAILED (exit 1)\nsrc/a.ts(1,1): e', 'ui')).toBeUndefined();
+	});
+
+	it('does not mistake src/app/ for the UI lane', () => {
+		expect(reportForLane('── typecheck FAILED (exit 2)\nsrc/app/x.ts(1,1): e', 'ui')).toBeUndefined();
+	});
+});
+
 // ── the laned build, driven end to end through the eval harness ─────────────
 
 const roots: string[] = [];
@@ -329,8 +375,14 @@ describe('a laned build turn (eval harness, mocked agent)', () => {
 			makeGenerator: async (phase, lane) =>
 				laneAgent(lane ?? 'unlaned', writeGuardFor(phase, lane), log, scripts[lane ?? 'unlaned']),
 			// Red until the UI lane's second-turn file exists: one gate run per turn
-			// (plus its repair), never one between the lanes.
-			gates: [{ name: 'typecheck', cmd: `test -f ${dir}/app/main.tsx && test -f ${dir}/app/turn2.txt` }],
+			// (plus its repair), never one between the lanes. Its output names an
+			// app/ file, which only the UI lane can fix (#2200 r1).
+			gates: [
+				{
+					name: 'typecheck',
+					cmd: `echo "app/main.tsx(1,1): error TS2322: screen is red"; test -f ${dir}/app/turn2.txt`,
+				},
+			],
 			probe: async () => ({ modules: [], roles: [] }),
 			maxTurns: 2,
 		});
@@ -344,10 +396,11 @@ describe('a laned build turn (eval harness, mocked agent)', () => {
 
 		const [api1, ui1, repair, api2, ui2] = log;
 		expect(repair?.message).toContain('repair attempt 1/');
-		// The red report from turn 1 opens turn 2 — in the FIRST lane only.
+		// The red report from turn 1 opens turn 2 in the lane that can fix it: it
+		// names app/main.tsx, so the UI lane — not the API lane, which cannot write it.
 		expect(api1?.gateReport).toBeUndefined();
-		expect(api2?.gateReport).toContain('typecheck');
-		expect(ui2?.gateReport).toBeUndefined();
+		expect(ui2?.gateReport).toContain('app/main.tsx(1,1): error TS2322');
+		expect(api2?.gateReport).toBeUndefined();
 		// Inside its guard, each lane's write lands…
 		expect(api1?.answers['src/module.ts']).toMatch(/^wrote src\/module\.ts/);
 		expect(ui1?.answers['app/main.tsx']).toMatch(/^wrote app\/main\.tsx/);

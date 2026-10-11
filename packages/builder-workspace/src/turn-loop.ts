@@ -36,6 +36,11 @@ export interface TurnLoopHooks<L = string> {
 	 * (it hands the same signal to its generator).
 	 */
 	readonly signal?: AbortSignal | undefined;
+	/**
+	 * The part of the carried report a lane can act on (#682). Absent, every
+	 * lane gets all of it. A lane given nothing gets no report.
+	 */
+	readonly carriedFor?: ((report: string, lane: L) => string | undefined) | undefined;
 	readonly onContinuation?: ((attempt: number, max: number) => void) | undefined;
 	readonly onRepair?: ((attempt: number, max: number) => void) | undefined;
 }
@@ -91,11 +96,17 @@ export async function runTurnLoop<L = string>(
 	};
 
 	// The barrier: every lane before any gate. An unlaned turn is one pass with
-	// no lane. The carried report rides the first pass only either way.
+	// no lane. The carried report rides the first pass of EACH lane: "first pass
+	// only" holds because continuations and repairs re-embed the fresh report,
+	// and a second lane is a fresh conversation that embeds nothing — withheld
+	// from it, a red app/ file reaches only the lane that cannot write it.
 	const lanes: readonly (L | undefined)[] = input.lanes?.length ? input.lanes : [undefined];
+	const carried = input.lastGateReport;
 	for (const [i, lane] of lanes.entries()) {
 		if (i > 0 && signal?.aborted) break;
-		await runToCompletion(input.message, i === 0 ? input.lastGateReport : undefined, lane);
+		const report =
+			carried !== undefined && lane !== undefined && hooks.carriedFor ? hooks.carriedFor(carried, lane) : carried;
+		await runToCompletion(input.message, report, lane);
 	}
 	let turn = await hooks.runChecks(`studio turn ${input.turnNo}: ${input.message.slice(0, 60)}`);
 

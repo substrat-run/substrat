@@ -139,7 +139,10 @@ describe('runTurnLoop with lanes (#682)', () => {
 		expect(result.repairs).toBe(0);
 	});
 
-	it('gives every lane the message, and the carried report to the first lane only', async () => {
+	it('gives every lane the message AND the carried report — each lane is a fresh conversation', async () => {
+		// "First pass only" exists because continuation and repair prompts re-embed
+		// the fresh report. A second lane embeds nothing, so a report withheld from
+		// it is a report the lane that can fix it never reads (#2200 r1).
 		const passes: Pass[] = [];
 		await runTurnLoop<Lane>(
 			{ message: 'build it', turnNo: 1, lastGateReport: 'carried', lanes: ['api', 'ui'] },
@@ -153,8 +156,42 @@ describe('runTurnLoop with lanes (#682)', () => {
 		);
 		expect(passes).toEqual([
 			{ text: 'build it', carried: 'carried', lane: 'api' },
-			{ text: 'build it', carried: undefined, lane: 'ui' },
+			{ text: 'build it', carried: 'carried', lane: 'ui' },
 		]);
+	});
+
+	it('routes the carried report through the host, so each lane gets the part it owns', async () => {
+		const passes: Pass[] = [];
+		await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lastGateReport: 'api-part|ui-part', lanes: ['api', 'ui'] },
+			{
+				carriedFor: (report, lane) => (lane === 'ui' ? report.split('|')[1] : undefined),
+				runPass: async (text, carried, lane) => {
+					passes.push({ text, carried, lane });
+					return false;
+				},
+				runChecks: async () => checked(green),
+			},
+		);
+		expect(passes).toEqual([
+			{ text: 'build it', carried: undefined, lane: 'api' },
+			{ text: 'build it', carried: 'ui-part', lane: 'ui' },
+		]);
+	});
+
+	it('still carries the report into the first pass only of a continued lane', async () => {
+		const passes: Pass[] = [];
+		await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lastGateReport: 'carried', lanes: ['ui'] },
+			{
+				runPass: async (text, carried, lane) => {
+					passes.push({ text, carried, lane });
+					return passes.length === 1; // the first pass is cut once
+				},
+				runChecks: async () => checked(green),
+			},
+		);
+		expect(passes.map((p) => p.carried)).toEqual(['carried', undefined]);
 	});
 
 	it('continues a truncated lane AS that lane, from one per-turn budget', async () => {
