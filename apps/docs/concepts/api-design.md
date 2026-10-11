@@ -453,6 +453,16 @@ so every facility it created had no version, and no conditional update against o
 ever have succeeded.
 :::
 
+**A state move keeps the version** ([#2191](https://github.com/substrat-run/substrat/issues/2191)).
+Archive, unarchive, trash and restore are the one kind of event that does not move it: they
+change no field anyone read. So a tag held from before a move still matches after it, and the
+move operations hand back no `ETag` because there is no new one to hand back. A trashed row
+is refused (`404`) to every operation whose declared check names it except one that declares
+`trashed: 'admits'` or `'purges'` — a restore, a delete for good, the purge — and a guarded one
+of those still compares its `If-Match`. An **archived** row is refused to none: an edit sent
+with a tag read before someone archived the row is admitted, lands on the archived row, and the
+row stays archived.
+
 Two smaller rules follow from the same reasoning:
 
 - **The 412 does not carry the current version.** Handing it back turns the obvious client

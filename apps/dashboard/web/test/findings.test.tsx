@@ -540,6 +540,38 @@ describe('Findings view', () => {
     expect(host.textContent).not.toContain('Rule created');
   });
 
+  const escape = async () => {
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    await settle();
+  };
+
+  it('opens the suppress dialog as a named modal with focus inside, and Escape closes it and gives focus back (#2199)', async () => {
+    await mount(fake(entries));
+    const opener = button('Suppress…', row('o'))!;
+    opener.focus();
+    await click(opener);
+    const dialog = document.body.querySelector('[role="dialog"]')!;
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)?.textContent).toBe('Suppress matching anomalies');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await escape();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('keeps the suppress dialog open on Escape while the create is in flight (#2199)', async () => {
+    const client = fake(entries);
+    client.createFindingRule = () => new Promise(() => {});
+    await mount(client);
+    await click(button('Suppress…', row('o')));
+    await typeReason('why');
+    await click(button('Suppress', document.body));
+    await escape();
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
   it('draws no Revoke rule for a non-manager — and the twin does', async () => {
     await mount(fake(entries, [rule1]), 'suppressed', false);
     expect(host.textContent).toContain('conflict on tickets/create');

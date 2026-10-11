@@ -56,7 +56,8 @@ import { REFUSAL_JOURNAL_PREFIX } from './delivery-refusal.js';
  *
  * So the walk here is `ORDER BY id`, and the cursor is `id`:
  *
- * - **`id` IS the entity's version at that point** (#901). The same token
+ * - **`id` IS the entity's version at that point** (#901) — on every entry but a
+ *   state move, which leaves the version where it was (#2191). The same token
  *   `ctx.versionOf` returns and `If-Match` compares (#129/#906), so listing the
  *   history, naming a version, and refusing a stale write stop being three
  *   vocabularies.

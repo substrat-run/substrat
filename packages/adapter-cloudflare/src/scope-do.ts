@@ -859,9 +859,9 @@ const KERNEL_DDL = `
   -- #1575: attachment text and its FTS5 index, shared from @substrat-run/kernel. After
   -- _substrat_attachments, whose delete trigger it adds.
   ${ATTACHMENT_TEXT_DDL}
-  -- #901: an entity's version is the ULID of the last event about it, so
-  -- MAX(id) per (entity_type, entity_id) is the read. The id column sits last so
-  -- SQLite walks to the end of the matched range instead of aggregating over it.
+  -- #901: an entity's version is the ULID of the last event about it (a state move
+  -- excepted, #2191), so the newest id per (entity_type, entity_id) is the read. The id
+  -- column sits last so SQLite walks the matched range backwards instead of aggregating.
   ${OUTBOX_ENTITY_INDEX}
   -- #116: the request-dedupe table, kernel-owned so no vertical migrates for it.
   ${IDEMPOTENCY_DDL}
@@ -2974,11 +2974,11 @@ export function defineScopeDO(
             // #2166: what the guards and the handler emit about a stamped entity, held below.
             const stamps = watchUpdatedStamps(doSpineSql(this.sql), this.updatedStampPlans);
             await refuseTrashedTarget(
-              { sql: doSpineSql(this.sql), plans: this.statePlans, check: ctx.check },
+              { sql: doSpineSql(this.sql), plans: this.statePlans, check: ctx.check, now: ctx.now() },
               operation,
               target,
               parsed,
-              purging ? { now: new Date().toISOString(), gate: this.purgeGateFacts(systemDoor!.moduleId, tenantId) } : undefined,
+              purging ? { gate: this.purgeGateFacts(systemDoor!.moduleId, tenantId) } : undefined,
             );
             await this.runGuards(operation, ctx, parsed);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);

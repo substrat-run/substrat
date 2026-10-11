@@ -183,7 +183,9 @@ export type DomainEvent = z.infer<typeof domainEvent>;
  *   as a real bug and had to read the adapter to find it. Here the column is
  *   decoded once, so a caller resolving a name gets the union the spine actually
  *   recorded rather than a string to trim quotes off.
- * - **`id` is the entity's VERSION at this point** (#901), not just a row key.
+ * - **`id` is the entity's VERSION at this point** (#901), not just a row key —
+ *   except on a state move (`ENTITY_STATE_MOVE_TYPES`), which leaves the version
+ *   at the entry before it (#2191).
  *   The same token `versionOf` returns and `If-Match` compares, so "list the
  *   history", "restore to this version" and "refuse my stale write" speak one
  *   vocabulary. It is therefore the cursor: `ORDER BY id` is creation order
