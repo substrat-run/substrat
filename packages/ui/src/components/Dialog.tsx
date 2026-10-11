@@ -117,9 +117,11 @@ function useModal(open: boolean, panel: RefObject<HTMLDivElement>, busy: boolean
     const el = panel.current;
     if (!el) return;
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    (tabbables(el)[0] ?? el).focus();
+    const unregister = register(el);
+    if (!el.contains(document.activeElement)) (tabbables(el)[0] ?? el).focus();
 
     const onKey = (e: KeyboardEvent) => {
+      if (stack.at(-1) !== el) return;
       if (e.defaultPrevented || e.isComposing) return;
       const target = e.target instanceof Node ? e.target : null;
       const inside = !!target && el.contains(target);
@@ -153,7 +155,8 @@ function useModal(open: boolean, panel: RefObject<HTMLDivElement>, busy: boolean
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
-      if (before?.isConnected) before.focus();
+      const wasTop = unregister();
+      if (wasTop && before?.isConnected) before.focus();
     };
   }, [open, panel]);
 }

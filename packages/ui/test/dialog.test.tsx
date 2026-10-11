@@ -218,21 +218,123 @@ describe('focus', () => {
     opener.remove();
   });
 
-  it('does not re-run the focus move on re-render while open', async () => {
+  it('does not re-run the focus move when the dialog re-renders with a fresh onCancel — focus stays where the user put it', async () => {
     function Form() {
       const [n, setN] = useState(0);
       return (
-        <Dialog {...props()}>
+        <Dialog {...props({ onCancel: () => void n })}>
           <input aria-label="a" />
-          <input aria-label="b" onChange={() => setN(n + 1)} />
+          <button onClick={() => setN(n + 1)}>bump {n}</button>
         </Dialog>
       );
     }
     await render(<Form />);
-    const b = document.querySelector<HTMLInputElement>('input[aria-label="b"]')!;
-    b.focus();
-    await render(<Form />);
-    expect(document.activeElement).toBe(b);
+    expect(document.activeElement).toBe(document.querySelector('input'));
+    const bump = document.querySelector<HTMLButtonElement>('button')!;
+    bump.focus();
+    await act(async () => bump.click());
+    expect(bump.textContent).toBe('bump 1'); // it did re-render
+    expect(document.activeElement).toBe(bump);
+  });
+
+  it('leaves focus on a child that took it itself (autoFocus) — and the twin without one lands on the first tabbable', async () => {
+    await render(
+      <Dialog {...props()}>
+        <input aria-label="a" />
+        <input aria-label="b" autoFocus />
+      </Dialog>,
+    );
+    expect(document.activeElement).toBe(document.querySelector('input[aria-label="b"]'));
+    await render(null);
+    await render(
+      <Dialog {...props()}>
+        <input aria-label="a" />
+        <input aria-label="b" />
+      </Dialog>,
+    );
+    expect(document.activeElement).toBe(document.querySelector('input[aria-label="a"]'));
+  });
+});
+
+describe('stacked dialogs', () => {
+  function Stack({ outerCancel, innerCancel, innerOpen }: { outerCancel: () => void; innerCancel: () => void; innerOpen: boolean }) {
+    return (
+      <Dialog {...props({ title: 'Outer', onCancel: outerCancel })}>
+        <input aria-label="outer-field" />
+        <button id="opens-inner">open inner</button>
+        <Dialog {...props({ title: 'Inner', open: innerOpen, onCancel: innerCancel })}>
+          <input aria-label="inner-field" />
+        </Dialog>
+      </Dialog>
+    );
+  }
+  const dialogs = () => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')];
+
+  it('Escape closes only the topmost, then the one beneath', async () => {
+    const outer = vi.fn(), inner = vi.fn();
+    await render(<Stack outerCancel={outer} innerCancel={inner} innerOpen />);
+    key('Escape');
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
+    await render(<Stack outerCancel={outer} innerCancel={inner} innerOpen={false} />);
+    key('Escape');
+    expect(outer).toHaveBeenCalledTimes(1);
+    expect(inner).toHaveBeenCalledTimes(1);
+  });
+
+  it('Tab wraps inside the topmost one only', async () => {
+    await render(<Stack outerCancel={() => {}} innerCancel={() => {}} innerOpen />);
+    const [, inner] = dialogs();
+    const field = inner!.querySelector('input')!;
+    field.focus();
+    const confirm = [...inner!.querySelectorAll('button')].find((b) => b.textContent === 'Confirm')!;
+    confirm.focus();
+    expect(key('Tab').defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(field); // the inner's first, not the outer's
+  });
+
+  it('closing the top returns focus into the dialog beneath, not the page', async () => {
+    const page = document.createElement('button');
+    document.body.append(page);
+    page.focus();
+    await render(<Stack outerCancel={() => {}} innerCancel={() => {}} innerOpen={false} />);
+    const opens = document.getElementById('opens-inner')!;
+    opens.focus();
+    await render(<Stack outerCancel={() => {}} innerCancel={() => {}} innerOpen />);
+    expect(dialogs()[1]!.contains(document.activeElement)).toBe(true);
+    await render(<Stack outerCancel={() => {}} innerCancel={() => {}} innerOpen={false} />);
+    expect(document.activeElement).toBe(opens);
+    expect(dialogs()[0]!.contains(document.activeElement)).toBe(true);
+    page.remove();
+  });
+
+  it('a lower dialog closing under an open one does not steal focus back from it', async () => {
+    const lower = document.createElement('div');
+    const upper = document.createElement('div');
+    document.body.append(lower, upper);
+    const a = createRoot(lower), b = createRoot(upper);
+    await act(async () => a.render(<Dialog {...props({ title: 'Lower' })}><input aria-label="l" /></Dialog>));
+    await act(async () => b.render(<Dialog {...props({ title: 'Upper' })}><input aria-label="u" /></Dialog>));
+    const field = upper.querySelector('input')!;
+    expect(document.activeElement).toBe(field);
+    await act(async () => a.render(<Dialog {...props({ title: 'Lower', open: false })} />));
+    expect(document.activeElement).toBe(field);
+    await act(async () => { a.unmount(); b.unmount(); });
+    lower.remove();
+    upper.remove();
+  });
+
+  it('two sibling dialogs: the later one answers Escape alone', async () => {
+    const first = vi.fn(), second = vi.fn();
+    await render(
+      <>
+        <Dialog {...props({ title: 'One', onCancel: first })} />
+        <Dialog {...props({ title: 'Two', onCancel: second })} />
+      </>,
+    );
+    key('Escape');
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
   });
 });
 
