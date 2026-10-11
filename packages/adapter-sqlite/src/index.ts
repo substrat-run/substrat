@@ -644,6 +644,8 @@ import {
   bindExportBreakRefusal,
   scopeMoveOf,
   runningVersionOf,
+  isPrimaryScope,
+  PROVISIONED_VERSIONS_SQL,
   type ServingPointer,
   CrossVerticalRegistry,
   exportReadPlan,
@@ -4538,7 +4540,14 @@ export class SqliteScopeHost implements ScopeHost {
    */
   private assertBindingShapesKept(scope: Scope, incomingId: string, servingRef?: string | null): void {
     const move = scopeMoveOf(scope, incomingId, servingRef, this.servingPointerOf(scope, servingRef));
-    if (move) assertNoBindingShapeBreak(this.manifestJsonOf(move.before), this.manifestJsonOf(move.after));
+    // A primary scope is also judged from the version it last reconciled: until then, a retirement
+    // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
+    if (move) this.assertNoStrandFrom([move.before, isPrimaryScope(scope) ? scope.provisionedVersionId : null], move.after);
+  }
+
+  /** `PROVISIONED_VERSIONS_SQL` over the directory. */
+  private provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): string[] {
+    return (this.directory.prepare(PROVISIONED_VERSIONS_SQL).all(vertical, servingRef, ownerTenant) as { version_id: string }[]).map((r) => r.version_id);
   }
 
   /** What one version of `slug` imports, from the registry; `not_found` for a version it does not know. */
@@ -8939,8 +8948,14 @@ export class SqliteScopeHost implements ScopeHost {
         // serves the incoming one next, and a failed serve leaves it behind the channel), and what each
         // re-pointed scope RUNS (`runningVersionOf`: on the serving script, the served version).
         const served = channel === 'prod' ? this.servingPointerOfVertical(verticalSlug) : null;
+        // And what each scope it moves last reconciled (`PROVISIONED_VERSIONS_SQL`).
         this.assertNoStrandFrom(
-          [outgoing?.id, served?.versionId, ...owned.map((s) => runningVersionOf(mapScope(s), served))],
+          [
+            outgoing?.id,
+            served?.versionId,
+            ...owned.map((s) => runningVersionOf(mapScope(s), served)),
+            ...(served || owned.length > 0 ? this.provisionedVersionsOf(verticalSlug, served?.ref ?? null, owned.length > 0 ? owning!.ownerTenant : null) : []),
+          ],
           versionId,
         );
 
@@ -9266,7 +9281,10 @@ export class SqliteScopeHost implements ScopeHost {
           .get(verticalSlug) as VerticalRow | undefined;
         if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
         // #2178: every install on the serving script runs the new version from this moment.
-        this.assertNoStrandFrom([r.serving_version_id], parsed.versionId);
+        this.assertNoStrandFrom(
+          [r.serving_version_id, ...(r.serving_ref ? this.provisionedVersionsOf(verticalSlug, r.serving_ref, null) : [])],
+          parsed.versionId,
+        );
         this.directory
           .prepare(
             `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,

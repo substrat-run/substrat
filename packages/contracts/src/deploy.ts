@@ -670,8 +670,14 @@ export const entityGrantShape = z.object({
    * wherever it would come to run where the shape binds — a promote, a bind, a route onto a serving
    * script — unless it retires every key (`bindingShapeBreaks`, #2178); a rollback to a version from
    * before the shape is refused the same way. Retiring is the way through: keep the shape with the
-   * keys in `retired` and none in `permissions`, then drop or move it in a later version. Omitted
-   * when unset, so a registry that binds nothing keeps its digest.
+   * keys in `retired` and none in `permissions`, then drop or move it in a later version. A
+   * retirement reaches an install only at its reconcile, so each primary install the move reaches is
+   * also judged from the version it last reconciled (`provisionedVersionId`): the drop stays refused
+   * until every one has reconciled the retiring version. That receipt proves less than the scope's
+   * own retirement record would: a reconcile that left a retirement open still writes it, a copy
+   * (fork, snapshot, preview) never reconciles and is not judged from one, and a scope with no
+   * receipt is not judged from one. Omitted when unset, so a registry that binds nothing keeps its
+   * digest.
    */
   bind: z.object({ permission: permissionKey }).optional(),
 });

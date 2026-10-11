@@ -774,6 +774,7 @@ export {
   isExportBreakRefusal,
   bindExportBreaksOf,
   scopeMoveOf,
+  PROVISIONED_VERSIONS_SQL,
   bindExportBreakRefusal,
   BIND_EXPORT_BREAK_REFUSAL,
   isBindExportBreakRefusal,

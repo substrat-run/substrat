@@ -7113,6 +7113,42 @@ export function scopeHostContractSuite(
         expect(await boundTo(sc)).toBe(dropped);
       });
 
+      it('a retirement counts for a scope only once it has reconciled the retiring version (review of #2181)', async () => {
+        const { slug, v } = await listed();
+        const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.binds, doClasses: [], migrationTag: 'g' });
+        // One install on the serving script, one bound by pointer: both reconciled the binding version.
+        const routed = await install(slug, v.binds);
+        const pinned = await install(slug, v.binds);
+        await host.admin.setScopeServingRef(staff, t1, pinned, null);
+        for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.binds);
+        // The retiring version promotes, serves and is bound; no install has reconciled it yet.
+        await host.admin.promoteVersion(staff, slug, 'prod', v.retired);
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
+        await host.admin.bindScopeVersion(staff, t1, pinned, v.retired);
+        // So the drop is refused at each door: the promote, the serve, and the pinned install's bind.
+        await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', /drops the shape/);
+        await expectRefusal(
+          host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' }),
+          'precondition_failed',
+          /reconciles/,
+        );
+        await expectRefusal(host.admin.bindScopeVersion(staff, t1, pinned, v.dropped), 'precondition_failed', /drops the shape/);
+        // A copy never reconciles, so its receipt is not read: its bind is judged on what it runs.
+        const copy = await install(slug, v.binds, { kind: 'archive', forkedFrom: pinned, forkedAt: new Date().toISOString() });
+        await host.admin.markScopeProvisioned(staff, t1, copy, v.binds);
+        await host.admin.bindScopeVersion(staff, t1, copy, v.retired);
+        await host.admin.bindScopeVersion(staff, t1, copy, v.dropped);
+        // The twin: once every install has reconciled the retiring version, the drop passes everywhere.
+        for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.retired);
+        await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' });
+        await host.admin.bindScopeVersion(staff, t1, pinned, v.dropped);
+        expect(await prodOf(slug)).toBe(v.dropped);
+        expect(await boundTo(pinned)).toBe(v.dropped);
+      });
+
       it("a private promote judges each owned scope it re-points from the scope's own version, before anything moves", async () => {
         const slug = `tenant-a/bind-${ulid().slice(-8).toLowerCase()}`;
         await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: t1 });

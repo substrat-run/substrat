@@ -707,6 +707,8 @@ interface ControlPlaneStub {
     filter: { tenantId?: string; status?: string[]; vertical?: string } & ListPage,
   ): Promise<ScopeRow[]>;
   getScopeRecord(tenantId: string, scopeId: string): Promise<ScopeRow | undefined>;
+  /** #2178: `PROVISIONED_VERSIONS_SQL` — the versions the scopes a promote or a serve moves last reconciled. */
+  provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): Promise<string[]>;
   /** The getScope gate's refusal as data, null when access is allowed (#1718). */
   scopeAccessRefusal(
     tenantId: string,
@@ -7246,8 +7248,17 @@ export class CloudflareScopeHost implements ScopeHost {
         const served = channel === 'prod' && owning?.serving_ref && owning.serving_version_id
           ? { ref: owning.serving_ref, versionId: owning.serving_version_id }
           : null;
+        // And what each scope it moves last reconciled (`PROVISIONED_VERSIONS_SQL`).
         await this.assertNoStrandFrom(
-          [outgoing?.id, served?.versionId, ...owned.map((s) => runningVersionOf(mapScope(s), served))],
+          [
+            outgoing?.id,
+            served?.versionId,
+            ...owned.map((s) => runningVersionOf(mapScope(s), served)),
+            ...(served || owned.length > 0
+              ? await this.cp.provisionedVersionsOf(verticalSlug, served?.ref ?? null, owned.length > 0 ? owning!.owner_tenant : null)
+              : []),
+          ],
+          incoming.id,
           incoming,
         );
 
@@ -7466,7 +7477,13 @@ export class CloudflareScopeHost implements ScopeHost {
         // #2178: every install on the serving script runs the new version from this moment.
         if (r.serving_version_id) {
           const incoming = await this.cp.readVersion(parsed.versionId);
-          if (incoming) await this.assertNoStrandFrom([r.serving_version_id], incoming);
+          if (incoming) {
+            await this.assertNoStrandFrom(
+              [r.serving_version_id, ...(r.serving_ref ? await this.cp.provisionedVersionsOf(verticalSlug, r.serving_ref, null) : [])],
+              incoming.id,
+              incoming,
+            );
+          }
         }
         await this.cp.setVerticalServing(verticalSlug, {
           ref: parsed.ref,
@@ -11086,9 +11103,10 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /** #2178: refuse running `incoming` where any of `froms` ran, each distinct version judged once. */
-  private async assertNoStrandFrom(froms: readonly (string | null | undefined)[], incoming: VersionRow): Promise<void> {
+  private async assertNoStrandFrom(froms: readonly (string | null | undefined)[], afterId: string, held: VersionRow): Promise<void> {
+    const after = await this.manifestOf(afterId, held);
     for (const from of new Set(froms)) {
-      if (from && from !== incoming.id) assertNoBindingShapeBreak(await this.manifestOf(from, incoming), incoming.manifest_json);
+      if (from && from !== afterId) assertNoBindingShapeBreak(await this.manifestOf(from, held), after);
     }
   }
 
@@ -11104,7 +11122,9 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private async assertBindingShapesKept(scope: Scope, incoming: VersionRow, servingRef?: string | null): Promise<void> {
     const move = scopeMoveOf(scope, incoming.id, servingRef, await this.servingPointerOf(scope, servingRef));
-    if (move) assertNoBindingShapeBreak(await this.manifestOf(move.before, incoming), await this.manifestOf(move.after, incoming));
+    // A primary scope is also judged from the version it last reconciled: until then, a retirement
+    // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
+    if (move) await this.assertNoStrandFrom([move.before, isPrimaryScope(scope) ? scope.provisionedVersionId : null], move.after, incoming);
   }
 
   /**

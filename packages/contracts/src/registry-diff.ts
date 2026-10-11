@@ -214,7 +214,9 @@ export function bindingShapeRefusal(breaks: readonly BindingShapeBreak[]): strin
     `${BINDING_SHAPE_REFUSAL} ${each.join(', ')}. Retire those keys first: keep the shape with the keys ` +
     'in `retired` and none of them in `permissions`, then drop or move it in a later version. A ' +
     'version from before the shape existed (a rollback) is refused the same way, and no ' +
-    'acknowledgement passes it: retire the keys in a new version instead'
+    'acknowledgement passes it: retire the keys in a new version instead. A retirement reaches an ' +
+    'install only when it reconciles the retiring version, so the drop stays refused until every ' +
+    'install it would move has'
   );
 }
 

@@ -2157,6 +2157,18 @@ export function scopeMoveOf(
 }
 
 /**
+ * #2178: the distinct versions the active primary scopes of a vertical that a promote or a serve
+ * moves were last provisioned against (`provisionedVersionId`, written only after a provision or
+ * reconcile succeeds): those routed on a serving ref, and those of an owner tenant. A retirement
+ * reaches a scope only at its reconcile, so a scope provisioned behind the retiring version still
+ * holds the keys. One row per version however many scopes, so a vertical with many installs
+ * costs one directory read. Binds `(vertical, servingRef, ownerTenant)`; a null matches nothing.
+ */
+export const PROVISIONED_VERSIONS_SQL = `SELECT DISTINCT provisioned_version_id AS version_id FROM scopes
+  WHERE vertical = ? AND status = 'active' AND forked_from IS NULL AND COALESCE(kind, '') != 'preview'
+    AND provisioned_version_id IS NOT NULL AND (serving_ref = ? OR tenant_id = ?)`;
+
+/**
  * Whom moving `scope` breaks (#1756): the promote gate's question (`exportBreaksOf`), asked of
  * ONE install in its own tenant, since an edge never crosses one.
  *

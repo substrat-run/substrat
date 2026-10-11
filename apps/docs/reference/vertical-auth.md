@@ -257,7 +257,9 @@ including the two OIDC ones where Better Auth stays dormant:
   drops a key from it without retiring that key is refused wherever it would run where the shape binds (a promote, a bind, a route onto the
   serving script), a rollback to a version from before the shape included, until it retires
   every key (#2178): keep the shape with the keys in `retired` and none in `permissions`, then
-  drop or move it in a later version. Dropping only `bind` is allowed. A
+  drop or move it in a later version, once every install has reconciled the retiring version
+  (each primary install is judged from the version it last reconciled; a copy never reconciles,
+  so a retirement never reaches it). Dropping only `bind` is allowed. A
   vertical supplies `nodeFor`, `callerOf` (who is asking, 401 for nobody) and the host verb.
   There is no admin gate, because the kernel's bound is the key on the record. An erasure of
   the record, or of its person, unbinds too.
