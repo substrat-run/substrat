@@ -8,6 +8,7 @@ import { dirname, join, isAbsolute, resolve } from 'node:path';
 import {
   buildPermissionRegistry,
   definePermissions,
+  assertDeclaredScopeStores,
   manifestStoresOf,
   runtimeNeeds,
   RUNTIME_BASELINE,
@@ -123,6 +124,7 @@ describe('readRuntimeNeeds', () => {
       entry: 'src/worker.ts',
       needsNodeCompat: false,
       stores: [],
+      scopeStores: [],
       tenantStores: [],
       blobStores: [],
     });
@@ -156,6 +158,24 @@ describe('readRuntimeNeeds', () => {
       },
     });
     expect(() => manifestStoresOf(readRuntimeNeeds(dir), false)).toThrow(/twice/);
+  });
+
+  it('reads a scope store, and refuses it while the kind has no registration', () => {
+    const dir = scratch({
+      substrat: {
+        runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'ontomate' }] },
+      },
+    });
+    const needs = readRuntimeNeeds(dir);
+    expect(needs?.scopeStores).toEqual([{ binding: 'GRAPH', kind: 'ontomate' }]);
+    expect(() => assertDeclaredScopeStores({ scopeStores: needs?.scopeStores })).toThrow(/not registered/);
+  });
+
+  it('refuses a scope-store kind the declaration does not have', () => {
+    const dir = scratch({
+      substrat: { runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] } },
+    });
+    expect(() => readRuntimeNeeds(dir)).toThrow();
   });
 
   it('rejects an invalid declaration instead of pushing something else', () => {

@@ -1,4 +1,4 @@
-import { ADMISSIBLE_BINDING_TYPES, PLATFORM_BINDING_PREFIX, substratError, verticalScriptStem } from '@substrat-run/contracts';
+import { ADMISSIBLE_BINDING_TYPES, assertDeclaredScopeStores, PLATFORM_BINDING_PREFIX, substratError, verticalScriptStem } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**
@@ -199,6 +199,12 @@ const NAMED_REFUSALS: Record<string, string> = {
  * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
  */
 export function assertSandboxContract(m: DeployManifest): void {
+  assertDeclaredScopeStores({
+    tenantStores: m.tenantStores,
+    blobStores: m.blobStores,
+    scopeStores: m.scopeStores,
+    bindingNames: m.bindings.map((b) => b.name),
+  });
   const own = new Set(m.doClasses);
   const admissible = new Set<string>(ADMISSIBLE_BINDING_TYPES);
   const doc = 'self-serve-deploy.md §4';

@@ -144,6 +144,19 @@ describe('assertSandboxContract', () => {
   it('names the offending binding and its type in the refusal', () => {
     expectRefusal([{ type: 'ai', name: 'LLM' }], /binding 'LLM' \(type 'ai'\)/);
   });
+
+  it('refuses a scope store whose kind is not registered', () => {
+    let thrown: unknown;
+    try {
+      assertSandboxContract({ ...manifest([]), scopeStores: [{ binding: 'GRAPH', kind: 'ontomate' }] });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown, 'an unregistered scope store was admitted').toBeInstanceOf(Error);
+    expect(errorCodeOf(thrown)).toBe('forbidden');
+    expect((thrown as Error).message).toMatch(/not registered/);
+    expect((thrown as Error).message).toMatch(/^deploy refused: /);
+  });
 });
 
 describe('nextMigrationTag', () => {

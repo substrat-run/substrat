@@ -263,8 +263,9 @@ records promotion moves a scope between. This is what turns the scope's nullable
 re-parsed at the control-plane trust boundary and run through the §4 sandbox contract.
 `runtimeNeeds.tenantStores` may say `kind: 'relational'` or `kind: 'blob'` (the older
 `blobStores` spelling is the same blob). The manifest a push sends does not: relational
-stores stay in `tenantStores` and blobs stay in `blobStores`. It also carries the
-permission registry and `RUNTIME_BASELINE`. One schema, two parses, no drift.
+stores stay in `tenantStores` and blobs stay in `blobStores`. It also carries
+`scopeStores`, one platform-run object per scope, the permission registry, and
+`RUNTIME_BASELINE`. One schema, two parses, no drift.
 
 ## Connections (`connections.ts`)
 

@@ -37,6 +37,7 @@ import {
   type RuntimeNeeds,
   type VersionOrigin,
   type DeployManifest,
+  assertDeclaredScopeStores,
   manifestStoresOf,
 } from '@substrat-run/contracts';
 import {
@@ -1573,6 +1574,13 @@ export async function push(
   // #1995: attachment bytes need a per-tenant bucket, and no vertical should have to remember
   // to ask for one — a module declaring an attachment target IS the request.
   const stores = manifestStoresOf(needs, declaresAttachments);
+  assertDeclaredScopeStores({
+    own: needs?.stores,
+    tenantStores: stores.tenantStores,
+    blobStores: stores.blobStores,
+    scopeStores: needs?.scopeStores,
+    bindingNames: bindings.map((b) => b.name),
+  });
   assertAttachmentBindingFree(bindings, stores.blobStores);
 
   // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build
@@ -1645,6 +1653,7 @@ export async function push(
     // declare. Carried here for admission + the tenant lifecycle. The attachment store is
     // added from the modules' `attachmentTargets` (#1995), not hand-declared.
     ...(stores.blobStores.length ? { blobStores: stores.blobStores } : {}),
+    ...(needs?.scopeStores?.length ? { scopeStores: needs.scopeStores } : {}),
     // Static files (#340): the routing config plus the full content-addressed manifest.
     // Sent even when the directory came out EMPTY — an empty `files` list is a vertical
     // that declared assets and built none, which the control plane should see as such
