@@ -23,9 +23,10 @@
  * Same answers as `posix.normalize` for the inputs this asks about: `.` and empty
  * segments drop, `..` pops the segment before it, and a `..` with nothing left to
  * pop is KEPT — which is what makes a path that climbs above the project fail the
- * prefix test below rather than silently resolving back into it.
+ * prefix test below rather than silently resolving back into it. The phase write
+ * guards judge paths with it too (phase.ts), for the same reason.
  */
-function normalise(path: string): string {
+export function normalise(path: string): string {
 	const out: string[] = [];
 	for (const seg of path.split('/')) {
 		if (seg === '' || seg === '.') continue;

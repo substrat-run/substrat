@@ -111,3 +111,162 @@ describe('runTurnLoop', () => {
 		expect(result.repairs).toBe(0);
 	});
 });
+
+describe('runTurnLoop with lanes (#682)', () => {
+	type Lane = 'api' | 'ui';
+	interface Pass {
+		readonly text: string;
+		readonly carried: string | undefined;
+		readonly lane: Lane | undefined;
+	}
+
+	it('runs every lane in order, THEN the gates once — the barrier', async () => {
+		const events: string[] = [];
+		const result = await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lanes: ['api', 'ui'] },
+			{
+				runPass: async (_text, _carried, lane) => {
+					events.push(`pass:${lane}`);
+					return false;
+				},
+				runChecks: async () => {
+					events.push('checks');
+					return checked(green);
+				},
+			},
+		);
+		expect(events).toEqual(['pass:api', 'pass:ui', 'checks']);
+		expect(result.repairs).toBe(0);
+	});
+
+	it('gives every lane the message AND the carried report — each lane is a fresh conversation', async () => {
+		// "First pass only" exists because continuation and repair prompts re-embed
+		// the fresh report. A second lane embeds nothing, so a report withheld from
+		// it is a report the lane that can fix it never reads (#2200 r1).
+		const passes: Pass[] = [];
+		await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lastGateReport: 'carried', lanes: ['api', 'ui'] },
+			{
+				runPass: async (text, carried, lane) => {
+					passes.push({ text, carried, lane });
+					return false;
+				},
+				runChecks: async () => checked(green),
+			},
+		);
+		expect(passes).toEqual([
+			{ text: 'build it', carried: 'carried', lane: 'api' },
+			{ text: 'build it', carried: 'carried', lane: 'ui' },
+		]);
+	});
+
+	it('routes the carried report through the host, so each lane gets the part it owns', async () => {
+		const passes: Pass[] = [];
+		await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lastGateReport: 'api-part|ui-part', lanes: ['api', 'ui'] },
+			{
+				carriedFor: (report, lane) => (lane === 'ui' ? report.split('|')[1] : undefined),
+				runPass: async (text, carried, lane) => {
+					passes.push({ text, carried, lane });
+					return false;
+				},
+				runChecks: async () => checked(green),
+			},
+		);
+		expect(passes).toEqual([
+			{ text: 'build it', carried: undefined, lane: 'api' },
+			{ text: 'build it', carried: 'ui-part', lane: 'ui' },
+		]);
+	});
+
+	it('still carries the report into the first pass only of a continued lane', async () => {
+		const passes: Pass[] = [];
+		await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lastGateReport: 'carried', lanes: ['ui'] },
+			{
+				runPass: async (text, carried, lane) => {
+					passes.push({ text, carried, lane });
+					return passes.length === 1; // the first pass is cut once
+				},
+				runChecks: async () => checked(green),
+			},
+		);
+		expect(passes.map((p) => p.carried)).toEqual(['carried', undefined]);
+	});
+
+	it('continues a truncated lane AS that lane, from one per-turn budget', async () => {
+		const passes: Pass[] = [];
+		const result = await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lanes: ['api', 'ui'] },
+			{
+				runPass: async (text, carried, lane) => {
+					passes.push({ text, carried, lane });
+					return true; // every pass cut by the step ceiling
+				},
+				runChecks: async () => checked(green),
+			},
+		);
+		// The API lane spends the whole budget; the UI lane still runs once and is
+		// not continued — the cap is per turn, not per lane.
+		expect(result.continuations).toBe(MAX_CONTINUATIONS);
+		const api = passes.filter((p) => p.lane === 'api');
+		const ui = passes.filter((p) => p.lane === 'ui');
+		expect(api).toHaveLength(1 + MAX_CONTINUATIONS);
+		expect(ui).toHaveLength(1);
+		expect(passes.every((p) => p.lane !== undefined)).toBe(true);
+	});
+
+	it('repairs UNLANED — a red verdict can sit on either side of the seam', async () => {
+		const passes: Pass[] = [];
+		let checks = 0;
+		await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lanes: ['api', 'ui'] },
+			{
+				runPass: async (text, carried, lane) => {
+					passes.push({ text, carried, lane });
+					return false;
+				},
+				runChecks: async () => {
+					checks += 1;
+					return checked(checks === 1 ? red : green);
+				},
+			},
+		);
+		expect(passes.map((p) => p.lane)).toEqual(['api', 'ui', undefined]);
+		expect(passes[2]?.text).toContain('repair attempt 1/');
+		expect(checks).toBe(2);
+	});
+
+	it('does not start the next lane once the turn is aborted', async () => {
+		const controller = new AbortController();
+		const lanes: (Lane | undefined)[] = [];
+		await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lanes: ['api', 'ui'] },
+			{
+				signal: controller.signal,
+				runPass: async (_t, _c, lane) => {
+					lanes.push(lane);
+					controller.abort();
+					return false;
+				},
+				runChecks: async () => checked(red),
+			},
+		);
+		expect(lanes).toEqual(['api']);
+	});
+
+	it('an empty lane list is one unlaned pass, exactly as before', async () => {
+		const passes: Pass[] = [];
+		await runTurnLoop<Lane>(
+			{ message: 'build it', turnNo: 1, lanes: [] },
+			{
+				runPass: async (text, carried, lane) => {
+					passes.push({ text, carried, lane });
+					return false;
+				},
+				runChecks: async () => checked(green),
+			},
+		);
+		expect(passes).toEqual([{ text: 'build it', carried: undefined, lane: undefined }]);
+	});
+});
