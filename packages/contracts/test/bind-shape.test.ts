@@ -5,13 +5,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  assertNoBindingShapeBreak,
   bindShapeProblems,
   buildPermissionRegistry,
   pushedPermissionRegistry,
   type EntityGrantShape,
   type ModuleManifest,
 } from '../src/index.js';
-import { diffRegistries, grantShapeHolderNotes, registryDirection } from '../src/registry-diff.js';
+import { bindingShapeBreaks, diffRegistries, grantShapeHolderNotes, registryDirection } from '../src/registry-diff.js';
 
 const holder = { table: 'desk_contacts', idColumn: 'id', principalColumn: 'principal' };
 const shape = (over: Partial<EntityGrantShape> = {}) =>
@@ -84,5 +85,108 @@ describe('a bind change between versions (#1686)', () => {
 
   it('an unchanged bind is no change at all', () => {
     expect(diffRegistries(registry(shape()), registry(shape())).grantChanges).toEqual([]);
+  });
+});
+
+describe('a holder change between versions (#2178)', () => {
+  const registry = (grant: EntityGrantShape) => ({ permissions: [], roles: [], entityGrants: [grant] });
+
+  it.each([
+    ['table', { ...holder, table: 'desk_people' }, 'desk_people.principal (by id)'],
+    ['id column', { ...holder, idColumn: 'key' }, 'desk_contacts.principal (by key)'],
+    ['principal column', { ...holder, principalColumn: 'owner' }, 'desk_contacts.owner (by id)'],
+    ['kind', 'grantee' as const, 'grantee'],
+  ])('a moved %s is reported, with a note that existing holders stay where they were', (_name, to, label) => {
+    const d = diffRegistries(registry(shape({ bind: undefined })), registry(shape({ bind: undefined, holder: to })));
+    expect(d.grantChanges[0]?.holder).toEqual({ from: 'desk_contacts.principal (by id)', to: label });
+    expect(grantShapeHolderNotes(d.grantChanges[0]!)).toEqual([
+      `holders are now read from ${label} (was desk_contacts.principal (by id)); existing holders are not moved`,
+    ]);
+    expect(registryDirection(d)).toBe('mixed');
+  });
+
+  it('a holder declared where there was none is a change too; an unchanged one, or a shape appearing, says no holder change', () => {
+    expect(diffRegistries(registry(shape({ bind: undefined, holder: undefined })), registry(shape({ bind: undefined }))).grantChanges[0]?.holder).toEqual({
+      from: null,
+      to: 'desk_contacts.principal (by id)',
+    });
+    expect(diffRegistries(registry(shape()), registry({ ...shape(), holder: { ...holder } })).grantChanges).toEqual([]);
+    expect(diffRegistries({ permissions: [], roles: [], entityGrants: [] }, registry(shape())).grantChanges[0]).not.toHaveProperty('holder');
+  });
+});
+
+describe('the binding-shape gate (#2178)', () => {
+  const grants = (...entityGrants: EntityGrantShape[]) => ({ entityGrants });
+  const moved = { ...holder, principalColumn: 'owner' };
+
+  it.each([
+    ['drops the shape', grants(), 'removed'],
+    ['moves its holder', grants(shape({ holder: moved })), 'holder'],
+    ['makes it a sharing shape', grants({ entityType: 'contact', permissions: ['desk:read-own'] } as EntityGrantShape), 'sharing'],
+    ['retires every key and drops the bind, holder moved', grants(shape({ permissions: [], retired: ['desk:read-own'], holder: moved, bind: undefined })), null],
+  ])('judges a version that %s while the running one binds', (_name, to, change) => {
+    const from = grants(shape({ permissions: ['desk:read-own'] }));
+    const breaks = bindingShapeBreaks(from, to);
+    if (change === null) expect(breaks).toEqual([]);
+    else expect(breaks).toEqual([{ entityType: 'contact', change, unretired: ['desk:read-own'] }]);
+  });
+
+  it('names only the keys left unretired', () => {
+    const from = grants(shape({ permissions: ['desk:read-own', 'desk:write-own'] }));
+    expect(bindingShapeBreaks(from, grants(shape({ permissions: [], retired: ['desk:read-own'], holder: moved })))).toEqual([
+      { entityType: 'contact', change: 'holder', unretired: ['desk:write-own'] },
+    ]);
+  });
+
+  it.each([
+    ['the same shape', grants(shape())],
+    ['the shape without its bind (its holder stays recorded, and it can still be retired)', grants(shape({ bind: undefined }))],
+    ['a version retiring every key, holder moved', grants(shape({ permissions: [], retired: ['desk:read-own'], holder: moved }))],
+    ['a shape with more keys', grants(shape({ permissions: ['desk:read-own', 'desk:write-own'] }))],
+  ])('passes %s', (_name, to) => {
+    expect(bindingShapeBreaks(grants(shape()), to)).toEqual([]);
+  });
+
+  it.each([
+    ['a shape that does not bind', shape({ bind: undefined })],
+    ['a binding shape with no current key', shape({ permissions: [], retired: ['desk:read-own'] })],
+    ['a sharing shape', { entityType: 'contact', permissions: ['desk:read-own'] } as EntityGrantShape],
+  ])('never judges the drop of %s', (_name, before) => {
+    expect(bindingShapeBreaks(grants(before), grants())).toEqual([]);
+  });
+
+  describe('over stored manifests', () => {
+    const manifest = (...entityGrants: EntityGrantShape[]) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } });
+    const refused = (from: string | null, to: string | null) => {
+      try {
+        assertNoBindingShapeBreak(from, to);
+        return null;
+      } catch (e) {
+        return e as Error & { code?: string };
+      }
+    };
+
+    it('refuses a strand precondition_failed, saying how to get through and that a rollback is refused too', () => {
+      const e = refused(manifest(shape()), manifest());
+      expect(e?.message).toMatch(/^this version would strand people bound to contact \(drops the shape; bound people keep desk:read-own\)/);
+      expect(e?.message).toMatch(/Retire those keys first/);
+      expect(e?.message).toMatch(/\(a rollback\) is refused the same way, and no acknowledgement passes it/);
+      expect(e).toMatchObject({ code: 'precondition_failed' });
+    });
+
+    it('passes a manifest with no registry, or two that keep the shape', () => {
+      expect(refused(null, null)).toBeNull();
+      expect(refused(JSON.stringify({}), manifest())).toBeNull();
+      expect(refused(manifest(shape()), manifest(shape()))).toBeNull();
+      // No shape before, so nothing was bound with it.
+      expect(refused(null, manifest(shape()))).toBeNull();
+    });
+
+    it('fails closed on grant shapes it cannot read, on either side', () => {
+      const broken = JSON.stringify({ registry: { entityGrants: [{ entityType: 7 }] } });
+      expect(refused(broken, manifest())?.message).toMatch(/running version's grant shapes cannot be read/);
+      expect(refused(manifest(), broken)?.message).toMatch(/incoming version's grant shapes cannot be read/);
+      expect(refused('not json', manifest())).toMatchObject({ code: 'precondition_failed' });
+    });
   });
 });

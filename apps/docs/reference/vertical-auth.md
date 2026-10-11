@@ -253,7 +253,11 @@ including the two OIDC ones where Better Auth stays dormant:
   `{ unbound: [<principal>, …] }`, or 403 naming the bind key the caller lacks on that record,
   or 404 for a type the scope does not bind. People already bound keep the shape until an
   unbind, an erasure or a retirement of its keys releases them, whatever a later version
-  declares. A
+  declares. So a version that removes the shape, moves its holder or makes it a sharing shape
+  is refused wherever it would run where the shape binds (a promote, a bind, a route onto the
+  serving script), a rollback to a version from before the shape included, until it retires
+  every key (#2178): keep the shape with the keys in `retired` and none in `permissions`, then
+  drop or move it in a later version. Dropping only `bind` is allowed. A
   vertical supplies `nodeFor`, `callerOf` (who is asking, 401 for nobody) and the host verb.
   There is no admin gate, because the kernel's bound is the key on the record. An erasure of
   the record, or of its person, unbinds too.
