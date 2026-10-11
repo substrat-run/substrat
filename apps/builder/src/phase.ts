@@ -69,9 +69,10 @@ export const guardPath: (path: string) => string = normalise;
  * the local studio's usual filesystem, folds case — and not only ASCII case:
  * `ſpec/model.ts` (long s), `teﬆ/scenario.test.ts` (the st ligature) and
  * `ẞ` (capital sharp s, to `ss`) all open the protected file (#2200 r2). A
- * sweep of every code point against files named with every one-, two- and
- * three-letter ASCII name found exactly the characters this folds — ß ẞ ſ K
- * ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ — and none that folds onto `.`; the test pins them.
+ * sweep of every code point against files named with every one- and two-letter
+ * ASCII name, plus the two three-letter ligature names (ffi, ffl), found exactly
+ * the characters this folds — ß ẞ ſ K ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ — and none that folds onto
+ * `.`; the test pins them.
  *
  * NFKC, then lower → upper → lower: lower first is what takes ẞ to ß, upper
  * takes ß and ſ and the ligatures to ASCII capitals, lower lands them. It folds

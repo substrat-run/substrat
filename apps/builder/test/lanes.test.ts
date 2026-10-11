@@ -148,10 +148,11 @@ describe('the UI lane — app/** only', () => {
 });
 
 describe('foldForGuard — the fold APFS applies, or a wider one (#2200 r2)', () => {
-	// The nine non-ASCII characters this repo's APFS folds onto ASCII letters,
+	// The eleven non-ASCII characters this repo's APFS folds onto ASCII letters,
 	// found by sweeping every code point against files named with every one- and
-	// two-letter ASCII name (and the three-letter ligature names). Each must
-	// fold to what APFS opens.
+	// two-letter ASCII name plus the two three-letter ligature names (ffi, ffl):
+	// nine fold onto one or two letters, ﬃ and ﬄ onto three. Each must fold to
+	// what APFS opens.
 	const APFS_FOLDS: [string, string][] = [
 		['ß', 'ss'], ['ẞ', 'ss'], ['ſ', 's'], ['K', 'k'],
 		['ﬀ', 'ff'], ['ﬁ', 'fi'], ['ﬂ', 'fl'], ['ﬅ', 'st'], ['ﬆ', 'st'], ['ﬃ', 'ffi'], ['ﬄ', 'ffl'],
@@ -449,7 +450,8 @@ describe('planLanes — what each lane is given', () => {
 	});
 
 	it('reads API-only as an opt-out only when it is the section\'s whole answer', async () => {
-		const mixed = '# Fx\n\n## 8. The screens\nThe export is API-only; admins get a dashboard.\n- Admin: dashboard';
+		// No list item here: only the opening-word anchor makes this read as screens.
+		const mixed = '# Fx\n\n## 8. The screens\nThe export is API-only; admins get a dashboard.';
 		const listed = '# Fx\n\n## 8. The screens\nAPI-only for the export.\n- Office: list of things';
 		for (const concept of [mixed, listed]) {
 			const plans = await planLanes(ws({ 'spec/concept.md': concept, 'spec/model.ts': 'M' }), 'iterate');
