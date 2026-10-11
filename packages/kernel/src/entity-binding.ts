@@ -45,8 +45,11 @@ interface EntityBinding {
   table: string;
   idColumn: string;
   principalColumn: string;
-  /** Who holds this on a record may bind its person with a link, and unbind them. */
-  permission: PermissionKey;
+  /**
+   * Who holds this on a record may bind its person with a link, and unbind them — null once a
+   * version dropped `bind` and kept the shape: nobody may, and an erasure still releases.
+   */
+  permission: PermissionKey | null;
   /** The shape's current keys — what a claim gives. */
   keys: PermissionKey[];
   /** Every key of the shape, current and retired — what an unbind takes back. */
@@ -62,7 +65,7 @@ function bindingFrom(entityType: string, rows: readonly { relation: string; obje
   const of = (relation: string) => rows.filter((r) => r.relation === relation).map((r) => r.object);
   const holder = of(BIND_HOLDER_RELATION);
   const permission = of(BIND_PERMISSION_RELATION);
-  if (holder.length !== 1 || permission.length !== 1) return null;
+  if (holder.length !== 1 || permission.length > 1) return null;
   const parts = holder[0]!.split('.');
   if (parts.length !== 3) return null;
   const [table, idColumn, principalColumn] = parts.map((n) =>
@@ -74,24 +77,28 @@ function bindingFrom(entityType: string, rows: readonly { relation: string; obje
     table,
     idColumn,
     principalColumn,
-    permission: permissionKey.parse(permission[0]),
+    permission: permission[0] === undefined ? null : permissionKey.parse(permission[0]),
     keys: keys(BIND_KEY_RELATION),
     every: keys(SHAPE_PROTECTED_KEY_RELATION),
   };
 }
 
-/** The scope's recorded binding for `entityType`, or null when its reconciled registry declares none. */
-function entityBindingOf(sql: ScopedSql, entityType: string): EntityBinding | null {
-  return bindingFrom(
+/**
+ * The scope's recorded binding for `entityType` that still declares its bind key — what a mint, a
+ * claim and an unbind need — or null when its reconciled registry binds nothing there.
+ */
+function entityBindingOf(sql: ScopedSql, entityType: string): (EntityBinding & { permission: PermissionKey }) | null {
+  const binding = bindingFrom(
     entityType,
     sql.query<{ relation: string; object: string }>(
       `SELECT relation, object FROM _substrat_tuples WHERE subject = ? AND relation IN (?, ?, ?, ?)`,
       [`shape:${entityType}`, ...BINDING_RELATIONS],
     ),
   );
+  return binding?.permission ? { ...binding, permission: binding.permission } : null;
 }
 
-/** Every binding the scope's reconciled registry records, in one read. */
+/** Every binding the scope's reconciled registry records, bind key or not — what an erasure releases — in one read. */
 function entityBindingsOf(sql: ScopedSql): EntityBinding[] {
   const bySubject = new Map<string, { relation: string; object: string }[]>();
   for (const row of sql.query<{ subject: string; relation: string; object: string }>(

@@ -619,24 +619,42 @@ function holderNames(holder: { table: string; idColumn: string; principalColumn:
  * The registry facts a reconcile records for the explicit tuple writer and a binding claim, made to
  * match the reached version's whole reviewed registry exactly, so a declaration a later version
  * drops stops counting:
- * - every current and retired key of each `holder: 'grantee'` or BINDING bootstrap shape
+ * - every current and retired key of each `holder: 'grantee'` or BOUND bootstrap shape
  *   (`shape-grantee-key`), which every non-shape grant then refuses on that entity type;
- * - each binding shape's holder column, bind key and current keys (#1686).
- * Two statements, bounded by the declared shapes, so it runs without a budget.
+ * - each bound shape's holder column and current keys, and — only while it declares `bind` — its
+ *   bind key (#1686).
+ *
+ * A shape is BOUND while it declares `bind`, and stays bound after a version drops `bind` for as
+ * long as it is still a bootstrap shape with the same table holder: records may already name their
+ * people in that column, holding the shape through it, and an erasure releases them by these
+ * facts. Without the bind key nobody can mint, claim or unbind any more; what was bound stays as a
+ * shape holder does when a key is dropped without being retired. A version that drops the shape,
+ * or changes its holder, drops the facts with it.
+ * Three statements, bounded by the declared shapes, so it runs without a budget.
  */
 function recordShapeFacts(db: SwitchSql, shapes: readonly EntityGrantShape[]): void {
-  const binding = shapes.filter(binds);
   const ref = (s: EntityGrantShape) => `shape:${s.entityType}`;
+  const holderOf = (s: EntityGrantShape & { holder: { table: string; idColumn: string; principalColumn: string } }) => {
+    const { table, idColumn, principalColumn } = holderNames(s.holder, 'reconcileEntityGrantShapes', `entityGrants bind of '${s.entityType}'`);
+    return `${table}.${idColumn}.${principalColumn}`;
+  };
+  const recorded = new Map(
+    (db.all(`SELECT subject, object FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?`, BIND_HOLDER_RELATION) as {
+      subject: string;
+      object: string;
+    }[]).map((r) => [r.subject, r.object]),
+  );
+  const tableHeld = (s: EntityGrantShape): s is EntityGrantShape & { holder: { table: string; idColumn: string; principalColumn: string } } =>
+    !!s.bootstrap && typeof s.holder === 'object';
+  const bound = shapes.filter(tableHeld).filter((s) => binds(s) || recorded.get(ref(s)) === holderOf(s));
+  const boundTypes = new Set(bound.map((s) => s.entityType));
   const facts: [subject: string, relation: string, object: string][] = [
     ...shapes
-      .filter((s) => (s.bootstrap && s.holder === 'grantee') || binds(s))
+      .filter((s) => (s.bootstrap && s.holder === 'grantee') || boundTypes.has(s.entityType))
       .flatMap((s) => keysOf([...s.permissions, ...(s.retired ?? [])]).map((k) => [ref(s), SHAPE_PROTECTED_KEY_RELATION, `granted:${k}`] as [string, string, string])),
-    ...binding.map((s) => {
-      const { table, idColumn, principalColumn } = holderNames(s.holder, 'reconcileEntityGrantShapes', `entityGrants bind of '${s.entityType}'`);
-      return [ref(s), BIND_HOLDER_RELATION, `${table}.${idColumn}.${principalColumn}`] as [string, string, string];
-    }),
-    ...binding.map((s) => [ref(s), BIND_PERMISSION_RELATION, s.bind.permission] as [string, string, string]),
-    ...binding.flatMap((s) => keysOf(s.permissions).map((k) => [ref(s), BIND_KEY_RELATION, `granted:${k}`] as [string, string, string])),
+    ...bound.map((s) => [ref(s), BIND_HOLDER_RELATION, holderOf(s)] as [string, string, string]),
+    ...shapes.filter(binds).map((s) => [ref(s), BIND_PERMISSION_RELATION, s.bind.permission] as [string, string, string]),
+    ...bound.flatMap((s) => keysOf(s.permissions).map((k) => [ref(s), BIND_KEY_RELATION, `granted:${k}`] as [string, string, string])),
   ];
   const json = JSON.stringify(facts);
   db.run(

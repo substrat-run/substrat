@@ -397,6 +397,38 @@ export function bindingInviteContractSuite(
         expect(await live(id)).toEqual([]);
       });
 
+      it('a version that drops `bind` but keeps the shape: nobody may mint or unbind, and an erasure still releases', async () => {
+        const { id, target } = await claimed();
+        await reconcile([{ ...BIND_SHAPE, bind: undefined }]);
+        try {
+          expect(await mint(clerk, await invitee(), rec(await record()))).toEqual({ ok: false, refused: 'bind-not-declared' });
+          expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: false, refused: 'bind-not-declared' });
+          // What was bound stays bound, as a shape holder does when a key is dropped without being retired…
+          expect(await reads(target, id)).toBe(true);
+          // …and the column still decides: a direct grant of the shape's key is still refused.
+          await expect(() =>
+            host.admin.grant(staff, { principalId: p(), permission: BIND_READ_OWN, node: node(), entity: rec(id), grantedBy: clerk }),
+          ).rejects.toThrow(/given only by the shape grant/);
+          await host.admin.shredSubject(staff, t1, s1, dataSubjectId.parse(target));
+          expect((await rowOf(id))?.principal).toBeNull();
+          expect(await live(id)).toEqual([]);
+        } finally {
+          await reconcile([BIND_SHAPE]);
+        }
+      });
+
+      it('a version that drops the shape drops its facts with it: an erasure then releases nothing, as for any dropped shape', async () => {
+        const { id, target } = await claimed();
+        await reconcile([]);
+        try {
+          await host.admin.shredSubject(staff, t1, s1, dataSubjectId.parse(target));
+          expect((await rowOf(id))?.principal).toBe(target);
+          expect((await live(id)).map((t) => t.relation)).toEqual(['bootstrap', `granted:${BIND_READ_OWN}`]);
+        } finally {
+          await reconcile([BIND_SHAPE]);
+        }
+      });
+
       it('releases a record the hook deleted, from what was read before it ran', async () => {
         const { id, target } = await claimed('drop');
         await host.admin.shredSubject(staff, t1, s1, dataSubjectId.parse(target));
