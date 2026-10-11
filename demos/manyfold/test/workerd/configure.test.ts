@@ -188,6 +188,18 @@ describe('a delivered substrat:auth switches the install to the per-install issu
     expect(await sessionOf(a, await binding.mint('sub-ann'))).toMatchObject({ sub: 'sub-ann' });
   });
 
+  it('pinned: an oidc choice that does not parse falls back to the binding default; one that parses but is incomplete is a 503', async () => {
+    // Not a URL: `authChoice` rejects it, so it reads as nothing delivered (same as meridian).
+    const bad = await install();
+    expect((await deliver(bad, JSON.stringify({ mode: 'oidc', issuer: 'not a url', clientId: 'c' }))).status).toBe(200);
+    expect(await (await get(bad, '/api/auth/login')).json()).toMatchObject({ issuer: BINDING_ISSUER });
+    expect(await sessionOf(bad, await binding.mint('sub-ann'))).toMatchObject({ sub: 'sub-ann' });
+    // Parses, but there is no clientId: the install is refused, not quietly given the binding issuer.
+    const incomplete = await install();
+    expect((await deliver(incomplete, JSON.stringify({ mode: 'oidc', issuer: 'https://team-auth.test' }))).status).toBe(200);
+    expect((await get(incomplete, '/api/auth/login')).status).toBe(503);
+  });
+
   it('a refused issuer is a 503 for that install, not a fall back to the binding default', async () => {
     const a = await install();
     expect((await deliver(a, choice('http://insecure-issuer.test', a))).status).toBe(200);
