@@ -5902,6 +5902,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const origin = { tenantId: tenantIdSchema.parse(dump.tenantId), scopeId: scopeIdSchema.parse(dump.scopeId) };
       const tables = await openDump(dump.tables, sealerFor(c, origin.tenantId, origin.scopeId));
       const landing = { ...dump, tables };
+      // #2185: cleared before the load as well as after it (below): a step after the load can still
+      // throw (the deployment's half, the re-assert), and the data that landed may predate a reconcile.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
       const vertical = await verticalForScope(c, scope);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
@@ -5920,6 +5923,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // tuples bring a retired key back and its spine has no record that the retirement ran. So the
       // receipt is cleared, as the rewind clears it, and with it the version whose retirements
       // finished: the install reads as not reconciled, and the sweep's next pass reconciles it.
+      // Again here, after the load, for a sweep reconcile that wrote the receipt while it ran.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
@@ -6316,6 +6320,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `the store scope ${scopeId} routes to in '${liveScript}' is not a live store (wiped or kept); nothing was resolved` }, 409);
     }
     const dump = await retryTransient(() => holder.exportScope(scopeId));
+    // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
+    // re-assert) cannot leave the receipt set over older data.
+    await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
     const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
       scopeId,
       exact: true,

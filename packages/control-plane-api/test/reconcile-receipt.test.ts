@@ -232,8 +232,12 @@ describe('the retirements a receipt records as finished (#2185)', () => {
       return { tenantId: T, scopeId: input.scopeId, owner, ...answer };
     },
     provisionInstance: async (input: { scopeId: string }) => ({ tenantId: T, scopeId: input.scopeId, owner }),
-    restoreScope: async () => ({ tables: 0 }),
+    restoreScope: async () => {
+      if (restoreFails) throw new Error('the deployment lost the restore after the host loaded it');
+      return { tables: 0 };
+    },
   } as unknown as VerticalClient;
+  let restoreFails = false;
   const app = () => createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { [SLUG]: client } });
 
   const scopeOn = async (version: string): Promise<ScopeId> => {
@@ -379,6 +383,26 @@ describe('the retirements a receipt records as finished (#2185)', () => {
     await reconcile(s, { retirementsLeftOpen: 0 });
     await host.admin.bindScopeVersion(staff, T, s, dropped);
     expect((await host.admin.getScopeRecord(staff, T, s))?.verticalVersionId).toBe(dropped);
+  });
+
+  /**
+   * Review of #2218, round 2: steps after the load can still throw (the deployment's half of the
+   * restore, the switch re-assert), and the route then answers 422 over data that has landed. The
+   * receipt is cleared before the load as well as after, so such a failure cannot leave it set.
+   */
+  it('a restore that fails after the data landed still leaves the receipt cleared', async () => {
+    const s = await scopeOn(retiring);
+    await reconcile(s, { retirementsLeftOpen: 0 });
+    expect(await finished(s)).toEqual({ provisioned: retiring, finished: retiring });
+    const backup = await host.admin.exportScope(staff, T, s);
+    restoreFails = true;
+    try {
+      const res = await app().request(`/tenants/${T}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(backup) });
+      expect(res.status).toBe(422);
+    } finally {
+      restoreFails = false;
+    }
+    expect(await finished(s)).toEqual({ provisioned: null, finished: null });
   });
 
   it('reads only a count the deployment actually sent', () => {
