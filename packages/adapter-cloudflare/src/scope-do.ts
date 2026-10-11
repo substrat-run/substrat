@@ -4977,7 +4977,7 @@ export function defineScopeDO(
       return await this.queue.enqueue(async (): Promise<BoundedUnbind> => {
         const liveSince = this.liveHighWaterMark();
         const now = instant.parse(new Date().toISOString());
-        let answer: BoundedUnbind = { ok: true, unbound: null };
+        let answer: BoundedUnbind = { ok: true, unbound: [] };
         await this.revision.transaction(async () => {
           answer = await unbindEntityHolderBounded(
             {
@@ -5003,7 +5003,7 @@ export function defineScopeDO(
             entity,
           );
         });
-        if (answer.ok && answer.unbound !== null) await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        if (answer.ok && answer.unbound.length > 0) await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return answer;
       });
     }

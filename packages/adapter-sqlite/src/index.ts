@@ -4902,7 +4902,7 @@ export class SqliteScopeHost implements ScopeHost {
         throw err;
       }
     });
-    if (outcome.ok && outcome.unbound !== null) {
+    if (outcome.ok && outcome.unbound.length > 0) {
       await this.dispatch(rt, null);
       await this.dispatchExecutors(rt, null);
     }
