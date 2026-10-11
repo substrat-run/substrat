@@ -187,10 +187,11 @@ describe('ticket0 on workerd — the deployment sweeps its own desks (#1646)', (
     expect(report.errors).toEqual([]);
     expect(report.scopes).toBe(1);
     // A desk's first pass runs every schedule it declares once — wake-snoozed,
-    // reap-abandoned, assign-round-robin, escalate-sla-breaches, and (#1083) auto-tag,
-    // auto-close, notify-no-reply — and none fails under the entitlements a real install
+    // reap-abandoned, assign-round-robin, escalate-sla-breaches, (#1083) auto-tag,
+    // auto-close, notify-no-reply, and (#2161) the saved-reply bin's purge horizon, which with
+    // an empty bin has nothing to do — and none fails under the entitlements a real install
     // projects.
-    expect(report.schedules).toEqual({ scopes: 1, fired: 7, skipped: 0, failed: 0 });
+    expect(report.schedules).toEqual({ scopes: 1, fired: 8, skipped: 0, failed: 0 });
 
     expect(await conversation(desk, due)).toMatchObject({ state: 'open', snoozed_until: null });
     expect(await conversation(desk, notYet)).toMatchObject({ state: 'snoozed', snoozed_until: FUTURE });
@@ -2626,5 +2627,86 @@ describe('ticket0 on workerd — invites through the deployed worker (#1686)', (
     expect(JSON.stringify(await refused.json())).toContain('already has a portal customer from an earlier invite');
     expect(await (await as('sub-owner', `/api/bindings/contact/${contactId}/unbind`)).json()).toEqual({ unbound: [legacy] });
     expect((await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
+  });
+});
+
+/**
+ * #2161 on the runtime a hosted desk runs: the saved-reply trash, over a Durable Object's
+ * SQLite. The node suite (`test/saved-reply-trash.test.ts`) holds every rule; this holds the
+ * SQL those rules run — the kernel's column, trigger and purge index on the DO, the library's
+ * and the bin's own `WHERE`, the reads by id that leave a binned reply out, and the purge the
+ * deployment's own sweeper runs.
+ *
+ * The DO host has no clock to move, so the horizon is reached the way #1648's describe reaches
+ * a due instant: written into the desk's own storage. The write goes through the same door the
+ * kernel's move uses — an authorization row in `_substrat_state_moves` for exactly that reply,
+ * held for the one statement — because the state trigger refuses any other.
+ */
+describe('ticket0 on workerd — the saved-reply trash (#2161)', () => {
+  const binDesk = scopeId.parse(ulid());
+  const stub = () => env.SCOPE.get(env.SCOPE.idFromName(binDesk));
+  const desk = () => host().getScope(owner, t, binDesk);
+  const titlesOf = async (op: 'ticket0/list-saved-replies' | 'ticket0/trashed-saved-replies') =>
+    (await (await desk()).invoke<Page<{ title: string }>>(op, {})).entries.map((r) => r.title);
+
+  beforeAll(async () => {
+    expect((await platform('/internal/provision', { tenantId: t, scopeId: binDesk, owner, entitlements })).status).toBe(201);
+  });
+  afterAll(async () => {
+    expect((await platform('/internal/delete-scope', { scopeId: binDesk })).status).toBe(200);
+  });
+
+  it('the kernel added the column, its guard and the purge index to the DO’s saved-reply table', async () => {
+    const schema = await runInDurableObject(stub(), async (_instance, state) => ({
+      columns: [...state.storage.sql.exec("SELECT name FROM pragma_table_info('ticket0_saved_replies')")].map((r) => String(r.name)),
+      objects: [
+        ...state.storage.sql.exec(
+          "SELECT type, name FROM sqlite_master WHERE tbl_name = 'ticket0_saved_replies' AND name LIKE '_substrat_%' ORDER BY name",
+        ),
+      ].map((r) => `${String(r.type)} ${String(r.name)}`),
+    }));
+    expect(schema.columns).toContain('_substrat_trashed_at');
+    expect(schema.objects.some((o) => o.startsWith('trigger '))).toBe(true);
+    expect(schema.objects.some((o) => o.startsWith('index '))).toBe(true);
+  });
+
+  it('bins a reply out of the library and every read of it, keeps its title, and restores it', async () => {
+    const admin = await desk();
+    const reply = await admin.invoke<{ id: string }>('ticket0/create-saved-reply', { title: 'On the DO', body: 'Hi.' });
+    expect(await admin.invoke('ticket0/trash-saved-reply', { savedReplyId: reply.id })).toEqual({ id: reply.id, state: 'trashed' });
+    expect(await titlesOf('ticket0/list-saved-replies')).not.toContain('On the DO');
+    expect(await titlesOf('ticket0/trashed-saved-replies')).toEqual(['On the DO']);
+    await expect(admin.invoke('ticket0/get-saved-reply', { savedReplyId: reply.id })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(admin.invoke('ticket0/create-saved-reply', { title: 'On the DO', body: 'Again.' })).rejects.toMatchObject({
+      code: 'conflict',
+      extensions: { reason: 'title_in_trash' },
+    });
+
+    expect(await admin.invoke('ticket0/restore-saved-reply', { savedReplyId: reply.id })).toEqual({ id: reply.id, state: 'active' });
+    expect(await titlesOf('ticket0/list-saved-replies')).toContain('On the DO');
+    expect(await titlesOf('ticket0/trashed-saved-replies')).toEqual([]);
+    // Emptying the bin is the permanent delete.
+    await admin.invoke('ticket0/trash-saved-reply', { savedReplyId: reply.id });
+    await admin.invoke('ticket0/delete-saved-reply', { savedReplyId: reply.id });
+    expect(await titlesOf('ticket0/trashed-saved-replies')).toEqual([]);
+  });
+
+  it('the deployment’s sweeper deletes a reply binned past 30 days, and leaves one binned today', async () => {
+    const admin = await desk();
+    const old = await admin.invoke<{ id: string }>('ticket0/create-saved-reply', { title: 'Binned long ago', body: 'Old.' });
+    const young = await admin.invoke<{ id: string }>('ticket0/create-saved-reply', { title: 'Binned today', body: 'New.' });
+    await admin.invoke('ticket0/trash-saved-reply', { savedReplyId: old.id });
+    await admin.invoke('ticket0/trash-saved-reply', { savedReplyId: young.id });
+    await runInDurableObject(stub(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec(`INSERT INTO _substrat_state_moves (entity_type, entity_id) VALUES ('savedReply', ?)`, old.id);
+      sql.exec(`UPDATE ticket0_saved_replies SET _substrat_trashed_at = ? WHERE id = ?`, PAST, old.id);
+      sql.exec(`DELETE FROM _substrat_state_moves WHERE entity_type = 'savedReply' AND entity_id = ?`, old.id);
+    });
+
+    // The pass sweeps every desk on the roster, so its totals are not this desk's: read the bin.
+    await sweep();
+    expect(await titlesOf('ticket0/trashed-saved-replies')).toEqual(['Binned today']);
+    await expect(admin.invoke('ticket0/restore-saved-reply', { savedReplyId: old.id })).rejects.toMatchObject({ code: 'not_found' });
   });
 });

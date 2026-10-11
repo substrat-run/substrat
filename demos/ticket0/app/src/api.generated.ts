@@ -878,6 +878,13 @@ export interface Ticket0Client {
   restore(input: { conversationId: string }): Promise<Conversation>;
 
   /**
+   * Restore a canned answer from the trash
+   *
+   * `POST /saved-replies/{savedReplyId}/restore` — `ticket0/restore-saved-reply`
+   */
+  restoreSavedReply(input: { savedReplyId: string }): Promise<{ id: string; state: "active" | "archived" | "trashed" }>;
+
+  /**
    * Revoke a documentation source’s refresh hook
    *
    * `DELETE /kb/sources/{sourceId}/token` — `ticket0/revoke-kb-refresh-token`
@@ -1003,6 +1010,22 @@ export interface Ticket0Client {
    * `POST /conversations/{conversationId}/tags` — `ticket0/tag-conversation`
    */
   tagConversation(input: { conversationId: string; tag: string }): Promise<ConversationTag>;
+
+  /**
+   * Move a canned answer to the trash
+   *
+   * `POST /saved-replies/{savedReplyId}/trash` — `ticket0/trash-saved-reply`
+   */
+  trashSavedReply(input: { savedReplyId: string }): Promise<{ id: string; state: "active" | "archived" | "trashed" }>;
+
+  /**
+   * The canned answers in the trash
+   *
+   * `GET /saved-replies/trash` — `ticket0/trashed-saved-replies`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  trashedSavedReplies(input: Record<string, never>): Promise<Paged<({ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null })>>;
 
   /**
    * Take a colleague off a conversation
@@ -1387,6 +1410,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/resolve`, "POST", omit(input, ["conversationId"]), undefined),
     restore: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/restore`, "POST", omit(input, ["conversationId"]), undefined),
+    restoreSavedReply: (input: Args) =>
+      send(`/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/restore`, "POST", omit(input, ["savedReplyId"]), undefined),
     revokeKbRefreshToken: (input: Args) =>
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/token`, "DELETE", undefined, omit(input, ["sourceId"])),
     rotateVerificationSecret: () =>
@@ -1421,6 +1446,10 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/suspend`, "POST", omit(input, ["conversationId"]), undefined),
     tagConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "POST", omit(input, ["conversationId"]), undefined),
+    trashSavedReply: (input: Args) =>
+      send(`/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/trash`, "POST", omit(input, ["savedReplyId"]), undefined),
+    trashedSavedReplies: (input: Args) =>
+      page("/saved-replies/trash", "GET", undefined, input),
     unfollowConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/followers/${encodeURIComponent(String(input.follower))}`, "DELETE", undefined, omit(input, ["conversationId","follower"])),
     unsubscribeSignup: (input: Args) =>

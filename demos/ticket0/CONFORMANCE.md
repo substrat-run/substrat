@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-103 operations · 38 narrowed checks · 38 conformance pairs driven
+107 operations · 45 narrowed checks · 45 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**38 pairs driven** across 38 of this package's 38 narrowed checks.
+**45 pairs driven** across 45 of this package's 45 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
@@ -45,11 +45,13 @@ against B, and requires a permission denial specifically.
 | `ticket0/apply-saved-reply` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/assign` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/close` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/delete-saved-reply` | `conversation:draft` | `savedReply`, id from `savedReplyId` | `savedReply` |
 | `ticket0/discard` | `conversation:discard` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/follow-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/forward-message` | `conversation:forward` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-conversation` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-csat` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/get-saved-reply` | `conversation:draft` | `savedReply`, id from `savedReplyId` | `savedReply` |
 | `ticket0/ingest-kb-source` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/list-conversation-tags` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-messages` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
@@ -60,6 +62,7 @@ against B, and requires a permission denial specifically.
 | `ticket0/my-messages` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/post-note` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/post-public-reply` | `conversation:reply-public` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/purge-saved-reply` | `saved-reply:purge` | `savedReply`, id from `savedReplyId` | `savedReply` |
 | `ticket0/record-answer` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/record-assistant-failure` | `conversation:widget` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/record-kb-articles` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
@@ -69,14 +72,18 @@ against B, and requires a permission denial specifically.
 | `ticket0/render-saved-reply` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/resolve` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/restore` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/restore-saved-reply` | `conversation:draft` | `savedReply`, id from `savedReplyId` | `savedReply` |
 | `ticket0/revoke-kb-refresh-token` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/set-priority` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/share-saved-reply` | `saved-reply:manage` | `savedReply`, id from `savedReplyId` | `savedReply` |
 | `ticket0/snooze` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/submit-csat` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/suspend` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/tag-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/trash-saved-reply` | `conversation:draft` | `savedReply`, id from `savedReplyId` | `savedReply` |
 | `ticket0/unfollow-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/untag-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/update-saved-reply` | `conversation:draft` | `savedReply`, id from `savedReplyId` | `savedReply` |
 | `ticket0/wake` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/widget-session` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 
@@ -98,8 +105,12 @@ extra keys are here with the reason — the one place that gap is written down.
 | Operation | Also granted | Because |
 | --- | --- | --- |
 | `ticket0/apply-saved-reply` | `conversation:reply-public` | a macro checks the union of the keys its parts declare, and sending its reply publicly is ticket0/post-public-reply, which declares conversation:reply-public |
+| `ticket0/delete-saved-reply` | `saved-reply:manage` | a shared reply is deleted only by the holder of saved-reply:manage, checked on that reply |
 | `ticket0/follow-conversation` | `conversation:read` | the handler delegates conversation:read to the follower via ctx.grant, and delegation only narrows a permission the caller already holds on that entity |
+| `ticket0/restore-saved-reply` | `saved-reply:manage` | a shared reply is restored only by the holder of saved-reply:manage, checked on that reply |
+| `ticket0/trash-saved-reply` | `saved-reply:manage` | a shared reply is binned only by the holder of saved-reply:manage, checked on that reply |
 | `ticket0/unfollow-conversation` | `conversation:read` | ctx.revoke takes the same guardrail as ctx.grant — a caller may only withdraw a grant it could have made, so it must hold the key on that entity too |
+| `ticket0/update-saved-reply` | `saved-reply:manage` | a shared reply is changed only by the holder of saved-reply:manage, checked on that reply |
 
 ### A second entity the kit supplies
 
@@ -124,7 +135,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 64 | `ticket0/add-block-rule`, `ticket0/add-kb-source`, `ticket0/assign-round-robin`, `ticket0/assistant-health`, `ticket0/assistant-mode`, `ticket0/auto-close`, `ticket0/auto-tag`, `ticket0/breaching-soon`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/confirm-signup`, `ticket0/create-saved-reply`, `ticket0/create-saved-reply-folder`, `ticket0/delete-saved-reply`, `ticket0/delete-saved-reply-folder`, `ticket0/desk-metrics`, `ticket0/discard-suspended`, `ticket0/escalate-sla-breaches`, `ticket0/get-contact`, `ticket0/get-desk`, `ticket0/get-saved-reply`, `ticket0/ingest-message`, `ticket0/list-agents`, `ticket0/list-behaviour-runs`, `ticket0/list-block-rules`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-conversations-by-tag`, `ticket0/list-kb-sources`, `ticket0/list-pending-outbound`, `ticket0/list-saved-replies`, `ticket0/list-saved-reply-folders`, `ticket0/list-signups`, `ticket0/list-suspended`, `ticket0/list-tags`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/notify-no-reply`, `ticket0/read-outbound`, `ticket0/reap-abandoned`, `ticket0/record-delivery`, `ticket0/remove-block-rule`, `ticket0/rename-saved-reply-folder`, `ticket0/request-human`, `ticket0/rotate-verification-secret`, `ticket0/search-contacts`, `ticket0/search-conversations`, `ticket0/search-kb`, `ticket0/set-agent-offboarded`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/share-saved-reply`, `ticket0/signup-counts`, `ticket0/signup-origins`, `ticket0/submit-signup`, `ticket0/unsubscribe-signup`, `ticket0/update-saved-reply`, `ticket0/usage-summary`, `ticket0/wake-snoozed`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread`, `ticket0/widget-watch` |
+| Node-level check | 61 | `ticket0/add-block-rule`, `ticket0/add-kb-source`, `ticket0/assign-round-robin`, `ticket0/assistant-health`, `ticket0/assistant-mode`, `ticket0/auto-close`, `ticket0/auto-tag`, `ticket0/breaching-soon`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/confirm-signup`, `ticket0/create-saved-reply`, `ticket0/create-saved-reply-folder`, `ticket0/delete-saved-reply-folder`, `ticket0/desk-metrics`, `ticket0/discard-suspended`, `ticket0/escalate-sla-breaches`, `ticket0/get-contact`, `ticket0/get-desk`, `ticket0/ingest-message`, `ticket0/list-agents`, `ticket0/list-behaviour-runs`, `ticket0/list-block-rules`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-conversations-by-tag`, `ticket0/list-kb-sources`, `ticket0/list-pending-outbound`, `ticket0/list-saved-replies`, `ticket0/list-saved-reply-folders`, `ticket0/list-signups`, `ticket0/list-suspended`, `ticket0/list-tags`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/notify-no-reply`, `ticket0/read-outbound`, `ticket0/reap-abandoned`, `ticket0/record-delivery`, `ticket0/remove-block-rule`, `ticket0/rename-saved-reply-folder`, `ticket0/request-human`, `ticket0/rotate-verification-secret`, `ticket0/search-contacts`, `ticket0/search-conversations`, `ticket0/search-kb`, `ticket0/set-agent-offboarded`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/signup-counts`, `ticket0/signup-origins`, `ticket0/submit-signup`, `ticket0/trashed-saved-replies`, `ticket0/unsubscribe-signup`, `ticket0/usage-summary`, `ticket0/wake-snoozed`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread`, `ticket0/widget-watch` |
 | Per-entity proof walk (`narrows`) | 1 | `ticket0/my-conversations` |
 
 ## 5. Not covered by this artifact

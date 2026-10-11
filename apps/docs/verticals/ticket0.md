@@ -42,7 +42,11 @@ begins with a stranger in a chat bubble on somebody else's page. It proves:
   accepts only replies that agent may use, each at most once per message. It does not check
   the text, because placeholders and edits would make that check undercount without telling
   anyone. Curating the shared library takes `saved-reply:manage`, which the assistant roles
-  do not hold. A reply's title and body never ride an event. Like every vertical-owned table,
+  do not hold. A deleted reply goes to a trash first: for 30 days whoever could change it
+  (its owner, or a curator for a shared one) can restore it or delete it for good, and after
+  that the desk deletes it. While it is in the trash it is gone from the library, the picker
+  and every send, and it keeps its title, so a new reply cannot take that title until the old
+  one is restored or deleted. A reply's title and body never ride an event. Like every vertical-owned table,
   though, the stored reply is outside subject erasure until the module hook that would reach
   it exists ([#2068](https://github.com/substrat-run/substrat/issues/2068)). So a canned
   answer uses placeholders, not a customer's details.
