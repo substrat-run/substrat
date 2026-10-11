@@ -1,0 +1,117 @@
+/**
+ * The storage-side fence (#1638 Q2): a stale holder's write is refused INSIDE its own
+ * transaction, by the scope's files, whoever wrote the code that made it.
+ *
+ * Each SQLite file of a scope carries one row, `_k3s_fence(epoch)`, and on every table a
+ * trigger for INSERT, UPDATE and DELETE:
+ *
+ *   WHEN k3s_holder_epoch() IS NOT (SELECT epoch FROM _k3s_fence) → RAISE(ABORT, 'k3s fence: …')
+ *
+ * `k3s_holder_epoch()` is a SQL function this process registers on every better-sqlite3
+ * connection it opens. It answers the epoch under which THIS process holds the scope the
+ * file belongs to, or NULL, and NULL never equals an epoch. A takeover stamps the new epoch
+ * into the previous holder's files under their write lock, before copying them. From that
+ * moment a holder that still believes it holds the scope, woken from a freeze, aborts at its
+ * first write. That holds even when it wakes inside a handler that writes without emitting
+ * anything, because the trigger sits on every table, not on the outbox. A connection that
+ * never registered the function fails closed too ("no such function").
+ *
+ * Every table, not the outbox, because the host guarantees no row per invocation: an event
+ * is emitted only if the handler emits one, and the idempotency record is written only when
+ * the caller sent a key (`packages/adapter-sqlite/src/index.ts`, the `BEGIN IMMEDIATE` …
+ * `COMMIT` of `invoke`). Tables are those that exist when the fence is stamped: a scope is
+ * stamped after the host migrated it. A table a later migration adds is not covered until
+ * the next stamp. Virtual tables and their shadow tables carry no trigger; their writes come
+ * from writes to tables that do.
+ *
+ * How it reaches the connection: `SqliteScopeHost` opens its own connections and offers no
+ * hook, so this patches better-sqlite3's `prepare`/`exec` to register the function on a
+ * connection's first statement, as `tools/vitest/like-pattern-limit.cjs` does for its limit.
+ * That makes this a demonstration of the mechanism a real adapter would build in (a function
+ * or a check on its own connection), not something to ship as is.
+ */
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+
+/** scope id → the epoch this process holds it under. */
+const holding = new Map<string, number>();
+
+/** Record that this process now holds `scope` under `epoch`. Set before the scope is opened. */
+export function holdEpoch(scope: string, epoch: number): void {
+  holding.set(scope, epoch);
+}
+
+/** A scope file lives at `…/scopes/<scopeId>/<file>.sqlite`. */
+const SCOPE_IN_PATH = /[\\/]scopes[\\/]([^\\/]+)[\\/][^\\/]+$/;
+
+let installed = false;
+
+/** Register `k3s_holder_epoch()` on every connection this process opens, from now on. */
+export function installEpochFunction(): void {
+  if (installed) return;
+  installed = true;
+  const proto = Database.prototype as unknown as Record<'prepare' | 'exec', (...a: unknown[]) => unknown>;
+  const registered = new WeakSet<object>();
+  for (const method of ['prepare', 'exec'] as const) {
+    const original = proto[method];
+    proto[method] = function (this: Database.Database, ...args: unknown[]) {
+      if (!registered.has(this)) {
+        registered.add(this);
+        const scope = SCOPE_IN_PATH.exec(this.name)?.[1];
+        this.function('k3s_holder_epoch', { deterministic: false }, () =>
+          scope === undefined ? null : (holding.get(scope) ?? null),
+        );
+      }
+      return original.apply(this, args);
+    };
+  }
+}
+
+export const FENCE_REFUSAL = 'k3s fence: stale holder';
+
+/** Whether `e` is the fence refusing a write. */
+export function isFenceRefusal(e: unknown): boolean {
+  return e instanceof Error && e.message.includes(FENCE_REFUSAL);
+}
+
+/**
+ * Stamp `epoch` into every SQLite file of the scope directory `dir` and make sure every table
+ * carries the fence triggers. One `BEGIN IMMEDIATE` per file, so it waits for, and then
+ * excludes, any write in flight there. After it returns, a write by a holder of an older
+ * epoch aborts.
+ */
+export function stampFence(dir: string, epoch: number): void {
+  for (const name of readdirSync(dir).filter((n) => n.endsWith('.sqlite'))) {
+    const db = new Database(join(dir, name), { fileMustExist: true, timeout: 5_000 });
+    try {
+      db.exec('BEGIN IMMEDIATE');
+      db.exec('CREATE TABLE IF NOT EXISTS _k3s_fence (epoch INTEGER NOT NULL)');
+      db.exec('DELETE FROM _k3s_fence');
+      db.prepare('INSERT INTO _k3s_fence (epoch) VALUES (?)').run(epoch);
+      const rows = db
+        .prepare<[], { name: string; sql: string | null }>("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+        .all();
+      const virtual = rows.filter((r) => /^CREATE VIRTUAL TABLE/i.test(r.sql ?? '')).map((r) => r.name);
+      const fenced = rows
+        .map((r) => r.name)
+        .filter((t) => !t.startsWith('sqlite_') && t !== '_k3s_fence')
+        .filter((t) => !virtual.some((v) => t === v || t.startsWith(`${v}_`)));
+      for (const table of fenced) {
+        for (const op of ['INSERT', 'UPDATE', 'DELETE']) {
+          db.exec(
+            `CREATE TRIGGER IF NOT EXISTS "_k3s_fence_${table}_${op.toLowerCase()}" BEFORE ${op} ON "${table}" ` +
+              `WHEN k3s_holder_epoch() IS NOT (SELECT epoch FROM _k3s_fence) ` +
+              `BEGIN SELECT RAISE(ABORT, '${FENCE_REFUSAL}'); END`,
+          );
+        }
+      }
+      db.exec('COMMIT');
+    } catch (e) {
+      if (db.inTransaction) db.exec('ROLLBACK');
+      throw e;
+    } finally {
+      db.close();
+    }
+  }
+}

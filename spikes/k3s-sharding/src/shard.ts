@@ -39,10 +39,14 @@ import { readJson, send, serveLocal } from './http.js';
 import { copyScope, openScope, scopeDir, seedScope, type ScopeWorld } from './todo-scope.js';
 import { exitWithParent } from './process.js';
 import { home } from './placement.js';
+import { holdEpoch, installEpochFunction, isFenceRefusal, stampFence } from './storage-fence.js';
 
 const node = process.env.NODE ?? 'todo-0';
 const port = Number(process.env.PORT ?? 0);
 const volume = process.env.VOLUME ?? '.data/volumes';
+/** `LEASES=off` is the control: no lease checks and no storage fence (`control-plane.ts`). */
+const fencing = process.env.LEASES !== 'off';
+if (fencing) installEpochFunction();
 const leases = new LeaseClient(process.env.CP_URL ?? 'http://127.0.0.1:0', node, Number(process.env.LEASE_MARGIN_MS ?? 400));
 
 type FaultPoint = 'pre-write' | 'post-commit';
@@ -116,8 +120,13 @@ async function place(scope: string, grant: Grant): Promise<void> {
   const dir = scopeDir(volume, node, scope);
   const stale = held.get(scope);
   held.delete(scope);
+  // From here this process writes the scope as `grant.epoch`; the stamps below are what make
+  // every other holder's writes abort (`storage-fence.ts`).
+  const stamp = (d: string) => fencing && stampFence(d, grant.epoch);
+  holdEpoch(scope, grant.epoch);
   // Nobody settled anywhere else since this shard last had it: what it has open is the latest.
   if (grant.dataOn === node && stale) {
+    stamp(dir);
     await leases.settle(scope, grant);
     held.set(scope, stale);
     return;
@@ -131,10 +140,16 @@ async function place(scope: string, grant: Grant): Promise<void> {
       );
     }
     placed = await seedScope(dir, scope);
+    stamp(dir);
   } else if (grant.dataOn === node && existsSync(join(dir, 'world.json'))) {
+    stamp(dir);
     placed = openScope(dir);
   } else {
-    await copyScope(scopeDir(volume, grant.dataOn, scope), dir);
+    // Fence the previous holder's files FIRST, under their write lock: a holder that wakes
+    // up later aborts at its first write, so the files are quiescent while they are copied.
+    const source = scopeDir(volume, grant.dataOn, scope);
+    stamp(source);
+    await copyScope(source, dir);
     placed = openScope(dir);
   }
   await leases.settle(scope, grant);
@@ -153,6 +168,19 @@ async function stubFor(scope: string) {
 }
 
 const epochOf = (scope: string) => guard.grant(scope)?.epoch;
+
+/**
+ * The scope's files refused a write: another holder stamped a newer epoch. This shard is a
+ * stale holder; it forgets the grant and closes the scope, inside the scope's queue.
+ */
+function dropFenced(scope: string): Promise<void> {
+  return serialized(scope, async () => {
+    guard.forget(scope);
+    const h = held.get(scope);
+    held.delete(scope);
+    await h?.host.close();
+  });
+}
 
 async function addItem(scope: string, text: string, key: string | undefined) {
   return serialized(scope, async () => {
@@ -212,7 +240,7 @@ if (bgPeriod > 0) {
       queued.add(scope);
       // Not ours (NotHolder) or lost mid-slot (Fenced): another shard runs it, or will.
       void serialized(scope, () => runDue(scope))
-        .catch(() => undefined)
+        .catch((e: unknown) => (isFenceRefusal(e) ? dropFenced(scope) : undefined))
         .finally(() => queued.delete(scope));
     }
   }, bgPeriod);
@@ -261,6 +289,10 @@ serveLocal(node, port, async (req, res, path) => {
       return send(res, 421, { holder: e.holder, epoch: e.epoch, retryAfterMs: e.retryAfterMs, node });
     }
     if (e instanceof Fenced) return send(res, 503, { error: e.message, node });
+    if (isFenceRefusal(e)) {
+      await dropFenced(scope);
+      return send(res, 503, { error: 'refused at commit by the scope fence: a newer holder took over', node });
+    }
     if (e instanceof UnknownScope) return send(res, 404, { error: e.message, node });
     if (e instanceof PlacementRefused) return send(res, 409, { error: e.message, node });
     return send(res, 500, { error: e instanceof Error ? e.message : String(e), node });
