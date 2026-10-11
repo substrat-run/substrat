@@ -198,6 +198,19 @@ export function bindingInviteContractSuite(
         expect(event?.payload).toMatchObject({ principal: target, mintedBy: clerk, action: { kind: 'bind', entity: rec(id) } });
       });
 
+      it("stores a bind link's holdings digest so a host from before binding invites cannot match it", async () => {
+        // Two targets holding exactly the same: their plain digests are equal.
+        const plain = await fixture.verbs.mintBecomeCapabilityBounded(t1, s1, clerk, { principal: await invitee(), maxUses: 1 });
+        const bound = await mint(clerk, await invitee(), rec(await record()));
+        if (!plain.ok || !bound.ok) throw new Error('expected both to mint');
+        const digest = async (id: string) =>
+          ((await raw(t1, s1, 'SELECT target_digest FROM _substrat_capabilities WHERE id = ?', [id])) as { target_digest: string }[])[0]!.target_digest;
+        const plainDigest = await digest(plain.minted.id);
+        // An old host compares the plain digest of what the target holds with this, and refuses on the mismatch.
+        expect(await digest(bound.minted.id)).toBe(`bind:${plainDigest}`);
+        expect(plainDigest.startsWith('bind:')).toBe(false);
+      });
+
       it('the key held on ONE record binds that record and no other', async () => {
         const mine = await record();
         const theirs = await record();

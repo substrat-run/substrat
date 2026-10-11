@@ -350,6 +350,20 @@ export function capabilityRecordOf(row: CapabilityRow): CapabilityRecord {
   );
 }
 
+/**
+ * A bind link's stored holdings digest starts with this (#1686). A host from before binding
+ * invites reads no `action` and would spend such a link as a plain `become` — the use taken,
+ * nothing bound. It compares the plain digest with this stored one, finds them different, and
+ * revokes the link (`holdings-changed`) instead: an old host fails closed.
+ */
+const BIND_DIGEST_PREFIX = 'bind:';
+
+/** What a row's `target_digest` must read for `held`: the plain digest, prefixed on a bind link. */
+async function storedDigest(row: CapabilityRow, held: Holdings): Promise<string> {
+  const digest = await holdingsDigest(held);
+  return row.action ? `${BIND_DIGEST_PREFIX}${digest}` : digest;
+}
+
 /** A `become` row's carried action (#1686), or null for a plain one. */
 function actionOf(row: CapabilityRow): CapabilityAction | null {
   return row.action ? capabilityAction.parse(JSON.parse(row.action)) : null;
@@ -766,7 +780,7 @@ export async function exchangeCapability(
     // a refusal always gets, and nothing written beyond the revoke. Its use is never taken.
     if (!deps.holdings || !row.target_digest) return null;
     const held = await deps.holdings(principalIdSchema.parse(row.principal));
-    if ((await holdingsDigest(held)) !== row.target_digest) {
+    if ((await storedDigest(row, held)) !== row.target_digest) {
       markRevoked(deps.sql, capabilityIdSchema.parse(row.id), null, deps.now, 'holdings-changed');
       return null;
     }
@@ -1085,7 +1099,7 @@ async function becomeLinkStateOf(
   if (typeof JSON.parse(row.minted_by) === 'string') {
     if (!holdings || !row.target_digest) return { state: 'revoked', reason: null };
     const held = await holdings(principalIdSchema.parse(row.principal));
-    if ((await holdingsDigest(held)) !== row.target_digest) return { state: 'revoked', reason: 'holdings-changed' };
+    if ((await storedDigest(row, held)) !== row.target_digest) return { state: 'revoked', reason: 'holdings-changed' };
   }
   return { state: 'open', reason: null };
 }
@@ -1262,7 +1276,7 @@ export async function mintBecomeCapabilityAsPrincipal(
     throw substratError('validation_failed', `mintBecomeCapability: expiresAt ${input.expiresAt} is not in the future`);
   }
   const action: CapabilityAction | null = input.bind ? { kind: 'bind', entity: input.bind.entity } : null;
-  const minted = await insertBecome(deps.sql, input, minter, deps.now, targetDigest, action);
+  const minted = await insertBecome(deps.sql, input, minter, deps.now, action ? `${BIND_DIGEST_PREFIX}${targetDigest}` : targetDigest, action);
   const payload: CapabilityBecomeMintedPayload = {
     capabilityId: minted.id,
     principal: input.principal,
