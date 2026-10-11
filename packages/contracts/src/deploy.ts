@@ -433,7 +433,12 @@ export function exportsOfManifestJson(manifestJson: string | null | undefined): 
  * shape. One whose grant shapes cannot be read is refused too, saying so: the gate cannot tell
  * that it strands nobody, and no acknowledgement passes it.
  */
-export function assertNoBindingShapeBreak(outgoingManifest: string | null | undefined, incomingManifest: string | null | undefined): void {
+export function assertNoBindingShapeBreak(
+  outgoingManifest: string | null | undefined,
+  incomingManifest: string | null | undefined,
+  /** What the outgoing version is, when the refusal should say (the installs that last reconciled it). */
+  judgedFrom?: string,
+): void {
   const grants = (json: string | null | undefined, which: string) => {
     const read = registryRowsOfManifestJson(json, 'entityGrants', entityGrantShape);
     if (read === null) return [];
@@ -446,7 +451,7 @@ export function assertNoBindingShapeBreak(outgoingManifest: string | null | unde
     return read.rows;
   };
   const breaks = bindingShapeBreaks({ entityGrants: grants(outgoingManifest, 'the running') }, { entityGrants: grants(incomingManifest, 'the incoming') });
-  if (breaks.length > 0) throw substratError('precondition_failed', bindingShapeRefusal(breaks));
+  if (breaks.length > 0) throw substratError('precondition_failed', bindingShapeRefusal(breaks) + (judgedFrom ? `. Judged from ${judgedFrom}` : ''));
 }
 
 /**

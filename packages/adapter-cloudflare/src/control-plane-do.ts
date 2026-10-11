@@ -118,7 +118,7 @@ import {
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
-import { blankSqlComments, executableSqlStatements, PROVISIONED_VERSIONS_SQL } from '@substrat-run/kernel';
+import { blankSqlComments, executableSqlStatements, installsReconciledOf, PROVISIONED_VERSIONS_SQL, type InstallsReconciled } from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
@@ -2408,8 +2408,8 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** #2178: `PROVISIONED_VERSIONS_SQL` over the directory — one row per version, however many scopes. */
-  provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): string[] {
-    return this.sql.exec(PROVISIONED_VERSIONS_SQL, vertical, servingRef, ownerTenant).toArray().map((r) => String(r.version_id));
+  provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): InstallsReconciled[] {
+    return installsReconciledOf(this.sql.exec(PROVISIONED_VERSIONS_SQL, vertical, servingRef, ownerTenant).toArray());
   }
 
   /** Cross-checks the pair (K-3): a scope under a DIFFERENT tenant reads as absent. */

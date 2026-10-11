@@ -453,6 +453,8 @@ import {
   bindExportBreakRefusal,
   scopeMoveOf,
   runningVersionOf,
+  installsReconciledNote,
+  type InstallsReconciled,
   type ServingPointer,
   collectPeers,
   peerSeats,
@@ -708,7 +710,7 @@ interface ControlPlaneStub {
   ): Promise<ScopeRow[]>;
   getScopeRecord(tenantId: string, scopeId: string): Promise<ScopeRow | undefined>;
   /** #2178: `PROVISIONED_VERSIONS_SQL` — the versions the scopes a promote or a serve moves last reconciled. */
-  provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): Promise<string[]>;
+  provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): Promise<InstallsReconciled[]>;
   /** The getScope gate's refusal as data, null when access is allowed (#1718). */
   scopeAccessRefusal(
     tenantId: string,
@@ -7254,12 +7256,12 @@ export class CloudflareScopeHost implements ScopeHost {
             outgoing?.id,
             served?.versionId,
             ...owned.map((s) => runningVersionOf(mapScope(s), served)),
-            ...(served || owned.length > 0
-              ? await this.cp.provisionedVersionsOf(verticalSlug, served?.ref ?? null, owned.length > 0 ? owning!.owner_tenant : null)
-              : []),
           ],
           incoming.id,
           incoming,
+          served || owned.length > 0
+            ? await this.cp.provisionedVersionsOf(verticalSlug, served?.ref ?? null, owned.length > 0 ? owning!.owner_tenant : null)
+            : [],
         );
 
         // §4's checkpoints, at the moment of exposure. A first promotion has
@@ -7479,9 +7481,10 @@ export class CloudflareScopeHost implements ScopeHost {
           const incoming = await this.cp.readVersion(parsed.versionId);
           if (incoming) {
             await this.assertNoStrandFrom(
-              [r.serving_version_id, ...(r.serving_ref ? await this.cp.provisionedVersionsOf(verticalSlug, r.serving_ref, null) : [])],
+              [r.serving_version_id],
               incoming.id,
               incoming,
+              r.serving_ref ? await this.cp.provisionedVersionsOf(verticalSlug, r.serving_ref, null) : [],
             );
           }
         }
@@ -11103,10 +11106,18 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /** #2178: refuse running `incoming` where any of `froms` ran, each distinct version judged once. */
-  private async assertNoStrandFrom(froms: readonly (string | null | undefined)[], afterId: string, held: VersionRow): Promise<void> {
+  private async assertNoStrandFrom(
+    froms: readonly (string | null | undefined)[],
+    afterId: string,
+    held: VersionRow,
+    receipts: readonly InstallsReconciled[] = [],
+  ): Promise<void> {
     const after = await this.manifestOf(afterId, held);
     for (const from of new Set(froms)) {
       if (from && from !== afterId) assertNoBindingShapeBreak(await this.manifestOf(from, held), after);
+    }
+    for (const r of receipts) {
+      if (r.versionId !== afterId) assertNoBindingShapeBreak(await this.manifestOf(r.versionId, held), after, installsReconciledNote(r));
     }
   }
 
@@ -11124,7 +11135,9 @@ export class CloudflareScopeHost implements ScopeHost {
     const move = scopeMoveOf(scope, incoming.id, servingRef, await this.servingPointerOf(scope, servingRef));
     // A primary scope is also judged from the version it last reconciled: until then, a retirement
     // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
-    if (move) await this.assertNoStrandFrom([move.before, isPrimaryScope(scope) ? scope.provisionedVersionId : null], move.after, incoming);
+    if (!move) return;
+    const receipt = isPrimaryScope(scope) && scope.provisionedVersionId ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
+    await this.assertNoStrandFrom([move.before], move.after, incoming, receipt);
   }
 
   /**

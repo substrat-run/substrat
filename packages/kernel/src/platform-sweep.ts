@@ -2157,16 +2157,37 @@ export function scopeMoveOf(
 }
 
 /**
- * #2178: the distinct versions the active primary scopes of a vertical that a promote or a serve
- * moves were last provisioned against (`provisionedVersionId`, written only after a provision or
- * reconcile succeeds): those routed on a serving ref, and those of an owner tenant. A retirement
- * reaches a scope only at its reconcile, so a scope provisioned behind the retiring version still
- * holds the keys. One row per version however many scopes, so a vertical with many installs
- * costs one directory read. Binds `(vertical, servingRef, ownerTenant)`; a null matches nothing.
+ * #2178: the versions the active primary scopes of a vertical that a promote or a serve moves were
+ * last provisioned against (`provisionedVersionId`, written only after a provision or reconcile
+ * succeeds): those routed on a serving ref, and those of an owner tenant. A retirement reaches a
+ * scope only at its reconcile, so a scope provisioned behind the retiring version still holds the
+ * keys. One row per version, with how many installs and one of them to name, however many installs
+ * there are. Binds `(vertical, servingRef, ownerTenant)`; a null matches nothing. The directory has
+ * no index on `vertical`, so this scans its scopes table: once per promote or serve.
  */
-export const PROVISIONED_VERSIONS_SQL = `SELECT DISTINCT provisioned_version_id AS version_id FROM scopes
+export const PROVISIONED_VERSIONS_SQL = `SELECT provisioned_version_id AS version_id, COUNT(*) AS installs, MIN(scope_id) AS example
+  FROM scopes
   WHERE vertical = ? AND status = 'active' AND forked_from IS NULL AND COALESCE(kind, '') != 'preview'
-    AND provisioned_version_id IS NOT NULL AND (serving_ref = ? OR tenant_id = ?)`;
+    AND provisioned_version_id IS NOT NULL AND (serving_ref = ? OR tenant_id = ?)
+  GROUP BY provisioned_version_id`;
+
+/** One row of `PROVISIONED_VERSIONS_SQL`: the installs that last reconciled one version. */
+export interface InstallsReconciled {
+  versionId: string;
+  installs: number;
+  /** One of them, so a refusal can say which install to look at. */
+  example: string;
+}
+
+/** `PROVISIONED_VERSIONS_SQL`'s rows, as either adapter's driver returns them. */
+export function installsReconciledOf(rows: readonly Record<string, unknown>[]): InstallsReconciled[] {
+  return rows.map((r) => ({ versionId: String(r.version_id), installs: Number(r.installs), example: String(r.example) }));
+}
+
+/** What a refusal judged from installs' receipts says it was judged from. */
+export function installsReconciledNote(g: InstallsReconciled): string {
+  return `${g.installs} install(s) that last reconciled ${g.versionId} (one is ${g.example}); the drop waits for their reconcile`;
+}
 
 /**
  * Whom moving `scope` breaks (#1756): the promote gate's question (`exportBreaksOf`), asked of

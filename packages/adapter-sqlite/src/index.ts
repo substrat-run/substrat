@@ -646,6 +646,9 @@ import {
   runningVersionOf,
   isPrimaryScope,
   PROVISIONED_VERSIONS_SQL,
+  installsReconciledOf,
+  installsReconciledNote,
+  type InstallsReconciled,
   type ServingPointer,
   CrossVerticalRegistry,
   exportReadPlan,
@@ -4525,11 +4528,17 @@ export class SqliteScopeHost implements ScopeHost {
     return v?.serving_ref && v.serving_version_id ? { ref: v.serving_ref, versionId: v.serving_version_id } : null;
   }
 
-  /** #2178: refuse running `incomingId` where any of `froms` ran, each distinct version judged once. */
-  private assertNoStrandFrom(froms: readonly (string | null | undefined)[], incomingId: string): void {
+  /**
+   * #2178: refuse running `incomingId` where any of `froms` ran, each distinct version judged once,
+   * and where installs last reconciled one of `receipts` — a refusal from those names them.
+   */
+  private assertNoStrandFrom(froms: readonly (string | null | undefined)[], incomingId: string, receipts: readonly InstallsReconciled[] = []): void {
     const incoming = this.manifestJsonOf(incomingId);
     for (const from of new Set(froms)) {
       if (from && from !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming);
+    }
+    for (const r of receipts) {
+      if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, installsReconciledNote(r));
     }
   }
 
@@ -4542,12 +4551,14 @@ export class SqliteScopeHost implements ScopeHost {
     const move = scopeMoveOf(scope, incomingId, servingRef, this.servingPointerOf(scope, servingRef));
     // A primary scope is also judged from the version it last reconciled: until then, a retirement
     // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
-    if (move) this.assertNoStrandFrom([move.before, isPrimaryScope(scope) ? scope.provisionedVersionId : null], move.after);
+    if (!move) return;
+    const receipt = isPrimaryScope(scope) && scope.provisionedVersionId ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
+    this.assertNoStrandFrom([move.before], move.after, receipt);
   }
 
   /** `PROVISIONED_VERSIONS_SQL` over the directory. */
-  private provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): string[] {
-    return (this.directory.prepare(PROVISIONED_VERSIONS_SQL).all(vertical, servingRef, ownerTenant) as { version_id: string }[]).map((r) => r.version_id);
+  private provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): InstallsReconciled[] {
+    return installsReconciledOf(this.directory.prepare(PROVISIONED_VERSIONS_SQL).all(vertical, servingRef, ownerTenant) as Record<string, unknown>[]);
   }
 
   /** What one version of `slug` imports, from the registry; `not_found` for a version it does not know. */
@@ -8954,9 +8965,9 @@ export class SqliteScopeHost implements ScopeHost {
             outgoing?.id,
             served?.versionId,
             ...owned.map((s) => runningVersionOf(mapScope(s), served)),
-            ...(served || owned.length > 0 ? this.provisionedVersionsOf(verticalSlug, served?.ref ?? null, owned.length > 0 ? owning!.ownerTenant : null) : []),
           ],
           versionId,
+          served || owned.length > 0 ? this.provisionedVersionsOf(verticalSlug, served?.ref ?? null, owned.length > 0 ? owning!.ownerTenant : null) : [],
         );
 
         // §4's two checkpoints, fired where the blast radius is. A FIRST promotion
@@ -9282,8 +9293,9 @@ export class SqliteScopeHost implements ScopeHost {
         if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
         // #2178: every install on the serving script runs the new version from this moment.
         this.assertNoStrandFrom(
-          [r.serving_version_id, ...(r.serving_ref ? this.provisionedVersionsOf(verticalSlug, r.serving_ref, null) : [])],
+          [r.serving_version_id],
           parsed.versionId,
+          r.serving_ref ? this.provisionedVersionsOf(verticalSlug, r.serving_ref, null) : [],
         );
         this.directory
           .prepare(

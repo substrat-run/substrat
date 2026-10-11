@@ -775,6 +775,8 @@ export {
   bindExportBreaksOf,
   scopeMoveOf,
   PROVISIONED_VERSIONS_SQL,
+  installsReconciledOf,
+  installsReconciledNote,
   bindExportBreakRefusal,
   BIND_EXPORT_BREAK_REFUSAL,
   isBindExportBreakRefusal,
@@ -787,6 +789,7 @@ export type {
   CrossVerticalReport,
   ProvisionReconcileReport,
   ServingPointer,
+  InstallsReconciled,
 } from './platform-sweep.js';
 export {
   migrationProgress,

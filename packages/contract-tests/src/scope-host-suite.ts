@@ -7127,14 +7127,16 @@ export function scopeHostContractSuite(
         await host.admin.promoteVersion(staff, slug, 'prod', v.retired);
         await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
         await host.admin.bindScopeVersion(staff, t1, pinned, v.retired);
-        // So the drop is refused at each door: the promote, the serve, and the pinned install's bind.
-        await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', /drops the shape/);
+        // So the drop is refused at each door: the promote, the serve, and the pinned install's bind,
+        // each naming the install it waits for.
+        const waitsFor = (sc: ScopeId) => new RegExp(`drops the shape.*Judged from 1 install\\(s\\) that last reconciled ${v.binds} \\(one is ${sc}\\)`);
+        await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', waitsFor(routed));
         await expectRefusal(
           host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' }),
           'precondition_failed',
-          /reconciles/,
+          waitsFor(routed),
         );
-        await expectRefusal(host.admin.bindScopeVersion(staff, t1, pinned, v.dropped), 'precondition_failed', /drops the shape/);
+        await expectRefusal(host.admin.bindScopeVersion(staff, t1, pinned, v.dropped), 'precondition_failed', waitsFor(pinned));
         // A copy never reconciles, so its receipt is not read: its bind is judged on what it runs.
         const copy = await install(slug, v.binds, { kind: 'archive', forkedFrom: pinned, forkedAt: new Date().toISOString() });
         await host.admin.markScopeProvisioned(staff, t1, copy, v.binds);
