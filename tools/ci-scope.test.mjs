@@ -238,9 +238,11 @@ test('decide: a package that reads a changed file off disk joins the selection',
     files: ['engines/notifications/src/index.ts'],
     lockfile: () => assert.fail('not read'),
     all,
-    selectChanged: (extra) => ((asked = extra), [all[1]]),
+    // pnpm's selector, stubbed: it answers what it is asked for.
+    selectChanged: (extra) => ((asked = extra), extra.map((name) => ({ name, dir: 'apps/console' }))),
   });
   assert.deepEqual(asked, ['@substrat-run/console']);
+  assert.deepEqual(r.selected, [{ name: '@substrat-run/console', dir: 'apps/console' }]);
   assert.deepEqual(r.readers, ['@substrat-run/console']);
   assert.deepEqual(r.lockfileImporters, []);
 });
