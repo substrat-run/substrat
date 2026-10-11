@@ -30,11 +30,14 @@ import { entityStateName, entityStateOutput } from './entity-state.js';
 import {
   DERIVED_KINDS,
   primaryKeyOf,
+  stampsOf,
   type DerivedKind,
   type EmittedExport,
   type EntityDef,
   type EntityFields,
+  type StampKind,
 } from './model.js';
+import { acceptsNull, baseDefOf } from './zod-read.js';
 
 // ---------------------------------------------------------------------------
 // Reading an operation's own declarations back off itself.
@@ -625,8 +628,8 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
   /** A reasoned exception when a PATCH input cannot be an optional, default-free field bag. */
   readonly patchException?: string;
   /**
-   * The PLATFORM writes this operation's handler (#1773) — see `DerivedKind` for the four shapes
-   * and what each one does.
+   * The PLATFORM writes this operation's handler (#1773) — see `DerivedKind` for the shapes and
+   * what each one does.
    *
    * A declaration whose shape the platform can derive says either this or `authored`, and
    * `defineOperations` refuses one that says neither: a hand-written `get` restates its
@@ -638,7 +641,7 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
   /**
    * Why this operation's handler is written by hand although the platform could derive it
    * (#1773). The reason is the review artifact: it names what the derived handler would get
-   * wrong here — a parent-existence check, a projection, a child table. Refused on an operation
+   * wrong here — a normalised input, a projection, a child table. Refused on an operation
    * that is not derivable, where every handler is authored and the line would only be noise.
    */
   readonly authored?: string;
@@ -1335,6 +1338,26 @@ export interface DerivedEmit {
 }
 
 /**
+ * The parent a check narrowed to it names (#2157): the row that must exist, and the link column
+ * the input's id fills or filters.
+ */
+export interface DerivedParent {
+  readonly entity: string;
+  readonly table: string;
+  readonly primaryKey: string;
+  /** The input field carrying the parent's id. */
+  readonly idFrom: string;
+  /** The link column, `<parent>_id`. */
+  readonly column: string;
+}
+
+/** A column a derived write stamps, and with what (#2157) — see `EntityDef.stamps`. */
+export interface DerivedStamp {
+  readonly column: string;
+  readonly kind: StampKind;
+}
+
+/**
  * Everything a derived handler needs, resolved from the declaration once, at module load. The
  * kernel builds the handler from this and nothing else, so the handler cannot read a field the
  * declaration did not name.
@@ -1355,6 +1378,8 @@ export type DerivationPlan = {
       /** input field → the column it filters, the parent's id field included. */
       readonly filters: readonly { readonly field: string; readonly column: string }[];
       readonly total: boolean;
+      /** The parent the check narrows to, which must exist — absent for a scope-wide page. */
+      readonly parent?: DerivedParent;
       /** The input field that picks the view of an archivable entity (#119), when declared. */
       readonly viewFrom?: string;
     }
@@ -1366,6 +1391,18 @@ export type DerivationPlan = {
       readonly emit: DerivedEmit;
     }
   | { readonly kind: 'delete'; readonly idFrom: string; readonly emit: DerivedEmit }
+  | {
+      readonly kind: 'create';
+      /** The parent the check narrows to: it must exist, fills its link column and is linked to. */
+      readonly parent?: DerivedParent;
+      /** input field → the column it fills. A field the caller left out is `NULL`. */
+      readonly values: readonly { readonly field: string; readonly column: string }[];
+      /** Every stamp: each is written on insert. */
+      readonly stamps: readonly DerivedStamp[];
+      /** The natural key's columns — a row already holding them is the answer. Empty for none. */
+      readonly key: readonly string[];
+      readonly emit: DerivedEmit;
+    }
   | { readonly kind: EntityMoveKind; readonly idFrom: string }
   | {
       readonly kind: 'trashed';
@@ -1414,28 +1451,6 @@ type DeclarationRead = {
   derive?: unknown;
   authored?: unknown;
 };
-
-/**
- * A schema read structurally, through the wrappers that only change optionality: the zod def
- * underneath, and whether any wrapper on the way admits `null`.
- */
-function unwrapped(schema: unknown): { base: { type?: string } | undefined; nullable: boolean } {
-  let current = schema;
-  let nullable = false;
-  for (let depth = 0; depth < 8; depth++) {
-    const def = (current as { _zod?: { def?: unknown } })?._zod?.def as
-      | { type?: string; innerType?: unknown }
-      | undefined;
-    if (!def) return { base: undefined, nullable };
-    if (def.type === 'nullable' || def.type === 'nullish') nullable = true;
-    else if (def.type !== 'optional' && def.type !== 'readonly') return { base: def, nullable };
-    current = def.innerType;
-  }
-  return { base: undefined, nullable };
-}
-
-const baseDefOf = (schema: unknown) => unwrapped(schema).base;
-const acceptsNull = (schema: unknown) => unwrapped(schema).nullable;
 
 /** The column kinds a derived write binds as they arrive: a JSON or boolean column needs encoding. */
 const DERIVED_WRITE_KINDS = new Set(['string', 'number', 'literal']);
@@ -1580,18 +1595,12 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
   const filterable = new Set(over.filterable ?? []);
   const filters: { field: string; column: string }[] = [];
   const { required, optional } = inputFields(decl);
+  let parent: DerivedParent | undefined;
   if (permission.entity !== undefined) {
-    if (!(base.def.parents ?? []).includes(permission.entity)) {
-      return `its check narrows to '${permission.entity}', which is not a parent of '${name}'`;
-    }
-    const idFrom = permission.idFrom as string;
-    const column = snakeCaseField(idFrom);
-    // The filter is what scopes the page to the checked parent, so it must BE the link to that
-    // parent — a filter on any other column passes the check on one row and pages another set.
-    const link = `${snakeCaseField(permission.entity)}_id`;
-    if (column !== link) {
-      return `the parent's id '${idFrom}' filters column '${column}', which is not the link to '${permission.entity}' ('${link}')`;
-    }
+    const target = parentTarget(name, base.def, permission, entities, 'filters');
+    if (typeof target === 'string') return target;
+    parent = target;
+    const { idFrom, column } = target;
     if (!required.includes(idFrom) || !filterable.has(column)) {
       return `the parent's id '${idFrom}' is not a required input filtering the declared \`filterable\` column '${column}'`;
     }
@@ -1620,8 +1629,34 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
     permission,
     filters,
     total: decl.paged?.total === true,
+    ...(parent ? { parent } : {}),
     ...(viewFrom !== undefined ? { viewFrom } : {}),
   };
+}
+
+/**
+ * The parent a check narrows to, for a page of its children or a child created under it (#2157).
+ * The input's id must fill the LINK column `<parent>_id` — a filter or a value on any other column
+ * passes the check on one row and reads or writes another.
+ */
+function parentTarget(
+  name: string,
+  def: EntityDef,
+  permission: { key: string; entity?: string; idFrom?: string },
+  entities: Record<string, EntityDef>,
+  verb: 'filters' | 'fills',
+): DerivedParent | string {
+  const parent = permission.entity as string;
+  if (!(def.parents ?? []).includes(parent)) return `its check narrows to '${parent}', which is not a parent of '${name}'`;
+  const idFrom = permission.idFrom as string;
+  const column = snakeCaseField(idFrom);
+  const link = `${snakeCaseField(parent)}_id`;
+  if (column !== link) {
+    return `the parent's id '${idFrom}' ${verb} column '${column}', which is not the link to '${parent}' ('${link}')`;
+  }
+  const base = derivableEntity(parent, entities);
+  if (typeof base === 'string') return base;
+  return { entity: parent, table: base.head.table, primaryKey: base.head.primaryKey, idFrom, column };
 }
 
 /** The input field a derived page of an archivable entity reads its view from (#119). */
@@ -1684,25 +1719,74 @@ function updatePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
   if (required.length !== 1 || required[0] !== idFrom) return `its input requires more than the id '${idFrom}'`;
   if (optional.length === 0) return 'its input has no field to write';
   const columnShape = base.def.fields.shape;
+  const stamps = stampsOf(name, base.def);
   const fields: { field: string; column: string }[] = [];
   for (const field of optional) {
-    const column = snakeCaseField(field);
-    const columnSchema = columnShape[column];
-    if (columnSchema === undefined) return `body field '${field}' is not a column of '${name}'`;
-    if (column === base.head.primaryKey) return `body field '${field}' would rewrite the row's id`;
-    const fieldSchema = decl.input?.shape[field];
-    const kind = baseDefOf(columnSchema)?.type;
-    if (kind === 'enum') {
-      return `column '${column}' is an enum — a change of state is a lifecycle edge with its own operation`;
-    }
-    if (!kind || !DERIVED_WRITE_KINDS.has(kind)) return `column '${column}' is not a string or number column`;
-    if (baseDefOf(fieldSchema)?.type !== kind) return `body field '${field}' is not the same type as column '${column}'`;
+    const target = writableColumn(decl, field, name, base.head.primaryKey, columnShape, stamps, UPDATE_WORDS);
+    if (typeof target === 'string') return target;
+    const { column, columnSchema, fieldSchema } = target;
     if (acceptsNull(fieldSchema) && !acceptsNull(columnSchema)) {
       return `body field '${field}' accepts null, and column '${column}' cannot be cleared`;
     }
     fields.push({ field, column });
   }
-  return { kind: 'update', ...base.head, permission: target.permission, idFrom, fields, emit: emitOf(decl) };
+  return {
+    kind: 'update',
+    ...base.head,
+    permission: target.permission,
+    idFrom,
+    fields,
+    emit: emitOf(decl),
+  };
+}
+
+/** How a derived write's refusals name the field and the two columns it may not fill. */
+interface WriteWords {
+  readonly field: string;
+  readonly onId: string;
+  readonly onEnum: string;
+}
+const UPDATE_WORDS: WriteWords = {
+  field: 'body field',
+  onId: "would rewrite the row's id",
+  onEnum: 'a change of state is a lifecycle edge with its own operation',
+};
+const CREATE_WORDS: WriteWords = {
+  field: 'input field',
+  onId: "would set the row's id, which a create mints",
+  onEnum: "a row's first state is its lifecycle's, and authored",
+};
+
+/**
+ * The column one input field of a derived write fills, by its snake_case name — or the clause it
+ * fails: no such column, the id, a stamp, an enum, a kind the write cannot bind as it arrives, or
+ * a field of another type. Whether it may be empty is the caller's rule.
+ */
+function writableColumn(
+  decl: DeclarationRead,
+  field: string,
+  name: string,
+  primaryKey: string,
+  columnShape: z.ZodRawShape,
+  stamps: Readonly<Record<string, StampKind>>,
+  words: WriteWords,
+): { column: string; columnSchema: unknown; fieldSchema: unknown } | string {
+  const column = snakeCaseField(field);
+  const columnSchema = columnShape[column];
+  if (columnSchema === undefined) return `${words.field} '${field}' is not a column of '${name}'`;
+  if (column === primaryKey) return `${words.field} '${field}' ${words.onId}`;
+  if (stamps[column] !== undefined) return `${words.field} '${field}' writes '${column}', which is stamped`;
+  const fieldSchema = decl.input?.shape[field];
+  const kind = baseDefOf(columnSchema)?.type;
+  if (kind === 'enum') return `column '${column}' is an enum — ${words.onEnum}`;
+  if (!kind || !DERIVED_WRITE_KINDS.has(kind)) return `column '${column}' is not a string or number column`;
+  if (baseDefOf(fieldSchema)?.type !== kind) return `${words.field} '${field}' is not the same type as column '${column}'`;
+  return { column, columnSchema, fieldSchema };
+}
+
+/** The declared stamps, in declared order. */
+function stampList(stamps: Readonly<Record<string, StampKind>>): DerivedStamp[] {
+  return Object.entries(stamps).map(([column, kind]) => ({ column, kind }));
 }
 
 function deletePlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
@@ -1720,6 +1804,89 @@ function deletePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
     return `${children.map((c) => `'${c}'`).join(', ')} declare${children.length === 1 ? 's' : ''} '${name}' as parent, so a delete would orphan them — a cascade is authored`;
   }
   return { kind: 'delete', ...base.head, permission: target.permission, idFrom, emit: emitOf(decl) };
+}
+
+/** A column a row may leave empty — what a derived create writes when no source names it. */
+const columnMayBeNull = (schema: unknown): boolean => acceptsNull(schema) || isOptionalSchema(schema);
+
+function createPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): DerivationPlan | string {
+  if (decl.http?.method !== 'POST') return 'it is not served as POST, the method that says it adds a row';
+  if (decl.paged !== undefined) return 'it is paged';
+  if (decl.concurrency !== undefined) return 'it declares `concurrency`, and a row that does not exist yet has no version';
+  const name = decl.emits?.entity;
+  if (typeof name !== 'string') return 'it emits nothing, and a create announces the row it adds';
+  const base = derivableEntity(name, entities);
+  if (typeof base === 'string') return base;
+  const { primaryKey } = base.head;
+  if (decl.output !== base.def.fields) return `its output is not '${name}'s own \`fields\``;
+  if (decl.emits?.entityIdFrom !== primaryKey) {
+    return `its event takes its subject from '${String(decl.emits?.entityIdFrom)}', not the row's id '${primaryKey}'`;
+  }
+  const columnShape = base.def.fields.shape;
+  if (baseDefOf(columnShape[primaryKey])?.type !== 'string') {
+    return `'${name}'s id '${primaryKey}' is not a string column, so a minted id cannot fill it`;
+  }
+  const permission = plainPermission(decl.permission);
+  if (typeof permission === 'string') return permission;
+  const { required, optional } = inputFields(decl);
+  let parent: DerivedParent | undefined;
+  if (permission.entity !== undefined) {
+    const target = parentTarget(name, base.def, permission, entities, 'fills');
+    if (typeof target === 'string') return target;
+    if (!required.includes(target.idFrom)) return `the parent's id '${target.idFrom}' is not a required input`;
+    if (baseDefOf(decl.input?.shape[target.idFrom])?.type !== baseDefOf(columnShape[target.column])?.type) {
+      return `input field '${target.idFrom}' is not the same type as link column '${target.column}'`;
+    }
+    parent = target;
+  }
+  const stamps = stampsOf(name, base.def);
+  // Every input field fills the column of its name — an input the row does not hold is one the
+  // handler does something else with.
+  const values: { field: string; column: string }[] = [];
+  for (const field of [...required, ...optional]) {
+    if (field === parent?.idFrom) continue;
+    if (snakeCaseField(field) === parent?.column) return `input field '${field}' writes the link column '${parent.column}'`;
+    const target = writableColumn(decl, field, name, primaryKey, columnShape, stamps, CREATE_WORDS);
+    if (typeof target === 'string') return target;
+    const { column, columnSchema, fieldSchema } = target;
+    if ((optional.includes(field) || acceptsNull(fieldSchema)) && !columnMayBeNull(columnSchema)) {
+      return `input field '${field}' may be absent or null, and column '${column}' cannot be empty`;
+    }
+    values.push({ field, column });
+  }
+  const filled = new Set([primaryKey, ...(parent ? [parent.column] : []), ...Object.keys(stamps), ...values.map((v) => v.column)]);
+  for (const column of Object.keys(columnShape)) {
+    if (!filled.has(column) && !columnMayBeNull(columnShape[column])) {
+      return `column '${column}' is filled by nothing the model names — no input, stamp or parent link — and cannot be empty`;
+    }
+  }
+  const key = [...(base.def.key ?? [])];
+  const fromInput = new Set([...(parent ? [parent.column] : []), ...values.map((v) => v.column)]);
+  for (const column of key) {
+    if (!fromInput.has(column)) return `its natural key column '${column}' is not filled from the input, so no existing row can be matched by it`;
+  }
+  // A replay answers the row already holding the key. The check passed on the parent the caller
+  // named, so the key must pin that parent too, or the lookup answers another parent's row.
+  if (parent && key.length > 0 && !key.includes(parent.column)) {
+    return `its natural key does not include the link to '${parent.entity}' ('${parent.column}'), so a replay could answer another ${parent.entity}'s row`;
+  }
+  // A replay would also answer a row the kernel hides (#119, K-45): a binned one to a caller who
+  // may not see the bin, or an archived one the active view leaves out — and skipping hidden rows
+  // only moves the clash to the insert. What re-creating one means is the vertical's to decide.
+  const hides = [base.def.trash ? '`trash`' : null, base.def.archive ? '`archive`' : null].filter(Boolean);
+  if (key.length > 0 && hides.length > 0) {
+    return `'${name}' declares ${hides.join(' and ')} and a natural key, so a replay could answer a row the kernel hides — whether re-creating one restores it, unarchives it or refuses is the vertical's call, so its handler is written by hand`;
+  }
+  return {
+    kind: 'create',
+    ...base.head,
+    permission,
+    ...(parent ? { parent } : {}),
+    values,
+    stamps: stampList(stamps),
+    key,
+    emit: emitOf(decl),
+  };
 }
 
 /** The derived kinds that are one kernel move (#119, K-45), and which declaration gates each. */
@@ -1801,6 +1968,7 @@ const PLANNERS: Record<DerivedKind, typeof getPlan> = {
   list: listPlan,
   update: updatePlan,
   delete: deletePlan,
+  create: createPlan,
   archive: movePlan('archive'),
   unarchive: movePlan('unarchive'),
   trash: movePlan('trash'),
@@ -1818,7 +1986,8 @@ function planFor(kind: DerivedKind, decl: DeclarationRead, entities: Record<stri
  * the module's entities alone — `undefined` when it matches none of `DerivedKind`. Pure: this
  * classifies, and `defineOperations` is what refuses. The first shape that matches is answered:
  * a `get` is served as GET and not paged, a `list` is paged, an `update` is a PATCH that emits, a
- * `delete` is a DELETE answering `{ id, deleted }`. The moves are the exception (`derivedKindsOf`).
+ * `delete` is a DELETE answering `{ id, deleted }`, a `create` is a POST that emits. The moves are
+ * the exception (`derivedKindsOf`).
  */
 export function derivationOf(decl: object, entities: Record<string, EntityDef>): DerivationPlan | undefined {
   for (const kind of DERIVED_KINDS) {

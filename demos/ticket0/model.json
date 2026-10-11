@@ -1462,7 +1462,11 @@
       },
       "key": [
         "name"
-      ]
+      ],
+      "stamps": {
+        "created_at": "createdAt",
+        "created_by": "createdBy"
+      }
     },
     "signup": {
       "table": "ticket0_signups",
@@ -2104,6 +2108,9 @@
     }
   },
   "handlers": {
+    "ticket0/create-saved-reply-folder": {
+      "authored": "the derived create is this handler, but the deployed control plane refuses a model carrying it until it parses kinds structurally (#2165)"
+    },
     "ticket0/get-contact": {
       "derive": "get"
     },

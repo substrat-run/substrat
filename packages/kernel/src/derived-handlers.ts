@@ -15,10 +15,13 @@ import {
   substratError,
   type DerivationPlan,
   type DerivedEmit,
+  type DerivedParent,
+  type DerivedStamp,
   type EntityRef,
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
 import type { OperationContext, OperationHandler, PageParams, SqlValue } from './scope-host.js';
+import { ulid } from './ulid.js';
 
 type Row = Record<string, unknown>;
 type Input = Record<string, unknown> | undefined;
@@ -29,15 +32,8 @@ const quoted = (identifier: string): string => `"${identifier.replace(/"/g, '""'
 /** The handler a plan describes. */
 export function derivedHandler(plan: DerivationPlan): OperationHandler<never, unknown> {
   const key = permissionKey.parse(plan.permission.key);
-  const columns = plan.columns.map(quoted).join(', ');
-  const select = `SELECT ${columns} FROM ${quoted(plan.table)} WHERE ${quoted(plan.primaryKey)} = ?`;
   const ref = (id: string): EntityRef => ({ entityType: plan.entity, entityId: id });
-
-  const rowOrThrow = (ctx: OperationContext, id: string): Row => {
-    const row = ctx.sql.query<Row>(select, [id])[0];
-    if (!row) throw substratError('not_found', `${plan.entity} not found: ${id}`);
-    return row;
-  };
+  const rowOrThrow = lookup(plan.entity, plan.table, plan.primaryKey, plan.columns.map(quoted).join(', '));
 
   /** The declared check: on the row the input names, or on its parent, or scope-wide. */
   const check = async (ctx: OperationContext, input: Input): Promise<void> => {
@@ -69,9 +65,12 @@ function bodyOf(
     case 'get':
       return (ctx, input) => rowOrThrow(ctx, String(input?.[plan.idFrom]));
 
-    case 'list':
-      return (ctx, input) =>
-        ctx.page<Row>(plan.entity, {
+    case 'list': {
+      const parentOrThrow = plan.parent && parentLookup(plan.parent);
+      return (ctx, input) => {
+        // A page of a parent's rows names the parent: one that does not exist is not an empty page.
+        parentOrThrow?.(ctx, input);
+        return ctx.page<Row>(plan.entity, {
           ...pageOf(input),
           filters: filtersOf(plan.filters, input),
           ...(plan.total ? { total: true } : {}),
@@ -80,6 +79,8 @@ function bodyOf(
             ? { view: input[plan.viewFrom] as PageParams['view'] }
             : {}),
         });
+      };
+    }
 
     case 'update':
       return (ctx, input) => {
@@ -110,6 +111,44 @@ function bodyOf(
         return result;
       };
 
+    case 'create': {
+      const parentOrThrow = plan.parent && parentLookup(plan.parent);
+      // Every column but the id, in the order the values are bound: the link, the input, the stamps.
+      const written = [
+        ...(plan.parent ? [plan.parent.column] : []),
+        ...plan.values.map(({ column }) => column),
+        ...plan.stamps.map(({ column }) => column),
+      ];
+      const insert =
+        `INSERT INTO ${quoted(plan.table)} (${[plan.primaryKey, ...written].map(quoted).join(', ')}) ` +
+        `VALUES (${['?', ...written.map(() => '?')].join(', ')})`;
+      const keyAt = plan.key.map((column) => written.indexOf(column));
+      const byKey =
+        `SELECT ${plan.columns.map(quoted).join(', ')} FROM ${quoted(plan.table)} WHERE ` +
+        plan.key.map((column) => `${quoted(column)} IS ?`).join(' AND ');
+      return (ctx, input) => {
+        const parentId = parentOrThrow?.(ctx, input);
+        const values: SqlValue[] = [
+          ...(parentId !== undefined ? [parentId] : []),
+          // A field the caller left out is NULL — the plan admits it only over a nullable column.
+          ...plan.values.map(({ field }) => (input?.[field] ?? null) as SqlValue),
+          ...stamped(ctx, plan.stamps),
+        ];
+        // Idempotent on the natural key: the row that already holds it is the answer, unchanged.
+        if (keyAt.length > 0) {
+          const existing = ctx.sql.query<Row>(byKey, keyAt.map((i) => values[i] as SqlValue))[0];
+          if (existing) return existing;
+        }
+        const id = ulid();
+        ctx.sql.exec(insert, [id, ...values]);
+        // The edge the permission walk follows from the new row to the parent it was checked on.
+        if (plan.parent) ctx.link(ref(id), { entityType: plan.parent.entity, entityId: String(parentId) });
+        const created = rowOrThrow(ctx, id);
+        ctx.emit(eventOf(plan.emit, ref(id), created));
+        return created;
+      };
+    }
+
     // One kernel move (#119): the verb checks the entity's declared key again, refuses a wrong
     // move as `conflict` and a missing row as `not_found`, and emits the move itself.
     case 'archive':
@@ -126,6 +165,33 @@ function bodyOf(
     case 'trashed':
       return (ctx, input) => ctx.pageTrashed<Row>(plan.entity, { ...pageOf(input), filters: filtersOf(plan.filters, input) });
   }
+}
+
+/** A read by primary key that answers `not_found` in the words a hand-written read uses. */
+function lookup(entity: string, table: string, primaryKey: string, columns: string): (ctx: OperationContext, id: string) => Row {
+  const select = `SELECT ${columns} FROM ${quoted(table)} WHERE ${quoted(primaryKey)} = ?`;
+  return (ctx, id) => {
+    const row = ctx.sql.query<Row>(select, [id])[0];
+    if (!row) throw substratError('not_found', `${entity} not found: ${id}`);
+    return row;
+  };
+}
+
+/** The parent the input names, or `not_found` — answered after the check, so it probes nothing. */
+function parentLookup(parent: DerivedParent): (ctx: OperationContext, input: Input) => string {
+  const exists = lookup(parent.entity, parent.table, parent.primaryKey, '1 AS found');
+  return (ctx, input) => {
+    const id = String(input?.[parent.idFrom]);
+    exists(ctx, id);
+    return id;
+  };
+}
+
+/** Each stamp's value for this invocation, in the plan's order: the time, or the caller. */
+function stamped(ctx: OperationContext, stamps: readonly DerivedStamp[]): SqlValue[] {
+  const now = ctx.now();
+  const caller = String(ctx.principal);
+  return stamps.map(({ kind }) => (kind === 'createdAt' ? now : caller));
 }
 
 /** The page the platform supplied with the input (`limit`, `cursor`, `sort`, `order`). */

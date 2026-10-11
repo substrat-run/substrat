@@ -8,6 +8,9 @@
  * - `dfolder` — the parent a page is scoped to.
  * - `dnote` — its child: derived get / list / update / delete. The writes that seed it, and the
  *   read of its history, are authored — none of them is a derivable shape.
+ * - `dtag` — another child of `dfolder`, made by a derived CREATE (#2157): keyed per folder, its
+ *   time and author stamped, linked to the folder it was checked on; read and changed derived too.
+ * - `dlabel` — a scope-wide derived create, with no parent and no natural key.
  * - `dshelf` — archivable and trashable, each under its own key (#119): derived archive /
  *   unarchive / trash / restore, the bin page, and a list with the archive view.
  */
@@ -40,6 +43,21 @@ export const derivedEntities = defineEntities({
     }),
     parents: ['dfolder'],
   },
+  dtag: {
+    table: 'derived_tags',
+    fields: z.object({
+      id: z.string(),
+      dfolder_id: z.string(),
+      label: z.string(),
+      note: z.string().nullable(),
+      created_at: z.string(),
+      created_by: z.string(),
+    }),
+    parents: ['dfolder'],
+    key: ['dfolder_id', 'label'],
+    stamps: { created_at: 'createdAt', created_by: 'createdBy' },
+  },
+  dlabel: { table: 'derived_labels', fields: z.object({ id: z.string(), name: z.string() }) },
   dshelf: {
     table: 'derived_shelves',
     fields: z.object({ id: z.string(), label: z.string() }),
@@ -116,11 +134,72 @@ export const derivedOperations = defineOperations(derivedEntities, PERMISSIONS)(
     http: { method: 'DELETE', path: '/notes/{noteId}' },
     emits: { entity: 'dnote', entityIdFrom: 'id', type: 'dnote.deleted', schemaVersion: 1, piiClass: 'none', payload: ['id'] },
   },
+  'derived/create-tag': {
+    summary: 'Tag a folder',
+    derive: 'create',
+    permission: { key: 'dnote:write', entity: 'dfolder', idFrom: 'dfolderId' },
+    input: z.object({ dfolderId: z.string(), label: z.string(), note: z.string().nullable().optional() }),
+    output: derivedEntities.dtag.fields,
+    http: { method: 'POST', path: '/folders/{dfolderId}/tags' },
+    emits: {
+      entity: 'dtag',
+      entityIdFrom: 'id',
+      type: 'dtag.created',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'dfolder_id', 'label', 'created_at', 'created_by'],
+    },
+  },
+  'derived/get-tag': {
+    summary: 'One tag — narrowed to the tag, so a grant on its folder reaches it only through the link',
+    derive: 'get',
+    permission: { key: 'dnote:read', entity: 'dtag', idFrom: 'tagId' },
+    input: z.object({ tagId: z.string() }),
+    output: derivedEntities.dtag.fields,
+    http: { method: 'GET', path: '/tags/{tagId}' },
+  },
+  'derived/update-tag': {
+    summary: "Change a tag's note",
+    derive: 'update',
+    permission: { key: 'dnote:write', entity: 'dtag', idFrom: 'tagId' },
+    input: z.object({ tagId: z.string(), note: z.string().nullable().optional() }),
+    output: derivedEntities.dtag.fields,
+    http: { method: 'PATCH', path: '/tags/{tagId}' },
+    concurrency: { over: 'dtag', idFrom: 'tagId' },
+    emits: {
+      entity: 'dtag',
+      entityIdFrom: 'id',
+      type: 'dtag.updated',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'note', 'created_by'],
+    },
+  },
+  'derived/create-label': {
+    summary: 'Add a label',
+    derive: 'create',
+    permission: 'dnote:write',
+    input: z.object({ name: z.string() }),
+    output: derivedEntities.dlabel.fields,
+    http: { method: 'POST', path: '/labels' },
+    emits: { entity: 'dlabel', entityIdFrom: 'id', type: 'dlabel.created', schemaVersion: 1, piiClass: 'none', payload: ['id', 'name'] },
+  },
   'derived/add-shelf': {
     summary: 'Add a shelf',
     permission: 'dnote:write',
     input: z.object({ id: z.string(), label: z.string() }),
     output: ok,
+  },
+  // A derived create on an archivable, trashable entity with no natural key (#2162): there is no
+  // replay to answer a hidden row, so it derives. With a key it would not (`createPlan`).
+  'derived/create-shelf': {
+    summary: 'Add a shelf, its id minted',
+    derive: 'create',
+    permission: 'dnote:write',
+    input: z.object({ label: z.string() }),
+    output: derivedEntities.dshelf.fields,
+    http: { method: 'POST', path: '/shelves' },
+    emits: { entity: 'dshelf', entityIdFrom: 'id', type: 'dshelf.created', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] },
   },
   'derived/list-shelves': {
     summary: 'The shelves, active unless the archive is asked for',
@@ -211,6 +290,11 @@ export const derivedMod: ModuleRegistration = {
       sql: `CREATE TABLE derived_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL);
             CREATE TABLE derived_notes (id TEXT PRIMARY KEY, dfolder_id TEXT NOT NULL, title TEXT NOT NULL,
                                         body TEXT, rank INTEGER NOT NULL);
+            CREATE TABLE derived_tags (id TEXT PRIMARY KEY, dfolder_id TEXT NOT NULL, label TEXT NOT NULL, note TEXT,
+                                       created_at TEXT NOT NULL, created_by TEXT NOT NULL,
+                                       UNIQUE (dfolder_id, label));
+            CREATE TABLE derived_labels (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+
             CREATE TABLE derived_shelves (id TEXT PRIMARY KEY, label TEXT NOT NULL);`,
     },
   ],
@@ -240,7 +324,12 @@ export const derivedMod: ModuleRegistration = {
     },
     'derived/history': async (ctx, i) => {
       assertAllowed(await ctx.check(READ));
-      return { entries: readHistory({ sql: ctx.sql }, noteRef(i.noteId)).entries };
+      // Any entity's history: a note's, a tag's or a label's — the id is enough to find it.
+      for (const entityType of ['dnote', 'dtag', 'dlabel']) {
+        const { entries } = readHistory({ sql: ctx.sql }, { entityType, entityId: i.noteId });
+        if (entries.length > 0) return { entries };
+      }
+      return { entries: [] };
     },
   }),
 };
