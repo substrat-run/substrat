@@ -42,7 +42,13 @@ export function mockFindingsClient(): FindingsClient {
     { id: 'R1', tenantId: 'MOCKTEAM', kind: null, operation: 'helpdesk/get-ticket', code: 'not_found', subject: null, expiresAt: new Date(Date.now() + 5 * 86_400_000).toISOString(), reason: 'Crawler noise', createdBy: 'you', createdAt: ago(1000) },
   ];
   return {
-    listFindings: async () => ({ available: true, entries }),
+    listFindings: async ({ status, limit = 100, cursor }) => {
+      // Like the plane: filtered, most recent first, and a cursor names a place in that order.
+      const all = entries.filter((e) => status === undefined || e.status === status).sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen));
+      const from = cursor === undefined ? 0 : Number(cursor);
+      const page = all.slice(from, from + limit);
+      return { available: true, entries: page, nextCursor: page.length >= limit ? String(from + limit) : null };
+    },
     setFindingStatus: async ({ id, status }) => {
       const next = { ...entries.find((e) => e.id === id)!, status };
       entries = entries.map((e) => (e.id === id ? next : e));

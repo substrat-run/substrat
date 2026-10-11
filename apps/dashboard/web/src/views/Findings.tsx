@@ -7,18 +7,19 @@ import {
   EXPIRY_CHOICES,
   FINDING_TABS,
   canSuppress,
-  LIST_LIMIT,
   REASON_MAX,
   countByStatus,
+  countIsExact,
   draftFor,
   draftNarrows,
   draftReady,
   findingsError,
   inTab,
-  listIsCut,
+  mergeFindings,
   movesFrom,
   ruleInput,
   ruleScope,
+  type FindingCursors,
   type FindingMove,
   type FindingStatus,
   type SuppressDraft,
@@ -44,7 +45,13 @@ const SEVERITY: Record<FindingEntry['severity'], 'danger' | 'warning' | 'info'> 
 
 const KIND_LABEL: Record<FindingEntry['kind'], string> = { invariant: 'Invariant', drift: 'Drift', recurring: 'Recurring' };
 
-type Load = { state: 'loading' } | { state: 'error'; message: string } | { state: 'unavailable' } | { state: 'ready'; entries: FindingEntry[]; rules: FindingRuleEntry[] };
+type Load =
+  | { state: 'loading' }
+  | { state: 'error'; message: string }
+  | { state: 'unavailable' }
+  | { state: 'ready'; entries: FindingEntry[]; cursors: FindingCursors; rules: FindingRuleEntry[] };
+
+const STATUSES = FINDING_TABS.map((t) => t.value);
 
 export function Findings({
   client,
@@ -68,11 +75,26 @@ export function Findings({
   const latest = useRef(0);
   const [suppressing, setSuppressing] = useState<FindingEntry | null>(null);
   const [notice, setNotice] = useState('');
+  // The tab whose next page is being fetched, and why the last such fetch failed. The failure
+  // sits beside the list, which keeps every page already loaded.
+  const [loadingMore, setLoadingMore] = useState<FindingStatus | null>(null);
+  const [moreError, setMoreError] = useState('');
 
   const read = useCallback(async (): Promise<Load> => {
     try {
-      const [list, rules] = await Promise.all([client.listFindings({}), client.listFindingRules({ active: true })]);
-      return list.available ? { state: 'ready', entries: list.entries, rules: rules.entries } : { state: 'unavailable' };
+      // The first page of every tab, so each can say whether its walk is already over (an exact
+      // count) or has more behind it (Load more).
+      const [pages, rules] = await Promise.all([
+        Promise.all(STATUSES.map((status) => client.listFindings({ status }))),
+        client.listFindingRules({ active: true }),
+      ]);
+      if (pages.some((p) => !p.available)) return { state: 'unavailable' };
+      return {
+        state: 'ready',
+        entries: pages.reduce<FindingEntry[]>((all, p) => mergeFindings(all, p.entries), []),
+        cursors: Object.fromEntries(STATUSES.map((status, i) => [status, pages[i]!.nextCursor ?? null])) as FindingCursors,
+        rules: rules.entries,
+      };
     } catch (e) {
       return { state: 'error', message: findingsError(e, 'read') };
     }
@@ -82,6 +104,7 @@ export function Findings({
   useEffect(() => {
     const mine = ++latest.current;
     setLoad({ state: 'loading' });
+    setMoreError('');
     void read().then((l) => mine === latest.current && setLoad(l));
     return () => {
       latest.current += 1;
@@ -98,6 +121,30 @@ export function Findings({
     if (mine !== latest.current) return;
     if (next.state === 'ready') setLoad(next);
     else setActionError('The list could not be refreshed, so what is shown may be out of date.');
+  };
+
+  /**
+   * The next page of one tab, appended and de-duplicated by id. A failure keeps what is loaded
+   * and the cursor, so pressing the button again retries the same page. An answer that lands
+   * after a refresh began belongs to a list that is gone: dropped, like a slow first read.
+   */
+  const loadMore = async (tab: FindingStatus, cursor: string) => {
+    const mine = latest.current;
+    setLoadingMore(tab);
+    setMoreError('');
+    try {
+      const page = await client.listFindings({ status: tab, cursor });
+      if (mine !== latest.current) return;
+      setLoad((l) =>
+        l.state === 'ready'
+          ? { ...l, entries: mergeFindings(l.entries, page.entries), cursors: { ...l.cursors, [tab]: page.nextCursor ?? null } }
+          : l,
+      );
+    } catch (e) {
+      if (mine === latest.current) setMoreError(findingsError(e, 'read'));
+    } finally {
+      setLoadingMore((t) => (t === tab ? null : t));
+    }
   };
 
   const working = async (id: string, work: () => Promise<void>) => {
@@ -152,20 +199,15 @@ export function Findings({
 
   const counts = countByStatus(load.entries);
   const rows = inTab(load.entries, tab);
-  const cut = listIsCut(load.entries);
+  const more = load.cursors[tab];
   return (
     <>
       <Tabs
-        // A cut list's counts are the counts of what was returned, not the team's totals: left off.
-        tabs={FINDING_TABS.map((t) => ({ value: t.value, label: t.label, ...(cut ? {} : { count: counts[t.value] }) }))}
+        // A tab still being walked counts what is loaded, not the team's total: left off until its walk ends.
+        tabs={FINDING_TABS.map((t) => ({ value: t.value, label: t.label, ...(countIsExact(load.cursors, t.value) ? { count: counts[t.value] } : {}) }))}
         value={tab}
         onChange={(v) => onTab(v as FindingStatus)}
       />
-      {cut && (
-        <div role="status" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-          Showing the latest {LIST_LIMIT} findings by last seen. Older ones are not listed here, so the tabs carry no counts.
-        </div>
-      )}
       {notice && <div role="status" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{notice}</div>}
       {actionError && <div role="alert" style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{actionError}</div>}
       <div style={{ ...card, padding: 0 }}>
@@ -183,7 +225,18 @@ export function Findings({
             />
           ))
         )}
+        {more !== null && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px' }}>
+            <Button variant="secondary" size="sm" loading={loadingMore === tab} onClick={() => void loadMore(tab, more)}>
+              Load more
+            </Button>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Showing {rows.length} by last seen; older findings follow.
+            </span>
+          </div>
+        )}
       </div>
+      {moreError && <div role="alert" style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{moreError}</div>}
       {tab === 'suppressed' && load.rules.length > 0 && (
         <section aria-label="Suppress rules" style={{ ...card, padding: 0 }}>
           <div style={{ padding: '10px 16px', fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>

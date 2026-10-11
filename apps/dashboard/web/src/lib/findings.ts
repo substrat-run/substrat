@@ -24,14 +24,34 @@ export function tabOf(value: string | undefined): FindingStatus {
 }
 
 /**
- * The plane's default page: the list read has no limit or cursor in its declared input, so a
- * team with more findings than this gets the most recently seen of them and nothing says so.
+ * Where each tab's walk stands: the cursor to follow for its next page, or `null` when the plane
+ * said the walk is over. A tab is walked on its own (`status` narrows the read), so a long
+ * Resolved history never hides the Open tab's older findings behind it.
  */
-export const LIST_LIMIT = 100;
+export type FindingCursors = Record<FindingStatus, string | null>;
 
-/** Whether the list is (or may be) cut at the plane's limit — then its counts are not totals. */
-export function listIsCut(entries: readonly FindingEntry[]): boolean {
-  return entries.length >= LIST_LIMIT;
+/**
+ * Fold a page into what is already loaded. By id, the newer copy winning: a finding that moved
+ * tab or was seen again since an earlier page is one row, not two. Kept in the plane's order
+ * (`lastSeen` descending, `id` ascending on a tie), so a row merged in lands where a fresh read
+ * would put it.
+ */
+export function mergeFindings(have: readonly FindingEntry[], page: readonly FindingEntry[]): FindingEntry[] {
+  const byId = new Map(have.map((e) => [e.id, e]));
+  for (const e of page) byId.set(e.id, e);
+  return [...byId.values()].sort(byRecency);
+}
+
+function byRecency(a: FindingEntry, b: FindingEntry): number {
+  return Date.parse(b.lastSeen) - Date.parse(a.lastSeen) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/**
+ * Whether a tab's count is the team's total for that tab. Only a walk that ran to its end says
+ * so: a count over the pages loaded so far is a floor, and a floor shown as a number reads as a total.
+ */
+export function countIsExact(cursors: FindingCursors, tab: FindingStatus): boolean {
+  return cursors[tab] === null;
 }
 
 export function countByStatus(entries: readonly FindingEntry[]): Record<FindingStatus, number> {
@@ -40,9 +60,9 @@ export function countByStatus(entries: readonly FindingEntry[]): Record<FindingS
   return counts;
 }
 
-/** The tab's findings, most recently seen first (the plane's own order, kept stable on ties). */
+/** The tab's findings, most recently seen first (the plane's own order, `id` breaking a tie as it does). */
 export function inTab(entries: readonly FindingEntry[], tab: FindingStatus): FindingEntry[] {
-  return entries.filter((e) => e.status === tab).sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen));
+  return entries.filter((e) => e.status === tab).sort(byRecency);
 }
 
 export type FindingMove = 'acked' | 'resolved' | 'open';
