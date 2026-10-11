@@ -643,6 +643,7 @@ import {
   bindExportBreaksOf,
   bindExportBreakRefusal,
   scopeMoveOf,
+  runningVersionOf,
   type ServingPointer,
   CrossVerticalRegistry,
   exportReadPlan,
@@ -4511,11 +4512,23 @@ export class SqliteScopeHost implements ScopeHost {
    * before or after a move (`servingRef`), the one case it decides what the scope runs.
    */
   private servingPointerOf(scope: Scope, servingRef?: string | null): ServingPointer | null {
-    if (!scope.vertical || !(scope.servingRef || servingRef)) return null;
+    return scope.vertical && (scope.servingRef || servingRef) ? this.servingPointerOfVertical(scope.vertical) : null;
+  }
+
+  /** What `slug` serves in place, or null when nothing is. */
+  private servingPointerOfVertical(slug: string): ServingPointer | null {
     const v = this.directory
       .prepare('SELECT serving_ref, serving_version_id FROM verticals WHERE slug = ?')
-      .get(scope.vertical) as { serving_ref: string | null; serving_version_id: string | null } | undefined;
+      .get(slug) as { serving_ref: string | null; serving_version_id: string | null } | undefined;
     return v?.serving_ref && v.serving_version_id ? { ref: v.serving_ref, versionId: v.serving_version_id } : null;
+  }
+
+  /** #2178: refuse running `incomingId` where any of `froms` ran, each distinct version judged once. */
+  private assertNoStrandFrom(froms: readonly (string | null | undefined)[], incomingId: string): void {
+    const incoming = this.manifestJsonOf(incomingId);
+    for (const from of new Set(froms)) {
+      if (from && from !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming);
+    }
   }
 
   /**
@@ -8915,21 +8928,21 @@ export class SqliteScopeHost implements ScopeHost {
           owning && owning.ownerTenant !== null && !owning.listed
             ? (this.directory
                 .prepare(
-                  `SELECT scope_id, tenant_id, vertical_version_id FROM scopes
+                  `SELECT * FROM scopes
                    WHERE vertical = ? AND tenant_id = ? AND status = 'active' AND forked_from IS NULL AND kind != 'preview'`,
                 )
-                .all(verticalSlug, owning.ownerTenant) as { scope_id: string; tenant_id: string; vertical_version_id: string | null }[])
+                .all(verticalSlug, owning.ownerTenant) as ScopeRow[])
             : [];
 
-        // #2178, ahead of the acknowledgements below because none of them passes it: the channel
-        // moves from what it serves, and each re-pointed scope from what it was bound to.
-        const incomingManifest = this.manifestJsonOf(versionId);
-        const judged = new Set<string>();
-        for (const from of [outgoing?.id, ...owned.map((s) => s.vertical_version_id)]) {
-          if (!from || from === versionId || judged.has(from)) continue;
-          judged.add(from);
-          assertNoBindingShapeBreak(this.manifestJsonOf(from), incomingManifest);
-        }
+        // #2178, ahead of the acknowledgements below because none of them passes it. What the promote
+        // moves something from: the channel's version, the version served in place (a prod promote
+        // serves the incoming one next, and a failed serve leaves it behind the channel), and what each
+        // re-pointed scope RUNS (`runningVersionOf`: on the serving script, the served version).
+        const served = channel === 'prod' ? this.servingPointerOfVertical(verticalSlug) : null;
+        this.assertNoStrandFrom(
+          [outgoing?.id, served?.versionId, ...owned.map((s) => runningVersionOf(mapScope(s), served))],
+          versionId,
+        );
 
         // §4's two checkpoints, fired where the blast radius is. A FIRST promotion
         // has nothing to diff against, so there is nothing to acknowledge — the
@@ -9252,6 +9265,8 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT * FROM verticals WHERE slug = ?')
           .get(verticalSlug) as VerticalRow | undefined;
         if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
+        // #2178: every install on the serving script runs the new version from this moment.
+        this.assertNoStrandFrom([r.serving_version_id], parsed.versionId);
         this.directory
           .prepare(
             `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,

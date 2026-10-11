@@ -7072,6 +7072,47 @@ export function scopeHostContractSuite(
         expect(await routeOf()).toBe(ref);
       });
 
+      it('a promote is judged from the version served in place too, and replacing what serves is judged like a promote (review of #2181)', async () => {
+        const { slug, v } = await listed();
+        const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.binds, doClasses: [], migrationTag: 'g' });
+        // The retiring version promotes, but its serve has not happened: what serves still binds.
+        await host.admin.promoteVersion(staff, slug, 'prod', v.retired);
+        await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', /drops the shape/);
+        expect(await prodOf(slug)).toBe(v.retired);
+        // Serving it straight onto the dropping version is the same move.
+        await expectRefusal(
+          host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' }),
+          'precondition_failed',
+          /drops the shape/,
+        );
+        // The twins: the retiring version served, then the drop promotes and serves.
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
+        await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' });
+        expect(await prodOf(slug)).toBe(v.dropped);
+      });
+
+      it('an owned scope on the serving script is judged from what it runs, not its lagging pointer (review of #2181)', async () => {
+        const slug = `tenant-a/bind-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: t1 });
+        const [plain, binds, dropped] = [
+          await publishShaped(slug, shapes.dropped, false),
+          await publishShaped(slug, shapes.binds, false),
+          await publishShaped(slug, shapes.dropped, false),
+        ];
+        const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.promoteVersion(staff, slug, 'prod', plain);
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: plain, doClasses: [], migrationTag: 'g' });
+        // Born on the serving script, its pointer names a binding version it has never run.
+        const sc = await install(slug, binds);
+        expect((await host.admin.getScopeRecord(staff, t1, sc))?.servingRef).toBe(ref);
+        await host.admin.promoteVersion(staff, slug, 'prod', dropped);
+        expect(await prodOf(slug)).toBe(dropped);
+        expect(await boundTo(sc)).toBe(dropped);
+      });
+
       it("a private promote judges each owned scope it re-points from the scope's own version, before anything moves", async () => {
         const slug = `tenant-a/bind-${ulid().slice(-8).toLowerCase()}`;
         await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: t1 });

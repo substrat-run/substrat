@@ -452,6 +452,7 @@ import {
   bindExportBreaksOf,
   bindExportBreakRefusal,
   scopeMoveOf,
+  runningVersionOf,
   type ServingPointer,
   collectPeers,
   peerSeats,
@@ -7238,15 +7239,17 @@ export class CloudflareScopeHost implements ScopeHost {
             ? (await this.cp.listScopes({ tenantId: owning.owner_tenant, vertical: verticalSlug, status: ['active'] })).filter(isPrimaryScopeRow)
             : [];
 
-        // #2178, ahead of the acknowledgements below because none of them passes it: the channel
-        // moves from what it serves, and each re-pointed scope from what it was bound to.
-        const judged = new Set<string>();
-        for (const from of [outgoing?.id, ...owned.map((s) => s.vertical_version_id)]) {
-          if (!from || from === versionId || judged.has(from)) continue;
-          judged.add(from);
-          const manifest = from === outgoing?.id ? outgoing.manifest_json : (await this.cp.readVersion(from))?.manifest_json;
-          assertNoBindingShapeBreak(manifest, incoming.manifest_json);
-        }
+        // #2178, ahead of the acknowledgements below because none of them passes it. What the promote
+        // moves something from: the channel's version, the version served in place (a prod promote
+        // serves the incoming one next, and a failed serve leaves it behind the channel), and what each
+        // re-pointed scope RUNS (`runningVersionOf`: on the serving script, the served version).
+        const served = channel === 'prod' && owning?.serving_ref && owning.serving_version_id
+          ? { ref: owning.serving_ref, versionId: owning.serving_version_id }
+          : null;
+        await this.assertNoStrandFrom(
+          [outgoing?.id, served?.versionId, ...owned.map((s) => runningVersionOf(mapScope(s), served))],
+          incoming,
+        );
 
         // §4's checkpoints, at the moment of exposure. A first promotion has
         // nothing to diff against — the gate is about change, not existence.
@@ -7460,6 +7463,11 @@ export class CloudflareScopeHost implements ScopeHost {
         const parsed = verticalServingState.parse(state);
         const r = await this.cp.readVertical(verticalSlug);
         if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
+        // #2178: every install on the serving script runs the new version from this moment.
+        if (r.serving_version_id) {
+          const incoming = await this.cp.readVersion(parsed.versionId);
+          if (incoming) await this.assertNoStrandFrom([r.serving_version_id], incoming);
+        }
         await this.cp.setVerticalServing(verticalSlug, {
           ref: parsed.ref,
           versionId: parsed.versionId,
@@ -11075,6 +11083,13 @@ export class CloudflareScopeHost implements ScopeHost {
   private async servingPointerOf(scope: Scope, servingRef?: string | null): Promise<ServingPointer | null> {
     const vertical = scope.vertical && (scope.servingRef || servingRef) ? await this.cp.readVertical(scope.vertical) : undefined;
     return vertical?.serving_ref && vertical.serving_version_id ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id } : null;
+  }
+
+  /** #2178: refuse running `incoming` where any of `froms` ran, each distinct version judged once. */
+  private async assertNoStrandFrom(froms: readonly (string | null | undefined)[], incoming: VersionRow): Promise<void> {
+    for (const from of new Set(froms)) {
+      if (from && from !== incoming.id) assertNoBindingShapeBreak(await this.manifestOf(from, incoming), incoming.manifest_json);
+    }
   }
 
   /** A version's stored manifest, from the row the caller already holds when it is that one. */
