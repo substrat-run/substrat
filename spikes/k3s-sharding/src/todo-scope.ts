@@ -70,17 +70,22 @@ export async function seedScope(dir: string, id: string): Promise<{ host: ScopeH
 }
 
 /**
- * Take a scope over from another node's volume: every SQLite file through the online
- * backup API (a consistent snapshot even while the source is open, or was killed with a
- * WAL not yet checkpointed), everything else copied, the lock file never.
+ * Take a scope over from another node's volume. Every SQLite file goes through the online
+ * backup API, everything else is copied, and the lock file never.
+ *
+ * The backup API makes each FILE a consistent snapshot, even of one whose process was killed
+ * with a WAL never checkpointed. It does not make the directory consistent as a whole: a
+ * transaction spanning the scope file and the directory database could be caught half
+ * applied. What rules that out is the order, not this function: the shard stamps the new
+ * epoch into the source files (`storage-fence.ts`) BEFORE copying, so from then on no holder
+ * can write any of them, and the copy reads files nobody is changing.
  *
  * This stands for "reattach the volume, or restore it from a synchronous replica". On one
  * runner the source volume is just a directory; in a cluster which of the two it is, and
- * what it costs, is question 3 (FINDINGS.md). What the spike relies on is only that the copy
- * is taken AFTER the previous holder's lease ended — that ordering is the lease's job.
+ * what it costs, is question 3 (FINDINGS.md).
  *
  * Files, not `exportScope`/`importScope`, on purpose: between two SQLite shards the files ARE
- * the scope, and the backup API copies them consistently (FINDINGS.md §4).
+ * the scope (FINDINGS.md §4).
  */
 export async function copyScope(from: string, to: string): Promise<void> {
   rmSync(to, { recursive: true, force: true });
