@@ -164,6 +164,9 @@ describe('refuseTrashedTarget under the purge sweep', () => {
   };
   trashAt('due', '2026-01-01T00:00:00.000Z');
   trashAt('young', '2026-01-10T00:00:00.000Z');
+  // Exactly at the cutoff (NOW − 7 days), and one millisecond after it.
+  trashAt('edge', '2026-01-05T00:00:00.000Z');
+  trashAt('edge+1ms', '2026-01-05T00:00:00.001Z');
   insert.run('active', 'active');
   const sql = {
     query: <T>(q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as T[],
@@ -225,15 +228,34 @@ describe('refuseTrashedTarget under the purge sweep', () => {
         { boxId: id },
       ).then(() => 'admitted', (e: unknown) => errorCodeOf(e));
 
-    it('holds a purgeEarly:false entity to its horizon: due admitted; young and active not_found; gone left to the handler', async () => {
+    it('holds a purgeEarly:false entity to its horizon: due admitted; young, active and gone not_found', async () => {
       expect(await asCaller('due')).toBe('admitted');
       expect(await asCaller('young')).toBe('not_found');
       expect(await asCaller('active')).toBe('not_found');
-      expect(await asCaller('gone')).toBe('admitted');
+      expect(await asCaller('gone')).toBe('not_found');
+    });
+    it('the cutoff is inclusive, as the sweep\'s is: trashed exactly at it is due, a millisecond later is not', async () => {
+      expect(await asCaller('edge')).toBe('admitted');
+      expect(await asCaller('edge+1ms')).toBe('not_found');
+      // The sweep agrees on both.
+      expect(await refusal('edge')).toBe('admitted');
+      expect(await refusal('edge+1ms')).toEqual(['conflict', 'purge_not_due']);
+    });
+    it('gives a holder ONE refusal for active, young and gone — same code, same message', async () => {
+      const answer = (id: string) =>
+        refuseTrashedTarget({ sql, plans: floorPlans, now: NOW, check: async () => ({ allowed: true as const, proof: [] }) } as never, 'b/delete', purgeTarget, {
+          boxId: id,
+        }).then(
+          () => 'admitted',
+          (e: unknown) => ({ code: errorCodeOf(e), message: (e as Error).message.replace(id, '<id>') }),
+        );
+      const onActive = await answer('active');
+      expect(onActive).toEqual({ code: 'not_found', message: 'box not found: <id>' });
+      expect(await answer('young')).toEqual(onActive);
+      expect(await answer('gone')).toEqual(onActive);
     });
     it('checks the declared key before it says not_found, so a caller without it learns nothing', async () => {
-      expect(await asCaller('young', false)).toBe('permission_denied');
-      expect(await asCaller('active', false)).toBe('permission_denied');
+      for (const id of ['young', 'active', 'gone']) expect(await asCaller(id, false)).toBe('permission_denied');
     });
     it('twin: without the floor, the purge is the permanent delete — admitted on young and active alike', async () => {
       for (const id of ['due', 'young', 'active', 'gone']) expect(await asCaller(id, true, plans)).toBe('admitted');

@@ -86,8 +86,11 @@ export interface TrashRefusalDeps {
  * `trash.purgeEarly: false`. Then the horizon is a floor for them too: on an entity that is active,
  * or was binned less than `purgeAfterDays` ago, the declared key is checked first (a caller
  * without it meets the `forbidden` any active entity gives) and a holder gets `not_found`, the bin
- * refusal's answer. There is deliberately no opt-out: no invoke option, door or principal purges
- * such an entity early. A missing row is left to the handler, as everywhere here.
+ * refusal's answer — and so does a missing entity, so the three cannot be told apart. There is
+ * deliberately no opt-out: no invoke option, door or principal purges such an entity early.
+ *
+ * The floor holds the PURGE OPERATION, not the bin: an operation declared `trashed: 'admits'` whose
+ * handler deletes the row, or a handler's own `ctx.sql`, still removes a binned entity at any time.
  */
 export async function refuseTrashedTarget(
   deps: TrashRefusalDeps,
@@ -130,10 +133,12 @@ export async function refuseTrashedTarget(
     return;
   }
   if (heldToHorizon) {
+    // A MISSING row is refused here too, with the same key check and the same answer, so a holder
+    // cannot tell a missing entity from an active or a young one by the refusal's text.
     // `entityStatePlans` refuses `purgeEarly: false` without a horizon; were one missing, nothing is due.
     const due =
       row?.trashed_at != null && plan.purgeAfterDays !== undefined && row.trashed_at <= purgeCutoffOf(deps.now, plan.purgeAfterDays);
-    if (!row || due) return;
+    if (due) return;
   } else if (!row || row.trashed_at === null) return;
   assertAllowed(await deps.check(target.key as Parameters<StateCheck>[0], { entityType: target.entity, entityId: id }));
   throw substratError('not_found', `${target.entity} not found: ${id}`);
