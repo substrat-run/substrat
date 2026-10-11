@@ -2720,7 +2720,7 @@ describe('mountPlatformSurface — the copy verbs carry the tenant (#2016, #2035
     expect((await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW, tenantId: TENANT })).status).toBe(201);
     const refused = await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW });
     expect(refused.status).toBe(400);
-    expect(await refused.json()).toMatchObject({ code: 'validation_failed', error: expect.stringMatching(/tenantId/) });
+    expect(await refused.json()).toMatchObject({ code: 'validation_failed', errors: [{ path: 'tenantId', message: 'Invalid input: expected string, received undefined' }] });
     expect(seen).toEqual([[SCOPE, NEW, TENANT]]);
   });
 
@@ -2736,7 +2736,7 @@ describe('mountPlatformSurface — the copy verbs carry the tenant (#2016, #2035
     expect(host.calls).toContain('projectRolesLocal');
     const refused = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [] });
     expect(refused.status).toBe(400);
-    expect(await refused.json()).toMatchObject({ code: 'validation_failed', error: expect.stringMatching(/tenantId/) });
+    expect(await refused.json()).toMatchObject({ code: 'validation_failed', errors: [{ path: 'tenantId', message: 'Invalid input: expected string, received undefined' }] });
     expect(seen).toEqual([TENANT]);
     expect(host.calls.filter((c) => c === 'projectRolesLocal')).toHaveLength(1);
   });
