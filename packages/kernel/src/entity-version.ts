@@ -1,7 +1,8 @@
-import { ifMatchAdmits, substratError, type EntityRef } from '@substrat-run/contracts';
+import { ENTITY_STATE_MOVE_TYPES, ifMatchAdmits, substratError, type EntityRef } from '@substrat-run/contracts';
 
 /**
- * An entity's version — the ULID of the last event about it (#901).
+ * An entity's version — the ULID of the last event about it (#901), a kernel state move
+ * excepted (#2191).
  *
  * ## There is no version column, and there should not be one
  *
@@ -35,12 +36,20 @@ import { ifMatchAdmits, substratError, type EntityRef } from '@substrat-run/cont
  *
  * ## What it is sensitive to
  *
- * ANY event about the entity moves the version, including one that changed
- * nothing the caller read. A precondition built on this is therefore
- * conservative: it can refuse a write that would in fact have been safe, and it
- * cannot admit one that would not. That is the correct direction to fail, and it
- * is a real difference from a per-row counter — documented here rather than
- * discovered by someone debugging a 412 they think is spurious.
+ * Every event about the entity moves the version but four: the kernel's state moves
+ * (`ENTITY_STATE_MOVE_TYPES` — archive, unarchive, trash, restore, #2191). The version exists
+ * to refuse a write over content the caller has not seen, and a move changes no content — it
+ * sets a `_substrat_*_at` column no read hands a client. Counting it refused, with a 412
+ * "changed since you read it", the next guarded write of a client that had only moved the row.
+ * A trashed row refuses writes anyway (the host's trash refusal); an ARCHIVED row does not, so a
+ * write made with a tag read before the archive is admitted and lands on the archived row, which
+ * stays archived. Nothing it read was overwritten.
+ *
+ * Every other event still counts, including one that changed nothing the caller read — a grant
+ * top-up, say. A precondition built on this is therefore conservative: it can refuse a write
+ * that would in fact have been safe, and it cannot admit one that would not. That is the correct
+ * direction to fail, and it is a real difference from a per-row counter — documented here rather
+ * than discovered by someone debugging a 412 they think is spurious.
  *
  * The converse is the one hole worth naming: a mutation that emits no event does
  * not move the version. "Every mutation emits a fat event" is a rule that review
@@ -61,18 +70,23 @@ export type EntityVersion = string;
  * reason `platformRequestHistoryQuery` exists: two surfaces answering one
  * question from one table must not drift on what the answer means.
  *
- * `MAX(id)` with no `GROUP BY` always returns exactly one row — the value is
- * NULL when the entity has no events. So absence is a null column, never a
- * missing row, and the caller distinguishes "never touched" from "touched" on
- * the value alone.
+ * The newest event about the entity that is not a state move. `ORDER BY id DESC
+ * LIMIT 1`, not `MAX(id)`: with the type predicate SQLite cannot answer `MAX`
+ * from the index's end and would aggregate over every event about the entity,
+ * where this walks `OUTBOX_ENTITY_INDEX` backwards and stops at the first row
+ * that is not a move. An entity with no such event returns no row, which
+ * `entityVersionOf` reads as null — "never touched" and "touched" are told apart
+ * on the value alone.
  */
 export function entityVersionQuery(ref: EntityRef): {
   sql: string;
-  params: [string, string];
+  params: string[];
 } {
   return {
-    sql: 'SELECT MAX(id) AS version FROM _substrat_outbox WHERE entity_type = ? AND entity_id = ?',
-    params: [ref.entityType, ref.entityId],
+    sql:
+      'SELECT id AS version FROM _substrat_outbox WHERE entity_type = ? AND entity_id = ? ' +
+      `AND type NOT IN (${ENTITY_STATE_MOVE_TYPES.map(() => '?').join(', ')}) ORDER BY id DESC LIMIT 1`,
+    params: [ref.entityType, ref.entityId, ...ENTITY_STATE_MOVE_TYPES],
   };
 }
 
@@ -80,8 +94,8 @@ export function entityVersionQuery(ref: EntityRef): {
  * The index that makes the query a seek instead of a scan.
  *
  * Column order matters and is not arbitrary: the two equality predicates come
- * first, and `id` last so SQLite answers `MAX(id)` by walking to the end of the
- * matched range rather than aggregating over it. Emitted into both adapters'
+ * first, and `id` last so SQLite answers the newest id by walking the matched
+ * range backwards from its end rather than aggregating over it. Emitted into both adapters'
  * spine DDL — kernel-owned, so no vertical carries a migration for it.
  *
  * The outbox had no index at all before this. Every other spine table with a
@@ -92,7 +106,7 @@ export function entityVersionQuery(ref: EntityRef): {
 export const OUTBOX_ENTITY_INDEX =
   'CREATE INDEX IF NOT EXISTS _substrat_outbox_entity ON _substrat_outbox (entity_type, entity_id, id);';
 
-/** The row `entityVersionQuery` returns — one row, `version` null when there are no events. */
+/** The row `entityVersionQuery` returns — none when the entity has no event that counts. */
 export interface EntityVersionRow {
   readonly version: string | null;
 }

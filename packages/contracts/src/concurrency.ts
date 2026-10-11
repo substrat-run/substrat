@@ -23,7 +23,11 @@
  *
  * ## The direction this fails
  *
- * ANY event about the entity moves the version, including one that changed
+ * Every event about the entity moves the version except a kernel state move —
+ * archive, unarchive, trash, restore (`ENTITY_STATE_MOVE_TYPES`, #2191), which
+ * changes no content. So a tag read before a move still matches after it, and a
+ * write made with one onto an ARCHIVED row is admitted (a trashed row refuses
+ * writes on its own). Every other event counts, including one that changed
  * nothing the caller read. So a precondition built on it is CONSERVATIVE: it can
  * refuse a write that would in fact have been safe, and it cannot admit one that
  * would not. Documented here as well as in the kernel because this is the half a

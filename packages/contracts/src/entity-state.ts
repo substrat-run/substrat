@@ -85,6 +85,26 @@ export const ENTITY_TRASHED = 'entity.trashed';
 export const ENTITY_RESTORED = 'entity.restored';
 
 /**
+ * The four move types, which leave an entity's version where it was (#2191).
+ *
+ * The version exists to refuse a write over content the caller has not seen, and a move
+ * changes no content: it sets one of the kernel's own `_substrat_*_at` columns, which no read
+ * hands a client. So the kernel's version query skips these, and a tag read before a trash and
+ * restore, or before an archive, still matches afterwards. A trashed row refuses writes anyway;
+ * an ARCHIVED one does not, so an edit made with a tag read before the archive lands on the
+ * archived row, and the archive stays.
+ *
+ * Only these four. The other kernel-authored types about an entity — a link or relink, a grant
+ * top-up, an attachment — still move the version: whether those are content is its own decision.
+ */
+export const ENTITY_STATE_MOVE_TYPES: readonly string[] = Object.freeze([
+  ENTITY_ARCHIVED,
+  ENTITY_UNARCHIVED,
+  ENTITY_TRASHED,
+  ENTITY_RESTORED,
+]);
+
+/**
  * The one payload all four carry: the entity, and the visible state before and after.
  *
  * Who did it and when are not here — they are the envelope's actor and `occurredAt`, stamped

@@ -494,6 +494,101 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
         }
       });
 
+      // #2191: a state move changes no content, so it leaves the version where it was. A tag the
+      // client read before a move still admits its next guarded write — and a real edit in between
+      // still refuses it, so the guard is narrower by exactly the moves and no more.
+      describe('a state move keeps the version (#2191)', () => {
+        const createShelf = (label: string) => as.invoke<Shelf>('derived/create-shelf', { label });
+        const rename = (who: ScopeStub, shelfId: string, label: string, opts: { ifMatch?: string; idempotencyKey?: string } = {}) =>
+          who.invoke<Shelf>('derived/rename-shelf', { shelfId, label }, { ...sink, ...opts });
+        /** Rename once with no precondition, and return the tag it handed back. */
+        const held = async (shelfId: string, label: string): Promise<string> => {
+          tags = [];
+          await rename(as, shelfId, label);
+          const tag = tags.at(-1);
+          expect(typeof tag).toBe('string');
+          return etagOf(tag as string);
+        };
+
+        it('admits a write with a tag read before a trash and a restore', async () => {
+          const sh = await createShelf('binned and back');
+          const tag = await held(sh.id, 'read');
+          await move(as, 'trash', sh.id);
+          await move(as, 'restore', sh.id);
+          tags = [];
+          expect(await rename(as, sh.id, 'written', { ifMatch: tag })).toEqual({ id: sh.id, label: 'written' });
+          // The write moved the version: the tag it hands back is a new one.
+          expect(etagOf(tags.at(-1) as string)).not.toBe(tag);
+        });
+
+        it('admits a write with a tag read before an archive, onto the archived row, which stays archived', async () => {
+          const sh = await createShelf('filed away');
+          const tag = await held(sh.id, 'read');
+          await move(as, 'archive', sh.id);
+          expect(await rename(as, sh.id, 'edited while archived', { ifMatch: tag })).toEqual({
+            id: sh.id,
+            label: 'edited while archived',
+          });
+          expect(await ids(as, 'derived/list-shelves', { view: 'archived' })).toContain(sh.id);
+          // And across the unarchive too.
+          const again = await held(sh.id, 'read again');
+          await move(as, 'unarchive', sh.id);
+          await expect(rename(as, sh.id, 'back', { ifMatch: again })).resolves.toEqual({ id: sh.id, label: 'back' });
+        });
+
+        it('still refuses the tag when someone edited between the moves', async () => {
+          const sh = await createShelf('edited between');
+          const asCarlNow = await host.getScope(carl, t, s);
+          const tag = await held(sh.id, 'mine');
+          await move(as, 'trash', sh.id);
+          await move(as, 'restore', sh.id);
+          await rename(asCarlNow, sh.id, 'carl’s');
+          await move(as, 'trash', sh.id);
+          await move(as, 'restore', sh.id);
+          expect(await codeOf(rename(as, sh.id, 'over carl', { ifMatch: tag }))).toBe('precondition_failed');
+          const { entries } = await as.invoke<{ entries: Shelf[] }>('derived/list-shelves', { limit: 100 });
+          expect(entries.find((r) => r.id === sh.id)?.label).toBe('carl’s');
+        });
+
+        it('replays a recorded write with a tag the moves since have not made stale', async () => {
+          const sh = await createShelf('replayed');
+          const key = `k-${ulid()}`;
+          tags = [];
+          await rename(as, sh.id, 'once', { idempotencyKey: key });
+          const recorded = tags.at(-1);
+          await move(as, 'trash', sh.id);
+          await move(as, 'restore', sh.id);
+          tags = [];
+          expect(await rename(as, sh.id, 'once', { idempotencyKey: key })).toEqual({ id: sh.id, label: 'once' });
+          expect(tags.at(-1)).toBe(recorded);
+          await expect(rename(as, sh.id, 'next', { ifMatch: etagOf(recorded as string) })).resolves.toEqual({
+            id: sh.id,
+            label: 'next',
+          });
+        });
+
+        it('hands back the content write’s version from a call that edits and moves at once', async () => {
+          const sh = await createShelf('both');
+          tags = [];
+          await as.invoke('derived/relabel-and-archive', { shelfId: sh.id, label: 'relabelled' }, sink);
+          const tag = etagOf(tags.at(-1) as string);
+          expect(await ids(as, 'derived/list-shelves', { view: 'archived' })).toContain(sh.id);
+          // The archive in the same call did not move it past the tag it handed back.
+          await expect(rename(as, sh.id, 'after', { ifMatch: tag })).resolves.toEqual({ id: sh.id, label: 'after' });
+        });
+
+        it('gives a row whose only events are moves no version', async () => {
+          // `add-shelf` emits nothing, so the row has no history; the moves do not give it one.
+          const sh = await addShelf('silent');
+          await move(as, 'archive', sh.id);
+          await move(as, 'unarchive', sh.id);
+          tags = [];
+          expect(await codeOf(rename(as, sh.id, 'any', { ifMatch: '*' }))).toBe('precondition_failed');
+          await rename(as, sh.id, 'first event');
+          expect(typeof tags.at(-1)).toBe('string');
+        });
+      });
+
       it('walks the bin row by row: a trash key narrowed to one row shows that row and no other', async () => {
         const nell: PrincipalId = principalId.parse(ulid());
         const mine = await addShelf('mine');
