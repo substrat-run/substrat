@@ -226,9 +226,9 @@ describe('a stored certificate is judged before it is kept (#2189)', () => {
   });
 
   it.each([
-    ['the outer signatureAlgorithm', 'outer'],
-    ['the signature algorithm inside the TBS', 'inner'],
-  ])('a certificate whose %s is not sha256WithRSAEncryption is re-minted', async (_l, which) => {
+    ['an outer signatureAlgorithm that is', 'outer'],
+    ['a TBS signature algorithm that is', 'inner'],
+  ])('a certificate with %s not sha256WithRSAEncryption is re-minted', async (_l, which) => {
     const good = await generateCertificate({ commonName: 'x', now: NOW });
     const der = Buffer.from(good.certificate, 'base64');
     // sha256WithRSAEncryption …01 0b → sha384WithRSAEncryption …01 0c; the first hit is the TBS's, the last the outer's.
