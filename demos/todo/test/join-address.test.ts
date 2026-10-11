@@ -92,9 +92,11 @@ describe('joining records only the session’s own verified address', () => {
     expect(((await res.json()) as { email: string }).email).toBe('dana@example.com');
   });
 
-  it('compares addresses without regard to case', async () => {
+  it('compares addresses without regard to case, and stores the issuer’s spelling', async () => {
     const sub = await member('Erik@Example.com', true);
-    expect((await joinAs(app, sub, 'erik@example.com')).status).toBe(200);
+    const res = await joinAs(app, sub, 'erik@example.com');
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { email: string }).email).toBe('Erik@Example.com');
   });
 
   it('refuses a verified session claiming a different address', async () => {

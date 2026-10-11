@@ -79,6 +79,8 @@ function joiningAsYourself(
         if (claimed.toLowerCase() !== own.email.toLowerCase()) {
           throw substratError('permission_denied', 'join with the verified email address you signed in with');
         }
+        // Stored as the issuer spells it, which is the spelling a share will be addressed to.
+        return stub.invoke(operation, { ...input, email: own.email } as typeof input, options);
       }
       return stub.invoke(operation, input, options);
     },
