@@ -190,4 +190,64 @@ describe('the findings routes (#1748)', () => {
     }
     expect((await findingsOf(asTenant))[0]!.status).not.toBe('resolved');
   });
+
+  describe('paging (#2198)', () => {
+    type Page = { entries: FindingEntry[]; nextCursor: string | null };
+    const paged = tenantId.parse(ulid());
+    let asPaged: Record<string, string>;
+    const read = async (headers: Record<string, string>, query: string) => app.request(`/findings?${query}`, { headers });
+    const page = async (query: string): Promise<Page> => {
+      const res = await read(asPaged, `tenantId=${paged}${query ? `&${query}` : ''}`);
+      expect(res.status).toBe(200);
+      return (await res.json()) as Page;
+    };
+
+    beforeAll(async () => {
+      await host.admin.createTenant(staff, { id: paged, slug: 'paged', name: 'paged' });
+      for (const x of ['a', 'b', 'c', 'd', 'e']) await fail(paged, `deploy.paged-${x}`);
+      asPaged = await tokenFor(paged);
+    });
+
+    it('answers a read that sends no limit or cursor as before, with the end of the walk named', async () => {
+      const whole = await page('');
+      expect(whole.entries).toHaveLength(5);
+      expect(whole.nextCursor).toBeNull();
+    });
+
+    it('walks the list with nextCursor, once each, and ends on a null cursor', async () => {
+      const whole = (await page('')).entries.map((f) => f.id);
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      const sizes: number[] = [];
+      do {
+        const next: Page = await page(`limit=2${cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`}`);
+        sizes.push(next.entries.length);
+        seen.push(...next.entries.map((f) => f.id));
+        cursor = next.nextCursor;
+      } while (cursor !== null);
+      // A full last page costs one empty read, the grammar's rule (pageOf): never a missed row.
+      expect(sizes).toEqual([2, 2, 1]);
+      expect(seen).toEqual(whole);
+    });
+
+    it('refuses a limit out of bounds and a cursor that is not one, with a 400', async () => {
+      for (const q of ['limit=0', 'limit=-1', 'limit=501', 'limit=1.5', 'limit=abc', 'cursor=', 'cursor=garbage', `cursor=${encodeURIComponent("x\u0000y")}`]) {
+        expect((await read(asPaged, `tenantId=${paged}&${q}`)).status, q).toBe(400);
+      }
+      // The twins: the ceiling itself, and a cursor the walk minted, are accepted.
+      expect((await read(asPaged, `tenantId=${paged}&limit=500`)).status).toBe(200);
+      const first = await page('limit=1');
+      expect((await read(asPaged, `tenantId=${paged}&limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`)).status).toBe(200);
+    });
+
+    it('keeps a tenant credential on its own tenant when it carries a cursor minted in another’s walk', async () => {
+      const mine = await page('limit=1');
+      // Another tenant's walk, resumed with this tenant's cursor, still reads only that tenant's rows...
+      const theirs = await app.request(`/findings?tenantId=${other}&limit=1&cursor=${encodeURIComponent(mine.nextCursor!)}`, { headers: asStaff });
+      expect(theirs.status).toBe(200);
+      for (const f of ((await theirs.json()) as Page).entries) expect(f.tenantId).toBe(other);
+      // ...and a tenant credential cannot use a cursor to reach one: naming it is refused first.
+      expect((await read(asPaged, `tenantId=${other}&cursor=${encodeURIComponent(mine.nextCursor!)}`)).status).toBe(403);
+    });
+  });
 });
