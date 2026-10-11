@@ -28,26 +28,85 @@ export interface DialogProps {
 const FOCUSABLE =
   'a[href],button,input,select,textarea,summary,[tabindex],[contenteditable=""],[contenteditable="true"]';
 
-/** Tabbable descendants, in DOM order: enabled, not `tabindex=-1`, not hidden. */
+/** Is `el`, or an ancestor up to (not including) `root`, hidden from the tab order and from sight? */
+function hiddenWithin(el: HTMLElement, root: HTMLElement): boolean {
+  if (getComputedStyle(el).visibility === 'hidden') return true;
+  for (let n: HTMLElement | null = el; n && n !== root; n = n.parentElement) {
+    if (n.hasAttribute('hidden') || n.hasAttribute('inert') || n.getAttribute('aria-hidden') === 'true') return true;
+    if (getComputedStyle(n).display === 'none') return true;
+    // A closed <details> shows only its first <summary>.
+    const parent: HTMLElement | null = n.parentElement;
+    if (parent instanceof HTMLDetailsElement && !parent.open && n !== parent.querySelector(':scope > summary')) return true;
+  }
+  return false;
+}
+
+/** Disabled itself, or inside a disabled <fieldset> (its first <legend> is exempt, as in browsers). */
+function disabledByFieldset(el: HTMLElement): boolean {
+  if (el.hasAttribute('disabled')) return true;
+  for (let fs = el.closest('fieldset[disabled]'); fs; fs = fs.parentElement?.closest('fieldset[disabled]') ?? null) {
+    const legend = fs.querySelector(':scope > legend');
+    if (!legend?.contains(el)) return true;
+  }
+  return false;
+}
+
+/** Only one radio per named group is tabbable: the checked one, else the first in DOM order. */
+function radioTabbable(el: HTMLInputElement, root: HTMLElement): boolean {
+  if (!el.name) return true;
+  const group = [...root.querySelectorAll<HTMLInputElement>('input[type="radio"]')].filter(
+    (r) => r.name === el.name && r.form === el.form && !disabledByFieldset(r) && !hiddenWithin(r, root),
+  );
+  return (group.find((r) => r.checked) ?? group[0]) === el;
+}
+
+/**
+ * Tabbable descendants, in DOM order. jsdom has no layout, so this reads what it does have:
+ * the `hidden`/`inert`/`aria-hidden` attributes, closed <details>, disabled <fieldset>, and
+ * computed `display`/`visibility` (inline and stylesheet rules alike). What only a real
+ * browser can answer — an element clipped to zero size, off-screen, covered — it cannot.
+ */
 function tabbables(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
     (el) =>
-      !el.hasAttribute('disabled') &&
+      !disabledByFieldset(el) &&
       el.getAttribute('tabindex') !== '-1' &&
       el.getAttribute('type') !== 'hidden' &&
-      !el.closest('[hidden]'),
+      !hiddenWithin(el, root) &&
+      (!(el instanceof HTMLInputElement) || el.type !== 'radio' || radioTabbable(el, root)),
   );
 }
 
 /**
- * The modal contract while `open`: focus moves in (the first tabbable, else the panel
- * itself) and goes back to where it was on close; Tab wraps inside; Escape cancels.
+ * Open dialogs, oldest first; the last is the one the keyboard belongs to. A dialog rendered
+ * inside another's children mounts (and so registers) first, so a registration slots beneath
+ * any already-registered panel it contains, which keeps the outer one below the inner one.
+ */
+const stack: HTMLElement[] = [];
+function register(el: HTMLElement): () => boolean {
+  const above = stack.findIndex((o) => el.contains(o));
+  if (above < 0) stack.push(el);
+  else stack.splice(above, 0, el);
+  return () => {
+    const wasTop = stack.at(-1) === el;
+    stack.splice(stack.indexOf(el), 1);
+    return wasTop;
+  };
+}
+
+/**
+ * The modal contract while `open`: focus moves in (a child that already took it, e.g. through
+ * `autoFocus`, keeps it; else the first tabbable; else the panel itself) and goes back to where
+ * it was on close; Tab wraps inside; Escape cancels.
  *
  * One `document` listener, not a React handler on the panel, so the keys still work when
- * focus was lost to `body`. Escape is stopped here, so a window-level layer underneath
- * (a slide-over's own Escape) does not also close. A control inside that consumes Escape
- * itself calls `preventDefault`/`stopPropagation` — React runs before this listener — and
- * the dialog stays open. Not while `busy`: cancel is dead then, and Escape is cancel.
+ * focus was lost to `body`. Only the topmost open dialog answers, and only it gives focus back,
+ * so stacked dialogs unwind last-in first-out — closing the upper returns focus into the lower
+ * one, not to the page. Escape is stopped here, so a window-level layer underneath (a
+ * slide-over's own Escape) does not also close. A control inside that consumes Escape itself
+ * calls `preventDefault`/`stopPropagation` — React runs before this listener — and the dialog
+ * stays open. Not while `busy`: cancel is dead then, and Escape is cancel. If the opener has
+ * left the document when the dialog closes, focus is left where the browser puts it: `body`.
  */
 function useModal(open: boolean, panel: RefObject<HTMLDivElement>, busy: boolean | undefined, onCancel?: () => void) {
   const latest = useRef({ busy, onCancel });

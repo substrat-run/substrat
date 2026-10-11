@@ -289,3 +289,102 @@ describe('Tab trap', () => {
     expect(key('Tab', {}, document.body).defaultPrevented).toBe(false);
   });
 });
+
+describe('Tab trap: what counts as tabbable', () => {
+  // With the footer disabled (busy, no confirm) the body's controls are the edges, so an element
+  // the browser would skip but a naive selector keeps moves the wrap point and lets focus leave.
+  const trapped = (body: ReactNode) => <Dialog {...props({ busy: true, onConfirm: undefined })}>{body}</Dialog>;
+  const visible = <input aria-label="visible" />;
+  const wrapsAt = (which: 'last' | 'first') => {
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="visible"]')!;
+    input.focus();
+    return key('Tab', { shiftKey: which === 'first' }).defaultPrevented;
+  };
+
+  const skipped: [string, ReactNode][] = [
+    ['hidden attribute', <input aria-label="x" hidden />],
+    ['display:none ancestor', <div style={{ display: 'none' }}><input aria-label="x" /></div>],
+    ['visibility:hidden', <input aria-label="x" style={{ visibility: 'hidden' }} />],
+    ['inert subtree', <div {...{ inert: '' }}><input aria-label="x" /></div>],
+    ['aria-hidden subtree', <div aria-hidden="true"><input aria-label="x" /></div>],
+    ['closed <details>', <details><summary>more</summary><input aria-label="x" /></details>],
+    ['disabled <fieldset>', <fieldset disabled><input aria-label="x" /></fieldset>],
+  ];
+
+  for (const [name, hidden] of skipped) {
+    it(`wraps past ${name} at the end, and at the start`, async () => {
+      await render(trapped(<>{visible}{hidden}</>));
+      // The closed <details>' own <summary> is tabbable, so the sole-control premise needs it out.
+      const summary = document.querySelector('summary');
+      if (summary) summary.setAttribute('tabindex', '-1');
+      expect(wrapsAt('last')).toBe(true);
+      await render(trapped(<>{hidden}{visible}</>));
+      const s2 = document.querySelector('summary');
+      if (s2) s2.setAttribute('tabindex', '-1');
+      expect(wrapsAt('first')).toBe(true);
+    });
+  }
+
+  it('twin: the same controls made reachable are not skipped — Tab from the first is left to the browser', async () => {
+    await render(trapped(<>{visible}<input aria-label="x" /></>));
+    expect(wrapsAt('last')).toBe(false);
+    await render(trapped(<><details open><summary>more</summary><input aria-label="x" /></details>{visible}</>));
+    document.querySelector('summary')!.setAttribute('tabindex', '-1');
+    expect(wrapsAt('first')).toBe(false);
+    await render(trapped(<><fieldset disabled><legend><input aria-label="x" /></legend></fieldset>{visible}</>));
+    expect(wrapsAt('first')).toBe(false); // the first <legend> is exempt from a disabled fieldset
+  });
+
+  it('keeps an open <details>’ summary tabbable and a closed one’s too, but not the closed one’s content', async () => {
+    await render(trapped(<><details><summary>more</summary><input aria-label="x" /></details>{visible}</>));
+    const summary = document.querySelector('summary')!;
+    summary.focus();
+    expect(key('Tab', { shiftKey: true }).defaultPrevented).toBe(true); // summary is first
+    visibleFocus();
+    expect(key('Tab').defaultPrevented).toBe(true); // visible is last: x (closed) is not
+  });
+
+  it('counts one radio per named group: the checked one, else the first — never an unchecked last', async () => {
+    await render(
+      trapped(
+        <>
+          {visible}
+          <input type="radio" name="g" aria-label="r1" defaultChecked />
+          <input type="radio" name="g" aria-label="r2" />
+        </>,
+      ),
+    );
+    document.querySelector<HTMLInputElement>('input[aria-label="r1"]')!.focus();
+    expect(key('Tab').defaultPrevented).toBe(true); // r1 is the group's stop, and the last
+    await render(
+      trapped(
+        <>
+          {visible}
+          <input type="radio" name="g" aria-label="r1" />
+          <input type="radio" name="g" aria-label="r2" />
+        </>,
+      ),
+    );
+    document.querySelector<HTMLInputElement>('input[aria-label="r1"]')!.focus();
+    expect(key('Tab').defaultPrevented).toBe(true); // none checked: the first is the stop
+    document.querySelector<HTMLInputElement>('input[aria-label="r2"]')!.focus();
+    expect(key('Tab').defaultPrevented).toBe(false); // r2 is not a stop; the browser decides
+  });
+
+  it('twin: radios in different groups are each a stop', async () => {
+    await render(
+      trapped(
+        <>
+          <input type="radio" name="g1" aria-label="r1" />
+          <input type="radio" name="g2" aria-label="r2" />
+        </>,
+      ),
+    );
+    document.querySelector<HTMLInputElement>('input[aria-label="r1"]')!.focus();
+    expect(key('Tab').defaultPrevented).toBe(false);
+  });
+});
+
+function visibleFocus() {
+  document.querySelector<HTMLInputElement>('input[aria-label="visible"]')!.focus();
+}
