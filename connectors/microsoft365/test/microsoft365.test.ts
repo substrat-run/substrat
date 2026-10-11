@@ -1,5 +1,5 @@
 import { URLSearchParams } from 'node:url';
-import { X509Certificate, constants, verify } from 'node:crypto';
+import { X509Certificate, constants, createPrivateKey, createSign, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { Connection } from '@substrat-run/contracts';
 import type { FetchLike, ScopeHost } from '@substrat-run/kernel';
@@ -15,6 +15,7 @@ import {
   sitePath,
   thumbprintS256,
 } from '../src/index.js';
+import { certificateMatchesKey, integer } from '../src/x509.js';
 
 /**
  * The Microsoft 365 connector against a stand-in for Entra's token endpoint and Graph.
@@ -152,6 +153,86 @@ describe('the client assertion', () => {
     const form = new URLSearchParams(ms.calls[0]!.body);
     expect(form.get('client_secret')).toBe('S3CRET-value');
     expect(form.get('client_assertion')).toBeNull();
+  });
+});
+
+describe('integer()', () => {
+  const hex = (b: Uint8Array) => Buffer.from(b).toString('hex');
+  it.each([
+    ['00', [0x00], '020100'],
+    ['7f', [0x7f], '02017f'],
+    ['80 gets the pad', [0x80], '02020080'],
+    ['ff gets the pad', [0xff], '020200ff'],
+    ['redundant zeros are dropped', [0x00, 0x00, 0x7f], '02017f'],
+    ['one zero stays before a high bit', [0x00, 0x80], '02020080'],
+    ['zeros then a high bit keep one pad', [0x00, 0x00, 0xff, 0x01], '020300ff01'],
+    ['all zeros is a single zero', [0x00, 0x00, 0x00], '020100'],
+    ['255/256 boundary', [0x01, 0x00], '02020100'],
+  ])('%s', (_l, bytes, der) => {
+    expect(hex(integer(new Uint8Array(bytes)))).toBe(der);
+  });
+});
+
+describe('a stored certificate is judged before it is kept (#2189)', () => {
+  /** A valid certificate re-signed with a serial beginning 00 7f: what the old encoder could draw. */
+  async function malformed() {
+    const good = await generateCertificate({ commonName: 'x', now: NOW });
+    const der = Buffer.from(good.certificate, 'base64');
+    const at = der.indexOf(Buffer.from('a003020102', 'hex')) + 5; // the serial's tag
+    expect(der[at]).toBe(0x02);
+    expect(der[at + 1]).toBe(16);
+    der[at + 2] = 0x00;
+    der[at + 3] = 0x7f;
+    const tbsLen = der.readUInt16BE(8);
+    const tbs = der.subarray(4, 4 + 4 + tbsLen);
+    const key = createPrivateKey({ key: Buffer.from(good.privateKey, 'base64'), format: 'der', type: 'pkcs8' });
+    createSign('sha256').update(tbs).sign(key).copy(der, der.length - 256);
+    return { ...good, certificate: der.toString('base64') };
+  }
+  const stored = (m: { privateKey: string; certificate: string; notAfter: string }) => ({
+    privateKey: m.privateKey,
+    certificate: m.certificate,
+    certificateNotAfter: m.notAfter,
+  });
+
+  it('the fixture really is unreadable to Node, and is judged malformed', async () => {
+    const bad = await malformed();
+    expect(() => new X509Certificate(Buffer.from(bad.certificate, 'base64'))).toThrow();
+    expect(await certificateMatchesKey(bad.certificate, bad.privateKey)).toBe(false);
+  });
+
+  it('a malformed unexpired certificate is re-minted on the next prepare', async () => {
+    const bad = await malformed();
+    const { secret, expiresAt } = await prepareMicrosoft365Candidate(base, stored(bad), { now: NOW, commonName: 'x' });
+    expect(secret.certificate).not.toBe(bad.certificate);
+    expect(secret.privateKey).not.toBe(bad.privateKey);
+    expect(() => new X509Certificate(Buffer.from(secret.certificate!, 'base64'))).not.toThrow();
+    expect(expiresAt).toBe(secret.certificateNotAfter);
+  });
+
+  it('a valid unexpired certificate is kept, not re-minted', async () => {
+    const good = await generateCertificate({ commonName: 'x', now: NOW });
+    expect(await certificateMatchesKey(good.certificate, good.privateKey)).toBe(true);
+    const { secret } = await prepareMicrosoft365Candidate(base, stored(good), { now: NOW, commonName: 'x' });
+    expect(secret.certificate).toBe(good.certificate);
+    expect(secret.privateKey).toBe(good.privateKey);
+  });
+
+  it('a certificate that is not the stored key\'s is re-minted', async () => {
+    const a = await generateCertificate({ commonName: 'x', now: NOW });
+    const b = await generateCertificate({ commonName: 'x', now: NOW });
+    expect(await certificateMatchesKey(a.certificate, b.privateKey)).toBe(false);
+    const { secret } = await prepareMicrosoft365Candidate(base, stored({ ...a, privateKey: b.privateKey }), {
+      now: NOW,
+      commonName: 'x',
+    });
+    expect(secret.certificate).not.toBe(a.certificate);
+  });
+
+  it('refuses a random() that does not return the 16 bytes', async () => {
+    await expect(generateCertificate({ commonName: 'x', now: NOW, random: () => new Uint8Array(8) })).rejects.toThrow(
+      /16 serial bytes/,
+    );
   });
 });
 
