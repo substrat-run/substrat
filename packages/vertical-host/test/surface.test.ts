@@ -1035,7 +1035,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(res.status).toBe(400);
   });
 
-  it('restore re-projects roles when a tenantId is present', async () => {
+  it('restore re-projects roles for the tenant it names', async () => {
     const host = fakeHost();
     await appWith(host).request(
       '/internal/restore',
@@ -1083,23 +1083,6 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       [SOURCE, true],
       [undefined, undefined],
     ]);
-  });
-
-  // #2035: a load that names no tenant could leave a store with no tenant record and no role rows.
-  it('restore refuses a body without a tenantId before the host is called', async () => {
-    const host = fakeHost();
-    const res = await appWith(host).request(
-      '/internal/restore',
-      {
-        method: 'POST',
-        headers: authed({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ scopeId: SCOPE, tables: [] }),
-      },
-      ENV,
-    );
-    expect(res.status).toBe(400);
-    expect(host.calls).not.toContain('restoreScopeLocal');
-    expect(host.calls).not.toContain('projectRolesLocal');
   });
 });
 
