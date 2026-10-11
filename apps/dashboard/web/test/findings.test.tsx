@@ -145,12 +145,14 @@ describe('Findings view', () => {
     [...within.querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
   const row = (id: string) => host.querySelector(`[data-finding="${id}"]`)!;
 
-  function fake(entries: FindingEntry[], rules: FindingRuleEntry[] = []): FindingsClient & { calls: Record<string, unknown[]> } {
+  function fake(entries: FindingEntry[], initialRules: FindingRuleEntry[] = []): FindingsClient & { calls: Record<string, unknown[]> } {
+    // Like the plane: `active` keeps the unexpired rules, and a revoke pulls the expiry back to now.
+    let rules = initialRules;
     const calls: Record<string, unknown[]> = { set: [], create: [], revoke: [] };
     return {
       calls,
       listFindings: async () => ({ available: true, entries }),
-      listFindingRules: async () => ({ entries: rules }),
+      listFindingRules: async ({ active }) => ({ entries: active ? rules.filter((r) => Date.parse(r.expiresAt) > Date.now()) : rules }),
       setFindingStatus: async (input) => {
         calls.set!.push(input);
         return { ...entries.find((e) => e.id === input.id)!, status: input.status };
@@ -161,7 +163,9 @@ describe('Findings view', () => {
       },
       revokeFindingRule: async (input) => {
         calls.revoke!.push(input);
-        return rules.find((r) => r.id === input.ruleId)!;
+        const ended = { ...rules.find((r) => r.id === input.ruleId)!, expiresAt: new Date().toISOString() };
+        rules = rules.map((r) => (r.id === ended.id ? ended : r));
+        return ended;
       },
     };
   }
@@ -289,6 +293,9 @@ describe('Findings view', () => {
     expect(host.textContent).toContain('conflict on tickets/create');
     await click(button('Revoke rule'));
     expect(client.calls.revoke).toEqual([{ ruleId: 'R1' }]);
+    // The visible outcome: the rule leaves the active list instead of lingering as "expired".
+    expect(host.textContent).not.toContain('conflict on tickets/create');
+    expect(host.textContent).not.toContain('Revoke rule');
   });
 
   it('works end to end on the preview client', async () => {

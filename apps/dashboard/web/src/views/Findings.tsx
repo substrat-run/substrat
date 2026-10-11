@@ -66,7 +66,7 @@ export function Findings({
 
   const read = useCallback(async (): Promise<Load> => {
     try {
-      const [list, rules] = await Promise.all([client.listFindings({}), client.listFindingRules({})]);
+      const [list, rules] = await Promise.all([client.listFindings({}), client.listFindingRules({ active: true })]);
       return list.available ? { state: 'ready', entries: list.entries, rules: rules.entries } : { state: 'unavailable' };
     } catch (e) {
       return { state: 'error', message: findingsError(e, 'read') };

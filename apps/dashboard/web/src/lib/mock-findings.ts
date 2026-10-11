@@ -48,7 +48,7 @@ export function mockFindingsClient(): FindingsClient {
       entries = entries.map((e) => (e.id === id ? next : e));
       return next;
     },
-    listFindingRules: async () => ({ entries: rules }),
+    listFindingRules: async ({ active }) => ({ entries: active ? rules.filter((r) => Date.parse(r.expiresAt) > Date.now()) : rules }),
     createFindingRule: async (input) => {
       const rule: FindingRuleEntry = { id: `R${rules.length + 1}`, tenantId: 'MOCKTEAM', kind: input.kind ?? null, operation: input.operation ?? null, code: input.code ?? null, subject: input.subject ?? null, expiresAt: input.expiresAt, reason: input.reason, createdBy: 'you', createdAt: new Date().toISOString() };
       rules = [...rules, rule];
@@ -61,9 +61,10 @@ export function mockFindingsClient(): FindingsClient {
       return { rule, suppressed };
     },
     revokeFindingRule: async ({ ruleId }) => {
-      const gone = rules.find((r) => r.id === ruleId)!;
-      rules = rules.filter((r) => r.id !== ruleId);
-      return gone;
+      // Like the plane: a revoked rule is not deleted, its expiry is pulled back to now.
+      const ended = { ...rules.find((r) => r.id === ruleId)!, expiresAt: new Date().toISOString() };
+      rules = rules.map((r) => (r.id === ruleId ? ended : r));
+      return ended;
     },
   };
 }
