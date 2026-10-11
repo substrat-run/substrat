@@ -17,7 +17,8 @@
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import type { Page, PrincipalId } from '@substrat-run/contracts';
+import { permissionKey, platformActorId, type Page, type PrincipalId } from '@substrat-run/contracts';
+import { ulid } from '@substrat-run/kernel';
 import { mountApi } from '../src/routes.js';
 import { createKit, TICKET0, type Desk } from './desk-kit.js';
 
@@ -276,6 +277,30 @@ describe('the bin’s 30-day horizon', () => {
     }
     await expect((await kit.system(desk)).invoke('ticket0/purge-saved-reply', { savedReplyId: reply.id })).rejects.toMatchObject(denied);
     expect(await bin(desk, desk.anna)).toEqual(['Binned']);
+  });
+
+  it('purges only a binned reply, even for a caller granted the key directly', async () => {
+    const desk = await freshDesk();
+    const active = await create(desk, desk.anna, { title: 'Still in use', personal: true });
+    const binned = await create(desk, desk.anna, { title: 'Binned', personal: true });
+    await call(desk, desk.anna, 'trash-saved-reply', { savedReplyId: binned.id });
+    // Not through any role: a grant of the purge key, straight onto the principal.
+    await kit.host.admin.grant(platformActorId.parse(ulid()), {
+      principalId: desk.bo,
+      permission: permissionKey.parse('saved-reply:purge'),
+      node: { tenantId: desk.tenant, scopeId: desk.scope },
+      grantedBy: desk.admin,
+    });
+
+    // An active reply is not the bin's to delete, whoever holds the key.
+    await expect(call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: active.id })).rejects.toMatchObject(notFound);
+    expect(await library(desk, desk.anna)).toEqual(['Still in use']);
+
+    // A binned one past its horizon is, as the sweep deletes it.
+    kit.clock.advance(31 * DAY);
+    expect(await call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: binned.id })).toEqual({ id: binned.id, title: 'Binned' });
+    expect(await bin(desk, desk.anna)).toEqual([]);
+    expect(await library(desk, desk.anna)).toEqual(['Still in use']);
   });
 
   it('on a desk not yet holding the purge tuple, purges nothing and loses nothing — the reply stays in the bin', async () => {

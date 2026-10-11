@@ -6210,13 +6210,18 @@ const bound = operationsFor(ticket0Operations)({
    * The bin's 30-day horizon. Run by the purge sweep alone, as the desk's system principal
    * under `saved-reply:purge` (held by no role); the host has already held the entity to
    * its cutoff. Any reply, shared or personal: the horizon is the desk's, not a person's.
+   *
+   * Only ever a reply IN THE TRASH, whoever calls it. The host holds the sweep to that, and
+   * withholds the key from the system principal everywhere else, but neither reaches a
+   * caller granted the key directly — so an active reply is `not_found` here, as it is to
+   * every other operation that reaches the bin only.
    */
   'ticket0/purge-saved-reply': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.savedReplyPurge, savedReplyRef(input.savedReplyId)));
     const row = ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
       input.savedReplyId,
     ])[0];
-    if (!row) throw substratError('not_found', `saved reply not found: ${input.savedReplyId}`);
+    if (!row || !inTrash(row)) throw substratError('not_found', `saved reply not in the trash: ${input.savedReplyId}`);
     return deleteSavedReplyRow(ctx, row);
   },
 
