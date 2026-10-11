@@ -47,7 +47,9 @@ import {
   boundedBecomeMint,
   boundedBecomeRevoke,
   becomeLinkState,
+  boundedUnbind,
   capabilityId,
+  entityRef,
   coverage,
   coverageRefusal,
   principalId,
@@ -55,6 +57,8 @@ import {
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
   type BecomeLinkState,
+  type BoundedUnbind,
+  type EntityRef,
   type CapabilityExchange,
   type CapabilityId,
   type Coverage,
@@ -422,12 +426,13 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     return c.body(null, 204);
   });
 
-  // INVARIANT (#1150): an accept never writes to the scope. The role was granted when the invite
-  // was minted; accepting only binds the subject in the identity directory, the same Durable
-  // Object the platform's member removal withdraws the invite and unbinds in — so a removal and
-  // an accept are serialized there, and an accept after a removal finds no invite. If a future
-  // accept path grants in the scope (ticket0's portal grant is one), a removal marker the grant
-  // checks becomes required, or a held accept could re-grant a removed person.
+  // INVARIANT (#1150): an accept writes nothing to the scope beyond what its capability's own
+  // exchange writes. The role was granted when the invite was minted; accepting only binds the
+  // subject in the identity directory, the same Durable Object the platform's member removal
+  // withdraws the invite and unbinds in — so a removal and an accept are serialized there, and an
+  // accept after a removal finds no invite. A binding invite (#1686) does grant in the scope — its
+  // record's shape — but only inside the exchange, which a withdrawal's revoke (made FIRST, in the
+  // scope) refuses atomically: the revoke is the removal marker that grant checks.
   app.post('/api/accept-invite', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     const subject = await (await deps.authProvider(c.env, c.req.raw)).resolve(c.req.raw.headers);
@@ -456,4 +461,56 @@ export function membersHook<E, D extends InviteDirectory & Pick<IdentityStub, 'l
   directory: (env: E, ref: { tenantId: TenantId; scopeId: ScopeId }) => D;
 }) {
   return { roles: opts.roles, directory: opts.directory, mint: mintMemberInvite };
+}
+
+/** What `POST /api/bindings/:entityType/:entityId/unbind` needs (#1686). */
+export interface UnbindRouteDeps<E extends object, N extends { scopeId: string }> {
+  /** The (tenant, scope) this request addresses — behind the router, from the assertion. */
+  nodeFor: (req: Request, env: E) => N | Promise<N>;
+  /**
+   * Who is asking: throw 401 for nobody. No admin gate beyond it, on purpose — the bound is the
+   * binding's own key on that record, judged by the kernel in the write's scope task, so whoever
+   * holds it there may unbind and nobody else, whatever their role is called.
+   */
+  callerOf: (c: Context<{ Bindings: E }>) => Promise<InviteCaller>;
+  /** The host's `unbindEntityHolderBounded`: bound and write in one scope task. */
+  unbindEntityHolderBounded: (env: E, node: N, caller: PrincipalId, entity: EntityRef) => Promise<BoundedUnbind>;
+}
+
+/**
+ * Mount the one generic UNBIND route (#1686), the lever beside a binding invite, for every
+ * vertical that declares a binding shape:
+ *
+ *   POST /api/bindings/:entityType/:entityId/unbind  → { unbound: [<principal>, …] }
+ *
+ * Clears the record's declared principal column and releases everyone holding the record's shape
+ * there — found by their marker on the spine, not by the column, so a holder given the shape
+ * before the column was ever written (a legacy holder) is released too — tombstoning the marker
+ * and everything they hold on the record, with one `entity.holder-unbound` each on the spine.
+ * `unbound: []` when nobody held it. A caller without the binding's key on the record is refused
+ * 403, naming it; a type the scope's reconciled registry does not bind is 404. A person keeps
+ * their login and any role; what goes is what the record gave them.
+ */
+export function mountUnbindRoute<E extends object, N extends { scopeId: string }>(
+  app: Hono<{ Bindings: E }>,
+  deps: UnbindRouteDeps<E, N>,
+): void {
+  app.post('/api/bindings/:entityType/:entityId/unbind', async (c) => {
+    const node = await deps.nodeFor(c.req.raw, c.env);
+    const caller = inviteCaller.safeParse(await deps.callerOf(c));
+    if (!caller.success) {
+      throw new HTTPException(500, { message: 'the caller gate named no principal — refusing to unbind for nobody' });
+    }
+    const entity = entityRef.safeParse({ entityType: c.req.param('entityType'), entityId: c.req.param('entityId') });
+    if (!entity.success) throw new HTTPException(400, { message: 'not an entity reference' });
+    const answer = boundedUnbind.safeParse(await deps.unbindEntityHolderBounded(c.env, node, caller.data.principal, entity.data));
+    if (!answer.success) throw new HTTPException(500, { message: 'the unbind did not answer as a bounded unbind — refusing' });
+    if (!answer.data.ok) {
+      if ('coverage' in answer.data) {
+        throw uncovered(answer.data.coverage.missing, `${entity.data.entityType}:${entity.data.entityId}`, 'unbind the person of');
+      }
+      throw new HTTPException(404, { message: `'${entity.data.entityType}' is not bound to a person here` });
+    }
+    return c.json({ unbound: answer.data.unbound });
+  });
 }

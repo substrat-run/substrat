@@ -122,8 +122,33 @@ export const principalBecomeCapabilityInput = z.object({
   expiresAt: instant.optional(),
   maxUses: z.number().int().positive(),
   label: capabilityLabel.optional(),
+  /**
+   * #1686: the ONE action the link carries beside the `become` — bind the claimant to their own
+   * record. See {@link capabilityAction}. Absent: a plain `become`, as a member invite is.
+   */
+  bind: z.object({ entity: entityRef }).optional(),
 });
 export type PrincipalBecomeCapabilityInput = z.infer<typeof principalBecomeCapabilityInput>;
+
+/**
+ * The one pre-authorised action a `become` capability may carry (#1686), done in the exchange's
+ * own transaction — so the link is spent, and the action done, together or not at all.
+ *
+ * `bind` — a binding invite. The record's declared shape (`ENTITY_GRANTS`, a bootstrap shape
+ * with a table holder and a `bind` permission) says which column names the record's person and
+ * which keys that person holds on it. The exchange sets that column to the claimant and gives
+ * them the shape. The rights come from the reviewed registry, never from the link: the link
+ * names only WHICH record. The minter must hold the shape's bind permission on that record,
+ * checked at mint and again at the exchange, so a link whose minter has since lost it — or
+ * left — is refused, with the one refusal every failed exchange gets. A record already bound
+ * refuses both: a link never moves someone else's portal.
+ *
+ * A discriminated union of one, on purpose: a later kind is a later member, not a new column.
+ */
+export const capabilityAction = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('bind'), entity: entityRef }),
+]);
+export type CapabilityAction = z.infer<typeof capabilityAction>;
 
 /**
  * Who minted or revoked a capability: the principal whose operation did it, or a platform
@@ -176,6 +201,11 @@ export const capabilityRecord = z.discriminatedUnion('mode', [
     mode: z.literal('become'),
     ...capabilityRecordCommon,
     principal: principalId,
+    /**
+     * #1686: what the exchange also does — a binding invite's `bind`. Null for a plain `become`.
+     * Absent from a host that predates it.
+     */
+    action: capabilityAction.nullable().optional(),
   }),
 ]);
 export type CapabilityRecord = z.infer<typeof capabilityRecord>;
@@ -200,10 +230,33 @@ export type MintedCapability = z.infer<typeof mintedCapability>;
  * - `target-already-claimed` — some `become` capability for the target has already been
  *   exchanged in this scope: somebody already is that principal, and a second link would let a
  *   second person become them too. A principal-minted `become` is for a seat nobody has taken.
+ *
+ * And for a link carrying a `bind` (#1686) — the minter lacking the bind permission on the record
+ * is a `coverage` naming that key:
+ * - `bind-not-declared` — no shape of the scope's reconciled registry binds this entity type;
+ * - `bind-record-missing` — the scope holds no such record;
+ * - `bind-record-ambiguous` — more than one row of the holder table carries the record's id (the
+ *   id column should be unique), so there is no one record a claim could bind;
+ * - `bind-record-bound` — the record already names a person. Refused, never re-bound: moving
+ *   someone's portal is an unbind and a new invite, never a side effect of a link;
+ * - `bind-record-held` — the column names nobody, but someone already holds the record's shape
+ *   there (given it before the column was written, or left behind by a holder a later version
+ *   moved). A link would bind a second person beside them: unbind the record first.
  */
 export const becomeMintRefusal = z.union([
   z.object({ ok: z.literal(false), coverage }),
-  z.object({ ok: z.literal(false), refused: z.enum(['target-holds-nothing', 'target-already-claimed']) }),
+  z.object({
+    ok: z.literal(false),
+    refused: z.enum([
+      'target-holds-nothing',
+      'target-already-claimed',
+      'bind-not-declared',
+      'bind-record-missing',
+      'bind-record-ambiguous',
+      'bind-record-bound',
+      'bind-record-held',
+    ]),
+  }),
 ]);
 export type BecomeMintRefusal = z.infer<typeof becomeMintRefusal>;
 
@@ -221,6 +274,20 @@ export const boundedBecomeRevoke = z.union([
   z.object({ ok: z.literal(false), coverage }),
 ]);
 export type BoundedBecomeRevoke = z.infer<typeof boundedBecomeRevoke>;
+
+/**
+ * What a host's bounded unbind answers (#1686) — `unbindEntityHolderBounded`, the lever beside a
+ * binding invite: everyone this call released from the record (empty when nobody held its shape,
+ * so nothing was written beyond clearing the column); or `coverage` naming the binding's key the caller
+ * lacks on the record; or `bind-not-declared` when the scope's reconciled registry binds no such
+ * entity type. A refusal writes nothing.
+ */
+export const boundedUnbind = z.union([
+  z.object({ ok: z.literal(true), unbound: z.array(principalId) }),
+  z.object({ ok: z.literal(false), coverage }),
+  z.object({ ok: z.literal(false), refused: z.literal('bind-not-declared') }),
+]);
+export type BoundedUnbind = z.infer<typeof boundedUnbind>;
 
 /**
  * Where a `become` link stands (#1686) — what a pending-invite list shows beside each invite, so
@@ -258,6 +325,8 @@ export const capabilityExchange = z.discriminatedUnion('kind', [
     kind: z.literal('principal'),
     capabilityId,
     principal: principalId,
+    /** #1686: the record the exchange bound the principal to, for a binding invite. */
+    bound: entityRef.optional(),
   }),
 ]);
 export type CapabilityExchange = z.infer<typeof capabilityExchange>;
@@ -433,6 +502,12 @@ export const capabilityBecomeMintedPayload = z.object({
   maxUses: z.number().int().positive(),
   label: capabilityLabel.nullable(),
   mintedBy: principalId,
+  /**
+   * #1686: the action the link carries, when it carries one. Added optional, so a consumer
+   * parsing v1 without it still parses; omitted (never null) on a plain `become`, so the
+   * payload of every link minted before it is unchanged.
+   */
+  action: capabilityAction.optional(),
 });
 export type CapabilityBecomeMintedPayload = z.infer<typeof capabilityBecomeMintedPayload>;
 

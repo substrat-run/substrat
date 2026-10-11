@@ -14,7 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import { assertKernelAuthoredType, substratError } from '@substrat-run/contracts';
 import { KERNEL_ACTOR, kernelOutboxInsertSql } from './kernel-outbox.js';
-import { GRANTEE_KEY_RELATION, explicitTupleSql } from './entity-grant.js';
+import { SHAPE_PROTECTED_KEY_RELATION, explicitTupleSql } from './entity-grant.js';
 import { liveTupleSql } from './permission-eval.js';
 import { assertSqlIdentifier } from './sql-identifier.js';
 import type { SwitchSql } from './system-switch.js';
@@ -77,7 +77,7 @@ declare const console: { warn(message: string): void };
  *   tuple writer refuses them to every other grant from then on.
  * - `holder: 'grantee'` (#2083), for a record that names no principal (a portal customer, a
  *   contact): whoever holds a live current or retired key of the shape on such an entity was given it.
- *   Each pass records current and retired keys (`shape-grantee-key`), and the explicit tuple
+ *   Each reconcile records current and retired keys (`shape-grantee-key`), and the explicit tuple
  *   writer makes non-shape grants refuse them on that entity type. A tuple from before the
  *   first such pass cannot be told apart. A marker already written by a shape grant persists
  *   through retirement, so its holder receives the new keys even if their old key was K alone.
@@ -251,7 +251,8 @@ export function topUpEntityGrantShapes(
   // a caller looping until it does would never stop.
   const limit = shapeTopUpBatch(pass.limit);
   const room = { writes: limit, reads: limit * SHAPE_MARKER_READS_PER_ROW };
-  recordGranteeKeys(db, pass.shapes);
+  // The registry is the same for every pass of one reconcile, so its facts are recorded by the first.
+  if (!pass.after) recordShapeFacts(db, pass.shapes);
   let toppedUp = 0;
   let retired = 0;
   let retirementsLeftOpen = 0;
@@ -616,11 +617,7 @@ function backfill(
     ) as WindowRow[];
     keyOf = (r) => [r.object, (r as WindowRow & { relation: string }).relation, r.subject];
   } else {
-    const { table, idColumn, principalColumn } = shape.holder;
-    const where = `entityGrants holder of '${shape.entityType}'`;
-    for (const [kind, name] of [['a table', table], ['a column', idColumn], ['a column', principalColumn]] as const) {
-      assertSqlIdentifier('reconcileEntityGrantShapes', kind, name, where);
-    }
+    const { table, idColumn, principalColumn } = holderNames(shape.holder, 'reconcileEntityGrantShapes', `entityGrants holder of '${shape.entityType}'`);
     // The vertical's table may not exist yet on this scope (a module not migrated): nothing to
     // mark, and the backfill stays open for the next reconcile rather than being recorded done.
     // Asked of SQLite, not read off the DDL's text, which keeps table options in any order and
@@ -720,28 +717,113 @@ function warnUnboundedRead(
 }
 
 /**
- * The current and retired keys of every `holder: 'grantee'` bootstrap shape, recorded so the
- * explicit tuple writer can refuse them to every non-shape grant. A reconcile carries the
- * reached version's whole reviewed registry,
- * so the records are made to match it exactly: a declaration a later version drops stops
- * refusing. Bounded by the declared keys, so it runs in every pass without a budget.
+ * A BINDING shape's record (#1686), on the scope's tuple spine beside the grantee keys: which
+ * table column names the record's person (`<table>.<idColumn>.<principalColumn>`), the key that
+ * lets someone bind or unbind them, and the shape's current keys — what a binding invite's claim
+ * gives. The claim and an unbind read these, never the vertical's code: the shape is the reviewed
+ * registry the platform last reconciled this scope with. Each identifier is a SQL identifier, so
+ * `.` cannot occur inside one.
  */
-function recordGranteeKeys(db: SwitchSql, shapes: readonly EntityGrantShape[]): void {
-  const rows = shapes
-    .filter((s) => s.bootstrap && s.holder === 'grantee')
-    .flatMap((s) => keysOf([...s.permissions, ...(s.retired ?? [])]).map((k): [string, string] => [`shape:${s.entityType}`, `granted:${k}`]));
+export const BIND_HOLDER_RELATION = 'shape-bind-holder';
+export const BIND_PERMISSION_RELATION = 'shape-bind-permission';
+export const BIND_KEY_RELATION = 'shape-bind-key';
+/**
+ * `(shape:<type>, shape-bound, bound)`: this scope has declared a binding for `<type>` (#1686).
+ * Written by the first reconcile that records the binding (and by every claim, to the same effect)
+ * and STICKY — no reconcile removes it, whatever later
+ * versions declare — so an erasure keeps releasing that type's holders after a version drops the
+ * shape, drops its `bind` or moves its holder column. A spine tuple like the others here, so
+ * module code can never write one (`ctx.sql` refuses every `_substrat_*` write).
+ */
+export const BOUND_EVER_RELATION = 'shape-bound';
+
+/** A shape the reconcile records as binding: bootstrap, a table holder, and a `bind`. */
+const binds = (s: EntityGrantShape): s is EntityGrantShape & { holder: { table: string; idColumn: string; principalColumn: string }; bind: { permission: string } } =>
+  !!s.bootstrap && !!s.bind && typeof s.holder === 'object';
+
+/** A table holder's three names, each checked as a SQL identifier before anything interpolates it. */
+function holderNames(holder: { table: string; idColumn: string; principalColumn: string }, area: string, where: string) {
+  for (const [kind, name] of [['a table', holder.table], ['a column', holder.idColumn], ['a column', holder.principalColumn]] as const) {
+    assertSqlIdentifier(area, kind, name, where);
+  }
+  return holder;
+}
+
+/**
+ * The registry facts a reconcile records for the explicit tuple writer and a binding claim, made to
+ * match the reached version's whole reviewed registry exactly, so a declaration a later version
+ * drops stops counting:
+ * - every current and retired key of each `holder: 'grantee'` or BOUND bootstrap shape
+ *   (`shape-grantee-key`), which every non-shape grant then refuses on that entity type;
+ * - each bound shape's holder column and current keys, and — only while it declares `bind` — its
+ *   bind key (#1686).
+ *
+ * A type that has ever bound (`shape-bound`) keeps its protected keys whatever later versions
+ * declare, so the keys stay refused to direct grants while its holders keep the shape; a key a
+ * later version gives the shape joins them.
+ *
+ * A shape is BOUND while it declares `bind`, and stays bound after a version drops `bind` for as
+ * long as it is still a bootstrap shape with the same table holder: records may already name their
+ * people in that column, holding the shape through it, and an erasure releases them by these
+ * facts. Without the bind key nobody can mint, claim or unbind any more; what was bound stays as a
+ * shape holder does when a key is dropped without being retired. A version that drops the shape,
+ * or changes its holder, drops the facts with it.
+ * Three statements, bounded by the declared shapes, so it runs without a budget.
+ */
+function recordShapeFacts(db: SwitchSql, shapes: readonly EntityGrantShape[]): void {
+  const ref = (s: EntityGrantShape) => `shape:${s.entityType}`;
+  const holderOf = (s: EntityGrantShape & { holder: { table: string; idColumn: string; principalColumn: string } }) => {
+    const { table, idColumn, principalColumn } = holderNames(s.holder, 'reconcileEntityGrantShapes', `entityGrants bind of '${s.entityType}'`);
+    return `${table}.${idColumn}.${principalColumn}`;
+  };
+  const recorded = new Map(
+    (db.all(`SELECT subject, object FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?`, BIND_HOLDER_RELATION) as {
+      subject: string;
+      object: string;
+    }[]).map((r) => [r.subject, r.object]),
+  );
+  const tableHeld = (s: EntityGrantShape): s is EntityGrantShape & { holder: { table: string; idColumn: string; principalColumn: string } } =>
+    !!s.bootstrap && typeof s.holder === 'object';
+  const bound = shapes.filter(tableHeld).filter((s) => binds(s) || recorded.get(ref(s)) === holderOf(s));
+  const boundTypes = new Set(bound.map((s) => s.entityType));
+  const facts: [subject: string, relation: string, object: string][] = [
+    ...shapes
+      .filter((s) => (s.bootstrap && s.holder === 'grantee') || boundTypes.has(s.entityType))
+      .flatMap((s) => keysOf([...s.permissions, ...(s.retired ?? [])]).map((k) => [ref(s), SHAPE_PROTECTED_KEY_RELATION, `granted:${k}`] as [string, string, string])),
+    ...bound.map((s) => [ref(s), BIND_HOLDER_RELATION, holderOf(s)] as [string, string, string]),
+    ...shapes.filter(binds).map((s) => [ref(s), BIND_PERMISSION_RELATION, s.bind.permission] as [string, string, string]),
+    // A declared binding is sticky from the first reconcile that records it, not only from its first
+    // claim: its keys stay refused and its holders (backfilled ones included) stay reachable by an
+    // erasure, whatever later versions declare. Never deleted: the DELETE below names other relations.
+    ...shapes.filter(binds).map((s) => [ref(s), BOUND_EVER_RELATION, 'bound'] as [string, string, string]),
+    ...bound.flatMap((s) => keysOf(s.permissions).map((k) => [ref(s), BIND_KEY_RELATION, `granted:${k}`] as [string, string, string])),
+  ];
+  const json = JSON.stringify(facts);
   db.run(
     // The subject range keeps it on the primary key: `shape:` rows only, never the whole table.
-    `DELETE FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?
+    `DELETE FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation IN (?, ?, ?, ?)
         AND NOT EXISTS (SELECT 1 FROM json_each(?) r
                          WHERE json_extract(r.value, '$[0]') = _substrat_tuples.subject
-                           AND json_extract(r.value, '$[1]') = _substrat_tuples.object)`,
-    GRANTEE_KEY_RELATION,
-    JSON.stringify(rows),
+                           AND json_extract(r.value, '$[1]') = _substrat_tuples.relation
+                           AND json_extract(r.value, '$[2]') = _substrat_tuples.object)
+        -- A type that ever bound keeps its protected keys whatever this version declares (#1686):
+        -- its holders keep the shape until released, and a direct grant of a key of it made while
+        -- the shape is out of the registry would be a holder no marker, unbind or held check sees.
+        AND NOT (relation = ? AND EXISTS (SELECT 1 FROM _substrat_tuples b
+                                           WHERE b.subject = _substrat_tuples.subject AND b.relation = ?))`,
+    SHAPE_PROTECTED_KEY_RELATION,
+    BIND_HOLDER_RELATION,
+    BIND_PERMISSION_RELATION,
+    BIND_KEY_RELATION,
+    json,
+    SHAPE_PROTECTED_KEY_RELATION,
+    BOUND_EVER_RELATION,
   );
-  for (const [subject, object] of rows) {
-    db.run('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', subject, GRANTEE_KEY_RELATION, object);
-  }
+  db.run(
+    `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
+       SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]') FROM json_each(?)`,
+    json,
+  );
 }
 
 /**

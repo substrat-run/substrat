@@ -253,6 +253,7 @@ import type {
   BecomeCapabilityInput,
   BoundedBecomeMint,
   BoundedBecomeRevoke,
+  BoundedUnbind,
   BecomeLinkState,
   PrincipalBecomeCapabilityInput,
   CapabilityExchange,
@@ -327,6 +328,9 @@ import {
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
   readBecomeLinkStates,
+  ENTITY_UNBIND_OPERATION,
+  allowedFor,
+  unbindEntityHolderBounded,
   capabilityAttachmentWriteRefused,
   createCapabilityVerbs,
   createEntityEdgeVerbs,
@@ -4893,6 +4897,7 @@ export function defineScopeDO(
               holdings: this.checker.holdings
                 ? (principal) => this.checker.holdings!({ kind: 'principal', id: principal }, { tenantId, scopeId })
                 : undefined,
+              allowed: (principal, permission, entity) => allowedFor(this.checker, principal, { tenantId, scopeId })(permission, entity),
             },
             secret,
             mode,
@@ -4919,7 +4924,7 @@ export function defineScopeDO(
       const minter = principalId.parse(caller);
       const parsed = principalBecomeCapabilityInput.parse(input);
       return await this.queue.enqueue(async (): Promise<BoundedBecomeMint> => {
-        const checked = await becomeMintCheck({ sql: doSpineSql(this.sql), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId });
+        const checked = await becomeMintCheck({ sql: doSpineSql(this.sql), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId }, parsed.bind);
         if (!checked.ok) return checked;
         const liveSince = this.liveHighWaterMark();
         const now = instant.parse(new Date().toISOString());
@@ -4952,6 +4957,54 @@ export function defineScopeDO(
         });
         await this.settleCommitted(tenantId, scopeId, liveSince, null);
         return { ok: true, minted: minted! };
+      });
+    }
+
+    /**
+     * Unbind a binding shape's record (#1686) — its column cleared and the shape its person held
+     * there through it taken back — as `caller`, who must hold the binding's key on the record. The
+     * kernel's bound and the write in ONE queued body and one storage transaction; a refusal writes
+     * nothing. On the spine as `entity.holder-unbound`, the caller its actor.
+     */
+    async unbindEntityHolderBoundedFor(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      caller: PrincipalId,
+      entity: EntityRef,
+    ): Promise<BoundedUnbind> {
+      await this.ensureMigrations();
+      const by = principalId.parse(caller);
+      return await this.queue.enqueue(async (): Promise<BoundedUnbind> => {
+        const liveSince = this.liveHighWaterMark();
+        const now = instant.parse(new Date().toISOString());
+        let answer: BoundedUnbind = { ok: true, unbound: [] };
+        await this.revision.transaction(async () => {
+          answer = await unbindEntityHolderBounded(
+            {
+              sql: doSpineSql(this.sql),
+              now,
+              allowed: allowedFor(this.checker, by, { tenantId, scopeId }),
+              emit: (event) =>
+                kernelEmit(this.operationContext(
+                  by,
+                  tenantId,
+                  scopeId,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  ENTITY_UNBIND_OPERATION,
+                  undefined,
+                  [],
+                  now,
+                ), event),
+            },
+            entity,
+          );
+        });
+        if (answer.ok && answer.unbound.length > 0) await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        return answer;
       });
     }
 
@@ -6421,6 +6474,8 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_capabilities ADD COLUMN target_digest TEXT',
         // #1686: why the kernel revoked a link itself; NULL for every revoke already there.
         'ALTER TABLE _substrat_capabilities ADD COLUMN revoked_reason TEXT',
+        // #1686: the action a become carries; NULL on every row already there — none carries one.
+        'ALTER TABLE _substrat_capabilities ADD COLUMN action TEXT',
         // #1632: legacy runs retain an unknown subject; no content-based backfill.
         'ALTER TABLE _substrat_job_runs ADD COLUMN subject_id TEXT',
         // #2034: the lease. NULL = nobody holds the run, which is right for every row already there.

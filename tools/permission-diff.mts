@@ -81,6 +81,7 @@ interface EntityGrantLike {
   bootstrap?: true;
   holder?: 'self' | 'grantee' | { table: string; idColumn: string; principalColumn: string };
   retired?: string[];
+  bind?: { permission: string };
 }
 /** The normalised surface render()/collectRegistry() consume — unchanged by the discovery move. */
 interface Surface {
@@ -107,7 +108,8 @@ const bootstrapCell = (g: EntityGrantLike): string => {
   if (!g.holder) return 'yes — holders given it from now on';
   if (g.holder === 'grantee') return 'yes — live holders of current or retired keys here; direct grants cannot give these keys';
   const whose = g.holder === 'self' ? 'the entity id is the principal' : `\`${g.holder.table}.${g.holder.principalColumn}\` names the principal`;
-  return `yes — ${whose}`;
+  // #1686: a binding shape's keys are refused to every other grant, as a grantee shape's are.
+  return g.bind ? `yes — ${whose}; direct grants cannot give these keys` : `yes — ${whose}`;
 };
 
 const root = new URL('..', import.meta.url).pathname;
@@ -187,6 +189,13 @@ const grantShapeTable = (grants: EntityGrantLike[]): string[] => {
     columns.push([
       'Taken back from existing holders (a direct grant on the same entity included)',
       (g) => (g.retired?.length ? sorted(g.retired).map(code).join(', ') : '—'),
+    ]);
+  }
+  // #1686: who may hand the shape out — a binding invite sets the holder column to its claimant.
+  if (grants.some((g) => g.bind)) {
+    columns.push([
+      'Bound by a link: whoever holds this key on the record may invite its person, or unbind them',
+      (g) => (g.bind ? code(g.bind.permission) : '—'),
     ]);
   }
   return [

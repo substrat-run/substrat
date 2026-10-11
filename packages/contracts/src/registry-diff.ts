@@ -9,7 +9,13 @@
 export interface RegistryLike {
   permissions: ReadonlyArray<{ key: string; description: string }>;
   roles: ReadonlyArray<{ key: string; permissions: readonly string[] }>;
-  entityGrants: ReadonlyArray<{ entityType: string; permissions: readonly string[]; bootstrap?: true; retired?: readonly string[] }>;
+  entityGrants: ReadonlyArray<{
+    entityType: string;
+    permissions: readonly string[];
+    bootstrap?: true;
+    retired?: readonly string[];
+    bind?: { permission: string };
+  }>;
 }
 
 export interface RegistryDiff {
@@ -30,6 +36,11 @@ export interface RegistryDiff {
     removed: string[];
     retired: string[];
     kept: string[];
+    /**
+     * #1686: the shape's bind permission moved — `from`/`to` the key whose holders on a record
+     * may bind its person with a link (null: the shape did not bind). Absent when unchanged.
+     */
+    bind?: { from: string | null; to: string | null };
     isNew: boolean;
     isGone: boolean;
   }>;
@@ -75,8 +86,11 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
     const kept = bootstrap ? removed.filter((k) => !(after?.retired ?? []).includes(k)) : [];
     const isNew = !before && !!after;
     const isGone = !!before && !after;
-    if (added.length || removed.length || retired.length || isNew || isGone) {
-      grantChanges.push({ entityType, added, removed, retired, kept, isNew, isGone });
+    const bindFrom = before?.bind?.permission ?? null;
+    const bindTo = after?.bind?.permission ?? null;
+    const bindChanged = bindFrom !== bindTo;
+    if (added.length || removed.length || retired.length || isNew || isGone || bindChanged) {
+      grantChanges.push({ entityType, added, removed, retired, kept, ...(bindChanged ? { bind: { from: bindFrom, to: bindTo } } : {}), isNew, isGone });
     }
   }
   return {
@@ -95,10 +109,13 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
  * A key dropped without being retired stays with them: the reconcile takes back only what a
  * version declares retired.
  */
-export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][number], 'retired' | 'kept'>): string[] {
+export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][number], 'retired' | 'kept' | 'bind'>): string[] {
   return [
     ...g.retired.map((k) => `existing holders lose ${k}, including any direct grant of ${k} on the same entity`),
     ...g.kept.map((k) => `existing holders keep ${k}: dropped from the shape but not retired`),
+    // #1686: who may hand the shape out — a binding invite — is part of what a shape confers.
+    ...(g.bind?.to ? [`whoever holds ${g.bind.to} on a record may bind its person to it with a link`] : []),
+    ...(g.bind?.from && !g.bind.to ? [`links may no longer bind a person to a record (was ${g.bind.from})`] : []),
   ];
 }
 
@@ -124,11 +141,11 @@ export function registryDirection(d: RegistryDiff): RegistryDirection {
   const adds =
     d.addedKeys.length > 0 ||
     d.roleChanges.some((r) => r.isNew || r.added.length > 0) ||
-    d.grantChanges.some((g) => g.isNew || g.added.length > 0);
+    d.grantChanges.some((g) => g.isNew || g.added.length > 0 || !!g.bind?.to);
   const removes =
     d.removedKeys.length > 0 ||
     d.roleChanges.some((r) => r.isGone || r.removed.length > 0) ||
-    d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0);
+    d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0 || !!g.bind?.from);
   // A description re-worded is a change that is neither: it keeps a diff from being "only".
   const other = d.changedKeys.length > 0;
   if (!hasRegistryChange(d)) return 'none';

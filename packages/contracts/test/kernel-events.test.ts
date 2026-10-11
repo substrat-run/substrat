@@ -14,7 +14,14 @@ import {
   assertModuleEmittableType,
   isKernelAuthoredEventType,
 } from '../src/kernel-events.js';
-import { ENTITY_GRANTS_RETIRED, ENTITY_GRANTS_TOPPED_UP, ENTITY_LINKED, ENTITY_RELINKED } from '../src/permission.js';
+import {
+  ENTITY_GRANTS_RETIRED,
+  ENTITY_GRANTS_TOPPED_UP,
+  ENTITY_HOLDER_BOUND,
+  ENTITY_HOLDER_UNBOUND,
+  ENTITY_LINKED,
+  ENTITY_RELINKED,
+} from '../src/permission.js';
 import { ENTITY_ARCHIVED, ENTITY_RESTORED, ENTITY_TRASHED, ENTITY_UNARCHIVED } from '../src/entity-state.js';
 
 const codeOf = (fn: () => void): string | undefined => {
@@ -27,7 +34,7 @@ const codeOf = (fn: () => void): string | undefined => {
 };
 
 describe('kernel-authored event types (#1864)', () => {
-  it('is exactly the seventeen types the kernel writes', () => {
+  it('is exactly the nineteen types the kernel writes', () => {
     expect([...KERNEL_AUTHORED_EVENT_TYPES].sort()).toEqual(
       [
         ATTACHMENT_ADDED,
@@ -52,6 +59,9 @@ describe('kernel-authored event types (#1864)', () => {
         EMAIL_DEAD_LETTERED,
         // #1686: a principal's `become` mint — a member invite — is on the spine as the kernel wrote it.
         CAPABILITY_BECOME_MINTED,
+        // #1686: a record bound to its claimant, or unbound — the declared shape given or taken back.
+        ENTITY_HOLDER_BOUND,
+        ENTITY_HOLDER_UNBOUND,
       ].sort(),
     );
   });
@@ -89,7 +99,7 @@ describe('kernel-authored event types (#1864)', () => {
         // a frozen array throws in strict mode; either way, nothing may have changed
       }
     }
-    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(17);
+    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(19);
     for (const type of [ENTITY_RELINKED, ENTITY_LINKED, CAPABILITY_MINTED, ATTACHMENT_ADDED]) {
       expect(codeOf(() => assertModuleEmittableType(type))).toBe('validation_failed');
       expect(isKernelAuthoredEventType(type)).toBe(true);

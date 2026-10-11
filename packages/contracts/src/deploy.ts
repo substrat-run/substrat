@@ -607,8 +607,69 @@ export const entityGrantShape = z.object({
    * empty, so a registry that retires nothing keeps the permission digest it had.
    */
   retired: z.array(permissionKey).optional(),
+  /**
+   * #1686: a BINDING shape — the record's own principal column decides who holds it, and a
+   * `become` link may carry "on claim, set that column to the claimant" (a binding invite).
+   * `permission` is an ordinary key: who holds it on a record may mint such a link for it and
+   * may unbind its person. Checked at mint, again at the claim, and at an unbind.
+   *
+   * Only on a `bootstrap` shape whose `holder` is the table form, and never one of the shape's
+   * own current or retired keys (a key that let you hand out itself would be no bound). The holder's
+   * `idColumn` should be unique: a claim binds exactly one row, so an id two rows carry is refused,
+   * and an unbind clears every row with it. The
+   * column the holder names must be one of the entity's erasure SUBJECTS rather than an
+   * `erasable` field: an erasure of the record or of its person unbinds it (the kernel clears the
+   * column and takes the shape back, after the module's erasure hook has read the rows).
+   *
+   * Its keys are refused to every direct grant on a record of this type, as a `'grantee'` shape's
+   * are (a grant on a parent of another type is not refused yet: #2177). A claim refuses a record
+   * whose column names someone, and one someone already holds the shape on (`bind-record-held` — a
+   * person given it before the column was written: unbind them first). An unbind releases every
+   * holder of the shape on the record from the spine, whatever the column names now.
+   *
+   * Once a scope has recorded a binding shape for a type (its first reconcile with the declaration),
+   * the type's protected keys stay refused to direct grants there whatever later versions declare.
+   * That is permanent and per scope: a vertical that removes the binding shape and wants those keys
+   * plain-granted again must use new key names — a retirement takes the keys back from their
+   * holders but does not lift the refusal, and nothing clears the scope's `shape-bound` record —
+   * and a scope the binding was never declared in is unaffected. This is intended, and fails closed.
+   * An erasure matches the erased id against every type that ever bound
+   * (as module erasure matches subject columns whatever the type): an id that is not a ULID can
+   * collide across types.
+   *
+   * People already bound KEEP the shape until they are released — an unbind while the shape binds,
+   * an erasure (which reaches every type that ever bound in the scope), or `retired` — whatever a
+   * later version does to the declaration: dropping `bind` keeps the holder recorded but leaves no
+   * unbind; removing the shape or moving its holder leaves erasure and retirement (#2178 would
+   * refuse that change). Omitted when unset, so a registry that binds nothing keeps its digest.
+   */
+  bind: z.object({ permission: permissionKey }).optional(),
 });
 export type EntityGrantShape = z.infer<typeof entityGrantShape>;
+
+/**
+ * #1686: what is wrong with a shape's `bind`, as messages — empty when nothing is. Checked where
+ * {@link retiredShapeProblems} is.
+ */
+export function bindShapeProblems(
+  shape: Pick<EntityGrantShape, 'entityType' | 'permissions' | 'bootstrap' | 'holder' | 'retired' | 'bind'>,
+  /** The keys the modules declare, where the registry is built; a push carries none to check against. */
+  declared?: ReadonlySet<string>,
+): string[] {
+  if (!shape.bind) return [];
+  const problems: string[] = [];
+  const where = `entityGrants '${shape.entityType}'`;
+  if (!shape.bootstrap) problems.push(`${where}: \`bind\` is only for a bootstrap shape; a sharing shape is reached through ctx.grant`);
+  if (typeof shape.holder !== 'object') {
+    problems.push(`${where}: \`bind\` needs a table holder ({ table, idColumn, principalColumn }) — the column a claim writes`);
+  }
+  if ([...shape.permissions, ...(shape.retired ?? [])].includes(shape.bind.permission)) {
+    problems.push(`${where}: binds with ${shape.bind.permission}, which is one of the shape's own keys`);
+  }
+  // A bind permission nothing declares could never be held, so no link could ever be minted.
+  if (declared && !declared.has(shape.bind.permission)) problems.push(`${where}: binds with ${shape.bind.permission}, which no module declares`);
+  return problems;
+}
 
 /**
  * #2082: what is wrong with a shape's `retired`, as messages — empty when nothing is. Checked
@@ -691,6 +752,7 @@ export const pushedPermissionRegistry = permissionRegistry.extend({
     .array(
       entityGrantShape.extend({ entityType: declaredEntityType }).superRefine((shape, ctx) => {
         for (const message of retiredShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['retired'], message });
+        for (const message of bindShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['bind'], message });
       }),
     )
     .default([]),
@@ -845,8 +907,12 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
       ...(g.bootstrap ? { bootstrap: true as const } : {}),
       ...(g.holder ? { holder: g.holder } : {}),
       ...(g.retired?.length ? { retired: sortKeys(g.retired) } : {}),
+      ...(g.bind ? { bind: { permission: g.bind.permission } } : {}),
     }));
-  const problems = entityGrants.flatMap(retiredShapeProblems);
+  const problems = [
+    ...entityGrants.flatMap(retiredShapeProblems),
+    ...entityGrants.flatMap((g) => bindShapeProblems(g, new Set(declaredBy.keys()))),
+  ];
   if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
 
   // #1705: the edges. Keyed so two modules declaring the same flow collapse into one row

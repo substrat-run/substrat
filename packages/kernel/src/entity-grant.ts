@@ -18,8 +18,11 @@ import type { SwitchSql } from './system-switch.js';
 
 type Params = [string, string, string];
 
-/** A reconciled grantee shape's protected key, stored on the scope's tuple spine. */
-export const GRANTEE_KEY_RELATION = 'shape-grantee-key';
+/**
+ * A key only its shape may give, stored on the scope's tuple spine: every current and retired key of
+ * a reconciled `'grantee'` or binding shape (#2083, #1686). The stored relation keeps its first name.
+ */
+export const SHAPE_PROTECTED_KEY_RELATION = 'shape-grantee-key';
 
 /** Every explicit non-shape scope tuple write uses this guard, including administrative writes. */
 function assertDelegableTuple(db: SwitchSql, relation: string, object: string): void {
@@ -27,7 +30,7 @@ function assertDelegableTuple(db: SwitchSql, relation: string, object: string): 
   const colon = object.indexOf(':');
   if (colon < 0) return;
   const entityType = object.slice(0, colon);
-  if (db.all('SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?', `shape:${entityType}`, GRANTEE_KEY_RELATION, relation).length > 0) {
+  if (db.all('SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?', `shape:${entityType}`, SHAPE_PROTECTED_KEY_RELATION, relation).length > 0) {
     throw new PermissionDenied(
       `cannot grant '${relation.slice('granted:'.length)}' on ${object} — ` +
         `it is a key of the declared '${entityType}' shape, given only by the shape grant`,

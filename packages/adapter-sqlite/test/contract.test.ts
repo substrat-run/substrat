@@ -21,6 +21,7 @@ import {
   attachmentTextContractSuite,
   capabilityContractSuite,
   becomeMintContractSuite,
+  bindingInviteContractSuite,
   capabilityExpiryContractSuite,
   connectorTestFetch,
   permissionContractSuite,
@@ -741,6 +742,33 @@ subjectErasureContractSuite(
       runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { all(...a: unknown[]): unknown[] } } };
     };
     return internals.runtime(tenant, scope).db.prepare(sql).all(...params);
+  },
+);
+
+// #1686: binding invites — the DEFAULT tuple checker, since the bound under test is the checker's.
+let bindingHost: SqliteScopeHost | undefined;
+bindingInviteContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-binding-'));
+    const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    bindingHost = host;
+    return {
+      host,
+      verbs: host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  // The scope's own connection, past `ctx.sql` — a trigger to fault the grant, a tuple only the
+  // kernel could write. A statement that returns no rows is run, not read.
+  async (tenant, scope, sql, params = []) => {
+    const statement = scopeRuntimeOf(bindingHost, tenant, scope).db.prepare(sql);
+    if (statement.reader) return statement.all(...params);
+    statement.run(...params);
+    return [];
   },
 );
 

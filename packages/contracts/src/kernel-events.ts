@@ -3,7 +3,14 @@ import { EMAIL_DEAD_LETTERED, EMAIL_REFUSED, EMAIL_SENT } from './email-intent.j
 import { CAPABILITY_BECOME_MINTED, CAPABILITY_EXERCISED, CAPABILITY_MINTED, CAPABILITY_REVOKED } from './capability.js';
 import { ENTITY_ARCHIVED, ENTITY_RESTORED, ENTITY_TRASHED, ENTITY_UNARCHIVED } from './entity-state.js';
 import { substratError } from './errors.js';
-import { ENTITY_GRANTS_RETIRED, ENTITY_GRANTS_TOPPED_UP, ENTITY_LINKED, ENTITY_RELINKED } from './permission.js';
+import {
+  ENTITY_GRANTS_RETIRED,
+  ENTITY_GRANTS_TOPPED_UP,
+  ENTITY_HOLDER_BOUND,
+  ENTITY_HOLDER_UNBOUND,
+  ENTITY_LINKED,
+  ENTITY_RELINKED,
+} from './permission.js';
 
 /**
  * The spine event types only the kernel writes (#1864). Each one is a fact about the
@@ -33,6 +40,8 @@ const KERNEL_AUTHORED: ReadonlySet<string> = new Set([
   ENTITY_ARCHIVED,
   ENTITY_GRANTS_RETIRED,
   ENTITY_GRANTS_TOPPED_UP,
+  ENTITY_HOLDER_BOUND,
+  ENTITY_HOLDER_UNBOUND,
   ENTITY_LINKED,
   ENTITY_RELINKED,
   ENTITY_RESTORED,

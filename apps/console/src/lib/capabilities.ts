@@ -27,7 +27,11 @@ export function capabilityTone(status: CapabilityStatus): BadgeTone {
  * differently, because the keys are the whole of what a link grants.
  */
 export function grantLine(r: CapabilityRecord): string {
-  if (r.mode === 'become') return `becomes ${r.principal}`;
+  if (r.mode === 'become') {
+    // #1686: a binding invite also binds whoever claims it to one record — part of what it grants.
+    const bind = r.action?.kind === 'bind' ? `, bound to ${r.action.entity.entityType}:${r.action.entity.entityId}` : '';
+    return `becomes ${r.principal}${bind}`;
+  }
   return `${r.permissions.join(', ')} on ${r.entity.entityType}:${r.entity.entityId}`;
 }
 

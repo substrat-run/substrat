@@ -56,6 +56,11 @@ describe('the console Capabilities card (#1686)', () => {
       'doc:read, doc:write on folder:F1',
     );
     expect(grantLine(become())).toBe('becomes 01J0000000000000000000SEAT');
+    // #1686: a binding invite reads as one — the record it binds is part of what it grants.
+    expect(grantLine(become({ action: { kind: 'bind', entity: { entityType: 'contact', entityId: 'C1' } } } as Partial<CapabilityRecord>))).toBe(
+      'becomes 01J0000000000000000000SEAT, bound to contact:C1',
+    );
+    expect(grantLine(become({ action: null } as Partial<CapabilityRecord>))).toBe('becomes 01J0000000000000000000SEAT');
     expect(operationsLine(act())).toBe('any the keys allow');
     expect(operationsLine(act({ operations: ['doc/read', 'doc/list'] } as Partial<CapabilityRecord>))).toBe('doc/read, doc/list');
     expect(operationsLine(become())).toBe('—');
