@@ -142,6 +142,20 @@ describe('/internal/configure on a hosted manyfold (#2201)', () => {
     expect(Object.keys(await env.AUTH.get(env.AUTH.idFromName(a.t)).getScopeConfig(a.s))).toEqual(['substrat:auth']);
   });
 
+  it('the delivered client secret is stored, and no answer of the worker carries it', async () => {
+    const a = await install();
+    const delivery = await deliver(a, choice('https://team-auth.test', a));
+    const bodies = [await delivery.text()];
+    for (const path of ['/api/auth/login', '/api/session', '/api/me', '/api/sites']) {
+      const res = await get(a, path, { authorization: `Bearer ${await perInstall.mint('sub-ann')}` });
+      bodies.push(`${[...res.headers].map(([k, v]) => `${k}: ${v}`).join('\n')}\n${await res.text()}`);
+    }
+    // Held in the identity directory (the positive twin: the search below could otherwise pass on nothing)...
+    expect((await env.AUTH.get(env.AUTH.idFromName(a.t)).getScopeConfig(a.s))['substrat:auth']).toContain('secret-1');
+    // ...and in no response.
+    for (const body of bodies) expect(body).not.toContain('secret-1');
+  });
+
   it.each([
     ['no platform secret', null],
     ['a wrong platform secret', 'not-the-secret'],
