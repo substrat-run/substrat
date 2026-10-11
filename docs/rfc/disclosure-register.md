@@ -421,7 +421,10 @@ written *after* the redaction, and nothing deletes that table. While pending, it
 provider's reference for the person's record, because the drain cannot retry without it. Kept
 as written, it would be a second durable record linking that reference to the date the person
 was erased, the very kind of copy §8.5 refuses to make with PII. **Recommendation: on settle,
-the drain replaces the erase intent's payload with the same tombstone #1600 uses.** The row
+the drain replaces the erase intent's payload with the same tombstone #1600 uses.** That is new
+settle work, not something settling does today: `settlePlatformRequestIn`
+(`packages/kernel/src/email-intent.ts:81`) writes status, `result`, `last_error` and
+`last_failure`, and never `payload`. P4 carries it (§8.9). The row
 then keeps the provider, the request time, the outcome and the pseudonymous `subjectId` (as
 every other tombstone does under option 1), and loses the reference. The cost is that a later
 "which record did we ask about" has no answer on our side, only "we asked Scrive on this date,
@@ -534,7 +537,9 @@ Each phase is its own PR, and each phase is useful if the next never ships.
 - **P3:** the receipt's `disclosures` field, with `not-notifiable` and `uncovered` only. This
   ships the honest list before any request is ever sent.
 - **P4, after Q3 is answered:** `erase` for Scrive, the only connector that has edges today,
-  together with the `connector-erase:<provider>` drain, its tombstone on settle (§8.4), and
-  `notified` on the receipt. It starts by establishing whether Scrive supports delete by
-  reference, which this RFC did not verify. If it does not, P4 has no first connector, and P3's
-  `not-notifiable` is the whole answer until a dispatching connector that can be asked arrives.
+  together with the `connector-erase:<provider>` drain, and `notified` on the receipt. Its
+  costs include new settle work: a payload tombstone on settle for this kind (§8.4), which
+  the shared settle path does not do for any kind today. It starts by establishing whether
+  Scrive supports delete by reference, which this RFC did not verify. If it does not, P4 has no
+  first connector, and P3's `not-notifiable` is the whole answer until a dispatching connector
+  that can be asked arrives.
