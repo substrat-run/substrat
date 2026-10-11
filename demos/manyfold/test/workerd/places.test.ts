@@ -112,9 +112,8 @@ async function install(issuerUrl: string | null, tenant: TenantId = tenantId.par
   ).toBe(201);
   if (issuerUrl) {
     const value = JSON.stringify({ mode: 'oidc', issuer: issuerUrl, clientId: `client-${i.s}`, clientSecret: 'secret-1' });
-    // Manyfold stores no per-instance config of its own (`/internal/configure` answers 501), so the
-    // choice is put where `onConfigure` would: the tenant's identity directory.
-    await env.AUTH.get(env.AUTH.idFromName(i.t)).setScopeConfig(i.s, [{ key: 'substrat:auth', value }]);
+    // Delivered as the platform delivers it: through the real route (#2201).
+    expect((await platform('/internal/configure', { tenantId: i.t, scopeId: i.s, entries: [{ key: 'substrat:auth', value }] })).status).toBe(200);
   }
   return i;
 }

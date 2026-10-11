@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { FetchLike } from '@substrat-run/kernel';
-import { fromBase64, generateCertificate, thumbprintS256, toBase64Url } from './x509.js';
+import { certificateMatchesKey, fromBase64, generateCertificate, thumbprintS256, toBase64Url } from './x509.js';
 
 /**
  * The stored credential — one tenant's app registration, app-only, in its own Entra directory.
@@ -50,8 +50,8 @@ export const authMethodOf = (s: Microsoft365Secret): AuthMethod =>
  *   connection's expiry cleared (`null`), since the certificate it described is gone.
  * - No client secret: the key is the platform's. A rotation that changes only the tenant's
  *   fields (a new sender, a corrected site) keeps the stored keypair, so the certificate the
- *   tenant already uploaded keeps working; a connection that has none, or whose certificate
- *   has lapsed, gets a new one.
+ *   tenant already uploaded keeps working; a connection that has none, whose certificate
+ *   has lapsed, or whose certificate is malformed or not its key's, gets a new one.
  *
  * Key material in the candidate itself is always discarded: a caller cannot choose the key.
  */
@@ -67,7 +67,13 @@ export async function prepareMicrosoft365Candidate(
   delete secret.clientSecret;
 
   const kept = previous?.privateKey && previous.certificate && previous.certificateNotAfter;
-  if (kept && Date.parse(previous.certificateNotAfter!) > opts.now.getTime()) {
+  // A stored certificate is kept only while it is unexpired AND reads as the certificate of the stored
+  // key; one that does not (#2189: a non-minimal serial) is re-minted, so the connection heals on its next save.
+  if (
+    kept &&
+    Date.parse(previous.certificateNotAfter!) > opts.now.getTime() &&
+    (await certificateMatchesKey(previous.certificate!, previous.privateKey!))
+  ) {
     return {
       secret: {
         ...secret,

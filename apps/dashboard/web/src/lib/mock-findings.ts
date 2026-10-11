@@ -42,7 +42,19 @@ export function mockFindingsClient(): FindingsClient {
     { id: 'R1', tenantId: 'MOCKTEAM', kind: null, operation: 'helpdesk/get-ticket', code: 'not_found', subject: null, expiresAt: new Date(Date.now() + 5 * 86_400_000).toISOString(), reason: 'Crawler noise', createdBy: 'you', createdAt: ago(1000) },
   ];
   return {
-    listFindings: async () => ({ available: true, entries }),
+    listFindings: async ({ status, limit = 100, cursor }) => {
+      // Like the plane: keyset-paged. Filtered, `lastSeen` descending with `id` ascending on a tie, and a
+      // cursor names the last row read by its sort key, so a row that moved tab between pages shifts nothing.
+      const sep = String.fromCharCode(0);
+      const after = cursor === undefined ? null : (cursor.split(sep) as [string, string]);
+      const page = entries
+        .filter((e) => status === undefined || e.status === status)
+        .sort((a, b) => (a.lastSeen === b.lastSeen ? (a.id < b.id ? -1 : 1) : a.lastSeen < b.lastSeen ? 1 : -1))
+        .filter((e) => after === null || e.lastSeen < after[0] || (e.lastSeen === after[0] && e.id > after[1]))
+        .slice(0, limit);
+      const last = page[page.length - 1];
+      return { available: true, entries: page, nextCursor: page.length >= limit && last ? `${last.lastSeen}${sep}${last.id}` : null, cut: false };
+    },
     setFindingStatus: async ({ id, status }) => {
       const next = { ...entries.find((e) => e.id === id)!, status };
       entries = entries.map((e) => (e.id === id ? next : e));

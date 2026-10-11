@@ -104,11 +104,11 @@ export interface DashboardClient {
   listFindingRules(input: { active?: boolean }): Promise<{ entries: FindingRuleEntry[] }>;
 
   /**
-   * This team's findings, most recently seen first
+   * One page of this team's findings, most recently seen first
    *
    * `GET /findings` — `dashboard/list-findings`
    */
-  listFindings(input: { status?: "open" | "acked" | "resolved" | "suppressed"; kind?: "invariant" | "drift" | "recurring" }): Promise<{ available: boolean; entries: FindingEntry[] }>;
+  listFindings(input: { status?: "open" | "acked" | "resolved" | "suppressed"; kind?: "invariant" | "drift" | "recurring"; limit?: number; cursor?: string }): Promise<{ available: boolean; entries: FindingEntry[]; nextCursor: string | null; cut: boolean }>;
 
   /**
    * End a suppress rule now

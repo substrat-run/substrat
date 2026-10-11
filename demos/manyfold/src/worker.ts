@@ -301,7 +301,7 @@ app.post('/api/sites/:slug/archive', async (c) => {
 // bookmarks/rewind — plus the guaranteed { error } envelope, authored once in
 // @substrat-run/vertical-host (issue #510) and mounted here. Manyfold's provision hook
 // also registers the site in the per-tenant registry (M2), and reconcile re-sources the
-// owner from the durable owner-of-record for a #332 repair. No per-instance config here.
+// owner from the durable owner-of-record for a #332 repair. `onConfigure` stores the delivered per-instance config.
 mountPlatformSurface<Env>(app, {
   platformSecret: (env) => env.PLATFORM_SECRET,
   hostFor,
@@ -321,6 +321,13 @@ mountPlatformSurface<Env>(app, {
     const { identity } = await authWiringFor(env, { tenantId: b.tenantId, scopeId: b.scopeId });
     await reportScopeMembers(id, placesReporter({ identity }), b.scopeId);
   },
+  // The delivery half of the per-install identity: the dashboard's `substrat:auth` choice and the
+  // Env tab's values arrive here and land in the tenant's identity directory, keyed by the SCOPE
+  // they were sent for. `authWiringFor` reads them back by the routed site, so a site with no
+  // delivery keeps the binding default and a delivery for one site is never read for another.
+  // The route's platform-secret guard is `mountPlatformSurface`'s, the same one every vertical has.
+  onConfigure: (env, b) =>
+    identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries),
   resolveOwner: async (env, ref) => {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
     return owner ? principalId.parse(owner) : null;
