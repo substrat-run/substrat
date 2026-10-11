@@ -261,7 +261,6 @@ export {
   isUnreachableParent,
   purgeDueOf,
   purgeHeldBy,
-  purgeCutoffOf,
   purgeOnlyKeysOf,
   purgeReportOf,
   purgeStillDue,

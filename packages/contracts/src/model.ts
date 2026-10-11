@@ -145,8 +145,14 @@ export interface EntityDef<Names extends string = string> {
    * transaction. Absent, nothing is ever purged: the bin keeps what it holds until a person
    * empties it. A purge removes the row the way that operation always has; the events about the
    * entity stay, which is what separates it from erasure (#37).
+   *
+   * `purgeEarly: false` (#2214) makes the horizon a FLOOR as well: the `trashed: 'purges'`
+   * operation is then refused `not_found`, for every caller, on an entity not in the bin or
+   * binned less than `purgeAfterDays` ago — the bin keeps what it holds at least that long, and
+   * the handler needs no clock rule of its own. Absent, the purge operation is also the delete a
+   * person empties the bin with, at any time. Requires `purgeAfterDays`.
    */
-  readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number };
+  readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number; readonly purgeEarly?: boolean };
   /**
    * How a subject erasure reaches this entity's rows (#2068) — see `subject-erasure.ts`.
    *
@@ -398,7 +404,7 @@ export interface EmittedEntity {
   /** The permission key that archives it (#119), when it can be archived. */
   readonly archive?: { readonly permission: string };
   /** The permission key that trashes it (#119), when it can be trashed, and its purge horizon. */
-  readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number };
+  readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number; readonly purgeEarly?: boolean };
   /** How a subject erasure reaches it (#2068), when declared. `subjects` sorted. */
   readonly erasure?: { readonly mode: 'blank' | 'delete' | 'custom'; readonly subjects?: readonly string[] };
   /** The columns stamped from the invocation (#2157, #2166), keyed sorted. */
@@ -549,7 +555,9 @@ export const emittedEntity = z.object({
   erasable: z.array(z.string()).optional(),
   outsideText: z.array(z.string()).optional(),
   archive: z.object({ permission: z.string().min(1) }).optional(),
-  trash: z.object({ permission: z.string().min(1), purgeAfterDays: z.number().int().positive().optional() }).optional(),
+  trash: z
+    .object({ permission: z.string().min(1), purgeAfterDays: z.number().int().positive().optional(), purgeEarly: z.boolean().optional() })
+    .optional(),
   erasure: z
     .object({ mode: z.enum(['blank', 'delete', 'custom']), subjects: z.array(z.string()).optional() })
     .optional(),
@@ -662,6 +670,7 @@ export function emitModel<T extends Record<string, EntityDef>>(
             trash: {
               permission: e.trash.permission,
               ...(e.trash.purgeAfterDays !== undefined ? { purgeAfterDays: e.trash.purgeAfterDays } : {}),
+              ...(e.trash.purgeEarly === false ? { purgeEarly: false } : {}),
             },
           }
         : {}),
@@ -984,11 +993,17 @@ export function entityStatesOf(entities: Record<string, EntityDef>): EntityState
     if (days !== undefined && !(Number.isInteger(days) && days > 0)) {
       throw new Error(`model: '${name}' declares trash.purgeAfterDays ${String(days)} — a horizon is a whole number of days, at least 1`);
     }
+    if (entity.trash?.purgeEarly === false && days === undefined) {
+      throw new Error(
+        `model: '${name}' declares trash.purgeEarly false and no purgeAfterDays — there is no horizon to hold a purge to`,
+      );
+    }
     out.push({
       entityType: name,
       ...(entity.archive ? { archivePermission: permissionKey.parse(entity.archive.permission) } : {}),
       ...(entity.trash ? { trashPermission: permissionKey.parse(entity.trash.permission) } : {}),
       ...(entity.trash?.purgeAfterDays !== undefined ? { purgeAfterDays: entity.trash.purgeAfterDays } : {}),
+      ...(entity.trash?.purgeEarly === false ? { purgeEarly: false } : {}),
       table: entity.table,
       idColumn: key[0] as string,
     });

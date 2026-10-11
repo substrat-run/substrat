@@ -31,12 +31,24 @@ import {
 import { PURGE_BATCH, runPlatformSweep, ulid, type FetchLike, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import type { RawScopeSql } from './entity-state-suite.js';
-import { EXPLODING_BOX, TBOX_PURGE_DAYS, TRASH_MODULE_ID, trashMod, trashOperations } from './entity-trash-module.js';
+import {
+  EXPLODING_BOX,
+  TBOX_PURGE_DAYS,
+  TFLOOR_PURGE_DAYS,
+  TRASH_FLOOR_MODULE_ID,
+  TRASH_MODULE_ID,
+  trashFloorMod,
+  trashMod,
+  trashOperations,
+} from './entity-trash-module.js';
 import { testOperations, type RawDerivedMaps } from './test-operations.js';
 
-const KEYS = ['box:read', 'box:write', 'box:archive', 'box:trash', 'box:delete'].map((k) => permissionKey.parse(k));
+const KEYS = ['box:read', 'box:write', 'box:archive', 'box:trash', 'box:delete', 'floor:read', 'floor:write', 'floor:trash', 'floor:purge'].map(
+  (k) => permissionKey.parse(k),
+);
 const READ = permissionKey.parse('box:read');
 const MODULE = moduleId.parse(TRASH_MODULE_ID);
+const FLOOR_MODULE = moduleId.parse(TRASH_FLOOR_MODULE_ID);
 const DAY = 86_400_000;
 const noFetch: FetchLike = async () => {
   throw new Error('no outbound fetch in this suite');
@@ -184,8 +196,10 @@ export function entityTrashContractSuite(
       fixture = await makeFixture();
       host = fixture.host;
       host.registerModule(trashMod);
+      host.registerModule(trashFloorMod);
       await host.admin.createTenant(staff, { id: t, slug: `trash-${t.slice(-10).toLowerCase()}`, name: 'Trash' });
       await host.admin.grantEntitlement(staff, t, 'trash');
+      await host.admin.grantEntitlement(staff, t, 'trash-floor');
       await host.admin.defineRole(staff, t, { key: 'boxer', permissions: KEYS, source: 'vertical' });
       await host.admin.defineRole(staff, t, { key: 'looker', permissions: [READ], source: 'vertical' });
       await host.admin.assignRole(staff, { principalId: alice, roleKey: 'boxer', node: { tenantId: t, scopeId: null } });
@@ -259,6 +273,89 @@ export function entityTrashContractSuite(
         const id = await binnedBox();
         await as.alice.invoke('trash/delete-box', { boxId: id });
         expect(await exists(scope, id)).toBe(false);
+      });
+    });
+
+    // -- trash.purgeEarly: false (#2214) ---------------------------------------------------
+
+    describe('an entity that refuses an early purge (`trash.purgeEarly: false`)', () => {
+      const addFloor = async (s: ScopeId, binned: boolean): Promise<string> => {
+        const floorId = ulid();
+        const door = await stub(alice, s);
+        await door.invoke('floor/add', { floorId });
+        if (binned) await door.invoke('floor/trash', { floorId });
+        return floorId;
+      };
+      const floorExists = async (s: ScopeId, floorId: string) =>
+        ((await (await stub(alice, s)).invoke('floor/exists', { floorId })) as { exists: boolean }).exists;
+      const purge = async (who: PrincipalId, s: ScopeId, floorId: string) =>
+        (await stub(who, s)).invoke('floor/purge', { floorId });
+
+      it('refuses its purge operation not_found to a holder of the key, on an active entity and one binned too recently — and deletes nothing', async () => {
+        const s = await freshScope();
+        const active = await addFloor(s, false);
+        const fresh = await addFloor(s, true);
+        const oneDay = await addFloor(s, true);
+        await backdate(s, 'trash_floors', 'tfloor', oneDay, 1);
+        const almost = await addFloor(s, true);
+        await backdate(s, 'trash_floors', 'tfloor', almost, TFLOOR_PURGE_DAYS - 1);
+        for (const id of [active, fresh, oneDay, almost]) {
+          expect(errorCodeOf(await errOf(purge(alice, s, id)))).toBe('not_found');
+          expect(await floorExists(s, id)).toBe(true);
+        }
+      });
+
+      it('twin: past its horizon, the same caller purges it', async () => {
+        const s = await freshScope();
+        const due = await addFloor(s, true);
+        await backdate(s, 'trash_floors', 'tfloor', due, TFLOOR_PURGE_DAYS + 1);
+        await expect(purge(alice, s, due)).resolves.toEqual({ ok: true });
+        expect(await floorExists(s, due)).toBe(false);
+      });
+
+      it('gives a caller WITHOUT the key one refusal, whether the entity is active, binned too recently, due, or missing', async () => {
+        const s = await freshScope();
+        const active = await addFloor(s, false);
+        const young = await addFloor(s, true);
+        const due = await addFloor(s, true);
+        await backdate(s, 'trash_floors', 'tfloor', due, TFLOOR_PURGE_DAYS + 1);
+        const refusal = async (floorId: string) => {
+          const e = (await errOf(purge(dave, s, floorId))) as Error & { permission?: unknown };
+          return { code: errorCodeOf(e), name: e.name, message: e.message.replace(floorId, '<id>'), permission: e.permission };
+        };
+        const onActive = await refusal(active);
+        expect(onActive.code).toBe('permission_denied');
+        expect(await refusal(young)).toEqual(onActive);
+        expect(await refusal(due)).toEqual(onActive);
+        expect(await refusal(ulid())).toEqual(onActive);
+        for (const id of [active, young, due]) expect(await floorExists(s, id)).toBe(true);
+      });
+
+      it('the sweep is unchanged: it purges what is due and leaves what is not', async () => {
+        const s = await freshScope();
+        const due = await addFloor(s, true);
+        await backdate(s, 'trash_floors', 'tfloor', due, TFLOOR_PURGE_DAYS + 1);
+        const young = await addFloor(s, true);
+        expect(await host.runDueSchedules(FLOOR_MODULE, t, s)).toMatchObject({ fired: 1, failed: 0, errors: [] });
+        expect(await floorExists(s, due)).toBe(false);
+        expect(await floorExists(s, young)).toBe(true);
+      });
+
+      it('has no opt-out: neither the system principal outside the sweep nor an invoke option purges it early', async () => {
+        const s = await freshScope();
+        const young = await addFloor(s, true);
+        const due = await addFloor(s, true);
+        await backdate(s, 'trash_floors', 'tfloor', due, TFLOOR_PURGE_DAYS + 1);
+        const system = await host.getSystemScope(FLOOR_MODULE, t, s);
+        // The purge-only key stays withheld outside the sweep, due or not.
+        expect(errorCodeOf(await errOf(system.invoke('floor/purge', { floorId: young })))).toBe('permission_denied');
+        expect(errorCodeOf(await errOf(system.invoke('floor/purge', { floorId: due })))).toBe('permission_denied');
+        // Purge authority is never an invoke option, for a holder of the key either.
+        const future = new Date(Date.now() + 365 * DAY).toISOString();
+        const claimed = (await stub(alice, s)).invoke('floor/purge', { floorId: young }, { purgeCutoff: future } as never);
+        expect(errorCodeOf(await errOf(claimed))).toBe('validation_failed');
+        expect(await floorExists(s, young)).toBe(true);
+        expect(await floorExists(s, due)).toBe(true);
       });
     });
 

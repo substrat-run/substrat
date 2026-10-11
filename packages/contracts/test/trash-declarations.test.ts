@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { defineEntities } from '../src/model.js';
+import { defineEntities, emitModel, emittedModel, entityStatesOf } from '../src/model.js';
 import {
   defineOperations,
   operationTargetsOf,
@@ -245,5 +245,42 @@ describe('trashRefusalGapsOf', () => {
       { operation: 'v/other-entity', entity: 'box', via: 'concurrency' },
       { operation: 'v/scope-key', entity: 'box', via: 'concurrency' },
     ]);
+  });
+});
+
+describe('trash.purgeEarly (#2214)', () => {
+  const floored = defineEntities({
+    box: {
+      table: 't_box',
+      fields: z.object({ id: z.string() }),
+      trash: { permission: 'box:trash', purgeAfterDays: 14, purgeEarly: false },
+    },
+  });
+
+  it('a floor rides the manifest declaration and the emitted model', () => {
+    expect(entityStatesOf(floored)).toEqual([
+      { entityType: 'box', trashPermission: 'box:trash', purgeAfterDays: 14, purgeEarly: false, table: 't_box', idColumn: 'id' },
+    ]);
+    expect(emitModel(floored).entities.box?.trash).toEqual({ permission: 'box:trash', purgeAfterDays: 14, purgeEarly: false });
+  });
+
+  it('twin: absent or true emits nothing — the default is the one shape it always had', () => {
+    const open = defineEntities({
+      box: { table: 't_box', fields: z.object({ id: z.string() }), trash: { permission: 'box:trash', purgeAfterDays: 14, purgeEarly: true } },
+    });
+    expect(emitModel(open).entities.box?.trash).toEqual({ permission: 'box:trash', purgeAfterDays: 14 });
+    expect(entityStatesOf(open)[0]).not.toHaveProperty('purgeEarly');
+  });
+
+  it('refuses a floor with no horizon to hold it to', () => {
+    const noHorizon = { box: { table: 't_box', fields: z.object({ id: z.string() }), trash: { permission: 'box:trash', purgeEarly: false } } };
+    expect(() => entityStatesOf(noHorizon)).toThrow(/purgeEarly false and no purgeAfterDays/);
+    expect(() => emitModel(noHorizon)).toThrow(/purgeEarly false and no purgeAfterDays/);
+  });
+
+  it('a reader tolerates a trash key it does not know — how an older control plane parses this one', () => {
+    const artifact = JSON.parse(JSON.stringify(emitModel(floored))) as { entities: { box: { trash: Record<string, unknown> } } };
+    artifact.entities.box.trash.keepFor = 'later';
+    expect(emittedModel.parse(artifact).entities.box?.trash).toEqual({ permission: 'box:trash', purgeAfterDays: 14, purgeEarly: false });
   });
 });

@@ -5611,11 +5611,11 @@ export class SqliteScopeHost implements ScopeHost {
             // here, before the guards and the handler — the declared key first, so a caller
             // without it meets the same `forbidden` an active entity gives (`entity-trash.ts`).
             await refuseTrashedTarget(
-              { sql: spineSql(rt.db), plans: this.statePlans, check: ctx.check },
+              { sql: spineSql(rt.db), plans: this.statePlans, check: ctx.check, now: ctx.now() },
               operation,
               target,
               parsed,
-              purging ? { now: this.clock(), gate: this.purgeGateFacts(rt, subject.id, tenantId, scopeId) } : undefined,
+              purging ? { gate: this.purgeGateFacts(rt, subject.id, tenantId, scopeId) } : undefined,
             );
             // Manifest guards (K-17): pre-conditions, inside the operation's own
             // transaction, before the handler. A throw here blocks the operation

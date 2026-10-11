@@ -1429,7 +1429,8 @@
       ],
       "trash": {
         "permission": "conversation:draft",
-        "purgeAfterDays": 30
+        "purgeAfterDays": 30,
+        "purgeEarly": false
       },
       "erasure": {
         "mode": "delete",

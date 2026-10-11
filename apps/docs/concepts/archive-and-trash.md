@@ -136,6 +136,14 @@ any other schedule.
 
 Purging is your delete, run on a timer. It is not erasure: the events about the entity stay.
 
+The purge operation is also the entity's permanent delete, so by default a person holding its
+key can empty the bin at any time. If the horizon is a promise ("kept for 30 days, whatever
+happens"), declare `trash: { permission, purgeAfterDays, purgeEarly: false }`. The host then
+refuses the purge operation with `not_found` on an entity that is not in the bin or was binned
+less recently than the horizon, for every caller, and checks the declared key first so the
+refusal reveals nothing. Your handler needs no date comparison of its own. Give people a
+separate delete (`trashed: 'admits'`) if they should still be able to empty the bin.
+
 ## What it does not do
 
 - **Only the reads the kernel composes are filtered.** A handler's own

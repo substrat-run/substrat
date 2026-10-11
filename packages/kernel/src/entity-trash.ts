@@ -59,6 +59,8 @@ export interface TrashRefusalDeps {
   readonly plans: ReadonlyMap<string, EntityStatePlan>;
   /** The operation's own check, so a pass is one of its authorizations and a denial is recorded as its own. */
   readonly check: StateCheck;
+  /** The invocation's `ctx.now()` — the host's clock, never a caller's — that a purge cutoff is computed from. */
+  readonly now: string;
 }
 
 /**
@@ -77,14 +79,22 @@ export interface TrashRefusalDeps {
  * adapter refuses a call that tries to supply one). The CUTOFF is computed here, from `now` — the
  * host's clock — and the entity's declared horizon, never taken from a caller: the entity must
  * still be trashed at or before it, or the purge is `conflict` (`purge_not_due`). So a restore
- * that landed between the sweep's selection and this turn wins, and nothing can purge early.
+ * that landed between the sweep's selection and this turn wins, and the sweep never purges early.
+ *
+ * **Any other caller of the purge operation** (#2214) — a person holding its key through a role or
+ * a direct grant — runs it as the permanent delete, at any time, unless the entity declares
+ * `trash.purgeEarly: false`. Then the horizon is a floor for them too: on an entity that is active,
+ * or was binned less than `purgeAfterDays` ago, the declared key is checked first (a caller
+ * without it meets the `forbidden` any active entity gives) and a holder gets `not_found`, the bin
+ * refusal's answer. There is deliberately no opt-out: no invoke option, door or principal purges
+ * such an entity early. A missing row is left to the handler, as everywhere here.
  */
 export async function refuseTrashedTarget(
   deps: TrashRefusalDeps,
   operation: string,
   target: OperationTarget | undefined,
   input: unknown,
-  purge?: { readonly now: string; readonly gate: PurgeGateFacts },
+  purge?: { readonly gate: PurgeGateFacts },
 ): Promise<void> {
   if (purge && target?.trashed !== 'purges') {
     throw substratError('internal', `${operation} is not a purge — only a \`trashed: 'purges'\` operation is run by the purge sweep`);
@@ -92,9 +102,12 @@ export async function refuseTrashedTarget(
   // A purge reaches one entity, whoever runs it: its PARSED input is the id and nothing else.
   // Registration requires a strict schema; this holds the parse result to it as well.
   if (target?.trashed === 'purges') assertPurgeInput(operation, target, input);
-  // An operation that opted in reaches the bin as it is; only a purge re-checks its cutoff.
-  if (!target || (target.trashed && !purge)) return;
+  if (!target) return;
   const plan = deps.plans.get(target.entity);
+  // An operation that opted in reaches the bin as it is; only a purge re-checks its cutoff — the
+  // sweep's always, any other caller's when the entity refuses an early purge.
+  const heldToHorizon = purge !== undefined || (target.trashed === 'purges' && plan?.purgeEarly === false);
+  if (target.trashed && !heldToHorizon) return;
   if (!plan?.trashPermission) return;
   const id = (input as Record<string, unknown> | undefined)?.[target.idFrom];
   if (typeof id !== 'string') return;
@@ -107,7 +120,7 @@ export async function refuseTrashedTarget(
     if (plan.purgeAfterDays === undefined) {
       throw substratError('internal', `${operation}: '${target.entity}' declares no purge horizon`);
     }
-    const purgeCutoff = purgeCutoffOf(purge.now, plan.purgeAfterDays);
+    const purgeCutoff = purgeCutoffOf(deps.now, plan.purgeAfterDays);
     if (!row) throw substratError('not_found', `${target.entity} not found: ${id}`);
     if (row.trashed_at === null || row.trashed_at > purgeCutoff) {
       throw substratError('conflict', `${operation}: ${target.entity}:${id} is no longer due for purge`, {
@@ -116,7 +129,12 @@ export async function refuseTrashedTarget(
     }
     return;
   }
-  if (!row || row.trashed_at === null) return;
+  if (heldToHorizon) {
+    // `entityStatePlans` refuses `purgeEarly: false` without a horizon; were one missing, nothing is due.
+    const due =
+      row?.trashed_at != null && plan.purgeAfterDays !== undefined && row.trashed_at <= purgeCutoffOf(deps.now, plan.purgeAfterDays);
+    if (!row || due) return;
+  } else if (!row || row.trashed_at === null) return;
   assertAllowed(await deps.check(target.key as Parameters<StateCheck>[0], { entityType: target.entity, entityId: id }));
   throw substratError('not_found', `${target.entity} not found: ${id}`);
 }

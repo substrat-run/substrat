@@ -70,6 +70,14 @@ export const entityStateDeclaration = z.object({
    * (run as a derived schedule — `purgeSchedulesOf`). Requires `trashPermission`.
    */
   purgeAfterDays: z.number().int().positive().optional(),
+  /**
+   * Whether the `trashed: 'purges'` operation may delete before the horizon (#2214). Absent or
+   * `true`, it is also the permanent delete a person empties the bin with, at any time. `false`
+   * makes the horizon a floor for every caller: the kernel refuses the operation `not_found` on an
+   * entity that is not in the trash or was binned less than `purgeAfterDays` ago, so the bin keeps
+   * what it holds at least that long. Requires `purgeAfterDays`.
+   */
+  purgeEarly: z.boolean().optional(),
   table: z.string().min(1).optional(),
   idColumn: z.string().min(1).optional(),
 });

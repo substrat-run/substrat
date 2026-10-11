@@ -170,17 +170,18 @@ describe('refuseTrashedTarget under the purge sweep', () => {
     exec: () => ({ changes: 0 }),
   };
   const plans = new Map(entityStatePlans('m', [horizon]).map((p) => [p.entityType, p]));
-  const deps = { sql, plans, check: async () => ({ allowed: true as const, proof: [] }) } as never;
+  const NOW = '2026-01-12T00:00:00.000Z';
+  const deps = { sql, plans, check: async () => ({ allowed: true as const, proof: [] }), now: NOW } as never;
   const clearGate: PurgeGateFacts = { switched: 'on', lifecycle: null, copy: false, foreignTenant: false };
-  const now = { now: '2026-01-12T00:00:00.000Z', gate: clearGate };
+  const sweep = { gate: clearGate };
   const refusal = (id: string, target: OperationTarget = purgeTarget) =>
-    refuseTrashedTarget(deps, 'b/delete', target, { boxId: id }, now).then(
+    refuseTrashedTarget(deps, 'b/delete', target, { boxId: id }, sweep).then(
       () => 'admitted',
       (e: unknown) => [errorCodeOf(e), (e as { extensions?: { reason?: string } }).extensions?.reason ?? null],
     );
 
   const refusalUnder = (id: string, gate: PurgeGateFacts) =>
-    refuseTrashedTarget(deps, 'b/delete', purgeTarget, { boxId: id }, { now: now.now, gate }).then(
+    refuseTrashedTarget(deps, 'b/delete', purgeTarget, { boxId: id }, { gate }).then(
       () => 'admitted',
       (e: unknown) => [errorCodeOf(e), (e as { extensions?: { reason?: string } }).extensions?.reason ?? null],
     );
@@ -203,15 +204,40 @@ describe('refuseTrashedTarget under the purge sweep', () => {
     expect(await refusal('due', { ...purgeTarget, trashed: 'admits' })).toEqual(['internal', null]);
   });
   it('holds a purge to its parsed input: the id and nothing else, in the sweep or out of it', async () => {
-    const run = (input: unknown, sweep?: typeof now) =>
-      refuseTrashedTarget(deps, 'b/delete', purgeTarget, input, sweep).then(() => 'admitted', (e: unknown) => errorCodeOf(e));
-    for (const sweep of [now, undefined]) {
-      expect(await run({ boxId: 'due', otherBoxId: 'young' }, sweep)).toBe('validation_failed');
-      expect(await run({ otherBoxId: 'due' }, sweep)).toBe('validation_failed');
-      expect(await run(undefined, sweep)).toBe('validation_failed');
+    const run = (input: unknown, by?: typeof sweep) =>
+      refuseTrashedTarget(deps, 'b/delete', purgeTarget, input, by).then(() => 'admitted', (e: unknown) => errorCodeOf(e));
+    for (const by of [sweep, undefined]) {
+      expect(await run({ boxId: 'due', otherBoxId: 'young' }, by)).toBe('validation_failed');
+      expect(await run({ otherBoxId: 'due' }, by)).toBe('validation_failed');
+      expect(await run(undefined, by)).toBe('validation_failed');
       // Twin: exactly the id.
-      expect(await run({ boxId: 'due' }, sweep)).toBe('admitted');
+      expect(await run({ boxId: 'due' }, by)).toBe('admitted');
     }
+  });
+
+  describe('outside the sweep (#2214)', () => {
+    const floorPlans = new Map(entityStatePlans('m', [{ ...horizon, purgeEarly: false }]).map((p) => [p.entityType, p]));
+    const asCaller = (id: string, allowed = true, planMap = floorPlans) =>
+      refuseTrashedTarget(
+        { sql, plans: planMap, now: NOW, check: async () => (allowed ? { allowed: true as const, proof: [] } : { allowed: false as const, reason: 'no' }) } as never,
+        'b/delete',
+        purgeTarget,
+        { boxId: id },
+      ).then(() => 'admitted', (e: unknown) => errorCodeOf(e));
+
+    it('holds a purgeEarly:false entity to its horizon: due admitted; young and active not_found; gone left to the handler', async () => {
+      expect(await asCaller('due')).toBe('admitted');
+      expect(await asCaller('young')).toBe('not_found');
+      expect(await asCaller('active')).toBe('not_found');
+      expect(await asCaller('gone')).toBe('admitted');
+    });
+    it('checks the declared key before it says not_found, so a caller without it learns nothing', async () => {
+      expect(await asCaller('young', false)).toBe('permission_denied');
+      expect(await asCaller('active', false)).toBe('permission_denied');
+    });
+    it('twin: without the floor, the purge is the permanent delete — admitted on young and active alike', async () => {
+      for (const id of ['due', 'young', 'active', 'gone']) expect(await asCaller(id, true, plans)).toBe('admitted');
+    });
   });
 });
 
