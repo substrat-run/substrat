@@ -378,7 +378,8 @@ export function bindingInviteContractSuite(
         expect(await tuplesOn(id)).toEqual([{ subject: `principal:${who}`, relation: `granted:${BIND_INVITE}`, live: true }]);
       });
       it('stay refused to direct grants on a type that has bound, even while a version declares no shape for it', async () => {
-        // A claim has bound brecord in this scope (the suite above), so the type is recorded as bound.
+        // Bind someone first, here, so the case holds whatever ran before it.
+        await exchange((await minted(clerk, await invitee(), rec(await record()))).secret);
         const id = await record();
         await reconcile([]);
         try {
