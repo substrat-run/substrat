@@ -6954,6 +6954,146 @@ export function scopeHostContractSuite(
       expect((await host.admin.listChannels(staff, 'callout')).find((c) => c.channel === 'prod')?.versionId).toBe(v);
     });
 
+    // -- a version that strands people a link bound (#2178) -------------------
+    // A binding shape's people keep it until they are released, and the levers need the shape:
+    // an unbind needs it to bind, a retirement needs it to be a bootstrap shape, an erasure finds
+    // them through the holder the scope recorded. So a version may drop or move a shape the
+    // running one binds with only once it retires the keys, and no acknowledgement passes it.
+    describe('a version that strands people a link bound (#2178)', () => {
+      const HOLDER = { table: 'bind_records', idColumn: 'id', principalColumn: 'principal' };
+      const KEY = 'contact:read-own';
+      const binding = (over: Record<string, unknown> = {}) => ({
+        entityType: 'contact', permissions: [KEY], bootstrap: true, holder: HOLDER, bind: { permission: 'contact:invite' }, ...over,
+      });
+      const shapes = {
+        binds: [binding()],
+        dropped: [],
+        moved: [binding({ holder: { ...HOLDER, principalColumn: 'owner' } })],
+        sharing: [{ entityType: 'contact', permissions: [KEY] }],
+        unbound: [binding({ bind: undefined })],
+        // Every key retired: nothing is left to strand, so the holder may move and the shape go.
+        retired: [binding({ permissions: [], retired: [KEY], holder: { ...HOLDER, principalColumn: 'owner' } })],
+      };
+      // One digest pair for every version, so the permission and migration checkpoints never fire:
+      // what refuses below is this gate alone.
+      const publishShaped = async (slug: string, entityGrants: unknown[], admit = true) => {
+        const id = ulid();
+        await host.admin.publishVersion(staff, {
+          id, verticalSlug: slug, version: `3.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+          permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+          manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
+        });
+        if (admit) await host.admin.admitVersion(staff, id);
+        return id;
+      };
+      const listed = async () => {
+        const slug = `acme/bind-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        const v = {} as Record<keyof typeof shapes, string>;
+        for (const k of Object.keys(shapes) as (keyof typeof shapes)[]) v[k] = await publishShaped(slug, shapes[k]);
+        return { slug, v };
+      };
+      const prodOf = async (slug: string) => (await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId;
+      const install = async (slug: string, version?: string, extra: object = {}) => {
+        const sc = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: sc, vertical: slug, ...extra });
+        await host.admin.activateScope(staff, t1, sc);
+        if (version) await host.admin.bindScopeVersion(staff, t1, sc, version);
+        return sc;
+      };
+      const boundTo = async (sc: ScopeId) => (await host.admin.getScopeRecord(staff, t1, sc))?.verticalVersionId;
+      const ALL_ACKS = { permissionChange: true, migrationChange: true, exportBreak: true } as const;
+
+      it('a promote that drops, re-holds or un-bootstraps a shape the channel binds with is refused, whatever is acknowledged', async () => {
+        const { slug, v } = await listed();
+        await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
+        for (const [version, says] of [
+          [v.dropped, /strand people bound to contact \(drops the shape; bound people keep contact:read-own\)/],
+          [v.moved, /contact \(reads its holder from elsewhere; bound people keep contact:read-own\)/],
+          [v.sharing, /contact \(makes it a sharing shape; bound people keep contact:read-own\)/],
+        ] as const) {
+          await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', version), 'precondition_failed', says);
+          await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', version, ALL_ACKS), 'precondition_failed', /retire those keys first/i);
+          expect(await prodOf(slug)).toBe(v.binds);
+        }
+        // The twins: the same shape, and one that only stops binding (its holder stays recorded and
+        // it can still be retired), promote.
+        await host.admin.promoteVersion(staff, slug, 'prod', await publishShaped(slug, shapes.binds));
+        await host.admin.promoteVersion(staff, slug, 'prod', v.unbound);
+        expect(await prodOf(slug)).toBe(v.unbound);
+      });
+
+      it('retiring every key is the way through: the holder may then move, and the shape go in a later version', async () => {
+        const { slug, v } = await listed();
+        await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
+        await host.admin.promoteVersion(staff, slug, 'prod', v.retired);
+        expect(await prodOf(slug)).toBe(v.retired);
+        await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
+        expect(await prodOf(slug)).toBe(v.dropped);
+        // Back again is a first appearance of the shape, not a strand.
+        await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
+        expect(await prodOf(slug)).toBe(v.binds);
+      });
+
+      it('a bind is judged on the version the scope runs, forks and previews included; a first bind is not', async () => {
+        const { slug, v } = await listed();
+        const sc = await install(slug, v.binds);
+        await expectRefusal(host.admin.bindScopeVersion(staff, t1, sc, v.dropped), 'precondition_failed', /drops the shape/);
+        await expectRefusal(host.admin.bindScopeVersion(staff, t1, sc, v.moved, { acknowledge: { exportBreak: true } }), 'precondition_failed', /reads its holder/);
+        // The read a caller asks before moving data refuses the same move.
+        await expectRefusal(host.admin.bindingImpact(staff, t1, sc, v.dropped), 'precondition_failed', /drops the shape/);
+        expect(await boundTo(sc)).toBe(v.binds);
+        // People bound in a copy live in the copy's own spine.
+        for (const extra of [{ kind: 'archive', forkedFrom: sc, forkedAt: new Date().toISOString() }, { kind: 'preview' }]) {
+          const copy = await install(slug, v.binds, extra);
+          await expectRefusal(host.admin.bindScopeVersion(staff, t1, copy, v.dropped), 'precondition_failed', /drops the shape/);
+        }
+        // The twins: a first bind ran nothing before it, and a retiring version moves the scope.
+        const fresh = await install(slug);
+        await host.admin.bindScopeVersion(staff, t1, fresh, v.dropped);
+        expect(await boundTo(fresh)).toBe(v.dropped);
+        await expect(host.admin.bindingImpact(staff, t1, sc, v.retired)).resolves.toEqual([]);
+        await host.admin.bindScopeVersion(staff, t1, sc, v.retired);
+        expect(await boundTo(sc)).toBe(v.retired);
+      });
+
+      it('routing a scope onto a serving script that runs a stranding version is refused like a bind', async () => {
+        const { slug, v } = await listed();
+        const sc = await install(slug, v.binds);
+        const routeOf = async () => (await host.admin.getScopeRecord(staff, t1, sc))?.servingRef ?? null;
+        const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' });
+        await expectRefusal(host.admin.setScopeServingRef(staff, t1, sc, ref), 'precondition_failed', /drops the shape/);
+        await expectRefusal(host.admin.bindingImpact(staff, t1, sc, v.binds, { servingRef: ref }), 'precondition_failed', /drops the shape/);
+        expect(await routeOf()).toBeNull();
+        // The twin: serving a version that retires the keys, the same route moves.
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
+        await host.admin.setScopeServingRef(staff, t1, sc, ref);
+        expect(await routeOf()).toBe(ref);
+      });
+
+      it("a private promote judges each owned scope it re-points from the scope's own version, before anything moves", async () => {
+        const slug = `tenant-a/bind-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: t1 });
+        const [plain, binds, dropped, retired] = [
+          await publishShaped(slug, shapes.dropped, false),
+          await publishShaped(slug, shapes.binds, false),
+          await publishShaped(slug, shapes.dropped, false),
+          await publishShaped(slug, shapes.retired, false),
+        ];
+        await host.admin.promoteVersion(staff, slug, 'prod', plain);
+        // An owned scope lagging on a binding version the channel never served.
+        const sc = await install(slug, binds);
+        await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', dropped, ALL_ACKS), 'precondition_failed', /drops the shape/);
+        expect(await prodOf(slug)).toBe(plain);
+        expect(await boundTo(sc)).toBe(binds);
+        // The twin: a version that retires the keys promotes and re-points it.
+        await host.admin.promoteVersion(staff, slug, 'prod', retired);
+        expect(await prodOf(slug)).toBe(retired);
+        expect(await boundTo(sc)).toBe(retired);
+      });
+    });
+
     // -- private verticals: self-serve prod (builder-plane.md §4-revised) ----
     // A private vertical's blast radius is its own tenant — dev/staging already
     // run the same bundle in the same sandbox — so its versions self-admit on
