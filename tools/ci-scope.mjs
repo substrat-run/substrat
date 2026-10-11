@@ -397,6 +397,13 @@ export const READS = [
     paths: /^apps\/router\/src\//,
     suite: 'packages/adapter-cloudflare/test/hostname-lifecycle.test.ts',
   },
+  // Holds the scope DO to one write-counted SQL handle; the adapter's own suite runs in
+  // workerd and cannot read a source file. The kernel does not depend on the adapter.
+  {
+    reader: '@substrat-run/kernel',
+    paths: /^packages\/adapter-cloudflare\/src\/scope-do\.ts$/,
+    suite: 'packages/kernel/test/carried-copy.test.ts',
+  },
 ];
 
 /** The packages that read one of `files` off disk (READS), sorted. */
@@ -407,6 +414,13 @@ export function readersOf(files) {
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+
+/**
+ * `git diff` as both CLIs list changed files. `--no-renames` names a moved file at BOTH ends:
+ * with rename detection on, a move out of a package lists only where it went, and a READS
+ * path (or the package it left) would never be seen.
+ */
+export const CHANGED_NAMES = ['diff', '--name-only', '--no-renames'];
 
 function workspace(filters) {
   const out = execFileSync('pnpm', ['ls', '-r', '--depth', '-1', '--json', ...filters.map((f) => `--filter=${f}`)], {
@@ -477,7 +491,7 @@ function main(argv) {
       event,
       base,
       head: process.env.GITHUB_HEAD_REF || undefined,
-      files: event === 'pull_request' ? git('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean) : [],
+      files: event === 'pull_request' ? git(...CHANGED_NAMES, base, 'HEAD').split('\n').filter(Boolean) : [],
       lockfile: () => lockfileScope(git('show', `${base}:${LOCKFILE}`), git('show', `HEAD:${LOCKFILE}`)),
       all,
       selectChanged: (extra) => {

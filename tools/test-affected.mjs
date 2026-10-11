@@ -24,7 +24,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { buildNames, decide, enclosingNames, lockfileScope, LOCKFILE, MEMBERS } from './ci-scope.mjs';
+import { buildNames, CHANGED_NAMES, decide, enclosingNames, lockfileScope, LOCKFILE, MEMBERS } from './ci-scope.mjs';
 
 /**
  * Which workspace members own `files`. A file belongs to the member with the longest
@@ -78,7 +78,7 @@ function main(argv) {
   const base = arg('--base') ?? git('merge-base', 'HEAD', 'origin/main').trim();
   const files = [
     ...new Set([
-      ...lines(git('diff', '--name-only', '--no-renames', base)),
+      ...lines(git(...CHANGED_NAMES, base)),
       ...lines(git('ls-files', '--others', '--exclude-standard')),
     ]),
   ].sort();

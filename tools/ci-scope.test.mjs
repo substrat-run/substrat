@@ -1,8 +1,11 @@
 // node --test tools/ci-scope.test.mjs
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertPartition, assignShards, buildNames, enclosingNames, classify, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, READS, readersOf, unitsOf } from './ci-scope.mjs';
+import { assertPartition, assignShards, buildNames, CHANGED_NAMES, enclosingNames, classify, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, READS, readersOf, unitsOf } from './ci-scope.mjs';
 
 // A lockfile in pnpm v9's shape: two workspace packages sharing one third-party
 // dependency, plus the root importer.
@@ -251,6 +254,33 @@ test('decide: a wrangler config selects contracts, the router source selects the
   assert.deepEqual(ask(['demos/auth-server/wrangler.jsonc']), ['@substrat-run/contracts']);
   assert.deepEqual(ask(['apps/router/src/worker.ts']), ['@substrat-run/adapter-cloudflare']);
   assert.deepEqual(ask(['demos/todo/wrangler.jsonc', 'apps/router/test/a.test.ts', 'apps/router/src2/x.ts']), []);
+});
+test('decide: the adapter\'s scope DO selects the kernel, other adapter source does not', () => {
+  const ask = (files) => {
+    let asked;
+    decide({ event: 'pull_request', base: 'B', files, lockfile: () => assert.fail('not read'), all, selectChanged: (extra) => ((asked = extra), [all[1]]) });
+    return asked;
+  };
+  assert.deepEqual(ask(['packages/adapter-cloudflare/src/scope-do.ts']), ['@substrat-run/kernel']);
+  assert.deepEqual(ask(['packages/adapter-cloudflare/src/control-plane-do.ts', 'packages/adapter-sqlite/src/scope-do.ts']), []);
+});
+test('CHANGED_NAMES: a file moved out of an engine is listed where it left, too', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ci-scope-'));
+  try {
+    const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' });
+    git('init', '-q');
+    mkdirSync(join(dir, 'engines/x/src'), { recursive: true });
+    writeFileSync(join(dir, 'engines/x/src/index.ts'), "export const manifest = { entitlementKey: 'x' };\n".repeat(20));
+    git('add', '-A');
+    git('commit', '-qm', 'base');
+    git('mv', 'engines/x/src/index.ts', 'engines/x/src/manifest.ts');
+    git('commit', '-qm', 'move');
+    const files = git(...CHANGED_NAMES, 'HEAD~1', 'HEAD').split('\n').filter(Boolean).sort();
+    assert.deepEqual(files, ['engines/x/src/index.ts', 'engines/x/src/manifest.ts']);
+    assert.deepEqual(readersOf(files), ['@substrat-run/console']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 test('readersOf: an engine manifest selects the console, nothing else an engine holds does', () => {
   assert.deepEqual(readersOf(['engines/notifications/src/index.ts']), ['@substrat-run/console']);
