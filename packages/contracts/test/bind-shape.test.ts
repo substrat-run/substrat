@@ -9,6 +9,7 @@ import {
   bindShapeProblems,
   buildPermissionRegistry,
   pushedPermissionRegistry,
+  retiredKeysOf,
   type EntityGrantShape,
   type ModuleManifest,
 } from '../src/index.js';
@@ -212,11 +213,77 @@ describe('the binding-shape gate (#2178)', () => {
       expect(refused(retiredAll, manifest(shape({ permissions: ['desk:other'], retired: ['desk:read-own'] })), { retiredStillHeld: true })).toBeNull();
     });
 
+    /**
+     * #2185: an install whose reconcile of a version did NOT finish its retirements is judged from
+     * that version with its retired keys still held (`retiredStillHeld`), and one whose retirements
+     * finished from the version as it is. The adapters choose between the two per group; these are
+     * the two judgments, over the strand and the evolutions #2181 holds.
+     */
+    describe('from a version whose retirements did or did not finish (#2185)', () => {
+      const unfinished = { judgedFrom: '1 install(s) that reconciled v3 with its retirements not finished (one is s1)', retiredStillHeld: true };
+      const v1 = manifest(shape({ permissions: ['desk:a', 'desk:b'] }));
+      const v2ok = manifest(shape({ permissions: ['desk:a'], retired: ['desk:b'] }));
+      const v3ok = manifest(shape({ permissions: [], retired: ['desk:a', 'desk:b'] }));
+      const v4 = manifest();
+
+      it('refuses the drop from a retire-all version whose retirements did not finish, naming what it waits for', () => {
+        const e = refused(v3ok, v4, unfinished);
+        expect(e?.message).toMatch(/drops the shape; bound people keep desk:a, desk:b/);
+        expect(e?.message).toMatch(/Judged from 1 install\(s\) that reconciled v3 with its retirements not finished \(one is s1\)$/);
+        expect(e).toMatchObject({ code: 'precondition_failed' });
+      });
+
+      it('passes the same drop once they finished (retire-all, then drop)', () => {
+        expect(refused(v3ok, v4)).toBeNull();
+      });
+
+      it('holds the v1..v4 strand at every step either way, and its twin path only where the retirements finished', () => {
+        const v2 = manifest(shape({ permissions: ['desk:a'] }));
+        const v3 = manifest(shape({ permissions: [], retired: ['desk:a'] }));
+        for (const opts of [{}, unfinished]) {
+          expect(refused(v1, v2, opts)?.message).toMatch(/bound people keep desk:b/);
+          expect(refused(v1, v3, opts)?.message).toMatch(/bound people keep desk:b/);
+        }
+        // The twin path: b retired as it is dropped, then a, then the drop.
+        expect(refused(v1, v2ok)).toBeNull();
+        expect(refused(v2ok, v3ok)).toBeNull();
+        expect(refused(v3ok, v4)).toBeNull();
+        // With v2's retirement of b unfinished, moving on to v3 (which still retires b) strands no one…
+        expect(refused(v2ok, v3ok, unfinished)).toBeNull();
+        // …but dropping the shape straight from it does.
+        expect(refused(v2ok, v4, unfinished)?.message).toMatch(/bound people keep desk:a, desk:b/);
+      });
+
+      it('passes a legitimate evolution from an unfinished version: a key added, a key dropped and retired', () => {
+        expect(refused(v2ok, manifest(shape({ permissions: ['desk:a', 'desk:c'], retired: ['desk:b'] })), unfinished)).toBeNull();
+        expect(refused(v2ok, manifest(shape({ permissions: ['desk:c'], retired: ['desk:a', 'desk:b'] })), unfinished)).toBeNull();
+      });
+
+      it('judges a version that retires nothing the same whether or not its retirements are said to have finished', () => {
+        const plain = manifest(shape({ permissions: ['desk:a'] }));
+        expect(refused(plain, manifest(shape({ permissions: ['desk:a', 'desk:c'] })), unfinished)).toBeNull();
+        expect(refused(plain, v4, unfinished)?.message).toBe(refused(plain, v4)?.message + `. Judged from ${unfinished.judgedFrom}`);
+      });
+    });
+
     it('fails closed on grant shapes it cannot read, on either side', () => {
       const broken = JSON.stringify({ registry: { entityGrants: [{ entityType: 7 }] } });
       expect(refused(broken, manifest())?.message).toMatch(/running version's grant shapes cannot be read/);
       expect(refused(manifest(), broken)?.message).toMatch(/incoming version's grant shapes cannot be read/);
       expect(refused('not json', manifest())).toMatchObject({ code: 'precondition_failed' });
     });
+  });
+});
+
+describe('the keys a retirement takes back (#2185)', () => {
+  it('is the retired keys the shape does not grant again, each once, sorted', () => {
+    expect(retiredKeysOf(shape({ permissions: ['desk:a'], retired: ['desk:c', 'desk:b', 'desk:c'] }))).toEqual(['desk:b', 'desk:c']);
+    // A key back in `permissions` ends its retirement, so it is not taken back.
+    expect(retiredKeysOf(shape({ permissions: ['desk:a', 'desk:b'], retired: ['desk:b'] }))).toEqual([]);
+  });
+
+  it('is nothing for a sharing shape, which is never reconciled, or a shape retiring nothing', () => {
+    expect(retiredKeysOf({ entityType: 'list', permissions: [], retired: ['list:read'] })).toEqual([]);
+    expect(retiredKeysOf(shape())).toEqual([]);
   });
 });

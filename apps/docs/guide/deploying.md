@@ -251,7 +251,12 @@ compares that receipt with the version the scope now serves, and re-runs `/inter
 on every active install that is behind — a push alone serves nothing, so it repairs nothing: a `null` receipt (a scope
 provisioned before the platform recorded one) counts as behind rather than up to date, forks and
 previews are skipped so a hook never mints a second copy of anything against somebody else's
-data, and a reconcile that fails is left unmarked and retried on the next pass. A reconcile runs
+data, and a reconcile that fails is left unmarked and retried on the next pass. Beside the receipt
+the platform records whether that reconcile finished every retirement the version declares (a key
+a shape lists in `retired`): your deployment answers how many it left open, and an install whose
+retirements did not finish counts as behind too, so the sweep runs them again. A deployment built on
+a vertical-host from before that answer reports nothing, which counts as not finished for a version
+that retires a key. A reconcile runs
 *both* halves of a provision — the kernel's (roles projected, owner seated, entitlements
 re-delivered) and yours (`onProvision`) — so a service principal or site registration a new
 release adds in its hook reaches every existing install with no button and no call. The

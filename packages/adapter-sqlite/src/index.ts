@@ -551,6 +551,7 @@ import {
   type SecretBox,
   type GuardPredicate,
   type HostAdmin,
+  type ReconcileOutcome,
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
@@ -651,6 +652,7 @@ import {
   PROVISIONED_VERSIONS_SQL,
   installsReconciledOf,
   installsReconciledNote,
+  installReconciled,
   type InstallsReconciled,
   type ServingPointer,
   CrossVerticalRegistry,
@@ -1320,6 +1322,8 @@ interface ScopeRow {
   schema_version: string;
   vertical_version_id: string | null;
   provisioned_version_id: string | null;
+  /** #2185: absent on a row read before `ensureDirectoryColumns` added it. */
+  retirements_finished_version_id?: string | null;
   migration_failed_version: string | null;
   migration_error: string | null;
   migration_attempts: number;
@@ -4551,7 +4555,8 @@ export class SqliteScopeHost implements ScopeHost {
       // Judged against every one of `froms`, including versions this group never ran: that can
       // only over-refuse, and only while the receipts are missing, never under-refuse.
       if (r.versionId === null) for (const from of judged) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming, { judgedFrom, retiredStillHeld: true });
-      else if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, { judgedFrom });
+      // #2185: a reconcile that did not finish the version's retirements leaves its keys held.
+      else if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, { judgedFrom, retiredStillHeld: !r.retirementsFinished });
     }
   }
 
@@ -4565,7 +4570,7 @@ export class SqliteScopeHost implements ScopeHost {
     // A primary scope is also judged from the version it last reconciled: until then, a retirement
     // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
     if (!move) return;
-    const receipt = isPrimaryScope(scope) ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
+    const receipt = isPrimaryScope(scope) ? [installReconciled(scope)] : [];
     this.assertNoStrandFrom([move.before], move.after, receipt);
   }
 
@@ -7344,6 +7349,7 @@ export class SqliteScopeHost implements ScopeHost {
         schemaVersion: r.schema_version,
         verticalVersionId: r.vertical_version_id,
         provisionedVersionId: r.provisioned_version_id ?? null,
+        retirementsFinishedVersionId: r.retirements_finished_version_id ?? null,
         migrationFailure: mapMigrationFailure(r),
         forkedFrom: r.forked_from,
         forkedAt: r.forked_at,
@@ -9277,17 +9283,23 @@ export class SqliteScopeHost implements ScopeHost {
        * Record that this scope's provision has now run against `versionId` (#1172).
        * Written only after a provision or reconcile succeeded — a receipt, never a hope.
        */
-      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string | null) => {
+      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string | null, outcome?: ReconcileOutcome) => {
         const scope = this.directory
           .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string } | undefined;
         if (!scope || scope.tenant_id !== tenantId) {
           throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         }
+        // #2185: both in one write — the retirements count as finished only for the version
+        // this receipt names, and a receipt written without that answer clears them.
+        const finished = versionId !== null && outcome?.retirementsFinished === true ? versionId : null;
         this.directory
-          .prepare('UPDATE scopes SET provisioned_version_id = ? WHERE scope_id = ?')
-          .run(versionId, scopeId);
-        this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, { versionId });
+          .prepare('UPDATE scopes SET provisioned_version_id = ?, retirements_finished_version_id = ? WHERE scope_id = ?')
+          .run(versionId, finished, scopeId);
+        this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
+          versionId,
+          ...(finished ? { retirementsFinished: true } : {}),
+        });
       },
       verticalServing: async (actor, verticalSlug: string) => {
         const r = this.directory
@@ -12256,6 +12268,9 @@ export class SqliteScopeHost implements ScopeHost {
     // #1172: which version this scope's provision hook last ran against. Null on every
     // existing row, which reads as "unknown, reconcile once" rather than "up to date".
     this.ensureColumn(this.directory, 'scopes', 'provisioned_version_id', 'provisioned_version_id TEXT');
+    // #2185: the version whose reconcile finished its retirements here. Null on every existing
+    // row, which reads as "not finished": the sweep reconciles each such install once more.
+    this.ensureColumn(this.directory, 'scopes', 'retirements_finished_version_id', 'retirements_finished_version_id TEXT');
     this.ensureColumn(this.directory, 'scopes', 'erasure_epoch', 'erasure_epoch INTEGER');
     this.ensureColumn(this.directory, 'scopes', 'reap_claimed_at', 'reap_claimed_at TEXT');
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).

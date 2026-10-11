@@ -7003,6 +7003,8 @@ export function scopeHostContractSuite(
       };
       const boundTo = async (sc: ScopeId) => (await host.admin.getScopeRecord(staff, t1, sc))?.verticalVersionId;
       const ALL_ACKS = { permissionChange: true, migrationChange: true, exportBreak: true } as const;
+      /** #2185: a reconcile that answered it left no retirement open. */
+      const FINISHED = { retirementsFinished: true } as const;
 
       it('a promote that drops, re-holds or un-bootstraps a shape the channel binds with is refused, whatever is acknowledged', async () => {
         const { slug, v } = await listed();
@@ -7122,7 +7124,8 @@ export function scopeHostContractSuite(
         const routed = await install(slug, v.binds);
         const pinned = await install(slug, v.binds);
         await host.admin.setScopeServingRef(staff, t1, pinned, null);
-        for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.binds);
+        // A version that retires nothing is written finished by every caller that reconciles it (#2185).
+        for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.binds, FINISHED);
         // The retiring version promotes, serves and is bound; no install has reconciled it yet.
         await host.admin.promoteVersion(staff, slug, 'prod', v.retired);
         await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
@@ -7142,8 +7145,9 @@ export function scopeHostContractSuite(
         await host.admin.markScopeProvisioned(staff, t1, copy, v.binds);
         await host.admin.bindScopeVersion(staff, t1, copy, v.retired);
         await host.admin.bindScopeVersion(staff, t1, copy, v.dropped);
-        // The twin: once every install has reconciled the retiring version, the drop passes everywhere.
-        for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.retired);
+        // The twin: once every install has reconciled the retiring version, and its retirements
+        // finished (#2185), the drop passes everywhere.
+        for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.retired, FINISHED);
         await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
         await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' });
         await host.admin.bindScopeVersion(staff, t1, pinned, v.dropped);
@@ -7157,10 +7161,10 @@ export function scopeHostContractSuite(
         await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
         await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.binds, doClasses: [], migrationTag: 'g' });
         const routed = await install(slug, v.binds);
-        await host.admin.markScopeProvisioned(staff, t1, routed, v.binds);
+        await host.admin.markScopeProvisioned(staff, t1, routed, v.binds, FINISHED);
         await host.admin.promoteVersion(staff, slug, 'prod', v.retired);
         await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
-        await host.admin.markScopeProvisioned(staff, t1, routed, v.retired);
+        await host.admin.markScopeProvisioned(staff, t1, routed, v.retired, FINISHED);
         // Its receipt cleared (a rewind here; a switch does the same on the hosted adapter): it may
         // not have run the retirement, so the drop waits for it, and says so.
         await host.admin.markScopeProvisioned(staff, t1, routed, null);
@@ -7171,10 +7175,120 @@ export function scopeHostContractSuite(
         await host.admin.promoteVersion(staff, slug, 'prod', added);
         const retiredBoth = await publishShaped(slug, [binding({ permissions: [], retired: [KEY, 'contact:other'], holder: { ...HOLDER, principalColumn: 'owner' } })]);
         await host.admin.promoteVersion(staff, slug, 'prod', retiredBoth);
-        // The twin: reconciled again, the drop passes.
-        await host.admin.markScopeProvisioned(staff, t1, routed, retiredBoth);
+        // The twin: reconciled again, its retirements finished, the drop passes.
+        await host.admin.markScopeProvisioned(staff, t1, routed, retiredBoth, FINISHED);
         await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
         expect(await prodOf(slug)).toBe(v.dropped);
+      });
+
+      /**
+       * #2185: a receipt says a reconcile ran, not that it finished the version's retirements: one
+       * that gave a retirement up (`retirementsLeftOpen`) still writes it. So the directory also
+       * records the version whose retirements FINISHED, and an install whose receipt's version has
+       * not is judged as still holding the keys that version retires — limitation (a) of #2181.
+       */
+      describe('the retirement finished, not only reconciled (#2185)', () => {
+        const unfinished = (version: string, sc: ScopeId) =>
+          new RegExp(`drops the shape.*Judged from 1 install\\(s\\) that reconciled ${version} with its retirements not finished \\(one is ${sc}\\); the drop waits for their retirements to finish`);
+        const retiringFleet = async () => {
+          const { slug, v } = await listed();
+          const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+          await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
+          await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.binds, doClasses: [], migrationTag: 'g' });
+          const routed = await install(slug, v.binds);
+          const pinned = await install(slug, v.binds);
+          await host.admin.setScopeServingRef(staff, t1, pinned, null);
+          for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.binds, FINISHED);
+          await host.admin.promoteVersion(staff, slug, 'prod', v.retired);
+          await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
+          await host.admin.bindScopeVersion(staff, t1, pinned, v.retired);
+          return { slug, v, ref, routed, pinned };
+        };
+
+        it('records the finished version beside the receipt, and a receipt written without it clears it', async () => {
+          const { v, routed } = await retiringFleet();
+          const record = async () => {
+            const r = await host.admin.getScopeRecord(staff, t1, routed);
+            return { provisioned: r?.provisionedVersionId, finished: r?.retirementsFinishedVersionId ?? null };
+          };
+          await host.admin.markScopeProvisioned(staff, t1, routed, v.retired, FINISHED);
+          expect(await record()).toEqual({ provisioned: v.retired, finished: v.retired });
+          await host.admin.markScopeProvisioned(staff, t1, routed, v.retired, { retirementsFinished: false });
+          expect(await record()).toEqual({ provisioned: v.retired, finished: null });
+          await host.admin.markScopeProvisioned(staff, t1, routed, v.retired, FINISHED);
+          // A caller that cannot say (an old vertical-host's answer) clears it.
+          await host.admin.markScopeProvisioned(staff, t1, routed, v.retired);
+          expect(await record()).toEqual({ provisioned: v.retired, finished: null });
+          await host.admin.markScopeProvisioned(staff, t1, routed, v.retired, FINISHED);
+          // A cleared receipt (a rewind) clears it too.
+          await host.admin.markScopeProvisioned(staff, t1, routed, null, FINISHED);
+          expect(await record()).toEqual({ provisioned: null, finished: null });
+        });
+
+        it('(a) a reconcile that left a retirement open blocks the drop at every door, naming the install; finished, the drop passes', async () => {
+          const { slug, v, ref, routed, pinned } = await retiringFleet();
+          // Both installs reconciled the retiring version, and each gave a retirement up.
+          for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.retired, { retirementsFinished: false });
+          // The promote and the serve move the routed install; the pinned one moves at its own bind.
+          await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', unfinished(v.retired, routed));
+          await expectRefusal(
+            host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' }),
+            'precondition_failed',
+            unfinished(v.retired, routed),
+          );
+          await expectRefusal(host.admin.bindScopeVersion(staff, t1, pinned, v.dropped), 'precondition_failed', unfinished(v.retired, pinned));
+          expect(await prodOf(slug)).toBe(v.retired);
+          // The twins: once each install's retirements finish, its door opens, and only its own.
+          await host.admin.markScopeProvisioned(staff, t1, pinned, v.retired, FINISHED);
+          await host.admin.bindScopeVersion(staff, t1, pinned, v.dropped);
+          expect(await boundTo(pinned)).toBe(v.dropped);
+          await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', unfinished(v.retired, routed));
+          await host.admin.markScopeProvisioned(staff, t1, routed, v.retired, FINISHED);
+          await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
+          await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' });
+          expect(await prodOf(slug)).toBe(v.dropped);
+        });
+
+        it('refuses only a move that would strand with the retirement unrun: a key added, a key dropped and retired still move', async () => {
+          const { slug, v, routed, pinned } = await retiringFleet();
+          for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.retired, { retirementsFinished: false });
+          const added = await publishShaped(slug, [binding({ permissions: ['contact:other'], retired: [KEY], holder: { ...HOLDER, principalColumn: 'owner' } })]);
+          await host.admin.promoteVersion(staff, slug, 'prod', added);
+          const retiredBoth = await publishShaped(slug, [binding({ permissions: [], retired: [KEY, 'contact:other'], holder: { ...HOLDER, principalColumn: 'owner' } })]);
+          await host.admin.promoteVersion(staff, slug, 'prod', retiredBoth);
+          expect(await prodOf(slug)).toBe(retiredBoth);
+          // And the version retiring every key, retire-all, then the drop: refused until finished.
+          await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', /retirements not finished/);
+          for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, retiredBoth, FINISHED);
+          await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
+          expect(await prodOf(slug)).toBe(v.dropped);
+        });
+
+        it('a version that retires nothing is judged the same finished or not: an unfinished answer blocks no other change', async () => {
+          const { slug, v } = await listed();
+          const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+          await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
+          await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.binds, doClasses: [], migrationTag: 'g' });
+          const routed = await install(slug, v.binds);
+          await host.admin.markScopeProvisioned(staff, t1, routed, v.binds, { retirementsFinished: false });
+          // A key added promotes; the drop is refused for the shape, as it is with every install finished.
+          const more = await publishShaped(slug, [binding({ permissions: [KEY, 'contact:other'] })]);
+          await host.admin.promoteVersion(staff, slug, 'prod', more);
+          expect(await prodOf(slug)).toBe(more);
+        });
+
+        it('(b) a copy is still not judged from its record: its bind is judged on what it runs, as before', async () => {
+          const { slug, v, pinned } = await retiringFleet();
+          const fork = await install(slug, v.binds, {
+            kind: 'archive',
+            forkedFrom: pinned,
+            forkedAt: new Date().toISOString(),
+          });
+          await host.admin.markScopeProvisioned(staff, t1, fork, v.retired, { retirementsFinished: false });
+          await host.admin.bindScopeVersion(staff, t1, fork, v.retired);
+          await host.admin.bindScopeVersion(staff, t1, fork, v.dropped);
+          expect(await boundTo(fork)).toBe(v.dropped);
+        });
       });
 
       it("a private promote judges each owned scope it re-points from the scope's own version, before anything moves", async () => {

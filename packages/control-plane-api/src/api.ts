@@ -163,7 +163,7 @@ import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backf
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
-import { reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
+import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
@@ -4033,8 +4033,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // button and the automatic phase have to write the same receipt, or pressing the
       // button means nothing to the thing that watches. Both name it with
       // `versionReachedAt`, from the deployment each actually reached.
+      // #2185: with whether it finished the version's retirements, from the deployment's answer.
       if (ranAs) {
-        await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, ranAs);
+        await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, ranAs, reconcileOutcomeOf(entityGrants, result));
       }
       // The reconcile succeeded; a store that did not mint rides back as a diagnosis
       // (`substrat scope provision` prints it, and `/health` keeps reporting the gap
@@ -6579,11 +6580,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         );
       }
       if (provisioned?.verticalVersionId) {
+        // #2185: a provision carries no shapes and reconciles none, so its retirements count as
+        // finished only when the version retires nothing; otherwise the sweep reconciles it. A
+        // registry that cannot be read is not finished, never a failed provision.
+        const outcome = provisioned.vertical
+          ? await reviewedEntityGrants(c.var.admin, c.get('actor'), provisioned.vertical, provisioned.verticalVersionId).then(
+              (shapes) => reconcileOutcomeOf(shapes, null),
+              () => ({ retirementsFinished: false }),
+            )
+          : reconcileOutcomeOf(undefined, null);
         await c.var.admin.markScopeProvisioned(
           c.get('actor'),
           input.tenantId,
           input.scopeId,
           provisioned.verticalVersionId,
+          outcome,
         );
       }
       return c.json(instance, 201);

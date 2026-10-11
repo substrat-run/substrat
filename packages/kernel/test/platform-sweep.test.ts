@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { platformActorId, connectionId, importsOfManifestJson, scopeId, tenantId } from '@substrat-run/contracts';
 import type { MigrationFailure, MigrationStraggler, Scope, Tenant } from '@substrat-run/contracts';
 import {
+  installReconciled,
+  installsReconciledNote,
+  installsReconciledOf,
   isPrimaryScope,
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
@@ -79,6 +82,11 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     tenantId: typeof T;
     verticalVersionId: string | null;
     provisionedVersionId: string | null;
+    /**
+     * #2185: absent means "finished for the receipt's version", as every fixture before the field
+     * describes; the cases about it set it, `null` included.
+     */
+    retirementsFinishedVersionId?: string | null;
     forkedFrom?: string | null;
     kind?: string;
     vertical?: string | null;
@@ -90,8 +98,14 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     verticals: { slug: string; servingRef?: string; servingVersionId?: string }[] = [],
   ) {
     const marked: { id: string; versionId: string }[] = [];
+    const outcomes: { id: string; outcome: unknown }[] = [];
     const admin = {
-      listScopes: async () => scopes.map((s) => ({ ...s, status: 'active' })),
+      listScopes: async () =>
+        scopes.map((s) => ({
+          ...s,
+          retirementsFinishedVersionId: s.retirementsFinishedVersionId === undefined ? s.provisionedVersionId : s.retirementsFinishedVersionId,
+          status: 'active',
+        })),
       listVerticals: async () => verticals,
       listConnections: async () => [],
       markScopeProvisioned: async (
@@ -99,22 +113,40 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
         _t: unknown,
         scope: string,
         versionId: string,
+        outcome?: { retirementsFinished?: boolean },
       ) => {
         marked.push({ id: scope, versionId });
+        outcomes.push({ id: scope, outcome });
         const row = scopes.find((s) => s.id === scope);
-        if (row) row.provisionedVersionId = versionId;
+        if (row) {
+          row.provisionedVersionId = versionId;
+          // As both adapters write it (#2185): this receipt's version, or none.
+          row.retirementsFinishedVersionId = outcome?.retirementsFinished === true ? versionId : null;
+        }
       },
     };
     const host = {
       admin,
       drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
     } as unknown as ScopeHost;
-    return { host, marked };
+    return { host, marked, outcomes };
   }
 
+  type Answer = void | 'unsupported' | { retirementsFinished?: boolean };
+  /**
+   * The #1172 cases are about the receipt, so a fn that says nothing about retirements answers
+   * them finished here, as a deployment whose version retires nothing does. The #2185 cases use
+   * {@link sweepAs}, which hands the fn's answer through as it is.
+   */
   const sweep = (
     host: ScopeHost,
-    fn: (t: unknown, s: unknown, expected?: unknown) => Promise<void | 'unsupported'>,
+    fn: (t: unknown, s: unknown, expected?: unknown) => Promise<Answer>,
+    extra: Pick<PlatformSweepOptions, 'provisionReconcileBatch' | 'provisionReconcileRng' | 'concurrency'> = {},
+  ) => sweepAs(host, async (t, s, e) => (await fn(t, s, e)) ?? { retirementsFinished: true }, extra);
+
+  const sweepAs = (
+    host: ScopeHost,
+    fn: (t: unknown, s: unknown, expected?: unknown) => Promise<Answer>,
     extra: Pick<PlatformSweepOptions, 'provisionReconcileBatch' | 'provisionReconcileRng' | 'concurrency'> = {},
   ) =>
     runPlatformSweep(host, {
@@ -271,6 +303,67 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     ]);
     const report = await runPlatformSweep(host, { actor: ACTOR, fetch: FETCH, sweepers: {} });
     expect(report.provisionReconcile).toBeNull();
+  });
+
+  /**
+   * #2185: a receipt is only half the answer. A reconcile that left a retirement open still
+   * writes it, so the sweep also counts as behind an install whose receipt's version did not
+   * finish its retirements, and reconciles it again until it does: the next run of the
+   * retirement the kernel's reconcile leaves open for exactly that.
+   */
+  describe('retirements finished (#2185)', () => {
+    it('reconciles once more an install from before the record (receipt current, retirements null), then leaves it', async () => {
+      const legacy: FakeScope = { id: sid(), tenantId: T, verticalVersionId: 'v3', provisionedVersionId: 'v3', retirementsFinishedVersionId: null };
+      const { host, marked, outcomes } = hostWithScopes([legacy]);
+      const report = await sweepAs(host, async () => ({ retirementsFinished: true }));
+      expect(report.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
+      expect(marked).toEqual([{ id: legacy.id, versionId: 'v3' }]);
+      expect(outcomes).toEqual([{ id: legacy.id, outcome: { retirementsFinished: true } }]);
+      expect(legacy.retirementsFinishedVersionId).toBe('v3');
+      const again = await sweepAs(host, async () => {
+        throw new Error('an install whose retirements finished must not be touched');
+      });
+      expect(again.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
+    });
+
+    it('writes the receipt of a reconcile that left a retirement open, and reconciles it again next pass until it finishes', async () => {
+      const open: FakeScope = { id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1' };
+      const { host, marked } = hostWithScopes([open]);
+      await sweepAs(host, async () => ({ retirementsFinished: false }));
+      expect(open.provisionedVersionId).toBe('v2');
+      expect(open.retirementsFinishedVersionId).toBeNull();
+      const second = await sweepAs(host, async () => ({ retirementsFinished: true }));
+      expect(second.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
+      expect(open.retirementsFinishedVersionId).toBe('v2');
+      expect(marked).toHaveLength(2);
+      const third = await sweepAs(host, async () => {
+        throw new Error('finished: nothing left to run');
+      });
+      expect(third.provisionReconcile).toEqual(tally({ behind: 0, reconciled: 0, failed: 0 }));
+    });
+
+    it('records an answer that says nothing (a host that predates the report) as not finished, so it is asked again each pass', async () => {
+      const old: FakeScope = { id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1' };
+      const { host, outcomes } = hostWithScopes([old]);
+      for (let pass = 0; pass < 2; pass++) {
+        const report = await sweepAs(host, async () => undefined);
+        expect(report.provisionReconcile).toEqual(tally({ behind: 1, reconciled: 1, failed: 0 }));
+      }
+      expect(outcomes).toEqual([
+        { id: old.id, outcome: undefined },
+        { id: old.id, outcome: undefined },
+      ]);
+      expect(old.retirementsFinishedVersionId).toBeNull();
+    });
+
+    it("writes neither half for an 'unsupported' reconcile, so the install stays as it was (limitation c)", async () => {
+      const unsupported: FakeScope = { id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1', retirementsFinishedVersionId: 'v1' };
+      const { host, marked } = hostWithScopes([unsupported]);
+      const report = await sweepAs(host, async () => 'unsupported');
+      expect(report.provisionReconcile?.unsupported.count).toBe(1);
+      expect(marked).toEqual([]);
+      expect(unsupported).toMatchObject({ provisionedVersionId: 'v1', retirementsFinishedVersionId: 'v1' });
+    });
   });
 
   /**
@@ -2336,5 +2429,48 @@ describe('exportBreaksOf: the promote gate fails closed (#1705 PR 3)', () => {
         readImports: async () => imports,
       }),
     ).rejects.toThrow(/directory down/);
+  });
+});
+
+/**
+ * #2185: the rows `PROVISIONED_VERSIONS_SQL` groups installs into, and what a refusal says of each.
+ * The SQL itself runs against both adapters' directories in contract-tests.
+ */
+describe('installs judged from their receipt and retirements (#2185)', () => {
+  it('reads the finished column as either driver returns it', () => {
+    expect(
+      installsReconciledOf([
+        { version_id: 'v1', finished: 1, installs: 2, example: 's1' },
+        { version_id: 'v1', finished: 0, installs: 1, example: 's2' },
+        { version_id: null, finished: 0, installs: 3, example: 's3' },
+      ]),
+    ).toEqual([
+      { versionId: 'v1', retirementsFinished: true, installs: 2, example: 's1' },
+      { versionId: 'v1', retirementsFinished: false, installs: 1, example: 's2' },
+      { versionId: null, retirementsFinished: false, installs: 3, example: 's3' },
+    ]);
+  });
+
+  it("counts one install's retirements finished only for the version its receipt names", () => {
+    const one = (provisionedVersionId: string | null, retirementsFinishedVersionId: string | null | undefined) =>
+      installReconciled({ id: 's1' as Scope['id'], provisionedVersionId, retirementsFinishedVersionId }).retirementsFinished;
+    expect(one('v2', 'v2')).toBe(true);
+    // An older version's answer (a receipt rewritten by a control plane that predates the column).
+    expect(one('v2', 'v1')).toBe(false);
+    expect(one('v2', null)).toBe(false);
+    expect(one('v2', undefined)).toBe(false);
+    expect(one(null, null)).toBe(false);
+  });
+
+  it('names what an unfinished group waits for, and what an old vertical-host must do', () => {
+    expect(installsReconciledNote({ versionId: 'v3', retirementsFinished: false, installs: 2, example: 's1' })).toBe(
+      '2 install(s) that reconciled v3 with its retirements not finished (one is s1); the drop waits for their retirements to finish: ' +
+        'the sweep reconciles them again each pass. An install whose vertical was built on a vertical-host that does not report ' +
+        'retirements stays here: push a version built on a current vertical-host',
+    );
+    expect(installsReconciledNote({ versionId: 'v3', retirementsFinished: true, installs: 1, example: 's1' })).toMatch(
+      /^1 install\(s\) that last reconciled v3 \(one is s1\); the drop waits for their reconcile/,
+    );
+    expect(installsReconciledNote({ versionId: null, retirementsFinished: false, installs: 1, example: 's1' })).toMatch(/with no reconcile receipt/);
   });
 });

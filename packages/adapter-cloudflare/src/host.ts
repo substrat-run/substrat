@@ -348,6 +348,7 @@ import {
   type FetchLike,
   type SecretBox,
   type HostAdmin,
+  type ReconcileOutcome,
   type ModuleRegistration,
   type OperationHandler,
   type PermissionChecker,
@@ -454,6 +455,7 @@ import {
   scopeMoveOf,
   runningVersionOf,
   installsReconciledNote,
+  installReconciled,
   type InstallsReconciled,
   type ServingPointer,
   collectPeers,
@@ -817,7 +819,7 @@ interface ControlPlaneStub {
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
   listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
     after?: { scriptRef: string; moveId: string } }): Promise<ScopeScriptCopyRow[]>;
-  markScopeProvisioned(scopeId: string, versionId: string | null): Promise<void>;
+  markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean): Promise<void>;
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
@@ -5823,6 +5825,7 @@ export class CloudflareScopeHost implements ScopeHost {
         schemaVersion: r.schema_version,
         verticalVersionId: r.vertical_version_id,
         provisionedVersionId: r.provisioned_version_id ?? null,
+        retirementsFinishedVersionId: r.retirements_finished_version_id ?? null,
         migrationFailure:
           r.migration_failed_version && r.migration_last_attempt_at
             ? {
@@ -7452,12 +7455,14 @@ export class CloudflareScopeHost implements ScopeHost {
        * reconciled against rather than whatever the scope happens to be bound to by the
        * time the write lands.
        */
-      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string | null) => {
+      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string | null, outcome?: ReconcileOutcome) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-        await this.cp.markScopeProvisioned(scopeId, versionId);
+        const finished = versionId !== null && outcome?.retirementsFinished === true;
+        await this.cp.markScopeProvisioned(scopeId, versionId, finished);
         await this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
           versionId,
+          ...(finished ? { retirementsFinished: true } : {}),
         });
       },
       verticalServing: async (actor, verticalSlug: string) => {
@@ -10469,7 +10474,12 @@ export class CloudflareScopeHost implements ScopeHost {
      *  seat, in bounded passes. Never a revoked key; a key is taken back only when the shape
      *  declares it `retired` (#2082). Absent ⇒ no reconcile. */
     entityGrants?: readonly EntityGrantShape[];
-  }): Promise<{ switchedOff?: SwitchedOff[] }> {
+  }): Promise<{
+    switchedOff?: SwitchedOff[];
+    /** #2185: when `entityGrants` were reconciled, how many shapes' retirements this reconcile
+     *  left open (`SHAPE_RETIRE_CONFIRMS_MAX`); 0 when every one finished. Absent when none ran. */
+    retirementsLeftOpen?: number;
+  }> {
     const carry = recordedOffFromWire(input);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
@@ -10570,8 +10580,10 @@ export class CloudflareScopeHost implements ScopeHost {
       carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
       services?.map((id) => `principal:${id}`),
     ));
-    if (input.entityGrants) await this.topUpEntityGrantShapesLocal(input.tenantId, input.scopeId, input.entityGrants);
-    return carry ? { switchedOff } : {};
+    const shapes = input.entityGrants
+      ? await this.topUpEntityGrantShapesLocal(input.tenantId, input.scopeId, input.entityGrants)
+      : null;
+    return { ...(carry ? { switchedOff } : {}), ...(shapes ? { retirementsLeftOpen: shapes.retirementsLeftOpen ?? 0 } : {}) };
   }
 
   /**
@@ -11123,7 +11135,8 @@ export class CloudflareScopeHost implements ScopeHost {
       if (r.versionId === null) {
         for (const from of judged) assertNoBindingShapeBreak(await this.manifestOf(from, held), after, { judgedFrom, retiredStillHeld: true });
       } else if (r.versionId !== afterId) {
-        assertNoBindingShapeBreak(await this.manifestOf(r.versionId, held), after, { judgedFrom });
+        // #2185: a reconcile that did not finish the version's retirements leaves its keys held.
+        assertNoBindingShapeBreak(await this.manifestOf(r.versionId, held), after, { judgedFrom, retiredStillHeld: !r.retirementsFinished });
       }
     }
   }
@@ -11143,7 +11156,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // A primary scope is also judged from the version it last reconciled: until then, a retirement
     // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
     if (!move) return;
-    const receipt = isPrimaryScope(scope) ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
+    const receipt = isPrimaryScope(scope) ? [installReconciled(scope)] : [];
     await this.assertNoStrandFrom([move.before], move.after, incoming, receipt);
   }
 

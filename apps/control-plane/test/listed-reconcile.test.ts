@@ -119,6 +119,8 @@ describe('provision reconcile follows the served version (#1653)', () => {
       reconcileScopeFn: async (_t, id) => {
         if (!mine.has(id)) return 'unsupported';
         reached.push(id);
+        // These versions retire nothing, so every caller records their retirements finished (#2185).
+        return { retirementsFinished: true };
       },
     });
     return reached.sort();
@@ -144,7 +146,7 @@ describe('provision reconcile follows the served version (#1653)', () => {
     await scopeAt(host, A, s.forkOfA, LISTED, v1, { forkedFrom: s.installA });
     await scopeAt(host, A, s.cleanRoom, LISTED, v2, { kind: 'preview' });
     for (const [t, id] of [[A, s.installA], [B, s.installB], [A, s.forkOfA]] as const) {
-      await host.admin.markScopeProvisioned(staff, t, id, v1);
+      await host.admin.markScopeProvisioned(staff, t, id, v1, { retirementsFinished: true });
     }
 
     // A private vertical whose promote already moved its scope along, as it does today.
@@ -152,7 +154,7 @@ describe('provision reconcile follows the served version (#1653)', () => {
     const p1 = await publish(host, PRIVATE, '1.0.0');
     await host.admin.setVerticalServing(staff, PRIVATE, { ref: PRIVATE_REF, versionId: p1, doClasses: ['ScopeDO'], migrationTag: 'v1' });
     await scopeAt(host, OWNER, s.ownScope, PRIVATE, p1);
-    await host.admin.markScopeProvisioned(staff, OWNER, s.ownScope, p1);
+    await host.admin.markScopeProvisioned(staff, OWNER, s.ownScope, p1, { retirementsFinished: true });
     await host.close();
   });
 
@@ -538,6 +540,26 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       });
       await host.admin.admitVersion(staff, running).catch(() => undefined);
     });
+    /**
+     * #2185: what the sweep records beside its receipt — whether the reconcile finished the
+     * retirements of the shapes it carried — from the deployment's own answer.
+     */
+    it('answers whether the reconcile finished the retirements its payload carried (#2185)', async () => {
+      const s = await wipedScope(t, false);
+      const retiring = [{ entityType: 'employee', permissions: [], retired: ['perm:use'], bootstrap: true as const }];
+      const answering = (extra: object) => ({
+        reconcileInstance: async (input: { tenantId: TenantId; scopeId: ScopeId }) => ({ tenantId: input.tenantId, scopeId: input.scopeId, owner, ...extra }),
+      });
+      const outcome = (extra: object, entityGrants?: typeof retiring) =>
+        reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, answering(extra) as never, { ...payload, ...(entityGrants ? { entityGrants } : {}) } as never);
+      expect(await outcome({ retirementsLeftOpen: 0 }, retiring)).toEqual({ retirementsFinished: true });
+      expect(await outcome({ retirementsLeftOpen: 1 }, retiring)).toEqual({ retirementsFinished: false });
+      // A deployment that predates the report says nothing: not finished, so the sweep asks again.
+      expect(await outcome({}, retiring)).toEqual({ retirementsFinished: false });
+      // Shapes that retire nothing have nothing to finish.
+      expect(await outcome({})).toEqual({ retirementsFinished: true });
+    });
+
     const rewound = async (switchedOff: boolean) => {
       const s = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: VERT });

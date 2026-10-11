@@ -463,8 +463,11 @@ describe('a key a declared shape retires, over a CP-less host (#2082)', () => {
   });
 
   it('a provision carrying the shape again retires nobody a second time', async () => {
-    await provision([{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true, retired: [USE] }]);
+    // #2185: and answers that it left no retirement open, which the platform records beside its receipt.
+    expect(await provision([{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true, retired: [USE] }])).toEqual({ retirementsLeftOpen: 0 });
     expect(await events('entity.grants-retired')).toEqual({ n: 3 });
+    // A provision with no shapes ran none, so it says nothing about them.
+    expect(await provision()).toEqual({});
   });
 });
 

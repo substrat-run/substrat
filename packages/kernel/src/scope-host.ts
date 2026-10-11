@@ -1016,6 +1016,19 @@ export interface MigrationFrontier {
  * cases no state was touched, so a foreign host can never clear a failure it
  * knows nothing about.
  */
+/**
+ * #2185: what a provision or reconcile reports about the scope it ran in, recorded beside its
+ * receipt (`HostAdmin.markScopeProvisioned`). An object so a later report joins it in the same
+ * write rather than as another call.
+ */
+export interface ReconcileOutcome {
+  /**
+   * Every retirement the reconciled version declares finished in the scope: the deployment
+   * answered that it left none open, or the version retires nothing. Absent reads as not finished.
+   */
+  retirementsFinished?: boolean;
+}
+
 export type MigrateScopeOutcome =
   | { status: 'migrated'; schemaVersion: string }
   | { status: 'noop' }
@@ -2560,12 +2573,19 @@ export interface HostAdmin {
    * `null` clears it back to "unknown", which the sweep reconciles on its next pass. That
    * is for something that undid what a provision did — a PITR rewind (#1674) takes the
    * scope's grants and its schedule switch back to the bookmark.
+   *
+   * #2185: `outcome.retirementsFinished` is whether that reconcile finished every retirement
+   * the version declares (`retiredKeysOf`), and writes `retirementsFinishedVersionId` in the same
+   * write: `versionId` when true, null otherwise, absent included. So a caller that cannot say
+   * (a provision with no shapes, a reconcile answered by a host that predates the report) leaves the
+   * install judged as still holding the keys its version retires, and the sweep reconciles it again.
    */
   markScopeProvisioned(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     versionId: string | null,
+    outcome?: ReconcileOutcome,
   ): Promise<void>;
 
   // -- the stable serving script (#286) ---------------------------------------
