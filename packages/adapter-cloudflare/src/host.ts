@@ -7229,10 +7229,11 @@ export class CloudflareScopeHost implements ScopeHost {
         const outgoing = current ? await this.cp.readVersion(current.version_id) : undefined;
         const ack = promotionAcknowledgement.parse(acknowledge ?? {});
 
-        // The owning tenant's live scopes a PRIVATE embedded promote re-points below (#321's
-        // exception aside), read before anything moves so the #2178 gate can judge each one.
-        const owning = channel === 'prod' && !incoming.deployment_ref ? await this.cp.readVertical(verticalSlug) : undefined;
-        const rebound =
+        // The owning tenant's live scopes a PRIVATE prod promote re-points — below for an embedded
+        // vertical, after the in-place serve for a dispatch-backed one (#321) — read before
+        // anything moves so the #2178 gate can judge each one.
+        const owning = channel === 'prod' ? await this.cp.readVertical(verticalSlug) : undefined;
+        const owned =
           owning && owning.owner_tenant !== null && !owning.listed
             ? (await this.cp.listScopes({ tenantId: owning.owner_tenant, vertical: verticalSlug, status: ['active'] })).filter(isPrimaryScopeRow)
             : [];
@@ -7240,7 +7241,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // #2178, ahead of the acknowledgements below because none of them passes it: the channel
         // moves from what it serves, and each re-pointed scope from what it was bound to.
         const judged = new Set<string>();
-        for (const from of [outgoing?.id, ...rebound.map((s) => s.vertical_version_id)]) {
+        for (const from of [outgoing?.id, ...owned.map((s) => s.vertical_version_id)]) {
           if (!from || from === versionId || judged.has(from)) continue;
           judged.add(from);
           const manifest = from === outgoing?.id ? outgoing.manifest_json : (await this.cp.readVersion(from))?.manifest_json;
@@ -7300,7 +7301,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // rebind here for them. An EMBEDDED vertical (no per-version script;
         // deployment_ref null — builtins, the contract tests) has no such hazard and
         // keeps the rebind here, which is the only place it happens for that path.
-        for (const s of rebound) {
+        for (const s of incoming.deployment_ref ? [] : owned) {
           if (s.vertical_version_id === versionId) continue;
           const prev = s.vertical_version_id ? await this.cp.readVersion(s.vertical_version_id) : undefined;
           if (prev && prev.migration_digest !== incoming.migration_digest) {
@@ -7360,6 +7361,9 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       bindingImpact: async (actor, tenantId, scopeId, versionId: string, opts): Promise<ExportBreak[]> => {
         const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
+        // #2178: a move no acknowledgement passes is refused here too, so a caller asking first
+        // (an adopt, an Update) stops before anything is copied.
+        await this.assertBindingShapesKept(mapScope(scope), v, opts?.servingRef);
         const breaks = await this.bindBreaks(actor, mapScope(scope), v, opts?.servingRef);
         await this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId, ...opts }, breaks.length);
         return breaks;

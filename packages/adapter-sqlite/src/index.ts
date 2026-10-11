@@ -8907,10 +8907,11 @@ export class SqliteScopeHost implements ScopeHost {
         const outgoing = current ? readVersion(current.version_id) : undefined;
         const ack = promotionAcknowledgement.parse(acknowledge ?? {});
 
-        // The owning tenant's live scopes a PRIVATE embedded promote re-points below (#321's
-        // exception aside), read before anything moves so the #2178 gate can judge each one.
-        const owning = channel === 'prod' && !incoming.deploymentRef ? readVertical(verticalSlug) : undefined;
-        const rebound =
+        // The owning tenant's live scopes a PRIVATE prod promote re-points — below for an embedded
+        // vertical, after the in-place serve for a dispatch-backed one (#321) — read before
+        // anything moves so the #2178 gate can judge each one.
+        const owning = channel === 'prod' ? readVertical(verticalSlug) : undefined;
+        const owned =
           owning && owning.ownerTenant !== null && !owning.listed
             ? (this.directory
                 .prepare(
@@ -8924,7 +8925,7 @@ export class SqliteScopeHost implements ScopeHost {
         // moves from what it serves, and each re-pointed scope from what it was bound to.
         const incomingManifest = this.manifestJsonOf(versionId);
         const judged = new Set<string>();
-        for (const from of [outgoing?.id, ...rebound.map((s) => s.vertical_version_id)]) {
+        for (const from of [outgoing?.id, ...owned.map((s) => s.vertical_version_id)]) {
           if (!from || from === versionId || judged.has(from)) continue;
           judged.add(from);
           assertNoBindingShapeBreak(this.manifestJsonOf(from), incomingManifest);
@@ -8987,7 +8988,7 @@ export class SqliteScopeHost implements ScopeHost {
         // adopt-then-rebind for those (serve → adopt legacy scopes → advance versions),
         // so we skip the rebind here. An EMBEDDED vertical (deploymentRef null) has no
         // per-version script and keeps the rebind here. See adapter-cloudflare parity.
-        for (const s of rebound) {
+        for (const s of incoming.deploymentRef ? [] : owned) {
           if (s.vertical_version_id === versionId) continue;
           const prev = s.vertical_version_id ? readVersion(s.vertical_version_id) : undefined;
           if (prev && prev.migrationDigest !== incoming.migrationDigest) {
@@ -9072,6 +9073,9 @@ export class SqliteScopeHost implements ScopeHost {
       },
       bindingImpact: async (actor, tenantId, scopeId, versionId: string, opts): Promise<ExportBreak[]> => {
         const { v, scope } = bindTarget(tenantId, scopeId, versionId);
+        // #2178: a move no acknowledgement passes is refused here too, so a caller asking first
+        // (an adopt, an Update) stops before anything is copied.
+        this.assertBindingShapesKept(mapScope(scope), versionId, opts?.servingRef);
         const breaks = await this.bindBreaks(actor, mapScope(scope), v, opts?.servingRef);
         this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId, ...opts }, breaks.length);
         return breaks;
