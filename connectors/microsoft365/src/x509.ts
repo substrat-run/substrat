@@ -28,7 +28,12 @@ export interface GeneratedCertificate {
 /** How long a generated certificate lives. The connection's expiry is set from it. */
 export const CERTIFICATE_VALIDITY_DAYS = 365;
 
-export async function generateCertificate(opts: { commonName: string; now: Date }): Promise<GeneratedCertificate> {
+export async function generateCertificate(opts: {
+  commonName: string;
+  now: Date;
+  /** Fills the serial number's bytes. Defaults to `crypto.getRandomValues`; a test fixes it. */
+  random?: (bytes: Uint8Array) => Uint8Array;
+}): Promise<GeneratedCertificate> {
   const keys = (await crypto.subtle.generateKey(
     { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
     true,
@@ -40,8 +45,10 @@ export async function generateCertificate(opts: { commonName: string; now: Date 
   // A minute back, so a clock a little behind Entra's does not read the certificate as not yet valid.
   const notBefore = new Date(Math.floor(opts.now.getTime() / 1000) * 1000 - 60_000);
   const notAfter = new Date(notBefore.getTime() + CERTIFICATE_VALIDITY_DAYS * 86_400_000);
-  const serial = crypto.getRandomValues(new Uint8Array(16));
-  serial[0]! &= 0x7f; // positive
+  const serial = (opts.random ?? ((b) => crypto.getRandomValues(b)))(new Uint8Array(16));
+  // Positive, and never a leading zero byte: DER wants the shortest INTEGER, and a strict parser
+  // (OpenSSL, so Node) refuses `00 xx` with xx < 0x80 — one serial in 256 once it was only masked.
+  serial[0] = (serial[0]! & 0x7f) | 0x40;
   const algorithm = seq(oid(OID_SHA256_WITH_RSA), nul());
   const name = seq(set(seq(oid(OID_COMMON_NAME), utf8(opts.commonName))));
   const tbs = seq(
@@ -105,8 +112,12 @@ const explicit = (n: number, inner: Uint8Array) => tlv(0xa0 + n, inner);
 const bitString = (bytes: Uint8Array) => tlv(0x03, concat(new Uint8Array([0]), bytes));
 
 function integer(bytes: Uint8Array): Uint8Array {
-  // Unsigned big-endian → DER INTEGER: a leading zero when the high bit would read as negative.
-  return tlv(0x02, bytes[0]! & 0x80 ? concat(new Uint8Array([0]), bytes) : bytes);
+  // Unsigned big-endian → DER INTEGER, the shortest form: no redundant leading zeros, and one
+  // leading zero when the high bit would otherwise read as negative.
+  let start = 0;
+  while (start < bytes.length - 1 && bytes[start] === 0) start++;
+  const magnitude = bytes.subarray(start);
+  return tlv(0x02, magnitude[0]! & 0x80 ? concat(new Uint8Array([0]), magnitude) : magnitude);
 }
 
 function oid(dotted: string): Uint8Array {

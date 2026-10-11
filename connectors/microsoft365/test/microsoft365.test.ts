@@ -78,6 +78,38 @@ describe('the generated certificate', () => {
     expect(new Date(cert.validTo).toISOString()).toBe(minted.notAfter);
     expect(Date.parse(minted.notAfter) - Date.parse(minted.notBefore)).toBe(365 * 86_400_000);
   });
+
+  // #2189: the serial was masked positive but not made shortest-form, so a leading 0x00 followed by a
+  // byte under 0x80 (one draw in 256) was a non-minimal DER INTEGER that OpenSSL — and Node — refuse.
+  // The draw is fixed here so the case is not left to chance; every row is parsed by Node's own parser.
+  const withSerialPrefix = (...prefix: number[]) => (bytes: Uint8Array) => {
+    bytes.fill(0x5a);
+    bytes.set(prefix);
+    return bytes;
+  };
+  it.each([
+    ['00 7f', [0x00, 0x7f]],
+    ['00 01', [0x00, 0x01]],
+    ['00 00 00', [0x00, 0x00, 0x00]],
+    ['80 ff (high bit set)', [0x80, 0xff]],
+    ['ff ff', [0xff, 0xff]],
+  ])('parses with a serial that begins %s', async (_label, prefix) => {
+    const minted = await generateCertificate({
+      commonName: 'x',
+      now: NOW,
+      random: withSerialPrefix(...prefix!),
+    });
+    const cert = new X509Certificate(Buffer.from(minted.certificate, 'base64'));
+    expect(cert.verify(cert.publicKey)).toBe(true);
+    // Positive and 16 octets with no redundant zero: the first byte is never 0x00.
+    expect(cert.serialNumber).toMatch(/^[1-7][0-9A-F]{31}$/);
+  });
+
+  it('a serial that already begins with a clean positive byte is kept as drawn', async () => {
+    const minted = await generateCertificate({ commonName: 'x', now: NOW, random: withSerialPrefix(0x41, 0x01) });
+    const cert = new X509Certificate(Buffer.from(minted.certificate, 'base64'));
+    expect(cert.serialNumber.startsWith('4101')).toBe(true);
+  });
 });
 
 describe('the client assertion', () => {
