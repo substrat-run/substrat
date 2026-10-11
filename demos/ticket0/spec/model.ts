@@ -1105,7 +1105,7 @@ export const ticket0Entities = defineEntities({
     }),
     key: ['name'],
     // What a derived write fills from the call rather than the input (#2157), which is what
-    // makes `create-saved-reply-folder` the platform's to write — once #2165 lands.
+    // makes `create-saved-reply-folder` the platform's to write.
     stamps: { created_by: 'createdBy', created_at: 'createdAt' },
   },
 
@@ -4175,8 +4175,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   /** A new folder. The same name returns the folder that already holds it, as a reply's title does. */
   'ticket0/create-saved-reply-folder': {
     summary: 'Add a folder for canned answers',
-    authored:
-      'the derived create is this handler, but the deployed control plane refuses a model carrying it until it parses kinds structurally (#2165)',
+    derive: 'create',
     permission: 'saved-reply:manage',
     input: z.object({ name: z.string().trim().min(1) }),
     output: ticket0Entities.savedReplyFolder.fields,
