@@ -1410,6 +1410,9 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
+      '@substrat-run/oidc-rp':
+        specifier: workspace:^
+        version: link:../../packages/oidc-rp
       '@substrat-run/vertical-host':
         specifier: workspace:^
         version: link:../../packages/vertical-host
