@@ -2109,7 +2109,7 @@
   },
   "handlers": {
     "ticket0/create-saved-reply-folder": {
-      "authored": "the derived create is this handler, but the deployed control plane refuses a model carrying it until it parses kinds structurally (#2165)"
+      "derive": "create"
     },
     "ticket0/get-contact": {
       "derive": "get"
