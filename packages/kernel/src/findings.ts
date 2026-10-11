@@ -411,7 +411,9 @@ export function listFindings(sql: RedactionSql, filter: FindingFilter = {}): Fin
   if (filter.cursor !== undefined) {
     const after = parseFindingCursor(filter.cursor);
     if (!after) throw substratError('validation_failed', 'cursor is not a findings cursor');
-    where.push('(last_seen < ? OR (last_seen = ? AND id > ?))');
+    // The range form, not a bare OR: `last_seen <= ?` is what an index on last_seen can seek on,
+    // and the inner test then drops the cursor's own tie-run up to and including the cursor row.
+    where.push('last_seen <= ? AND (last_seen < ? OR id > ?)');
     params.push(after.lastSeen, after.lastSeen, after.id);
   }
   params.push(limit);
