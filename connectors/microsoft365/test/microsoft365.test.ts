@@ -215,6 +215,16 @@ describe('a stored certificate is judged before it is kept (#2189)', () => {
     expect(expiresAt).toBe(secret.certificateNotAfter);
   });
 
+  it('a certificate whose signature does not verify is re-minted', async () => {
+    const good = await generateCertificate({ commonName: 'x', now: NOW });
+    const der = Buffer.from(good.certificate, 'base64');
+    der[der.length - 1]! ^= 0x01;
+    const bad = { ...good, certificate: der.toString('base64') };
+    expect(await certificateMatchesKey(bad.certificate, bad.privateKey)).toBe(false);
+    const { secret } = await prepareMicrosoft365Candidate(base, stored(bad), { now: NOW, commonName: 'x' });
+    expect(secret.certificate).not.toBe(bad.certificate);
+  });
+
   it('a valid unexpired certificate is kept, not re-minted', async () => {
     const good = await generateCertificate({ commonName: 'x', now: NOW });
     expect(await certificateMatchesKey(good.certificate, good.privateKey)).toBe(true);
