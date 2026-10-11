@@ -235,6 +235,11 @@ describe('a stored certificate is judged before it is kept (#2189)', () => {
     const needle = Buffer.from('2a864886f70d01010b', 'hex');
     const at = which === 'inner' ? der.indexOf(needle) : der.lastIndexOf(needle);
     der[at + needle.length - 1] = 0x0c;
+    if (which === 'inner') {
+      // Re-sign, so the signature is sound and only the algorithm check can refuse it.
+      const key = createPrivateKey({ key: Buffer.from(good.privateKey, 'base64'), format: 'der', type: 'pkcs8' });
+      createSign('sha256').update(der.subarray(4, 8 + der.readUInt16BE(6))).sign(key).copy(der, der.length - 256);
+    }
     const bad = { ...good, certificate: der.toString('base64') };
     expect(await certificateMatchesKey(bad.certificate, bad.privateKey)).toBe(false);
     const { secret } = await prepareMicrosoft365Candidate(base, stored(bad), { now: NOW, commonName: 'x' });
