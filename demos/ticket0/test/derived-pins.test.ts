@@ -94,10 +94,10 @@ describe('derived reads answer what the handlers they replaced answered (#1773)'
 });
 
 /**
- * #2157/#2165: `ticket0/create-saved-reply-folder` matches the derived CREATE shape and stays
- * authored until the deployed control plane parses a model carrying `derive: 'create'` (#2165).
- * These pins hold the authored handler today, and the derived one after the flip, unchanged —
- * each step of the body, against the desk's own database with the table named as a literal:
+ * #2157/#2165: `ticket0/create-saved-reply-folder` is derived (`derive: 'create'`, #2165).
+ * These pins held the hand-written handler before the flip and hold the derived one after it,
+ * unchanged, so an equivalent derivation keeps them green — each step of the body, against the
+ * desk's own database with the table named as a literal:
  *
  *     check saved-reply:manage
  *     SELECT * … WHERE name = ?  → that row, if any, and nothing else
