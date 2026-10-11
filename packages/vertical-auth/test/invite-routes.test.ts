@@ -32,7 +32,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { mintCapabilitySecret, ulid, unknownRoleError } from '@substrat-run/kernel';
-import { mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
+import { LEGACY_INVITES_LIST_REPORT_MS, legacyInvitesLine, mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
 import { sha256Hex } from '../src/owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from '../src/provider.js';
 
@@ -62,6 +62,9 @@ class MemoryDirectory implements InviteDirectory {
   }
   async listInvites() {
     return [...this.invites.values()].map(({ tokenHash: _hash, ...row }) => row);
+  }
+  async legacyInviteCount() {
+    return [...this.invites.values()].filter((r) => r.capabilityId === null).length;
   }
   async getInvite(_scopeId: string, principal: string) {
     const row = this.invites.get(principal);
@@ -868,5 +871,93 @@ describe('mountInviteRoutes — the link is a become capability', () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ ok: true, principal });
     expect(log).toEqual([]);
+  });
+});
+
+/**
+ * #2175: the measurement of the legacy hash-only branch. The list writes a line only while a
+ * hash-only invite is pending (absence is the signal) and at most hourly per scope; the legacy
+ * accept always writes one; a capability accept writes none. A line carries a count and a scope id.
+ */
+describe('legacy invite measurement (#2175)', () => {
+  let lines: string[];
+  let clock: number;
+  const parsed = () => lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+  const list = () => app.request('http://app.example/api/invites', { headers: admin }, env());
+  const legacy = async (email: string | null = 'legacy@acme.example') => {
+    const principal = ulid();
+    const token = 'cd'.repeat(32);
+    await directory.createInvite('scope-1', principal, 'editor', email, await sha256Hex(token + principal));
+    return { principal, token: token + principal };
+  };
+
+  beforeEach(() => {
+    lines = [];
+    clock = 1_700_000_000_000;
+    app = mount({ log: (l) => lines.push(l), now: () => clock });
+  });
+
+  it('lists with no line while no hash-only invite is pending — a capability invite is not one', async () => {
+    expect((await list()).status).toBe(200);
+    await app.request('http://app.example/api/invites', json({ roleKey: 'editor' }), env());
+    expect(directory.invites.size).toBe(1);
+    expect((await list()).status).toBe(200);
+    expect(lines).toEqual([]);
+  });
+
+  it('lists with one line, a count and a scope id, once a hash-only invite is pending', async () => {
+    await legacy('person@acme.example');
+    await legacy(null);
+    await list();
+    expect(parsed()).toEqual([{ ...legacyInvitesLine('scope-1', 2, 'list') }]);
+    // A count and an id: no address, token or principal anywhere in the line.
+    expect(lines[0]).not.toMatch(/person@|acme|[0-9a-f]{64}/);
+    for (const p of directory.invites.keys()) expect(lines[0]).not.toContain(p);
+  });
+
+  it('reports a scope at most once an hour on the list, then again', async () => {
+    await legacy();
+    await list();
+    await list();
+    clock += LEGACY_INVITES_LIST_REPORT_MS - 1;
+    await list();
+    expect(lines).toHaveLength(1);
+    clock += 1;
+    await list();
+    expect(lines).toHaveLength(2);
+  });
+
+  it('a settled scope is never throttled: the line returns the moment one is pending again', async () => {
+    await list();
+    await legacy();
+    await list();
+    expect(lines).toHaveLength(1);
+  });
+
+  it('a withdrawn hash-only invite (its row is deleted) stops being counted', async () => {
+    const { principal } = await legacy();
+    await app.request(`http://app.example/api/invites/${principal}/revoke`, json({}), env());
+    expect(directory.invites.size).toBe(0);
+    await list();
+    expect(lines).toEqual([]);
+  });
+
+  it('the legacy accept always writes a line, with what is left; a capability accept writes none', async () => {
+    const first = await legacy();
+    await legacy();
+    expect((await accept(first.token)).status).toBe(200);
+    expect(parsed()).toEqual([legacyInvitesLine('scope-1', 1, 'accept')]);
+
+    lines.length = 0;
+    const minted = await (await app.request('http://app.example/api/invites', json({ roleKey: 'editor' }), env())).json() as { acceptUrl: string };
+    const secret = decodeURIComponent(minted.acceptUrl.split('/').pop()!);
+    expect((await accept(secret)).status).toBe(200);
+    expect(lines).toEqual([]);
+  });
+
+  it('the legacy accept writes a line even when the accept finds nothing, and the count is null when the door cannot count', async () => {
+    expect((await accept('ef'.repeat(32))).status).toBe(400);
+    expect(parsed()).toEqual([legacyInvitesLine('scope-1', 0, 'accept')]);
+    expect(legacyInvitesLine('scope-1', null, 'accept').pending).toBeNull();
   });
 });

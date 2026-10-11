@@ -80,7 +80,50 @@ export type InviteDirectory = Pick<
   IdentityStub,
   | 'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'
   | 'inviteLink'
->;
+> &
+  // Optional so a directory written before #2175 still mounts; the identity DO's stub has it.
+  Partial<Pick<IdentityStub, 'legacyInviteCount'>>;
+
+/**
+ * #2175: the line that measures the legacy hash-only invite branch, as `tenantUnrecordedLine` is
+ * the line that measures an unrecorded scope — one JSON line, `substrat` naming it, ids only.
+ * `pending` is the scope's unclaimed hash-only invites (null when the door cannot count them); `via` is the door that wrote it. The list
+ * writes it ONLY when `pending > 0`, so a settled period has no line at all; an accept through the
+ * legacy branch always writes it, since that is the branch still serving. No address, token or
+ * principal — a number and a scope id.
+ */
+export const legacyInvitesLine = (scopeId: string, pending: number | null, via: 'list' | 'accept') => ({
+  substrat: 'legacy-invites-pending' as const,
+  level: 'warn' as const,
+  scopeId,
+  pending,
+  via,
+  message: 'hash-only member invites are still pending; the legacy accept branch cannot be retired yet',
+});
+
+/** The list path reports a scope at most this often, per isolate — it is read often. */
+export const LEGACY_INVITES_LIST_REPORT_MS = 60 * 60 * 1000;
+
+/**
+ * The list path's report (#2175), for every door that lists pending invites: `count` is asked at
+ * most once per scope per `LEGACY_INVITES_LIST_REPORT_MS` of the reporter's life (in memory, per
+ * isolate — a restart reports again), and a line is written only when it is above zero, so a
+ * settled scope writes nothing and is not throttled. Make one per mount, not per request.
+ */
+export function legacyInviteListReporter(opts: { log?: (line: string) => void; now?: () => number } = {}) {
+  const log = opts.log ?? ((line: string) => console.warn(line));
+  const now = opts.now ?? Date.now;
+  const reported = new Map<string, number>();
+  return async (scopeId: string, count: (() => Promise<number>) | undefined): Promise<void> => {
+    if (!count) return;
+    const last = reported.get(scopeId);
+    if (last !== undefined && now() - last < LEGACY_INVITES_LIST_REPORT_MS) return;
+    const pending = await count();
+    if (pending === 0) return;
+    reported.set(scopeId, now());
+    log(JSON.stringify(legacyInvitesLine(scopeId, pending, 'list')));
+  };
+}
 
 /** The label every member invite's capability carries — what an operator's capability read shows. */
 export const MEMBER_INVITE_LABEL = 'member invite';
@@ -167,6 +210,10 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
    * hands over a configured `https://host/` does not send invitees to `https://host//`.
    */
   origin?: (req: Request) => string;
+  /** Where the #2175 measurement lines go. Defaults to `console.warn`. */
+  log?: (line: string) => void;
+  /** The clock the list path's hourly throttle reads. Defaults to `Date.now`. */
+  now?: () => number;
 }
 
 /** The 403 a refused bound answers, in one wording for every door that confers a role. */
@@ -278,8 +325,10 @@ export async function withLinkStates(
  */
 export async function acceptMemberInvite(
   deps: {
-    directory: Pick<InviteDirectory, 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'>;
+    directory: Pick<InviteDirectory, 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability' | 'legacyInviteCount'>;
     exchange: (secret: string) => Promise<CapabilityExchange | null>;
+    /** Where the #2175 measurement line goes. Defaults to `console.warn`. */
+    log?: (line: string) => void;
   },
   scopeId: string,
   sub: string,
@@ -287,7 +336,11 @@ export async function acceptMemberInvite(
 ): Promise<string | null> {
   if (!plausibleCapabilitySecret(token)) {
     // LEGACY — a hash-only invite (see `claimInvite`).
-    return deps.directory.claimInvite(scopeId, sub, await sha256Hex(token));
+    const principal = await deps.directory.claimInvite(scopeId, sub, await sha256Hex(token));
+    // #2175: reaching this branch at all is the signal it still serves; the count is what is left.
+    const left = (await deps.directory.legacyInviteCount?.(scopeId)) ?? null;
+    (deps.log ?? ((line) => console.warn(line)))(JSON.stringify(legacyInvitesLine(scopeId, left, 'accept')));
+    return principal;
   }
   return redeemBecomeLink(
     {
@@ -341,6 +394,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
   app: Hono<{ Bindings: E }>,
   deps: InviteRouteDeps<E, N>,
 ): void {
+  const log = deps.log ?? ((line: string) => console.warn(line));
+  const reportLegacyOnList = legacyInviteListReporter({ log, now: deps.now });
+
   const originOf = (req: Request): string => (deps.origin?.(req) ?? new URL(req.url).origin).replace(/\/$/, '');
 
   /** Who the gate admitted — refusing a mount wired short or a gate naming no caller. */
@@ -373,7 +429,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     await deps.requireAdmin(c);
-    const rows = await deps.directory(c.env, node).listInvites(node.scopeId);
+    const directory = deps.directory(c.env, node);
+    const rows = await directory.listInvites(node.scopeId);
+    await reportLegacyOnList(node.scopeId, directory.legacyInviteCount && (() => directory.legacyInviteCount!(node.scopeId)));
     const invites = await withLinkStates(rows, (ids) => deps.becomeLinkStates(c.env, node, ids));
     return c.json({ roles: [...deps.roles], invites });
   });
@@ -439,7 +497,7 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
     const { token } = await bodyOf(c, acceptInviteBody);
     const principal = await acceptMemberInvite(
-      { directory: deps.directory(c.env, node), exchange: (secret) => deps.exchangeCapability(c.env, node, secret) },
+      { directory: deps.directory(c.env, node), exchange: (secret) => deps.exchangeCapability(c.env, node, secret), log },
       node.scopeId,
       subject.sub,
       token,
