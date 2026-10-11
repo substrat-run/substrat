@@ -119,9 +119,10 @@ operation. Nothing else in the app has to remember that Björn may touch this li
 grant is the fact, and every check reads it.
 
 `share-list` finds the person by the address they joined with, so that address has to be
-theirs. The operation cannot see the session, so the dev server's `src/app.ts` checks it in
-front of `POST /api/join`: the body's `email` must be the session's own, and the issuer must
-have said `email_verified: true` about it (`identifyEmail` from
+theirs. The operation cannot see the session, so the dev server's `src/app.ts` checks it on
+the scope stub every door invokes through — the HTTP route and the MCP tool alike: the
+`email` given must be the session's own, and the issuer must have said `email_verified: true`
+about it (`identifyEmail` from
 [`@substrat-run/oidc-rp`](/reference/oidc-rp#an-address-is-an-identifier-only-when-the-issuer-verified-it)).
 Do the same wherever an address decides who receives access.
 

@@ -61,6 +61,18 @@ const send = (app: Hono, path: string, sub: string, body: unknown) =>
 
 const joinAs = (app: Hono, sub: string, email: string) => send(app, '/api/join', sub, { email, displayName: 'Someone' });
 
+/** The same operation through the other door the mount serves: the MCP tool `todo_join`. */
+async function joinOverMcp(sub: string, email: string): Promise<{ isError?: boolean; content: { text: string }[] }> {
+  const res = await send(app, '/api/mcp', sub, {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: { name: 'todo_join', arguments: { email, displayName: 'Someone' } },
+  });
+  expect(res.status).toBe(200);
+  return ((await res.json()) as { result: { isError?: boolean; content: { text: string }[] } }).result;
+}
+
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'todo-join-'));
   host = buildHost(dir);
@@ -141,5 +153,26 @@ describe('a share reaches only the person who verified the address', () => {
     const sub = await member('karin@example.com', true);
     expect((await joinAs(app, sub, 'lars@example.com')).status).toBe(403);
     expect((await shareTo('lars@example.com')).status).toBe(404);
+  });
+
+  it('shares to the member who joined over MCP with their verified address', async () => {
+    const sub = await member('mona@example.com', true);
+    expect((await joinOverMcp(sub, 'mona@example.com')).isError).toBeUndefined();
+    expect((await shareTo('mona@example.com')).status).toBe(200);
+  });
+
+  it('refuses the same claim over MCP, so the share still finds nobody', async () => {
+    const sub = await member('nils@example.com', true);
+    const result = await joinOverMcp(sub, 'olga@example.com');
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain('join with the verified email address you signed in with');
+    expect((await shareTo('olga@example.com')).status).toBe(404);
+  });
+
+  it('refuses an unverified address over MCP too', async () => {
+    const sub = await member('petra@example.com', false);
+    const result = await joinOverMcp(sub, 'petra@example.com');
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain('not verified');
   });
 });
