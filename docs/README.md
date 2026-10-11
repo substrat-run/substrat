@@ -202,6 +202,7 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 | [model-phase-plan.md](rfc/model-phase-plan.md) | `building` | The model phase. Umbrella #685 open. |
 | [rallypoint-concept.md](rfc/rallypoint-concept.md) | `historical` | The RallyPoint concept — the racket-club demo that drove engine-booking; the demo is gone, the argument stays. |
 | [sub-transactions.md](rfc/sub-transactions.md) | `superseded` | Moved — the sub-transactions RFC shipped as ctx.atomic and now lives in architecture/. |
+| [vat-carriage.md](rfc/vat-carriage.md) | `proposed` | Concept spec for VAT carriage in engine-invoicing (#326) — a rate and a tax amount on a line, a per-rate decomposition frozen at export. Argued against the currency work that already shipped and against K-39; recommends per-line carriage and leaves the replace-or-additive question to a human. |
 
 ### `briefs/`
 
