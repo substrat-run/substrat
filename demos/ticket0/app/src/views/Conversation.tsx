@@ -25,7 +25,6 @@ import {
 } from '../api.js';
 import { agentName, agents, assignableStaff } from '../agents.js';
 import { everyPage } from '../staff.js';
-import { moveSavedReply } from '../saved-reply-moves.js';
 import { contactsWith, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
 import { PACE } from '../pace.js';
@@ -1371,7 +1370,7 @@ function SavedReplies({
    * Deleting for good is the trash's own button, and that one still asks twice.
    */
   const remove = (reply: SavedReplyOut) =>
-    write(() => moveSavedReply(api, 'trash', reply.id), 'Could not move that reply to the trash.', () =>
+    write(() => api.trashSavedReply({ savedReplyId: reply.id }), 'Could not move that reply to the trash.', () =>
       setDraft(null),
     );
 
@@ -1816,7 +1815,7 @@ function TrashManager({
               className="btn btn-ghost"
               disabled={busy}
               aria-label={`Restore ${r.title}`}
-              onClick={() => act(() => moveSavedReply(api, 'restore', r.id), 'Could not restore that reply.')}
+              onClick={() => act(() => api.restoreSavedReply({ savedReplyId: r.id }), 'Could not restore that reply.')}
             >
               Restore
             </button>

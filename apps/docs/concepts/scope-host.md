@@ -185,7 +185,8 @@ interface OperationContext {
   cursor. An undeclared sort or filter throws (`SortNotDeclared`, `FilterNotDeclared`),
   never silently applies nothing. See [Lists are pages, not dumps](/concepts/api-design#_4-lists-are-pages-not-dumps).
 - **`versionOf`** is an entity's version — the ULID of the last event about it, read
-  from the outbox; there is no version column. It is what a read-modify-write's
+  from the outbox; there is no version column. A state move (archive, unarchive, trash,
+  restore) is the one event that leaves it where it was: it changes no content. It is what a read-modify-write's
   `If-Match` is checked against, and it survives a shred, so an erased entity can still
   refuse a stale write. The caller's side of that comparison is
   [`InvokeOptions.ifMatch`](#preconditions-travel-per-invocation-not-in-the-input); the

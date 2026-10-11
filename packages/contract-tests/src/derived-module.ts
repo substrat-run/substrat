@@ -12,7 +12,9 @@
  *   time and author stamped, linked to the folder it was checked on; read and changed derived too.
  * - `dlabel` — a scope-wide derived create, with no parent and no natural key.
  * - `dshelf` — archivable and trashable, each under its own key (#119): derived archive /
- *   unarchive / trash / restore, the bin page, and a list with the archive view.
+ *   unarchive / trash / restore, the bin page, and a list with the archive view; a guarded derived
+ *   rename, so a held tag can be carried across a move (#2191), and an authored relabel-and-archive
+ *   that changes content and moves in one call.
  */
 import { z } from 'zod';
 import {
@@ -243,6 +245,24 @@ export const derivedOperations = defineOperations(derivedEntities, PERMISSIONS)(
     output: entityStateOutput,
     http: { method: 'POST', path: '/shelves/{shelfId}/restore' },
   },
+  'derived/rename-shelf': {
+    summary: 'Rename a shelf',
+    derive: 'update',
+    permission: { key: 'dnote:write', entity: 'dshelf', idFrom: 'shelfId' },
+    input: z.object({ shelfId: z.string(), label: z.string().optional() }),
+    output: derivedEntities.dshelf.fields,
+    http: { method: 'PATCH', path: '/shelves/{shelfId}' },
+    concurrency: { over: 'dshelf', idFrom: 'shelfId' },
+    emits: { entity: 'dshelf', entityIdFrom: 'id', type: 'dshelf.updated', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] },
+  },
+  'derived/relabel-and-archive': {
+    summary: 'Relabel a shelf and file it away, in one call',
+    permission: { key: 'dnote:write', entity: 'dshelf', idFrom: 'shelfId' },
+    input: z.object({ shelfId: z.string(), label: z.string() }),
+    output: derivedEntities.dshelf.fields,
+    concurrency: { over: 'dshelf', idFrom: 'shelfId' },
+    emits: { entity: 'dshelf', entityIdFrom: 'id', type: 'dshelf.updated', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] },
+  },
   'derived/trashed-shelves': {
     summary: 'The bin',
     derive: 'trashed',
@@ -322,10 +342,18 @@ export const derivedMod: ModuleRegistration = {
       ctx.sql.exec('INSERT INTO derived_shelves (id, label) VALUES (?, ?)', [i.id, i.label]);
       return { ok: true };
     },
+    'derived/relabel-and-archive': async (ctx, i) => {
+      assertAllowed(await ctx.check(WRITE, { entityType: 'dshelf', entityId: i.shelfId }));
+      ctx.sql.exec('UPDATE derived_shelves SET label = ? WHERE id = ?', [i.label, i.shelfId]);
+      const entity = { entityType: 'dshelf', entityId: i.shelfId };
+      ctx.emit({ type: 'dshelf.updated', schemaVersion: 1, entity, piiClass: 'none', payload: { id: i.shelfId, label: i.label } });
+      await ctx.archive(entity);
+      return { id: i.shelfId, label: i.label };
+    },
     'derived/history': async (ctx, i) => {
       assertAllowed(await ctx.check(READ));
-      // Any entity's history: a note's, a tag's or a label's — the id is enough to find it.
-      for (const entityType of ['dnote', 'dtag', 'dlabel']) {
+      // Any entity's history: a note's, a tag's, a label's or a shelf's — the id is enough to find it.
+      for (const entityType of ['dnote', 'dtag', 'dlabel', 'dshelf']) {
         const { entries } = readHistory({ sql: ctx.sql }, { entityType, entityId: i.noteId });
         if (entries.length > 0) return { entries };
       }
