@@ -6617,7 +6617,9 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, 'grantEntityShape', grant.node, null, grant);
       },
       reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
-        const result = await this.topUpEntityGrantShapesLocal(node.tenantId, node.scopeId, shapes, opts?.batch);
+        // #2184: the bound types are the reconcile route's answer to the platform, not part of this
+        // surface, which answers what the pure host's does.
+        const { boundEver: _boundEver, ...result } = await this.topUpEntityGrantShapesLocal(node.tenantId, node.scopeId, shapes, opts?.batch);
         if (result.toppedUp > 0 || result.retired > 0) {
           await this.recordAdmin(actor, 'reconcileEntityGrantShapes', node, null, { shapes, ...result });
         }
