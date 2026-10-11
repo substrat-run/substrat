@@ -34,6 +34,8 @@ export interface ObsQuery {
   /** #1921: a record's timeline over the page — `<entityType>:<id>`, and its scope when not the page's. */
   rec?: string;
   recScope?: string;
+  /** #1748: the Findings inbox's tab — a finding status. */
+  tab?: string;
 }
 export const OBS_KEYS = [
   'app',
@@ -64,6 +66,7 @@ export const OBS_KEYS = [
   'reqScope',
   'rec',
   'recScope',
+  'tab',
 ] as const;
 export function readObsQuery(search: string): ObsQuery {
   const p = new URLSearchParams(search);

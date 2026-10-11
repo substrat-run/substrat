@@ -7,6 +7,7 @@ import { promoteWithCheckpoint, type Acks, type Checkpoint } from './lib/promote
 import { navigate as go, obsPath, setTeamSlug, teamPath } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
+import { mayManageFromRole } from './lib/findings';
 import { sectionLabel, sectionOf, sectionQuery } from './lib/obs-sections';
 import { CommandPalette } from './components/CommandPalette';
 import { mergePaletteModels, type PaletteContext, type PaletteGo } from './lib/palette';
@@ -1014,6 +1015,8 @@ export function App() {
           // hand-edited URL must read as no cursor rather than as one open at the top.
           cursor={route.from && route.to ? { from: route.from, to: route.to } : null}
           onNav={(q) => go(obsPath(q))}
+          teamId={me.currentTeamId}
+          canManageFindings={mayManageFromRole(members.find((m) => m.principal === me.principal)?.role_key)}
         />
       ) : route.section === 'settings' ? (
         <Settings org={org} />
