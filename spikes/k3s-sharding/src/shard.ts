@@ -16,19 +16,29 @@
  *   POST /scopes/:scope/items {text}   + Idempotency-Key   → the item, plus {node, epoch}
  *   GET  /scopes/:scope/items                              → {entries, node, epoch}
  *   421 {holder, epoch, retryAfterMs}  — not mine; ask the holder (or wait for it)
+ *   POST /_rebalance {members}         → release every held scope whose home moved (question 4)
+ *
+ * Background work (question 6): with `BG_PERIOD_MS` set, every period the shard runs the due
+ * slots of each scope it holds — or can take: the scopes on its own volume, so a pod the
+ * StatefulSet brought back picks its scopes up again without waiting for a request. A slot
+ * is one `todo/add-item` of `bg:<k>` under the idempotency key `bg:<k>`, through the same
+ * fenced stub as a request: the lease is what lets only one shard run it, the key is what
+ * makes a slot the previous holder finished (or half-finished) a replay on the next.
  *
  * Faults are armed over IPC by the test (`{ arm: { text, point, signal } }`): when the write
  * with that text reaches `point`, the shard reports it and sends itself `signal`. Signalling
  * itself is what makes the kill land at exactly that point, every run.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { principalId, tenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
-import { LeaseClient, NotHolder, type Grant } from './lease-client.js';
+import { LeaseClient, LeaseGuard, NotHolder, type Grant } from './lease-client.js';
+import { Fenced, fenceScopeHost, type FenceHooks } from './fence.js';
 import { copyScope, openScope, scopeDir, seedScope, type ScopeWorld } from './todo-scope.js';
 import { exitWithParent } from './process.js';
+import { home } from './placement.js';
 
 const node = process.env.NODE ?? 'todo-0';
 const port = Number(process.env.PORT ?? 0);
@@ -58,7 +68,6 @@ async function fault(point: FaultPoint, text: string): Promise<void> {
 interface Held {
   host: ScopeHost;
   world: ScopeWorld;
-  grant: Grant;
 }
 const held = new Map<string, Held>();
 const queues = new Map<string, Promise<unknown>>();
@@ -74,62 +83,131 @@ function serialized<T>(scope: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function take(scope: string): Promise<Held> {
-  const have = held.get(scope);
-  if (have) return have;
-  const grant = await leases.acquire(scope);
+/**
+ * A new grant: put the scope's latest state on this node's volume before anything runs on
+ * it. Called by the guard inside `admit`, so always inside the scope's queue.
+ */
+async function place(scope: string, grant: Grant): Promise<void> {
   const dir = scopeDir(volume, node, scope);
-  let placed: { host: ScopeHost; world: ScopeWorld };
-  if (grant.dataOn === null) {
-    rmSync(dir, { recursive: true, force: true });
-    placed = await seedScope(dir, scope);
-  } else if (grant.dataOn === node && existsSync(join(dir, 'world.json'))) {
-    placed = openScope(dir);
+  const stale = held.get(scope);
+  held.delete(scope);
+  let placed: Held;
+  if (grant.dataOn === node && stale) {
+    placed = stale;
   } else {
-    await copyScope(scopeDir(volume, grant.dataOn, scope), dir);
-    placed = openScope(dir);
+    await stale?.host.close();
+    if (grant.dataOn === null) {
+      rmSync(dir, { recursive: true, force: true });
+      placed = await seedScope(dir, scope);
+    } else if (grant.dataOn === node && existsSync(join(dir, 'world.json'))) {
+      placed = openScope(dir);
+    } else {
+      await copyScope(scopeDir(volume, grant.dataOn, scope), dir);
+      placed = openScope(dir);
+    }
   }
   await leases.settle(scope, grant);
-  const h: Held = { ...placed, grant };
-  held.set(scope, h);
-  return h;
+  held.set(scope, placed);
 }
 
-async function stubOf(h: Held) {
-  return h.host.getScope(principalId.parse(h.world.member), tenantId.parse(h.world.tenant), h.world.scope as never);
+const guard = new LeaseGuard(leases, { onAcquire: place, fencing: process.env.LEASES !== 'off' });
+guard.startRenewing(Number(process.env.LEASE_RENEW_MS ?? 400));
+
+const hooks: FenceHooks = {
+  beforeInvoke: async (_scope, _op, input) => fault('pre-write', (input as { text?: string }).text ?? ''),
+  afterInvoke: async (_scope, _op, input) => fault('post-commit', (input as { text?: string }).text ?? ''),
+};
+
+/** The scope's stub, fenced: `admit` first (which may place the data), then the host. */
+async function stubFor(scope: string) {
+  await guard.admit(scope);
+  const h = held.get(scope)!;
+  const host = fenceScopeHost(h.host, guard, hooks);
+  const stub = await host.getScope(principalId.parse(h.world.member), tenantId.parse(h.world.tenant), h.world.scope as never);
+  return { stub, world: h.world };
 }
+
+const epochOf = (scope: string) => guard.grant(scope)?.epoch;
 
 async function addItem(scope: string, text: string, key: string | undefined) {
   return serialized(scope, async () => {
-    const h = await take(scope);
-    const stub = await stubOf(h);
-    await fault('pre-write', text);
+    const { stub, world } = await stubFor(scope);
     const item = await stub.invoke<Record<string, unknown>>(
       'todo/add-item',
-      { listId: h.world.listId, text },
+      { listId: world.listId, text },
       key ? { idempotencyKey: key } : undefined,
     );
-    await fault('post-commit', text);
-    return { ...item, node, epoch: h.grant.epoch };
+    return { ...item, node, epoch: epochOf(scope) };
   });
 }
 
 async function listItems(scope: string) {
   return serialized(scope, async () => {
-    const h = await take(scope);
-    const stub = await stubOf(h);
+    const { stub, world } = await stubFor(scope);
     const entries: Array<Record<string, unknown>> = [];
     let cursor: string | null = null;
     do {
       const page: { entries: Array<Record<string, unknown>>; nextCursor: string | null } = await stub.invoke(
         'todo/list-items',
-        { listId: h.world.listId, limit: 200, ...(cursor ? { cursor } : {}) },
+        { listId: world.listId, limit: 200, ...(cursor ? { cursor } : {}) },
       );
       entries.push(...page.entries);
       cursor = page.nextCursor;
     } while (cursor);
-    return { entries, node, epoch: h.grant.epoch };
+    return { entries, node, epoch: epochOf(scope) };
   });
+}
+
+const bgPeriod = Number(process.env.BG_PERIOD_MS ?? 0);
+/** The next slot to run, per scope and epoch: a new holding starts at 0 and replays what is done. */
+const bgNext = new Map<string, number>();
+
+function ownVolumeScopes(): string[] {
+  const dir = join(volume, node, 'scopes');
+  return existsSync(dir) ? readdirSync(dir) : [];
+}
+
+async function runDue(scope: string): Promise<void> {
+  const { stub, world } = await stubFor(scope);
+  const at = `${scope}@${guard.grant(scope)?.epoch}`;
+  // Counted from the scope's birth, so every holder agrees on which slots are due.
+  const due = Math.floor((Date.now() - world.bornAt) / bgPeriod);
+  for (let k = bgNext.get(at) ?? 0; k <= due; k++) {
+    await stub.invoke('todo/add-item', { listId: world.listId, text: `bg:${k}` }, { idempotencyKey: `bg:${k}` });
+    bgNext.set(at, k + 1);
+  }
+}
+
+if (bgPeriod > 0) {
+  setInterval(() => {
+    for (const scope of new Set([...held.keys(), ...ownVolumeScopes()])) {
+      // Not ours (NotHolder) or lost mid-slot (Fenced): another shard runs it, or will.
+      void serialized(scope, () => runDue(scope)).catch(() => undefined);
+    }
+  }, bgPeriod);
+}
+
+/**
+ * A planned move (question 4): for each scope whose home is no longer this shard, finish what
+ * is queued, release the lease and close the scope. The new home takes it on its next request
+ * — the release is what lets it do so at once, instead of waiting out a TTL — and copies it
+ * from this volume, which the control plane still names as `data_on`.
+ */
+async function rebalance(members: string[]): Promise<string[]> {
+  const moved = [...held.keys()].filter((scope) => home(scope, members) !== node);
+  await Promise.all(
+    moved.map((scope) =>
+      serialized(scope, async () => {
+        const grant = guard.grant(scope);
+        const h = held.get(scope);
+        held.delete(scope);
+        guard.forget(scope);
+        if (grant) await leases.release(scope, grant);
+        await h?.host.close();
+      }),
+    ),
+  );
+  return moved;
 }
 
 async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -145,7 +223,11 @@ function send(res: ServerResponse, status: number, payload: unknown): void {
 
 const server = createServer((req, res) => {
   void (async () => {
-    const m = /^\/scopes\/([^/]+)\/items$/.exec(new URL(req.url ?? '/', 'http://shard').pathname);
+    const path = new URL(req.url ?? '/', 'http://shard').pathname;
+    if (req.method === 'POST' && path === '/_rebalance') {
+      return send(res, 200, { moved: await rebalance((await body(req)).members as string[]) });
+    }
+    const m = /^\/scopes\/([^/]+)\/items$/.exec(path);
     if (!m) return send(res, 404, {});
     const scope = decodeURIComponent(m[1]!);
     try {
@@ -160,6 +242,7 @@ const server = createServer((req, res) => {
       if (e instanceof NotHolder) {
         return send(res, 421, { holder: e.holder, epoch: e.epoch, retryAfterMs: e.retryAfterMs, node });
       }
+      if (e instanceof Fenced) return send(res, 503, { error: e.message, node });
       return send(res, 500, { error: e instanceof Error ? e.message : String(e), node });
     }
   })();

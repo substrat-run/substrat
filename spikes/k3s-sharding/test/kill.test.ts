@@ -1,18 +1,23 @@
 /**
  * Kill mid-write: no acknowledged write is lost, and none is applied twice (#1638 Q2).
  *
- * Two shards, two routers, one scope whose home is `todo-0`. The run, every step pinned by a
- * fault the shard fires on itself at an exact point (no sleeps deciding the order):
+ * Two shards, three routers, one scope whose home is `todo-0`. Router-1 is patient (a long
+ * per-attempt timeout), the others give up on a shard after 1.5 s. Every step is pinned by a
+ * fault the shard fires on itself at an exact point, so no sleep decides the order:
  *
- *   1. writes through both routers, so both cache `todo-0`;
- *   2. `todo-0` FREEZES (SIGSTOP) between taking the write and applying it — a pod whose node
- *      stopped answering, not one that died. Router-0 times out and fails over to `todo-1`;
- *   3. more writes land on `todo-1`;
- *   4. `todo-0` wakes up. Router-1 never saw the failover and sends it the next write;
- *   5. `todo-1` is SIGKILLed after committing a write and before answering it. Router-0
- *      retries it, with its idempotency key, wherever the scope is served next, while the
- *      StatefulSet's part brings `todo-1` back under the same name and volume;
- *   6. every acknowledged write must be in the scope exactly once, read through either router.
+ *   1. writes through every router, so all three cache `todo-0`;
+ *   2. `todo-0` FREEZES (SIGSTOP) after admitting w4 and before applying it — a pod whose
+ *      node stopped answering, not one that died. Patient router-1 keeps waiting on it;
+ *   3. router-0 times out on `todo-0` and fails over: `todo-1` takes the scope once the frozen
+ *      holder's lease has run out, and w5, w6 land there;
+ *   4. `todo-0` wakes and finishes w4 on its own, now stale, copy. Router-1 is still waiting
+ *      for that answer — the post-invocation fence is what keeps it from being a success;
+ *   5. router-2 never saw any of this and sends w7 to `todo-0` — the pre-invocation check
+ *      (a renewal the control plane refuses) is what turns it away;
+ *   6. `todo-1` is SIGKILLed after committing w8 and before answering it. Router-0 retries it
+ *      under its idempotency key wherever the scope is served next, while the StatefulSet's
+ *      part brings `todo-1` back under the same name and volume;
+ *   7. every acknowledged write must be in the scope exactly once, read through each router.
  *
  * A SIGKILL alone cannot fail this on one machine — a dead process writes nothing, and the
  * retry is recognised by its key. What fails is step 2's survivor: a holder that is not dead.
@@ -35,44 +40,63 @@ function scopeHomedOn(node: string, members: readonly string[]): string {
   }
 }
 
-async function freezeFailoverKill(c: Cluster): Promise<{ acked: string[]; reads: string[][] }> {
+interface Run {
+  acked: string[];
+  /** Which shard acknowledged each write, at which epoch. */
+  by: Record<string, { node: unknown; epoch: unknown }>;
+  reads: string[][];
+  /** How long the frozen-holder write and the killed-holder write took to be acknowledged. */
+  failoverMs: { frozen: number; killed: number };
+}
+
+async function freezeFailoverKill(c: Cluster): Promise<Run> {
   const scope = scopeHomedOn('todo-0', c.members);
   const acked: string[] = [];
+  const by: Run['by'] = {};
   const write = async (router: string, text: string) => {
     const r = await c.write(router, scope, text);
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     acked.push(text);
+    by[text] = { node: r.json.node, epoch: r.json.epoch };
     return r.json;
   };
 
-  // 1. Both routers learn `todo-0`.
-  expect((await write('router-0', 'w0')).node).toBe('todo-0');
-  expect((await write('router-1', 'w0b')).node).toBe('todo-0');
-  for (const t of ['w1', 'w2', 'w3']) await write('router-0', t);
+  // 1. Every router learns `todo-0`.
+  for (const [router, text] of [['router-0', 'w0'], ['router-1', 'w1'], ['router-2', 'w2'], ['router-0', 'w3']]) {
+    expect((await write(router!, text!)).node).toBe('todo-0');
+  }
 
-  // 2. `todo-0` freezes mid-write; router-0 fails over.
+  // 2. `todo-0` freezes mid-write; patient router-1 waits on it.
   c.arm('todo-0', { text: 'w4', point: 'pre-write', signal: 'SIGSTOP' });
-  const w4 = write('router-0', 'w4');
+  const w4 = write('router-1', 'w4');
   await c.reached('todo-0', 'w4');
-  expect((await w4).node).toBe('todo-1');
 
-  // 3. More writes, on `todo-1`.
-  for (const t of ['w5', 'w6']) expect((await write('router-0', t)).node).toBe('todo-1');
+  // 3. Router-0 fails over to `todo-1`.
+  const frozenAt = Date.now();
+  await write('router-0', 'w5');
+  const frozen = Date.now() - frozenAt;
+  await write('router-0', 'w6');
 
-  // 4. `todo-0` wakes; router-1 still believes it holds the scope.
+  // 4. `todo-0` wakes and finishes w4 — on a copy nobody serves any more.
   c.signal('todo-0', 'SIGCONT');
-  await write('router-1', 'w7');
+  await w4;
 
-  // 5. `todo-1` dies after committing w8 and before answering it.
+  // 5. Router-2 still believes `todo-0` holds the scope.
+  await write('router-2', 'w7');
+
+  // 6. `todo-1` dies after committing w8 and before answering it.
   c.arm('todo-1', { text: 'w8', point: 'post-commit', signal: 'SIGKILL' });
+  const killedAt = Date.now();
   const w8 = write('router-0', 'w8');
   await c.reached('todo-1', 'w8');
   await c.restart('todo-1');
   await w8;
+  const killed = Date.now() - killedAt;
 
-  // 6. Read back through both routers.
-  const reads = [(await c.read('router-0', scope)).texts, (await c.read('router-1', scope)).texts];
-  return { acked, reads };
+  // 7. Read back through every router.
+  const reads: string[][] = [];
+  for (const router of ['router-0', 'router-1', 'router-2']) reads.push((await c.read(router, scope)).texts);
+  return { acked, by, reads, failoverMs: { frozen, killed } };
 }
 
 function tally(texts: string[]): Record<string, number> {
@@ -81,16 +105,54 @@ function tally(texts: string[]): Record<string, number> {
   return n;
 }
 
+function damage(run: Run): Array<{ lost: string[]; doubled: string[] }> {
+  return run.reads.map((texts) => {
+    const n = tally(texts);
+    return {
+      lost: run.acked.filter((t) => (n[t] ?? 0) === 0),
+      doubled: run.acked.filter((t) => (n[t] ?? 0) > 1),
+    };
+  });
+}
+
+/** Router-1 is the patient one: it is still waiting when the frozen holder wakes. */
+const ROUTERS = [1500, 20_000, 1500];
+const CLEAN = { lost: [], doubled: [] };
+
 describe('kill mid-write', () => {
   it('loses no acknowledged write and applies none twice', async () => {
-    cluster = await new Cluster({ shards: 2, routers: 2 }).start();
-    const { acked, reads } = await freezeFailoverKill(cluster);
-    for (const texts of reads) {
-      const n = tally(texts);
-      const lost = acked.filter((t) => (n[t] ?? 0) === 0);
-      const doubled = acked.filter((t) => (n[t] ?? 0) > 1);
-      expect({ lost, doubled }).toEqual({ lost: [], doubled: [] });
-      expect(texts).toHaveLength(acked.length);
+    cluster = await new Cluster({ shards: 2, routerTimeoutsMs: ROUTERS }).start();
+    const run = await freezeFailoverKill(cluster);
+    expect(damage(run)).toEqual([CLEAN, CLEAN, CLEAN]);
+    expect(run.reads[1]).toEqual(run.reads[0]);
+    expect(run.reads[2]).toEqual(run.reads[0]);
+    expect(run.reads[0]).toHaveLength(run.acked.length);
+    // `todo-1` was granted the scope only after the frozen holder's lease ran out (epoch 2).
+    expect(run.by.w5).toEqual({ node: 'todo-1', epoch: 2 });
+    // The woken holder's w4 was fenced, not acknowledged: router-1 retried it on `todo-1`.
+    expect(run.by.w4).toEqual({ node: 'todo-1', epoch: 2 });
+    // Router-2 was turned away from the woken holder rather than served by it.
+    expect(run.by.w7).toEqual({ node: 'todo-1', epoch: 2 });
+    // The killed holder's write was answered under a third epoch, by whoever took it next.
+    expect(run.by.w8?.epoch).toBe(3);
+    console.log(`failover after a frozen holder: ${run.failoverMs.frozen} ms; after a killed one: ${run.failoverMs.killed} ms`);
+  });
+
+  // The control: the same cluster with the lease switched off (routing plus a placement
+  // table, `LEASES=off`). It must LOSE writes; if it ever stops doing so, this test no
+  // longer shows what the lease is for, and the one above proves nothing.
+  it('without the lease, the woken holder keeps acknowledging on a stale copy (control)', async () => {
+    cluster = await new Cluster({ shards: 2, routerTimeoutsMs: ROUTERS, leases: 'off' }).start();
+    const run = await freezeFailoverKill(cluster);
+    // The woken holder acknowledged both: w4 for patient router-1, w7 for stale router-2.
+    expect(run.by.w4?.node).toBe('todo-0');
+    expect(run.by.w7?.node).toBe('todo-0');
+    // w6 went to `todo-1` alone, and the served copy is the woken holder's. (w5 may survive:
+    // router-0's abandoned first attempt sat queued on the frozen shard, and whether it runs
+    // once the shard wakes is up to the socket, so the control does not depend on it.)
+    for (const d of damage(run)) {
+      expect(d.lost).toContain('w6');
+      expect(d.doubled).toEqual([]);
     }
   });
 });

@@ -11,7 +11,10 @@
  *   scope, seed it).
  * - `renew` extends only the CURRENT (holder, epoch). A holder that slept through its expiry
  *   and finds the epoch moved learns it is fenced here, and stops.
- * - `settle` records that the holder's own volume now has the data (after the copy).
+ * - `settle` records that the holder's node's volume now has the data (after the copy).
+ *
+ * A holder is a process incarnation (`todo-1/<boot id>`), so a pod brought back under the
+ * same name waits out its predecessor's lease like anyone else (`lease-client.ts`).
  * - `release` ends a lease early (a planned move, question 4).
  *
  * Every write is one `BEGIN IMMEDIATE` transaction, so two shards racing for one scope are
@@ -31,6 +34,7 @@ import { exitWithParent } from './process.js';
 const dir = process.env.CP_DIR ?? '.data/control-plane';
 const port = Number(process.env.PORT ?? 0);
 const ttlMs = Number(process.env.LEASE_TTL_MS ?? 1500);
+const leasesOn = process.env.LEASES !== 'off';
 
 mkdirSync(dir, { recursive: true });
 const db = new Database(join(dir, 'leases.sqlite'));
@@ -70,6 +74,9 @@ const acquire = db.transaction((scope: string, holder: string): Reply => {
     db.prepare('UPDATE leases SET expires_at = ? WHERE scope = ?').run(now + ttlMs, scope);
     return [200, { epoch: row.epoch, ttlMs, dataOn: row.data_on }];
   }
+  if (leasesOn && row.expires_at > now) {
+    return [409, { holder: row.holder, epoch: row.epoch, retryAfterMs: row.expires_at - now }];
+  }
   const epoch = row.epoch + 1;
   db.prepare('UPDATE leases SET holder = ?, epoch = ?, expires_at = ? WHERE scope = ?').run(holder, epoch, now + ttlMs, scope);
   return [200, { epoch, ttlMs, dataOn: row.data_on }];
@@ -84,10 +91,10 @@ const renew = db.transaction((scope: string, holder: string, epoch: number): Rep
   return [200, { epoch, ttlMs }];
 });
 
-const settle = db.transaction((scope: string, holder: string, epoch: number): Reply => {
+const settle = db.transaction((scope: string, holder: string, epoch: number, node: string): Reply => {
   const row = read.get(scope);
   if (!row || row.holder !== holder || row.epoch !== epoch) return [409, {}];
-  db.prepare('UPDATE leases SET data_on = ? WHERE scope = ?').run(holder, scope);
+  db.prepare('UPDATE leases SET data_on = ? WHERE scope = ?').run(node, scope);
   return [200, {}];
 });
 
@@ -128,7 +135,7 @@ const server = createServer((req, res) => {
         case '/lease/renew':
           return send(res, renew(scope, holder, epoch));
         case '/lease/settle':
-          return send(res, settle(scope, holder, epoch));
+          return send(res, settle(scope, holder, epoch, String(b.node)));
         case '/lease/release':
           return send(res, release(scope, holder, epoch));
         default:

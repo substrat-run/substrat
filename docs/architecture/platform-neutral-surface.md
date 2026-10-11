@@ -320,6 +320,24 @@ neutral and move unchanged. The hard rows are all one problem — **reproducing 
 single-writer semantics** — and a per-scope leader lease + a single-consumer queue +
 SQLite-on-a-PV satisfies it.
 
+That last sentence has been run once, on one machine, in
+[`spikes/k3s-sharding`](../../spikes/k3s-sharding/FINDINGS.md) (#1638, layer 1). It holds,
+with three conditions the sentence does not name, and each was found by a test that failed
+without it:
+
+- **The lease holder is a process incarnation, not the pod name.** A StatefulSet reuses the
+  name, and a force-deleted pod can still be running when its replacement starts. A lease
+  keyed by name lets the two share it.
+- **The holder withholds an acknowledgement when its lease ran out during the invocation.**
+  A holder frozen between its lease check and its commit wakes up and commits to a copy
+  nobody serves any more. What must not happen is that its caller is told the write succeeded.
+- **The client's idempotency key reaches the scope through the router.** After a shard dies
+  without answering, only the scope can tell whether the write committed.
+
+The spike also shows that a scope is unavailable for about one lease TTL when its holder
+fails, and that the contract-suite pass §6 calls for needs the directory as a separate
+service first (#1638, question 5).
+
 ---
 
 ## 6. The port surface, restated

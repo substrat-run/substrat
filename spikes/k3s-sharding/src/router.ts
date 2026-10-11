@@ -19,7 +19,8 @@ import { candidates } from './placement.js';
 import { exitWithParent } from './process.js';
 
 const port = Number(process.env.PORT ?? 0);
-const members = JSON.parse(process.env.MEMBERS ?? '{}') as Record<string, string>;
+/** Name → URL. Replaced whole by `POST /_members` when the StatefulSet is scaled. */
+let members = JSON.parse(process.env.MEMBERS ?? '{}') as Record<string, string>;
 const requestTimeoutMs = Number(process.env.REQUEST_TIMEOUT_MS ?? 1500);
 const deadlineMs = Number(process.env.ROUTE_DEADLINE_MS ?? 20_000);
 
@@ -100,6 +101,11 @@ function send(res: ServerResponse, status: number, payload: unknown): void {
 const server = createServer((req, res) => {
   void (async () => {
     const path = new URL(req.url ?? '/', 'http://router').pathname;
+    if (req.method === 'POST' && path === '/_members') {
+      members = JSON.parse(await body(req)) as Record<string, string>;
+      cache.clear();
+      return send(res, 200, { members: Object.keys(members) });
+    }
     const m = /^\/scopes\/([^/]+)\//.exec(path);
     if (!m) return send(res, 404, {});
     const headers: Record<string, string> = { 'content-type': 'application/json' };

@@ -22,12 +22,19 @@ const SPIKE = fileURLToPath(new URL('../', import.meta.url));
 
 export interface ClusterOptions {
   shards: number;
-  routers?: number;
+  /** One router per entry, each with that per-attempt timeout (ms). Default: one, 1500. */
+  routerTimeoutsMs?: number[];
   /** `off` runs the control: placement and routing with no lease (`control-plane.ts`). */
   leases?: 'on' | 'off';
   leaseTtlMs?: number;
   leaseMarginMs?: number;
-  requestTimeoutMs?: number;
+  /**
+   * How many of the shards the routers are told about at start (default: all). The rest are
+   * running pods the StatefulSet has not been scaled onto yet — see `scale()`.
+   */
+  routedShards?: number;
+  /** Run each held scope's background slots every this many ms (`shard.ts`); off by default. */
+  bgPeriodMs?: number;
 }
 
 export interface FaultReport {
@@ -65,6 +72,7 @@ export class Cluster {
   private readonly procs = new Map<string, Proc>();
   private readonly everSpawned: ChildProcess[] = [];
   private cpUrl = '';
+  private readonly shardUrls: Record<string, string> = {};
 
   constructor(readonly opts: ClusterOptions) {
     this.members = statefulSetMembers('todo', opts.shards);
@@ -115,7 +123,7 @@ export class Cluster {
       },
       cpPort,
     );
-    const urls: Record<string, string> = {};
+    const urls = this.shardUrls;
     await Promise.all(
       this.members.map(async (name) => {
         const port = await freePort();
@@ -129,25 +137,52 @@ export class Cluster {
             VOLUME: join(this.dir, 'volumes'),
             LEASE_MARGIN_MS: String(this.opts.leaseMarginMs ?? 400),
             LEASES: this.opts.leases ?? 'on',
+            BG_PERIOD_MS: String(this.opts.bgPeriodMs ?? 0),
           },
           port,
         );
       }),
     );
-    for (let i = 0; i < (this.opts.routers ?? 1); i++) {
+    for (const [i, timeout] of (this.opts.routerTimeoutsMs ?? [1500]).entries()) {
       const name = `router-${i}`;
       await this.spawn(
         name,
         'router.ts',
         {
           ROUTER_NAME: name,
-          MEMBERS: JSON.stringify(urls),
-          REQUEST_TIMEOUT_MS: String(this.opts.requestTimeoutMs ?? 1500),
+          MEMBERS: JSON.stringify(this.routed(this.opts.routedShards ?? this.members.length)),
+          REQUEST_TIMEOUT_MS: String(timeout),
         },
         await freePort(),
       );
     }
     return this;
+  }
+
+  private routed(n: number): Record<string, string> {
+    return Object.fromEntries(this.members.slice(0, n).map((m) => [m, this.shardUrls[m]!]));
+  }
+
+  /**
+   * Scale the StatefulSet to `n` replicas: every router learns the new member list, then
+   * every shard releases the scopes whose home moved. Returns what each shard released.
+   */
+  async scale(n: number): Promise<Record<string, string[]>> {
+    const routed = this.routed(n);
+    for (const name of this.procs.keys()) {
+      if (!name.startsWith('router-')) continue;
+      const res = await fetch(`${this.url(name)}/_members`, { method: 'POST', body: JSON.stringify(routed) });
+      if (res.status !== 200) throw new Error(`${name} refused the member list`);
+    }
+    const moved: Record<string, string[]> = {};
+    for (const shard of Object.keys(routed)) {
+      const res = await fetch(`${this.url(shard)}/_rebalance`, {
+        method: 'POST',
+        body: JSON.stringify({ members: Object.keys(routed) }),
+      });
+      moved[shard] = ((await res.json()) as { moved: string[] }).moved;
+    }
+    return moved;
   }
 
   get controlPlane(): string {
