@@ -11113,11 +11113,16 @@ export class CloudflareScopeHost implements ScopeHost {
     receipts: readonly InstallsReconciled[] = [],
   ): Promise<void> {
     const after = await this.manifestOf(afterId, held);
-    for (const from of new Set(froms)) {
-      if (from && from !== afterId) assertNoBindingShapeBreak(await this.manifestOf(from, held), after);
-    }
+    const judged = [...new Set(froms)].filter((f): f is string => !!f && f !== afterId);
+    for (const from of judged) assertNoBindingShapeBreak(await this.manifestOf(from, held), after);
     for (const r of receipts) {
-      if (r.versionId !== afterId) assertNoBindingShapeBreak(await this.manifestOf(r.versionId, held), after, installsReconciledNote(r));
+      const judgedFrom = installsReconciledNote(r);
+      // No receipt: the installs run one of `froms` and may not have reconciled its retirements.
+      if (r.versionId === null) {
+        for (const from of judged) assertNoBindingShapeBreak(await this.manifestOf(from, held), after, { judgedFrom, retiredStillHeld: true });
+      } else if (r.versionId !== afterId) {
+        assertNoBindingShapeBreak(await this.manifestOf(r.versionId, held), after, { judgedFrom });
+      }
     }
   }
 
@@ -11136,7 +11141,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // A primary scope is also judged from the version it last reconciled: until then, a retirement
     // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
     if (!move) return;
-    const receipt = isPrimaryScope(scope) && scope.provisionedVersionId ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
+    const receipt = isPrimaryScope(scope) ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
     await this.assertNoStrandFrom([move.before], move.after, incoming, receipt);
   }
 

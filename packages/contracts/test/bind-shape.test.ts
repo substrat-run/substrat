@@ -178,9 +178,10 @@ describe('the binding-shape gate (#2178)', () => {
 
   describe('over stored manifests', () => {
     const manifest = (...entityGrants: EntityGrantShape[]) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } });
-    const refused = (from: string | null, to: string | null) => {
+    const refused = (from: string | null, to: string | null) => refused2(from, to);
+    const refused2 = (from: string | null, to: string | null, opts?: Parameters<typeof assertNoBindingShapeBreak>[2]) => {
       try {
-        assertNoBindingShapeBreak(from, to);
+        assertNoBindingShapeBreak(from, to, opts);
         return null;
       } catch (e) {
         return e as Error & { code?: string };
@@ -201,6 +202,15 @@ describe('the binding-shape gate (#2178)', () => {
       expect(refused(manifest(shape()), manifest(shape()))).toBeNull();
       // No shape before, so nothing was bound with it.
       expect(refused(null, manifest(shape()))).toBeNull();
+    });
+
+    it('judges installs that may not have run a retirement as still holding its keys, and names what it judged from', () => {
+      const retiredAll = manifest(shape({ permissions: [], retired: ['desk:read-own'] }));
+      expect(refused(retiredAll, manifest())).toBeNull();
+      const e = refused2(retiredAll, manifest(), { judgedFrom: '2 install(s) with no reconcile receipt (one is s1)', retiredStillHeld: true });
+      expect(e?.message).toMatch(/drops the shape; bound people keep desk:read-own.*Judged from 2 install\(s\) with no reconcile receipt \(one is s1\)$/);
+      // A move that strands nobody even so is not refused: the key stays retired in the incoming version.
+      expect(refused2(retiredAll, manifest(shape({ permissions: ['desk:other'], retired: ['desk:read-own'] })), { retiredStillHeld: true })).toBeNull();
     });
 
     it('fails closed on grant shapes it cannot read, on either side', () => {

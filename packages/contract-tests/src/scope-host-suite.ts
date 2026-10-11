@@ -7151,6 +7151,32 @@ export function scopeHostContractSuite(
         expect(await boundTo(pinned)).toBe(v.dropped);
       });
 
+      it('an install with no receipt counts as not reconciled, but only for a move that would strand otherwise (review of #2181, round 2)', async () => {
+        const { slug, v } = await listed();
+        const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.promoteVersion(staff, slug, 'prod', v.binds);
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.binds, doClasses: [], migrationTag: 'g' });
+        const routed = await install(slug, v.binds);
+        await host.admin.markScopeProvisioned(staff, t1, routed, v.binds);
+        await host.admin.promoteVersion(staff, slug, 'prod', v.retired);
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
+        await host.admin.markScopeProvisioned(staff, t1, routed, v.retired);
+        // Its receipt cleared (a rewind here; a switch does the same on the hosted adapter): it may
+        // not have run the retirement, so the drop waits for it, and says so.
+        await host.admin.markScopeProvisioned(staff, t1, routed, null);
+        const noReceipt = new RegExp(`drops the shape.*Judged from 1 install\\(s\\) with no reconcile receipt.*\\(one is ${routed}\\)`);
+        await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', noReceipt);
+        // A move that strands nobody even with the retirement unrun is not refused for it: a key added.
+        const added = await publishShaped(slug, [binding({ permissions: ['contact:other'], retired: [KEY], holder: { ...HOLDER, principalColumn: 'owner' } })]);
+        await host.admin.promoteVersion(staff, slug, 'prod', added);
+        const retiredBoth = await publishShaped(slug, [binding({ permissions: [], retired: [KEY, 'contact:other'], holder: { ...HOLDER, principalColumn: 'owner' } })]);
+        await host.admin.promoteVersion(staff, slug, 'prod', retiredBoth);
+        // The twin: reconciled again, the drop passes.
+        await host.admin.markScopeProvisioned(staff, t1, routed, retiredBoth);
+        await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
+        expect(await prodOf(slug)).toBe(v.dropped);
+      });
+
       it("a private promote judges each owned scope it re-points from the scope's own version, before anything moves", async () => {
         const slug = `tenant-a/bind-${ulid().slice(-8).toLowerCase()}`;
         await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: t1 });

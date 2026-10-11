@@ -2162,18 +2162,22 @@ export function scopeMoveOf(
  * succeeds): those routed on a serving ref, and those of an owner tenant. A retirement reaches a
  * scope only at its reconcile, so a scope provisioned behind the retiring version still holds the
  * keys. One row per version, with how many installs and one of them to name, however many installs
- * there are. Binds `(vertical, servingRef, ownerTenant)`; a null matches nothing. The directory has
+ * there are. Installs with NO receipt are a row too (`version_id` null): a switch clears the receipt
+ * (#2045), a rewind does, and a new install has none until its first reconcile. The sweep reconciles
+ * every one of them on its next pass, so a refusal they cause is transient unless that reconcile
+ * keeps failing or answers 'unsupported'. Binds `(vertical, servingRef, ownerTenant)`; a null matches nothing. The directory has
  * no index on `vertical`, so this scans its scopes table: once per promote or serve.
  */
 export const PROVISIONED_VERSIONS_SQL = `SELECT provisioned_version_id AS version_id, COUNT(*) AS installs, MIN(scope_id) AS example
   FROM scopes
   WHERE vertical = ? AND status = 'active' AND forked_from IS NULL AND COALESCE(kind, '') != 'preview'
-    AND provisioned_version_id IS NOT NULL AND (serving_ref = ? OR tenant_id = ?)
+    AND (serving_ref = ? OR tenant_id = ?)
   GROUP BY provisioned_version_id`;
 
 /** One row of `PROVISIONED_VERSIONS_SQL`: the installs that last reconciled one version. */
 export interface InstallsReconciled {
-  versionId: string;
+  /** Null: installs with no receipt, which may not have reconciled anything they run. */
+  versionId: string | null;
   installs: number;
   /** One of them, so a refusal can say which install to look at. */
   example: string;
@@ -2181,12 +2185,13 @@ export interface InstallsReconciled {
 
 /** `PROVISIONED_VERSIONS_SQL`'s rows, as either adapter's driver returns them. */
 export function installsReconciledOf(rows: readonly Record<string, unknown>[]): InstallsReconciled[] {
-  return rows.map((r) => ({ versionId: String(r.version_id), installs: Number(r.installs), example: String(r.example) }));
+  return rows.map((r) => ({ versionId: r.version_id == null ? null : String(r.version_id), installs: Number(r.installs), example: String(r.example) }));
 }
 
 /** What a refusal judged from installs' receipts says it was judged from. */
 export function installsReconciledNote(g: InstallsReconciled): string {
-  return `${g.installs} install(s) that last reconciled ${g.versionId} (one is ${g.example}); the drop waits for their reconcile`;
+  const which = g.versionId === null ? 'with no reconcile receipt (a switch or a rewind cleared it, or none was written yet)' : `that last reconciled ${g.versionId}`;
+  return `${g.installs} install(s) ${which} (one is ${g.example}); the drop waits for their reconcile`;
 }
 
 /**

@@ -4534,11 +4534,13 @@ export class SqliteScopeHost implements ScopeHost {
    */
   private assertNoStrandFrom(froms: readonly (string | null | undefined)[], incomingId: string, receipts: readonly InstallsReconciled[] = []): void {
     const incoming = this.manifestJsonOf(incomingId);
-    for (const from of new Set(froms)) {
-      if (from && from !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming);
-    }
+    const judged = [...new Set(froms)].filter((f): f is string => !!f && f !== incomingId);
+    for (const from of judged) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming);
     for (const r of receipts) {
-      if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, installsReconciledNote(r));
+      const judgedFrom = installsReconciledNote(r);
+      // No receipt: the installs run one of `froms` and may not have reconciled its retirements.
+      if (r.versionId === null) for (const from of judged) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming, { judgedFrom, retiredStillHeld: true });
+      else if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, { judgedFrom });
     }
   }
 
@@ -4552,7 +4554,7 @@ export class SqliteScopeHost implements ScopeHost {
     // A primary scope is also judged from the version it last reconciled: until then, a retirement
     // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
     if (!move) return;
-    const receipt = isPrimaryScope(scope) && scope.provisionedVersionId ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
+    const receipt = isPrimaryScope(scope) ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
     this.assertNoStrandFrom([move.before], move.after, receipt);
   }
 

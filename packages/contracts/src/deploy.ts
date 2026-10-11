@@ -436,8 +436,15 @@ export function exportsOfManifestJson(manifestJson: string | null | undefined): 
 export function assertNoBindingShapeBreak(
   outgoingManifest: string | null | undefined,
   incomingManifest: string | null | undefined,
-  /** What the outgoing version is, when the refusal should say (the installs that last reconciled it). */
-  judgedFrom?: string,
+  opts: {
+    /** What the outgoing version is, when the refusal should say (the installs that last reconciled it). */
+    judgedFrom?: string;
+    /**
+     * Judge as if the outgoing version's retirements had not run: for installs with no receipt,
+     * which may not have reconciled it, so may still hold every key it retires.
+     */
+    retiredStillHeld?: boolean;
+  } = {},
 ): void {
   const grants = (json: string | null | undefined, which: string) => {
     const read = registryRowsOfManifestJson(json, 'entityGrants', entityGrantShape);
@@ -450,8 +457,13 @@ export function assertNoBindingShapeBreak(
     }
     return read.rows;
   };
-  const breaks = bindingShapeBreaks({ entityGrants: grants(outgoingManifest, 'the running') }, { entityGrants: grants(incomingManifest, 'the incoming') });
-  if (breaks.length > 0) throw substratError('precondition_failed', bindingShapeRefusal(breaks) + (judgedFrom ? `. Judged from ${judgedFrom}` : ''));
+  const outgoing = grants(outgoingManifest, 'the running').map((g) =>
+    opts.retiredStillHeld && g.retired?.length ? { ...g, permissions: [...g.permissions, ...g.retired], retired: undefined } : g,
+  );
+  const breaks = bindingShapeBreaks({ entityGrants: outgoing }, { entityGrants: grants(incomingManifest, 'the incoming') });
+  if (breaks.length > 0) {
+    throw substratError('precondition_failed', bindingShapeRefusal(breaks) + (opts.judgedFrom ? `. Judged from ${opts.judgedFrom}` : ''));
+  }
 }
 
 /**
@@ -678,11 +690,12 @@ export const entityGrantShape = z.object({
    * keys in `retired` and none in `permissions`, then drop or move it in a later version. A
    * retirement reaches an install only at its reconcile, so each primary install the move reaches is
    * also judged from the version it last reconciled (`provisionedVersionId`): the drop stays refused
-   * until every one has reconciled the retiring version. That receipt proves less than the scope's
-   * own retirement record would: a reconcile that left a retirement open still writes it, a copy
-   * (fork, snapshot, preview) never reconciles and is not judged from one, and a scope with no
-   * receipt is not judged from one. Omitted when unset, so a registry that binds nothing keeps its
-   * digest.
+   * until every one has reconciled the retiring version. An install with no receipt (a switch or a
+   * rewind cleared it, or it is new) counts as not having run the retirements of what it runs, until
+   * the sweep's next reconcile writes one. That receipt proves less than the scope's own retirement
+   * record would: a reconcile that left a retirement open still writes it, and a copy (fork,
+   * snapshot, preview) never reconciles and is not judged from one. Omitted when unset, so a
+   * registry that binds nothing keeps its digest.
    */
   bind: z.object({ permission: permissionKey }).optional(),
 });
