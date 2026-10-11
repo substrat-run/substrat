@@ -44,6 +44,9 @@ writeFileSync(
     vars: {
       PLATFORM_SECRET: 'test-platform-secret',
       ROUTER_SECRET: 'test-router-secret',
+      // The binding-default identity (AUTH_PROVIDER defaults to 'oidc'): what an install with no
+      // delivered `substrat:auth` runs on, and what a delivery overrides (#2201).
+      OIDC_ISSUER: 'https://binding-issuer.test',
       SUBSTRAT_VERSION_ID: '01JTESTVRSN0000000000000F0',
       // Read by the suite only — the worker never looks at it.
       TEST_INSTALL_ENTITLEMENTS: JSON.stringify(installEntitlements),
