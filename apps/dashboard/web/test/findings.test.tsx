@@ -180,7 +180,7 @@ describe('Findings view', () => {
           .sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen) || (a.id < b.id ? -1 : 1));
         const after = input.cursor === undefined ? 0 : all.findIndex((e) => e.id === input.cursor) + 1;
         const page = all.slice(after, after + pageSize);
-        return { available: true, entries: page, nextCursor: page.length >= pageSize ? page[page.length - 1]!.id : null };
+        return { available: true, entries: page, nextCursor: page.length >= pageSize ? page[page.length - 1]!.id : null, cut: false };
       },
       listFindingRules: async ({ active }) => ({ entries: active ? rules.filter((r) => Date.parse(r.expiresAt) > Date.now()) : rules }),
       setFindingStatus: async (input) => {
@@ -360,6 +360,19 @@ describe('Findings view', () => {
       expect(button('Load more')).toBeUndefined();
     });
 
+    it('does not call a page exact when an older control plane cut it: no count, a note, no Load more', async () => {
+      const client = fake(open(3), [], 3);
+      const real = client.listFindings;
+      // The dashboard's `cut`: a plane that predates paging returned a full page it cannot continue.
+      client.listFindings = async (i) => ({ ...(await real(i)), nextCursor: null, cut: i.status === 'open' });
+      await mount(client);
+      expect(button('Load more')).toBeUndefined();
+      expect(host.textContent).toContain('Showing the latest 3 findings');
+      const label = (prefix: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith(prefix))?.textContent;
+      expect(label('Open')).toBe('Open'); // cut: no number
+      expect(label('Acked')).toContain('0'); // the twin: an uncut tab keeps its exact count
+    });
+
     it('moves a finding between tabs without disturbing the walk of the others', async () => {
       const client = fake([...open(4), ...entries.slice(1)], [], 3);
       await mount(client);
@@ -384,8 +397,10 @@ describe('Findings view', () => {
     });
 
     it('calls a count exact only once that tab’s walk has ended', () => {
-      const cursors = { open: 'x', acked: null, resolved: null, suppressed: null };
+      const ended = { next: null, cut: false };
+      const cursors = { open: { next: 'x', cut: false }, acked: ended, resolved: { next: null, cut: true }, suppressed: ended };
       expect(countIsExact(cursors, 'open')).toBe(false);
+      expect(countIsExact(cursors, 'resolved')).toBe(false); // cut: not over, just not walkable
       expect(countIsExact(cursors, 'acked')).toBe(true);
     });
   });
@@ -428,7 +443,7 @@ describe('Findings view', () => {
 
   it('says the store is not there yet when the read is unavailable', async () => {
     const client = fake(entries);
-    client.listFindings = async () => ({ available: false, entries: [], nextCursor: null });
+    client.listFindings = async () => ({ available: false, entries: [], nextCursor: null, cut: false });
     await mount(client);
     expect(host.textContent).toContain('not available on this platform yet');
   });
@@ -658,7 +673,7 @@ describe('Findings view', () => {
     client.listFindings = ({ status }) => {
       const n = Math.floor(calls++ / perRead) + 1;
       return new Promise((resolve) => {
-        (pending[n] ??= []).push(() => resolve({ available: true, entries: status === 'open' ? [finding({ id: `r${n}`, title: `read ${n}` })] : [], nextCursor: null }));
+        (pending[n] ??= []).push(() => resolve({ available: true, entries: status === 'open' ? [finding({ id: `r${n}`, title: `read ${n}` })] : [], nextCursor: null, cut: false }));
         release[n] = () => pending[n]!.forEach((r) => r());
       });
     };

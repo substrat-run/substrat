@@ -42,8 +42,9 @@ export const dashboardRoutes = defineRoutes({
       cursor: z.string().min(1).optional(),
     }),
     // `available: false` is a plane that predates findings — said as such, never as an empty inbox.
-    // `nextCursor` is null when the walk is over.
-    output: z.object({ available: z.boolean(), entries: z.array(findingEntry), nextCursor: z.string().nullable() }),
+    // `nextCursor` is null when the walk is over. `cut` is true only when a control plane that
+    // predates paging returned a full page it cannot continue: the list may be longer than shown.
+    output: z.object({ available: z.boolean(), entries: z.array(findingEntry), nextCursor: z.string().nullable(), cut: z.boolean() }),
     http: { method: 'GET', path: '/findings' },
   },
   'dashboard/set-finding-status': {

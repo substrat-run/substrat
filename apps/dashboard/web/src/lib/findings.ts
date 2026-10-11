@@ -25,10 +25,11 @@ export function tabOf(value: string | undefined): FindingStatus {
 
 /**
  * Where each tab's walk stands: the cursor to follow for its next page, or `null` when the plane
- * said the walk is over. A tab is walked on its own (`status` narrows the read), so a long
+ * said the walk is over. `cut` is a walk that cannot continue though the list may be longer (a
+ * control plane that predates paging returned a full page): not over, and not walkable. A tab is walked on its own (`status` narrows the read), so a long
  * Resolved history never hides the Open tab's older findings behind it.
  */
-export type FindingCursors = Record<FindingStatus, string | null>;
+export type FindingCursors = Record<FindingStatus, { next: string | null; cut: boolean }>;
 
 /**
  * Fold a page into what is already loaded. By id, the newer copy winning: a finding that moved
@@ -51,7 +52,7 @@ function byRecency(a: FindingEntry, b: FindingEntry): number {
  * so: a count over the pages loaded so far is a floor, and a floor shown as a number reads as a total.
  */
 export function countIsExact(cursors: FindingCursors, tab: FindingStatus): boolean {
-  return cursors[tab] === null;
+  return cursors[tab].next === null && !cursors[tab].cut;
 }
 
 export function countByStatus(entries: readonly FindingEntry[]): Record<FindingStatus, number> {

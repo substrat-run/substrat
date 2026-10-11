@@ -47,7 +47,7 @@ export function mockFindingsClient(): FindingsClient {
       const all = entries.filter((e) => status === undefined || e.status === status).sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen));
       const from = cursor === undefined ? 0 : Number(cursor);
       const page = all.slice(from, from + limit);
-      return { available: true, entries: page, nextCursor: page.length >= limit ? String(from + limit) : null };
+      return { available: true, entries: page, nextCursor: page.length >= limit ? String(from + limit) : null, cut: false };
     },
     setFindingStatus: async ({ id, status }) => {
       const next = { ...entries.find((e) => e.id === id)!, status };

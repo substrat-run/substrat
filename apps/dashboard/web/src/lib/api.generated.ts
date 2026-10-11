@@ -108,7 +108,7 @@ export interface DashboardClient {
    *
    * `GET /findings` — `dashboard/list-findings`
    */
-  listFindings(input: { status?: "open" | "acked" | "resolved" | "suppressed"; kind?: "invariant" | "drift" | "recurring"; limit?: number; cursor?: string }): Promise<{ available: boolean; entries: FindingEntry[]; nextCursor: string | null }>;
+  listFindings(input: { status?: "open" | "acked" | "resolved" | "suppressed"; kind?: "invariant" | "drift" | "recurring"; limit?: number; cursor?: string }): Promise<{ available: boolean; entries: FindingEntry[]; nextCursor: string | null; cut: boolean }>;
 
   /**
    * End a suppress rule now

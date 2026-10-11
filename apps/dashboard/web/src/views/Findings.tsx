@@ -92,7 +92,7 @@ export function Findings({
       return {
         state: 'ready',
         entries: pages.reduce<FindingEntry[]>((all, p) => mergeFindings(all, p.entries), []),
-        cursors: Object.fromEntries(STATUSES.map((status, i) => [status, pages[i]!.nextCursor ?? null])) as FindingCursors,
+        cursors: Object.fromEntries(STATUSES.map((status, i) => [status, { next: pages[i]!.nextCursor ?? null, cut: pages[i]!.cut === true }])) as FindingCursors,
         rules: rules.entries,
       };
     } catch (e) {
@@ -137,7 +137,7 @@ export function Findings({
       if (mine !== latest.current) return;
       setLoad((l) =>
         l.state === 'ready'
-          ? { ...l, entries: mergeFindings(l.entries, page.entries), cursors: { ...l.cursors, [tab]: page.nextCursor ?? null } }
+          ? { ...l, entries: mergeFindings(l.entries, page.entries), cursors: { ...l.cursors, [tab]: { next: page.nextCursor ?? null, cut: page.cut === true } } }
           : l,
       );
     } catch (e) {
@@ -199,7 +199,8 @@ export function Findings({
 
   const counts = countByStatus(load.entries);
   const rows = inTab(load.entries, tab);
-  const more = load.cursors[tab];
+  const more = load.cursors[tab].next;
+  const cut = load.cursors[tab].cut;
   return (
     <>
       <Tabs
@@ -236,6 +237,11 @@ export function Findings({
           </div>
         )}
       </div>
+      {cut && (
+        <div role="status" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+          Showing the latest {rows.length} findings by last seen. Older ones cannot be listed until the platform finishes updating, so this tab carries no count.
+        </div>
+      )}
       {moreError && <div role="alert" style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{moreError}</div>}
       {tab === 'suppressed' && load.rules.length > 0 && (
         <section aria-label="Suppress rules" style={{ ...card, padding: 0 }}>

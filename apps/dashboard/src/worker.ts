@@ -5357,7 +5357,7 @@ async function findingsPlane({ c, host, node }: TeamContext, may: 'read' | 'mana
 const routeHandlers = {
   'dashboard/list-findings': async (ctx, filter) => {
     const page = await (await findingsPlane(ctx, 'read')).listFindings(filter);
-    return page === null ? { available: false, entries: [], nextCursor: null } : { available: true, ...page };
+    return page === null ? { available: false, entries: [], nextCursor: null, cut: false } : { available: true, ...page };
   },
   'dashboard/set-finding-status': async (ctx, { id, status }) =>
     (await findingsPlane(ctx, 'manage')).setFindingStatus(id, status),

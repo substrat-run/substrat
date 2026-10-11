@@ -152,7 +152,7 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
     }
   });
   describe('paging (#2198): the read gate is the paging gate', () => {
-    type Page = { available: boolean; entries: { id: string; operation: string }[]; nextCursor: string | null };
+    type Page = { available: boolean; entries: { id: string; operation: string }[]; nextCursor: string | null; cut: boolean };
     const page = async (role: keyof typeof subs, query = ''): Promise<Page> => {
       const res = await asRole(role, 'GET', `/api/teams/${tenant}/findings${query}`);
       expect(res.status, `${role} ${query}`).toBe(200);
@@ -171,6 +171,7 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
       expect(body.available).toBe(true);
       expect(body.entries).toHaveLength(5);
       expect(body.nextCursor).toBeNull();
+      expect(body.cut).toBe(false); // a paging plane's null is a finished walk
       // Nothing about paging was asked of the plane.
       const reads = planeCalls.filter((c) => c.startsWith('GET /findings?'));
       expect(reads.map((c) => new URL(c.slice(4), 'http://x').searchParams.has('cursor'))).toEqual([false]);
@@ -209,7 +210,7 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
       expect(res.status).toBe(400);
     });
 
-    it('a plane that predates paging answers entries alone: the walk ends, it is never replayed', async () => {
+    it('a plane that predates paging answers entries alone: no cursor is followed, and a full page is marked cut', async () => {
       const plain = env.CONTROL_PLANE_SVC as { fetch: (u: string | URL | Request, i?: RequestInit) => Promise<Response> };
       env.CONTROL_PLANE_SVC = {
         fetch: async (u: string | URL | Request, i?: RequestInit) => {
@@ -222,6 +223,11 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
       const body = await page('owner', '?limit=2');
       expect(body.available).toBe(true);
       expect(body.nextCursor).toBeNull();
+      expect(body.cut).toBe(true); // a page of 2 asked for 2: the old plane may have cut it
+      // The twin: a page shorter than the limit asked for is the whole list, cut or not.
+      const whole = await page('owner');
+      expect(whole.entries).toHaveLength(5);
+      expect(whole.cut).toBe(false);
     });
   });
 
