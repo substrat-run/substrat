@@ -16,6 +16,7 @@ import {
   manifestOperations,
   moduleManifest,
   permissionKey,
+  purgeSchedulesOf,
   type EnvVarSpec,
 } from '@substrat-run/contracts';
 import { ticket0Entities, ticket0Operations } from '../spec/model.js';
@@ -34,6 +35,7 @@ export const T0_PERM = {
   conversationRelay: permissionKey.parse('conversation:relay'),
   conversationEscalate: permissionKey.parse('conversation:escalate'),
   savedReplyManage: permissionKey.parse('saved-reply:manage'),
+  savedReplyPurge: permissionKey.parse('saved-reply:purge'),
   contactRead: permissionKey.parse('contact:read'),
   contactInvite: permissionKey.parse('contact:invite'),
   kbRead: permissionKey.parse('kb:read'),
@@ -174,6 +176,7 @@ export const ticket0Manifest = moduleManifest.parse({
       'conversation:relay': 'Bring messages in from email and read the ones going out — the relay only, no human role',
       'conversation:escalate': 'Record that a conversation missed a response or resolution target and tell the desk — the desk’s own timer only, no human role',
       'saved-reply:manage': 'Add, change and remove the desk’s shared saved replies and their folders, and share a personal reply with the desk',
+      'saved-reply:purge': 'Delete a saved reply for good once it has been in the trash for 30 days — held by no role: the desk’s purge sweep alone uses it',
       'contact:read': 'See the people who have asked something',
       'contact:invite': 'Invite a contact to their portal with a link that binds whoever claims it to that contact, or unbind them — the portal itself is the contact shape, not this key',
       'kb:read': 'Read and search the knowledge base',
@@ -378,6 +381,18 @@ export const ticket0Manifest = moduleManifest.parse({
       cadence: { everyMinutes: 15 },
       permissions: ['conversation:escalate'],
     },
+    /**
+     * The saved-reply bin's 30-day horizon (#2161), derived from `savedReply.trash`: it runs
+     * `ticket0/purge-saved-reply` on each reply binned that long, one per transaction.
+     *
+     * Its key, `saved-reply:purge`, is one no other schedule names, so a desk provisioned
+     * before it existed holds no tuple for it until the provision reconcile (#1172) seats
+     * one — see `escalate-sla-breaches` above. That reconcile runs on the first platform
+     * sweep after the push, and the first reply this could purge is one binned 30 days
+     * after that push, so the order never bites. Every row older than the bin is active
+     * (its `_substrat_trashed_at` is NULL), so on an existing desk this has nothing to do.
+     */
+    ...purgeSchedulesOf(ticket0Operations, ticket0Entities),
   ],
   entitlementKey: 'ticket0',
   envSpec: TICKET0_ENV,

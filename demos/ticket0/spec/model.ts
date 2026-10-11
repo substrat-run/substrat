@@ -39,6 +39,7 @@ import {
   defineLifecycles,
   defineOperations,
   emitModel,
+  entityStateOutput,
   instant,
   z,
   modelUsageLine,
@@ -1167,6 +1168,18 @@ export const ticket0Entities = defineEntities({
      */
     erasable: ['title', 'body'],
     erasure: { subjects: ['owner'], mode: 'delete' },
+    /**
+     * A deleted canned answer goes to a bin for 30 days first (#2161, K-45): it is
+     * something the whole desk pastes, so deleting one is the kind of thing somebody
+     * regrets the next morning.
+     *
+     * The key is `conversation:draft`, the one every reply operation already checks,
+     * because WHO may bin a reply is not a key: it is whoever may change it — its owner,
+     * or for a shared one the holder of `saved-reply:manage` — decided on the row
+     * (`assertMayCurate` in `src/module.ts`). That is also why the moves and the bin are
+     * authored rather than derived.
+     */
+    trash: { permission: 'conversation:draft', purgeAfterDays: 30 },
   },
 
   /** One satisfaction score per conversation, once. Keyed by the conversation for
@@ -1770,6 +1783,14 @@ export const TICKET0_PERMISSIONS = [
    * person who wrote it. Held by the two human staff roles and no service.
    */
   'saved-reply:manage',
+  /**
+   * Delete a binned saved reply for good once its 30 days are up (#2161) — the purge
+   * horizon's key, held by NO role and no service. The desk's system principal holds it
+   * for the purge sweep alone, and the kernel withholds it from every other call (a
+   * purge-only key, #119), so it is never a way round "its owner, or `saved-reply:manage`
+   * for a shared one". A person empties the bin with `delete-saved-reply`.
+   */
+  'saved-reply:purge',
   'contact:read',
   /**
    * Invite a contact's person to their portal, or unbind them (#1686). Held on a contact,
@@ -3717,6 +3738,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * the handler (`sortKey`), because "shared or mine" is a rule about the caller and no
    * declared filter can say it: a filter a client may set is a filter a client may
    * set to somebody else. Oldest first by id; the picker orders what it shows itself.
+   * A binned reply is not listed (#2161): the page is the handler's, so the handler
+   * leaves the trash out itself (`ctx.page` would have).
    */
   'ticket0/list-saved-replies': {
     summary: 'The canned answers you may use: the desk’s shared ones and your own',
@@ -3740,6 +3763,11 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * The same title from the same owner returns the reply that already holds it, as it
    * always has. The title is unique per owner (`savedReply.key`), so an agent's
    * personal "Refund" and the desk's are two replies.
+   *
+   * The key holds across the trash (K-45: a binned reply keeps its key), so a title a
+   * BINNED reply holds is a `conflict` with reason `title_in_trash` (#2161): answering
+   * with the binned reply would hand back something gone as if it were in the library,
+   * and saving a second one would break the key. Restore it, or delete it for good, first.
    */
   'ticket0/create-saved-reply': {
     summary: 'Save a canned answer',
@@ -3789,7 +3817,9 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    */
   'ticket0/get-saved-reply': {
     summary: 'One canned answer',
-    permission: 'conversation:draft',
+    // On the row (#2161), so the host answers a binned reply `not_found` before this runs.
+    // Every role holding the key holds it scope-wide, so who passes is unchanged.
+    permission: { key: 'conversation:draft', entity: 'savedReply', idFrom: 'savedReplyId' },
     input: z.object({ savedReplyId: z.string() }),
     output: savedReplyPublic,
     http: { method: 'GET', path: '/saved-replies/{savedReplyId}' },
@@ -3821,7 +3851,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    */
   'ticket0/update-saved-reply': {
     summary: 'Change a canned answer',
-    permission: 'conversation:draft',
+    // On the row, for `get-saved-reply`'s reason (#2161): a binned reply is not edited.
+    permission: { key: 'conversation:draft', entity: 'savedReply', idFrom: 'savedReplyId' },
     input: z.object({
       savedReplyId: z.string(),
       title: z.string().min(1).optional(),
@@ -3861,7 +3892,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    */
   'ticket0/share-saved-reply': {
     summary: 'Share a personal canned answer with the desk',
-    permission: 'saved-reply:manage',
+    // On the row, for `get-saved-reply`'s reason (#2161): a binned reply is not shared.
+    permission: { key: 'saved-reply:manage', entity: 'savedReply', idFrom: 'savedReplyId' },
     input: z.object({ savedReplyId: z.string() }),
     output: savedReplyPublic,
     http: { method: 'POST', path: '/saved-replies/{savedReplyId}/share' },
@@ -3895,10 +3927,17 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    *
    * Who may delete it is who may change it: the owner of a personal reply, and for a
    * shared one the holder of `saved-reply:manage` (see `update-saved-reply`).
+   *
+   * It is the PERMANENT delete, and it reaches the bin too (`trashed: 'admits'`, #2161):
+   * this is how a person empties it. The screens move a reply to the trash instead
+   * (`trash-saved-reply`); a caller deleting an active reply outright still can, as before.
+   * The 30-day horizon runs `purge-saved-reply`, not this, because the sweep is the
+   * desk's system principal and no owner.
    */
   'ticket0/delete-saved-reply': {
     summary: 'Delete a canned answer',
-    permission: 'conversation:draft',
+    permission: { key: 'conversation:draft', entity: 'savedReply', idFrom: 'savedReplyId' },
+    trashed: 'admits',
     input: z.object({ savedReplyId: z.string() }),
     output: z.object({ id: z.string(), title: z.string() }),
     http: { method: 'DELETE', path: '/saved-replies/{savedReplyId}' },
@@ -3908,6 +3947,78 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       entityIdFrom: 'id',
       type: 'ticket0.saved-reply-deleted',
       // v2 (#1087): the id only. The title is free text, `erasable`, and off every event.
+      schemaVersion: 2,
+      piiClass: 'none',
+      payload: ['id'],
+    },
+  },
+
+  /**
+   * Move a canned answer to the trash (#2161). It leaves the library, the picker and
+   * every read by id at once, and comes back with `restore-saved-reply` until the bin's
+   * 30 days are up.
+   *
+   * Who may is who may delete it: the owner of a personal reply, the holder of
+   * `saved-reply:manage` for a shared one. A colleague's personal reply is `not_found`,
+   * as it is everywhere. The kernel's move emits `entity.trashed`.
+   */
+  'ticket0/trash-saved-reply': {
+    summary: 'Move a canned answer to the trash',
+    authored:
+      'who may bin a reply is who may change it — its owner, or saved-reply:manage for a shared one — decided on the row; one key on the row cannot say that',
+    permission: { key: 'conversation:draft', entity: 'savedReply', idFrom: 'savedReplyId' },
+    input: z.object({ savedReplyId: z.string() }),
+    output: entityStateOutput,
+    http: { method: 'POST', path: '/saved-replies/{savedReplyId}/trash' },
+  },
+
+  /** Take a canned answer out of the trash, back into the library. Who may is who may change it. */
+  'ticket0/restore-saved-reply': {
+    summary: 'Restore a canned answer from the trash',
+    authored:
+      'who may restore a reply is who may change it — its owner, or saved-reply:manage for a shared one — decided on the row; one key on the row cannot say that',
+    permission: { key: 'conversation:draft', entity: 'savedReply', idFrom: 'savedReplyId' },
+    trashed: 'admits',
+    input: z.object({ savedReplyId: z.string() }),
+    output: entityStateOutput,
+    http: { method: 'POST', path: '/saved-replies/{savedReplyId}/restore' },
+  },
+
+  /**
+   * The canned answers in the trash that the caller could use before: the desk's shared
+   * ones and their own, never a colleague's personal one — the library's rule, applied
+   * to the bin. Oldest first by id, like the library.
+   *
+   * Not the derived bin (`derive: 'trashed'`), which checks the trash key on each row:
+   * every reply user holds that key, so it would list colleagues' personal replies.
+   * "Shared or mine" is a rule about the caller, so the handler composes the page.
+   */
+  'ticket0/trashed-saved-replies': {
+    summary: 'The canned answers in the trash',
+    permission: 'conversation:draft',
+    input: z.object({}),
+    output: savedReplyPublic,
+    paged: { sortKey: 'id' },
+    http: { method: 'GET', path: '/saved-replies/trash' },
+  },
+
+  /**
+   * The bin's 30-day horizon (#2161): a reply binned that long is deleted for good. Run
+   * only by the purge sweep, as the desk's system principal, under `saved-reply:purge` —
+   * a key no role holds. People empty the bin with `delete-saved-reply`.
+   */
+  'ticket0/purge-saved-reply': {
+    summary: 'Delete a binned canned answer whose 30 days are up',
+    permission: { key: 'saved-reply:purge', entity: 'savedReply', idFrom: 'savedReplyId' },
+    trashed: 'purges',
+    // Strict: a purge's parsed input is the id and nothing else (#119).
+    input: z.strictObject({ savedReplyId: z.string() }),
+    output: z.object({ id: z.string(), title: z.string() }),
+    emits: {
+      entity: 'savedReply',
+      entityIdFrom: 'id',
+      type: 'ticket0.saved-reply-deleted',
+      // The same event a person's delete announces: the reply is gone, whoever removed it.
       schemaVersion: 2,
       piiClass: 'none',
       payload: ['id'],

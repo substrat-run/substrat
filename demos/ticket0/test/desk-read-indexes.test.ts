@@ -12,6 +12,7 @@ import { ulid } from '@substrat-run/kernel';
 import { MODULES } from '../src/provision.js';
 import { ticket0Manifest } from '../src/manifest.js';
 import { listsBefore0027 } from './before-0027.js';
+import { withoutTheBin } from './before-2161.js';
 import { createKit, type Desk } from './desk-kit.js';
 import { DESK_TABLES, populateDesk } from './desk-fixture.js';
 import {
@@ -122,12 +123,12 @@ beforeAll(async () => {
   // The version this upgrades FROM: everything through 0022, and its list declarations.
   const previous = new SqliteScopeHost({ dir });
   for (const module of MODULES) previous.registerModule(module.manifest.id === ticket0Manifest.id
-    ? {
+    ? withoutTheBin({
         ...module,
         manifest: { ...module.manifest, erasure: undefined, lists: listsBefore0027(module.manifest.lists ?? []) },
         onSubjectErased: undefined,
         migrations: (module.migrations ?? []).filter((m) => m.version <= '0022'),
-      }
+      })
     : module);
   try {
     await previous.admin.createTenant(actor, { id: tenant, slug: 'desk-reads', name: 'Desk reads' });

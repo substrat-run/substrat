@@ -203,6 +203,47 @@ describe('purgeSchedulesOf', () => {
 
 describe('trashRefusalGapsOf', () => {
   it('names the operations whose check is resolved on a trashable entity, and only those', () => {
-    expect(trashRefusalGapsOf(ops, entities)).toEqual([{ operation: 'b/touch', entity: 'box' }]);
+    expect(trashRefusalGapsOf(ops, entities)).toEqual([{ operation: 'b/touch', entity: 'box', via: 'check' }]);
+  });
+
+  // #2161: the general form of the gap ticket0's saved replies had — a scope-wide key, an id
+  // in the input, and `concurrency` the one declaration saying which entity that id names.
+  const versioned = define({
+    'v/scope-key': {
+      summary: 's',
+      permission: 'box:read',
+      input: byBox,
+      output: ok,
+      concurrency: { over: 'box', idFrom: 'boxId' },
+    },
+    'v/other-entity': {
+      summary: 's',
+      permission: { key: 'box:read', entity: 'shelf', idFrom: 'shelfId' },
+      input: z.object({ shelfId: z.string(), boxId: z.string() }),
+      output: ok,
+      concurrency: { over: 'box', idFrom: 'boxId' },
+    },
+    // The positive twins: on the row, the host refuses it; over an entity with no trash, there is nothing to refuse.
+    'v/on-the-row': {
+      summary: 's',
+      permission: { key: 'box:read', entity: 'box', idFrom: 'boxId' },
+      input: byBox,
+      output: ok,
+      concurrency: { over: 'box', idFrom: 'boxId' },
+    },
+    'v/untrashable': {
+      summary: 's',
+      permission: 'box:read',
+      input: z.object({ shelfId: z.string() }),
+      output: ok,
+      concurrency: { over: 'shelf', idFrom: 'shelfId' },
+    },
+  });
+
+  it('names a scope-key or other-entity operation that addresses a trashable entity by its concurrency id', () => {
+    expect(trashRefusalGapsOf(versioned, entities)).toEqual([
+      { operation: 'v/other-entity', entity: 'box', via: 'concurrency' },
+      { operation: 'v/scope-key', entity: 'box', via: 'concurrency' },
+    ]);
   });
 });

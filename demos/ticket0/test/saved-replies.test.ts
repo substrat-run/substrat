@@ -28,6 +28,7 @@ import { ticket0Manifest } from '../src/manifest.js';
 import { MODULES } from '../src/provision.js';
 import { mountApi } from '../src/routes.js';
 import { listsBefore0027 } from './before-0027.js';
+import { withoutTheBin } from './before-2161.js';
 import { createKit, type Desk } from './desk-kit.js';
 
 const kit = createKit('ticket0-saved-replies-');
@@ -619,12 +620,12 @@ describe('migration 0027 on an existing desk', () => {
       for (const m of MODULES)
         previous.registerModule(
           m.manifest.id === ticket0Manifest.id
-            ? {
+            ? withoutTheBin({
                 ...m,
                 manifest: { ...m.manifest, erasure: undefined, lists: listsBefore0027(m.manifest.lists ?? []) },
                 onSubjectErased: undefined,
                 migrations: (m.migrations ?? []).filter((x) => x.version <= '0026'),
-              }
+              })
             : m,
           );
       const old = await provision(previous, 'migration-0027-old');
@@ -658,10 +659,13 @@ describe('migration 0027 on an existing desk', () => {
       const after = new Database(file(old));
       try {
         const rows = after.prepare('SELECT * FROM ticket0_saved_replies ORDER BY id').all() as Record<string, unknown>[];
-        expect(rows.map(({ owner: _o, folder_id: _f, use_count: _u, last_used_at: _l, ...rest }) => rest)).toEqual(beforeRows);
-        expect(rows.map((r) => [r.id, r.owner, r.folder_id, r.use_count, r.last_used_at])).toEqual([
-          ['r1', '', null, 0, null],
-          ['r2', '', null, 0, null],
+        expect(
+          rows.map(({ owner: _o, folder_id: _f, use_count: _u, last_used_at: _l, _substrat_trashed_at: _t, ...rest }) => rest),
+        ).toEqual(beforeRows);
+        // Every reply older than the bin (#2161) arrives in the library: the kernel's column is NULL.
+        expect(rows.map((r) => [r.id, r.owner, r.folder_id, r.use_count, r.last_used_at, r._substrat_trashed_at])).toEqual([
+          ['r1', '', null, 0, null, null],
+          ['r2', '', null, 0, null, null],
         ]);
         const add = after.prepare(
           "INSERT INTO ticket0_saved_replies (id, title, body, created_by, created_at, owner) VALUES (?, ?, 'x', 'p', '2026-01-04T00:00:00.000Z', ?)",

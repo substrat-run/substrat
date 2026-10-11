@@ -27,6 +27,7 @@ import {
   permissionsUsedBy,
   principalId,
   substratError,
+  TRASHED_AT_COLUMN,
   z,
   type CountedPage,
   type EntityRow,
@@ -38,6 +39,7 @@ import {
   assertAllowed,
   DEFAULT_SEARCH_LIMIT,
   MAX_SEARCH_LIMIT,
+  purgeCutoffOf,
   ulid,
   type ModuleRegistration,
   type OnSubjectErased,
@@ -132,6 +134,7 @@ const threadRef = (conversationId: string) => ({ entityType: 'publicThread', ent
 const messageRef = (id: string) => ({ entityType: 'message', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
 const sourceRef = (id: string) => ({ entityType: 'kbSource', entityId: id });
+const savedReplyRef = (id: string) => ({ entityType: 'savedReply', entityId: id });
 
 /** The desk is a singleton per scope, and this is its id. */
 const DESK = 'desk';
@@ -387,17 +390,32 @@ function renderSavedReplyBody(
 /** The `owner` of the desk's own, shared saved replies (see `savedReply.owner`). */
 const SHARED_OWNER = '';
 
+/** The predicate keeping a binned saved reply out of a read (#2161). Module code may READ the column. */
+const SAVED_REPLY_NOT_TRASHED = `${TRASHED_AT_COLUMN} IS NULL`;
+
 /**
- * A saved reply the CALLER may use: the desk's, or their own.
+ * A saved reply the CALLER may use: the desk's, or their own — and not in the trash.
  *
  * A colleague's personal reply is `not_found` here, exactly as an id that names nothing
  * is, so no answer from any operation tells the caller it exists. Every saved-reply
  * operation reads through this one function, which is what keeps the rule from depending
  * on each handler remembering it.
+ *
+ * A binned reply is `not_found` too (#2161). The host already refuses one for the
+ * operations checked on the reply itself; this is what refuses it for `render-` and
+ * `apply-saved-reply` (and `alsoUsed`), whose check is on the conversation, so the host
+ * cannot see the reply. `trashed: 'included'` is for the two that reach the bin: restore
+ * and the permanent delete.
  */
-function savedReplyOrThrow(ctx: OperationContext, id: string): SavedReplyRow {
+function savedReplyOrThrow(
+  ctx: OperationContext,
+  id: string,
+  trashed: 'excluded' | 'included' = 'excluded',
+): SavedReplyRow {
   const row = ctx.sql.query<SavedReplyRow>(
-    'SELECT * FROM ticket0_saved_replies WHERE id = ? AND owner IN (?, ?)',
+    `SELECT * FROM ticket0_saved_replies WHERE id = ? AND owner IN (?, ?)${
+      trashed === 'excluded' ? ` AND ${SAVED_REPLY_NOT_TRASHED}` : ''
+    }`,
     [id, SHARED_OWNER, String(ctx.principal)],
   )[0];
   if (!row) throw substratError('not_found', `saved reply not found: ${id}`);
@@ -405,20 +423,91 @@ function savedReplyOrThrow(ctx: OperationContext, id: string): SavedReplyRow {
 }
 
 /**
- * May the caller change or delete this reply? A row `savedReplyOrThrow` handed back is
+ * May the caller change, bin or delete this reply? A row `savedReplyOrThrow` handed back is
  * shared or the caller's own. Their own is theirs to change; a shared one is what every
  * colleague pastes, and changing it is curation (`saved-reply:manage`).
+ *
+ * Checked on the reply (#2161), as the operation's own key now is: every role holding the
+ * key holds it scope-wide, so nobody passes or fails differently, and a grant narrowed to
+ * one shared reply reaches that reply and no other.
  */
 async function assertMayCurate(ctx: OperationContext, row: SavedReplyRow): Promise<void> {
-  if (row.owner === SHARED_OWNER) assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+  if (row.owner === SHARED_OWNER) assertAllowed(await ctx.check(T0_PERM.savedReplyManage, savedReplyRef(row.id)));
 }
 
-/** The reply of this owner already holding this title, other than `exceptId`. The key's rule, asked. */
+/**
+ * The reply of this owner already holding this title, other than `exceptId`. The key's rule,
+ * asked — over the trash too, since a binned reply keeps its key (K-45).
+ */
 function titleTaken(ctx: OperationContext, owner: string, title: string, exceptId = ''): SavedReplyRow | undefined {
   return ctx.sql.query<SavedReplyRow>(
     'SELECT * FROM ticket0_saved_replies WHERE owner = ? AND title = ? AND id <> ?',
     [owner, title, exceptId],
   )[0];
+}
+
+/** Is this reply, as `SELECT *` read it, in the trash? The kernel's column rides every such row. */
+const trashedAtOf = (row: SavedReplyRow): string | null =>
+  (row as SavedReplyRow & { [TRASHED_AT_COLUMN]?: string | null })[TRASHED_AT_COLUMN] ?? null;
+const inTrash = (row: SavedReplyRow): boolean => trashedAtOf(row) != null;
+
+/**
+ * The `conflict` for a title another reply holds (#2161). One held by a reply in the trash
+ * says so, with reason `title_in_trash`, because the caller cannot see that reply in the
+ * library and would otherwise be told about a name nothing seems to hold.
+ */
+function titleConflict(holder: SavedReplyRow, message: string): Error {
+  const binned = inTrash(holder);
+  return substratError(
+    'conflict',
+    binned ? `${message} — it is in the trash: restore it, or delete it for good, first` : message,
+    binned ? { reason: 'title_in_trash' } : undefined,
+  );
+}
+
+/**
+ * Delete a reply for good, and say so — the one body of the person's `delete-saved-reply`
+ * and the horizon's `purge-saved-reply` (#2161), which differ only in who may.
+ */
+function deleteSavedReplyRow(ctx: OperationContext, row: SavedReplyRow): { id: string; title: string } {
+  ctx.sql.exec('DELETE FROM ticket0_saved_replies WHERE id = ?', [row.id]);
+  ctx.emit({
+    type: 'ticket0.saved-reply-deleted',
+    schemaVersion: 2,
+    entity: savedReplyRef(row.id),
+    piiClass: 'none',
+    payload: { id: row.id },
+  });
+  return { id: row.id, title: row.title };
+}
+
+/**
+ * One page of the replies the caller may use — the desk's and their own, never a
+ * colleague's — on one side of the trash: the library, or the bin (#2161). Keyset by id.
+ */
+function savedReplyPage(
+  ctx: OperationContext,
+  input: { limit?: number; cursor?: string; order?: 'asc' | 'desc'; folderId?: string },
+  side: 'library' | 'bin',
+) {
+  const limit = input.limit ?? LIST_PAGE_DEFAULT;
+  const params: SqlValue[] = [SHARED_OWNER, String(ctx.principal)];
+  let sql = `SELECT * FROM ticket0_saved_replies WHERE owner IN (?, ?) AND ${
+    side === 'library' ? SAVED_REPLY_NOT_TRASHED : `${TRASHED_AT_COLUMN} IS NOT NULL`
+  }`;
+  if (input.folderId !== undefined) {
+    sql += ' AND folder_id = ?';
+    params.push(input.folderId);
+  }
+  const desc = input.order === 'desc';
+  if (input.cursor) {
+    sql += desc ? ' AND id < ?' : ' AND id > ?';
+    params.push(input.cursor);
+  }
+  sql += ` ORDER BY id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
+  params.push(limit);
+  const page = pageOf(ctx.sql.query<SavedReplyRow>(sql, params), limit, (row) => row.id);
+  return { ...page, entries: page.entries.map(savedReplyPublic) };
 }
 
 /** A `folderId` input resolved: absent keeps `current`, null unfiles, an id must name a folder. */
@@ -473,7 +562,10 @@ function savedReplyActions(row: Pick<SavedReplyRow, 'id' | 'actions'>): MacroAct
 function savedReplyPublic(
   row: SavedReplyRow,
 ): Omit<SavedReplyRow, 'actions' | 'owner'> & { actions: MacroAction[]; owner: string | null } {
-  return { ...row, owner: row.owner === SHARED_OWNER ? null : row.owner, actions: savedReplyActions(row) };
+  // `SELECT *` also reads the kernel's trash column (#2161). It is state, not a field, and
+  // the host does not parse an output, so it is left here rather than handed out.
+  const { [TRASHED_AT_COLUMN]: _trashedAt, ...fields } = row as SavedReplyRow & { [TRASHED_AT_COLUMN]?: unknown };
+  return { ...fields, owner: row.owner === SHARED_OWNER ? null : row.owner, actions: savedReplyActions(row) };
 }
 
 /**
@@ -5982,22 +6074,7 @@ const bound = operationsFor(ticket0Operations)({
    */
   'ticket0/list-saved-replies': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationDraft));
-    const limit = input.limit ?? LIST_PAGE_DEFAULT;
-    const params: SqlValue[] = [SHARED_OWNER, String(ctx.principal)];
-    let sql = 'SELECT * FROM ticket0_saved_replies WHERE owner IN (?, ?)';
-    if (input.folderId !== undefined) {
-      sql += ' AND folder_id = ?';
-      params.push(input.folderId);
-    }
-    const desc = input.order === 'desc';
-    if (input.cursor) {
-      sql += desc ? ' AND id < ?' : ' AND id > ?';
-      params.push(input.cursor);
-    }
-    sql += ` ORDER BY id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
-    params.push(limit);
-    const page = pageOf(ctx.sql.query<SavedReplyRow>(sql, params), limit, (row) => row.id);
-    return { ...page, entries: page.entries.map(savedReplyPublic) };
+    return savedReplyPage(ctx, input, 'library');
   },
 
   'ticket0/create-saved-reply': async (ctx, input) => {
@@ -6006,7 +6083,12 @@ const bound = operationsFor(ticket0Operations)({
     // A shared reply is pasted by every colleague, so adding one is curation.
     if (owner === SHARED_OWNER) assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
     const existing = titleTaken(ctx, owner, input.title);
-    if (existing) return savedReplyPublic(existing);
+    if (existing) {
+      // The same title from the same owner answers the reply holding it — unless that reply
+      // is in the trash, which is not something to hand back as if it were in the library.
+      if (inTrash(existing)) throw titleConflict(existing, `a saved reply is already called "${input.title}"`);
+      return savedReplyPublic(existing);
+    }
     const folderId = folderFrom(ctx, input.folderId, null);
     const id = ulid();
     ctx.sql.exec(
@@ -6019,7 +6101,7 @@ const bound = operationsFor(ticket0Operations)({
     ctx.emit({
       type: 'ticket0.saved-reply-created',
       schemaVersion: 2,
-      entity: { entityType: 'savedReply', entityId: row.id },
+      entity: savedReplyRef(row.id),
       piiClass: 'none',
       payload: savedReplyPayload(row),
     });
@@ -6031,7 +6113,7 @@ const bound = operationsFor(ticket0Operations)({
    * and so carries no entity tag, which would leave the first save unconditional.
    */
   'ticket0/get-saved-reply': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft, savedReplyRef(input.savedReplyId)));
     return savedReplyPublic(savedReplyOrThrow(ctx, input.savedReplyId));
   },
 
@@ -6049,14 +6131,13 @@ const bound = operationsFor(ticket0Operations)({
    * announces nothing, so a consumer counting this event counts real edits.
    */
   'ticket0/update-saved-reply': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft, savedReplyRef(input.savedReplyId)));
     const existing = savedReplyOrThrow(ctx, input.savedReplyId);
     await assertMayCurate(ctx, existing);
     const title = input.title ?? existing.title;
     const body = input.body ?? existing.body;
-    if (titleTaken(ctx, existing.owner, title, existing.id)) {
-      throw substratError('conflict', `another saved reply is already called "${title}"`);
-    }
+    const holder = titleTaken(ctx, existing.owner, title, existing.id);
+    if (holder) throw titleConflict(holder, `another saved reply is already called "${title}"`);
     const actions =
       input.actions !== undefined ? storedActions(input.actions) : existing.actions;
     const folderId = folderFrom(ctx, input.folderId, existing.folder_id);
@@ -6076,7 +6157,7 @@ const bound = operationsFor(ticket0Operations)({
     ctx.emit({
       type: 'ticket0.saved-reply-updated',
       schemaVersion: 2,
-      entity: { entityType: 'savedReply', entityId: row.id },
+      entity: savedReplyRef(row.id),
       piiClass: 'none',
       payload: savedReplyPayload(row),
     });
@@ -6092,18 +6173,61 @@ const bound = operationsFor(ticket0Operations)({
    * because afterwards there is nowhere left to read it from; the event keeps the id.
    */
   'ticket0/delete-saved-reply': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft, savedReplyRef(input.savedReplyId)));
+    // The permanent delete empties the bin, so it reaches a binned reply too (#2161).
+    const existing = savedReplyOrThrow(ctx, input.savedReplyId, 'included');
+    await assertMayCurate(ctx, existing);
+    return deleteSavedReplyRow(ctx, existing);
+  },
+
+  /**
+   * Into the trash (#2161). Who may is who may delete it (`assertMayCurate`); the move
+   * itself is the kernel's, which checks the entity's trash key and emits the event.
+   */
+  'ticket0/trash-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft, savedReplyRef(input.savedReplyId)));
     const existing = savedReplyOrThrow(ctx, input.savedReplyId);
     await assertMayCurate(ctx, existing);
-    ctx.sql.exec('DELETE FROM ticket0_saved_replies WHERE id = ?', [existing.id]);
-    ctx.emit({
-      type: 'ticket0.saved-reply-deleted',
-      schemaVersion: 2,
-      entity: { entityType: 'savedReply', entityId: existing.id },
-      piiClass: 'none',
-      payload: { id: existing.id },
-    });
-    return { id: existing.id, title: existing.title };
+    return { id: existing.id, state: await ctx.trash(savedReplyRef(existing.id)) };
+  },
+
+  /** Out of the trash, by whoever could have binned it. */
+  'ticket0/restore-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft, savedReplyRef(input.savedReplyId)));
+    const existing = savedReplyOrThrow(ctx, input.savedReplyId, 'included');
+    await assertMayCurate(ctx, existing);
+    return { id: existing.id, state: await ctx.restore(savedReplyRef(existing.id)) };
+  },
+
+  /**
+   * The bin, by the library's rule: shared or mine, never a colleague's. Composed here for
+   * the reason the library is — "mine" is about the caller — and keyset by id like it.
+   */
+  'ticket0/trashed-saved-replies': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    return savedReplyPage(ctx, input, 'bin');
+  },
+
+  /**
+   * The bin's 30-day horizon. Run by the purge sweep alone, as the desk's system principal
+   * under `saved-reply:purge` (held by no role); the host has already held the entity to
+   * its cutoff. Any reply, shared or personal: the horizon is the desk's, not a person's.
+   *
+   * Only ever a reply IN THE TRASH and past its horizon, whoever calls it. The host holds the
+   * sweep to both, and withholds the key from the system principal everywhere else, but
+   * neither reaches a caller granted the key directly — so an active reply, or one binned
+   * less than `purgeAfterDays` ago, is `not_found` here, by the kernel's own cutoff.
+   */
+  'ticket0/purge-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.savedReplyPurge, savedReplyRef(input.savedReplyId)));
+    const row = ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
+      input.savedReplyId,
+    ])[0];
+    const trashedAt = row ? trashedAtOf(row) : null;
+    if (!row || trashedAt === null || trashedAt > purgeCutoffOf(ctx.now(), ticket0Entities.savedReply.trash.purgeAfterDays)) {
+      throw substratError('not_found', `saved reply not in the trash past its horizon: ${input.savedReplyId}`);
+    }
+    return deleteSavedReplyRow(ctx, row);
   },
 
   /**
@@ -6112,17 +6236,16 @@ const bound = operationsFor(ticket0Operations)({
    * shared reply back.
    */
   'ticket0/share-saved-reply': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.savedReplyManage));
+    assertAllowed(await ctx.check(T0_PERM.savedReplyManage, savedReplyRef(input.savedReplyId)));
     const existing = savedReplyOrThrow(ctx, input.savedReplyId);
     if (existing.owner === SHARED_OWNER) return savedReplyPublic(existing);
-    if (titleTaken(ctx, SHARED_OWNER, existing.title)) {
-      throw substratError('conflict', `the desk already has a saved reply called "${existing.title}"`);
-    }
+    const holder = titleTaken(ctx, SHARED_OWNER, existing.title);
+    if (holder) throw titleConflict(holder, `the desk already has a saved reply called "${existing.title}"`);
     ctx.sql.exec('UPDATE ticket0_saved_replies SET owner = ? WHERE id = ?', [SHARED_OWNER, existing.id]);
     ctx.emit({
       type: 'ticket0.saved-reply-shared',
       schemaVersion: 1,
-      entity: { entityType: 'savedReply', entityId: existing.id },
+      entity: savedReplyRef(existing.id),
       piiClass: 'none',
       payload: { id: existing.id, created_by: existing.created_by },
     });
@@ -6210,7 +6333,7 @@ const bound = operationsFor(ticket0Operations)({
     ctx.emit({
       type: 'ticket0.saved-reply-applied',
       schemaVersion: 2,
-      entity: { entityType: 'savedReply', entityId: reply.id },
+      entity: savedReplyRef(reply.id),
       piiClass: 'none',
       // Not the action types: the caller is told what ran, the desk's trail is not, since
       // the macro may be personal. Each action's own event already says what it did.

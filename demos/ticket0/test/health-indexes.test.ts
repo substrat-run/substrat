@@ -17,6 +17,7 @@ import {
 import { NO_REPLY_WAITING } from '../src/module.js';
 import { listsBefore0021 } from './before-0021.js';
 import { listsBefore0027 } from './before-0027.js';
+import { withoutTheBin } from './before-2161.js';
 
 type Query = { sql: string; args: (string | number)[] };
 const queries = {
@@ -100,12 +101,12 @@ beforeAll(async () => {
   // The version this upgrades FROM, so its list declaration too: `quarantine` became a
   // filterable column in 0021 (#1088), and a pre-0021 schema has no column to index.
   for (const module of MODULES) previous.registerModule(module.manifest.id === ticket0Manifest.id
-    ? {
+    ? withoutTheBin({
         ...module,
         manifest: { ...module.manifest, erasure: undefined, lists: listsBefore0021(listsBefore0027(module.manifest.lists ?? [])) },
         onSubjectErased: undefined,
         migrations: (module.migrations ?? []).filter(m => m.version <= '0014'),
-      }
+      })
     : module);
   try {
     await previous.admin.createTenant(actor, { id: tenant, slug: 'index-upgrade', name: 'Index upgrade' });
