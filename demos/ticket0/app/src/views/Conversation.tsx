@@ -1789,12 +1789,15 @@ function TrashManager({
   useEffect(() => {
     void load();
   }, []);
-  /** A write, then the trash read again: the picker's own reload refreshes the library. */
-  const act = (call: () => Promise<unknown>, fallback: string) =>
-    write(call, fallback, () => {
-      setConfirming(null);
-      void load();
-    });
+  /**
+   * A write, then the trash read again: the picker's own reload refreshes the library.
+   * The armed Delete-for-good is disarmed BEFORE the call, so a refusal leaves the button
+   * asking once again rather than one click from a retry.
+   */
+  const act = (call: () => Promise<unknown>, fallback: string) => {
+    setConfirming(null);
+    write(call, fallback, () => void load());
+  };
 
   return (
     <div style={{ padding: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1811,6 +1814,7 @@ function TrashManager({
             <button
               className="btn btn-ghost"
               disabled={busy}
+              aria-label={`Restore ${r.title}`}
               onClick={() => act(() => api.restoreSavedReply({ savedReplyId: r.id }), 'Could not restore that reply.')}
             >
               Restore
@@ -1818,6 +1822,7 @@ function TrashManager({
             <button
               className="btn btn-ghost"
               disabled={busy}
+              aria-label={confirming === r.id ? `Delete ${r.title} for good — click again` : `Delete ${r.title} for good`}
               onClick={() =>
                 confirming === r.id
                   ? act(() => api.deleteSavedReply({ savedReplyId: r.id }), 'Could not delete that reply.')
@@ -1829,7 +1834,10 @@ function TrashManager({
           </div>
         ))
       )}
-      <div className="t-small">Replies in the trash are deleted for good after 30 days.</div>
+      <div className="t-small">
+        The desk’s shared replies and your own; a colleague’s personal replies are theirs alone. Replies in the
+        trash are deleted for good after 30 days.
+      </div>
       <div>
         <button className="btn btn-ghost" disabled={busy} onClick={onDone}>
           Done
