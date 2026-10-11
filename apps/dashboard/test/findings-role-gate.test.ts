@@ -60,7 +60,7 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 const PROVIDER = 'authhero';
 const staff = platformActorId.parse(ulid());
 
-describe('the /api/findings routes ask the caller’s permission (#1748)', () => {
+describe('the findings routes ask the caller’s permission (#1748)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   const tenant = tenantId.parse(ulid());
@@ -144,7 +144,7 @@ describe('the /api/findings routes ask the caller’s permission (#1748)', () =>
 
   it('reads: every role holding read-findings sees this team’s findings and only them', async () => {
     for (const role of ['owner', 'member', 'viewer'] as const) {
-      const res = await asRole(role, 'GET', '/api/findings');
+      const res = await asRole(role, 'GET', `/api/teams/${tenant}/findings`);
       expect(res.status, role).toBe(200);
       const body = (await res.json()) as { available: boolean; entries: { tenantId: string; operation: string }[] };
       expect(body.available).toBe(true);
@@ -152,13 +152,13 @@ describe('the /api/findings routes ask the caller’s permission (#1748)', () =>
     }
   });
   it('reads: a person with no role is refused the inbox and its rules', async () => {
-    await refused('nobody', 'GET', '/api/findings');
-    await refused('nobody', 'GET', '/api/findings/rules');
+    await refused('nobody', 'GET', `/api/teams/${tenant}/findings`);
+    await refused('nobody', 'GET', `/api/teams/${tenant}/findings/rules`);
   });
 
   it('verdicts: a viewer cannot acknowledge, resolve or reopen, and nothing moves', async () => {
     const f = await myFinding();
-    await refused('viewer', 'PUT', `/api/findings/${f.id}/status`, { status: 'resolved' });
+    await refused('viewer', 'PUT', `/api/teams/${tenant}/findings/${f.id}/status`, { status: 'resolved' });
     expect((await myFinding()).status).toBe('open');
   });
   it('verdicts: a member and an owner can', async () => {
@@ -167,23 +167,77 @@ describe('the /api/findings routes ask the caller’s permission (#1748)', () =>
       ['member', 'acked'],
       ['owner', 'resolved'],
     ] as const) {
-      const res = await asRole(role, 'PUT', `/api/findings/${f.id}/status`, { status });
+      const res = await asRole(role, 'PUT', `/api/teams/${tenant}/findings/${f.id}/status`, { status });
       expect(res.status, role).toBe(200);
       expect((await myFinding()).status).toBe(status);
     }
   });
 
   it('rules: a viewer cannot suppress or revoke, and nothing is suppressed', async () => {
-    await refused('viewer', 'POST', '/api/findings/rules', rule());
-    await refused('viewer', 'DELETE', `/api/findings/rules/${ulid()}`);
+    await refused('viewer', 'POST', `/api/teams/${tenant}/findings/rules`, rule());
+    await refused('viewer', 'DELETE', `/api/teams/${tenant}/findings/rules/${ulid()}`);
     expect((await myFinding()).status).toBe('open');
   });
   it('rules: a member can suppress, and revoke what they suppressed', async () => {
-    const res = await asRole('member', 'POST', '/api/findings/rules', rule());
+    const res = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, rule());
     expect(res.status).toBe(201);
     const { rule: created } = (await res.json()) as { rule: { id: string } };
     expect((await myFinding()).status).toBe('suppressed');
-    expect((await asRole('member', 'DELETE', `/api/findings/rules/${created.id}`)).status).toBe(200);
+    expect((await asRole('member', 'DELETE', `/api/teams/${tenant}/findings/rules/${created.id}`)).status).toBe(200);
     expect((await host.admin.listFindingRules(staff, tenant, { active: true }))).toEqual([]);
+  });
+
+  /**
+   * The team is the URL's (#2170). The `sb_team` cookie is shared by every tab on the
+   * origin, so a team read from it is whichever team the LAST tab switched to — a tab still
+   * showing one team read, and wrote, another. These routes take the team from their path.
+   */
+  describe('the team a request is about is the one its path names', () => {
+    const second = tenantId.parse(ulid());
+
+    beforeEach(async () => {
+      // The owner is in a second team too, with a finding of its own there.
+      const p = principalId.parse(ulid());
+      const secondScope = scopeId.parse(ulid());
+      await provisionDashboard(host, { tenantId: second, scopeId: secondScope, owner: p, slug: 'second', name: 'Second' });
+      await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: subs.owner, principal: p, tenantId: second, scopeId: secondScope });
+      await host.admin.recordOpsFailure({ actor: staff, operation: 'deploy.second', tenantId: second, message: 'x' });
+    });
+
+    const withCookie = (cookie: string, path: string) => app.request(path, { headers: { cookie } }, env);
+    const operations = async (res: Response) => {
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { entries: { operation: string }[] }).entries.map((f) => f.operation);
+    };
+
+    it('a caller in two teams reads the team the path names, whichever team the cookie pins', async () => {
+      // Another tab switched to `second`: the cookie says so, this tab's URL does not.
+      expect(await operations(await withCookie(`sb_session=${subs.owner}; sb_team=${second}`, `/api/teams/${tenant}/findings`))).toEqual([
+        'deploy.mine',
+      ]);
+      expect(await operations(await withCookie(`sb_session=${subs.owner}; sb_team=${tenant}`, `/api/teams/${second}/findings`))).toEqual([
+        'deploy.second',
+      ]);
+    });
+
+    it('a team the caller is not in is a 404 — never their own team instead — and the plane is not asked', async () => {
+      for (const team of [second, otherTenant, tenantId.parse(ulid())]) {
+        const res = await asRole('viewer', 'GET', `/api/teams/${team}/findings`);
+        expect(res.status, team).toBe(404);
+      }
+      expect(planeCalls).toEqual([]);
+    });
+
+    it('no session is a 401, before anything else is looked at', async () => {
+      const res = await withCookie('', `/api/teams/${tenant}/findings?status=bogus`);
+      expect(res.status).toBe(401);
+      expect(planeCalls).toEqual([]);
+    });
+
+    it('an input the declaration refuses is a 400, before the plane is asked', async () => {
+      const res = await asRole('owner', 'GET', `/api/teams/${tenant}/findings?status=bogus`);
+      expect(res.status).toBe(400);
+      expect(planeCalls).toEqual([]);
+    });
   });
 });

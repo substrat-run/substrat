@@ -40,6 +40,7 @@ import {
   errorCodeOf,
 } from '@substrat-run/contracts';
 import { externalInput, externalJson } from './wire.js';
+import type { RouteImpl } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError } from './errors.js';
@@ -629,5 +630,140 @@ export function mountOperations(
     mountMcp(app, operations, resolveStub, { ...(options.mcp ?? {}), basePath: base });
   }
 
+  return mounted;
+}
+
+/** The slice of a `defineRoutes` entry the mount reads, structurally. */
+interface RouteDecl {
+  readonly http: { readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; readonly path: string };
+  readonly input?: unknown;
+  readonly output?: unknown;
+  readonly status?: 200 | 201 | 202;
+}
+
+type SafeParse = (value: unknown) => { success: true; data: unknown } | { success: false; error: { message: string } };
+
+/** A declared schema's `safeParse`, read structurally — this package does not import zod. */
+function safeParseOf(schema: unknown): SafeParse | undefined {
+  const fn = (schema as { safeParse?: unknown } | undefined)?.safeParse;
+  return typeof fn === 'function' ? (fn.bind(schema) as SafeParse) : undefined;
+}
+
+export interface MountRoutesOptions<Ctx> {
+  /**
+   * Prefix for every route — it may carry Hono parameters of its own. The dashboard's
+   * `/api/teams/:teamId` is one: the team is the mount's to resolve (`context`), not a
+   * field any route declares, which is why a base parameter never reaches `input`.
+   */
+  readonly basePath: string;
+  /**
+   * Resolve what every handler runs against, before the input is parsed — so a caller
+   * with no session is a 401, not a 400 about a field they had no business sending.
+   * Throw an `HTTPException` to refuse.
+   */
+  readonly context: (c: Context) => Promise<Ctx>;
+}
+
+/**
+ * Mount a declared route set (#2170) — `mountOperations`' twin for routes whose handler
+ * is host code rather than an operation.
+ *
+ * Everything that is a fact about the DECLARATION is done here, once, for every route:
+ * the path and its registration order (§ `comparePaths`, and `assertNoUnreachable` for
+ * what ordering cannot resolve), the query coercion a URL needs (§ `queryCoercers`),
+ * the input parse (a refusal is a 400 naming the field), and the output parse — so a
+ * response carries exactly what the route declares, and a handler that answers outside
+ * it is a 500 naming the route rather than a field the client silently reads as absent.
+ *
+ * What it does NOT do is decide a domain error's status: a handler's throw reaches the
+ * app's `onError` untouched, as `mountOperations`' unmapped errors do.
+ */
+export function mountRoutes<Routes extends Readonly<Record<string, RouteDecl>>, Ctx>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: Hono<any, any, any>,
+  routes: Routes,
+  options: MountRoutesOptions<Ctx>,
+): (handlers: RouteImpl<Routes, Ctx>) => { route: string; method: string; path: string }[] {
+  // Curried, like `defineOperations`, so `Ctx` is inferred from `context` alone and the
+  // handler map is then checked against it. Taking both in one call left TypeScript to
+  // infer `Ctx` from a mapped type and a context-sensitive arrow at once, and it settled
+  // on `unknown` — which refuses every correctly typed handler.
+  return (handlers) => mountDeclaredRoutes(app, routes, handlers as unknown as Record<string, unknown>, options);
+}
+
+function mountDeclaredRoutes<Ctx>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: Hono<any, any, any>,
+  routes: Readonly<Record<string, RouteDecl>>,
+  handlers: Readonly<Record<string, unknown>>,
+  options: MountRoutesOptions<Ctx>,
+): { route: string; method: string; path: string }[] {
+  const declared = Object.keys(routes)
+    .map((name) => [name, routes[name] as RouteDecl] as const)
+    .sort(
+      ([aName, a], [bName, b]) =>
+        comparePaths(a.http.path, b.http.path) ||
+        (a.http.method < b.http.method ? -1 : a.http.method > b.http.method ? 1 : 0) ||
+        (aName < bName ? -1 : aName > bName ? 1 : 0),
+    );
+  assertNoUnreachable(declared);
+
+  const mounted: { route: string; method: string; path: string }[] = [];
+  for (const [name, decl] of declared) {
+    const handle = handlers[name] as unknown as ((ctx: Ctx, input: unknown) => unknown) | undefined;
+    // The `satisfies RouteImpl` clause makes this a compile error; this is the runtime
+    // half, for a map assembled by spreading.
+    if (typeof handle !== 'function') throw new Error(`mountRoutes: '${name}' is declared but has no handler`);
+    const { method, path } = decl.http;
+    const params = pathParams(path);
+    const full = `${options.basePath}${toHonoPath(path)}`;
+    const takesBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
+    const coercers = queryCoercers(decl.input as HttpDecl['input']);
+    const parseIn = safeParseOf(decl.input);
+    const parseOut = safeParseOf(decl.output);
+    if (decl.output !== undefined && !parseOut) throw new Error(`mountRoutes: '${name}' declares an output that is not a schema`);
+
+    const typed = (values: Record<string, string | undefined>): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [field, raw] of Object.entries(values)) {
+        const coerce = coercers[field];
+        out[field] = coerce && raw !== undefined ? coerce(raw) : raw;
+      }
+      return out;
+    };
+
+    const handler = async (c: Context) => {
+      const ctx = await options.context(c);
+      const fromPath: Record<string, string | undefined> = {};
+      for (const p of params) fromPath[p] = c.req.param(p);
+      let input: unknown;
+      if (parseIn) {
+        let payload: Record<string, unknown>;
+        if (takesBody) {
+          const raw = await c.req.text();
+          payload = { ...(raw ? (parseBody(raw) as Record<string, unknown>) : {}), ...typed(fromPath) };
+        } else {
+          payload = { ...typed(c.req.query()), ...typed(fromPath) };
+        }
+        const parsed = parseIn(payload);
+        if (!parsed.success) throw new HTTPException(400, { message: parsed.error.message });
+        input = parsed.data;
+      }
+      const result = await handle(ctx, input);
+      if (!parseOut) return c.body(null, 204);
+      const out = parseOut(result);
+      if (!out.success) {
+        throw new Error(`mountRoutes: '${name}' answered outside its declared output — ${out.error.message}`);
+      }
+      return c.json(out.data as object, decl.status ?? 200);
+    };
+
+    if (method === 'GET') app.get(full, handler);
+    else if (method === 'POST') app.post(full, handler);
+    else if (method === 'PUT') app.put(full, handler);
+    else if (method === 'PATCH') app.patch(full, handler);
+    else app.delete(full, handler);
+    mounted.push({ route: name, method, path: full });
+  }
   return mounted;
 }

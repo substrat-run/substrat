@@ -93,6 +93,17 @@ OIDC cookie** so a switch never touches the login.
 - UI: a switcher under the wordmark in `DashShell` lists every team with a checkmark on the
   current; it is where "New team" (Phase 2) will live.
 
+**The cookie is being retired as the team a request acts on (#2170).** A cookie is shared by
+every tab on the origin, so with two tabs on two teams the tab that switched last decided the
+team for both: one tab's shell showed team A while its requests read, and wrote, team B. The
+membership check still held, so this was a wrong-team bug, not an isolation hole. The fix is that a
+request names its team in its own URL. Routes move into the declared surface
+(`apps/dashboard/src/routes.ts`), mounted under `/api/teams/:teamId` by `mountRoutes`. There,
+anything but that exact team is a 404, never a fallback to your default team. The browser reaches
+them through the generated client, built per team (`teamApi(teamId)`). Areas move one at a time;
+findings is first. When the last area has moved, `sb_team` survives only as "last team used",
+read to decide where `/` lands.
+
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
 
 ## 5. Phase 2 — create a team + onboarding (built)
