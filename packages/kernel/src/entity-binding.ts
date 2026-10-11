@@ -200,7 +200,8 @@ export function bindIn(
     throw substratError('internal', `capability ${link.capabilityId}: its bind on ${entity.entityType} was refused after it was judged`);
   }
   grantEntityShapeIn(switchSqlOf(sql), principal, entity, binding.keys);
-  // Sticky: an erasure releases this type's holders whatever a later version declares.
+  // Sticky (the reconcile that recorded the binding wrote it too): an erasure releases this type's
+  // holders whatever a later version declares.
   sql.exec('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', [
     `shape:${entity.entityType}`,
     BOUND_EVER_RELATION,
