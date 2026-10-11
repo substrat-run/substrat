@@ -1230,6 +1230,30 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     expect(leftOpen).toEqual([0, 2, undefined, undefined]);
   });
 
+  /**
+   * #2184: likewise the types the scope has ever bound, which the platform records beside its
+   * receipt for the binding-shape gate. A list that does not parse is left out: unknown.
+   */
+  it('reconcile answers the types the scope has ever bound, and none when the host reports none or nonsense', async () => {
+    const answers: unknown[] = [{ boundShapeTypes: ['contact'] }, { boundShapeTypes: [] }, undefined, { boundShapeTypes: [7] }, { boundShapeTypes: [''] }, { boundShapeTypes: 'contact' }];
+    const host = fakeHost({ provisionScopeLocal: async () => answers.shift() as never });
+    const bound: unknown[] = [];
+    for (let i = 0; i < 6; i++) {
+      const res = await appWith(host, { resolveOwner: async () => OWNER as never }).request(
+        '/internal/reconcile',
+        {
+          method: 'POST',
+          headers: authed({ 'content-type': 'application/json' }),
+          body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE }),
+        },
+        ENV,
+      );
+      expect(res.status).toBe(200);
+      bound.push(((await res.json()) as { boundShapeTypes?: string[] }).boundShapeTypes);
+    }
+    expect(bound).toEqual([['contact'], [], undefined, undefined, undefined, undefined]);
+  });
+
   it('delete-scope runs the host then the onDeleteScope hook', async () => {
     const host = fakeHost();
     let forgotten: { scopeId: string; tenantId: string | undefined } | null = null;

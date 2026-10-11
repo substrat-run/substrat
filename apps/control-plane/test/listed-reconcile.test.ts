@@ -119,8 +119,9 @@ describe('provision reconcile follows the served version (#1653)', () => {
       reconcileScopeFn: async (_t, id) => {
         if (!mine.has(id)) return 'unsupported';
         reached.push(id);
-        // These versions retire nothing, so every caller records their retirements finished (#2185).
-        return { retirementsFinished: true };
+        // These versions retire nothing and hold nobody by a table, so every caller records their
+        // retirements finished (#2185) and nothing bound (#2184).
+        return { retirementsFinished: true, boundShapes: [] };
       },
     });
     return reached.sort();
@@ -146,7 +147,7 @@ describe('provision reconcile follows the served version (#1653)', () => {
     await scopeAt(host, A, s.forkOfA, LISTED, v1, { forkedFrom: s.installA });
     await scopeAt(host, A, s.cleanRoom, LISTED, v2, { kind: 'preview' });
     for (const [t, id] of [[A, s.installA], [B, s.installB], [A, s.forkOfA]] as const) {
-      await host.admin.markScopeProvisioned(staff, t, id, v1, { retirementsFinished: true });
+      await host.admin.markScopeProvisioned(staff, t, id, v1, { retirementsFinished: true, boundShapes: [] });
     }
 
     // A private vertical whose promote already moved its scope along, as it does today.
@@ -154,7 +155,7 @@ describe('provision reconcile follows the served version (#1653)', () => {
     const p1 = await publish(host, PRIVATE, '1.0.0');
     await host.admin.setVerticalServing(staff, PRIVATE, { ref: PRIVATE_REF, versionId: p1, doClasses: ['ScopeDO'], migrationTag: 'v1' });
     await scopeAt(host, OWNER, s.ownScope, PRIVATE, p1);
-    await host.admin.markScopeProvisioned(staff, OWNER, s.ownScope, p1, { retirementsFinished: true });
+    await host.admin.markScopeProvisioned(staff, OWNER, s.ownScope, p1, { retirementsFinished: true, boundShapes: [] });
     await host.close();
   });
 
@@ -552,12 +553,30 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       });
       const outcome = (extra: object, entityGrants?: typeof retiring) =>
         reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, answering(extra) as never, { ...payload, ...(entityGrants ? { entityGrants } : {}) } as never);
-      expect(await outcome({ retirementsLeftOpen: 0 }, retiring)).toEqual({ retirementsFinished: true });
-      expect(await outcome({ retirementsLeftOpen: 1 }, retiring)).toEqual({ retirementsFinished: false });
+      // These shapes hold nobody by a table, so nothing can be bound through them (#2184): [].
+      expect(await outcome({ retirementsLeftOpen: 0 }, retiring)).toEqual({ retirementsFinished: true, boundShapes: [] });
+      expect(await outcome({ retirementsLeftOpen: 1 }, retiring)).toEqual({ retirementsFinished: false, boundShapes: [] });
       // A deployment that predates the report says nothing: not finished, so the sweep asks again.
-      expect(await outcome({}, retiring)).toEqual({ retirementsFinished: false });
+      expect(await outcome({}, retiring)).toEqual({ retirementsFinished: false, boundShapes: [] });
       // Shapes that retire nothing have nothing to finish.
-      expect(await outcome({})).toEqual({ retirementsFinished: true });
+      expect(await outcome({})).toEqual({ retirementsFinished: true, boundShapes: [] });
+    });
+
+    /** #2184: and which binding shapes links have bound in it, from the same answer. */
+    it('answers the binding shapes the deployment reported bound, of those its payload holds by a table (#2184)', async () => {
+      const s = await wipedScope(t, false);
+      const held = [
+        { entityType: 'contact', permissions: ['perm:use'], bootstrap: true as const, holder: { table: 'bind_records', idColumn: 'id', principalColumn: 'principal' } },
+      ];
+      const answering = (extra: object) => ({
+        reconcileInstance: async (input: { tenantId: TenantId; scopeId: ScopeId }) => ({ tenantId: input.tenantId, scopeId: input.scopeId, owner, ...extra }),
+      });
+      const outcome = (extra: object) =>
+        reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, answering(extra) as never, { ...payload, entityGrants: held } as never);
+      expect(await outcome({ retirementsLeftOpen: 0, boundShapeTypes: ['contact', 'other'] })).toEqual({ retirementsFinished: true, boundShapes: ['contact'] });
+      expect(await outcome({ retirementsLeftOpen: 0, boundShapeTypes: [] })).toEqual({ retirementsFinished: true, boundShapes: [] });
+      // A deployment that predates the report: unknown, so the gate counts the shape bound and the sweep asks again.
+      expect(await outcome({ retirementsLeftOpen: 0 })).toEqual({ retirementsFinished: true });
     });
 
     const rewound = async (switchedOff: boolean) => {

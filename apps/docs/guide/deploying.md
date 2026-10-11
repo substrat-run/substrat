@@ -258,7 +258,11 @@ retirements did not finish counts as behind too, so the sweep runs them again (a
 whose receipt is behind, which go first). The count needs **both** `@substrat-run/adapter-cloudflare`
 (which counts) and `@substrat-run/vertical-host` (which answers) at a release that reports it; a
 deployment built on an older one of either reports nothing, which counts as not finished for a
-version that retires a key. A restore of a backup, like a rewind, clears the receipt, since the data
+version that retires a key. It also records which binding shapes links have ever bound in the
+install, so a shape whose `bind` you dropped stays guarded until its keys are retired; an install
+that has not reported them yet (an older package of either kind, or a row from before the record)
+counts as behind as well, and is judged as having bound every bootstrap shape of its version with a
+table holder until it reports. A restore of a backup, like a rewind, clears the receipt, since the data
 it loads may predate what a reconcile did. A reconcile runs
 *both* halves of a provision — the kernel's (roles projected, owner seated, entitlements
 re-delivered) and yours (`onProvision`) — so a service principal or site registration a new

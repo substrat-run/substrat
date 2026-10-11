@@ -652,6 +652,9 @@ import {
   PROVISIONED_VERSIONS_SQL,
   installsReconciledOf,
   installsReconciledNote,
+  boundEverOf,
+  boundShapesColumn,
+  boundShapesOfColumn,
   installReconciled,
   type InstallsReconciled,
   type ServingPointer,
@@ -1324,6 +1327,8 @@ interface ScopeRow {
   provisioned_version_id: string | null;
   /** #2185: absent on a row read before `ensureDirectoryColumns` added it. */
   retirements_finished_version_id?: string | null;
+  /** #2184: added by `ensureDirectoryColumns` (`boundShapesColumn`). */
+  bound_shapes?: string | null;
   migration_failed_version: string | null;
   migration_error: string | null;
   migration_attempts: number;
@@ -4554,9 +4559,9 @@ export class SqliteScopeHost implements ScopeHost {
       // No receipt: the installs run one of `froms` and may not have reconciled its retirements.
       // Judged against every one of `froms`, including versions this group never ran: that can
       // only over-refuse, and only while the receipts are missing, never under-refuse.
-      if (r.versionId === null) for (const from of judged) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming, { judgedFrom, retiredStillHeld: true });
+      if (r.versionId === null) for (const from of judged) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming, { judgedFrom, retiredStillHeld: true, boundEver: boundEverOf(r) });
       // #2185: a reconcile that did not finish the version's retirements leaves its keys held.
-      else if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, { judgedFrom, retiredStillHeld: !r.retirementsFinished });
+      else if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, { judgedFrom, retiredStillHeld: !r.retirementsFinished, boundEver: boundEverOf(r) });
     }
   }
 
@@ -7350,6 +7355,7 @@ export class SqliteScopeHost implements ScopeHost {
         verticalVersionId: r.vertical_version_id,
         provisionedVersionId: r.provisioned_version_id ?? null,
         retirementsFinishedVersionId: r.retirements_finished_version_id ?? null,
+        boundShapes: boundShapesOfColumn(r.bound_shapes),
         migrationFailure: mapMigrationFailure(r),
         forkedFrom: r.forked_from,
         forkedAt: r.forked_at,
@@ -9293,12 +9299,14 @@ export class SqliteScopeHost implements ScopeHost {
         // #2185: both in one write — the retirements count as finished only for the version
         // this receipt names, and a receipt written without that answer clears them.
         const finished = versionId !== null && outcome?.retirementsFinished === true ? versionId : null;
+        // #2184: and the binding shapes it reported bound, paired with this receipt's version.
         this.directory
-          .prepare('UPDATE scopes SET provisioned_version_id = ?, retirements_finished_version_id = ? WHERE scope_id = ?')
-          .run(versionId, finished, scopeId);
+          .prepare('UPDATE scopes SET provisioned_version_id = ?, retirements_finished_version_id = ?, bound_shapes = ? WHERE scope_id = ?')
+          .run(versionId, finished, boundShapesColumn(versionId, outcome?.boundShapes), scopeId);
         this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
           versionId,
           ...(finished ? { retirementsFinished: true } : {}),
+          ...(versionId !== null && outcome?.boundShapes ? { boundShapes: outcome.boundShapes } : {}),
         });
       },
       verticalServing: async (actor, verticalSlug: string) => {
@@ -12271,6 +12279,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #2185: the version whose reconcile finished its retirements here. Null on every existing
     // row, which reads as "not finished": the sweep reconciles each such install once more.
     this.ensureColumn(this.directory, 'scopes', 'retirements_finished_version_id', 'retirements_finished_version_id TEXT');
+    // #2184: null on every existing row, which reads as unknown (the sweep reconciles it once more).
+    this.ensureColumn(this.directory, 'scopes', 'bound_shapes', 'bound_shapes TEXT');
     this.ensureColumn(this.directory, 'scopes', 'erasure_epoch', 'erasure_epoch INTEGER');
     this.ensureColumn(this.directory, 'scopes', 'reap_claimed_at', 'reap_claimed_at TEXT');
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).

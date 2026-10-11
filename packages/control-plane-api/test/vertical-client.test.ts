@@ -1670,3 +1670,21 @@ it('reconcileInstance reads back how many retirements the reconcile left open, a
   // platform then counts the retirements not finished.
   for (let i = 0; i < 4; i++) expect(await read()).toBeUndefined();
 });
+
+it('reconcileInstance reads back the types the scope has ever bound, and only a list of names (#2184)', async () => {
+  const owner = 'principal-1';
+  const replies: unknown[] = [['contact'], [], undefined, [7], [''], 'contact', null];
+  const client = new VerticalClient({
+    fetch: (async () => {
+      const types = replies.shift();
+      return Response.json({ tenantId: t, scopeId: s, owner, ...(types === undefined ? {} : { boundShapeTypes: types }) });
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  const read = async () => (await client.reconcileInstance({ tenantId: t, scopeId: s, entitlements: [] } as never)).boundShapeTypes;
+  expect(await read()).toEqual(['contact']);
+  expect(await read()).toEqual([]);
+  // A deployment built on packages that predate the report sends none, and a malformed list is
+  // dropped: the platform then reads the scope's bound types as unknown.
+  for (let i = 0; i < 5; i++) expect(await read()).toBeUndefined();
+});

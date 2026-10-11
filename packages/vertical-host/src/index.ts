@@ -224,6 +224,10 @@ export interface VerticalScopeHost {
      *  finished). The hosted host (`adapter-cloudflare`) counts them; one built before it answers none,
      *  and the platform counts them not finished. */
     retirementsLeftOpen?: number;
+    /** #2184: with `entityGrants`, every type the scope has ever bound (`shape-bound`). One built
+     *  before it answers none, and the platform judges the scope as possibly having bound every
+     *  table-held bootstrap shape of its version. */
+    boundShapeTypes?: string[];
   }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
@@ -671,6 +675,15 @@ const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
 const retirementsAnswer = (leftOpen: number | undefined) => {
   const parsed = leftOpen === undefined ? undefined : z.number().int().nonnegative().safeParse(leftOpen);
   return parsed?.success ? { retirementsLeftOpen: parsed.data } : {};
+};
+
+/**
+ * #2184: the types the scope has ever bound, parsed on the way OUT like `retirementsAnswer`: a list
+ * that does not parse is left out, and the platform then reads the scope's bound types as unknown.
+ */
+const boundShapesAnswer = (types: string[] | undefined) => {
+  const parsed = types === undefined ? undefined : z.array(z.string().min(1)).safeParse(types);
+  return parsed?.success ? { boundShapeTypes: parsed.data } : {};
 };
 
 const discardKeptBody = z.object({
@@ -1936,6 +1949,8 @@ export function mountPlatformSurface<Env extends object>(
       ...switchedOffAnswer(reconciled?.switchedOff),
       // #2185: what the platform records beside its receipt — whether the retirements finished.
       ...retirementsAnswer(reconciled?.retirementsLeftOpen),
+      // #2184: and which binding shapes the scope has ever bound, for the binding-shape gate.
+      ...boundShapesAnswer(reconciled?.boundShapeTypes),
     });
   });
 

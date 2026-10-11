@@ -240,14 +240,16 @@ export interface ShapePass {
  * `entity.grants-retired` event, then holders topped up, each with its `entity.grants-topped-up`
  * event. `next` is `null` once the scope is done; otherwise the caller runs another pass with it
  * as `after`. `retirementsLeftOpen` counts the shapes whose retirement this pass gave up on at
- * `SHAPE_RETIRE_CONFIRMS_MAX`, for the next reconcile to run again. Run it inside ONE
+ * `SHAPE_RETIRE_CONFIRMS_MAX`, for the next reconcile to run again. The last pass (`next: null`)
+ * also answers `boundEver` (#2184): every type this scope has ever bound (`shape-bound`), read
+ * after this reconcile recorded its facts, for the platform's binding-shape gate. Run it inside ONE
  * transaction, so the keys and their events commit together. Re-running a finished scope writes
  * nothing.
  */
 export function topUpEntityGrantShapes(
   db: SwitchSql,
   pass: ShapePass,
-): { toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null } {
+): { toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; boundEver?: string[] } {
   // Here as well as at each entry point: a pass with no budget never hands back `next: null`, so
   // a caller looping until it does would never stop.
   const limit = shapeTopUpBatch(pass.limit);
@@ -309,7 +311,19 @@ export function topUpEntityGrantShapes(
     toppedUp += gave.found.length;
     if (!gave.done) return stop('topUp', gave.at);
   }
-  return { toppedUp, retired, retirementsLeftOpen, next: null };
+  return { toppedUp, retired, retirementsLeftOpen, next: null, boundEver: boundEverTypes(db) };
+}
+
+/**
+ * #2184: every entity type this scope has ever bound (`shape-bound`, sticky), sorted. One read of
+ * the `shape:` range of the spine, bounded by the types ever declared.
+ */
+export function boundEverTypes(db: SwitchSql): string[] {
+  return (
+    db.all(`SELECT subject FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ? ORDER BY subject`, BOUND_EVER_RELATION) as {
+      subject: string;
+    }[]
+  ).map((r) => r.subject.slice('shape:'.length));
 }
 
 /** What a pass may still spend: rows of work it may write, and markers it may read. */
