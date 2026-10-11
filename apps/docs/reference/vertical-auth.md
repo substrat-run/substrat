@@ -259,8 +259,9 @@ including the two OIDC ones where Better Auth stays dormant:
   every key (#2178): keep the shape with the keys in `retired` and none in `permissions`, then
   drop or move it in a later version, once the retirement has finished in every install (#2185:
   each primary install is judged from the version it last reconciled and whether that reconcile
-  finished the version's retirements. One that left a retirement open, one whose vertical-host
-  predates the report, and one with no receipt, such as just after a kill switch, all wait; the
+  finished the version's retirements. One that left a retirement open, one built on an
+  `adapter-cloudflare` or `vertical-host` that predates the report, and one with no receipt, such
+  as just after a kill switch or a restore, all wait; the
   sweep reconciles them again on its next pass. A copy never reconciles, so a retirement never
   reaches it, and its own bind is judged only on what it runs). Dropping only `bind` is allowed. A
   vertical supplies `nodeFor`, `callerOf` (who is asking, 401 for nobody) and the host verb.

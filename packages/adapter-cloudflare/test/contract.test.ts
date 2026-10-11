@@ -5944,6 +5944,11 @@ describe('#113 — a refusal raised inside a Durable Object keeps its code acros
  * binding-shape drop from a version that declares a retirement, nothing else, and the sweep must
  * re-converge every such install on its own (a reconcile answering "finished" writes the version
  * beside the receipt), after which the drop passes.
+ *
+ * The sweep's reconcile is STUBBED here (it answers "finished"): this proves the predicate and the
+ * write converge on DO SQLite, not that a real deployment's answer becomes "finished". That half is
+ * apps/control-plane's `reconcileReachedScope` test ("answers whether the reconcile finished the
+ * retirements its payload carried") and control-plane-api's route tests in reconcile-receipt.test.ts.
  */
 describe('#2185 — wedge risk: the retirements-finished column added to an existing directory', () => {
   const staff = platformActorId.parse(ulid());
