@@ -1,5 +1,5 @@
 import { URLSearchParams } from 'node:url';
-import { X509Certificate, constants, createPrivateKey, createSign, verify } from 'node:crypto';
+import { X509Certificate, constants, createPrivateKey, createPublicKey, createSign, createVerify, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { Connection } from '@substrat-run/contracts';
 import type { FetchLike, ScopeHost } from '@substrat-run/kernel';
@@ -183,10 +183,15 @@ describe('a stored certificate is judged before it is kept (#2189)', () => {
     expect(der[at + 1]).toBe(16);
     der[at + 2] = 0x00;
     der[at + 3] = 0x7f;
-    const tbsLen = der.readUInt16BE(8);
-    const tbs = der.subarray(4, 4 + 4 + tbsLen);
+    // der: 30 82 LL LL (certificate) | 30 82 TT TT (tbs, length at offset 6) | … | signature (last 256).
+    expect(der.subarray(4, 6).toString('hex')).toBe('3082');
+    const tbs = der.subarray(4, 8 + der.readUInt16BE(6));
     const key = createPrivateKey({ key: Buffer.from(good.privateKey, 'base64'), format: 'der', type: 'pkcs8' });
     createSign('sha256').update(tbs).sign(key).copy(der, der.length - 256);
+    // The fixture must be sound in every way but the serial, or it would fail the signature check
+    // and never reach the serial one: assert it verifies.
+    const signed = createVerify('sha256').update(tbs).verify(createPublicKey(key), der.subarray(der.length - 256));
+    expect(signed).toBe(true);
     return { ...good, certificate: der.toString('base64') };
   }
   const stored = (m: { privateKey: string; certificate: string; notAfter: string }) => ({
