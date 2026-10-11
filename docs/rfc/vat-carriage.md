@@ -210,7 +210,7 @@ accounting hand-off, a double invoice. The precedent is the v2 bump of
 | `underlagDetail` | `vatBreakdown`, per-line fields | additive on a published read shape |
 | `underlagListRow` | none required | — |
 | `invoicing.underlag-updated` (v1) | none | unchanged |
-| `invoicing.underlag-exported` (v2) | `vatBreakdown: [{ rate, net, tax }]`, and `total` possibly gross | **the K-39 question** |
+| `invoicing.underlag-exported` (v2) | `vatBreakdown: [{ rate, net, tax }]` added; `total` unchanged (§5.4) | **the K-39 question** |
 
 The three producer events are owned by their producers; invoicing parses its own view of
 each. An optional field there is a change to the *producer's* payload, made by the
@@ -235,12 +235,13 @@ a `schemaVersion` bump"*, which reads the same way; that wording is CLAUDE.md's,
 K-39 keeps the rest of D-28 *"untouched"*. The nearest recorded precedent is D-22's
 export-schema diff (`tools/export-schema-diff.mts`, #1705): for an *exported vertical event*
 it refuses a removed, retyped or newly-required field at an unchanged version and states that
-*"a new export, or a new optional field, is additive"*. That is a different rule (vertical exports, not engine
+*"A NEW export, or a new optional field, is additive"*. That is a different rule (vertical exports, not engine
 events), but it is the closest statement of what the platform treats as breaking. A consumer
 using Zod's default object parsing ignores the extra key; **no consumer in this repo parses
-strictly** — a search for `.strict()` finds only a vertical's own input union
-(`demos/ticket0/spec/model.ts`), not an event consumer, and invoicing's three consumed events
-use plain `z.object`. A bump would impose a replace — a guaranteed dead-letter in every
+strictly an invoicing event payload**. `.strict()` is used elsewhere (contracts,
+control-plane-api, vertical-host, the dashboard worker, and a few demos), but a search finds
+no reference to `invoicing.underlag-exported` or `-updated` in any `.ts` outside
+`engines/invoicing`, and invoicing's own three consumed events use plain `z.object`. A bump would impose a replace — a guaranteed dead-letter in every
 consumer that was fine — to protect against a break that does not occur.
 
 **Reading 2 — any payload change is a replace.**
