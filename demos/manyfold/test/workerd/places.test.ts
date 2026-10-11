@@ -63,7 +63,7 @@ type Failure = null | 'discovery-500' | 'report-500' | 'throw';
 function issuer(origin: string, opts: { index: boolean } = { index: true }) {
   const reports: Report[] = [];
   const stray: string[] = [];
-  const state = { discoveries: 0, failure: null as Failure };
+  const state = { discoveries: 0, attempts: 0, failure: null as Failure };
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url === `${origin}/.well-known/substrat-places`) {
@@ -73,6 +73,7 @@ function issuer(origin: string, opts: { index: boolean } = { index: true }) {
       return opts.index ? Response.json({ report_endpoint: `${origin}/api/places/report` }) : new Response('no', { status: 404 });
     }
     if (url === `${origin}/api/places/report`) {
+      state.attempts++;
       if (state.failure === 'throw') throw new TypeError('connection refused');
       if (state.failure === 'report-500') return new Response('down', { status: 500 });
       reports.push(JSON.parse(String(init?.body)) as Report);
@@ -250,6 +251,10 @@ describe('manyfold reports a login\'s place to the identity pool (#1670)', () =>
       await settle(() => iss.state.discoveries, 2);
       expect(iss.state.discoveries).toBeGreaterThan(0); // it did try
       expect(iss.reports).toEqual([]);
+      // A report that failed is told apart from one never attempted: with the report endpoint down
+      // the present (from /api/me) and the repair (from reconcile) each tried and failed; with
+      // discovery down, nothing got as far as a report.
+      expect(iss.state.attempts).toBe(failure === 'report-500' ? 2 : 0);
       // The failure was not remembered as an answer: the issuer back, the next call reports.
       iss.state.failure = null;
       expect((await me(a, 'sub-ann')).status).toBe(200);
@@ -257,6 +262,7 @@ describe('manyfold reports a login\'s place to the identity pool (#1670)', () =>
       expect(iss.reports.map((r) => [r.op, r.sub, r.scope_id])).toEqual([['present', 'sub-ann', a.s]]);
       expect((await platform('/internal/reconcile', { tenantId: a.t, scopeId: a.s, owner, entitlements })).status).toBe(200);
       expect(iss.reports.at(-1)).toMatchObject({ op: 'replace', scope_id: a.s, subs: ['sub-ann'] });
+      expect(iss.state.attempts).toBe((failure === 'report-500' ? 2 : 0) + 2); // the retries: present, then the repair
     },
   );
 });
