@@ -636,6 +636,17 @@ describe('a key a shape protects reaches its record only through the record (#21
     expect(await allowed(onRegion, WO_READ, w2)).toBe(true);
   });
 
+  it('a record with a protected parent and a direct path to the ancestor is reached by the direct path alone', async () => {
+    // A diamond: w3 is filed under the customer AND straight under the region.
+    const w3 = { entityType: 'workorder', entityId: 'w3' };
+    const grant = row(`principal:${ALICE}`, `granted:${WO_READ}`, 'region:r1');
+    const viaCustomer = row('workorder:w3', 'parent', 'customer:c1');
+    const direct = row('workorder:w3', 'parent', 'region:r1');
+    expect(await allowed([shape, ...edges, viaCustomer, direct, grant], WO_READ, w3)).toBe(true);
+    // Without the direct edge the only path passes through the customer, where the walk stops.
+    expect(await allowed([shape, ...edges, viaCustomer, grant], WO_READ, w3)).toBe(false);
+  });
+
   it('a grant written before the scope recorded the shape stops reaching through the record once it is recorded', async () => {
     const old = [...edges, row(`principal:${ALICE}`, `granted:${WO_READ}`, 'region:r1')];
     expect(await allowed(old, WO_READ, w1)).toBe(true);

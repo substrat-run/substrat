@@ -12,8 +12,9 @@
  *   shape's type is made on (#2177).
  *
  * Operations are thin pass-throughs and check nothing themselves, except `bind/read`, which is
- * the portal read a bound person makes: `bind:read-own` on that one record, and `bind/allowed`,
- * which answers the caller's own check of a key on an entity.
+ * the portal read a bound person makes: `bind:read-own` on that one record; `bind/allowed`,
+ * which answers the caller's own check of a key on an entity; and `bind/granted`, the caller's
+ * own grant-scoped listing.
  */
 import { z } from 'zod';
 import {
@@ -127,6 +128,18 @@ export const bindMod: ModuleRegistration = {
     /** Whether the caller holds `{ permission }` on `{ entity }`, by the ordinary check. */
     'bind/allowed': (async (ctx, input: { permission: PermissionKey; entity: EntityRef }) =>
       (await ctx.check(input.permission, input.entity)).allowed) as Handler,
+    /** Every id the caller's grants list for `{ permission, entityType }`, all pages, or the page kind when it is not ids. */
+    'bind/granted': (async (ctx, input: { permission: PermissionKey; entityType: string }) => {
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await ctx.grantedEntities(input.permission, input.entityType, cursor === undefined ? {} : { cursor });
+        if (page.kind !== 'ids') return page.kind;
+        ids.push(...page.ids);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor !== undefined);
+      return [...new Set(ids)].sort();
+    }) as Handler,
     /** The bound person's portal read: their own record, and nobody else's. */
     'bind/read': (async (ctx, input: { id: string }) => {
       assertAllowed(await ctx.check(BIND_READ_OWN, { entityType: 'brecord', entityId: input.id }));

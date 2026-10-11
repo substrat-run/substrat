@@ -435,6 +435,18 @@ export function bindingInviteContractSuite(
         expect(await reads(who, id)).toBe(false);
       });
 
+      it("is not listed by a grant-scoped read through the group either, while an unprotected key's listing is", async () => {
+        const { g, id } = await filed();
+        const who = await invitee();
+        const granted = async (permission: string, entityType: string) =>
+          (await host.getScope(who, t1, s1)).invoke<string[] | string>('bind/granted', { permission, entityType });
+        await host.admin.grant(staff, { principalId: who, permission: BIND_READ_OWN, node: node(), entity: group(g), grantedBy: clerk });
+        expect(await granted(BIND_READ_OWN, 'bgroup')).toEqual([g]);
+        expect(await granted(BIND_READ_OWN, 'brecord')).toEqual([]);
+        await host.admin.grant(staff, { principalId: who, permission: BIND_INVITE, node: node(), entity: group(g), grantedBy: clerk });
+        expect(await granted(BIND_INVITE, 'brecord')).toEqual([id]);
+      });
+
       it('made before the scope recorded the shape, stops reaching the record once it is recorded', async () => {
         const scope = scopeId.parse(ulid());
         await host.provisionScope(staff, { tenantId: t1, scopeId: scope, vertical: 'bind-vertical' });
