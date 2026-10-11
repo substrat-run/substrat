@@ -330,6 +330,9 @@ importers:
       '@substrat-run/oidc-rp':
         specifier: workspace:^
         version: link:../../packages/oidc-rp
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../../packages/vertical-host
       hono:
         specifier: ^4.13.13
         version: 4.13.13

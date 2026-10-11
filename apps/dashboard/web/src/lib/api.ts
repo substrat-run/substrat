@@ -1,4 +1,5 @@
 import { problemDetail } from '@substrat-run/contracts';
+import { createClient, type DashboardClient } from './api.generated';
 import { tenantLogsQuery } from './logs-query';
 import type { PromoteReviewWire } from './promote-review';
 import { exportBreaksIn } from './bind-ack';
@@ -1542,6 +1543,25 @@ export interface ExportBreakRow {
   schemaVersion: number;
   /** What the version exports it as instead, or null when it no longer does. */
   incoming: number | null;
+}
+
+/**
+ * The declared surface (#2170), bound to ONE team: every call goes to
+ * `/api/teams/<teamId>/…`, so the request names its team in its own URL. The routes
+ * `call` reaches below still read the team off the `sb_team` cookie, which every tab
+ * shares — the reason a tab could show one team while reading another. Areas move from
+ * `call` to this as their routes move into `src/routes.ts`.
+ *
+ * Build it from the team the TAB is on (`me.currentTeamId`, pinned by the URL), never
+ * once at module load.
+ */
+export function teamApi(teamId: string): DashboardClient {
+  return createClient({
+    baseUrl: `/api/teams/${encodeURIComponent(teamId)}`,
+    fetch: (input, init) => fetch(input, { credentials: 'include', ...init }),
+    // The one reading of a failed body (#971), same as `call`.
+    errorMessage: (body) => problemDetail(body),
+  });
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {

@@ -61,8 +61,11 @@ export interface ClientConfig {
    * A list because a vertical that composes engines wants the ENGINE's entities named
    * too: without them `protocolGet`'s return type inlines four hundred characters of
    * protocol row on one line, which is a diff nobody reads.
+   *
+   * Absent for a surface with no entities of its own — a declared route set whose
+   * handlers answer with published schemas (#2170) has nothing stored to name.
    */
-  readonly entities: string | readonly string[];
+  readonly entities?: string | readonly string[];
   /**
    * Extra schemas to name, as `InterfaceName` → export name.
    *

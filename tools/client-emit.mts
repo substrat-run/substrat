@@ -100,7 +100,8 @@ for (const group of ['demos', 'apps']) {
     };
     const client = pkg.substrat?.client;
     if (!client) continue;
-    for (const field of ['model', 'entities', 'operations', 'out', 'name'] as const) {
+    // `entities` is optional: a declared route set (#2170) stores nothing of its own to name.
+    for (const field of ['model', 'operations', 'out', 'name'] as const) {
       if (!client[field]) cannot(`${group}/${n}: substrat.client is missing \`${field}\``);
     }
     if (Array.isArray(client.operations) && client.operations.length === 0) {
@@ -182,7 +183,7 @@ for (const { rel, dir, config } of opted) {
     return first.exports[name];
   };
   const mod = new Proxy({} as Record<string, unknown>, { get: (_t, k: string) => resolve(k) });
-  const entityBags = typeof config.entities === 'string' ? [config.entities] : config.entities;
+  const entityBags = config.entities === undefined ? [] : typeof config.entities === 'string' ? [config.entities] : config.entities;
   const entities: Record<string, unknown> = {};
   for (const bagName of entityBags) {
     const bag = mod[bagName] as Record<string, unknown> | undefined;

@@ -2885,3 +2885,77 @@ export type HandlerOutput<O> = O extends { output: infer R }
         : z.infer<R>
     : unknown
   : unknown;
+
+// ---------------------------------------------------------------------------
+// Routes: a declared HTTP surface whose handlers are host code, not operations.
+// ---------------------------------------------------------------------------
+
+/**
+ * One route an app answers with a hand-written handler rather than an operation (#2170).
+ *
+ * The same `http`/`input`/`output` shape an operation declares, minus everything that
+ * makes a thing an OPERATION — no permission key, no events, no entity. A route exists
+ * because its handler does what module code may not: call the control plane, `HostAdmin`,
+ * a provider's API. What it still owes the reader is a declaration, so the route table,
+ * the input parse, the output parse and the browser client are derived from one object
+ * (`mountRoutes` in `@substrat-run/vertical-host`, `renderClient` in model-emit) instead
+ * of being restated beside the handler.
+ *
+ * Shaped like an operation on purpose: a route that later becomes a model operation
+ * (#1185) keeps its path, its schemas and its client method, and only its implementation
+ * moves.
+ */
+type RouteShape<R> = {
+  /** One line; the client method's doc comment. */
+  readonly summary: string;
+  /** Path params, query (a read) or body (a write), merged and parsed as one object. */
+  readonly input?: z.ZodType;
+  /** What the handler answers. Parsed on the way OUT, so the response is what this says. */
+  readonly output: z.ZodType;
+  /** `{var}` must name an input field — checked here, so the path cannot outrun the input. */
+  readonly http: {
+    readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    readonly path: CheckedPath<R>;
+  };
+  /** The success status, when it is not 200 — `201` for a create. */
+  readonly status?: 200 | 201 | 202;
+};
+
+/**
+ * Declare an app's hand-handled routes (#2170).
+ *
+ * ```ts
+ * export const routes = defineRoutes({
+ *   'dashboard/list-findings': {
+ *     summary: "This team's findings, most recently seen first",
+ *     input: z.object({ status: findingStatus.optional() }),
+ *     output: z.object({ available: z.boolean(), entries: z.array(findingEntry) }),
+ *     http: { method: 'GET', path: '/findings' },
+ *   },
+ * });
+ * ```
+ */
+export function defineRoutes<const Routes extends { readonly [K in keyof Routes]: RouteShape<Routes[K]> }>(
+  routes: Routes,
+): Routes {
+  return routes;
+}
+
+/** What a route's handler is handed: its parsed input, or `undefined` when it declares none. */
+export type RouteInput<R> = R extends { input: infer I } ? (I extends z.ZodType ? z.infer<I> : undefined) : undefined;
+
+/** What a route's handler answers — the declared output, before the mount parses it. */
+export type RouteOutput<R> = R extends { output: infer O } ? (O extends z.ZodType ? z.input<O> : never) : never;
+
+/**
+ * The handler map a declared route set requires — the routes' twin of `OperationImpl`.
+ *
+ * Written `{ … } satisfies RouteImpl<typeof routes, Ctx>`, it makes four things compile
+ * errors at the exact handler: a route declared and not handled, one handled and not
+ * declared, an input the handler reads differently from the declaration, and a return
+ * the declared output would not accept. `Ctx` is whatever the app's mount resolves per
+ * request — for the dashboard, the caller's team.
+ */
+export type RouteImpl<Routes, Ctx> = {
+  readonly [K in keyof Routes]: (ctx: Ctx, input: RouteInput<Routes[K]>) => RouteOutput<Routes[K]> | Promise<RouteOutput<Routes[K]>>;
+};

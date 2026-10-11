@@ -3,7 +3,17 @@
   "version": "0.43.3",
   "private": true,
   "substrat": {
-    "permissions": "src/provision.ts"
+    "permissions": "src/provision.ts",
+    "client": {
+      "model": "src/routes.ts",
+      "operations": "dashboardRoutes",
+      "schemas": {
+        "FindingEntry": "findingEntry",
+        "FindingRuleEntry": "findingRuleEntry"
+      },
+      "out": "web/src/lib/api.generated.ts",
+      "name": "Dashboard"
+    }
   },
   "description": "The Dashboard — Substrat’s tenant-facing self-service surface (the platform vertical). See docs/architecture/dashboard.md.",
   "type": "module",
@@ -27,6 +37,7 @@
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
     "hono": "catalog:",
     "tweetnacl": "^1.0.3",
     "zod": "catalog:"
