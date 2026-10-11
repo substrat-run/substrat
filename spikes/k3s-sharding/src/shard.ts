@@ -212,7 +212,14 @@ async function listItems(scope: string) {
 }
 
 const bgPeriod = Number(process.env.BG_PERIOD_MS ?? 0);
-/** The next slot to run, per scope and epoch: a new holding starts at 0 and replays what is done. */
+/**
+ * The next slot to run, per scope and epoch: a new holding starts at 0 and replays what is
+ * done. Two costs a real design would not pay. A handover costs one invocation per slot
+ * since the scope's birth. And it is exactly-once only while the keys are retained: the
+ * kernel prunes idempotency records after `IDEMPOTENCY_RETENTION_MS` (24 h), and after that a
+ * replay would run an old slot again. The real version keeps a durable per-scope watermark,
+ * which is what the kernel's schedule ledger is.
+ */
 const bgNext = new Map<string, number>();
 
 function ownVolumeScopes(): string[] {
