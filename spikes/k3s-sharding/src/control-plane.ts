@@ -12,10 +12,10 @@
  * - `renew` extends only the CURRENT (holder, epoch). A holder that slept through its expiry
  *   and finds the epoch moved learns it is fenced here, and stops.
  * - `settle` records that the holder's node's volume now has the data (after the copy).
+ * - `release` ends a lease early (a planned move, question 4).
  *
  * A holder is a process incarnation (`todo-1/<boot id>`), so a pod brought back under the
  * same name waits out its predecessor's lease like anyone else (`lease-client.ts`).
- * - `release` ends a lease early (a planned move, question 4).
  *
  * Every write is one `BEGIN IMMEDIATE` transaction, so two shards racing for one scope are
  * serialized by SQLite and exactly one wins the epoch.
@@ -25,10 +25,10 @@
  * lease. `test/kill.test.ts` runs the cluster that way and asserts that it LOSES an
  * acknowledged write, so the lease's absence stays visible rather than argued.
  */
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { readJson, send, serveLocal } from './http.js';
 import { exitWithParent } from './process.js';
 
 const dir = process.env.CP_DIR ?? '.data/control-plane';
@@ -58,98 +58,79 @@ interface LeaseRow {
 type Reply = [status: number, body: unknown];
 
 const read = db.prepare<[string], LeaseRow>('SELECT * FROM leases WHERE scope = ?');
+const insert = db.prepare('INSERT INTO leases (scope, holder, epoch, expires_at, data_on) VALUES (?, ?, 1, ?, NULL)');
+const extend = db.prepare('UPDATE leases SET expires_at = ? WHERE scope = ?');
+const hand = db.prepare('UPDATE leases SET holder = ?, epoch = ?, expires_at = ? WHERE scope = ?');
+const place = db.prepare('UPDATE leases SET data_on = ? WHERE scope = ?');
 
-const acquire = db.transaction((scope: string, holder: string): Reply => {
+/** The row, if `(holder, epoch)` is still the current grant on it. */
+function current(scope: string, holder: string, epoch: number): LeaseRow | undefined {
+  const row = read.get(scope);
+  return row && row.holder === holder && row.epoch === epoch ? row : undefined;
+}
+
+function acquire(scope: string, holder: string): Reply {
   const now = Date.now();
   const row = read.get(scope);
   if (!row) {
-    db.prepare('INSERT INTO leases (scope, holder, epoch, expires_at, data_on) VALUES (?, ?, 1, ?, NULL)').run(
-      scope,
-      holder,
-      now + ttlMs,
-    );
+    insert.run(scope, holder, now + ttlMs);
     return [200, { epoch: 1, ttlMs, dataOn: null }];
   }
   if (row.holder === holder && row.expires_at > now) {
-    db.prepare('UPDATE leases SET expires_at = ? WHERE scope = ?').run(now + ttlMs, scope);
+    extend.run(now + ttlMs, scope);
     return [200, { epoch: row.epoch, ttlMs, dataOn: row.data_on }];
   }
   if (leasesOn && row.expires_at > now) {
     return [409, { holder: row.holder, epoch: row.epoch, retryAfterMs: row.expires_at - now }];
   }
   const epoch = row.epoch + 1;
-  db.prepare('UPDATE leases SET holder = ?, epoch = ?, expires_at = ? WHERE scope = ?').run(holder, epoch, now + ttlMs, scope);
+  hand.run(holder, epoch, now + ttlMs, scope);
   return [200, { epoch, ttlMs, dataOn: row.data_on }];
-});
+}
 
-const renew = db.transaction((scope: string, holder: string, epoch: number): Reply => {
-  const row = read.get(scope);
-  if (!row || row.holder !== holder || row.epoch !== epoch) {
+function renew(scope: string, holder: string, epoch: number): Reply {
+  if (!current(scope, holder, epoch)) {
+    const row = read.get(scope);
     return [409, row ? { holder: row.holder, epoch: row.epoch, retryAfterMs: Math.max(0, row.expires_at - Date.now()) } : {}];
   }
-  db.prepare('UPDATE leases SET expires_at = ? WHERE scope = ?').run(Date.now() + ttlMs, scope);
+  extend.run(Date.now() + ttlMs, scope);
   return [200, { epoch, ttlMs }];
-});
-
-const settle = db.transaction((scope: string, holder: string, epoch: number, node: string): Reply => {
-  const row = read.get(scope);
-  if (!row || row.holder !== holder || row.epoch !== epoch) return [409, {}];
-  db.prepare('UPDATE leases SET data_on = ? WHERE scope = ?').run(node, scope);
-  return [200, {}];
-});
-
-const release = db.transaction((scope: string, holder: string, epoch: number): Reply => {
-  const row = read.get(scope);
-  if (!row || row.holder !== holder || row.epoch !== epoch) return [409, {}];
-  db.prepare('UPDATE leases SET expires_at = 0 WHERE scope = ?').run(scope);
-  return [200, {}];
-});
-
-async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
-  let raw = '';
-  for await (const chunk of req) raw += chunk;
-  return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
 }
 
-function send(res: ServerResponse, [status, payload]: Reply): void {
-  res.writeHead(status, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(payload));
+function settle(scope: string, holder: string, epoch: number, node: string): Reply {
+  if (!current(scope, holder, epoch)) return [409, {}];
+  place.run(node, scope);
+  return [200, {}];
 }
 
-const server = createServer((req, res) => {
-  void (async () => {
-    try {
-      const url = new URL(req.url ?? '/', 'http://cp');
-      if (req.method === 'GET' && url.pathname.startsWith('/lease/')) {
-        const row = read.get(decodeURIComponent(url.pathname.slice('/lease/'.length)));
-        return send(res, row ? [200, { ...row, now: Date.now() }] : [404, {}]);
-      }
-      if (req.method !== 'POST') return send(res, [405, {}]);
-      const b = await body(req);
-      const scope = String(b.scope);
-      const holder = String(b.holder);
-      const epoch = Number(b.epoch);
-      switch (url.pathname) {
-        case '/lease/acquire':
-          return send(res, acquire(scope, holder));
-        case '/lease/renew':
-          return send(res, renew(scope, holder, epoch));
-        case '/lease/settle':
-          return send(res, settle(scope, holder, epoch, String(b.node)));
-        case '/lease/release':
-          return send(res, release(scope, holder, epoch));
-        default:
-          return send(res, [404, {}]);
-      }
-    } catch (e) {
-      send(res, [500, { error: String(e) }]);
+function release(scope: string, holder: string, epoch: number): Reply {
+  if (!current(scope, holder, epoch)) return [409, {}];
+  extend.run(0, scope);
+  return [200, {}];
+}
+
+const writes = {
+  '/lease/acquire': db.transaction((b: Record<string, unknown>) => acquire(String(b.scope), String(b.holder))),
+  '/lease/renew': db.transaction((b: Record<string, unknown>) => renew(String(b.scope), String(b.holder), Number(b.epoch))),
+  '/lease/settle': db.transaction((b: Record<string, unknown>) =>
+    settle(String(b.scope), String(b.holder), Number(b.epoch), String(b.node)),
+  ),
+  '/lease/release': db.transaction((b: Record<string, unknown>) => release(String(b.scope), String(b.holder), Number(b.epoch))),
+} as const;
+
+serveLocal('control-plane', port, async (req, res, path) => {
+  try {
+    if (req.method === 'GET' && path.startsWith('/lease/')) {
+      const row = read.get(decodeURIComponent(path.slice('/lease/'.length)));
+      return row ? send(res, 200, { ...row, now: Date.now() }) : send(res, 404, {});
     }
-  })();
-});
-
-server.listen(port, '127.0.0.1', () => {
-  const addr = server.address();
-  const bound = typeof addr === 'object' && addr ? addr.port : port;
-  process.send?.({ ready: 'control-plane', port: bound });
+    if (req.method !== 'POST') return send(res, 405, {});
+    const write = writes[path as keyof typeof writes];
+    if (!write) return send(res, 404, {});
+    const [status, payload] = write.immediate(await readJson(req));
+    send(res, status, payload);
+  } catch (e) {
+    send(res, 500, { error: String(e) });
+  }
 });
 exitWithParent(() => db.close());

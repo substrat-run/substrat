@@ -199,7 +199,7 @@ export class Cluster {
     return p;
   }
 
-  log(name: string): string {
+  private log(name: string): string {
     return this.proc(name).log.join('');
   }
 

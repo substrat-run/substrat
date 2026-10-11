@@ -52,7 +52,7 @@ export class LeaseClient {
     const res = await fetch(`${this.controlPlane}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ holder: this.holder, node: this.node, ...body }),
+      body: JSON.stringify({ holder: this.holder, ...body }),
       signal: AbortSignal.timeout(5_000),
     });
     return { status: res.status, json: (await res.json()) as Record<string, unknown> };
@@ -87,7 +87,7 @@ export class LeaseClient {
   }
 
   async settle(scope: string, grant: Grant): Promise<void> {
-    const { status, json } = await this.post('/lease/settle', { scope, epoch: grant.epoch });
+    const { status, json } = await this.post('/lease/settle', { scope, epoch: grant.epoch, node: this.node });
     if (status !== 200) throw this.refused(scope, json);
     grant.dataOn = this.node;
   }

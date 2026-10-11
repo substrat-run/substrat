@@ -21,6 +21,7 @@
  *
  * A SIGKILL alone cannot fail this on one machine — a dead process writes nothing, and the
  * retry is recognised by its key. What fails is step 2's survivor: a holder that is not dead.
+ * The second test runs the same steps with the lease switched off, and must lose writes.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { ulid } from '@substrat-run/kernel';

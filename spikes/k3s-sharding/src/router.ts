@@ -13,9 +13,9 @@
  * be one the scope can recognise. That is the kernel's idempotency recording (#116), carried
  * from the client unchanged.
  */
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { candidates } from './placement.js';
+import { readText, send, serveLocal } from './http.js';
 import { exitWithParent } from './process.js';
 
 const port = Number(process.env.PORT ?? 0);
@@ -87,37 +87,18 @@ async function route(scope: string, f: Forward): Promise<{ status: number; json:
   return { status: 504, json: { error: `no shard answered for ${scope}` } };
 }
 
-async function body(req: IncomingMessage): Promise<string> {
-  let raw = '';
-  for await (const chunk of req) raw += chunk;
-  return raw;
-}
-
-function send(res: ServerResponse, status: number, payload: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(payload));
-}
-
-const server = createServer((req, res) => {
-  void (async () => {
-    const path = new URL(req.url ?? '/', 'http://router').pathname;
-    if (req.method === 'POST' && path === '/_members') {
-      members = JSON.parse(await body(req)) as Record<string, string>;
-      cache.clear();
-      return send(res, 200, { members: Object.keys(members) });
-    }
-    const m = /^\/scopes\/([^/]+)\//.exec(path);
-    if (!m) return send(res, 404, {});
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
-    const key = req.headers['idempotency-key'];
-    if (typeof key === 'string') headers['idempotency-key'] = key;
-    const r = await route(decodeURIComponent(m[1]!), { method: req.method ?? 'GET', path, body: await body(req), headers });
-    send(res, r.status, r.json);
-  })();
-});
-
-server.listen(port, '127.0.0.1', () => {
-  const addr = server.address();
-  process.send?.({ ready: process.env.ROUTER_NAME ?? 'router', port: typeof addr === 'object' && addr ? addr.port : port });
+serveLocal(process.env.ROUTER_NAME ?? 'router', port, async (req, res, path) => {
+  if (req.method === 'POST' && path === '/_members') {
+    members = JSON.parse(await readText(req)) as Record<string, string>;
+    cache.clear();
+    return send(res, 200, { members: Object.keys(members) });
+  }
+  const m = /^\/scopes\/([^/]+)\//.exec(path);
+  if (!m) return send(res, 404, {});
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const key = req.headers['idempotency-key'];
+  if (typeof key === 'string') headers['idempotency-key'] = key;
+  const r = await route(decodeURIComponent(m[1]!), { method: req.method ?? 'GET', path, body: await readText(req), headers });
+  send(res, r.status, r.json);
 });
 exitWithParent();

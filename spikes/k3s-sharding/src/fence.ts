@@ -16,12 +16,15 @@
  * that a caller is TOLD it succeeded. The caller retries under its idempotency key and the
  * new holder applies it once. `test/kill.test.ts` is that case.
  *
+ * A test that needs a fault to land between the two checks wraps the INNER host
+ * (`shard.ts`), so the fence carries no seams of its own.
+ *
  * Only the operation path is fenced. The lifecycle and directory methods (`provisionScope`,
  * `admin.*`, snapshots) pass through untouched: they belong to the control plane, and making
  * that a service every shard calls is question 5, outside this spike.
  */
 import type { ScopeHost, ScopeStub } from '@substrat-run/kernel';
-import { NotHolder } from './lease-client.js';
+import type { NotHolder } from './lease-client.js';
 
 export interface ScopeGuard {
   /** Resolves when this process may write `scope` now; throws {@link NotHolder} otherwise. */
@@ -37,12 +40,6 @@ export class Fenced extends Error {
   }
 }
 
-/** Test seams around the invocation, so a fault can land between the two checks. */
-export interface FenceHooks {
-  beforeInvoke?(scope: string, operation: string, input: unknown): Promise<void>;
-  afterInvoke?(scope: string, operation: string, input: unknown): Promise<void>;
-}
-
 function isStub(v: unknown): v is ScopeStub {
   return (
     typeof v === 'object' &&
@@ -52,32 +49,37 @@ function isStub(v: unknown): v is ScopeStub {
   );
 }
 
-function fenceStub(stub: ScopeStub, guard: ScopeGuard, hooks: FenceHooks): ScopeStub {
-  const invoke: ScopeStub['invoke'] = async (operation, input, options) => {
-    const scope = stub.scopeId;
-    await guard.admit(scope);
-    await hooks.beforeInvoke?.(scope, operation, input);
-    const out = await stub.invoke(operation, input, options);
-    await hooks.afterInvoke?.(scope, operation, input);
-    if (!guard.stillHeld(scope)) throw new Fenced(scope);
-    return out as never;
-  };
-  return new Proxy(stub, {
-    get: (target, prop, receiver) => (prop === 'invoke' ? invoke : Reflect.get(target, prop, receiver)),
-  });
-}
-
-export function fenceScopeHost(host: ScopeHost, guard: ScopeGuard, hooks: FenceHooks = {}): ScopeHost {
+/**
+ * `host`, with `invoke` replaced on every stub it mints — through any method that resolves
+ * to a stub, and through `attributed()`. Everything else passes through untouched.
+ */
+export function wrapStubs(host: ScopeHost, wrap: (stub: ScopeStub) => ScopeStub['invoke']): ScopeHost {
   return new Proxy(host, {
     get(target, prop) {
       const value: unknown = Reflect.get(target, prop, target);
       if (typeof value !== 'function') return value;
       return (...args: unknown[]) => {
         const out: unknown = (value as (...a: unknown[]) => unknown).apply(target, args);
-        if (prop === 'attributed') return fenceScopeHost(out as ScopeHost, guard, hooks);
-        if (out instanceof Promise) return out.then((v: unknown) => (isStub(v) ? fenceStub(v, guard, hooks) : v));
-        return out;
+        if (prop === 'attributed') return wrapStubs(out as ScopeHost, wrap);
+        if (!(out instanceof Promise)) return out;
+        return out.then((v: unknown) => {
+          if (!isStub(v)) return v;
+          const invoke = wrap(v);
+          return new Proxy(v, {
+            get: (stub, p, receiver) => (p === 'invoke' ? invoke : Reflect.get(stub, p, receiver)),
+          });
+        });
       };
     },
+  });
+}
+
+export function fenceScopeHost(host: ScopeHost, guard: ScopeGuard): ScopeHost {
+  return wrapStubs(host, (stub) => async (operation, input, options) => {
+    const scope = stub.scopeId;
+    await guard.admit(scope);
+    const out = await stub.invoke(operation, input, options);
+    if (!guard.stillHeld(scope)) throw new Fenced(scope);
+    return out as never;
   });
 }

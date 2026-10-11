@@ -29,13 +29,13 @@
  * with that text reaches `point`, the shard reports it and sends itself `signal`. Signalling
  * itself is what makes the kill land at exactly that point, every run.
  */
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { principalId, tenantId } from '@substrat-run/contracts';
+import { principalId, scopeId as scopeIdOf, tenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { LeaseClient, LeaseGuard, NotHolder, type Grant } from './lease-client.js';
-import { Fenced, fenceScopeHost, type FenceHooks } from './fence.js';
+import { Fenced, fenceScopeHost, wrapStubs } from './fence.js';
+import { readJson, send, serveLocal } from './http.js';
 import { copyScope, openScope, scopeDir, seedScope, type ScopeWorld } from './todo-scope.js';
 import { exitWithParent } from './process.js';
 import { home } from './placement.js';
@@ -45,7 +45,7 @@ const port = Number(process.env.PORT ?? 0);
 const volume = process.env.VOLUME ?? '.data/volumes';
 const leases = new LeaseClient(process.env.CP_URL ?? 'http://127.0.0.1:0', node, Number(process.env.LEASE_MARGIN_MS ?? 400));
 
-export type FaultPoint = 'pre-write' | 'post-commit';
+type FaultPoint = 'pre-write' | 'post-commit';
 interface Fault {
   text: string;
   point: FaultPoint;
@@ -65,8 +65,25 @@ async function fault(point: FaultPoint, text: string): Promise<void> {
   process.kill(process.pid, f!.signal);
 }
 
+/**
+ * The inner host, with each stub reporting the armed faults on either side of its own
+ * invocation. Fenced on the outside, so a fault lands between the fence's two checks.
+ */
+function withFaults(host: ScopeHost): ScopeHost {
+  const textOf = (input: unknown) => (input as { text?: string } | undefined)?.text ?? '';
+  return wrapStubs(host, (stub) => async (operation, input, options) => {
+    await fault('pre-write', textOf(input));
+    const out = await stub.invoke(operation, input, options);
+    await fault('post-commit', textOf(input));
+    return out as never;
+  });
+}
+
 interface Held {
+  /** The scope's own host: what is closed when the scope leaves this shard. */
   host: ScopeHost;
+  /** The same host as requests and the background loop see it: faults inside, fence outside. */
+  fenced: ScopeHost;
   world: ScopeWorld;
 }
 const held = new Map<string, Held>();
@@ -91,40 +108,36 @@ async function place(scope: string, grant: Grant): Promise<void> {
   const dir = scopeDir(volume, node, scope);
   const stale = held.get(scope);
   held.delete(scope);
-  let placed: Held;
+  // Nobody settled anywhere else since this shard last had it: what it has open is the latest.
   if (grant.dataOn === node && stale) {
-    placed = stale;
+    await leases.settle(scope, grant);
+    held.set(scope, stale);
+    return;
+  }
+  await stale?.host.close();
+  let placed: { host: ScopeHost; world: ScopeWorld };
+  if (grant.dataOn === null) {
+    rmSync(dir, { recursive: true, force: true });
+    placed = await seedScope(dir, scope);
+  } else if (grant.dataOn === node && existsSync(join(dir, 'world.json'))) {
+    placed = openScope(dir);
   } else {
-    await stale?.host.close();
-    if (grant.dataOn === null) {
-      rmSync(dir, { recursive: true, force: true });
-      placed = await seedScope(dir, scope);
-    } else if (grant.dataOn === node && existsSync(join(dir, 'world.json'))) {
-      placed = openScope(dir);
-    } else {
-      await copyScope(scopeDir(volume, grant.dataOn, scope), dir);
-      placed = openScope(dir);
-    }
+    await copyScope(scopeDir(volume, grant.dataOn, scope), dir);
+    placed = openScope(dir);
   }
   await leases.settle(scope, grant);
-  held.set(scope, placed);
+  held.set(scope, { ...placed, fenced: fenceScopeHost(withFaults(placed.host), guard) });
 }
 
 const guard = new LeaseGuard(leases, { onAcquire: place, fencing: process.env.LEASES !== 'off' });
 guard.startRenewing(Number(process.env.LEASE_RENEW_MS ?? 400));
 
-const hooks: FenceHooks = {
-  beforeInvoke: async (_scope, _op, input) => fault('pre-write', (input as { text?: string }).text ?? ''),
-  afterInvoke: async (_scope, _op, input) => fault('post-commit', (input as { text?: string }).text ?? ''),
-};
-
 /** The scope's stub, fenced: `admit` first (which may place the data), then the host. */
 async function stubFor(scope: string) {
   await guard.admit(scope);
-  const h = held.get(scope)!;
-  const host = fenceScopeHost(h.host, guard, hooks);
-  const stub = await host.getScope(principalId.parse(h.world.member), tenantId.parse(h.world.tenant), h.world.scope as never);
-  return { stub, world: h.world };
+  const { fenced, world } = held.get(scope)!;
+  const stub = await fenced.getScope(principalId.parse(world.member), tenantId.parse(world.tenant), scopeIdOf.parse(world.scope));
+  return { stub, world };
 }
 
 const epochOf = (scope: string) => guard.grant(scope)?.epoch;
@@ -169,7 +182,7 @@ function ownVolumeScopes(): string[] {
 
 async function runDue(scope: string): Promise<void> {
   const { stub, world } = await stubFor(scope);
-  const at = `${scope}@${guard.grant(scope)?.epoch}`;
+  const at = `${scope}@${epochOf(scope)}`;
   // Counted from the scope's birth, so every holder agrees on which slots are due.
   const due = Math.floor((Date.now() - world.bornAt) / bgPeriod);
   for (let k = bgNext.get(at) ?? 0; k <= due; k++) {
@@ -179,10 +192,16 @@ async function runDue(scope: string): Promise<void> {
 }
 
 if (bgPeriod > 0) {
+  /** Scopes with a pass already queued: a tick slower than the period does not pile up more. */
+  const queued = new Set<string>();
   setInterval(() => {
     for (const scope of new Set([...held.keys(), ...ownVolumeScopes()])) {
+      if (queued.has(scope)) continue;
+      queued.add(scope);
       // Not ours (NotHolder) or lost mid-slot (Fenced): another shard runs it, or will.
-      void serialized(scope, () => runDue(scope)).catch(() => undefined);
+      void serialized(scope, () => runDue(scope))
+        .catch(() => undefined)
+        .finally(() => queued.delete(scope));
     }
   }, bgPeriod);
 }
@@ -210,46 +229,27 @@ async function rebalance(members: string[]): Promise<string[]> {
   return moved;
 }
 
-async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
-  let raw = '';
-  for await (const chunk of req) raw += chunk;
-  return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-}
-
-function send(res: ServerResponse, status: number, payload: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(payload));
-}
-
-const server = createServer((req, res) => {
-  void (async () => {
-    const path = new URL(req.url ?? '/', 'http://shard').pathname;
-    if (req.method === 'POST' && path === '/_rebalance') {
-      return send(res, 200, { moved: await rebalance((await body(req)).members as string[]) });
+serveLocal(node, port, async (req, res, path) => {
+  if (req.method === 'POST' && path === '/_rebalance') {
+    return send(res, 200, { moved: await rebalance((await readJson(req)).members as string[]) });
+  }
+  const m = /^\/scopes\/([^/]+)\/items$/.exec(path);
+  if (!m) return send(res, 404, {});
+  const scope = decodeURIComponent(m[1]!);
+  try {
+    if (req.method === 'POST') {
+      const b = await readJson(req);
+      const key = req.headers['idempotency-key'];
+      return send(res, 200, await addItem(scope, String(b.text), typeof key === 'string' ? key : undefined));
     }
-    const m = /^\/scopes\/([^/]+)\/items$/.exec(path);
-    if (!m) return send(res, 404, {});
-    const scope = decodeURIComponent(m[1]!);
-    try {
-      if (req.method === 'POST') {
-        const b = await body(req);
-        const key = req.headers['idempotency-key'];
-        return send(res, 200, await addItem(scope, String(b.text), typeof key === 'string' ? key : undefined));
-      }
-      if (req.method === 'GET') return send(res, 200, await listItems(scope));
-      return send(res, 405, {});
-    } catch (e) {
-      if (e instanceof NotHolder) {
-        return send(res, 421, { holder: e.holder, epoch: e.epoch, retryAfterMs: e.retryAfterMs, node });
-      }
-      if (e instanceof Fenced) return send(res, 503, { error: e.message, node });
-      return send(res, 500, { error: e instanceof Error ? e.message : String(e), node });
+    if (req.method === 'GET') return send(res, 200, await listItems(scope));
+    return send(res, 405, {});
+  } catch (e) {
+    if (e instanceof NotHolder) {
+      return send(res, 421, { holder: e.holder, epoch: e.epoch, retryAfterMs: e.retryAfterMs, node });
     }
-  })();
-});
-
-server.listen(port, '127.0.0.1', () => {
-  const addr = server.address();
-  process.send?.({ ready: node, port: typeof addr === 'object' && addr ? addr.port : port });
+    if (e instanceof Fenced) return send(res, 503, { error: e.message, node });
+    return send(res, 500, { error: e instanceof Error ? e.message : String(e), node });
+  }
 });
 exitWithParent();
