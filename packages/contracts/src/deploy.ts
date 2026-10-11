@@ -622,6 +622,11 @@ export const entityGrantShape = z.object({
    * person given it before the column was written: unbind them first). An unbind releases every
    * holder of the shape on the record from the spine, whatever the column names now.
    *
+   * Once a type has bound someone in a scope, its keys stay refused to direct grants there whatever
+   * later versions declare, and an erasure matches the erased id against every type that ever bound
+   * (as module erasure matches subject columns whatever the type): an id that is not a ULID can
+   * collide across types.
+   *
    * People already bound KEEP the shape until they are released — an unbind while the shape binds,
    * an erasure (which reaches every type that ever bound in the scope), or `retired` — whatever a
    * later version does to the declaration: dropping `bind` keeps the holder recorded but leaves no
