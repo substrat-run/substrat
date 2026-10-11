@@ -684,16 +684,17 @@ describe('a key a shape protects reaches its record only through the record (#21
     expect(isWriteStatement(shapeProtectedTypesQuery(`granted:${WO_READ}`).sql)).toBe(false);
   });
 
-  it('reads the protecting types at most once per walk, and not at all for a walk that never climbs', async () => {
+  it('reads the protecting types at most once per walk, and not at all for a walk with no edge to climb', async () => {
     let reads = 0;
     const onProtectedRead = () => void (reads += 1);
     const deep = [...[1, 2, 3, 4].map((i) => row(`n:${i}`, 'parent', `n:${i + 1}`)), row(`principal:${ALICE}`, `granted:${WO_READ}`, 'n:5')];
     expect(await allowed(deep, WO_READ, { entityType: 'n', entityId: '1' }, { onProtectedRead })).toBe(true);
     expect(reads).toBe(1);
     reads = 0;
-    // A hit at the start, and a node-level check, never climb.
+    // A hit at the start, a node-level check, and a miss on an entity with no parents never climb.
     expect(await allowed([row(`principal:${ALICE}`, `granted:${WO_READ}`, 'n:1')], WO_READ, { entityType: 'n', entityId: '1' }, { onProtectedRead })).toBe(true);
     expect((await createTupleEvaluator(readerFor({ scope: [], onProtectedRead })).check(alice, WO_READ, NODE)).allowed).toBe(false);
+    expect(await allowed([], WO_READ, { entityType: 'n', entityId: 'leaf' }, { onProtectedRead })).toBe(false);
     expect(reads).toBe(0);
   });
 });

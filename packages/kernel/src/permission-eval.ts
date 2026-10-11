@@ -235,7 +235,8 @@ async function switchedOff(subject: CheckSubject, node: Node, scope: ScopeTupleR
  *
  * `stopsAt`, when given, names the refs the walk probes but never climbs past — the records a
  * protected key reaches only through their own grant (`protectedStop`). Asked only of a ref the
- * walk would expand, so a hit at the start costs nothing.
+ * walk would expand and that has parent edges, so a hit at the start, or a miss at a leaf, costs
+ * nothing.
  */
 async function walkParents<R>(
   scope: Pick<ScopeTupleReader, 'parents'>,
@@ -263,8 +264,10 @@ async function walkParents<R>(
     if (depth === ENTITY_WALK_DEPTH) break;
     const next: Frontier[] = [];
     for (const candidate of frontier) {
-      if (stopsAt && (await stopsAt(candidate.ref))) continue;
-      for (const p of await scope.parents(candidate.ref)) {
+      const edges = await scope.parents(candidate.ref);
+      // Asked only of a ref with edges to climb, so a miss at a leaf reads no shapes.
+      if (edges.length === 0 || (stopsAt && (await stopsAt(candidate.ref)))) continue;
+      for (const p of edges) {
         // A revoked parent edge stops expanding. Without this the tombstone would work
         // for grants and membership but silently NOT for entity edges — which is the
         // case open question 15 is actually about (a facility moving management
@@ -290,8 +293,9 @@ async function walkParents<R>(
  * where the shape's grant sits; a grant on an ancestor still reaches the ancestor's other
  * descendants by any path that does not pass through such a record.
  *
- * The protecting types are read once per walk, and only when it first tries to climb, so a check
- * that never walks, or hits at its start, reads nothing more.
+ * The protecting types are read once per walk, and only when it first has an edge to climb, so a
+ * check that never walks, hits at its start, or misses on an entity with no parents reads nothing
+ * more.
  */
 function protectedStop(
   scope: Pick<ScopeTupleReader, 'shapeProtectedTypes'>,
