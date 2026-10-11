@@ -5,8 +5,11 @@
  *
  * It keeps NO placement table. For each request it walks the rendezvous order of the scope
  * (`placement.ts`) and caches only one fact per scope: the shard that last answered for it.
- * Shards correct it: a `421` names the holder, and the router goes there — or, when the
- * holder is the shard it just gave up on, waits out the `retryAfterMs` the lease reported.
+ * Shards correct it: a `421` names the holder, and the router goes there — including when
+ * the holder is the shard it just gave up on after a timeout. A live lease means that shard
+ * is slow rather than gone, so the router asks it again with a growing backoff; if it really
+ * is gone, its lease runs out and the next `421` names someone else. All of it inside one
+ * deadline per request.
  *
  * A write that got no answer is retried, with its `Idempotency-Key`, on the next shard in
  * the order: the router cannot know whether the dead shard committed it, so the retry must
@@ -49,6 +52,7 @@ async function attempt(target: string, f: Forward): Promise<{ status: number; js
 async function route(scope: string, f: Forward): Promise<{ status: number; json: Record<string, unknown> }> {
   const until = Date.now() + deadlineMs;
   const suspects = new Set<string>();
+  let backoffs = 0;
   const order = candidates(scope, Object.keys(members));
   let target = cache.get(scope) ?? order[0]!;
   const replaySafe = f.method === 'GET' || f.headers['idempotency-key'] !== undefined;
@@ -61,12 +65,17 @@ async function route(scope: string, f: Forward): Promise<{ status: number; json:
       const r = await attempt(target, f);
       if (r.status === 421) {
         const holder = r.json.holder as string | undefined;
-        if (holder && holder !== target && !suspects.has(holder) && members[holder]) {
+        if (holder && holder !== target && members[holder]) {
+          if (suspects.has(holder)) {
+            // The lease says the shard we gave up on still holds the scope: it is slow, not
+            // gone, or it would have lost the lease. Ask it again, backing off each time.
+            suspects.delete(holder);
+            await sleep(Math.min(50 * 2 ** backoffs++, 400));
+          }
           target = holder;
           continue;
         }
-        // The holder is the shard we just gave up on (or unknown): its lease has not run
-        // out yet. Wait a slice of what is left, then ask again.
+        // No holder named (the scope is between holders): wait a slice, ask again.
         await sleep(Math.min(Math.max(Number(r.json.retryAfterMs ?? 0), 50), 250));
         continue;
       }
