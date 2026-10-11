@@ -93,11 +93,17 @@ export async function certificateMatchesKey(certificateBase64: string, privateKe
     const version = readTlv(der, tbs.body, 0xa0);
     const serial = version && readTlv(der, version.end, 0x02);
     if (!serial || !isShortestPositive(der.subarray(serial.body, serial.end))) return false;
+    // Both algorithm fields (RFC 5280 §4.1.1.2 makes them agree) must be the sha256WithRSAEncryption
+    // this module signs with, which is the algorithm the verification below uses.
+    const expectedAlgorithm = seq(oid(OID_SHA256_WITH_RSA), nul());
+    const sameAs = (t: { start: number; end: number }) => equal(der.subarray(t.start, t.end), expectedAlgorithm);
+    if (!sameAs(alg)) return false;
     let at = serial.end;
     let spki: { start: number; body: number; end: number } | undefined;
     for (let i = 0; i < 5; i++) {
       const t = readTlv(der, at);
       if (!t) return false;
+      if (i === 0 && !sameAs(t)) return false;
       if (i === 4) spki = t;
       at = t.end;
     }
@@ -227,6 +233,10 @@ function time(d: Date): Uint8Array {
   return d.getUTCFullYear() < 2050
     ? tlv(0x17, new TextEncoder().encode(`${digits.slice(2)}Z`))
     : tlv(0x18, new TextEncoder().encode(`${digits}Z`));
+}
+
+function equal(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 function concat(...parts: Uint8Array[]): Uint8Array {

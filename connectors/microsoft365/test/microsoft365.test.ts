@@ -225,6 +225,22 @@ describe('a stored certificate is judged before it is kept (#2189)', () => {
     expect(secret.certificate).not.toBe(bad.certificate);
   });
 
+  it.each([
+    ['the outer signatureAlgorithm', 'outer'],
+    ['the signature algorithm inside the TBS', 'inner'],
+  ])('a certificate whose %s is not sha256WithRSAEncryption is re-minted', async (_l, which) => {
+    const good = await generateCertificate({ commonName: 'x', now: NOW });
+    const der = Buffer.from(good.certificate, 'base64');
+    // sha256WithRSAEncryption …01 0b → sha384WithRSAEncryption …01 0c; the first hit is the TBS's, the last the outer's.
+    const needle = Buffer.from('2a864886f70d01010b', 'hex');
+    const at = which === 'inner' ? der.indexOf(needle) : der.lastIndexOf(needle);
+    der[at + needle.length - 1] = 0x0c;
+    const bad = { ...good, certificate: der.toString('base64') };
+    expect(await certificateMatchesKey(bad.certificate, bad.privateKey)).toBe(false);
+    const { secret } = await prepareMicrosoft365Candidate(base, stored(bad), { now: NOW, commonName: 'x' });
+    expect(secret.certificate).not.toBe(bad.certificate);
+  });
+
   it('a valid unexpired certificate is kept, not re-minted', async () => {
     const good = await generateCertificate({ commonName: 'x', now: NOW });
     expect(await certificateMatchesKey(good.certificate, good.privateKey)).toBe(true);
