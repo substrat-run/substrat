@@ -133,9 +133,12 @@ question 16 (§7).
    question 16; [#128](https://github.com/substrat-run/substrat/issues/128). The question
    says *decide before a third party consumes an engine event*; this package is on public
    npm.
-2. **VAT is not modelled.** Lines carry a unit price and a line total, with no tax
-   treatment. A third consumer asking for VAT carriage is
-   [#326](https://github.com/substrat-run/substrat/issues/326), and
-   `strategy/commerce-gaps.md` §4.1 walks what it would take.
+2. **VAT is not modelled.** Lines carry a unit price, a currency and a line total, with no
+   rate and no tax amount, and the document has no per-rate decomposition. VAT *carriage*
+   (not determination) is
+   [#326](https://github.com/substrat-run/substrat/issues/326), which a third consumer
+   re-raised after the currency work in §2 had shipped on its own; the concept spec is
+   [`rfc/vat-carriage.md`](../rfc/vat-carriage.md) (proposed, undecided), and
+   [`strategy/commerce-gaps.md`](../strategy/commerce-gaps.md) §4.1 holds the original walk.
 3. **`number` is `MAX(number) + 1` per scope** — correct under serialized execution (K-6),
    stated because it would not be elsewhere.
