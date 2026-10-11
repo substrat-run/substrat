@@ -745,26 +745,40 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     expect(seen.closedWith).toBeNull();
   });
 
-  it("walks to the root with the key it was checked by: a row whose shape protects that key is not nudged (#2177)", async () => {
+  it("a row the key reaches only through a record its shape protects is the subscriber's own check (#2177)", async () => {
     // `live:read` reaches a note through its folder by the reader's grant on the cabinet. Once a
-    // `note` shape protects the key, the reader's own check on a note refuses, so the walk the
-    // nudge rides on must stop at the note too: the root still passes, and nothing is sent.
+    // `note` shape protects the key, a check of it on a note stops at the note. The nudge must
+    // give the answer that check gives: refused for a grant above the note, allowed for a holder
+    // by a node-level grant or by the note's own shape.
     const node = { tenantId: t, scopeId: sc };
-    const seen = await watchChecked(reader, F1);
+    const nodeHolder = principalId.parse(ulid());
+    const shapeHolder = principalId.parse(ulid());
+    await host.admin.grant(staff, { principalId: nodeHolder, permission: READ, node, grantedBy: writer });
+    await host.admin.grant(staff, { principalId: shapeHolder, permission: READ, node, entity: { entityType: 'cabinet', entityId: C1 }, grantedBy: writer });
+    const viaCabinet = await watchChecked(reader, F1);
+    const viaNode = await watchChecked(nodeHolder, F1);
+    const viaShape = await watchChecked(shapeHolder, F1);
     try {
       await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'note', permissions: [READ], bootstrap: true, holder: 'grantee' }]);
-      await as('live/touch', { noteId: IN_F1 });
+      await host.admin.grantEntityShape(staff, { principalId: shapeHolder, node, entity: { entityType: 'note', entityId: IN_F1 }, permissions: [READ], grantedBy: writer });
+      await as('live/touch-each', { noteIds: [IN_F1, IN_F1B] });
       await settle();
-      expect(seen.frames).toEqual([]);
-      expect(seen.closedWith).toBeNull();
+      // The grant above the note reaches neither note: nothing is sent, and the root still holds.
+      expect(viaCabinet.frames).toEqual([]);
+      expect(viaCabinet.closedWith).toBeNull();
+      // A node-level holder holds the key on every note: both are nudged.
+      expect(viaNode.frames.map((f) => f.kind)).toEqual(['nudge', 'nudge']);
+      // The note's own shape holder is nudged about that note and not its neighbour.
+      expect(viaShape.frames).toHaveLength(1);
+      expect(viaShape.frames[0]!.kind).toBe('nudge');
     } finally {
       await host.admin.reconcileEntityGrantShapes(staff, node, []);
     }
     // The positive twin, on the same socket: with no shape protecting the key, the row is nudged.
     await as('live/touch', { noteId: IN_F1 });
     await settle();
-    expect(seen.frames).toHaveLength(1);
-    expect(seen.frames[0]!.kind).toBe('nudge');
+    expect(viaCabinet.frames).toHaveLength(1);
+    expect(viaCabinet.frames[0]!.kind).toBe('nudge');
   });
 
   // -- the gate on every pass -------------------------------------------------

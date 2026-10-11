@@ -3518,6 +3518,12 @@ export function defineScopeDO(
        * principal holding that root in several tabs is one check, fanned out to each socket.
        */
       const rootChecks = new Map<string, Promise<boolean>>();
+      /**
+       * A row beneath a checked root that the key reaches only through a record whose shape
+       * protects it (#2177): decided by the subscriber's own check of the key on the row, asked
+       * once per (principal, key, row) per pass, under the same epoch rules as `rootChecks`.
+       */
+      const rowChecks = new Map<string, Promise<boolean>>();
       const ancestors = new Map<string, Promise<Set<string>>>();
       /**
        * How long the memos above may be trusted (#938, Codex #2077 r4, r5). They are decisions
@@ -3559,28 +3565,29 @@ export function defineScopeDO(
         if (!holds(epoch, now)) {
           epoch = openEpoch(now);
           rootChecks.clear();
+          rowChecks.clear();
           ancestors.clear();
         }
         return epoch;
       };
       /**
-       * A root checked by a key is walked to with that key (#2177): the walk stops where the key's
-       * own check would, at a record whose shape protects it, so a row the key reaches only through
-       * such a record is never nudged to someone the check on the row would refuse. A vouched root
-       * has no key and walks the plain edges. Memoised per (row, key), since the stop depends on it.
+       * Is the row beneath the root? With a `key` (#2177), only along a path the key's own check
+       * would climb: it stops at a record whose shape protects the key. Memoised per (row, key),
+       * since the stop depends on it.
        */
       const reaches = async (
         row: (typeof announceable)[number],
-        root: { entityType: string; entityId: string; checked?: string },
+        root: { entityType: string; entityId: string },
         now: string,
+        key?: PermissionKey,
       ) => {
-        const memo = `${row.id}\n${root.checked ?? ''}`;
+        const memo = `${row.id}\n${key ?? ''}`;
         let up = ancestors.get(memo);
         if (!up) {
           // A walk that cannot answer is a frame not sent — the same fail-closed rule as the check.
           // Walked at the decision's own instant; remembered only while its epoch holds.
           up = Promise.resolve()
-            .then(() => ancestorsWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, now, root.checked as PermissionKey | undefined))
+            .then(() => ancestorsWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, now, key))
             .catch(() => new Set<string>());
           ancestors.set(memo, up);
         }
@@ -3666,6 +3673,26 @@ export function defineScopeDO(
               rootVerdict = { epoch: e, allowed: await check };
             }
             if (!rootVerdict.allowed) return 'revoked';
+            // The root check speaks for a row the key reaches through the root. A row it reaches
+            // only through a record whose shape protects the key (#2177) is the subscriber's own
+            // check on the row: a holder by role or by the record's shape is nudged, a holder by a
+            // grant above the record is not — the answer `ctx.check` gives, by asking it.
+            const key = within.checked as PermissionKey;
+            if (!(await reaches(row, within, now, key))) {
+              const ask = () =>
+                context()
+                  .check(key, { entityType: row.entity_type, entityId: row.entity_id })
+                  .then((d) => d.allowed, () => false);
+              let allowed: Promise<boolean> | undefined;
+              if (e.remote) {
+                allowed = ask();
+              } else {
+                const memo = `${subscriber.principal}\n${key}\n${row.id}`;
+                allowed = rowChecks.get(memo);
+                if (!allowed) rowChecks.set(memo, (allowed = ask()));
+              }
+              if (!(await allowed)) return 'skip';
+            }
           }
           if (within?.vouched !== undefined || within?.checked !== undefined) {
             // The root was vouched for or checked, so the walk above was the row filter —

@@ -15,7 +15,7 @@ tracking: ["#2177"]
 
 **This is not negation.** No tuple denies anything, and the cut is not authored by a vertical. It is a fact the kernel records at reconcile: the scope's `shape:<type>` rows, the same ones the explicit writer reads. The algebra stays fixed and still has no rewrites. A walk for a protected key just has one more place where it ends.
 
-**One rule, every walk that carries a key.** `check`, an `act` capability's walk to its root, and a live subscription's walk to a root checked by a key all stop at the same place, through one predicate. A walk with no key, such as a vouched live root, walks every edge as before.
+**One rule, every walk that carries a key.** `check` and an `act` capability's walk to its root stop at the same place, through one predicate. A live subscription whose root is checked by a key walks to the root with that stop as well. A row beneath the root that the key reaches only through such a record is decided by the subscriber's own check of the key on the row. So a holder by a node-level grant, or by the record's own shape, is still told about it, and a holder by a grant above the record is not: the answer `check` gives. A walk with no key, such as a vouched live root, walks every edge as before.
 
 ## Cost
 
