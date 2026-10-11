@@ -56,23 +56,32 @@ interface Report {
   subs?: string[];
 }
 
+/** How the fake issuer misbehaves: not at all, discovery down, the report down, or the connection dead. */
+type Failure = null | 'discovery-500' | 'report-500' | 'throw';
+
 /** The fake issuer: answers places discovery (or 404s it) and records each report it is sent. */
 function issuer(origin: string, opts: { index: boolean } = { index: true }) {
   const reports: Report[] = [];
   const stray: string[] = [];
+  const state = { discoveries: 0, failure: null as Failure };
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url === `${origin}/.well-known/substrat-places`) {
+      state.discoveries++;
+      if (state.failure === 'throw') throw new TypeError('connection refused');
+      if (state.failure === 'discovery-500') return new Response('down', { status: 500 });
       return opts.index ? Response.json({ report_endpoint: `${origin}/api/places/report` }) : new Response('no', { status: 404 });
     }
     if (url === `${origin}/api/places/report`) {
+      if (state.failure === 'throw') throw new TypeError('connection refused');
+      if (state.failure === 'report-500') return new Response('down', { status: 500 });
       reports.push(JSON.parse(String(init?.body)) as Report);
       return new Response(null, { status: 204 });
     }
     stray.push(url);
     return new Response('not found', { status: 404 });
   });
-  return { reports, stray };
+  return { reports, stray, state };
 }
 
 /** Wait for a report that is sent after the response (`waitUntil`), or for quiet. */
@@ -173,7 +182,9 @@ describe('meridian reports a login\'s place to the identity pool (#1670)', () =>
     const b = await install('https://pool-d.test');
     expect((await me(a, 'sub-ann')).status).toBe(200);
     expect((await me(b, 'sub-bob')).status).toBe(200);
-    await settle(() => iss.reports.length, 4);
+    await settle(() => iss.reports.length, 2);
+    // One `present` per install: the loop below must not be able to pass on nothing.
+    expect(iss.reports.map((r) => r.op)).toEqual(['present', 'present']);
     for (const r of iss.reports) {
       const own = r.client_id === `client-${a.s}` ? a : b;
       expect(r.scope_id).toBe(own.s);
@@ -182,19 +193,48 @@ describe('meridian reports a login\'s place to the identity pool (#1670)', () =>
     }
   });
 
-  it('twin: an install with no delivered identity sends nothing', async () => {
+  it('twin: an install with no delivered identity sends nothing — not from /api/me, not from a reconcile', async () => {
     const iss = issuer('https://pool-e.test');
     const a = await install(null);
+    await me(a, 'sub-ann'); // whatever the worker answers without an identity, it tells no issuer
+    expect((await platform('/internal/reconcile', { tenantId: a.t, scopeId: a.s, owner, entitlements })).status).toBe(200);
     await settle(() => iss.reports.length, 1);
     expect(iss.reports).toEqual([]);
     expect(iss.stray).toEqual([]);
+    expect(iss.state.discoveries).toBe(0);
   });
 
-  it('twin: an issuer that keeps no index is asked once and sent nothing', async () => {
+  it('twin: an issuer that keeps no index is asked once, however many logins, and sent nothing', async () => {
     const iss = issuer('https://pool-f.test', { index: false });
     const a = await install('https://pool-f.test');
     expect((await me(a, 'sub-ann')).status).toBe(200);
-    await settle(() => iss.reports.length, 1);
+    await settle(() => iss.state.discoveries, 1);
+    expect(iss.state.discoveries).toBe(1);
+    expect((await me(a, 'sub-bob')).status).toBe(401);
+    await settle(() => iss.state.discoveries, 2);
+    expect(iss.state.discoveries).toBe(1);
     expect(iss.reports).toEqual([]);
   });
+
+  it.each(['discovery-500', 'report-500', 'throw'] as const)(
+    'twin: an issuer that fails (%s) breaks neither /api/me nor reconcile, and the next call retries',
+    async (failure) => {
+      const origin = `https://pool-${failure}.test`;
+      const iss = issuer(origin);
+      const a = await install(origin);
+      iss.state.failure = failure;
+      expect((await me(a, 'sub-ann')).status).toBe(200);
+      expect((await platform('/internal/reconcile', { tenantId: a.t, scopeId: a.s, owner, entitlements })).status).toBe(200);
+      await settle(() => iss.state.discoveries, 2);
+      expect(iss.state.discoveries).toBeGreaterThan(0); // it did try
+      expect(iss.reports).toEqual([]);
+      // The failure was not remembered as an answer: the issuer back, the next call reports.
+      iss.state.failure = null;
+      expect((await me(a, 'sub-ann')).status).toBe(200);
+      await settle(() => iss.reports.length, 1);
+      expect(iss.reports.map((r) => [r.op, r.sub, r.scope_id])).toEqual([['present', 'sub-ann', a.s]]);
+      expect((await platform('/internal/reconcile', { tenantId: a.t, scopeId: a.s, owner, entitlements })).status).toBe(200);
+      expect(iss.reports.at(-1)).toMatchObject({ op: 'replace', scope_id: a.s, subs: ['sub-ann'] });
+    },
+  );
 });
