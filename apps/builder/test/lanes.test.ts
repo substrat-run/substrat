@@ -113,11 +113,55 @@ describe('the UI lane — app/** only', () => {
 	});
 });
 
+describe('case: a guard judges the file the filesystem will open (#2200 r1)', () => {
+	// The local studio's usual filesystem (APFS) is case-insensitive, so
+	// `App/main.tsx` IS `app/main.tsx` and `Spec/model.ts` IS the model. A refusal
+	// folds case, so it holds on either kind of filesystem; an allowance does
+	// not, because on a case-sensitive one (the hosted container) `App/` is a
+	// new directory outside the lane — so a wrong-cased path fails closed.
+	it('the API lane refuses app/** in any case', () => {
+		for (const p of ['App/main.tsx', 'APP/x.ts', 'aPp/../App/x.tsx']) expect(apiLaneWriteGuard(p), p).not.toBeNull();
+		// Positive twin: a sibling that only starts like app stays the API lane's.
+		expect(apiLaneWriteGuard('Apps/x.ts')).toBeNull();
+		expect(apiLaneWriteGuard('Application.ts')).toBeNull();
+	});
+
+	it('the UI lane writes app/ as spelled, and tells a wrong-cased path how to spell it', () => {
+		expect(uiLaneWriteGuard('app/main.tsx')).toBeNull();
+		expect(uiLaneWriteGuard('App/main.tsx')).toMatch(/spell it app\//);
+	});
+
+	it('the build guard refuses the model and the scenario oracle in any case, the half that predates lanes', () => {
+		for (const p of ['Spec/model.ts', 'SPEC/MODEL.TS', 'spec/Model.json']) expect(buildWriteGuard(p), p).toMatch(/spec\/model/);
+		for (const p of ['TEST/scenario.test.ts', 'test/Scenario.Test.ts']) expect(buildWriteGuard(p), p).toMatch(/scenario/);
+		// Positive twins: the files beside them stay writable, in any case.
+		expect(buildWriteGuard('Spec/models/extra.ts')).toBeNull();
+		expect(buildWriteGuard('TEST/server.test.ts')).toBeNull();
+		expect(buildWriteGuard('Spec/concept.md')).toBeNull();
+	});
+
+	it('on THIS filesystem, if it folds case, the write the guard refuses would land inside app/', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'builder-case-'));
+		roots.push(root);
+		const ws = new LocalWorkspace({ root });
+		await ws.writeFile('app/keep.txt', 'x');
+		const folds = await ws.exists('APP/keep.txt');
+		if (!folds) return; // a case-sensitive filesystem: App/ is a different directory
+		await ws.writeFile('App/main.tsx', 'landed');
+		expect(await ws.readFile('app/main.tsx')).toBe('landed');
+		expect(apiLaneWriteGuard('App/main.tsx')).not.toBeNull();
+		await ws.dispose();
+	});
+});
+
 describe('the lanes are disjoint and cover the tree', () => {
 	const paths = [
 		'app', 'app/x.tsx', 'app/src/a/b.ts', CONTRACT_GAPS_FILE, 'src/module.ts', 'test/server.test.ts',
 		'migrations/0001.sql', 'package.json', 'tsconfig.json', 'README.md', 'apps/y.ts', 'app/../src/z.ts',
+		'App/x.tsx', 'APP/y.ts', 'Spec/model.ts',
 	];
+	/** Wrong-cased app/ paths: refused by both lanes, which is the fail-closed answer. */
+	const miscased = (p: string) => guardPath(p).toLowerCase().startsWith('app/') && !guardPath(p).startsWith('app/');
 
 	it('no path is writable by both lanes', () => {
 		for (const p of paths) {
@@ -127,9 +171,12 @@ describe('the lanes are disjoint and cover the tree', () => {
 	});
 
 	it('every path the build may write is writable by exactly one lane', () => {
-		for (const p of paths.filter((p) => buildWriteGuard(p) === null)) {
+		for (const p of paths.filter((p) => buildWriteGuard(p) === null && !miscased(p))) {
 			const writers = LANES.filter((l) => writeGuardFor('iterate', l)(p) === null);
 			expect(writers, p).toHaveLength(1);
+		}
+		for (const p of paths.filter(miscased)) {
+			expect(LANES.filter((l) => writeGuardFor('iterate', l)(p) === null), p).toEqual([]);
 		}
 	});
 

@@ -132,7 +132,10 @@ export function buildWriteGuard(path: string): string | null {
 	// suite that agrees with whatever got built — the same failure as a model
 	// redrawn at continuation 14, one level down. `test/server.test.ts` and any
 	// other suite the build ADDS stay writable; only the scenario is frozen.
-	if (/^test\/scenario\.test\./.test(p)) {
+	// Both refusals fold case: on a case-insensitive filesystem (APFS, the local
+	// studio's usual one) `Spec/model.ts` IS the model, and a refusal that folds
+	// holds on either kind of filesystem (#2200 r1).
+	if (/^test\/scenario\.test\./i.test(p)) {
 		return (
 			'build turns cannot write test/scenario.test.* — it is the concept\'s claim ' +
 			'about this app, written before the code so it could disagree with it. If an ' +
@@ -140,7 +143,7 @@ export function buildWriteGuard(path: string): string | null {
 			'from, not here'
 		);
 	}
-	if (!/^spec\/model\./.test(p)) return null;
+	if (!/^spec\/model\./i.test(p)) return null;
 	return (
 		'build turns cannot write spec/model.* — the model changes only from ' +
 		'upstream (a requirement, a corrected understanding of the domain), never ' +
@@ -205,6 +208,14 @@ export const CONTRACT_GAPS_FILE = 'app/CONTRACT-GAPS.md';
 const underUi = (p: string): boolean => p === UI_ROOT || p.startsWith(`${UI_ROOT}/`);
 
 /**
+ * `app/` in any case. A REFUSAL of the UI lane's territory uses this, because
+ * on a case-insensitive filesystem `App/main.tsx` lands in `app/`. The UI lane's
+ * ALLOWANCE does not: on a case-sensitive one `App/` is a new directory outside
+ * the lane, so a wrong-cased path is refused by both lanes — closed, not open.
+ */
+const underUiAnyCase = (p: string): boolean => underUi(p.toLowerCase());
+
+/**
  * The API lane writes everything EXCEPT `app/**`, under the build guard.
  *
  * The complement, not a `src/** + test/** + migrations/**` allowlist: the
@@ -213,7 +224,7 @@ const underUi = (p: string): boolean => p === UI_ROOT || p.startsWith(`${UI_ROOT
  */
 export function apiLaneWriteGuard(path: string): string | null {
 	const p = guardPath(path);
-	if (underUi(p)) {
+	if (underUiAnyCase(p)) {
 		return (
 			'the API lane cannot write app/** — the UI lane runs after you in this same ' +
 			'turn and owns the screens. Finish the API (routes, operations, migrations, ' +
@@ -231,6 +242,9 @@ export function apiLaneWriteGuard(path: string): string | null {
 export function uiLaneWriteGuard(path: string): string | null {
 	const p = guardPath(path);
 	if (underUi(p)) return null;
+	if (underUiAnyCase(p)) {
+		return `the UI lane writes app/** exactly as spelled — spell it app/${p.slice(UI_ROOT.length + 1)}`;
+	}
 	return (
 		`the UI lane writes only app/** — ${p} belongs to the API lane. If the screens ` +
 		`need an operation or field the API does not offer, add one line to ` +
@@ -483,7 +497,7 @@ export function reportForLane(report: string, lane: BuildLane): string | undefin
 		for (const line of lines) {
 			const paths = linePaths(line);
 			if (paths.length > 0) {
-				owners = new Set(paths.map((p): BuildLane => (underUi(p) ? 'ui' : 'api')));
+				owners = new Set(paths.map((p): BuildLane => (underUiAnyCase(p) ? 'ui' : 'api')));
 				named = true;
 				if (owners.has(lane)) mine = true;
 			}
