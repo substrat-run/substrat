@@ -300,7 +300,7 @@ function protectedStop(
   let types: Promise<Set<string>> | undefined;
   return async (ref) => {
     const protecting = await (types ??= Promise.resolve(scope.shapeProtectedTypes(`granted:${permission}`)).then((t) => new Set(t)));
-    return protecting.size > 0 && protecting.has(ref.slice(0, ref.indexOf(':')));
+    return protecting.has(ref.slice(0, ref.indexOf(':')));
   };
 }
 
