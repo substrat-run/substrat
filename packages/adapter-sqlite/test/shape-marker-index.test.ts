@@ -18,7 +18,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox, type SwitchSql } from '@substrat-run/kernel';
-import { permMod, shapeReconcilePlans } from '@substrat-run/contract-tests';
+import { permMod, shapeBackfillTies, shapeReconcilePlans } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
 const INDEX = '_substrat_tuples_shape_marker';
@@ -76,8 +76,15 @@ function expectOnIndexes(db: InstanceType<typeof Database>, ids: { tenantId: str
   for (const plan of report.walks) expect(plan).toMatch(new RegExp(`SEARCH m USING (COVERING )?INDEX ${INDEX} \\(\\(object,subject\\)>\\(\\?,\\?\\) AND object<\\?\\)`));
   // The index order IS the walk's order: no sort, which would read the whole range first.
   for (const plan of report.walks) expect(plan).not.toMatch(/TEMP B-TREE FOR ORDER BY/);
-  expect(report.backfills.length).toBeGreaterThan(0);
-  for (const plan of report.backfills) expect(plan).toMatch(/SEARCH t USING (COVERING )?INDEX _substrat_tuples_object_relation_subject \(object>\? AND object<\?\)/);
+  // #2154: the backfill reads each holder kind in its index order, a window per pass, and marks each
+  // legacy holder exactly once.
+  for (const plan of [...report.backfills.self, ...report.backfills.grantee]) {
+    expect(plan).toMatch(/SEARCH t USING (COVERING )?INDEX _substrat_tuples_object_relation_subject \(\(object,relation,subject\)>\(\?,\?,\?\) AND object<\?\)/);
+  }
+  for (const plan of report.backfills.table) expect(plan).toMatch(/SEARCH e USING (COVERING )?INDEX sqlite_autoindex_shape_plan_badge_1 \(id>\?\)/);
+  for (const kind of ['self', 'grantee', 'table'] as const) expect(report.backfills[kind].length, kind).toBeGreaterThan(0);
+  for (const plan of Object.values(report.backfills).flat()) expect(plan).not.toMatch(/TEMP B-TREE FOR ORDER BY/);
+  expect([report.marks, report.maxFetched <= report.window]).toEqual([report.holders, true]);
   expect(report.scans).toEqual([]);
 }
 
@@ -105,5 +112,20 @@ describe('the shape reconcile reads markers on their own index (#2083)', () => {
       expect(indexed(db)).toBeDefined();
       expectOnIndexes(db, { tenantId: t1, scopeId: s1 });
     });
+  });
+});
+
+/**
+ * #2159 review: a table holder's rows that share an id are all read, whichever row a window ends on,
+ * and so are those after a NULL principal or in a WITHOUT ROWID table. The workerd half is
+ * adapter-cloudflare's `shape-marker-index.test.ts`.
+ */
+describe('the shape backfill reads every row of a table holder, ties included (#2154)', () => {
+  it('a duplicate id, a NULL principal at a window edge and a WITHOUT ROWID table (however its DDL ends) and a column named rowid each mark every holder', async () => {
+    const { host, file, t1, s1 } = await provisioned();
+    await host.close();
+    const cases = withFile(file, (db) => shapeBackfillTies(raw(db), { tenantId: t1, scopeId: s1 }));
+    expect(cases.map((c) => c.name)).toEqual(['duplicate id', 'null principal at the edge', 'without rowid', 'without rowid, strict', 'without rowid, then a comment', 'a column named rowid']);
+    expect(cases.map((c) => [c.name, c.marked, c.recorded])).toEqual(cases.map((c) => [c.name, c.expected, true]));
   });
 });
