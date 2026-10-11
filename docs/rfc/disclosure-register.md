@@ -30,7 +30,8 @@ stale tree is worth nothing.
 
 One question: **which third parties hold data about this person.** A data subject asks it
 under Article 15(1)(c); a controller answers it; an erasure request makes it operational,
-because Article 17(2) asks the controller to *tell* those third parties.
+because Article 19 asks the controller to *tell* each recipient (unless that proves
+impossible or involves disproportionate effort).
 
 [K-37](../decisions/K-037-subject-erasure-splits-by-store-tier-1-is-redacted-platform-.md)
 built erasure and shipped its limits documented rather than discovered
@@ -467,8 +468,11 @@ and states only:
 **What the platform claims about the provider's copy: nothing.** Not even under `acknowledged`.
 A 2xx means the provider accepted a request. It does not mean the copy is gone, and no text in
 the receipt, the dashboard or the trust page may say "erased" about a processor. Under
-`not-notifiable` the controller (on the hosted product, the tenant) still owes Art. 17(2)
-notice; the receipt gives them the list to do it from. That is the most the platform can
+`not-notifiable` the controller (on the hosted product, the tenant) still has the duty the
+receipt is designed to evidence. For a connector that received the data as a recipient that
+is Art. 19, communicating the erasure to each recipient unless that proves impossible or
+involves disproportionate effort; Art. 17(2) applies only where the controller made the
+data public. The receipt gives them the list to act from. That is the most the platform can
 honestly hand over, and it is more than §13.1 limit 3's silence.
 
 ### 8.6 What it asks of the kernel
@@ -514,7 +518,7 @@ trajectory and not claim until it ships.
    recommends, giving up "which record did we ask about"? Or should it keep the provider's
    reference as evidence, making a durable link from that reference to the erasure date?
 3. **Automatic or confirmed notice.** Should a shred send erase requests by itself, or should
-   the receipt list the edges and the controller confirm before anything is sent? Art. 17(2)
+   the receipt list the edges and the controller confirm before anything is sent? Art. 19
    binds the controller, which argues for confirmation; an unsent request helps nobody, which
    argues against it.
 4. **Is `discloses` a gate?** Should `lint:connector-grants` refuse a connector without one
