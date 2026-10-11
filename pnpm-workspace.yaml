@@ -7,6 +7,10 @@ packages:
   - "demos/*/admin"
   - "apps/*"
   - "apps/*/web"
+  # The one spike that is a member (#1638): its evidence is a vitest suite over the
+  # workspace kernel, adapter and contract suites, so it needs the `workspace:` links.
+  # Every other spike stays outside, as the `typescript` catalog note below says.
+  - "spikes/k3s-sharding"
   # Builder-studio projects: gitignored, own nested git repos — but workspace
   # members so `workspace:*` deps on the kernel/engines resolve and the per-
   # project gates (`pnpm --filter ./.builder/projects/<n> …`) can run.

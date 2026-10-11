@@ -320,6 +320,45 @@ neutral and move unchanged. The hard rows are all one problem — **reproducing 
 single-writer semantics** — and a per-scope leader lease + a single-consumer queue +
 SQLite-on-a-PV satisfies it.
 
+That last sentence has been run once, on one machine, in
+[`spikes/k3s-sharding`](../../spikes/k3s-sharding/FINDINGS.md) (#1638, layer 1), and only for
+**copy-on-takeover between scope directories on one filesystem**: the new holder can open
+the old holder's live files, fences them, and copies them once the old lease has ended. That
+is the shared-storage case with working locks. Genuinely node-local volumes across nodes,
+and a PersistentVolume reattached to another node, were not run. In the shape that was run
+it held, with conditions the sentence does not name, each held by a test that fails without
+it.
+
+- **The lease holder is a process incarnation, not the pod name.** A StatefulSet reuses the
+  name, and a force-deleted pod can still be running when its replacement starts. A lease
+  keyed by name lets the two share it.
+- **A fencing epoch is checked inside the scope's own transaction, on every table.** A holder
+  frozen between its lease check and its commit wakes up after the scope has moved on. The
+  takeover stamps a newer epoch into the old holder's files before copying them, and every
+  table's triggers abort a write made under an older one. That covers writes that emit no
+  event, which a check on the outbox would miss. The spike reaches `SqliteScopeHost`'s
+  connections by patching better-sqlite3. That shows the mechanism a real adapter would
+  build into its own connection; it is not a drop-in. The check works because the new holder
+  can reach the stale holder's live files. **With node-local volumes in a cluster it cannot:**
+  a live old node's volume is not reachable from the new node, and a copy from a replica
+  takes the stamp on the replica, not on the stale holder's file. Such a deployment needs a
+  fence at the storage the holder writes to: the volume revoked before it is attached
+  elsewhere, or each commit checked against the lease where the data lives. The spike did
+  not show either.
+- **The client's idempotency key reaches the scope through the router.** After a shard dies
+  without answering, only the scope can tell whether the write committed. A write without a
+  key is never retried once it may have run.
+
+It also rests on assumptions a real adapter has to make true. The holder's and the control
+plane's clocks may not drift apart in rate by more than the lease margin over one TTL. Lease
+expiry is measured on monotonic clocks, never wall clocks. And the lease table must be at
+least as durable as the data: the spike fails closed when it is lost, refusing every scope
+rather than reseeding one. A scope is unavailable for about one lease TTL when its holder
+fails, but a holder frozen *inside* a write transaction keeps the file's lock. The takeover
+cannot fence it until it wakes, so the scope stays unavailable for as long as the freeze
+lasts. That is safe, but only stopping the old holder bounds it. The contract-suite pass
+described in §6 requires the directory as a separate service first (#1638, question 5).
+
 ---
 
 ## 6. The port surface, restated

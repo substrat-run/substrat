@@ -1,0 +1,359 @@
+/**
+ * The test harness: one control plane, N shards, M routers, as real processes on localhost.
+ *
+ * Plays the scheduler's part too: `restart(name)` brings a shard back under the same name,
+ * port and volume, which is what a StatefulSet does for a pod it lost.
+ *
+ * Every spawned process is tracked, and `stop()` SIGKILLs whatever is still alive (a
+ * stopped one is continued first, so the kill is delivered) and then checks that nothing
+ * survived — a leftover process on a shared machine is a failure of the run, not noise.
+ */
+import { fork, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { statefulSetMembers } from '../src/placement.js';
+
+const SRC = fileURLToPath(new URL('../src/', import.meta.url));
+const SPIKE = fileURLToPath(new URL('../', import.meta.url));
+
+export interface ClusterOptions {
+  shards: number;
+  /** One router per entry, each with that per-attempt timeout (ms). Default: one, 1500. */
+  routerTimeoutsMs?: number[];
+  /** `off` runs the control: placement and routing with no lease (`control-plane.ts`). */
+  leases?: 'on' | 'off';
+  leaseTtlMs?: number;
+  leaseMarginMs?: number;
+  /**
+   * How many of the shards the routers are told about at start (default: all). The rest are
+   * running pods the StatefulSet has not been scaled onto yet — see `scale()`.
+   */
+  routedShards?: number;
+  /** The control plane's lease clock moves only when the test says so (`advanceClock`). */
+  manualClock?: boolean;
+  /** Let the control plane create a lease row on first acquire (the contract binding only). */
+  implicitProvision?: boolean;
+  /** Run each held scope's background slots every this many ms (`shard.ts`); off by default. */
+  bgPeriodMs?: number;
+}
+
+export interface FaultReport {
+  at: string;
+  text: string;
+  node: string;
+}
+
+interface Proc {
+  name: string;
+  child: ChildProcess;
+  env: Record<string, string>;
+  file: string;
+  port: number;
+  log: string[];
+  faults: FaultReport[];
+}
+
+export class Cluster {
+  readonly dir = mkdtempSync(join(tmpdir(), 'k3s-sharding-'));
+  readonly members: string[];
+  private readonly procs = new Map<string, Proc>();
+  private readonly everSpawned: ChildProcess[] = [];
+  private cpUrl = '';
+  private readonly shardUrls: Record<string, string> = {};
+
+  constructor(readonly opts: ClusterOptions) {
+    this.members = statefulSetMembers('todo', opts.shards);
+  }
+
+  /**
+   * Start `file` as `name`. It binds `port` — 0, the first time, so the operating system picks a
+   * free one and no other suite can take it in between — and reports what it bound in `ready`,
+   * which is the port `restart()` hands the next incarnation.
+   */
+  private async spawn(name: string, file: string, env: Record<string, string>, port = 0): Promise<Proc> {
+    const log: string[] = [];
+    const child = fork(join(SRC, file), [], {
+      cwd: SPIKE,
+      execArgv: ['--import', 'tsx'],
+      env: { ...process.env, ...env, PORT: String(port), SPIKE_MAX_LIFE_MS: '240000' },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    this.everSpawned.push(child);
+    child.stdout?.on('data', (d: Buffer) => log.push(d.toString()));
+    child.stderr?.on('data', (d: Buffer) => log.push(d.toString()));
+    const proc: Proc = { name, child, env, file, port, log, faults: [] };
+    child.on('message', (m: Partial<FaultReport>) => {
+      if (m.at) proc.faults.push(m as FaultReport);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${name} did not start: ${log.join('')}`)), 30_000);
+      child.on('message', (m: { ready?: string; port?: number }) => {
+        if (m.ready) {
+          proc.port = Number(m.port);
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      child.on('exit', (code, signal) => {
+        clearTimeout(timer);
+        reject(new Error(`${name} exited during start (${code ?? signal}): ${log.join('')}`));
+      });
+    });
+    this.procs.set(name, proc);
+    return proc;
+  }
+
+  async start(): Promise<this> {
+    mkdirSync(join(this.dir, 'faults'));
+    const cp = await this.spawn(
+      'control-plane',
+      'control-plane.ts',
+      {
+        CP_DIR: join(this.dir, 'control-plane'),
+        LEASE_TTL_MS: String(this.opts.leaseTtlMs ?? 2000),
+        LEASES: this.opts.leases ?? 'on',
+        PROVISION: this.opts.implicitProvision ? 'implicit' : 'explicit',
+        CLOCK: this.opts.manualClock ? 'manual' : 'monotonic',
+      },
+    );
+    this.cpUrl = `http://127.0.0.1:${cp.port}`;
+    const urls = this.shardUrls;
+    await Promise.all(
+      this.members.map(async (name) => {
+        const shard = await this.spawn(
+          name,
+          'shard.ts',
+          {
+            NODE: name,
+            CP_URL: this.cpUrl,
+            VOLUME: join(this.dir, 'volumes'),
+            LEASE_MARGIN_MS: String(this.opts.leaseMarginMs ?? 400),
+            LEASES: this.opts.leases ?? 'on',
+            BG_PERIOD_MS: String(this.opts.bgPeriodMs ?? 0),
+            FAULT_DIR: join(this.dir, 'faults'),
+          },
+        );
+        urls[name] = `http://127.0.0.1:${shard.port}`;
+      }),
+    );
+    for (const [i, timeout] of (this.opts.routerTimeoutsMs ?? [1500]).entries()) {
+      const name = `router-${i}`;
+      await this.spawn(
+        name,
+        'router.ts',
+        {
+          ROUTER_NAME: name,
+          MEMBERS: JSON.stringify(this.routed(this.opts.routedShards ?? this.members.length)),
+          REQUEST_TIMEOUT_MS: String(timeout),
+        },
+      );
+    }
+    return this;
+  }
+
+  private routed(n: number): Record<string, string> {
+    return Object.fromEntries(this.members.slice(0, n).map((m) => [m, this.shardUrls[m]!]));
+  }
+
+  /**
+   * Scale the StatefulSet to `n` replicas: every router learns the new member list, then
+   * every shard releases the scopes whose home moved. Returns what each shard released.
+   */
+  async scale(n: number): Promise<Record<string, string[]>> {
+    const routed = this.routed(n);
+    for (const name of this.procs.keys()) {
+      if (!name.startsWith('router-')) continue;
+      const res = await fetch(`${this.url(name)}/_members`, { method: 'POST', body: JSON.stringify(routed) });
+      if (res.status !== 200) throw new Error(`${name} refused the member list`);
+    }
+    const moved: Record<string, string[]> = {};
+    for (const shard of Object.keys(routed)) {
+      const res = await fetch(`${this.url(shard)}/_rebalance`, {
+        method: 'POST',
+        body: JSON.stringify({ members: Object.keys(routed) }),
+      });
+      moved[shard] = ((await res.json()) as { moved: string[] }).moved;
+    }
+    return moved;
+  }
+
+  get controlPlane(): string {
+    return this.cpUrl;
+  }
+
+  url(name: string): string {
+    return `http://127.0.0.1:${this.proc(name).port}`;
+  }
+
+  private proc(name: string): Proc {
+    const p = this.procs.get(name);
+    if (!p) throw new Error(`no process ${name}`);
+    return p;
+  }
+
+  private log(name: string): string {
+    return this.proc(name).log.join('');
+  }
+
+  /** Arm a fault: when the write with `text` reaches `point` on `name`, it signals itself. */
+  arm(name: string, fault: { text: string; point: 'pre-write' | 'in-tx' | 'post-commit'; signal: NodeJS.Signals }): void {
+    this.proc(name).child.send({ arm: fault });
+  }
+
+  /** Resolves once `name` reported reaching a fault point for `text`. */
+  async reached(name: string, text: string, timeoutMs = 20_000): Promise<FaultReport> {
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      const hit = this.proc(name).faults.find((f) => f.text === text);
+      if (hit) return hit;
+      // `in-tx` reports by marker file: inside a synchronous transaction an IPC message is not
+      // flushed before the shard signals itself.
+      if (existsSync(join(this.dir, 'faults', `${name}--in-tx--${text}`))) return { at: 'in-tx', text, node: name };
+      await sleep(10);
+    }
+    throw new Error(`${name} never reached the fault for ${text}: ${this.log(name)}`);
+  }
+
+  signal(name: string, sig: NodeJS.Signals): void {
+    this.proc(name).child.kill(sig);
+  }
+
+  async exited(name: string, timeoutMs = 10_000): Promise<void> {
+    const { child } = this.proc(name);
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${name} did not exit`)), timeoutMs);
+      child.once('exit', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  /** The StatefulSet's part: the same name, port and volume, a new process. */
+  async restart(name: string): Promise<void> {
+    const p = this.proc(name);
+    await this.exited(name);
+    this.procs.delete(name);
+    await this.spawn(name, p.file, p.env, p.port);
+  }
+
+  /** A write keyed `w:<text>`, or with no key at all when `key` is `null`. */
+  /** The control plane's half of provisioning a scope; a shard places nothing it was not given. */
+  async provision(scope: string): Promise<void> {
+    const res = await fetch(`${this.cpUrl}/lease/provision`, { method: 'POST', body: JSON.stringify({ scope }) });
+    if (res.status !== 200 && res.status !== 201) throw new Error(`provision ${scope}: ${res.status}`);
+  }
+
+  async write(
+    router: string,
+    scope: string,
+    text: string,
+    key: string | null = `w:${text}`,
+  ): Promise<{ status: number; json: Record<string, unknown> }> {
+    const res = await fetch(`${this.url(router)}/scopes/${scope}/items`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(key === null ? {} : { 'idempotency-key': key }) },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    return { status: res.status, json: (await res.json()) as Record<string, unknown> };
+  }
+
+  async read(router: string, scope: string): Promise<{ texts: string[]; node: string; epoch: number }> {
+    const res = await fetch(`${this.url(router)}/scopes/${scope}/items`, { signal: AbortSignal.timeout(30_000) });
+    const json = (await res.json()) as { entries: Array<{ text: string }>; node: string; epoch: number };
+    if (res.status !== 200) throw new Error(`read ${res.status}: ${JSON.stringify(json)}`);
+    return { texts: json.entries.map((e) => e.text), node: json.node, epoch: json.epoch };
+  }
+
+  async lease(scope: string): Promise<{ holder: string; epoch: number; expires_at: number; now: number; data_on: string | null }> {
+    const res = await fetch(`${this.cpUrl}/lease/${scope}`);
+    return (await res.json()) as never;
+  }
+
+  /**
+   * The item texts in `node`'s own files for `scope`, read straight off the volume — what is on
+   * disk there, whether or not anyone serves it. `null` when the volume has no such scope.
+   */
+  itemsOnVolume(node: string, scope: string): string[] | null {
+    const dir = join(this.dir, 'volumes', node, 'scopes', scope);
+    if (!existsSync(dir)) return null;
+    const texts: string[] = [];
+    for (const name of readdirSync(dir).filter((n) => n.endsWith('.sqlite'))) {
+      const db = new Database(join(dir, name), { readonly: true, fileMustExist: true });
+      try {
+        const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todo_items'").get();
+        if (has) texts.push(...db.prepare<[], { text: string }>('SELECT text FROM todo_items ORDER BY id').all().map((r) => r.text));
+      } finally {
+        db.close();
+      }
+    }
+    return texts;
+  }
+
+  /** Move the control plane's manual lease clock forward (`manualClock` only). */
+  async advanceClock(ms: number): Promise<void> {
+    const res = await fetch(`${this.cpUrl}/_clock`, { method: 'POST', body: JSON.stringify({ advanceMs: ms }) });
+    if (res.status !== 200) throw new Error(`advance clock: ${res.status}`);
+  }
+
+  /** Restart the control plane on its own files (a reschedule, not a loss). */
+  async restartControlPlane(): Promise<void> {
+    this.signal('control-plane', 'SIGKILL');
+    await this.restart('control-plane');
+  }
+
+  /** The SQLite files (and `world.json`) in `node`'s directory for `scope`, sorted; WAL side files left out. */
+  filesOnVolume(node: string, scope: string): string[] {
+    const dir = join(this.dir, 'volumes', node, 'scopes', scope);
+    return existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith('.sqlite') || n === 'world.json').sort() : [];
+  }
+
+  /** Damage a volume: remove one file from `node`'s directory for `scope`. */
+  removeFromVolume(node: string, scope: string, name: string): void {
+    rmSync(join(this.dir, 'volumes', node, 'scopes', scope, name));
+  }
+
+  /** The control plane loses its lease table: killed, its files deleted, started again. */
+  async loseControlPlaneState(): Promise<void> {
+    this.signal('control-plane', 'SIGKILL');
+    await this.exited('control-plane');
+    rmSync(join(this.dir, 'control-plane'), { recursive: true, force: true });
+    await this.restart('control-plane');
+  }
+
+  async stop(): Promise<void> {
+    for (const child of this.everSpawned) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGCONT');
+        child.kill('SIGKILL');
+      }
+    }
+    await Promise.all(
+      this.everSpawned.map(
+        (child) =>
+          new Promise<void>((resolve) => {
+            if (child.exitCode !== null || child.signalCode !== null) return resolve();
+            child.once('exit', () => resolve());
+          }),
+      ),
+    );
+    const alive = this.everSpawned.filter((c) => c.pid !== undefined && isAlive(c.pid));
+    rmSync(this.dir, { recursive: true, force: true });
+    if (alive.length > 0) throw new Error(`processes survived the cluster: ${alive.map((c) => c.pid).join(', ')}`);
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
