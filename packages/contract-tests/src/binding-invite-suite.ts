@@ -490,16 +490,26 @@ export function bindingInviteContractSuite(
         }
       });
 
-      it('a version that drops the shape drops its facts with it: an erasure then releases nothing, as for any dropped shape', async () => {
+      it('a version that drops the shape: an erasure still releases its holders from the spine, the column left as no holder names it', async () => {
         const { id, target } = await claimed();
         await reconcile([]);
         try {
           await host.admin.shredSubject(staff, t1, s1, dataSubjectId.parse(target));
+          expect(await live(id)).toEqual([]);
+          expect(await reads(target, id)).toBe(false);
+          // The kernel no longer knows which column the shape was held through.
           expect((await rowOf(id))?.principal).toBe(target);
-          expect((await live(id)).map((t) => t.relation)).toEqual(['bootstrap', `granted:${BIND_READ_OWN}`]);
         } finally {
           await reconcile([BIND_SHAPE]);
         }
+      });
+
+      it('the record of having bound is spine state: module code cannot write it', async () => {
+        await expect(() =>
+          put("INSERT INTO _substrat_tuples (subject, relation, object) VALUES ('shape:brecord', 'shape-bound', 'bound')"),
+        ).rejects.toThrow(/cannot write the platform spine/);
+        // And it is there, written by a claim, not by any module.
+        expect(await sql("SELECT 1 AS one FROM _substrat_tuples WHERE subject = 'shape:brecord' AND relation = 'shape-bound'")).toEqual([{ one: 1 }]);
       });
 
       it('releases a record the hook deleted, from what was read before it ran', async () => {

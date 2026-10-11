@@ -602,6 +602,14 @@ function backfill(db: SwitchSql, pass: ShapePass, shape: EntityGrantShape, prefi
 export const BIND_HOLDER_RELATION = 'shape-bind-holder';
 export const BIND_PERMISSION_RELATION = 'shape-bind-permission';
 export const BIND_KEY_RELATION = 'shape-bind-key';
+/**
+ * `(shape:<type>, shape-bound, bound)`: this scope has bound someone to a record of `<type>` (#1686).
+ * Written by the first claim of the type and STICKY — no reconcile removes it, whatever later
+ * versions declare — so an erasure keeps releasing that type's holders after a version drops the
+ * shape, drops its `bind` or moves its holder column. A spine tuple like the others here, so
+ * module code can never write one (`ctx.sql` refuses every `_substrat_*` write).
+ */
+export const BOUND_EVER_RELATION = 'shape-bound';
 
 /** A shape the reconcile records as binding: bootstrap, a table holder, and a `bind`. */
 const binds = (s: EntityGrantShape): s is EntityGrantShape & { holder: { table: string; idColumn: string; principalColumn: string }; bind: { permission: string } } =>

@@ -15,7 +15,7 @@ import {
   type PermissionKey,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { BIND_HOLDER_RELATION, BIND_KEY_RELATION, BIND_PERMISSION_RELATION, grantEntityShapeIn } from './entity-grant-shape.js';
+import { BIND_HOLDER_RELATION, BIND_KEY_RELATION, BIND_PERMISSION_RELATION, BOUND_EVER_RELATION, grantEntityShapeIn } from './entity-grant-shape.js';
 import { SHAPE_PROTECTED_KEY_RELATION } from './entity-grant.js';
 import type { ScopedSql } from './scope-host.js';
 import { assertSqlIdentifier, tableExists } from './sql-identifier.js';
@@ -196,6 +196,12 @@ export function bindIn(
     throw substratError('internal', `capability ${link.capabilityId}: its bind on ${entity.entityType} was refused after it was judged`);
   }
   grantEntityShapeIn(switchSqlOf(sql), principal, entity, binding.keys);
+  // Sticky: an erasure releases this type's holders whatever a later version declares.
+  sql.exec('INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', [
+    `shape:${entity.entityType}`,
+    BOUND_EVER_RELATION,
+    'bound',
+  ]);
   const payload: EntityHolderBoundPayload = { entity, principal, ...link, granted: binding.keys };
   emit({ type: ENTITY_HOLDER_BOUND, schemaVersion: 1, entity, piiClass: 'none', payload });
 }
@@ -286,24 +292,37 @@ export interface ErasureBindings {
 
 /**
  * Every binding the erasure of `subjectId` reaches, by the spine and by the column: on each type the
- * scope binds, the record that IS the subject (every holder on it) and every record the subject
+ * scope binds or has ever bound (`shape-bound`), the record that IS the subject (every holder on it) and every record the subject
  * holds the shape on (their own marker), plus the rows whose column names the subject or that are
  * the subject. Read BEFORE any declared blank, delete or hook runs, so a row a module's erasure
  * deletes is still known. A scope that binds nothing pays the one read of its shape records.
  */
 export function captureBoundOf(sql: ScopedSql, subjectId: string): ErasureBindings {
   const out: ErasureBindings = { holders: [], columns: [] };
-  for (const binding of entityBindingsOf(sql)) {
-    const prefix = `${binding.entityType}:`;
+  const bindings = new Map(entityBindingsOf(sql).map((b) => [b.entityType, b]));
+  // Every type that binds now, and every type that ever bound here (`shape-bound`, sticky).
+  const types = new Set([
+    ...bindings.keys(),
+    ...sql
+      .query<{ subject: string }>(`SELECT subject FROM _substrat_tuples WHERE subject >= 'shape:' AND subject < 'shape;' AND relation = ?`, [
+        BOUND_EVER_RELATION,
+      ])
+      .map((r) => r.subject.slice('shape:'.length)),
+  ]);
+  for (const entityType of types) {
+    const prefix = `${entityType}:`;
     out.holders.push({ object: `${prefix}${subjectId}` });
     for (const { object } of sql.query<{ object: string }>(
       `SELECT object FROM _substrat_tuples
         WHERE subject = ? AND relation = '${ENTITY_SHAPE_MARKER_RELATION}' AND revoked_at IS NULL AND object >= ? AND object < ?`,
-      [`${PRINCIPAL}${subjectId}`, prefix, `${binding.entityType};`],
+      [`${PRINCIPAL}${subjectId}`, prefix, `${entityType};`],
     )) {
       out.holders.push({ object, only: subjectId });
     }
-    if (!tableExists(switchSqlOf(sql), binding.table)) continue;
+    // The column only where the holder is still recorded: a type a later version stopped binding
+    // has no column the kernel still knows, and its holders are released from the spine alone.
+    const binding = bindings.get(entityType);
+    if (!binding || !tableExists(switchSqlOf(sql), binding.table)) continue;
     for (const r of sql.query<{ id: string; principal: string }>(
       `SELECT "${binding.idColumn}" AS id, "${binding.principalColumn}" AS principal FROM "${binding.table}"
         WHERE ("${binding.idColumn}" = ? OR "${binding.principalColumn}" = ?) AND "${binding.principalColumn}" IS NOT NULL`,
