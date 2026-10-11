@@ -68,4 +68,26 @@ describe('copyScope', () => {
     expect(textIn(join(root, 'b', 'scopes', aside[0]!))).toEqual(['stale']);
     expect(existsSync(from)).toBe(true);
   });
+
+  // Only meaningful where the filesystem folds case (APFS and NTFS by default; most Linux CI
+  // runners do not), so it runs where a case-only alias can exist and is skipped elsewhere.
+  // Whether it runs is decided by probing the filesystem the test writes to, never assumed.
+  it.skipIf(!foldsCase())('refuses a destination that differs from the source only in case', async () => {
+    root = mkdtempSync(join(tmpdir(), 'k3s-copy-'));
+    const dir = join(root, 'a', 'scopes', 'Scope');
+    scopeAt(dir, 'only copy');
+    await expect(copyScope(dir, join(root, 'a', 'scopes', 'scope'))).rejects.toThrow(/onto itself/);
+    expect(textIn(dir)).toEqual(['only copy']);
+  });
 });
+
+/** Whether the temp filesystem treats names differing only in case as the same entry. */
+function foldsCase(): boolean {
+  const probe = mkdtempSync(join(tmpdir(), 'k3s-case-'));
+  try {
+    mkdirSync(join(probe, 'Probe'));
+    return existsSync(join(probe, 'probe'));
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}

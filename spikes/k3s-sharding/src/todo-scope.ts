@@ -105,7 +105,7 @@ export async function seedScope(dir: string, id: string): Promise<{ host: ScopeH
  * the scope (FINDINGS.md §4).
  */
 export async function copyScope(from: string, to: string): Promise<void> {
-  const source = realpathSync(from);
+  const source = realpathSync.native(from);
   const target = resolve(to);
   const targetReal = realThroughAncestor(target);
   const inside = (a: string, b: string) => a === b || a.startsWith(b + sep);
@@ -121,9 +121,13 @@ export async function copyScope(from: string, to: string): Promise<void> {
   renameSync(incoming, target);
 }
 
-/** `path` with symlinks resolved, through its nearest existing ancestor if it does not exist yet. */
+/**
+ * `path` with symlinks resolved, through its nearest existing ancestor if it does not exist
+ * yet. `.native` also returns the name's case as stored, so on a filesystem that folds case
+ * two spellings of one directory compare equal.
+ */
 function realThroughAncestor(path: string): string {
-  if (existsSync(path)) return realpathSync(path);
+  if (existsSync(path)) return realpathSync.native(path);
   const parent = dirname(path);
   return parent === path ? path : join(realThroughAncestor(parent), basename(path));
 }
