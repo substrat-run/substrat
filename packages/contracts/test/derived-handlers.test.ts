@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { entityStateName, entityStateOutput } from '../src/entity-state.js';
-import { defineEntities } from '../src/model.js';
+import { defineEntities, emitModel, emittedModel } from '../src/model.js';
 import { defineOperations, derivationOf, derivationPlanOf } from '../src/operations.js';
 
 const entities = defineEntities({
@@ -44,6 +44,63 @@ const entities = defineEntities({
     table: 't_pairs',
     fields: z.object({ left: z.string(), right: z.string() }),
     primaryKey: ['left', 'right'],
+  },
+  // A create's subject (#2157): a folder's child, keyed per folder, its time and author stamped.
+  tag: {
+    table: 't_tags',
+    fields: z.object({
+      id: z.string(),
+      folder_id: z.string(),
+      label: z.string(),
+      note: z.string().nullable(),
+      created_at: z.string(),
+      created_by: z.string(),
+    }),
+    parents: ['folder'],
+    key: ['folder_id', 'label'],
+    // Declared out of order, so the rendered artifact's sort is visible.
+    stamps: { created_by: 'createdBy', created_at: 'createdAt' },
+  },
+  // Its natural key holds a stamp, which no input carries — so nothing can match it before the insert.
+  badge: {
+    table: 't_badges',
+    fields: z.object({ id: z.string(), label: z.string(), created_at: z.string() }),
+    key: ['created_at'],
+    stamps: { created_at: 'createdAt' },
+  },
+  counter: { table: 't_counters', fields: z.object({ id: z.number(), label: z.string() }) },
+  // A natural key on an entity the kernel hides rows of (#119): binned, archived, and both.
+  binnedKeyed: {
+    table: 't_binned_keyed',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    key: ['label'],
+    trash: { permission: 'note:write' },
+  },
+  filedKeyed: {
+    table: 't_filed_keyed',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    key: ['label'],
+    archive: { permission: 'note:write' },
+  },
+  hiddenKeyed: {
+    table: 't_hidden_keyed',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    key: ['label'],
+    archive: { permission: 'note:write' },
+    trash: { permission: 'note:write' },
+  },
+  filed: {
+    table: 't_filed',
+    fields: z.object({ id: z.string(), label: z.string() }),
+    archive: { permission: 'note:write' },
+  },
+  keyed: { table: 't_keyed', fields: z.object({ id: z.string(), label: z.string() }), key: ['label'] },
+  // A folder's child whose natural key leaves the folder out: a label is unique scope-wide.
+  sticker: {
+    table: 't_stickers',
+    fields: z.object({ id: z.string(), folder_id: z.string(), label: z.string() }),
+    parents: ['folder'],
+    key: ['label'],
   },
 });
 const PERMS = ['note:read', 'note:write', 'note:archive'] as const;
@@ -85,6 +142,16 @@ const DELETE = {
   output: z.object({ id: z.string(), deleted: z.boolean() }),
   http: { method: 'DELETE', path: '/notes/{noteId}' },
   emits: emitsNote('n.deleted'),
+} as const;
+
+const emitsTag = { entity: 'tag', entityIdFrom: 'id', type: 't.created', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] } as const;
+const CREATE = {
+  summary: 's',
+  permission: { key: 'note:write', entity: 'folder', idFrom: 'folderId' },
+  input: z.object({ folderId: z.string(), label: z.string(), note: z.string().nullable().optional() }),
+  output: entities.tag.fields,
+  http: { method: 'POST', path: '/folders/{folderId}/tags' },
+  emits: emitsTag,
 } as const;
 
 const kindOf = (decl: object) => derivationOf(decl, entities)?.kind;
@@ -142,6 +209,13 @@ describe('derivationOf — list', () => {
       total: false,
     });
     expect(derivationOf({ ...LIST, paged: { ...LIST.paged, total: true } }, entities)).toMatchObject({ total: true });
+  });
+
+  it('names the parent the check narrows to, whose row must exist (#2157)', () => {
+    expect(derivationOf(LIST, entities)).toMatchObject({
+      parent: { entity: 'folder', table: 't_folders', primaryKey: 'id', idFrom: 'folderId', column: 'folder_id' },
+    });
+    expect(derivationOf({ ...LIST, permission: 'note:read', input: undefined }, entities)).not.toHaveProperty('parent');
   });
 
   it('derives an unscoped page behind a scope key, with no input at all', () => {
@@ -226,6 +300,26 @@ describe('derivationOf — update', () => {
     });
   });
 
+  it('writes no stamp, and refuses a body field that would rewrite one (#2157)', () => {
+    const tagUpdate = {
+      ...UPDATE,
+      permission: { key: 'note:write', entity: 'tag', idFrom: 'tagId' },
+      input: z.object({ tagId: z.string(), note: z.string().nullable().optional() }),
+      output: entities.tag.fields,
+      http: { method: 'PATCH', path: '/tags/{tagId}' },
+      concurrency: { over: 'tag', idFrom: 'tagId' },
+      emits: { ...emitsTag, type: 't.updated' },
+    } as const;
+    const plan = derivationOf(tagUpdate, entities);
+    expect(plan).toMatchObject({ kind: 'update', fields: [{ field: 'note', column: 'note' }] });
+    expect(plan).not.toHaveProperty('stamps');
+    const writesStamp = { ...tagUpdate, input: z.object({ tagId: z.string(), createdBy: z.string().optional() }) };
+    expect(kindOf(writesStamp)).toBeUndefined();
+    expect(() => define({ 't/upd': { ...writesStamp, derive: 'update' } })).toThrow(
+      "model: 't/upd' declares `derive: 'update'`, but body field 'createdBy' writes 'created_by', which is stamped.",
+    );
+  });
+
   it.each([
     ['not PATCH', { ...UPDATE, http: { method: 'PUT', path: '/notes/{noteId}' } }],
     ['without concurrency, which would lose updates', { ...UPDATE, concurrency: undefined }],
@@ -271,6 +365,230 @@ describe('derivationOf — delete', () => {
   });
 });
 
+describe('derivationOf — create (#2157)', () => {
+  it('derives the insert: a minted id, the parent link, the input, the stamps, the key', () => {
+    expect(derivationOf(CREATE, entities)).toEqual({
+      kind: 'create',
+      entity: 'tag',
+      table: 't_tags',
+      primaryKey: 'id',
+      columns: ['id', 'folder_id', 'label', 'note', 'created_at', 'created_by'],
+      permission: { key: 'note:write', entity: 'folder', idFrom: 'folderId' },
+      parent: { entity: 'folder', table: 't_folders', primaryKey: 'id', idFrom: 'folderId', column: 'folder_id' },
+      values: [
+        { field: 'label', column: 'label' },
+        { field: 'note', column: 'note' },
+      ],
+      stamps: [
+        { column: 'created_by', kind: 'createdBy' },
+        { column: 'created_at', kind: 'createdAt' },
+      ],
+      key: ['folder_id', 'label'],
+      emit: { type: 't.created', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] },
+    });
+  });
+
+  it('derives a scope-wide create with no parent and no key', () => {
+    const binCreate = {
+      ...CREATE,
+      permission: 'note:write',
+      input: z.object({ label: z.string() }),
+      output: entities.bin.fields,
+      http: { method: 'POST', path: '/bins' },
+      emits: { ...emitsTag, entity: 'bin' },
+    } as const;
+    const plan = derivationOf(binCreate, entities);
+    expect(plan).toMatchObject({ kind: 'create', entity: 'bin', values: [{ field: 'label', column: 'label' }], stamps: [], key: [] });
+    expect(plan).not.toHaveProperty('parent');
+  });
+
+  it.each([
+    ['not POST', { ...CREATE, http: { method: 'PUT', path: '/folders/{folderId}/tags' } }],
+    ['invoke-only', { ...CREATE, http: undefined }],
+    ['paged', { ...CREATE, paged: { sortKey: 'id' } }],
+    ['declaring concurrency', { ...CREATE, concurrency: { over: 'tag', idFrom: 'folderId' } }],
+    ['silent', { ...CREATE, emits: undefined }],
+    ['announcing another entity than the row it answers', { ...CREATE, emits: { ...emitsTag, entity: 'note' } }],
+    ['announcing a subject other than the row', { ...CREATE, emits: { ...emitsTag, entityIdFrom: 'folder_id' } }],
+    ['a projection', { ...CREATE, output: z.object({ id: z.string() }) }],
+    ['narrowed to an entity that is not a parent', { ...CREATE, permission: { key: 'note:write', entity: 'bin', idFrom: 'folderId' } }],
+    ['resolved in the handler', { ...CREATE, permission: { key: 'note:write', entity: 'folder', resolved: 'x' } }],
+    ['the parent id optional', { ...CREATE, input: CREATE.input.extend({ folderId: z.string().optional() }) }],
+    ['the parent id of another type than its link', { ...CREATE, input: CREATE.input.extend({ folderId: z.number() }) }],
+    ['an input that is no column', { ...CREATE, input: CREATE.input.extend({ colour: z.string() }) }],
+    ['an input that sets the id', { ...CREATE, input: CREATE.input.extend({ id: z.string() }) }],
+    ['an input that writes a stamp', { ...CREATE, input: CREATE.input.extend({ createdAt: z.string() }) }],
+    ['an input of another type than its column', { ...CREATE, input: CREATE.input.extend({ label: z.number() }) }],
+    ['an optional input over a column that cannot be empty', { ...CREATE, input: CREATE.input.extend({ label: z.string().optional() }) }],
+    ['a column nothing fills', { ...CREATE, input: z.object({ folderId: z.string() }) }],
+    ['narrowing per row', { ...CREATE, narrows: { key: 'note:write', entity: 'tag', idField: 'id' } }],
+  ])('not when %s', (_, decl) => {
+    expect(kindOf(decl)).toBeUndefined();
+  });
+
+  it('not over an enum column — a first state is the lifecycle’s', () => {
+    const noteCreate = {
+      ...CREATE,
+      input: z.object({ folderId: z.string(), title: z.string(), rank: z.number(), pinned: z.number(), status: z.enum(['draft', 'done']) }),
+      output: entities.note.fields,
+      http: { method: 'POST', path: '/folders/{folderId}/notes' },
+      emits: emitsNote('n.created'),
+    } as const;
+    expect(() => define({ 'n/new': { ...noteCreate, derive: 'create' } })).toThrow(
+      "model: 'n/new' declares `derive: 'create'`, but column 'status' is an enum — a row's first state is its lifecycle's, and authored.",
+    );
+  });
+
+  it('refuses each create clause by name', () => {
+    expect(() => define({ 't/new': { ...CREATE, input: z.object({ folderId: z.string() }), derive: 'create' } })).toThrow(
+      "model: 't/new' declares `derive: 'create'`, but column 'label' is filled by nothing the model names — no input, stamp or parent link — and cannot be empty.",
+    );
+    // Nullable rather than optional: one required field and two optional ones is a field bag,
+    // which the concurrency gate refuses first.
+    expect(() => define({ 't/new': { ...CREATE, input: CREATE.input.extend({ label: z.string().nullable() }), derive: 'create' } })).toThrow(
+      "model: 't/new' declares `derive: 'create'`, but input field 'label' may be absent or null, and column 'label' cannot be empty.",
+    );
+    const badge = {
+      ...CREATE,
+      permission: 'note:write',
+      input: z.object({ label: z.string() }),
+      output: entities.badge.fields,
+      http: { method: 'POST', path: '/badges' },
+      emits: { ...emitsTag, entity: 'badge' },
+    } as const;
+    expect(() => define({ 'b/new': { ...badge, derive: 'create' } })).toThrow(
+      "model: 'b/new' declares `derive: 'create'`, but its natural key column 'created_at' is not filled from the input, so no existing row can be matched by it.",
+    );
+    const counter = { ...badge, output: entities.counter.fields, emits: { ...emitsTag, entity: 'counter' } } as const;
+    expect(() => define({ 'c/new': { ...counter, derive: 'create' } as never })).toThrow(
+      "model: 'c/new' declares `derive: 'create'`, but 'counter's id 'id' is not a string column, so a minted id cannot fill it.",
+    );
+    const misLinked = { ...CREATE, permission: { key: 'note:write', entity: 'folder', idFrom: 'label' }, input: z.object({ label: z.string() }) } as const;
+    expect(() => define({ 't/new': { ...misLinked, derive: 'create' } as never })).toThrow(
+      "model: 't/new' declares `derive: 'create'`, but the parent's id 'label' fills column 'label', which is not the link to 'folder' ('folder_id').",
+    );
+  });
+
+  it('refuses a parent-narrowed create whose natural key leaves the parent out — a replay would cross parents', () => {
+    const sticker = {
+      ...CREATE,
+      input: z.object({ folderId: z.string(), label: z.string() }),
+      output: entities.sticker.fields,
+      http: { method: 'POST', path: '/folders/{folderId}/stickers' },
+      emits: { ...emitsTag, entity: 'sticker' },
+    } as const;
+    expect(kindOf(sticker)).toBeUndefined();
+    expect(() => define({ 's/new': { ...sticker, derive: 'create' } })).toThrow(
+      "model: 's/new' declares `derive: 'create'`, but its natural key does not include the link to 'folder' ('folder_id'), so a replay could answer another folder's row.",
+    );
+    // Its positive twin: the same create, scope-wide, has no parent to cross.
+    const scoped = { ...sticker, permission: 'note:write', input: z.object({ folderId: z.string(), label: z.string() }) } as const;
+    expect(kindOf(scoped)).toBe('create');
+  });
+
+  describe('a natural key on an entity the kernel hides rows of (#119) — a replay would answer one', () => {
+    const scopeCreate = (entity: 'binnedKeyed' | 'filedKeyed' | 'hiddenKeyed' | 'filed' | 'keyed' | 'bin') =>
+      ({
+        ...CREATE,
+        permission: 'note:write',
+        input: z.object({ label: z.string() }),
+        output: entities[entity].fields,
+        http: { method: 'POST', path: '/things' },
+        emits: { ...emitsTag, entity },
+      }) as const;
+    const refusal = (entity: string, hides: string) =>
+      `model: 'x/new' declares \`derive: 'create'\`, but '${entity}' declares ${hides} and a natural key, so a replay could ` +
+      "answer a row the kernel hides — whether re-creating one restores it, unarchives it or refuses is the vertical's call, so its handler is written by hand.";
+
+    it.each([
+      ['binnedKeyed', '`trash`'],
+      ['filedKeyed', '`archive`'],
+      ['hiddenKeyed', '`trash` and `archive`'],
+    ] as const)('refuses %s, naming %s', (entity, hides) => {
+      expect(kindOf(scopeCreate(entity))).toBeUndefined();
+      expect(() => define({ 'x/new': { ...scopeCreate(entity), derive: 'create' } })).toThrow(refusal(entity, hides));
+      // Not a derivable shape, so its hand-written handler needs no `authored` either: the gate
+      // takes it as it is, and refuses an `authored` there as noise.
+      expect(() => define({ 'x/new': scopeCreate(entity) })).not.toThrow();
+    });
+
+    it.each(['bin', 'filed', 'keyed'] as const)('derives %s: trash, archive or a key, but not a key with either', (entity) => {
+      expect(kindOf(scopeCreate(entity))).toBe('create');
+    });
+  });
+
+  it('(a) refuses a create that matches and declares neither', () => {
+    expect(() => define({ 't/new': CREATE })).toThrow(
+      "model: 't/new' is derivable from the model as `create` over 'tag', and declares neither `derive` nor `authored`.",
+    );
+    expect(() => define({ 't/new': { ...CREATE, authored: 'it normalises the label' } })).not.toThrow();
+  });
+});
+
+describe('stamps (#2157)', () => {
+  const stamped = (stamps: Record<string, string>) => () =>
+    defineEntities({
+      e: {
+        table: 't_e',
+        fields: z.object({ id: z.string(), at: z.string(), n: z.number() }),
+        stamps: stamps as never,
+      },
+    });
+
+  it('accepts a string column, either of the two kinds', () => {
+    expect(stamped({ at: 'createdAt' })).not.toThrow();
+    expect(stamped({ at: 'createdBy' })).not.toThrow();
+  });
+
+  it.each([
+    [{ gone: 'createdAt' }, "model: e.stamps names 'gone', which is not a field"],
+    [{ id: 'createdAt' }, "model: e.stamps names 'id', which is the primary key"],
+    [{ n: 'createdAt' }, "model: e.stamps names 'n', which is not a string column"],
+    [{ at: 'deletedAt' }, "model: e.stamps.at is 'deletedAt' — a stamp is one of createdAt, createdBy"],
+    // Not yet: an updated pair waits for the host to hold it on every write (#2166).
+    [{ at: 'updatedAt' }, "model: e.stamps.at is 'updatedAt' — a stamp is one of createdAt, createdBy"],
+  ])('refuses %j', (stamps, message) => {
+    expect(stamped(stamps)).toThrow(message);
+  });
+
+  it('renders into the model, sorted, in a shape the artifact schema parses', () => {
+    const model = emitModel(entities);
+    expect(model.entities.tag?.stamps).toEqual({ created_at: 'createdAt', created_by: 'createdBy' });
+    expect(Object.keys(model.entities.tag?.stamps ?? {})).toEqual(['created_at', 'created_by']);
+    expect(model.entities.note).not.toHaveProperty('stamps');
+    expect(emittedModel.parse(model).entities.tag?.stamps).toEqual(model.entities.tag?.stamps);
+  });
+});
+
+describe('the model artifact is forward-compatible to its readers (#2157)', () => {
+  // A control plane parses a pushed model with the contracts it was built with. A kind, a stamp
+  // or a handler key it does not know yet was written by a newer emitter, not a broken one.
+  const fromNewerEmitter = {
+    entities: { tag: { ...emitModel(entities).entities.tag, stamps: { created_at: 'createdAt', gone_at: 'deletedAt' } } },
+    handlers: {
+      't/archive': { derive: 'archive' },
+      't/new': { derive: 'create', before: 'the folder is not closed' },
+      't/odd': { authored: 'a reason' },
+    },
+  };
+
+  it('parses a derive kind, a stamp kind and a handler key this release does not know, and keeps them', () => {
+    const parsed = emittedModel.parse(fromNewerEmitter);
+    expect(parsed.handlers).toEqual(fromNewerEmitter.handlers);
+    expect(parsed.entities.tag?.stamps).toEqual({ created_at: 'createdAt', gone_at: 'deletedAt' });
+  });
+
+  it('still refuses what no emitter writes: a blank kind, a handler with neither key', () => {
+    expect(() => emittedModel.parse({ entities: {}, handlers: { x: { derive: '' } } })).toThrow();
+    expect(() => emittedModel.parse({ entities: {}, handlers: { x: { reason: 'r' } } })).toThrow();
+  });
+
+  it('the emitter itself still writes only a kind it knows', () => {
+    expect(() => emitModel(entities, { operations: { x: { derive: 'upsert' } } })).toThrow();
+    expect(emitModel(entities, { operations: { x: { derive: 'create' } } }).handlers).toEqual({ x: { derive: 'create' } });
+  });
+});
+
 describe('the gate', () => {
   it('records the plan for a `derive` declaration, and none for anything else', () => {
     const ops = define({
@@ -301,8 +619,8 @@ describe('the gate', () => {
       "model: 'n/upd' declares `derive: 'update'`, but column 'status' is an enum — a change of state is a lifecycle edge with its own operation.",
     );
     // A kind that does not exist, through a cast, is refused by name too.
-    expect(() => define({ 'n/get': { ...GET, derive: 'create' as never } })).toThrow(
-      "model: 'n/get' declares `derive: 'create'` — the derivable shapes are get, list, update, delete, archive, unarchive, trash, restore, trashed.\n" +
+    expect(() => define({ 'n/get': { ...GET, derive: 'upsert' as never } })).toThrow(
+      "model: 'n/get' declares `derive: 'upsert'` — the derivable shapes are get, list, update, delete, create, archive, unarchive, trash, restore, trashed.\n" +
         '  Remedy: declare one of them, or drop `derive` and write the handler.',
     );
   });
@@ -315,7 +633,7 @@ describe('the gate', () => {
     expect(() =>
       define({ 'n/ping': { summary: 's', permission: 'note:read', output: z.object({ ok: z.boolean() }), authored: 'habit' } }),
     ).toThrow(
-      "model: 'n/ping' declares `authored`, but nothing about it is derivable — it matches none of get, list, update, delete, archive, unarchive, trash, restore, trashed, " +
+      "model: 'n/ping' declares `authored`, but nothing about it is derivable — it matches none of get, list, update, delete, create, archive, unarchive, trash, restore, trashed, " +
         'so every handler for it is authored already.\n' +
         '  Remedy: remove `authored`.',
     );
@@ -338,8 +656,8 @@ describe('the gate', () => {
     const declarations = () => [
       // @ts-expect-error — both at once is refused at compile time.
       define({ 'n/get': { ...GET, derive: 'get', authored: 'x' } }),
-      // @ts-expect-error — `create` is not a derivable shape yet.
-      define({ 'n/get': { ...GET, derive: 'create' } }),
+      // @ts-expect-error — `upsert` is not a derivable shape.
+      define({ 'n/get': { ...GET, derive: 'upsert' } }),
     ];
     expect(declarations).toBeTypeOf('function');
   });

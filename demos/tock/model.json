@@ -799,7 +799,7 @@
       "derive": "get"
     },
     "tock/list-rows": {
-      "authored": "answers not_found for a run that does not exist, where the derived page would answer an empty one"
+      "derive": "list"
     },
     "tock/list-sources": {
       "derive": "list"

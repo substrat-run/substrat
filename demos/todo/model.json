@@ -156,7 +156,7 @@
       "derive": "archive"
     },
     "todo/list-shares": {
-      "authored": "answers not_found for a list that does not exist, where the derived page would answer an empty one"
+      "derive": "list"
     },
     "todo/restore-list": {
       "derive": "restore"
