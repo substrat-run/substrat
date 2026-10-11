@@ -3,7 +3,7 @@ id: K-48
 date: 2026-10-11
 layer: kernel
 title: "A key a declared shape protects reaches a record of the shape's type only through the record"
-status: proposed
+status: accepted
 aliases: []
 amends: [K-12]
 tracking: ["#2177"]
