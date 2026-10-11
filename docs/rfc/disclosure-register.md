@@ -442,8 +442,8 @@ Two things, both on `HostAdmin`, neither on `OperationContext`:
 1. **One read**, `listSubjectDisclosures(subjectId)`: the §8.3 join, implemented once in the
    kernel with a one-line shim per adapter, as `redactSubjectJobRuns` is, and held by a contract
    suite with its twin (the edges read before a shred equal the edges read after it, because
-   every column the join reads is envelope). Staff and platform only; no module ever calls it. No table, no migration, so it is
-   not a migration checkpoint.
+   every column the join reads is envelope). Staff and platform only; no module ever calls it.
+   No table, no migration, so it is not a migration checkpoint.
 2. **One receipt field**, `disclosures`, defaulted so an older receipt parses. A coordinator
    refuses a ScopeDO that predates it before touching the key, as it already refuses the
    pre-#1600 and pre-#1632 replies.
