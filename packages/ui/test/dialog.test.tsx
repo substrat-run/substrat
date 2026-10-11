@@ -5,7 +5,7 @@
  * ignores it too, Tab in the middle is left to the browser — so a handler that fires always
  * (or never) fails one of the two.
  */
-import { act, useState, type ReactNode } from 'react';
+import { act, startTransition, Suspense, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dialog, type DialogProps } from '../src/components/Dialog';
@@ -245,6 +245,44 @@ describe('focus', () => {
     b.remove();
   });
 
+  it('a render that was thrown away leaves nothing behind: the next opening still captures the real opener', async () => {
+    const a = document.createElement('button');
+    const b = document.createElement('button');
+    document.body.append(a, b);
+    let ready = false;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = () => ((ready = true), r())));
+    function Gate({ hold }: { hold: boolean }) {
+      if (hold && !ready) throw gate;
+      return null;
+    }
+    let set!: (open: boolean) => void;
+    function App() {
+      const [open, setOpen] = useState(false);
+      set = setOpen;
+      return (
+        <Suspense fallback={null}>
+          <Dialog {...props({ open })}>
+            <input aria-label="a" />
+          </Dialog>
+          <Gate hold={open} />
+        </Suspense>
+      );
+    }
+    await render(<App />);
+    a.focus();
+    // A transition that suspends: React renders the open Dialog, then discards that render.
+    await act(async () => startTransition(() => set(true)));
+    expect(panel()).toBeNull();
+    b.focus();
+    await act(async () => release());
+    expect(panel()).not.toBeNull();
+    await act(async () => startTransition(() => set(false)));
+    expect(document.activeElement).toBe(b);
+    a.remove();
+    b.remove();
+  });
+
   it('returns focus to the real opener under StrictMode too', async () => {
     const { StrictMode } = await import('react');
     const opener = document.createElement('button');
@@ -450,6 +488,24 @@ describe('stacked dialogs', () => {
     await act(async () => { a.unmount(); b.unmount(); });
     lower.remove();
     upper.remove();
+    page.remove();
+  });
+
+  it('two dialogs opened in the same commit: closing the upper returns focus into the lower, not the page behind it', async () => {
+    const page = document.createElement('button');
+    document.body.append(page);
+    page.focus();
+    const ui = (lower: boolean, upper: boolean) => (
+      <>
+        <Dialog {...props({ title: 'Lower', open: lower })}><input aria-label="l" /></Dialog>
+        <Dialog {...props({ title: 'Upper', open: upper })}><input aria-label="u" /></Dialog>
+      </>
+    );
+    await render(ui(true, true)); // one commit, both register in it
+    await render(ui(true, false));
+    expect(document.activeElement).toBe(document.querySelector('input[aria-label="l"]'));
+    await render(ui(false, false));
+    expect(document.activeElement).toBe(page);
     page.remove();
   });
 

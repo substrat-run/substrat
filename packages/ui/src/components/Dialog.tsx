@@ -106,6 +106,11 @@ function register(el: HTMLElement, before: HTMLElement | null): () => HTMLElemen
       for (const o of stack.slice(at)) if (o.before && el.contains(o.before)) o.before = entry.before;
       return false;
     }
+    // The topmost closing with another dialog still open beneath: focus belongs in that one. An
+    // opener outside it (two dialogs that opened in the same commit both read the page's) would
+    // put focus on the page behind a modal that is still open.
+    const below = stack.at(-1);
+    if (below && !(entry.before && below.el.contains(entry.before))) return tabbables(below.el)[0] ?? below.el;
     return entry.before;
   };
 }
@@ -130,13 +135,16 @@ function useModal(open: boolean, panel: RefObject<HTMLDivElement>, busy: boolean
 
   // The opener is read while rendering, not in the effect: React commits a child's `autoFocus`
   // and runs the child's effects before this component's, so by then `activeElement` is already
-  // the dialog's own child. Until the effect below has run, every render of an open dialog
-  // re-reads it, which keeps the write idempotent (StrictMode's second render, or a render that
-  // was thrown away, sees the same element — nothing inside this dialog has been committed yet).
-  // The effect pins it by setting `pinned`; its cleanup lets the next opening capture afresh.
+  // the dialog's own child. A server render has no `document`, hence the guard. Every render of
+  // an open dialog re-reads it, which is idempotent and leaves nothing behind in a render React
+  // throws away (a suspended transition, StrictMode's second pass): the ref is only ever
+  // consumed by the effect. `pinned` stops that re-read once the effect has run, and matters
+  // only for Fast Refresh, which re-renders an open dialog (focus now inside it) and then
+  // re-runs its effect: without the guard the re-run would register that child as the opener.
+  // The effect sets it; its cleanup lets the next opening capture afresh.
   const opener = useRef<HTMLElement | null>(null);
   const pinned = useRef(false);
-  if (open && !pinned.current) {
+  if (open && !pinned.current && typeof document !== 'undefined') {
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   }
 
