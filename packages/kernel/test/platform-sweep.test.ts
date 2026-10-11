@@ -375,6 +375,43 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
       expect(seen.filter((id) => retirementsOnly.some((r) => r.id === id))).toHaveLength(1);
     });
 
+    /**
+     * Review of #2218, round 2: receipt-behind installs that never leave that class (a reconcile
+     * that answers 'unsupported' or keeps throwing writes no receipt) used to fill the whole window
+     * once there were a batch of them, fleet-wide, and the retirement-only installs (every migrated
+     * row, every retirement left open) were never reconciled again. Neither class may starve.
+     */
+    it('starves neither class: past a batch of forever-stuck receipt-behind installs, retirement-only ones still converge', async () => {
+      const stuck = Array.from({ length: 60 }, (): FakeScope => ({ id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1' }));
+      const retirementsOnly = [0, 1, 2].map((): FakeScope => ({ id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v2', retirementsFinishedVersionId: null }));
+      const { host } = hostWithScopes([...stuck, ...retirementsOnly]);
+      const answer = async (_t: unknown, s: unknown) => (stuck.some((x) => x.id === s) ? ('unsupported' as const) : { retirementsFinished: true });
+      for (let pass = 0; pass < 3 && retirementsOnly.some((r) => r.retirementsFinishedVersionId !== 'v2'); pass++) {
+        await sweepAs(host, answer, { provisionReconcileRng: () => 0.5 });
+      }
+      expect(retirementsOnly.map((r) => r.retirementsFinishedVersionId)).toEqual(['v2', 'v2', 'v2']);
+    });
+
+    it('and the twin: past a batch of retirement-only installs that never finish, receipt-behind ones still get most of the window', async () => {
+      const neverFinish = Array.from({ length: 60 }, (): FakeScope => ({ id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v2', retirementsFinishedVersionId: null }));
+      const receipt = Array.from({ length: 40 }, (): FakeScope => ({ id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1' }));
+      const { host } = hostWithScopes([...neverFinish, ...receipt]);
+      const seen: string[] = [];
+      const report = await sweepAs(
+        host,
+        async (_t, s) => {
+          seen.push(s as string);
+          return { retirementsFinished: false };
+        },
+        { provisionReconcileRng: () => 0.5 },
+      );
+      // 50 slots: the retirement-only class is owed a quarter (12) and takes no more while the other
+      // class can use the rest, so 38 of the 40 receipt-behind installs are reconciled this pass.
+      expect(report.provisionReconcile).toMatchObject({ behind: 100, reconciled: 50 });
+      expect(seen.filter((id) => receipt.some((r) => r.id === id)).length).toBe(50 - Math.floor(50 / 4));
+      expect(seen.filter((id) => neverFinish.some((r) => r.id === id)).length).toBe(Math.floor(50 / 4));
+    });
+
     it("writes neither half for an 'unsupported' reconcile, so the install stays as it was (limitation c)", async () => {
       const unsupported: FakeScope = { id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1', retirementsFinishedVersionId: 'v1' };
       const { host, marked } = hostWithScopes([unsupported]);

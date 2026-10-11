@@ -619,6 +619,15 @@ async function servingPointersFor(
  * the id order, starting at `rng()` of the way round and wrapping. Deterministic for a
  * given `rng`, which is what makes the fairness claim testable.
  */
+/**
+ * #2185: the slots of a #1172 window owed to installs behind on their retirements alone: a quarter,
+ * at least one. A window of one slot cannot be split, so it goes to them on a quarter of the passes.
+ */
+function retirementShareOf(batch: number, rng: () => number): number {
+  if (batch >= 2) return Math.max(1, Math.floor(batch / 4));
+  return batch === 1 && rng() < 0.25 ? 1 : 0;
+}
+
 function reconcileWindow<T extends { id: string }>(behind: readonly T[], batch: number, rng: () => number): T[] {
   if (behind.length <= batch) return [...behind];
   if (batch <= 0) return [];
@@ -1316,12 +1325,19 @@ export async function runPlatformSweep(
     }
     provisionReconcile.behind = behind.length;
     const batch = options.provisionReconcileBatch ?? PROVISION_RECONCILE_BATCH;
-    // #2185: installs whose receipt is behind what they run go first, and only the slots they leave
-    // go to installs behind on their retirements alone. One of those may never finish (a vertical
-    // built on packages that cannot report), and it must not take a provision repair's slot.
+    // #2185: two classes share the window, and neither may starve the other. Installs whose receipt
+    // is behind what they run take most of it; installs behind on their retirements alone are owed a
+    // quarter (`retirementShareOf`). Either class can hold installs that never leave it: a reconcile
+    // that answers 'unsupported' or keeps throwing writes no receipt, and a vertical built on packages
+    // that cannot report never finishes a retirement. A fixed share bounds what those cost the other
+    // class, and a slot one class does not need goes to the other. Within a class the window starts
+    // at random, so no install in it is skipped for good either.
     const rng = options.provisionReconcileRng ?? Math.random;
-    const first = reconcileWindow(behind.filter((b) => b.receiptBehind), batch, rng);
-    const window = [...first, ...reconcileWindow(behind.filter((b) => !b.receiptBehind), batch - first.length, rng)];
+    const receiptBehind = behind.filter((b) => b.receiptBehind);
+    const retirementsOnly = behind.filter((b) => !b.receiptBehind);
+    const owed = Math.min(retirementsOnly.length, retirementShareOf(batch, rng));
+    const first = reconcileWindow(receiptBehind, batch - owed, rng);
+    const window = [...first, ...reconcileWindow(retirementsOnly, batch - first.length, rng)];
     provisionReconcile.deferred = behind.length - window.length;
     await mapBounded(window, concurrency, async (s) => {
       try {
