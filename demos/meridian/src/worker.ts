@@ -49,6 +49,9 @@ import {
   IdentityDO,
   instanceAuthFor,
   mintOwnerClaimLink,
+  observePlace,
+  placesReporter,
+  reportScopeMembers,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
@@ -222,7 +225,11 @@ async function authWiringFor(env: Env, node: CompanyNode) {
  * `AuthProvider`.
  */
 async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
-  const instance = await authWiringFor(env, nodeFor(req, env));
+  return providerOf(await authWiringFor(env, nodeFor(req, env)));
+}
+
+/** The provider an already-read configuration selects; a refusal becomes its HTTP status. */
+function providerOf(instance: Awaited<ReturnType<typeof authWiringFor>>): AuthProvider {
   try {
     return instance.provider();
   } catch (err) {
@@ -242,11 +249,21 @@ async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
  * impersonation bypass one environment variable from being live.
  */
 async function principalFor(env: Env, req: Request): Promise<PrincipalId | null> {
-  const subject = await (await authProviderFor(env, req)).resolve(req.headers);
-  if (!subject) return null;
+  return (await callerFor(env, req)).principal;
+}
+
+/**
+ * `principalFor`, keeping what `/api/me` reports to the identity pool's places index (#1670):
+ * the subject the principal was resolved from (the index is keyed on its `sub`) and the
+ * configured identity, read once here rather than in a second DO hop.
+ */
+async function callerFor(env: Env, req: Request) {
   const node = nodeFor(req, env);
+  const instance = await authWiringFor(env, node);
+  const subject = await providerOf(instance).resolve(req.headers);
+  if (!subject) return { identity: instance.identity, subject: null, principal: null };
   const principal = await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub);
-  return principal ? principalId.parse(principal) : null;
+  return { identity: instance.identity, subject, principal: principal ? principalId.parse(principal) : null };
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -298,6 +315,12 @@ mountPlatformSurface<Env>(app, {
     // install is reconciled after a promote anyway, a bounded batch per control-plane pass
     // (scheduler.md §3.3). Which is also why everything here must stay idempotent.
     await sweeper(env).noteScope(b.tenantId, b.scopeId);
+    // The places repair (#1670): the WHOLE set bound in this scope, sent to the identity pool it
+    // signs in at, so an entry a lost report left wrong is right again after every reconcile. A
+    // no-op before the scope has an issuer, and for an issuer that keeps no index. Never throws.
+    const node = { tenantId: b.tenantId, scopeId: b.scopeId };
+    const { identity } = await authWiringFor(env, node);
+    await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
   },
   // A reaped scope's alarm must never wake it again.
   onDeleteScope: async (env, s) => {
@@ -378,7 +401,16 @@ app.get('/api/me', async (c) => {
   const node = nodeFor(c.req.raw, c.env);
   // Resolve the caller via the configured provider (Better-Auth-DO / OIDC), mapping the
   // subject → principal (claiming the owner seat on first login).
-  const principal = await principalFor(c.env, c.req.raw);
+  const { identity, subject, principal } = await callerFor(c.env, c.req.raw);
+  // Tell the identity pool what this resolve established (#1670), after the response: the
+  // login's places list, on the issuer's own origin, shows this scope while the login is bound
+  // here and stops once it is not. Only the router-asserted scope and the caller's own `sub`
+  // go out, once per login per isolate, and it never throws.
+  if (subject) {
+    c.executionCtx.waitUntil(
+      observePlace(placesReporter({ identity }), node.scopeId, subject.sub, principal),
+    );
+  }
   if (!principal) {
     // No principal yet. If the owner seat is unclaimed, this instance is awaiting first-run
     // setup — tell the SPA to show "create the admin account", not a bare sign-in.
@@ -396,11 +428,8 @@ app.get('/api/me', async (c) => {
     country: 'SE' | 'ES';
     employeeId: string | null;
   };
-  // The display name the issuer asserted — cheap to re-resolve, and it keeps the SPA's
-  // shape total whether or not the issuer sends `name`.
-  const subject = await authProviderFor(c.env, c.req.raw)
-    .then((p) => p.resolve(c.req.raw.headers))
-    .catch(() => null);
+  // The display name the issuer asserted, which keeps the SPA's shape total whether or not the
+  // issuer sends `name`.
   return c.json({
     key: principal,
     display: subject?.name ?? subject?.email ?? 'You',

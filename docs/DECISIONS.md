@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-109 decisions · 61 plan · 48 kernel
+110 decisions · 62 plan · 48 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -120,4 +120,5 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-45](decisions/K-045-archive-and-trash-are-two-kernel-gated-states-on-the-entity.md) | 2026-10-05 | kernel | Archive and trash are two kernel-gated states on the entity's own row, distinct from erasure and tenant deletion <br>*awaiting ratification* <br>*amends K-41* | #119 |
 | [K-46](decisions/K-046-subject-erasure-reaches-a-module-s-own-tables-by-declaration-or.md) | 2026-10-06 | kernel | Subject erasure reaches a module's own tables by declaration or by a narrow synchronous hook, in the spine's transaction <br>*awaiting ratification* <br>*amends K-37* | #2068, #37 |
 | [K-47](decisions/K-047-notifications-are-an-engine-composed-by-call-the-kernel-s-part.md) | 2026-10-10 | kernel | Notifications are an engine composed by call; the kernel's part is the send intent <br>*awaiting ratification* | #118 |
+| [D-62](decisions/D-062-a-login-s-places-are-an-index-at-its-identity-pool-shown-only-t.md) | 2026-10-11 | plan | A login's places are an index at its identity pool, shown only to that login on the issuer's own origin; verticals report into it and never read it | #1670, #1694, #2201 |
 | [K-48](decisions/K-048-a-shape-protected-key-reaches-its-record-only-through-the-record.md) | 2026-10-11 | kernel | A key a declared shape protects reaches a record of the shape's type only through the record <br>*amends K-12* | #2177 |

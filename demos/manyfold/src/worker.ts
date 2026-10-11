@@ -33,6 +33,9 @@ import {
   IdentityDO,
   instanceAuthFor,
   mintOwnerClaimLink,
+  observePlace,
+  placesReporter,
+  reportScopeMembers,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
@@ -164,7 +167,11 @@ async function authWiringFor(env: Env, base: SiteNode) {
  * against OIDC_ISSUER. Anything else is unconfigured — fail closed.
  */
 async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
-  const instance = await authWiringFor(env, baseNode(req, env));
+  return providerOf(await authWiringFor(env, baseNode(req, env)));
+}
+
+/** The provider an already-read configuration selects; a refusal becomes its HTTP status. */
+function providerOf(instance: Awaited<ReturnType<typeof authWiringFor>>): AuthProvider {
   try {
     return instance.provider();
   } catch (err) {
@@ -179,11 +186,28 @@ async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
  * shipped an impersonation bypass one environment variable from being live.
  */
 async function principalFor(env: Env, req: Request): Promise<PrincipalId | null> {
-  const subject = await (await authProviderFor(env, req)).resolve(req.headers);
-  if (!subject) return null;
+  return (await callerFor(env, req)).principal;
+}
+
+/**
+ * `principalFor`, keeping what `/api/me` needs beyond the principal: the subject (its display
+ * name, and the `sub` the identity pool's places index is keyed on, #1670) and the configured
+ * identity, read once here. `home` is whether the selected site is the routed one, the only
+ * scope the platform registers as a place.
+ */
+async function callerFor(env: Env, req: Request) {
+  const base = baseNode(req, env);
+  const instance = await authWiringFor(env, base);
+  const subject = await providerOf(instance).resolve(req.headers);
   const node = await nodeFor(req, env);
-  const principal = await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub);
-  return principal ? principalId.parse(principal) : null;
+  const principal = subject ? await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub) : null;
+  return {
+    identity: instance.identity,
+    subject,
+    principal: principal ? principalId.parse(principal) : null,
+    node,
+    home: node.scopeId === base.scopeId,
+  };
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -212,8 +236,17 @@ app.get('/api/session', async (c) => c.json(await (await authProviderFor(c.env, 
 
 // Who am I, in the selected site, and what may I do — needs-setup aware (first-run).
 app.get('/api/me', async (c) => {
-  const node = await nodeFor(c.req.raw, c.env);
-  const principal = await principalFor(c.env, c.req.raw);
+  const { identity, subject, principal, node, home } = await callerFor(c.env, c.req.raw);
+  // Tell the identity pool what this resolve established (#1670), after the response: the login's
+  // places list, on the issuer's own origin, shows this site while the login is bound here and
+  // stops once it is not. Only the routed site is reported, and its id is the router-asserted
+  // one: a site picked with `x-site`/`x-scope` is not a place the platform registers (multi-site
+  // is the issue's open item), so it is neither reported nor allowed to name one.
+  if (subject && home) {
+    c.executionCtx.waitUntil(
+      observePlace(placesReporter({ identity }), node.scopeId, subject.sub, principal),
+    );
+  }
   if (!principal) {
     // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the first-sign-in
     // window is open; by a claim link from the dashboard once it has closed. The SPA's copy
@@ -225,7 +258,6 @@ app.get('/api/me', async (c) => {
   }
   const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
   const who = (await scope.invoke('manyfold/whoami', undefined)) as { can: Record<string, boolean> };
-  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers).catch(() => null);
   return c.json({ key: principal, display: subject?.name ?? subject?.email ?? 'You', site: node.scopeId, can: who.can });
 });
 
@@ -281,6 +313,13 @@ mountPlatformSurface<Env>(app, {
     // Remember this site in the vertical's own per-tenant registry (M2), so the app can list
     // and switch between its sites without reaching the control-plane directory. Idempotent.
     if (b.slug && b.name) await id.recordSite(b.scopeId, b.slug, b.name);
+    // The places repair (#1670): the WHOLE set bound in this site, sent to the identity pool the
+    // tenant signs in at, so an entry a lost report left wrong is right again after every
+    // reconcile. The pool drops an unregistered site's report, which is what a site beyond the
+    // routed one is until multi-site places exist. A no-op before an issuer is delivered, and
+    // for an issuer that keeps no index. Never throws.
+    const { identity } = await authWiringFor(env, { tenantId: b.tenantId, scopeId: b.scopeId });
+    await reportScopeMembers(id, placesReporter({ identity }), b.scopeId);
   },
   resolveOwner: async (env, ref) => {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
