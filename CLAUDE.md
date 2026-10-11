@@ -98,7 +98,10 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   their slice of that same selection. The selection is `tools/ci-scope.mjs`: the packages
   the diff touched plus everything that depends on them (pnpm's `...[<base>]`), plus the
   importers a lockfile change can be pinned to, widening back to everything when the
-  change lands outside every package or the lockfile change cannot be pinned. A job
+  change lands outside every package or the lockfile change cannot be pinned. A suite that
+  reads another package's files off disk has no edge pnpm can see, so it is listed in the
+  tool's `READS` table instead — apps/console's SKU test scans every engine's manifest,
+  and a new engine went red only on main until it was (#2164). A job
   named `test` aggregates the verdict. That scoping is what #878's
   template gate rides on, so neither side is the other's mistake: don't "fix" the workflow
   into the root scripts, and don't teach a local agent to run the unfiltered sweep.

@@ -24,7 +24,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { buildNames, decide, enclosingNames, lockfileScope, LOCKFILE, MEMBERS } from './ci-scope.mjs';
+import { buildNames, CHANGED_NAMES, decide, enclosingNames, lockfileScope, LOCKFILE, MEMBERS } from './ci-scope.mjs';
 
 /**
  * Which workspace members own `files`. A file belongs to the member with the longest
@@ -78,7 +78,7 @@ function main(argv) {
   const base = arg('--base') ?? git('merge-base', 'HEAD', 'origin/main').trim();
   const files = [
     ...new Set([
-      ...lines(git('diff', '--name-only', '--no-renames', base)),
+      ...lines(git(...CHANGED_NAMES, base)),
       ...lines(git('ls-files', '--others', '--exclude-standard')),
     ]),
   ].sort();
@@ -115,6 +115,7 @@ function main(argv) {
   const names = result.selected.map((p) => p.name);
   console.log(`test:affected: ${names.length} package(s) — changed against ${base.slice(0, 12)}, plus their dependents:`);
   for (const p of result.selected) console.log(`  ${p.dir}`);
+  if (result.readers.length > 0) console.log(`test:affected: a changed file is read off disk by: ${result.readers.join(', ')}`);
   if (result.lockfileImporters.length > 0) {
     console.log(`test:affected: ${LOCKFILE} changed the dependencies of: ${result.lockfileImporters.join(', ')}`);
   }
