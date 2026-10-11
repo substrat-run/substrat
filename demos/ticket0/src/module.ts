@@ -6213,16 +6213,17 @@ const bound = operationsFor(ticket0Operations)({
    * is the desk's, not a person's.
    *
    * Only ever a reply IN THE TRASH and past its horizon, whoever calls it: the entity declares
-   * `purgeEarly: false`, so the kernel refuses an active reply, or one binned less than
-   * `purgeAfterDays` ago, `not_found` before this runs — a caller granted the key directly
-   * included (#2214). A reply that does not exist at all is this handler's to refuse.
+   * `purgeEarly: false`, so the kernel refuses an active reply, one binned less than
+   * `purgeAfterDays` ago, or one that does not exist, with one `not_found` before this runs —
+   * a caller granted the key directly included (#2214).
    */
   'ticket0/purge-saved-reply': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.savedReplyPurge, savedReplyRef(input.savedReplyId)));
     const row = ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
       input.savedReplyId,
     ])[0];
-    if (!row) throw substratError('not_found', `saved reply not found: ${input.savedReplyId}`);
+    // Unreachable — the kernel refused a missing reply already; this narrows the type, in its words.
+    if (!row) throw substratError('not_found', `savedReply not found: ${input.savedReplyId}`);
     return deleteSavedReplyRow(ctx, row);
   },
 

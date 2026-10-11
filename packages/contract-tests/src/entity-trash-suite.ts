@@ -305,6 +305,20 @@ export function entityTrashContractSuite(
         }
       });
 
+      it('gives a holder ONE refusal — code and message — for an active, a young and a missing entity', async () => {
+        const s = await freshScope();
+        const active = await addFloor(s, false);
+        const young = await addFloor(s, true);
+        const refusal = async (floorId: string) => {
+          const e = (await errOf(purge(alice, s, floorId))) as Error;
+          return { code: errorCodeOf(e), name: e.name, message: e.message.replace(floorId, '<id>') };
+        };
+        const onActive = await refusal(active);
+        expect(onActive.code).toBe('not_found');
+        expect(await refusal(young)).toEqual(onActive);
+        expect(await refusal(ulid())).toEqual(onActive);
+      });
+
       it('twin: past its horizon, the same caller purges it', async () => {
         const s = await freshScope();
         const due = await addFloor(s, true);
