@@ -162,15 +162,19 @@ one SQLite file per scope.
 `storageShape` is not the only store a vertical can hold. Orthogonal to shape A/B, a
 vertical's manifest can declare stores the platform mints for it, one per *tenant*:
 
-- **`tenantStores`** — an independent SQL database (D1 on Cloudflare, a separate `.sqlite`
-  file on the pure adapter), minted by `provisionTenantStore` and opened through
-  `openTenantStore`. An own-store concept — an auth DB, say.
-- **`blobStores`** — object storage (an R2 bucket) behind the kernel's attachment surface,
-  for the documents and images a scope's rows point at rather than contain. The attachment
-  store itself is never declared by hand: when any module declares `attachmentTargets`,
-  `substrat push` declares an `ATTACHMENTS` store, the platform binds each installed tenant's
-  bucket as `ATTACHMENTS__<tenant>`, and the Cloudflare host resolves the one for the tenant it
-  is serving. The worker wires nothing.
+- **`tenantStores`** — one platform-minted store per tenant. `kind` defaults to
+  `relational`: an independent SQL database (D1 on Cloudflare, a separate `.sqlite` file
+  on the pure adapter), minted by `provisionTenantStore` and opened through
+  `openTenantStore`. `kind: 'blob'` is object storage (an R2 bucket), the same store a
+  `blobStores` entry declares. `blobStores` is the older spelling and still accepted; a
+  binding named in both is refused, because both would be bound as `<BINDING>__<tenant>`.
+  A push still sends blobs in the manifest's `blobStores`, so an older control plane
+  reads the same document it reads today.
+- The attachment store is never declared by hand: when any module declares
+  `attachmentTargets`, `substrat push` declares an `ATTACHMENTS` blob store, the platform
+  binds each installed tenant's bucket as `ATTACHMENTS__<tenant>`, and the Cloudflare host
+  resolves the one for the tenant it is serving. The worker wires nothing. A relational
+  store of that name is refused.
 
 Both follow the same ownership rule, and it is the load-bearing part: **the builder supplies
 no id.** The vertical declares a *need*; the platform mints the database or bucket, holds the

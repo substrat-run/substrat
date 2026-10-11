@@ -8,6 +8,7 @@ import { dirname, join, isAbsolute, resolve } from 'node:path';
 import {
   buildPermissionRegistry,
   definePermissions,
+  manifestStoresOf,
   runtimeNeeds,
   RUNTIME_BASELINE,
   outboundHost,
@@ -130,6 +131,31 @@ describe('readRuntimeNeeds', () => {
   it('is undefined when the block (or package.json) is absent — the wrangler.jsonc path', () => {
     expect(readRuntimeNeeds(scratch({ substrat: { slug: 'x' } }))).toBeUndefined();
     expect(readRuntimeNeeds(scratch())).toBeUndefined();
+  });
+
+  it('reads a blob declared on tenantStores, which push sends as a blob store', () => {
+    const dir = scratch({
+      substrat: {
+        runtimeNeeds: { entry: 'src/worker.ts', tenantStores: [{ binding: 'FILES', kind: 'blob' }] },
+      },
+    });
+    expect(manifestStoresOf(readRuntimeNeeds(dir), false)).toEqual({
+      tenantStores: [],
+      blobStores: [{ binding: 'FILES', kind: 'blob' }],
+    });
+  });
+
+  it('refuses a binding declared as both a relational store and a blob store', () => {
+    const dir = scratch({
+      substrat: {
+        runtimeNeeds: {
+          entry: 'src/worker.ts',
+          tenantStores: [{ binding: 'FILES' }],
+          blobStores: [{ binding: 'FILES' }],
+        },
+      },
+    });
+    expect(() => manifestStoresOf(readRuntimeNeeds(dir), false)).toThrow(/twice/);
   });
 
   it('rejects an invalid declaration instead of pushing something else', () => {

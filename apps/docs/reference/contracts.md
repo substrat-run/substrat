@@ -261,7 +261,8 @@ records promotion moves a scope between. This is what turns the scope's nullable
 
 `deployManifest` — the JSON a `substrat push` sends beside the module files (D-39),
 re-parsed at the control-plane trust boundary and run through the §4 sandbox contract.
-Carries `runtimeNeeds` (own-DO `storeNeed`s, per-tenant `tenantStoreNeed`s), the
+Carries `runtimeNeeds` (own-DO `storeNeed`s, per-tenant stores — `tenantStores` with
+`kind` `relational` or `blob`, the older `blobStores` spelling of a blob), the
 permission registry, and `RUNTIME_BASELINE`. One schema, two parses, no drift.
 
 ## Connections (`connections.ts`)
