@@ -128,12 +128,24 @@ function useModal(open: boolean, panel: RefObject<HTMLDivElement>, busy: boolean
   const latest = useRef({ busy, onCancel });
   latest.current = { busy, onCancel };
 
+  // The opener is read while rendering, not in the effect: React commits a child's `autoFocus`
+  // and runs the child's effects before this component's, so by then `activeElement` is already
+  // the dialog's own child. Until the effect below has run, every render of an open dialog
+  // re-reads it, which keeps the write idempotent (StrictMode's second render, or a render that
+  // was thrown away, sees the same element — nothing inside this dialog has been committed yet).
+  // The effect pins it by setting `pinned`; its cleanup lets the next opening capture afresh.
+  const opener = useRef<HTMLElement | null>(null);
+  const pinned = useRef(false);
+  if (open && !pinned.current) {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
+
   useEffect(() => {
     if (!open) return;
     const el = panel.current;
     if (!el) return;
-    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const unregister = register(el, before);
+    pinned.current = true;
+    const unregister = register(el, opener.current);
     if (!el.contains(document.activeElement)) (tabbables(el)[0] ?? el).focus();
 
     const onKey = (e: KeyboardEvent) => {
@@ -170,6 +182,7 @@ function useModal(open: boolean, panel: RefObject<HTMLDivElement>, busy: boolean
     };
     document.addEventListener('keydown', onKey);
     return () => {
+      pinned.current = false;
       document.removeEventListener('keydown', onKey);
       const back = unregister();
       if (back && back.isConnected) back.focus();

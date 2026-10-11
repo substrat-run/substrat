@@ -208,6 +208,61 @@ describe('focus', () => {
     stays.remove();
   });
 
+  it('returns focus to the real opener when a child takes focus itself (autoFocus) — the opener, not the child that is gone', async () => {
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
+    await render(
+      <Dialog {...props()}>
+        <input aria-label="a" autoFocus />
+      </Dialog>,
+    );
+    expect(document.activeElement).toBe(document.querySelector('input'));
+    await render(<Dialog {...props({ open: false })} />);
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('captures the opener afresh on each opening, and keeps it through re-renders while open', async () => {
+    const a = document.createElement('button');
+    const b = document.createElement('button');
+    document.body.append(a, b);
+    const ui = (open: boolean, n = 0) => (
+      <Dialog {...props({ open, onCancel: () => void n })}>
+        <input aria-label="a" autoFocus />
+      </Dialog>
+    );
+    a.focus();
+    await render(ui(true));
+    await render(ui(true, 1)); // re-render while open: focus is in the child, must not become the opener
+    await render(ui(false));
+    expect(document.activeElement).toBe(a);
+    b.focus();
+    await render(ui(true));
+    await render(ui(false));
+    expect(document.activeElement).toBe(b);
+    a.remove();
+    b.remove();
+  });
+
+  it('returns focus to the real opener under StrictMode too', async () => {
+    const { StrictMode } = await import('react');
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
+    const ui = (open: boolean) => (
+      <StrictMode>
+        <Dialog {...props({ open })}>
+          <input aria-label="a" autoFocus />
+        </Dialog>
+      </StrictMode>
+    );
+    await render(ui(true));
+    await render(ui(false));
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
   it('returns focus on unmount too — a caller that renders it conditionally', async () => {
     const opener = document.createElement('button');
     document.body.append(opener);
@@ -328,6 +383,34 @@ describe('stacked dialogs', () => {
     await render(<Stack outerCancel={() => {}} innerCancel={() => {}} innerOpen={false} />);
     expect(document.activeElement).toBe(opens);
     expect(dialogs()[0]!.contains(document.activeElement)).toBe(true);
+    page.remove();
+  });
+
+  it('opened from inside another dialog\'s autoFocus child: closing the inner returns to that child, closing the outer to the page opener', async () => {
+    const page = document.createElement('button');
+    document.body.append(page);
+    page.focus();
+    function Nested({ outer, inner }: { outer: boolean; inner: boolean }) {
+      return (
+        <>
+          <Dialog {...props({ title: 'Outer', open: outer })}>
+            <button id="auto" autoFocus>auto</button>
+          </Dialog>
+          <Dialog {...props({ title: 'Inner', open: inner })}>
+            <input aria-label="inner-auto" autoFocus />
+          </Dialog>
+        </>
+      );
+    }
+    await render(<Nested outer inner={false} />);
+    const auto = document.getElementById('auto')!;
+    expect(document.activeElement).toBe(auto);
+    await render(<Nested outer inner />);
+    expect(document.activeElement).toBe(document.querySelector('input[aria-label="inner-auto"]'));
+    await render(<Nested outer inner={false} />);
+    expect(document.activeElement).toBe(auto);
+    await render(<Nested outer={false} inner={false} />);
+    expect(document.activeElement).toBe(page);
     page.remove();
   });
 
