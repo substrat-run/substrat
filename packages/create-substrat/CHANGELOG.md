@@ -1,5 +1,50 @@
 # create-substrat
 
+## 0.11.4
+
+### Patch Changes
+
+- e286f87: **Breaking:** `create` is now a derivable shape (#2157). After upgrading, `defineOperations` refuses at module load a create that matches it and declares neither `derive` nor `authored`, and the error names the operation and both remedies:
+
+  - Declare `derive: 'create'` and delete the handler. `operationsFor` no longer asks for it and supplies the platform's.
+  - Or keep the handler and declare `authored: '<what the derived create would get wrong here>'`.
+
+  A create matches when it is served as `POST`, emits about the row by its id, answers with the entity's own `fields`, and every column of the row is filled by exactly one thing the model names:
+
+  - the primary key, a minted ULID (so it must be a single string column);
+  - the link column `<parent>_id`, from the id of the parent the check is narrowed to;
+  - an input field, filling the column of its snake_case name, of the same type (string or number);
+  - a declared stamp (below);
+  - the column's default (`NULL` unless the table sets one), for a nullable column nothing else names: it is left out of the insert. An optional input the caller leaves out is written as `NULL`.
+
+  The derived create checks the declared key first. With a parent, it answers `not_found` for a parent that does not exist and links the new row to the parent, so the parent's grants reach it. On an entity with a natural `key`, a row already holding that key is the answer, with no write and no event. Under a parent, that key must include the link column, or the create is not derivable. A replay answers on the write key alone, as a hand-written idempotent create does. An entity that declares `trash` or `archive` cannot pair a natural key with a derived create, because the replay would answer a row the kernel hides; that create is written by hand. Otherwise it inserts the row and emits the declared event once.
+
+  **Behaviour change, derived `list`:** a derived page whose check is narrowed to a parent now answers `not_found` for a parent that does not exist, where it answered an empty page. The check still comes first, so a caller without the key is still `permission_denied`.
+
+  What changes:
+
+  - `@substrat-run/contracts`:
+    - `EntityDef.stamps`, `{ column: 'createdAt' | 'createdBy' }`, names the columns a derived create fills from the call: `ctx.now()` or the calling principal. A derived update refuses a body field that writes a stamped column. Only the created pair exists, because a row is inserted once and the declaration stays true of it. An updated pair waits for the host to hold it on every write, authored ones included.
+    - `defineEntities` refuses a stamp on a column that is not a field, on the primary key, or on a column that is not a string. Stamps add no migration.
+    - `emitModel` renders `stamps` into `model.json`. `DERIVED_KINDS` gains `'create'`, and the plan types gain `DerivedParent` and `DerivedStamp`.
+    - `emittedModel`, the schema a reader such as the control plane parses a pushed `model.json` with, is forward-compatible. A `derive` kind, a stamp kind or an extra key on a handler entry that a newer emitter wrote is carried rather than refused. Before, a closed list refused every model whose emitter was newer than the reader, so a vertical's push was a 400 until the control plane was redeployed. What the reader holds is typed `IngressModel`. `emitModel` and the `EmittedModel` type still allow only the kinds this release knows, and `defineOperations` still refuses an unknown kind at load.
+  - `@substrat-run/kernel`: the derived create, with its stamps, and the parent-existence check on a derived list.
+  - `@substrat-run/contract-tests`: `derivedHandlersContractSuite` covers both on both adapters.
+
+  Nothing derives a hook around a handler: an operation that needs one more step than its shape stays authored.
+
+- f6d671b: **Archive and trash operations are derived handlers (#119).** An entity that declares `archive: { permission }` or `trash: { permission }` no longer needs a hand-written handler for its moves or its bin. Declare the operation with `derive` and the platform writes it:
+
+  - `derive: 'archive'` / `'unarchive'` / `'trash'` / `'restore'`: a `POST` whose input is the id alone, checked on that row (`permission: { key, entity, idFrom }`) under the key the entity declares for the move: its archive key for archive and unarchive, its trash key for trash and restore. It answers the new `entityStateOutput` schema (`{ id, state }`) and declares no `emits`, because the kernel announces the move. A `restore` declares `trashed: 'admits'`, and the other three must not.
+  - `derive: 'trashed'`: the bin. A `GET` page (`paged.over`) of an entity that declares `trash`, answering its `fields`. It declares `narrows` checking exactly the trash key and no leading check, because `ctx.pageTrashed` checks the key on every row. Optional inputs are declared filters.
+  - A derived `list` over an entity that declares `archive` may take one optional `view: z.enum(['active', 'archived'])` input, passed to `ctx.page`. Without it the page is the active rows.
+
+  `@substrat-run/contracts` exports `entityStateOutput`, and `DERIVED_KINDS` grows to nine. `@substrat-run/kernel` writes the five new handlers through the existing verbs, adding no `ctx` surface. `@substrat-run/contract-tests`' derived-handler suite holds them on both adapters.
+
+  **Compatibility.** `defineOperations` already refuses, at module load, an operation of a derivable shape that declares neither `derive` nor `authored` (#1773). The new shapes join that check. An operation that matches one exactly, including answering `entityStateOutput` itself, must now declare it. The error names the operation and the shapes it matches, for example `derivable from the model as \`archive\` or \`unarchive\``. Archive and unarchive declare the same shape, so the error offers both, and `derive`says which move it is. The widened`list`shape is gated the same way: a hand-written page over an entity that declares`archive`, whose only input beyond the declared filters is an optional `view: z.enum(['active', 'archived'])`, was not derivable before and is now refused as derivable as `list`.
+
+  The one-word migration: add `derive: 'archive'` (or the move it is) to the declaration, delete its handler, and use `entityStateOutput` as its output. For such a page, add `derive: 'list'` and delete its handler. Or, to keep the handler, declare `authored: '<why>'`. An operation answering its own `{ id, state }` schema is not matched, and is unaffected.
+
 ## 0.11.3
 
 ### Patch Changes

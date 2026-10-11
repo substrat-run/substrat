@@ -1,5 +1,26 @@
 # @substrat-run/control-plane-api
 
+## 0.144.0
+
+### Minor Changes
+
+- 134e6c2: **Breaking:** the kernel no longer exports the signed connect state (part of #1978).
+
+  - `signConnectState`, `verifyConnectState`, `ConnectStateError` and the `ConnectStateClaim` type now live in `@substrat-run/control-plane-api`, beside the connect-URL and connect-link relays that mint it. The dashboard, which verifies it, already depends on that package. Import them from `@substrat-run/control-plane-api` instead.
+  - `CONNECT_STATE_PURPOSE` is no longer exported. The purpose label and the token format are unchanged, so a state minted before the release still verifies after it.
+
+### Patch Changes
+
+- Updated dependencies [835409e]
+- Updated dependencies [f84eb3a]
+- Updated dependencies [e286f87]
+- Updated dependencies [f6d671b]
+- Updated dependencies [134e6c2]
+- Updated dependencies [6dc8097]
+  - @substrat-run/contracts@0.144.0
+  - @substrat-run/kernel@0.144.0
+  - @substrat-run/control-plane-client@0.1.9
+
 ## 0.143.0
 
 ### Minor Changes
