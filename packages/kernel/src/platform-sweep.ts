@@ -615,11 +615,6 @@ async function servingPointersFor(
 }
 
 /**
- * This pass's share of the behind scopes: at most `batch`, as a contiguous window over
- * the id order, starting at `rng()` of the way round and wrapping. Deterministic for a
- * given `rng`, which is what makes the fairness claim testable.
- */
-/**
  * #2185: the slots of a #1172 window owed to installs behind on their retirements alone: a quarter,
  * at least one. A window of one slot cannot be split, so it goes to them on a quarter of the passes.
  */
@@ -628,6 +623,11 @@ function retirementShareOf(batch: number, rng: () => number): number {
   return batch === 1 && rng() < 0.25 ? 1 : 0;
 }
 
+/**
+ * This pass's share of the behind scopes: at most `batch`, as a contiguous window over
+ * the id order, starting at `rng()` of the way round and wrapping. Deterministic for a
+ * given `rng`, which is what makes the fairness claim testable.
+ */
 function reconcileWindow<T extends { id: string }>(behind: readonly T[], batch: number, rng: () => number): T[] {
   if (behind.length <= batch) return [...behind];
   if (batch <= 0) return [];
