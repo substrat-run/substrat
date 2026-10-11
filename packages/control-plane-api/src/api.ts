@@ -43,6 +43,9 @@ import {
   errorCode,
   issueStatus,
   issueStatusInput,
+  FINDINGS_LIMIT_DEFAULT,
+  FINDINGS_LIMIT_MAX,
+  findingCursorOf,
   findingKind,
   findingRuleInput,
   findingStatus,
@@ -1053,13 +1056,15 @@ const issueStatusUpdate = z.object({
   status: issueStatusInput,
 });
 
-// The findings read (#1748). No cursor, for the issues read's reason: the cardinality is the
-// number of distinct shapes a tenant has. `tenantId` is forced for a confined principal.
+// The findings read (#1748), keyset-paged (#2198). `limit` stays optional with the kernel's own
+// default (100) rather than `listPageQuery`'s 20, so a caller that sends nothing gets the page it
+// always got. `tenantId` is forced for a confined principal.
 const findingsQuery = z.object({
   tenantId: tenantIdSchema.optional(),
   status: findingStatus.optional(),
   kind: findingKind.optional(),
-  limit: z.coerce.number().int().min(1).max(500).optional(),
+  limit: z.coerce.number().int().min(1).max(FINDINGS_LIMIT_MAX).optional(),
+  cursor: listPageQuery.shape.cursor,
 });
 const findingStatusUpdate = z.object({ status: findingStatusInput }).strict();
 const findingRulesQuery = z.object({
@@ -9743,8 +9748,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       status: c.req.query('status'),
       kind: c.req.query('kind'),
       limit: c.req.query('limit'),
+      cursor: c.req.query('cursor'),
     });
-    return c.json({ entries: await c.var.admin.listFindings(c.get('actor'), filter) });
+    const entries = await c.var.admin.listFindings(c.get('actor'), filter);
+    return c.json(pageOf(entries, filter.limit ?? FINDINGS_LIMIT_DEFAULT, findingCursorOf));
   });
 
   // A verdict: acknowledge, resolve or reopen. Keyed on the tenant in the path as well as the id,

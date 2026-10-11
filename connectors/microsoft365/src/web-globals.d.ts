@@ -13,8 +13,10 @@ interface CryptoKeyPair {
 declare const crypto: {
   subtle: {
     generateKey(algorithm: object, extractable: boolean, usages: string[]): Promise<CryptoKeyPair | CryptoKey>;
+    exportKey(format: 'jwk', key: CryptoKey): Promise<{ n?: string; e?: string }>;
     exportKey(format: 'spki' | 'pkcs8', key: CryptoKey): Promise<ArrayBuffer>;
-    importKey(format: 'pkcs8', data: Uint8Array, algorithm: object, extractable: boolean, usages: string[]): Promise<CryptoKey>;
+    importKey(format: 'pkcs8' | 'spki', data: Uint8Array, algorithm: object, extractable: boolean, usages: string[]): Promise<CryptoKey>;
+    verify(algorithm: string | object, key: CryptoKey, signature: Uint8Array, data: Uint8Array): Promise<boolean>;
     sign(algorithm: string | object, key: CryptoKey, data: Uint8Array): Promise<ArrayBuffer>;
     digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer>;
   };
