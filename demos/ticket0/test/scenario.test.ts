@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { principalId, type CountedPage, type Page } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import { classifyError } from '@substrat-run/vertical-host';
-import { T0_PERM } from '../src/manifest.js';
+import { CONTACT_PORTAL } from '../src/provision.js';
 import { ASSISTANT_NAME, ATTACHMENTS_NOT_STORED } from '../src/module.js';
 import { buildHost, seed, signIdentity, type Desk, type World } from '../src/seed.js';
 
@@ -1671,12 +1671,14 @@ describe('a signed-in customer, by contrast', () => {
     const stranger = principalId.parse(ulid());
     const desk = world.substrat;
 
-    // No role assignment anywhere. One grant, on one contact.
-    await host.admin.grant(world.staff, {
+    // No role assignment anywhere. One grant, on one contact: the portal shape's, the only
+    // grant that can give its key on a contact once the desk is reconciled (#2083, #1686) —
+    // a direct grant of it is refused.
+    await host.admin.grantEntityShape(world.staff, {
       principalId: stranger,
-      permission: T0_PERM.conversationReadOwn,
       node: { tenantId: desk.tenant, scopeId: desk.scope },
       entity: { entityType: 'contact', entityId: desk.customerContactId },
+      permissions: CONTACT_PORTAL,
       grantedBy: stranger,
     });
 

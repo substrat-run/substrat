@@ -19,10 +19,9 @@
  * has to ask.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import type { PlatformActorId, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
-import type { PermissionKey } from '@substrat-run/contracts';
-import type { ScopeHost } from '@substrat-run/kernel';
-import type { InviteDesk, PendingInvite } from './invites.js';
+import { capabilityId as capabilityIdOf, type PlatformActorId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import type { ClaimedInvite, InviteDesk, PendingInvite } from './invites.js';
 
 /** A stored invite. The token itself was shown once and never written down. */
 interface StoredInvite {
@@ -32,6 +31,8 @@ interface StoredInvite {
   roleKey: string;
   email: string | null;
   tokenHash: string;
+  /** The `become` capability the link is (#1686); absent on an invite written before it. */
+  capabilityId?: string | null;
   createdAt: string;
 }
 
@@ -43,13 +44,12 @@ export interface DevNode {
 export interface DevInviteDeskOptions {
   /** Where to persist — a path beside `.data/cast.json`. */
   readonly file: string;
-  readonly host: ScopeHost;
-  /** The local platform actor the role writes and the identity link are stamped with. */
+  /** The pure-SQLite host — its bounded verbs are the invite's, as the worker's host's are. */
+  readonly host: SqliteScopeHost;
+  /** The local platform actor the identity link and a rollback are stamped with. */
   readonly actor: PlatformActorId;
   /** The identity pool the dev issuer's subjects live in. */
   readonly provider: string;
-  /** The portal SHAPE (`CONTACT_PORTAL`), given whole so it can grow (#2083). */
-  readonly portalPermissions: readonly PermissionKey[];
   /**
    * The desk the SIGNED-IN caller works in, or null when nobody is signed in — which
    * is the ordinary state of somebody following an invite link for the first time.
@@ -91,6 +91,27 @@ export function devInviteDesk(opts: DevInviteDeskOptions): InviteDesk {
     return node;
   };
 
+  /**
+   * Bind this subject to `match`'s pre-minted principal, and consume the invite.
+   *
+   * The link goes into the kernel's OWN identity directory — the same table the
+   * seeded personas are in, and the same one `caller()` reads — so an accepted
+   * invitee then signs in through exactly the path everybody else does. Nothing
+   * about their login is a shortcut except which issuer minted the subject.
+   */
+  const bindTo = async (sub: string, match: StoredInvite, rows: StoredInvite[]): Promise<ClaimedInvite> => {
+    const desk = { tenantId: match.tenantId as TenantId, scopeId: match.scopeId as ScopeId };
+    await opts.host.admin.linkIdentity(opts.actor, {
+      provider: opts.provider,
+      externalId: sub,
+      principal: match.principal as PrincipalId,
+      tenantId: desk.tenantId,
+      scopeId: desk.scopeId,
+    });
+    write(rows.filter((i) => i !== match));
+    return { principal: match.principal, roleKey: match.roleKey };
+  };
+
   return {
     store: {
       async list(): Promise<PendingInvite[]> {
@@ -105,7 +126,7 @@ export function devInviteDesk(opts: DevInviteDeskOptions): InviteDesk {
             created_at: createdAt,
           }));
       },
-      async create({ principal, roleKey, email, tokenHash }) {
+      async create({ principal, roleKey, email, tokenHash, capabilityId }) {
         const desk = nodeOrThrow();
         write([
           ...read(),
@@ -116,57 +137,62 @@ export function devInviteDesk(opts: DevInviteDeskOptions): InviteDesk {
             roleKey,
             email,
             tokenHash,
+            capabilityId,
             createdAt: new Date().toISOString(),
           },
         ]);
+      },
+      async linkOf(principal) {
+        const desk = nodeOrThrow();
+        return read().find((i) => i.scopeId === desk.scopeId && i.principal === principal)?.capabilityId ?? null;
       },
       async revoke(principal) {
         const desk = nodeOrThrow();
         write(read().filter((i) => !(i.scopeId === desk.scopeId && i.principal === principal)));
       },
       /**
-       * Bind this subject to the invite's pre-minted principal, and consume the invite.
-       *
-       * The link goes into the kernel's OWN identity directory — the same table the
-       * seeded personas are in, and the same one `caller()` reads — so an accepted
-       * invitee then signs in through exactly the path everybody else does. Nothing
-       * about their login is a shortcut except which issuer minted the subject.
+       * A link's hash names its desk too: the person accepting has no principal yet and
+       * therefore no desk for the request to carry, so the match is what says which scope
+       * the exchange that follows runs in.
        */
+      async matches(tokenHash) {
+        const match = read().find((i) => i.tokenHash === tokenHash && i.capabilityId);
+        if (!match) return false;
+        node = { tenantId: match.tenantId as TenantId, scopeId: match.scopeId as ScopeId };
+        return true;
+      },
+      async claimByCapability(sub, capabilityId, principal) {
+        const rows = read();
+        const match = rows.find((i) => i.capabilityId === capabilityId && i.principal === principal);
+        return match ? bindTo(sub, match, rows) : null;
+      },
+      // LEGACY: an invite written before #1686, matched by its hash alone.
       async claim(sub, tokenHash) {
         const rows = read();
-        const match = rows.find((i) => i.tokenHash === tokenHash);
+        const match = rows.find((i) => i.tokenHash === tokenHash && !i.capabilityId);
         if (!match) return null;
         node = { tenantId: match.tenantId as TenantId, scopeId: match.scopeId as ScopeId };
-        await opts.host.admin.linkIdentity(opts.actor, {
-          provider: opts.provider,
-          externalId: sub,
-          principal: match.principal as PrincipalId,
-          tenantId: node.tenantId,
-          scopeId: node.scopeId,
-        });
-        write(rows.filter((i) => i.tokenHash !== tokenHash));
-        return { principal: match.principal, roleKey: match.roleKey };
+        return bindTo(sub, match, rows);
       },
     },
 
-    assignRole: async (principal, roleKey) => {
+    grantRole: (caller, principal, roleKey) => {
       const desk = nodeOrThrow();
-      await opts.host.admin.assignRole(opts.actor, {
-        principalId: principal as PrincipalId,
-        roleKey,
-        node: desk,
-      });
+      return opts.host.assignScopeRoleBounded(desk.tenantId, desk.scopeId, caller, principal, roleKey);
     },
-
-    grantContactPortal: async (principal, contactId) => {
+    revokeRole: (principal, roleKey) =>
+      opts.host.admin.unassignRole(opts.actor, { principalId: principal, roleKey, node: nodeOrThrow() }),
+    mintLink: (caller, input) => {
       const desk = nodeOrThrow();
-      await opts.host.admin.grantEntityShape(opts.actor, {
-        principalId: principal as PrincipalId,
-        node: desk,
-        entity: { entityType: 'contact', entityId: contactId },
-        permissions: opts.portalPermissions,
-        grantedBy: principal as PrincipalId,
-      });
+      return opts.host.mintBecomeCapabilityBounded(desk.tenantId, desk.scopeId, caller, input);
+    },
+    revokeLink: (caller, capabilityId) => {
+      const desk = nodeOrThrow();
+      return opts.host.revokeBecomeCapability(desk.tenantId, desk.scopeId, capabilityIdOf.parse(capabilityId), caller);
+    },
+    exchange: (secret) => {
+      const desk = nodeOrThrow();
+      return opts.host.exchangeCapability(desk.tenantId, desk.scopeId, secret, { mode: 'become' });
     },
 
     invokeAs: async (principal, operation, input) => {

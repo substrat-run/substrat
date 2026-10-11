@@ -61,7 +61,7 @@ import {
 import { classifyError } from '@substrat-run/vertical-host';
 import { addBusinessMs, businessMsBetween, instantOf } from '../../src/business-time.js';
 import { ticket0Manifest } from '../../src/manifest.js';
-import { MODULES } from '../../src/provision.js';
+import { CONTACT_PORTAL, ENTITY_GRANTS, MODULES } from '../../src/provision.js';
 import { ticket0Migrations } from '../../src/migrations.generated.js';
 import { INBOX_PARTIAL_INDEXES, listsBefore0021 } from '../before-0021.js';
 import { listsBefore0027 } from '../before-0027.js';
@@ -2452,4 +2452,179 @@ describe('ticket0 subject erasure on workerd', () => {
       },
     });
   }, 60_000);
+});
+
+/**
+ * #1686 through the deployed worker: the desk's invites, as a browser makes and claims them —
+ * routed, signed in with a bearer the test signs, against the worker's own `deskOf` (the tenant's
+ * IdentityDO, the ScopeDO's bounded verbs). Every other invite test drives the dev server's store;
+ * this is the one that runs the path a hosted desk runs. What it holds:
+ *
+ *   - a staff invite is minted under the assignment bound, by the admin who invites, and joins;
+ *   - a customer invite binds its claimant to their contact on claim, not before, and opens the
+ *     portal there;
+ *   - a withdrawn invite cannot be claimed;
+ *   - the two 409s: a contact someone is bound to, and a contact a customer from an earlier
+ *     invite holds (unbind first);
+ *   - the unbind route releases the bound customer for the admin, and refuses an agent.
+ */
+describe('ticket0 on workerd — invites through the deployed worker (#1686)', () => {
+  const tenant = tenantId.parse(ulid());
+  const desk = scopeId.parse(ulid());
+  const deskOwner = principalId.parse(ulid());
+  const ISSUER = 'https://auth.invites.test';
+  const ORIGIN = 'https://desk.invites.ticket0.test';
+  const directory = () => env.AUTH.get(env.AUTH.idFromName(tenant));
+  let signingKey: CryptoKey;
+  let issuer: ReturnType<typeof stubIssuer>;
+
+  const b64url = (bytes: ArrayBuffer | Uint8Array): string =>
+    btoa(String.fromCharCode(...new Uint8Array(bytes)))
+      .replaceAll('+', '-')
+      .replaceAll('/', '_')
+      .replace(/=+$/, '');
+  const encodeJson = (value: unknown): string => b64url(new TextEncoder().encode(JSON.stringify(value)));
+  async function bearerFor(sub: string): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    const head = `${encodeJson({ alg: 'RS256', kid: 'inv-1', typ: 'JWT' })}.${encodeJson({ iss: ISSUER, sub, iat: now, exp: now + 300 })}`;
+    const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', signingKey, new TextEncoder().encode(head));
+    return `${head}.${b64url(signature)}`;
+  }
+
+  /** A routed request to the desk, signed in as `sub`. */
+  async function as(sub: string, path: string, body?: unknown): Promise<Response> {
+    return SELF.fetch(`${ORIGIN}${path}`, {
+      method: body === undefined && !path.endsWith('/revoke') && !path.endsWith('/unbind') ? 'GET' : 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-substrat-tenant': tenant,
+        'x-substrat-scope': desk,
+        'x-substrat-router': env.ROUTER_SECRET,
+        authorization: `Bearer ${await bearerFor(sub)}`,
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  }
+  const tokenOf = (acceptUrl: string) => new URL(acceptUrl).searchParams.get('invite')!;
+  const contactPrincipal = async (contactId: string) =>
+    (await (await host().getScope(deskOwner, tenant, desk)).invoke<{ principal: string | null }>('ticket0/get-contact', { contactId })).principal;
+
+  let mailed = 0;
+  /** A contact that arrived by mail, as the relay records one. */
+  async function contact(): Promise<string> {
+    const config = await directory().getScopeConfig(desk);
+    const relay = principalId.parse((JSON.parse(config['ticket0:services']!) as { relay: string }).relay);
+    const message = await (await host().getScope(relay, tenant, desk)).invoke<{ conversation_id: string }>('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: `invitee-${(mailed += 1)}@invites.example`,
+      contactName: 'Invitee',
+      subject: 'Let me in',
+      bodyText: 'Please.',
+      emailMessageId: `<invite-${mailed}@mail.example>`,
+    });
+    return (await (await host().getScope(deskOwner, tenant, desk)).invoke<{ contact_id: string }>('ticket0/get-conversation', {
+      conversationId: message.conversation_id,
+    })).contact_id;
+  }
+
+  beforeAll(async () => {
+    const pair = (await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair;
+    signingKey = pair.privateKey;
+    const jwk = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey;
+    issuer = stubIssuer();
+    issuer.expect(
+      'GET',
+      `${ISSUER}/.well-known/openid-configuration`,
+      () => Response.json({ issuer: ISSUER, jwks_uri: `${ISSUER}/jwks`, authorization_endpoint: `${ISSUER}/authorize` }),
+      true,
+    );
+    issuer.expect('GET', `${ISSUER}/jwks`, () => Response.json({ keys: [{ ...jwk, alg: 'RS256', kid: 'inv-1', use: 'sig' }] }), true);
+    const install = { tenantId: tenant, scopeId: desk, owner: deskOwner, entitlements };
+    expect((await platform('/internal/provision', install)).status).toBe(201);
+    // The platform's reviewed registry rides the reconcile, as it does after every promote: the
+    // contact shape a claim binds by. A desk not yet reconciled with it binds nothing.
+    expect((await platform('/internal/reconcile', { ...install, entityGrants: ENTITY_GRANTS })).status).toBe(200);
+    expect(
+      (
+        await platform('/internal/configure', {
+          tenantId: tenant,
+          scopeId: desk,
+          entries: [
+            {
+              key: 'substrat:auth',
+              value: JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'desk-client', clientSecret: 'desk-secret' }),
+            },
+          ],
+        })
+      ).status,
+    ).toBe(200);
+    expect(await directory().resolvePrincipal(desk, 'sub-owner')).toBe(deskOwner);
+  });
+  afterAll(() => issuer.restore());
+
+  it('a staff invite is minted by the admin under the assignment bound, and its invitee joins as that principal', async () => {
+    const created = await as('sub-owner', '/api/invites', { roleKey: 'agent', email: 'nils@invites.example' });
+    expect(created.status).toBe(201);
+    const invite = (await created.json()) as { principal: string; acceptUrl: string };
+    expect(await as('sub-nils', '/api/accept-invite', { token: tokenOf(invite.acceptUrl) }).then((r) => r.json())).toEqual({
+      ok: true,
+      principal: invite.principal,
+    });
+    expect(await directory().resolvePrincipal(desk, 'sub-nils')).toBe(invite.principal);
+    // The link is the admin's: minted by them, for the invitee, and spent.
+    const links = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(desk)), (_i, state) =>
+      state.storage.sql.exec("SELECT minted_by, uses FROM _substrat_capabilities WHERE mode = 'become' AND principal = ?", invite.principal).toArray(),
+    );
+    expect(links).toEqual([{ minted_by: JSON.stringify(deskOwner), uses: 1 }]);
+  });
+
+  it('a customer invite binds its claimant to their contact on claim, and opens their portal there', async () => {
+    const contactId = await contact();
+    const created = await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId });
+    expect(created.status).toBe(201);
+    const invite = (await created.json()) as { principal: string; acceptUrl: string };
+    expect(await contactPrincipal(contactId)).toBeNull();
+    expect((await as('sub-priya', '/api/accept-invite', { token: tokenOf(invite.acceptUrl) })).status).toBe(200);
+    expect(await contactPrincipal(contactId)).toBe(invite.principal);
+    const portal = (await (await host().getScope(principalId.parse(invite.principal), tenant, desk)).invoke<Page<unknown>>(
+      'ticket0/my-conversations',
+      { limit: 10 },
+    )).entries;
+    expect(portal.length).toBe(1);
+
+    // A second invite to the same contact is refused: it names someone now.
+    const again = await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId });
+    expect(again.status).toBe(409);
+    expect(JSON.stringify(await again.json())).toContain('already has a portal login');
+
+    // The unbind: an agent may not; the admin releases them, and the contact can be invited again.
+    const agentInvite = (await (await as('sub-owner', '/api/invites', { roleKey: 'agent' })).json()) as { acceptUrl: string };
+    expect((await as('sub-anna', '/api/accept-invite', { token: tokenOf(agentInvite.acceptUrl) })).status).toBe(200);
+    expect((await as('sub-anna', `/api/bindings/contact/${contactId}/unbind`)).status).toBe(403);
+    const unbound = await as('sub-owner', `/api/bindings/contact/${contactId}/unbind`);
+    expect(await unbound.json()).toEqual({ unbound: [invite.principal] });
+    expect(await contactPrincipal(contactId)).toBeNull();
+    expect((await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
+  });
+
+  it('a withdrawn invite cannot be claimed', async () => {
+    const invite = (await (await as('sub-owner', '/api/invites', { roleKey: 'agent' })).json()) as { principal: string; acceptUrl: string };
+    expect((await as('sub-owner', `/api/invites/${invite.principal}/revoke`)).status).toBe(204);
+    expect((await as('sub-late', '/api/accept-invite', { token: tokenOf(invite.acceptUrl) })).status).toBe(400);
+  });
+
+  it('a contact a customer from an earlier invite holds is refused until it is unbound', async () => {
+    const contactId = await contact();
+    const legacy = principalId.parse(ulid());
+    await host().grantEntityShapeLocal(desk, legacy, { entityType: 'contact', entityId: contactId }, CONTACT_PORTAL);
+    const refused = await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId });
+    expect(refused.status).toBe(409);
+    expect(JSON.stringify(await refused.json())).toContain('already has a portal customer from an earlier invite');
+    expect(await (await as('sub-owner', `/api/bindings/contact/${contactId}/unbind`)).json()).toEqual({ unbound: [legacy] });
+    expect((await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
+  });
 });

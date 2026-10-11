@@ -22,7 +22,10 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { Page } from '@substrat-run/contracts';
-import type { ScopeHost } from '@substrat-run/kernel';
+import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { writeFileSync, readFileSync } from 'node:fs';
+import { sha256Hex } from '@substrat-run/vertical-auth/tokens';
+import { mountUnbindRoute } from '@substrat-run/vertical-auth/invite-routes';
 import { T0_PERM } from '../src/manifest.js';
 import { CONTACT_BOUND_ROLE, CONTACT_PORTAL, HUMAN_ROLES, ROLES, STAFF_ROLES } from '../src/provision.js';
 import { buildHost, linkDevPersonas, seed, type World } from '../src/seed.js';
@@ -31,7 +34,7 @@ import { mountInvites } from '../harness/invites.js';
 import { devInviteDesk } from '../harness/dev-invites.js';
 
 let dir: string;
-let host: ScopeHost;
+let host: SqliteScopeHost;
 let world: World;
 let app: Hono;
 
@@ -100,6 +103,7 @@ beforeAll(async () => {
       if (!desk) throw new HTTPException(401, { message: 'unauthorized' });
       const scope = await host.getScope(desk.principal, world.substrat.tenant, world.substrat.scope);
       await scope.invoke('ticket0/get-desk', {});
+      return { principal: desk.principal };
     },
     deskOf: async (_c: Context) => {
       const caller = callerDesk();
@@ -108,12 +112,20 @@ beforeAll(async () => {
         host,
         actor: world.staff,
         provider: DEV_PROVIDER,
-        portalPermissions: CONTACT_PORTAL,
         caller: caller
           ? { tenantId: world.substrat.tenant, scopeId: world.substrat.scope }
           : null,
       });
     },
+  });
+  mountUnbindRoute(app as unknown as Hono<{ Bindings: object }>, {
+    nodeFor: () => ({ tenantId: world.substrat.tenant, scopeId: world.substrat.scope }),
+    callerOf: async () => {
+      const desk = callerDesk();
+      if (!desk) throw new HTTPException(401, { message: 'unauthorized' });
+      return desk;
+    },
+    unbindEntityHolderBounded: (_env, n, caller, entity) => host.unbindEntityHolderBounded(n.tenantId, n.scopeId, caller, entity),
   });
 });
 
@@ -129,6 +141,17 @@ function callerDesk(): { principal: import('@substrat-run/contracts').PrincipalI
 const asAdmin = () => (signedIn = { sub: 'dev|markus', name: 'Markus' });
 const asAgent = () => (signedIn = { sub: 'dev|anna', name: 'Anna' });
 const asNobody = () => (signedIn = null);
+
+const adminStub = () => host.getScope(world.substrat.admin.principal, world.substrat.tenant, world.substrat.scope);
+/** A contact no customer has been bound to yet — the seeded customer's own is bound. */
+async function freeContact(): Promise<string> {
+  const page = (await (await adminStub()).invoke('ticket0/list-contacts', {})) as Page<{ id: string; principal: string | null }>;
+  const free = page.entries.find((c) => c.principal === null);
+  if (!free) throw new Error('the seed has no unbound contact');
+  return free.id;
+}
+const contactPrincipal = async (contactId: string) =>
+  ((await (await adminStub()).invoke('ticket0/get-contact', { contactId })) as { principal: string | null }).principal;
 
 describe('inviting somebody onto the desk', () => {
   it('only an admin may see or create invites', async () => {
@@ -220,22 +243,19 @@ describe('inviting somebody onto the desk', () => {
     // argument — and refuses without one rather than opening nothing.
     expect((await post('/api/invites', { roleKey: 'customer' })).status).toBe(400);
 
-    const contacts = (await (
-      await host.getScope(
-        world.substrat.admin.principal,
-        world.substrat.tenant,
-        world.substrat.scope,
-      )
-    ).invoke('ticket0/list-contacts', {})) as Page<{ id: string }>;
-    const contactId = contacts.entries[0]!.id;
+    const contactId = await freeContact();
 
     const created = await post('/api/invites', { roleKey: 'customer', contactId });
     expect(created.status).toBe(201);
     const invite = (await created.json()) as { principal: string; acceptUrl: string };
     const token = new URL(invite.acceptUrl).searchParams.get('invite')!;
+    // Not bound until it is claimed: the link names the contact, the claim binds it.
+    expect(await contactPrincipal(contactId)).toBeNull();
 
     signedIn = { sub: 'dev|外部', name: 'A Customer' };
     expect((await post('/api/accept-invite', { token })).status).toBe(200);
+    // #1686: the claim bound them — the contact names them now, which is what their portal is.
+    expect(await contactPrincipal(contactId)).toBe(invite.principal);
 
     // Staff, and a customer, are two sets. A customer in the assignee picker would be
     // a bug rather than a convenience.
@@ -282,6 +302,97 @@ describe('inviting somebody onto the desk', () => {
  * desk: the harness grants by key, and a desk's projected role is what `provisionScopeLocal`
  * wrote from this same array. A key missing from `ROLES` fails rather than counting as empty.
  */
+describe('a customer invite binds them to their contact (#1686)', () => {
+  it('refuses a contact that already has a portal login, and one that does not exist', async () => {
+    asAdmin();
+    const listed = async () => ((await (await app.request('/api/invites')).json()) as { invites: unknown[] }).invites;
+    const before = await listed();
+    expect((await post('/api/invites', { roleKey: 'customer', contactId: world.substrat.customerContactId })).status).toBe(409);
+    expect((await post('/api/invites', { roleKey: 'customer', contactId: 'no-such-contact' })).status).toBe(404);
+    // The refusal took its grant back with it: nothing new is pending.
+    expect(await listed()).toEqual(before);
+  });
+
+  it('an existing portal customer from an earlier invite must be unbound first — and the unbind releases them', async () => {
+    asAdmin();
+    const contactId = await freeContact();
+    // As a customer invited before binding invites holds it: the portal shape, the contact naming nobody.
+    const legacy = (await import('@substrat-run/kernel')).ulid() as never;
+    await host.admin.grantEntityShape(world.staff, {
+      principalId: legacy,
+      node: { tenantId: world.substrat.tenant, scopeId: world.substrat.scope },
+      entity: { entityType: 'contact', entityId: contactId },
+      permissions: CONTACT_PORTAL,
+      grantedBy: world.substrat.admin.principal,
+    });
+    const refused = await post('/api/invites', { roleKey: 'customer', contactId });
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { message?: string; error?: string })).toMatchObject({
+      error: expect.stringContaining('already has a portal customer from an earlier invite'),
+    });
+    const res = await post(`/api/bindings/contact/${contactId}/unbind`);
+    expect(await res.json()).toEqual({ unbound: [legacy] });
+    expect((await post('/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
+  });
+
+  it('a withdrawn customer invite binds nobody', async () => {
+    asAdmin();
+    const contactId = await freeContact();
+    const invite = (await (await post('/api/invites', { roleKey: 'customer', contactId })).json()) as { principal: string; acceptUrl: string };
+    expect((await post(`/api/invites/${invite.principal}/revoke`)).status).toBe(204);
+    signedIn = { sub: 'dev|withdrawn' };
+    expect((await post('/api/accept-invite', { token: new URL(invite.acceptUrl).searchParams.get('invite')! })).status).toBe(400);
+    expect(await contactPrincipal(contactId)).toBeNull();
+  });
+
+  it('the unbind route takes the portal away — for the admin, not an agent — and the contact can be invited again', async () => {
+    asAdmin();
+    const contactId = await freeContact();
+    const invite = (await (await post('/api/invites', { roleKey: 'customer', contactId })).json()) as { principal: string; acceptUrl: string };
+    signedIn = { sub: 'dev|to-unbind' };
+    expect((await post('/api/accept-invite', { token: new URL(invite.acceptUrl).searchParams.get('invite')! })).status).toBe(200);
+
+    asAgent();
+    expect((await post(`/api/bindings/contact/${contactId}/unbind`)).status).toBe(403);
+    expect(await contactPrincipal(contactId)).toBe(invite.principal);
+
+    asAdmin();
+    const res = await post(`/api/bindings/contact/${contactId}/unbind`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ unbound: [invite.principal] });
+    expect(await contactPrincipal(contactId)).toBeNull();
+    expect((await post('/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
+  });
+});
+
+describe('a legacy hash-only invite still accepts (#1686, #2175)', () => {
+  it('a row minted before the capability links accepts by its hash, once', async () => {
+    const file = join(dir, 'invites.json');
+    const principal = (await import('@substrat-run/kernel')).ulid();
+    await host.admin.assignRole(world.staff, {
+      principalId: principal as never,
+      roleKey: 'agent',
+      node: { tenantId: world.substrat.tenant, scopeId: world.substrat.scope },
+    });
+    const token = 'legacy-token-written-before-1686';
+    const rows = JSON.parse(readFileSync(file, 'utf8')) as unknown[];
+    rows.push({
+      scopeId: world.substrat.scope,
+      tenantId: world.substrat.tenant,
+      principal,
+      roleKey: 'agent',
+      email: null,
+      tokenHash: await sha256Hex(token),
+      createdAt: new Date().toISOString(),
+    });
+    writeFileSync(file, JSON.stringify(rows));
+    signedIn = { sub: 'dev|legacy', name: 'Legacy Person' };
+    expect(await (await post('/api/accept-invite', { token })).json()).toEqual({ ok: true, principal });
+    signedIn = { sub: 'dev|legacy-again' };
+    expect((await post('/api/accept-invite', { token })).status).toBe(400);
+  });
+});
+
 describe('the invite gate covers every invitable role', () => {
   const perms = (key: string) => {
     const role = ROLES.find((r) => r.key === key);

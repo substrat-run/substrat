@@ -1771,6 +1771,15 @@ export const TICKET0_PERMISSIONS = [
    */
   'saved-reply:manage',
   'contact:read',
+  /**
+   * Invite a contact's person to their portal, or unbind them (#1686). Held on a contact,
+   * it lets a link bind whoever claims it to THAT contact (`ticket0_contacts.principal`),
+   * which is what gives them the declared portal shape there — the key itself confers no
+   * read. Checked when the link is minted and again when it is claimed, so a link from
+   * someone who has since lost it is refused. No operation checks it: it is the bind key of
+   * the `contact` shape in `ENTITY_GRANTS`, judged by the kernel.
+   */
+  'contact:invite',
   'kb:read',
   'kb:manage',
   /**

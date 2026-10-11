@@ -23,16 +23,30 @@
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { z } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import {
+  z,
+  type BoundedBecomeMint,
+  type BoundedBecomeRevoke,
+  type CapabilityExchange,
+  type CapabilityId,
+  type Coverage,
+  type PrincipalBecomeCapabilityInput,
+  type PrincipalId,
+} from '@substrat-run/contracts';
 /**
- * The token shape, its hash and the `?invite=` path — the same three facts the owner
- * claim link is built from, imported rather than reimplemented so the two doors into a
- * desk cannot start disagreeing about any of them. The `/tokens` subpath and not the
- * root: the root exports `IdentityDO`, which imports `cloudflare:workers`, and the
- * node dev server mounts this file too.
+ * The invite itself is vertical-auth's (#1686): `mintMemberInvite` grants the role under the
+ * assignment bound, mints the link as a `become` capability in the desk's own scope and records
+ * it; `acceptMemberInvite` redeems a link (or, LEGACY, a hash-only invite minted before this);
+ * `withdrawMemberInvite` revokes the link before the row. The `/invite-routes` subpath and not
+ * the root: the root exports `IdentityDO`, which imports `cloudflare:workers`, and the node dev
+ * server mounts this file too.
  */
-import { claimToken, invitePath, sha256Hex } from '@substrat-run/vertical-auth/tokens';
+import {
+  acceptMemberInvite,
+  mintMemberInvite,
+  uncovered,
+  withdrawMemberInvite,
+} from '@substrat-run/vertical-auth/invite-routes';
 
 /** A pending invite, as an admin sees it. Never the token — only its hash is kept. */
 export interface PendingInvite {
@@ -40,6 +54,12 @@ export interface PendingInvite {
   readonly roleKey: string;
   readonly email: string | null;
   readonly created_at: string;
+}
+
+/** Who an accepted invite made the caller, and at which role — read while the row still says. */
+export interface ClaimedInvite {
+  readonly principal: string;
+  readonly roleKey: string;
 }
 
 /**
@@ -52,34 +72,53 @@ export interface PendingInvite {
  */
 export interface InviteStore {
   list(): Promise<PendingInvite[]>;
+  /** Record an invite: its link's hash, and which capability the link is (#1686). */
   create(invite: {
     principal: string;
     roleKey: string;
     email: string | null;
     tokenHash: string;
+    capabilityId: string;
   }): Promise<void>;
+  /** The capability an open invite's link is, or null for a legacy hash-only one. */
+  linkOf(principal: string): Promise<string | null>;
   revoke(principal: string): Promise<void>;
+  /** Is this hash an open invite's link — asked BEFORE the scope spends the link's use. */
+  matches(tokenHash: string): Promise<boolean>;
   /**
-   * Bind this verified subject to the open invite matching `tokenHash`, consuming it.
-   * Null when no open invite matches — the one answer a caller gets for every way this
-   * can fail.
+   * Bind this verified subject to the invite the exchanged capability is, consuming it — only
+   * while the row still names that capability and principal. Null otherwise.
    *
    * It returns the ROLE as well as the principal, and that is not a convenience. The
    * role decides whether the new arrival belongs in the staff directory, and it is
    * gone the moment the invite is consumed — so the only place that can still answer
-   * is the store, while it still has the row. The caller cannot look it up first: on
-   * the dev server an invitee has no principal yet and therefore no desk to list.
+   * is the store, while it still has the row.
    */
-  claim(sub: string, tokenHash: string): Promise<{ principal: string; roleKey: string } | null>;
+  claimByCapability(sub: string, capabilityId: string, principal: string): Promise<ClaimedInvite | null>;
+  /** LEGACY: bind by the hash of a token minted before #1686. Null when no open invite matches. */
+  claim(sub: string, tokenHash: string): Promise<ClaimedInvite | null>;
 }
 
-/** The desk one request addresses: its invite store, and the writes an invite makes. */
+/**
+ * The desk one request addresses: its invite store, and the host's bounded verbs an invite
+ * runs. Each is the host's own: the check and the write in one scope task, a refusal writing
+ * nothing.
+ */
 export interface InviteDesk {
   readonly store: InviteStore;
-  /** Grant a freshly minted principal a scope-wide role. */
-  readonly assignRole: (principal: string, roleKey: string) => Promise<void>;
-  /** Narrow a customer to ONE contact's history — the portal grant. */
-  readonly grantContactPortal: (principal: string, contactId: string) => Promise<void>;
+  /** Grant a freshly minted principal a scope-wide role, bounded by what `caller` holds. */
+  readonly grantRole: (caller: PrincipalId, principal: PrincipalId, roleKey: string) => Promise<Coverage>;
+  /** Take a role back — the undo of a grant whose invite could not be recorded. */
+  readonly revokeRole: (principal: PrincipalId, roleKey: string) => Promise<unknown>;
+  /**
+   * Mint an invite's link: a `become` capability, bounded by what `caller` holds — and, for a
+   * customer, carrying the bind onto their contact (#1686), bounded by `contact:invite` there.
+   */
+  readonly mintLink: (caller: PrincipalId, input: PrincipalBecomeCapabilityInput) => Promise<BoundedBecomeMint>;
+  /** Revoke an invite's link, recording `caller`. */
+  readonly revokeLink: (caller: PrincipalId, capabilityId: CapabilityId) => Promise<BoundedBecomeRevoke>;
+  /** Exchange a link in the desk's scope — `become` only; a customer's binds them there. */
+  readonly exchange: (secret: string) => Promise<CapabilityExchange | null>;
   /** Invoke an operation AS a principal — how an accepted invitee gets their profile row. */
   readonly invokeAs: (principal: string, operation: string, input: unknown) => Promise<unknown>;
 }
@@ -111,10 +150,11 @@ export interface InviteSurfaceOptions {
   /** Which desk this request is for, and how to write to it. */
   readonly deskOf: (c: Context) => Promise<InviteDesk>;
   /**
-   * Assert the caller may manage this desk's people. Throws (401/403) if not — the
-   * check itself is the host's, because only it knows how a caller is authenticated.
+   * Assert the caller may manage this desk's people, and say who they are. Throws (401/403)
+   * if not — the check itself is the host's, because only it knows how a caller is
+   * authenticated. The principal it returns is who every bound is then asked about.
    */
-  readonly requireAdmin: (c: Context) => Promise<void>;
+  readonly requireAdmin: (c: Context) => Promise<{ principal: PrincipalId }>;
   /** The verified caller, or null. Used only by accept, which has no admin to check. */
   readonly subjectOf: (c: Context) => Promise<InviteSubject | null>;
   /**
@@ -173,6 +213,25 @@ export async function recordStaffProfile(
   }
 }
 
+/** A customer invite the kernel refused for its contact (#1686), as the admin is told. */
+function bindRefused(refused: Extract<BoundedBecomeMint, { refused: string }>['refused']): HTTPException {
+  if (refused === 'bind-record-missing') return new HTTPException(404, { message: 'no such contact on this desk' });
+  if (refused === 'bind-record-bound') {
+    return new HTTPException(409, { message: 'this contact already has a portal login — unbind it before inviting someone else' });
+  }
+  if (refused === 'bind-record-ambiguous') {
+    // ticket0_contacts.id is the primary key, so this is a corrupt desk rather than a user's mistake.
+    return new HTTPException(409, { message: 'more than one contact row carries this id — the contact cannot be bound' });
+  }
+  if (refused === 'bind-record-held') {
+    // A customer invited before binding invites: they hold the portal, but the contact never named them.
+    return new HTTPException(409, {
+      message: 'this contact already has a portal customer from an earlier invite — unbind the contact before inviting someone to it',
+    });
+  }
+  return new HTTPException(409, { message: 'this desk has not been set up to bind a customer to a contact yet' });
+}
+
 /**
  * Mount `GET/POST /api/invites`, `POST /api/invites/:principal/revoke` and
  * `POST /api/accept-invite`.
@@ -195,7 +254,7 @@ export function mountInvites(
   });
 
   app.post('/api/invites', async (c) => {
-    await opts.requireAdmin(c);
+    const { principal: caller } = await opts.requireAdmin(c);
     const desk = await opts.deskOf(c);
     const { email, roleKey, contactId } = inviteBody.parse(await c.req.json());
     if (!opts.humanRoles.includes(roleKey)) {
@@ -203,73 +262,98 @@ export function mountInvites(
         message: `'${roleKey}' is not a role a person can be invited at`,
       });
     }
-    if (roleKey === opts.contactBoundRole && !contactId) {
+    const customer = roleKey === opts.contactBoundRole;
+    if (customer && !contactId) {
       throw new HTTPException(400, {
         message: 'a customer invite names the contact whose history it opens (contactId)',
       });
     }
-    const principal = ulid();
-    const token = claimToken();
-    await desk.assignRole(principal, roleKey);
-    if (roleKey === opts.contactBoundRole) {
-      /**
-       * The PORTAL grant. The admin proved they hold `desk:configure` above, and
-       * `contact:read` is in the same role, so the id they name is one they can already
-       * read off the contacts list — what this hands over is strictly narrower than
-       * what they hold: one contact's own conversations, public messages only, no inbox.
-       *
-       * The id is not checked against a row, because there is no read-one-contact
-       * operation and inventing one to validate an argument would be the wrong reason
-       * to widen the surface. A grant naming a contact that does not exist opens
-       * nothing — the walk starts at a row that is not there — so the failure mode is
-       * an invite that shows an empty portal, not somebody else's history.
-       */
-      await desk.grantContactPortal(principal, contactId!);
-    }
-    await desk.store.create({
-      principal,
-      roleKey,
-      email: email ?? null,
-      tokenHash: await sha256Hex(token),
-    });
-    return c.json(
+    const minted = await mintMemberInvite(
       {
-        principal,
-        roleKey,
-        email: email ?? null,
-        created_at: now(),
-        acceptUrl: `${opts.appOrigin(c)}${invitePath(token)}`,
+        grant: (assignee) => desk.grantRole(caller, assignee, roleKey),
+        /**
+         * A customer's link BINDS whoever claims it to their contact (#1686): the claim sets
+         * `ticket0_contacts.principal` to them and gives them the declared portal shape, in
+         * one transaction. This is not delegation — the inviter hands over none of their own
+         * authority, so it is bounded by `contact:invite` on that contact rather than by
+         * anything the portal confers, checked here and again when the link is claimed.
+         */
+        mint: async (link) => {
+          const out = await desk.mintLink(caller, customer ? { ...link, bind: { entity: { entityType: 'contact', entityId: contactId! } } } : link);
+          if (!out.ok && 'refused' in out && out.refused.startsWith('bind-')) throw bindRefused(out.refused);
+          return out;
+        },
+        record: (principal, tokenHash, capabilityId) =>
+          desk.store.create({ principal, roleKey, email: email ?? null, tokenHash, capabilityId }),
+        revokeCapability: (link) => desk.revokeLink(caller, link),
+        rollback: (principal) => desk.revokeRole(principal, roleKey),
       },
-      201,
+      { roleKey, email: email ?? null, origin: opts.appOrigin(c) },
     );
+    if (!minted.ok) throw uncovered(minted.coverage.missing, customer ? `contact:${contactId}` : roleKey, 'invite at');
+    return c.json({ ...minted.invite, created_at: now() }, 201);
   });
 
   app.post('/api/invites/:principal/revoke', async (c) => {
-    await opts.requireAdmin(c);
+    const { principal: caller } = await opts.requireAdmin(c);
     const desk = await opts.deskOf(c);
-    await desk.store.revoke(c.req.param('principal'));
+    // The link first, then the row (#1686): a revoke that fails leaves the row for the retry.
+    await withdrawMemberInvite(
+      {
+        directory: {
+          inviteLink: (_scope, principal) => desk.store.linkOf(principal),
+          revokeInvite: async (_scope, principal) => {
+            await desk.store.revoke(principal);
+            return null;
+          },
+        },
+        revokeCapability: (link) => desk.revokeLink(caller, link),
+      },
+      '',
+      c.req.param('principal'),
+    );
     return c.body(null, 204);
   });
 
   /**
    * Accept an invite: the invitee has signed in at the issuer, and now claims it.
-   * Binds their subject → the pre-minted principal, which already holds the role (and,
-   * for a customer, the grant on their own contact).
+   * Binds their subject → the pre-minted principal, which already holds the role. For a
+   * customer the exchange also binds them to their contact and gives them its portal shape,
+   * in the scope, in the same transaction that spends the link (#1686).
    */
   app.post('/api/accept-invite', async (c) => {
     const subject = await opts.subjectOf(c);
     if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
     const { token } = acceptBody.parse(await c.req.json());
     const desk = await opts.deskOf(c);
-    const claimed = await desk.store.claim(subject.sub, await sha256Hex(token));
-    if (!claimed) {
+    let claimed: ClaimedInvite | null = null;
+    const keep = (row: ClaimedInvite | null) => {
+      claimed = row;
+      return row?.principal ?? null;
+    };
+    await acceptMemberInvite(
+      {
+        directory: {
+          claimInvite: async (_scope, sub, hash) => keep(await desk.store.claim(sub, hash)),
+          inviteMatches: (_scope, hash) => desk.store.matches(hash),
+          claimInviteByCapability: async (_scope, sub, capabilityId, principal) =>
+            keep(await desk.store.claimByCapability(sub, capabilityId, principal)),
+        },
+        exchange: (secret) => desk.exchange(secret),
+      },
+      '',
+      subject.sub,
+      token,
+    );
+    const joined = claimed as ClaimedInvite | null;
+    if (!joined) {
       throw new HTTPException(400, { message: 'this invite is invalid or already used' });
     }
     // Staff go in the directory; a customer does not. The portal is not the inbox, and
     // a customer offered in an assignee picker would be a bug.
-    if (opts.staffRoles.includes(claimed.roleKey)) {
-      await recordStaffProfile(desk.invokeAs, claimed.principal, subject);
+    if (opts.staffRoles.includes(joined.roleKey)) {
+      await recordStaffProfile(desk.invokeAs, joined.principal, subject);
     }
-    return c.json({ ok: true, principal: claimed.principal });
+    return c.json({ ok: true, principal: joined.principal });
   });
 }
