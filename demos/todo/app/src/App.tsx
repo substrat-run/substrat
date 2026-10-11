@@ -2,6 +2,12 @@
  * Three screens, one per line of spec/concept.md §8: your lists, a list, and who
  * it is shared with. Hash routing, so a refresh keeps the screen.
  *
+ * Your lists come in three views (#119): the active ones, the archive and the trash,
+ * each its own read on the server — `my-lists`, `my-lists?view=archived` and
+ * `trashed-lists`. Archive is "done with it, keep it"; trash is the delete you can
+ * take back. The moves are the server's: a list you may not archive or bin is
+ * refused there, and the refusal is shown, not predicted.
+ *
  * Switching user is a real sign-in at the issuer, not a header swap, and it is how
  * the permission model becomes visible: the same screen, a different answer, and no
  * filtering anywhere in this file. The picker itself lives at the issuer — this app
@@ -13,6 +19,9 @@ import { api, ApiError, auth, me, type Item, type List, type Paged, type Session
 
 /** The wall, as opposed to a blip: the server said no, not "try again". */
 const denied = (error: unknown) => error instanceof ApiError && error.status === 403;
+
+/** A move against a list that is no longer where this screen shows it (#119). */
+const stale = (error: unknown) => error instanceof ApiError && (error.status === 409 || error.status === 404);
 
 function useHash(): string {
   const [hash, setHash] = useState(() => window.location.hash);
@@ -32,6 +41,15 @@ function Problem({ error }: { error: unknown }) {
       {error instanceof Error ? error.message : String(error)}
     </p>
   );
+}
+
+/** Which of your lists a screen shows: `#/`, `#/archived` or `#/trash`. */
+export type ListsShown = 'active' | 'archived' | 'trash';
+
+const VIEW_HASH: Record<ListsShown, string> = { active: '#/', archived: '#/archived', trash: '#/trash' };
+
+function shownOf(hash: string): ListsShown {
+  return hash === VIEW_HASH.archived ? 'archived' : hash === VIEW_HASH.trash ? 'trash' : 'active';
 }
 
 export function App() {
@@ -71,31 +89,81 @@ export function App() {
           <button onClick={() => auth.logout()}>Sign out</button>
         </span>
       </header>
-      <main>{match ? <ListView key={`${who}:${match[1]}`} listId={match[1]!} /> : <Lists key={who} />}</main>
+      <main>
+        {match ? (
+          <ListView key={`${who}:${match[1]}`} listId={match[1]!} />
+        ) : (
+          <Lists key={`${who}:${shownOf(hash)}`} shown={shownOf(hash)} />
+        )}
+      </main>
     </>
   );
 }
 
-function Lists() {
+/** What each view says about itself, above its rows. */
+const VIEW_COPY: Record<ListsShown, { tab: string; title: string; sub: string; empty: string }> = {
+  active: {
+    tab: 'Active',
+    title: 'Your lists',
+    sub: 'The ones you own, and the ones someone shared with you. A list nobody shared is not filtered out here — it never comes back from the server at all.',
+    empty: 'Nothing yet. Create a list, or ask someone to share one with you.',
+  },
+  archived: {
+    tab: 'Archived',
+    title: 'Archived',
+    sub: 'Lists filed away. Still yours, still shared, just out of the way.',
+    empty: 'Nothing archived.',
+  },
+  trash: {
+    tab: 'Trash',
+    title: 'Trash',
+    sub: 'Lists you binned. Restore one and it comes back as it was, items and shares included; after 30 days it is deleted for good.',
+    empty: 'The trash is empty.',
+  },
+};
+
+/** Each view is its own read: the server decides what is in it. */
+function readOf(shown: ListsShown): () => Promise<Paged<List>> {
+  if (shown === 'trash') return () => api.trashedLists();
+  return () => api.myLists(shown === 'archived' ? { view: 'archived' } : {});
+}
+
+export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
   const [lists, setLists] = useState<List[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [name, setName] = useState('');
+  const copy = VIEW_COPY[shown];
 
   const load = useCallback(async () => {
     try {
-      setLists((await api.myLists({})).entries);
+      setLists((await readOf(shown)()).entries);
       setError(null);
     } catch (e) {
       setError(e);
       if (denied(e)) setLists(null);
     }
-  }, []);
+  }, [shown]);
   useEffect(() => {
     void load();
   }, [load]);
   // The screen outlives the grant: a list shared with you and then un-shared stays
   // on this screen until something re-asks. Focus, visibility and a slow poll do.
   useAutoRefresh(load);
+
+  // A refused move is a 403 about THAT list, not a wall over the screen: the rows stay.
+  // A 409 or 404 is this view gone stale — another tab moved or binned the list — so the
+  // view is read again and the stale row goes; the message is set after, since a good
+  // read clears it.
+  const move = async (fn: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await fn();
+      void load();
+    } catch (e) {
+      if (stale(e)) await load();
+      setError(e);
+    }
+  };
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,40 +179,71 @@ function Lists() {
 
   return (
     <>
-      <h2>Your lists</h2>
-      <p className="sub">
-        The ones you own, and the ones someone shared with you. A list nobody shared is not
-        filtered out here — it never comes back from the server at all.
-      </p>
+      <nav className="views">
+        {(Object.keys(VIEW_HASH) as ListsShown[]).map((v) => (
+          <a key={v} href={VIEW_HASH[v]} aria-current={v === shown ? 'page' : undefined}>
+            {VIEW_COPY[v].tab}
+          </a>
+        ))}
+      </nav>
+      <h2>{copy.title}</h2>
+      <p className="sub">{copy.sub}</p>
       <Problem error={error} />
       {lists === null ? (
         !error && <p className="empty">Loading…</p>
       ) : lists.length === 0 ? (
         <div className="card">
-          <p className="empty">Nothing yet. Create a list, or ask someone to share one with you.</p>
+          <p className="empty">{copy.empty}</p>
         </div>
       ) : (
         lists.map((l) => (
           <div className="card" key={l.id}>
             <div className="row">
-              <a href={`#/list/${l.id}`}>{l.name}</a>
+              {/* A binned list answers not_found to everything but restore, so it is not a link. */}
+              {shown === 'trash' ? <span>{l.name}</span> : <a href={`#/list/${l.id}`}>{l.name}</a>}
               <span className="spacer" />
-              <SharedTag list={l} />
+              {shown !== 'trash' && <SharedTag list={l} />}
+              {shown === 'active' && (
+                <button className="link" onClick={() => move(() => api.archiveList({ listId: l.id }))}>
+                  archive
+                </button>
+              )}
+              {shown === 'archived' && (
+                <button className="link" onClick={() => move(() => api.unarchiveList({ listId: l.id }))}>
+                  unarchive
+                </button>
+              )}
+              {shown === 'trash' ? (
+                <>
+                  <button className="link" onClick={() => move(() => api.restoreList({ listId: l.id }))}>
+                    restore
+                  </button>
+                  <button className="link" onClick={() => move(() => api.deleteList({ listId: l.id }))}>
+                    delete for good
+                  </button>
+                </>
+              ) : (
+                <button className="link" onClick={() => move(() => api.trashList({ listId: l.id }))}>
+                  trash
+                </button>
+              )}
             </div>
           </div>
         ))
       )}
-      <form className="inline" onSubmit={create}>
-        <input
-          type="text"
-          value={name}
-          placeholder="New list…"
-          onChange={(e) => setName(e.target.value)}
-        />
-        <button className="primary" disabled={!name.trim()}>
-          Create
-        </button>
-      </form>
+      {shown === 'active' && (
+        <form className="inline" onSubmit={create}>
+          <input
+            type="text"
+            value={name}
+            placeholder="New list…"
+            onChange={(e) => setName(e.target.value)}
+          />
+          <button className="primary" disabled={!name.trim()}>
+            Create
+          </button>
+        </form>
+      )}
     </>
   );
 }

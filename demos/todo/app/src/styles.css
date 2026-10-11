@@ -49,3 +49,8 @@ button:disabled { opacity: .5; cursor: default; }
 .back:hover { text-decoration: underline; }
 section.share { margin-top: 2rem; }
 section.share h3 { font-size: .95rem; margin: 0 0 .6rem; }
+
+/* The three views of your lists (#119). */
+nav.views { display: flex; gap: .9rem; margin-bottom: .6rem; font-size: .9rem; }
+nav.views a { color: var(--muted); text-decoration: none; padding-bottom: .15rem; }
+nav.views a[aria-current='page'] { color: inherit; border-bottom: 2px solid var(--accent); font-weight: 600; }
