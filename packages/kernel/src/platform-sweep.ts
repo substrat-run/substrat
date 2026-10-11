@@ -2137,6 +2137,26 @@ export function bindExportBreakRefusal(breaks: readonly ExportBreak[]): string {
 }
 
 /**
+ * What a bind or a route change moves `scope` between (#1756, #2178): the version it runs before
+ * and the one it runs after (`runningVersionOf` on both of its inputs), or null when the move
+ * changes nothing it runs — a re-point that stays on the serving script — or it ran nothing before
+ * (a first bind). `servingRef` omitted: the route is unchanged.
+ */
+export function scopeMoveOf(
+  scope: Pick<Scope, 'verticalVersionId' | 'servingRef'>,
+  incomingVersionId: string,
+  servingRef: string | null | undefined,
+  serving: ServingPointer | null,
+): { before: string; after: string } | null {
+  const before = runningVersionOf(scope, serving);
+  const after = runningVersionOf(
+    { verticalVersionId: incomingVersionId, servingRef: servingRef === undefined ? scope.servingRef : servingRef },
+    serving,
+  );
+  return before === null || after === null || before === after ? null : { before, after };
+}
+
+/**
  * Whom moving `scope` breaks (#1756): the promote gate's question (`exportBreaksOf`), asked of
  * ONE install in its own tenant, since an edge never crosses one.
  *
@@ -2181,13 +2201,9 @@ export async function bindExportBreaksOf(input: {
   // ref this host cannot name), and what the scope runs there is not this vertical's code at all:
   // the same known gap as above, never a phantom move judged against the wrong vertical.
   if (typeof input.servingRef === 'string' && input.servingRef !== input.serving?.ref) return [];
-  const before = runningVersionOf(scope, input.serving);
-  const after = runningVersionOf(
-    { verticalVersionId: input.incoming.id, servingRef: input.servingRef === undefined ? scope.servingRef : input.servingRef },
-    input.serving,
-  );
-  if (before === null || after === null || before === after) return [];
-  const [outgoing, incoming] = await Promise.all([input.readExports(before), input.readExports(after)]);
+  const move = scopeMoveOf(scope, input.incoming.id, input.servingRef, input.serving);
+  if (move === null) return [];
+  const [outgoing, incoming] = await Promise.all([input.readExports(move.before), input.readExports(move.after)]);
   return exportBreaksOf({
     admin: input.admin,
     actor: input.actor,

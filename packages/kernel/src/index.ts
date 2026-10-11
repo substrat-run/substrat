@@ -773,6 +773,7 @@ export {
   exportBreakRefusal,
   isExportBreakRefusal,
   bindExportBreaksOf,
+  scopeMoveOf,
   bindExportBreakRefusal,
   BIND_EXPORT_BREAK_REFUSAL,
   isBindExportBreakRefusal,

@@ -458,6 +458,7 @@ export const INDEX_VALUE_EXPORTS = [
   'runPurgePass',
   'runningVersionOf',
   'scheduleStateHasKind',
+  'scopeMoveOf',
   'scopeOwesSwitch',
   'scopeRoleHolders',
   'scopeScriptCopyOf',
