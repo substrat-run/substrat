@@ -1,8 +1,12 @@
 import {
   FINDING_RULE_MAX_DAYS,
+  FINDINGS_LIMIT_DEFAULT,
+  FINDINGS_LIMIT_MAX,
+  instant,
   findingEntry,
   findingRuleEntry,
   opsFailureFingerprint,
+  parseFindingCursor,
   substratError,
   type ErrorCode,
   type FindingEntry,
@@ -297,7 +301,11 @@ const MAX_CODES = 5;
  * - it was `suppressed` and no rule covers it any longer → `open`;
  * - otherwise the status stands (`acked` stays acked: somebody is already on it).
  */
-export function observeFinding(sql: RedactionSql, o: FindingObservation, at: string): void {
+export function observeFinding(sql: RedactionSql, o: FindingObservation, occurredAt: string): void {
+  // Stored in the one canonical spelling (`toISOString`), which is also the spelling the
+  // contract reads it back in and `findingCursorOf` mints a cursor from: the keyset seek compares
+  // strings, so a stamp without milliseconds or with an offset would be skipped or replayed (#2198).
+  const at = instant.parse(occurredAt);
   const ruleId = activeRule(sql, o, at);
   const existing = sql(
     `SELECT id, status, regressed, codes, resolved_version, likely_cause
@@ -375,10 +383,17 @@ export function observeFinding(sql: RedactionSql, o: FindingObservation, at: str
 }
 
 /**
- * Findings, most recently seen first. No cursor, like the issue read it projects: the
- * cardinality is the number of distinct shapes a tenant has, and `limit` bounds it.
+ * Findings, most recently seen first, keyset-paged (#2198): `lastSeen` descending, `id` ascending
+ * on a tie, and `filter.cursor` resumes strictly after a row, `findingCursorOf`'s (lastSeen, id).
+ * A page returns at most `limit` rows (default 100, ceiling `FINDINGS_LIMIT_MAX`); the HTTP layer
+ * wraps it with `pageOf`, so the walk ends on a short page. A `limit` or `cursor` that is not one
+ * is refused, never read as "from the start" — a walk that silently restarted would never end.
  */
 export function listFindings(sql: RedactionSql, filter: FindingFilter = {}): FindingEntry[] {
+  const limit = assertRowLimit('limit', filter.limit ?? FINDINGS_LIMIT_DEFAULT);
+  if (limit > FINDINGS_LIMIT_MAX) {
+    throw substratError('validation_failed', `limit must be at most ${FINDINGS_LIMIT_MAX}, got ${limit}`);
+  }
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (filter.tenantId !== undefined) {
@@ -393,7 +408,15 @@ export function listFindings(sql: RedactionSql, filter: FindingFilter = {}): Fin
     where.push('kind = ?');
     params.push(filter.kind);
   }
-  params.push(assertRowLimit('limit', filter.limit ?? 100));
+  if (filter.cursor !== undefined) {
+    const after = parseFindingCursor(filter.cursor);
+    if (!after) throw substratError('validation_failed', 'cursor is not a findings cursor');
+    // The range form, not a bare OR: `last_seen <= ?` is what an index on last_seen can seek on,
+    // and the inner test then drops the cursor's own tie-run up to and including the cursor row.
+    where.push('last_seen <= ? AND (last_seen < ? OR id > ?)');
+    params.push(after.lastSeen, after.lastSeen, after.id);
+  }
+  params.push(limit);
   const rows = sql(
     `SELECT ${FINDING_COLUMNS} FROM _substrat_findings` +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +

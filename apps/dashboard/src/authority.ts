@@ -67,7 +67,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import { LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
+import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
 import {
   ControlPlaneError,
   ControlPlaneTransport,
@@ -2144,17 +2144,30 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
-   * This tenant's findings (#1748), most recently seen first. `null` on a plane predating the
-   * route (deploy skew), never `[]`: an empty inbox says nothing is wrong, which a plane that
-   * cannot answer has not said.
+   * One page of this tenant's findings (#1748), most recently seen first; `cursor` is the previous
+   * page's `nextCursor`. `null` on a plane predating the route (deploy skew), never an empty page:
+   * an empty inbox says nothing is wrong, which a plane that cannot answer has not said. A plane
+   * that predates PAGING answers `entries` alone (no `nextCursor` key at all, which is not the
+   * `null` of a finished walk): there is no cursor to follow, since that plane would ignore it and
+   * replay its first page forever. When such a plane returned a full page the list may be cut, and
+   * `cut` says so, so a caller does not read it as a finished walk.
    */
-  async listFindings(filter: { status?: FindingStatus; kind?: FindingKind; limit?: number } = {}): Promise<FindingEntry[] | null> {
+  async listFindings(
+    filter: { status?: FindingStatus; kind?: FindingKind; limit?: number; cursor?: string } = {},
+  ): Promise<{ entries: FindingEntry[]; nextCursor: string | null; cut: boolean } | null> {
     const q = new URLSearchParams({ tenantId: this.tenantId });
     if (filter.status) q.set('status', filter.status);
     if (filter.kind) q.set('kind', filter.kind);
     if (filter.limit !== undefined) q.set('limit', String(filter.limit));
+    if (filter.cursor !== undefined) q.set('cursor', filter.cursor);
     try {
-      return (await this.call<{ entries: FindingEntry[] }>(`/findings?${q}`)).entries;
+      const page = await this.call<{ entries: FindingEntry[]; nextCursor?: string | null }>(`/findings?${q}`);
+      const unpaged = page.nextCursor === undefined;
+      return {
+        entries: page.entries,
+        nextCursor: page.nextCursor ?? null,
+        cut: unpaged && page.entries.length >= (filter.limit ?? FINDINGS_LIMIT_DEFAULT),
+      };
     } catch (e) {
       if (e instanceof ControlPlaneError && e.status === 404) return null;
       throw e;

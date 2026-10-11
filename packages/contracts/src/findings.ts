@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { instant, scopeId, tenantId } from './ids.js';
 import { errorCode } from './errors.js';
+import { CURSOR_FIELD_SEPARATOR } from './pagination.js';
 
 /**
  * Findings (#1748): anomalies a tenant triages like email, in one inbox with one lifecycle.
@@ -133,10 +134,40 @@ export const findingRuleEntry = z.object({
 });
 export type FindingRuleEntry = z.infer<typeof findingRuleEntry>;
 
-/** Filter for `listFindings`. `tenantId` absent is the staff fleet read; a tenant's read is forced to it. */
+/** A findings read that names no `limit` gets this many — what it returned before it could page. */
+export const FINDINGS_LIMIT_DEFAULT = 100;
+/** The most one findings page may ask for. */
+export const FINDINGS_LIMIT_MAX = 500;
+
+/**
+ * Filter for `listFindings`. `tenantId` absent is the staff fleet read; a tenant's read is forced to it.
+ *
+ * Keyset-paged like every list read (`pagination.ts`): `cursor` is the previous page's
+ * `nextCursor`, opaque to a caller. The walk is `lastSeen` descending with `id` ascending as the
+ * tiebreak, and a cursor names the last row's (lastSeen, id), so a tie on `lastSeen` is never split
+ * wrongly across a page boundary. The set moves while it is walked: a finding seen again is bumped
+ * to the front, ahead of any cursor, so a walk never returns one twice, and one it had not yet
+ * reached is met at the front of the next fresh read instead.
+ */
 export interface FindingFilter {
   tenantId?: z.infer<typeof tenantId>;
   status?: FindingStatus;
   kind?: FindingKind;
   limit?: number;
+  cursor?: string;
+}
+
+/** The cursor that resumes a walk just after `entry`: `lastSeen`, then `id`, joined as the grammar says. */
+export function findingCursorOf(entry: Pick<FindingEntry, 'lastSeen' | 'id'>): string {
+  return `${entry.lastSeen}${CURSOR_FIELD_SEPARATOR}${entry.id}`;
+}
+
+/** A cursor taken apart, or `null` for one `findingCursorOf` could not have made. */
+export function parseFindingCursor(cursor: string): { lastSeen: string; id: string } | null {
+  const at = cursor.indexOf(CURSOR_FIELD_SEPARATOR);
+  if (at === -1) return null;
+  const lastSeen = cursor.slice(0, at);
+  const id = cursor.slice(at + 1);
+  if (id === '' || id.includes(CURSOR_FIELD_SEPARATOR) || !instant.safeParse(lastSeen).success) return null;
+  return { lastSeen, id };
 }
