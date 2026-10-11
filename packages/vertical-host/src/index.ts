@@ -689,7 +689,11 @@ const wipeCarriedBody = z.object({
 });
 
 const restoreBody = z.object({
-  tenantId: tenantIdOf.optional(),
+  /** #2016: the tenant the platform restores for, recorded as the scope's receipt in the load's own
+   *  transaction. Required (#2035): a load that names none could land a store with no tenant record
+   *  and no role rows (a dump from a world that keeps its roles elsewhere), which a CP-less door can
+   *  hold no pair against. Refused before the store is touched, so the refusal writes nothing. */
+  tenantId: tenantIdOf,
   scopeId: scopeIdOf,
   /** #1742: as on the reconcile — applied to `scopeId`, in the restore's own event. */
   switchedOff: z.array(moduleIdOf).optional(),
@@ -1091,7 +1095,7 @@ export function mountPlatformSurface<Env extends object>(
       tenantId: body.tenantId,
       fence: body.fence,
     });
-    if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
+    await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });
 
@@ -1407,7 +1411,9 @@ export function mountPlatformSurface<Env extends object>(
   // wipe a reaped fork — both inside this deployment; no bytes cross the boundary.
   app.post('/internal/snapshot', async (c) => {
     const body = z
-      .object({ sourceScopeId: scopeIdOf, newScopeId: scopeIdOf, tenantId: tenantIdOf.optional() })
+      // #2035: the tenant is required, as on the restore: the copy records it, and a source foreign
+      // to it is refused before anything is copied.
+      .object({ sourceScopeId: scopeIdOf, newScopeId: scopeIdOf, tenantId: tenantIdOf })
       .parse(await c.req.json());
     return c.json(await deps.hostFor(c.env).snapshotScopeLocal(body.sourceScopeId, body.newScopeId, body.tenantId), 201);
   });

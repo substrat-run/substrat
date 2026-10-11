@@ -173,7 +173,7 @@ describe('mountPlatformSurface — the error envelope (#510 regression)', () => 
       {
         method: 'POST',
         headers: authed({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ scopeId: SCOPE, tables: [] }),
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, tables: [] }),
       },
       ENV,
     );
@@ -204,7 +204,7 @@ describe('mountPlatformSurface — the error envelope (#510 regression)', () => 
       {
         method: 'POST',
         headers: authed({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ scopeId: SCOPE, tables: [] }),
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, tables: [] }),
       },
       ENV,
     );
@@ -496,7 +496,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const restore = await appWith(restoring).request('/internal/restore', {
       method: 'POST',
       headers: authed({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ scopeId: SCOPE, tables: [], loadStamp: 'stamp-8' }),
+      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, tables: [], loadStamp: 'stamp-8' }),
     }, ENV);
     expect(restore.status).toBe(200);
     expect(opts).toMatchObject({ loadStamp: 'stamp-8' });
@@ -505,7 +505,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const fenced = await appWith(restoring).request('/internal/restore', {
       method: 'POST',
       headers: authed({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ scopeId: SCOPE, tables: [], expect: { loadStamp: null, revision: 'ev-9' } }),
+      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, tables: [], expect: { loadStamp: null, revision: 'ev-9' } }),
     }, ENV);
     expect(fenced.status).toBe(200);
     expect(opts).toMatchObject({ expect: { loadStamp: null, revision: 'ev-9' } });
@@ -515,14 +515,14 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const leased = await appWith(restoring).request('/internal/restore', {
       method: 'POST',
       headers: authed({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ scopeId: SCOPE, tables: [], fence }),
+      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, tables: [], fence }),
     }, ENV);
     expect(leased.status).toBe(200);
     expect(opts).toMatchObject({ fence });
     const malformed = await appWith(restoring).request('/internal/restore', {
       method: 'POST',
       headers: authed({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ scopeId: SCOPE, tables: [], fence: { ...fence, notAfter: 'whenever' } }),
+      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, tables: [], fence: { ...fence, notAfter: 'whenever' } }),
     }, ENV);
     expect(malformed.status).toBe(400);
   });
@@ -1073,7 +1073,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
         {
           method: 'POST',
           headers: authed({ 'content-type': 'application/json' }),
-          body: JSON.stringify({ scopeId: SCOPE, tables: [], ...extra }),
+          body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, tables: [], ...extra }),
         },
         ENV,
       );
@@ -1085,9 +1085,10 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     ]);
   });
 
-  it('restore skips the role re-projection when no tenantId is given', async () => {
+  // #2035: a load that names no tenant could leave a store with no tenant record and no role rows.
+  it('restore refuses a body without a tenantId before the host is called', async () => {
     const host = fakeHost();
-    await appWith(host).request(
+    const res = await appWith(host).request(
       '/internal/restore',
       {
         method: 'POST',
@@ -1096,7 +1097,8 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       },
       ENV,
     );
-    expect(host.calls).toContain('restoreScopeLocal');
+    expect(res.status).toBe(400);
+    expect(host.calls).not.toContain('restoreScopeLocal');
     expect(host.calls).not.toContain('projectRolesLocal');
   });
 });
@@ -1819,7 +1821,7 @@ describe('mountPlatformSurface — the envelope is problem+json', () => {
       {
         method: 'POST',
         headers: authed({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ scopeId: SCOPE, tables: [] }),
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, tables: [] }),
       },
       ENV,
     );
@@ -2072,7 +2074,7 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], ...carry });
     expect(seen.map((x) => x.tenantHeld)).toEqual([[SCHED], [SCHED], [SCHED]]);
     // A malformed one is refused before the host is called.
-    const bad = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], switchedOff: [SCHED], tenantHeld: 'all' });
+    const bad = await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], switchedOff: [SCHED], tenantHeld: 'all' });
     expect(bad.status).toBe(400);
     expect(seen).toHaveLength(3);
   });
@@ -2098,7 +2100,7 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     const { host, seen } = recording();
     const reconcile = await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE });
     expect(await reconcile.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER });
-    const restore = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [] });
+    const restore = await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [] });
     expect(await restore.json()).toEqual({ tables: 0 });
     expect(seen.map((s) => s.switchedOff)).toEqual([undefined, undefined]);
   });
@@ -2125,7 +2127,7 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     const host = fakeHost(); // provisionScopeLocal → void, restoreScopeLocal → { tables: 3 }
     const reconcile = await post(host, '/internal/reconcile', { tenantId: TENANT, scopeId: SCOPE, switchedOff: [SCHED] });
     expect(await reconcile.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER });
-    const restore = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], switchedOff: [SCHED] });
+    const restore = await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], switchedOff: [SCHED] });
     expect(await restore.json()).toEqual({ tables: 3 });
   });
 
@@ -2144,7 +2146,7 @@ describe('mountPlatformSurface — the recorded-off list rides provision, reconc
     const provision = await post(host, '/internal/provision', { tenantId: TENANT, scopeId: SCOPE, owner: OWNER, switchedOff: [SCHED] });
     expect(provision.status).toBe(201);
     expect(await provision.json()).toEqual({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER });
-    const restore = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], switchedOff: [SCHED] });
+    const restore = await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], switchedOff: [SCHED] });
     expect(restore.status).toBe(200);
     expect(await restore.json()).toEqual({ tables: 2 });
   });
@@ -2577,11 +2579,11 @@ describe('marking a copy (#2005)', () => {
         return { tables: 0 };
       },
     });
-    expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], markCopy: PREVIEW })).status).toBe(200);
-    expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [] })).status).toBe(200);
+    expect((await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], markCopy: PREVIEW })).status).toBe(200);
+    expect((await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [] })).status).toBe(200);
     expect(seen).toEqual([PREVIEW, undefined]);
     // The old boolean shape carries no classification, so it is refused rather than guessed.
-    expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [], markCopy: true })).status).toBe(400);
+    expect((await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [], markCopy: true })).status).toBe(400);
   });
 
   for (const [path, verb] of [['/internal/mark-copy', 'markCopyLocal'], ['/internal/clear-copy-mark', 'clearCopyMarkLocal']] as const) {
@@ -2699,14 +2701,15 @@ describe('mountPlatformSurface — the platform-supplied sweeper (#1902)', () =>
 
 /**
  * #2016: the copy verbs carry the tenant the platform copies for, so the scope that receives the
- * bytes records its own tenant. Absent from an older platform, and then the host is called as before.
+ * bytes records its own tenant. #2035: the tenant is required. A body without one is refused before
+ * the host is called, so a load never lands a store with no tenant record (condition 2 of #2035).
  */
-describe('mountPlatformSurface — the copy verbs carry the tenant (#2016)', () => {
+describe('mountPlatformSurface — the copy verbs carry the tenant (#2016, #2035)', () => {
   const NEW = '01JZ0000000000000000SCP002';
   const post = (host: VerticalScopeHost, path: string, body: unknown) =>
     appWith(host).request(path, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) }, ENV);
 
-  it('a snapshot hands the host the tenant, and an older platform\'s none', async () => {
+  it('a snapshot hands the host the tenant, and a body without one is refused before the host is called', async () => {
     const seen: unknown[][] = [];
     const host = fakeHost({
       snapshotScopeLocal: async (...args: unknown[]) => {
@@ -2715,11 +2718,13 @@ describe('mountPlatformSurface — the copy verbs carry the tenant (#2016)', () 
       },
     });
     expect((await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW, tenantId: TENANT })).status).toBe(201);
-    expect((await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW })).status).toBe(201);
-    expect(seen).toEqual([[SCOPE, NEW, TENANT], [SCOPE, NEW, undefined]]);
+    const refused = await post(host, '/internal/snapshot', { sourceScopeId: SCOPE, newScopeId: NEW });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ code: 'validation_failed', error: expect.stringMatching(/tenantId/) });
+    expect(seen).toEqual([[SCOPE, NEW, TENANT]]);
   });
 
-  it('a restore hands the host the tenant it then repairs for, and an older platform\'s none', async () => {
+  it('a restore hands the host the tenant it then repairs for, and a body without one is refused before the host is called', async () => {
     const seen: unknown[] = [];
     const host = fakeHost({
       restoreScopeLocal: async (_s: unknown, _t: unknown, opts?: unknown) => {
@@ -2728,8 +2733,12 @@ describe('mountPlatformSurface — the copy verbs carry the tenant (#2016)', () 
       },
     });
     expect((await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [] })).status).toBe(200);
-    expect((await post(host, '/internal/restore', { scopeId: SCOPE, tables: [] })).status).toBe(200);
-    expect(seen).toEqual([TENANT, undefined]);
+    expect(host.calls).toContain('projectRolesLocal');
+    const refused = await post(host, '/internal/restore', { scopeId: SCOPE, tables: [] });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ code: 'validation_failed', error: expect.stringMatching(/tenantId/) });
+    expect(seen).toEqual([TENANT]);
+    expect(host.calls.filter((c) => c === 'projectRolesLocal')).toHaveLength(1);
   });
 });
 
