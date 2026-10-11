@@ -38,6 +38,14 @@ export function updatedStampsContractSuite(adapterName: string, makeFixture: () 
     const get = (id: string) => as.invoke<Doc>('stamps/get-doc', { docId: id });
     const events = async (id: string) => (await as.invoke<{ events: number }>('stamps/history', { id })).events;
     const create = async (title: string) => as.invoke<Doc>('stamps/create-doc', { title });
+    /**
+     * A stamp left alone is only stale once the clock has moved past it: in the same millisecond
+     * the old time IS this call's, and true. A timer, because workerd's clock stands still while
+     * code runs.
+     */
+    const pastStamp = async (d: Doc) => {
+      while (new Date().toISOString() <= d.updated_at) await new Promise((r) => setTimeout(r, 2));
+    };
 
     beforeAll(async () => {
       fixture = await makeFixture();
@@ -102,10 +110,7 @@ export function updatedStampsContractSuite(adapterName: string, makeFixture: () 
         ['other', 'updated_by', 'principal'],
       ] as const)('stamping %s is refused internal, and the write and its event roll back', async (stamp, column, what) => {
         const d = await create(`refused ${stamp}`);
-        // A stamp left alone is only stale once the clock has moved past it: in the same
-        // millisecond the old time IS this call's, and true. A timer, because workerd's clock
-        // stands still while code runs.
-        while (new Date().toISOString() <= d.updated_at) await new Promise((r) => setTimeout(r, 2));
+        await pastStamp(d);
         const seen = await events(d.id);
         const r = await refusal(asCarl.invoke('stamps/touch-doc', { id: d.id, title: 'lost', stamp }));
         expect(r.code).toBe('internal');
@@ -141,8 +146,11 @@ export function updatedStampsContractSuite(adapterName: string, makeFixture: () 
 
       it('an emit rolled back inside ctx.atomic is gone from the outbox, so it is not held', async () => {
         const d = await create('atomic');
+        // Another principal, past the create's millisecond: the rolled-back write left the row
+        // stale in time, so were its emit still counted, this call would be refused.
+        await pastStamp(d);
         const seen = await events(d.id);
-        await as.invoke('stamps/atomic-touch', { id: d.id, title: 'never' });
+        await asCarl.invoke('stamps/atomic-touch', { id: d.id, title: 'never' });
         expect(await get(d.id)).toEqual(d);
         expect(await events(d.id)).toBe(seen);
       });
