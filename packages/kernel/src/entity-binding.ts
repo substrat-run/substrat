@@ -161,6 +161,9 @@ export async function judgeBind(
   entityObjectRef(entity, 'bind');
   const binding = entityBindingOf(sql, entity.entityType);
   if (!binding) return { ok: false, refused: 'bind-not-declared' };
+  // The key before anything about the record: a minter without it on this record learns nothing
+  // of whether it exists, names someone, or is held — the same refusal for every record they lack.
+  if (!(await allowed(binding.permission, entity))) return lacking(binding.permission);
   const record = boundRecord(sql, binding, entity.entityId);
   if (record.rows === 0) return { ok: false, refused: 'bind-record-missing' };
   if (record.principal !== null) return { ok: false, refused: 'bind-record-bound' };
@@ -170,7 +173,6 @@ export async function judgeBind(
   // before the column was written, or left by a holder column a later version moved — is a holder
   // a new link would bind a second person beside. Unbind them first.
   if (heldBySomeone(sql, entityObjectRef(entity, 'bind'))) return { ok: false, refused: 'bind-record-held' };
-  if (!(await allowed(binding.permission, entity))) return lacking(binding.permission);
   return { ok: true, binding };
 }
 

@@ -219,6 +219,13 @@ export function bindingInviteContractSuite(
         await host.admin.grant(staff, { principalId: narrow, permission: BIND_INVITE, node: node(), entity: rec(mine), grantedBy: clerk });
         expect((await mint(narrow, await invitee(), rec(mine))).ok).toBe(true);
         expect(await mint(narrow, await invitee(), rec(theirs))).toEqual({ ok: false, coverage: { covered: false, missing: [BIND_INVITE] } });
+        // And it learns nothing about a record it lacks the key on: a missing one and a bound one
+        // answer the same coverage refusal as a free one, never their state.
+        const bound = await record();
+        await put('UPDATE bind_records SET principal = ? WHERE id = ?', [p(), bound]);
+        for (const id of [ulid(), bound]) {
+          expect(await mint(narrow, await invitee(), rec(id))).toEqual({ ok: false, coverage: { covered: false, missing: [BIND_INVITE] } });
+        }
       });
     });
 
