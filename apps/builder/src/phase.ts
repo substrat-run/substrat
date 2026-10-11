@@ -442,13 +442,19 @@ export function screensSection(concept: string): string | null {
 
 /**
  * "API-only for now" is a valid screens section (interview.md §8) and means no
- * app — when it is the section's whole answer: its body opens with "API-only"
- * and lists no screens. "The export is API-only; admins get a dashboard" is a
- * screen, not an opt-out.
+ * app — when it is the section's whole answer: its body opens with "API-only",
+ * however dressed (`**API-only**`, `> API-only`, "None, API-only", "No screens —
+ * API-only"), and lists no screens. "The export is API-only; admins get a
+ * dashboard" is a screen, not an opt-out. A miss here only costs a UI pass that
+ * finds nothing to build.
  */
 function apiOnly(section: string): boolean {
 	const body = section.split('\n').slice(1).join('\n').trim();
-	return /^api[- ]only\b/i.test(body) && !/^\s*(?:[-*]|\d+\.)\s/m.test(body);
+	const plain = body.replace(/[*_`>]/g, '').trim();
+	return (
+		/^(?:(?:none|no screens?|nothing)\b[\s,.;:—–-]*)?api[- ]only\b/i.test(plain) &&
+		!/^\s*(?:[-*]|\d+\.)\s/m.test(body)
+	);
 }
 
 /** The recorded gaps as a context block, bounded by `parseContractGaps`. */

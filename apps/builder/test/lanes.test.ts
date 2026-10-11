@@ -441,6 +441,13 @@ describe('planLanes — what each lane is given', () => {
 		}
 	});
 
+	it('reads an API-only answer however it is dressed — emphasis, a leading "None" (#2200 r2)', async () => {
+		for (const answer of ['**API-only** for now.', 'None, API-only for now.', '_API only_.', 'No screens — API-only.', '> API-only for now']) {
+			const concept = `# Fx\n\n## 8. The screens\n${answer}`;
+			expect(await planLanes(ws({ 'spec/concept.md': concept, 'spec/model.ts': 'M' }), 'iterate'), answer).toEqual([]);
+		}
+	});
+
 	it('reads API-only as an opt-out only when it is the section\'s whole answer', async () => {
 		const mixed = '# Fx\n\n## 8. The screens\nThe export is API-only; admins get a dashboard.\n- Admin: dashboard';
 		const listed = '# Fx\n\n## 8. The screens\nAPI-only for the export.\n- Office: list of things';
