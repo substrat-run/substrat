@@ -228,6 +228,10 @@ describe('focus', () => {
         </Dialog>
       );
     }
+    // A real opener: with body as the opener, restoring focus to it is a no-op and hides a re-run.
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
     await render(<Form />);
     expect(document.activeElement).toBe(document.querySelector('input'));
     const bump = document.querySelector<HTMLButtonElement>('button')!;
@@ -235,6 +239,7 @@ describe('focus', () => {
     await act(async () => bump.click());
     expect(bump.textContent).toBe('bump 1'); // it did re-render
     expect(document.activeElement).toBe(bump);
+    opener.remove();
   });
 
   it('leaves focus on a child that took it itself (autoFocus) — and the twin without one lands on the first tabbable', async () => {
@@ -282,6 +287,24 @@ describe('stacked dialogs', () => {
     expect(inner).toHaveBeenCalledTimes(1);
   });
 
+  it('Escape and Tab belong to the inner one even when the outer listener is the first to run', async () => {
+    // The inner opens later, so the outer's document listener is registered first and sees the
+    // key while the target is inside both and nothing has called preventDefault yet. Only the
+    // topmost check keeps it from handling the key.
+    const outer = vi.fn(), inner = vi.fn();
+    await render(<Stack outerCancel={outer} innerCancel={inner} innerOpen={false} />);
+    await render(<Stack outerCancel={outer} innerCancel={inner} innerOpen />);
+    key('Escape');
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
+    const [outerPanel, innerPanel] = dialogs();
+    const innerConfirm = [...innerPanel!.querySelectorAll('button')].find((b) => b.textContent === 'Confirm')!;
+    innerConfirm.focus();
+    key('Tab');
+    expect(innerPanel!.contains(document.activeElement)).toBe(true);
+    expect(outerPanel!.contains(innerPanel!)).toBe(true);
+  });
+
   it('Tab wraps inside the topmost one only', async () => {
     await render(<Stack outerCancel={() => {}} innerCancel={() => {}} innerOpen />);
     const [, inner] = dialogs();
@@ -321,6 +344,26 @@ describe('stacked dialogs', () => {
     expect(document.activeElement).toBe(field);
     await act(async () => a.render(<Dialog {...props({ title: 'Lower', open: false })} />));
     expect(document.activeElement).toBe(field);
+    await act(async () => { a.unmount(); b.unmount(); });
+    lower.remove();
+    upper.remove();
+    page.remove();
+  });
+
+  it('lower closing first, then the upper: focus ends on the original page opener, not body', async () => {
+    const page = document.createElement('button');
+    const lower = document.createElement('div');
+    const upper = document.createElement('div');
+    document.body.append(page, lower, upper);
+    page.focus();
+    const a = createRoot(lower), b = createRoot(upper);
+    await act(async () => a.render(<Dialog {...props({ title: 'Lower' })}><input aria-label="l" /><button id="go">go</button></Dialog>));
+    document.getElementById('go')!.focus(); // the control in the lower dialog that opens the upper
+    await act(async () => b.render(<Dialog {...props({ title: 'Upper' })}><input aria-label="u" /></Dialog>));
+    await act(async () => a.render(<Dialog {...props({ title: 'Lower', open: false })} />));
+    expect(upper.contains(document.activeElement)).toBe(true);
+    await act(async () => b.render(<Dialog {...props({ title: 'Upper', open: false })} />));
+    expect(document.activeElement).toBe(page);
     await act(async () => { a.unmount(); b.unmount(); });
     lower.remove();
     upper.remove();
@@ -490,6 +533,25 @@ describe('Tab trap: what counts as tabbable', () => {
     expect(key('Tab').defaultPrevented).toBe(true); // none checked: the first is the stop
     document.querySelector<HTMLInputElement>('input[aria-label="r2"]')!.focus();
     expect(key('Tab').defaultPrevented).toBe(false); // r2 is not a stop; the browser decides
+  });
+
+  it('a group is per form: same-named radios in different forms, or one outside any form, are each a stop', async () => {
+    await render(
+      trapped(
+        <>
+          <form><input type="radio" name="g" aria-label="r1" /></form>
+          <form><input type="radio" name="g" aria-label="r2" /></form>
+          <input type="radio" name="g" aria-label="r3" />
+        </>,
+      ),
+    );
+    const radio = (n: string) => document.querySelector<HTMLInputElement>(`input[aria-label="${n}"]`)!;
+    radio('r1').focus();
+    expect(key('Tab').defaultPrevented).toBe(false); // r2 and r3 are stops after it
+    radio('r3').focus();
+    expect(key('Tab').defaultPrevented).toBe(true); // r3 is the last stop
+    radio('r2').focus();
+    expect(key('Tab').defaultPrevented).toBe(false);
   });
 
   it('twin: radios in different groups are each a stop', async () => {

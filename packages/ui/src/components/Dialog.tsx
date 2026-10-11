@@ -32,7 +32,7 @@ const FOCUSABLE =
 function hiddenWithin(el: HTMLElement, root: HTMLElement): boolean {
   if (getComputedStyle(el).visibility === 'hidden') return true;
   for (let n: HTMLElement | null = el; n && n !== root; n = n.parentElement) {
-    if (n.hasAttribute('hidden') || n.hasAttribute('inert') || n.getAttribute('aria-hidden') === 'true') return true;
+    if (n.hasAttribute('inert') || n.getAttribute('aria-hidden') === 'true') return true;
     if (getComputedStyle(n).display === 'none') return true;
     // A closed <details> shows only its first <summary>.
     const parent: HTMLElement | null = n.parentElement;
@@ -62,8 +62,8 @@ function radioTabbable(el: HTMLInputElement, root: HTMLElement): boolean {
 
 /**
  * Tabbable descendants, in DOM order. jsdom has no layout, so this reads what it does have:
- * the `hidden`/`inert`/`aria-hidden` attributes, closed <details>, disabled <fieldset>, and
- * computed `display`/`visibility` (inline and stylesheet rules alike). What only a real
+ * the `inert`/`aria-hidden` attributes, closed <details>, disabled <fieldset>, and
+ * computed `display`/`visibility` (inline and stylesheet rules alike — which is how `hidden` is seen). What only a real
  * browser can answer — an element clipped to zero size, off-screen, covered — it cannot.
  */
 function tabbables(root: HTMLElement): HTMLElement[] {
@@ -82,15 +82,28 @@ function tabbables(root: HTMLElement): HTMLElement[] {
  * inside another's children mounts (and so registers) first, so a registration slots beneath
  * any already-registered panel it contains, which keeps the outer one below the inner one.
  */
-const stack: HTMLElement[] = [];
-function register(el: HTMLElement): () => boolean {
-  const above = stack.findIndex((o) => el.contains(o));
-  if (above < 0) stack.push(el);
-  else stack.splice(above, 0, el);
+interface Entry {
+  el: HTMLElement;
+  /** Where focus goes back to when this one closes while topmost. */
+  before: HTMLElement | null;
+}
+const stack: Entry[] = [];
+function register(el: HTMLElement, before: HTMLElement | null): () => HTMLElement | null | false {
+  const entry: Entry = { el, before };
+  const above = stack.findIndex((o) => el.contains(o.el));
+  if (above < 0) stack.push(entry);
+  else stack.splice(above, 0, entry);
+  // Returns what to refocus, or `false` when this was not the topmost (nothing to restore).
   return () => {
-    const wasTop = stack.at(-1) === el;
-    stack.splice(stack.indexOf(el), 1);
-    return wasTop;
+    const at = stack.indexOf(entry);
+    stack.splice(at, 1);
+    if (at < stack.length) {
+      // Closed beneath others: whoever sits above and would hand focus back into this dialog
+      // inherits this one's opener instead, so the page still gets focus when the last closes.
+      for (const o of stack.slice(at)) if (o.before && el.contains(o.before)) o.before = entry.before;
+      return false;
+    }
+    return entry.before;
   };
 }
 
@@ -117,11 +130,11 @@ function useModal(open: boolean, panel: RefObject<HTMLDivElement>, busy: boolean
     const el = panel.current;
     if (!el) return;
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const unregister = register(el);
+    const unregister = register(el, before);
     if (!el.contains(document.activeElement)) (tabbables(el)[0] ?? el).focus();
 
     const onKey = (e: KeyboardEvent) => {
-      if (stack.at(-1) !== el) return;
+      if (stack.at(-1)?.el !== el) return;
       if (e.defaultPrevented || e.isComposing) return;
       const target = e.target instanceof Node ? e.target : null;
       const inside = !!target && el.contains(target);
@@ -155,8 +168,8 @@ function useModal(open: boolean, panel: RefObject<HTMLDivElement>, busy: boolean
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
-      const wasTop = unregister();
-      if (wasTop && before?.isConnected) before.focus();
+      const back = unregister();
+      if (back && back.isConnected) back.focus();
     };
   }, [open, panel]);
 }
