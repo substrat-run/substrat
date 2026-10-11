@@ -50,7 +50,10 @@ const implicitProvision = process.env.PROVISION === 'implicit';
  * `validUntil` still admits writes. A monotonic reading means nothing to the next
  * incarnation, so at boot every held lease is re-held for one full TTL from now (below).
  */
-const now = () => performance.now();
+const manual = process.env.CLOCK === 'manual';
+/** `CLOCK=manual` (tests): time moves only by `POST /_clock {advanceMs}`, so no test races it. */
+let manualMs = 0;
+const now = () => (manual ? manualMs : performance.now());
 
 mkdirSync(dir, { recursive: true });
 const db = new Database(join(dir, 'leases.sqlite'));
@@ -157,6 +160,10 @@ serveLocal('control-plane', port, async (req, res, path) => {
       return row ? send(res, 200, { ...row, now: now() }) : send(res, 404, {});
     }
     if (req.method !== 'POST') return send(res, 405, {});
+    if (manual && path === '/_clock') {
+      manualMs += Number((await readJson(req)).advanceMs ?? 0);
+      return send(res, 200, { now: manualMs });
+    }
     const write = writes[path as keyof typeof writes];
     if (!write) return send(res, 404, {});
     const [status, payload] = write.immediate(await readJson(req));

@@ -34,6 +34,8 @@ export interface ClusterOptions {
    * running pods the StatefulSet has not been scaled onto yet — see `scale()`.
    */
   routedShards?: number;
+  /** The control plane's lease clock moves only when the test says so (`advanceClock`). */
+  manualClock?: boolean;
   /** Let the control plane create a lease row on first acquire (the contract binding only). */
   implicitProvision?: boolean;
   /** Run each held scope's background slots every this many ms (`shard.ts`); off by default. */
@@ -124,6 +126,7 @@ export class Cluster {
         LEASE_TTL_MS: String(this.opts.leaseTtlMs ?? 2000),
         LEASES: this.opts.leases ?? 'on',
         PROVISION: this.opts.implicitProvision ? 'implicit' : 'explicit',
+        CLOCK: this.opts.manualClock ? 'manual' : 'monotonic',
       },
       cpPort,
     );
@@ -299,6 +302,18 @@ export class Cluster {
       }
     }
     return texts;
+  }
+
+  /** Move the control plane's manual lease clock forward (`manualClock` only). */
+  async advanceClock(ms: number): Promise<void> {
+    const res = await fetch(`${this.cpUrl}/_clock`, { method: 'POST', body: JSON.stringify({ advanceMs: ms }) });
+    if (res.status !== 200) throw new Error(`advance clock: ${res.status}`);
+  }
+
+  /** Restart the control plane on its own files (a reschedule, not a loss). */
+  async restartControlPlane(): Promise<void> {
+    this.signal('control-plane', 'SIGKILL');
+    await this.restart('control-plane');
   }
 
   /** The control plane loses its lease table: killed, its files deleted, started again. */

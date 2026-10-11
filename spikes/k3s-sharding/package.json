@@ -2,12 +2,13 @@
   "name": "@substrat-run/spike-k3s-sharding",
   "version": "0.0.0",
   "private": true,
-  "description": "Spike for #1638 — scopes sharded across processes: placement, a fenced lease, a router, and a kill-mid-write test (layer 1, no cluster)",
+  "description": "Spike for #1638 \u2014 scopes sharded across processes: placement, a fenced lease, a router, and a kill-mid-write test (layer 1, no cluster)",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:cluster": "vitest run -c vitest.cluster.config.ts"
   },
   "dependencies": {
     "@substrat-run/adapter-sqlite": "workspace:^",

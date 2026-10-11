@@ -12,7 +12,7 @@ import { performance } from 'node:perf_hooks';
 
 export interface Grant {
   epoch: number;
-  /** Monotonic (`performance.now()`) instant after which the holder must not acknowledge a write. */
+  /** Instant on the holder's monotonic clock (`LeaseClient.now`) after which it must not acknowledge a write. */
   validUntil: number;
   /** The node whose volume holds the latest state, or `null` for a scope nobody has written. */
   dataOn: string | null;
@@ -51,6 +51,8 @@ export class LeaseClient {
     readonly node: string,
     readonly marginMs: number,
     incarnation: string = crypto.randomUUID(),
+    /** The holder's monotonic clock; a test passes its own so no assertion races real time. */
+    readonly now: () => number = () => performance.now(),
   ) {
     this.holder = `${node}/${incarnation}`;
   }
@@ -75,7 +77,7 @@ export class LeaseClient {
   }
 
   async acquire(scope: string): Promise<Grant> {
-    const sent = performance.now();
+    const sent = this.now();
     const { status, json } = await this.post('/lease/acquire', { scope });
     if (status === 404) throw new UnknownScope(scope);
     if (status !== 200) throw this.refused(scope, json);
@@ -88,7 +90,7 @@ export class LeaseClient {
 
   /** Extends the grant in place; throws {@link NotHolder} when the epoch moved on. */
   async renew(scope: string, grant: Grant): Promise<void> {
-    const sent = performance.now();
+    const sent = this.now();
     const { status, json } = await this.post('/lease/renew', { scope, epoch: grant.epoch });
     if (status !== 200) throw this.refused(scope, json);
     grant.validUntil = sent + Number(json.ttlMs) - this.marginMs;
@@ -140,7 +142,7 @@ export class LeaseGuard {
 
   async admit(scope: string): Promise<void> {
     const g = this.grants.get(scope);
-    if (g && (this.opts.fencing === false || performance.now() < g.validUntil)) return;
+    if (g && (this.opts.fencing === false || this.client.now() < g.validUntil)) return;
     if (g) {
       try {
         await this.client.renew(scope, g);
@@ -162,7 +164,7 @@ export class LeaseGuard {
 
   stillHeld(scope: string): boolean {
     const g = this.grants.get(scope);
-    return g !== undefined && (this.opts.fencing === false || performance.now() < g.validUntil);
+    return g !== undefined && (this.opts.fencing === false || this.client.now() < g.validUntil);
   }
 
   /** Renew every held grant each `intervalMs`, dropping the ones whose epoch moved on. */

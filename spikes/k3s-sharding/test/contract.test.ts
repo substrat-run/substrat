@@ -39,9 +39,16 @@ afterAll(() => {
 });
 
 scopeHostContractSuite('k3s-sharding: sqlite behind the lease fence', async () => {
-  const cluster = await new Cluster({ shards: 0, routerTimeoutsMs: [], leaseTtlMs: 5_000, implicitProvision: true }).start();
-  const guard = new LeaseGuard(new LeaseClient(cluster.controlPlane, 'todo-0', 500));
-  guard.startRenewing(1_000);
+  // Both clocks stand still: a grant never runs out mid-suite however slow the runner is, so
+  // the binding tests the fence's wiring, never a race against real time.
+  const cluster = await new Cluster({
+    shards: 0,
+    routerTimeoutsMs: [],
+    leaseTtlMs: 5_000,
+    implicitProvision: true,
+    manualClock: true,
+  }).start();
+  const guard = new LeaseGuard(new LeaseClient(cluster.controlPlane, 'todo-0', 500, undefined, () => 0));
   const dir = mkdtempSync(join(tmpdir(), 'k3s-sharding-contract-'));
   const inner = new SqliteScopeHost({
     dir,
@@ -52,7 +59,6 @@ scopeHostContractSuite('k3s-sharding: sqlite behind the lease fence', async () =
   return {
     host: fenceScopeHost(inner, counted(guard)),
     cleanup: async () => {
-      guard.stop();
       await inner.close();
       rmSync(dir, { recursive: true, force: true });
       await cluster.stop();
