@@ -2191,7 +2191,12 @@ export function installsReconciledOf(rows: readonly Record<string, unknown>[]): 
 /** What a refusal judged from installs' receipts says it was judged from. */
 export function installsReconciledNote(g: InstallsReconciled): string {
   const which = g.versionId === null ? 'with no reconcile receipt (a switch or a rewind cleared it, or none was written yet)' : `that last reconciled ${g.versionId}`;
-  return `${g.installs} install(s) ${which} (one is ${g.example}); the drop waits for their reconcile`;
+  return (
+    `${g.installs} install(s) ${which} (one is ${g.example}); the drop waits for their reconcile. ` +
+    "If that install's reconcile keeps failing or answers 'unsupported' (a vertical built on a vertical-host " +
+    'that cannot reconcile), no sweep writes its receipt: fix the reconcile or push a version built on a ' +
+    'current vertical-host, so the retirement reaches it'
+  );
 }
 
 /**

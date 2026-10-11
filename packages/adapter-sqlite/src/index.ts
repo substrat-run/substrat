@@ -4539,6 +4539,8 @@ export class SqliteScopeHost implements ScopeHost {
     for (const r of receipts) {
       const judgedFrom = installsReconciledNote(r);
       // No receipt: the installs run one of `froms` and may not have reconciled its retirements.
+      // Judged against every one of `froms`, including versions this group never ran: that can
+      // only over-refuse, and only while the receipts are missing, never under-refuse.
       if (r.versionId === null) for (const from of judged) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming, { judgedFrom, retiredStillHeld: true });
       else if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, { judgedFrom });
     }
