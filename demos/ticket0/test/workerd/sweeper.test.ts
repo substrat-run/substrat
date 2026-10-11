@@ -2726,7 +2726,7 @@ describe('ticket0 on workerd — every load names its tenant, so none leaves a t
   const tenant = tenantId.parse(ulid());
   const foreign = tenantId.parse(ulid());
   const source = scopeId.parse(ulid());
-  const moduleOfDesk = MODULES[0]!.id;
+  const moduleOfDesk = moduleId.parse(ticket0Manifest.id);
 
   const sqlOf = (s: ScopeId, query: string) =>
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), async (_instance, state) => [...state.storage.sql.exec(query)]);
