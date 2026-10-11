@@ -5,6 +5,7 @@ import { Findings } from '../src/views/Findings';
 import { ApiError, createClient, type FindingEntry, type FindingRuleEntry } from '../src/lib/api.generated';
 import { mockFindingsClient, type FindingsClient } from '../src/lib/mock-findings';
 import {
+  LIST_LIMIT,
   canSuppress,
   countByStatus,
   draftFor,
@@ -215,6 +216,16 @@ describe('Findings view', () => {
     await mount(client, 'acked');
     await click(button('Resolve', row('a')));
     expect(client.calls.set!.at(-1)).toEqual({ id: 'a', status: 'resolved' });
+  });
+
+  it('says when the list is cut at the plane’s limit and leaves the counts off — and the twin below it keeps them', async () => {
+    const many = Array.from({ length: LIST_LIMIT }, (_, i) => finding({ id: `m${i}`, title: `finding ${i}` }));
+    await mount(fake(many));
+    expect(host.textContent).toContain(`Showing the latest ${LIST_LIMIT} findings`);
+    expect([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Open'))?.textContent).toBe('Open');
+    await mount(fake(many.slice(1)));
+    expect(host.textContent).not.toContain('Showing the latest');
+    expect([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Open'))?.textContent).toContain(String(LIST_LIMIT - 1));
   });
 
   it('offers a suppressed finding no move', async () => {

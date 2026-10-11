@@ -23,6 +23,17 @@ export function tabOf(value: string | undefined): FindingStatus {
   return FINDING_TABS.find((t) => t.value === value)?.value ?? 'open';
 }
 
+/**
+ * The plane's default page: the list read has no limit or cursor in its declared input, so a
+ * team with more findings than this gets the most recently seen of them and nothing says so.
+ */
+export const LIST_LIMIT = 100;
+
+/** Whether the list is (or may be) cut at the plane's limit — then its counts are not totals. */
+export function listIsCut(entries: readonly FindingEntry[]): boolean {
+  return entries.length >= LIST_LIMIT;
+}
+
 export function countByStatus(entries: readonly FindingEntry[]): Record<FindingStatus, number> {
   const counts: Record<FindingStatus, number> = { open: 0, acked: 0, resolved: 0, suppressed: 0 };
   for (const e of entries) counts[e.status] += 1;

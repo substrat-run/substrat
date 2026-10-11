@@ -7,12 +7,14 @@ import {
   EXPIRY_CHOICES,
   FINDING_TABS,
   canSuppress,
+  LIST_LIMIT,
   countByStatus,
   draftFor,
   draftNarrows,
   draftReady,
   findingsError,
   inTab,
+  listIsCut,
   movesFrom,
   ruleInput,
   ruleScope,
@@ -125,13 +127,20 @@ export function Findings({
 
   const counts = countByStatus(load.entries);
   const rows = inTab(load.entries, tab);
+  const cut = listIsCut(load.entries);
   return (
     <>
       <Tabs
-        tabs={FINDING_TABS.map((t) => ({ value: t.value, label: t.label, count: counts[t.value] }))}
+        // A cut list's counts are the counts of what was returned, not the team's totals: left off.
+        tabs={FINDING_TABS.map((t) => ({ value: t.value, label: t.label, ...(cut ? {} : { count: counts[t.value] }) }))}
         value={tab}
         onChange={(v) => onTab(v as FindingStatus)}
       />
+      {cut && (
+        <div role="status" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+          Showing the latest {LIST_LIMIT} findings by last seen. Older ones are not listed here, so the tabs carry no counts.
+        </div>
+      )}
       {notice && <div role="status" style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{notice}</div>}
       {actionError && <div role="alert" style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{actionError}</div>}
       <div style={{ ...card, padding: 0 }}>
