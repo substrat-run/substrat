@@ -20,7 +20,6 @@ import { Hono } from 'hono';
 import { permissionKey, platformActorId, type Page, type PrincipalId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createClient } from '../app/src/api.generated.js';
-import { moveSavedReply } from '../app/src/saved-reply-moves.js';
 import { mountApi } from '../src/routes.js';
 import { createKit, TICKET0, type Desk } from './desk-kit.js';
 
@@ -303,6 +302,21 @@ describe('the bin’s 30-day horizon', () => {
     await expect(call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: binned.id })).rejects.toMatchObject(notFound);
     expect(await bin(desk, desk.anna)).toEqual(['Binned']);
 
+    // One answer for active, young and missing alike — code and message — so the bin is not probed.
+    const answer = async (id: string) => {
+      const e = (await call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: id }).then(
+        () => {
+          throw new Error('expected a refusal');
+        },
+        (err: unknown) => err,
+      )) as { code?: string; message: string };
+      return { code: e.code, message: e.message.replace(id, '<id>') };
+    };
+    const onActive = await answer(active.id);
+    expect(onActive).toMatchObject(notFound);
+    expect(await answer(binned.id)).toEqual(onActive);
+    expect(await answer(ulid())).toEqual(onActive);
+
     // Past its horizon it is, as the sweep deletes it.
     kit.clock.advance(30 * DAY);
     expect(await call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: binned.id })).toEqual({ id: binned.id, title: 'Binned' });
@@ -368,9 +382,11 @@ describe('through the generated client, as the picker holds it', () => {
     // Edit: the read arms the guard, the save moves the tag the client holds.
     await api.getSavedReply({ savedReplyId: reply.id });
     await api.updateSavedReply({ savedReplyId: reply.id, body: 'Hello.' });
-    // The picker's Move to trash, which drops the tag the move made stale.
-    await moveSavedReply(api, 'trash', reply.id);
-    // Delete for good from the trash pane.
+    // The picker's Move to trash. The client keeps the tag the save handed back: a move leaves
+    // the version where it was (#2191), so the tag is still current.
+    await api.trashSavedReply({ savedReplyId: reply.id });
+    expect(api.versions.has(`savedReply:${reply.id}`)).toBe(true);
+    // Delete for good from the trash pane, sent with that tag.
     await expect(api.deleteSavedReply({ savedReplyId: reply.id })).resolves.toEqual({ id: reply.id, title: 'Edited, then binned' });
   });
 
@@ -380,12 +396,31 @@ describe('through the generated client, as the picker holds it', () => {
     const reply = await api.createSavedReply({ title: 'Back again', body: 'Hi.', personal: true });
     await api.getSavedReply({ savedReplyId: reply.id });
     await api.updateSavedReply({ savedReplyId: reply.id, body: 'Hello.' });
-    await moveSavedReply(api, 'trash', reply.id);
-    await moveSavedReply(api, 'restore', reply.id);
+    await api.trashSavedReply({ savedReplyId: reply.id });
+    await api.restoreSavedReply({ savedReplyId: reply.id });
     await expect(api.updateSavedReply({ savedReplyId: reply.id, body: 'Hello again.' })).resolves.toMatchObject({ body: 'Hello again.' });
   });
 
-  it('still refuses a delete over a colleague’s edit when nothing was moved: only a move drops the tag', async () => {
+  it('refuses my delete for good over a colleague’s restore, edit and re-bin', async () => {
+    const desk = await freshDesk();
+    const anna = clientFor(desk, desk.anna);
+    const bo = clientFor(desk, desk.bo);
+    const reply = await anna.createSavedReply({ title: 'Binned, rescued, binned', body: 'Hi.' });
+    await anna.getSavedReply({ savedReplyId: reply.id });
+    await anna.updateSavedReply({ savedReplyId: reply.id, body: 'Hello.' });
+    await anna.trashSavedReply({ savedReplyId: reply.id });
+    // Bo takes it back out, rewrites it, and bins it again.
+    await bo.restoreSavedReply({ savedReplyId: reply.id });
+    await bo.getSavedReply({ savedReplyId: reply.id });
+    await bo.updateSavedReply({ savedReplyId: reply.id, body: 'Bo’s wording.' });
+    await bo.trashSavedReply({ savedReplyId: reply.id });
+    // Anna's held tag predates Bo's edit, so her delete for good is refused rather than taking it.
+    await expect(anna.deleteSavedReply({ savedReplyId: reply.id })).rejects.toMatchObject({ status: 412 });
+    await bo.restoreSavedReply({ savedReplyId: reply.id });
+    expect((await bo.getSavedReply({ savedReplyId: reply.id })).body).toBe('Bo’s wording.');
+  });
+
+  it('still refuses a delete over a colleague’s edit when nothing was moved', async () => {
     const desk = await freshDesk();
     const anna = clientFor(desk, desk.anna);
     const bo = clientFor(desk, desk.bo);

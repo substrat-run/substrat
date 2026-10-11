@@ -48,6 +48,19 @@ describe('entityStatePlans: refuses', () => {
   it('a table name that is not a plain identifier', () => {
     expect(() => entityStatePlans('@m', [{ ...both, table: 'docs; DROP TABLE x' }])).toThrow(/identifier/);
   });
+  it('an entity refusing an early purge with no horizon to hold it to (#2214)', () => {
+    expect(() => entityStatePlans('@m', [{ ...both, purgeEarly: false }])).toThrow(/no purge horizon/);
+  });
+});
+
+describe('entityStatePlans: purgeEarly (#2214)', () => {
+  it('carries a floor only when it is declared false; true and absent are the same plan', () => {
+    const [floor] = entityStatePlans('@m', [{ ...both, purgeAfterDays: 3, purgeEarly: false }]);
+    expect(floor).toMatchObject({ purgeAfterDays: 3, purgeEarly: false });
+    const [open] = entityStatePlans('@m', [{ ...both, purgeAfterDays: 3, purgeEarly: true }]);
+    expect(open).toEqual(entityStatePlans('@m', [{ ...both, purgeAfterDays: 3 }])[0]);
+    expect(open).not.toHaveProperty('purgeEarly');
+  });
 });
 
 describe('entityStateMigrations', () => {

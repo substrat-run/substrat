@@ -254,8 +254,9 @@ previews are skipped so a hook never mints a second copy of anything against som
 data, and a reconcile that fails is left unmarked and retried on the next pass. Beside the receipt
 the platform records whether that reconcile finished every retirement the version declares (a key
 a shape lists in `retired`): your deployment answers how many it left open, and an install whose
-retirements did not finish counts as behind too, so the sweep runs them again (after the installs
-whose receipt is behind, which go first). The count needs **both** `@substrat-run/adapter-cloudflare`
+retirements did not finish counts as behind too, so the sweep runs them again. The sweep's window is
+shared: installs whose receipt is behind take most of it, installs behind on their retirements alone
+are owed a quarter (at least one slot), and a slot one class does not need goes to the other. The count needs **both** `@substrat-run/adapter-cloudflare`
 (which counts) and `@substrat-run/vertical-host` (which answers) at a release that reports it; a
 deployment built on an older one of either reports nothing, which counts as not finished for a
 version that retires a key. It also records which binding shapes links have ever bound in the

@@ -70,6 +70,8 @@ export interface EntityStatePlan {
   readonly trashPermission?: PermissionKey;
   /** Present when a trashed entity is purged after this many days (`entity-trash.ts`). */
   readonly purgeAfterDays?: number;
+  /** `false` when the horizon is a floor for every caller of the purge operation (#2214); absent otherwise. */
+  readonly purgeEarly?: false;
 }
 
 /** The operation's own check — a pass is recorded as one of its authorizations (K-34). */
@@ -103,6 +105,9 @@ export function entityStatePlans(
     if (decl.purgeAfterDays !== undefined && !decl.trashPermission) {
       throw new Error(`entity state: ${where} declares a purge horizon and no trash — only a trashed entity is purged`);
     }
+    if (decl.purgeEarly === false && decl.purgeAfterDays === undefined) {
+      throw new Error(`entity state: ${where} refuses an early purge and declares no purge horizon — there is no horizon to hold it to`);
+    }
     plans.push({
       moduleId,
       entityType: decl.entityType,
@@ -111,6 +116,7 @@ export function entityStatePlans(
       ...(decl.archivePermission ? { archivePermission: decl.archivePermission } : {}),
       ...(decl.trashPermission ? { trashPermission: decl.trashPermission } : {}),
       ...(decl.purgeAfterDays !== undefined ? { purgeAfterDays: decl.purgeAfterDays } : {}),
+      ...(decl.purgeEarly === false ? { purgeEarly: false as const } : {}),
     });
   }
   return plans;

@@ -388,7 +388,6 @@ export const INDEX_VALUE_EXPORTS = [
   'plausibleSessionToken',
   'pruneFindings',
   'pruneScopeStorageRows',
-  'purgeCutoffOf',
   'purgeDueOf',
   'purgeHeldBy',
   'purgeOnlyKeysOf',

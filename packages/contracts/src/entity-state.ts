@@ -70,6 +70,16 @@ export const entityStateDeclaration = z.object({
    * (run as a derived schedule — `purgeSchedulesOf`). Requires `trashPermission`.
    */
   purgeAfterDays: z.number().int().positive().optional(),
+  /**
+   * Whether the `trashed: 'purges'` operation may delete before the horizon (#2214). Absent or
+   * `true`, it is also the permanent delete a person empties the bin with, at any time. `false`
+   * makes the horizon a floor for that operation, for every caller: the kernel refuses it
+   * `not_found` on an entity that is not in the trash or was binned less than `purgeAfterDays` ago.
+   * It holds the purge operation, not the bin: an operation declared `trashed: 'admits'` whose
+   * handler deletes the row, or a handler's own `ctx.sql`, still removes a binned entity at any
+   * time. Requires `purgeAfterDays`.
+   */
+  purgeEarly: z.boolean().optional(),
   table: z.string().min(1).optional(),
   idColumn: z.string().min(1).optional(),
 });
@@ -83,6 +93,28 @@ export const ENTITY_UNARCHIVED = 'entity.unarchived';
 export const ENTITY_TRASHED = 'entity.trashed';
 /** `ctx.restore` took an entity out of the trash, back to the state it was trashed from. */
 export const ENTITY_RESTORED = 'entity.restored';
+
+/**
+ * The four move types, which leave an entity's version where it was (#2191).
+ *
+ * The version exists to refuse a write over content the caller has not seen, and a move
+ * changes no content: it sets one of the kernel's own `_substrat_*_at` columns, which no read
+ * hands a client. So the kernel's version query skips these, and a tag read before a trash and
+ * restore, or before an archive, still matches afterwards. A trashed row is refused to every
+ * operation whose declared check names it except one that declares `trashed: 'admits'` or `'purges'` — a
+ * restore, a delete for good, the purge — and a guarded one of those still compares its tag. An
+ * ARCHIVED row is refused to none, so an edit made with a tag read before the archive lands on
+ * the archived row, and the archive stays.
+ *
+ * Only these four. The other kernel-authored types about an entity — a link or relink, a grant
+ * top-up, an attachment — still move the version: whether those are content is its own decision.
+ */
+export const ENTITY_STATE_MOVE_TYPES: readonly string[] = Object.freeze([
+  ENTITY_ARCHIVED,
+  ENTITY_UNARCHIVED,
+  ENTITY_TRASHED,
+  ENTITY_RESTORED,
+]);
 
 /**
  * The one payload all four carry: the entity, and the visible state before and after.

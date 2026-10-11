@@ -30,7 +30,7 @@ import {
 } from '@substrat-run/contracts';
 import { membershipFixtureMod } from './membership-module.js';
 import { rebuildMod, stateMod } from './entity-state-module.js';
-import { trashMod } from './entity-trash-module.js';
+import { trashFloorMod, trashMod } from './entity-trash-module.js';
 import { derivedMod } from './derived-module.js';
 import { stampsMod } from './stamps-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
@@ -3030,6 +3030,7 @@ export const contractTestModules: ModuleRegistration[] = [
   // its tables or invokes a `state/*` operation.
   stateMod,
   trashMod,
+  trashFloorMod,
   // #1773: the derived-handler suite's module. Inert for every other suite — nothing else reads
   // its tables or invokes a `derived/*` operation.
   derivedMod,

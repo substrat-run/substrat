@@ -1164,6 +1164,35 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await resolve(p.scopeId, { script: v1ref, action: 'discard', acknowledge: { discard: true } })).status).toBe(409);
     });
 
+    /**
+     * #2185, review of #2218 round 3: the kept copy can land in the live store and the resolution
+     * still fail after it. A sweep reconcile that wrote the receipt in between must not survive the
+     * failure, so the receipt is cleared on the way out of it too.
+     */
+    it('a restore forward that fails once the kept copy has landed still leaves the receipt cleared', async () => {
+      const p = await keptByLateWrite('kept-fails');
+      const v1ref = refOf.get(version.v1)!;
+      const read = await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy?script=${v1ref}`, { headers: auth });
+      const { kept } = (await read.json()) as { kept: { keptAt: string } };
+      await dir.admin.markScopeProvisioned(staff, t, p.scopeId, version.v2, { retirementsFinished: true });
+      const restore = hostFor('v2').restoreScopeLocal.bind(hostFor('v2'));
+      // The data lands, a sweep reconcile writes the receipt, then the deployment fails the call.
+      const sabotage = vi.spyOn(hostFor('v2'), 'restoreScopeLocal').mockImplementation(async (...args) => {
+        await restore(...args);
+        await dir.admin.markScopeProvisioned(staff, t, p.scopeId, version.v2, { retirementsFinished: true });
+        throw new Error('the deployment failed after the load');
+      });
+      let status: number;
+      try {
+        status = (await resolve(p.scopeId, { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: kept.keptAt } })).status;
+      } finally {
+        sabotage.mockRestore();
+      }
+      expect(status).not.toBe(200);
+      const receipt = await dir.admin.getScopeRecord(staff, t, p.scopeId);
+      expect({ provisioned: receipt?.provisionedVersionId, finished: receipt?.retirementsFinishedVersionId ?? null }).toEqual({ provisioned: null, finished: null });
+    });
+
     it('discarding the kept copy is acknowledged, logged, and lets the bind back carry again', async () => {
       const p = await keptByLateWrite('kept-discard');
       const v1ref = refOf.get(version.v1)!;
