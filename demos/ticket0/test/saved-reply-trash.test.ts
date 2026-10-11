@@ -303,6 +303,21 @@ describe('the bin’s 30-day horizon', () => {
     await expect(call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: binned.id })).rejects.toMatchObject(notFound);
     expect(await bin(desk, desk.anna)).toEqual(['Binned']);
 
+    // One answer for active, young and missing alike — code and message — so the bin is not probed.
+    const answer = async (id: string) => {
+      const e = (await call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: id }).then(
+        () => {
+          throw new Error('expected a refusal');
+        },
+        (err: unknown) => err,
+      )) as { code?: string; message: string };
+      return { code: e.code, message: e.message.replace(id, '<id>') };
+    };
+    const onActive = await answer(active.id);
+    expect(onActive).toMatchObject(notFound);
+    expect(await answer(binned.id)).toEqual(onActive);
+    expect(await answer(ulid())).toEqual(onActive);
+
     // Past its horizon it is, as the sweep deletes it.
     kit.clock.advance(30 * DAY);
     expect(await call(desk, desk.bo, 'purge-saved-reply', { savedReplyId: binned.id })).toEqual({ id: binned.id, title: 'Binned' });

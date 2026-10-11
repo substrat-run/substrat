@@ -298,3 +298,82 @@ export const trashMod: ModuleRegistration = {
   // The host derives each operation's target from these — the same declarations it parses with.
   }, { inputs: operationInputsOf(trashOperations) }),
 };
+
+/**
+ * The second fixture (#2214): an entity whose horizon is a FLOOR — `trash.purgeEarly: false` — so
+ * its `trashed: 'purges'` operation (`floor/purge`) is refused to every caller until the entity has
+ * been in the bin `TFLOOR_PURGE_DAYS`. Its own module, so `@test/trash`'s sweep counts are its own.
+ */
+export const TRASH_FLOOR_MODULE_ID = '@test/trash-floor';
+export const TFLOOR_PURGE_DAYS = 7;
+
+export const floorEntities = defineEntities({
+  tfloor: {
+    table: 'trash_floors',
+    fields: z.object({ id: z.string() }),
+    trash: { permission: 'floor:trash', purgeAfterDays: TFLOOR_PURGE_DAYS, purgeEarly: false },
+  },
+});
+
+const FLOOR_PERMISSIONS = ['floor:read', 'floor:write', 'floor:trash', 'floor:purge'] as const;
+const floorId = z.object({ floorId: z.string() });
+const floor = (key: (typeof FLOOR_PERMISSIONS)[number]) => ({ key, entity: 'tfloor', idFrom: 'floorId' }) as const;
+
+export const floorOperations = defineOperations(floorEntities, FLOOR_PERMISSIONS)({
+  'floor/add': { summary: 'Add a floor', permission: 'floor:write', input: floorId, output: ok },
+  'floor/trash': { summary: 'Bin a floor', permission: floor('floor:trash'), input: floorId, output: ok },
+  'floor/purge': {
+    summary: 'Delete a floor for good — only once it has been in the bin its whole horizon',
+    permission: floor('floor:purge'),
+    trashed: 'purges',
+    input: z.strictObject({ floorId: z.string() }),
+    output: ok,
+  },
+  'floor/exists': { summary: 'Whether a floor row exists at all', permission: 'floor:read', input: floorId, output: z.object({ exists: z.boolean() }) },
+});
+
+const floorRef = (id: string): EntityRef => ({ entityType: 'tfloor', entityId: id });
+const FP = (key: (typeof FLOOR_PERMISSIONS)[number]) => key as Parameters<Parameters<Handler>[0]['check']>[0];
+
+export const trashFloorMod: ModuleRegistration = {
+  manifest: moduleManifest.parse({
+    id: TRASH_FLOOR_MODULE_ID,
+    version: '1.0.0',
+    kernelContract: '^0.0.1',
+    migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+    ...manifestOperations(floorOperations, {
+      permissions: {
+        'floor:read': 'read floors',
+        'floor:write': 'write floors',
+        'floor:trash': 'bin a floor',
+        'floor:purge': 'delete a floor for good',
+      },
+      consumes: [],
+    }),
+    ...manifestEntities(floorEntities, {}),
+    schedules: purgeSchedulesOf(floorOperations, floorEntities),
+    entitlementKey: 'trash-floor',
+  }),
+  migrations: [{ version: '0001-init', sql: 'CREATE TABLE trash_floors (id TEXT PRIMARY KEY);' }],
+  ...testOperations({
+    'floor/add': (async (ctx, i: { floorId: string }) => {
+      assertAllowed(await ctx.check(FP('floor:write')));
+      ctx.sql.exec('INSERT INTO trash_floors (id) VALUES (?)', [i.floorId]);
+      return { ok: true };
+    }) as Handler,
+    'floor/trash': (async (ctx, i: { floorId: string }) => {
+      await ctx.trash(floorRef(i.floorId));
+      return { ok: true };
+    }) as Handler,
+    // No clock and no state read: the kernel has held the entity to its horizon before this runs.
+    'floor/purge': (async (ctx, i: { floorId: string }) => {
+      assertAllowed(await ctx.check(FP('floor:purge'), floorRef(i.floorId)));
+      ctx.sql.exec('DELETE FROM trash_floors WHERE id = ?', [i.floorId]);
+      return { ok: true };
+    }) as Handler,
+    'floor/exists': (async (ctx, i: { floorId: string }) => {
+      assertAllowed(await ctx.check(FP('floor:read')));
+      return { exists: ctx.sql.query('SELECT 1 AS x FROM trash_floors WHERE id = ?', [i.floorId]).length > 0 };
+    }) as Handler,
+  }, { inputs: operationInputsOf(floorOperations) }),
+};

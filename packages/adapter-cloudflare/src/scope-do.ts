@@ -2974,11 +2974,11 @@ export function defineScopeDO(
             // #2166: what the guards and the handler emit about a stamped entity, held below.
             const stamps = watchUpdatedStamps(doSpineSql(this.sql), this.updatedStampPlans);
             await refuseTrashedTarget(
-              { sql: doSpineSql(this.sql), plans: this.statePlans, check: ctx.check },
+              { sql: doSpineSql(this.sql), plans: this.statePlans, check: ctx.check, now: ctx.now() },
               operation,
               target,
               parsed,
-              purging ? { now: new Date().toISOString(), gate: this.purgeGateFacts(systemDoor!.moduleId, tenantId) } : undefined,
+              purging ? { gate: this.purgeGateFacts(systemDoor!.moduleId, tenantId) } : undefined,
             );
             await this.runGuards(operation, ctx, parsed);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
