@@ -1,26 +1,28 @@
 /**
- * The contact portal is a declared shape, so a key added to it reaches the customers who already
- * held it (#2083) — including the ones a release before the shape grant gave it key by key, which
- * is every customer a deployed desk invited until now.
+ * The contact portal is a declared BINDING shape (#2083, #1686): a customer's portal is what the
+ * shape gives the person their contact's `principal` names, and they are bound to it by a
+ * customer invite — a link the desk-admin mints with `contact:invite` on that contact.
  *
- * Kerstin stands for one of them: a second person on the seeded customer's contact, holding one
- * key of an older shape (`contact:read`) written one key at a time, with no holder marker. A
- * contact names no principal, so nothing but the `'grantee'` holder could find her. The shape the
- * reconcile carries is `CONTACT_PORTAL` grown by that key. Before it she sees no conversation in
- * her portal; after it she sees exactly the customer's, the same list the seeded customer sees.
+ * What is held here, on the seeded desk (which binds its customer through exactly that link):
+ * - the seeded customer is bound — the contact names them, and their portal lists their history;
+ * - a key the shape gains reaches them at the next reconcile, once;
+ * - the portal's keys come from the column alone: a direct grant of one on a contact is refused,
+ *   while a key outside the shape is not;
+ * - unbinding takes the portal away, and leaves the contact free for a new invite.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { principalId, type Page } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { ulid } from '@substrat-run/kernel';
+import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { T0_PERM } from '../src/manifest.js';
 import { CONTACT_BOUND_ROLE, CONTACT_PORTAL, ENTITY_GRANTS } from '../src/provision.js';
 import { buildHost, seed, type World } from '../src/seed.js';
 
 let dir: string;
-let host: ScopeHost;
+let host: SqliteScopeHost;
 let world: World;
 const kerstin = principalId.parse(ulid());
 
@@ -28,52 +30,73 @@ beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'ticket0-portal-shape-'));
   host = buildHost(dir);
   world = await seed(host);
-  const desk = world.substrat;
-  const node = { tenantId: desk.tenant, scopeId: desk.scope };
-  await host.admin.assignRole(world.staff, { principalId: kerstin, roleKey: CONTACT_BOUND_ROLE, node });
-  // An older shape, granted the old way: one key, no marker.
-  await host.admin.grant(world.staff, {
-    principalId: kerstin,
-    permission: T0_PERM.contactRead,
-    node,
-    entity: { entityType: 'contact', entityId: desk.customerContactId },
-    grantedBy: desk.admin.principal,
-  });
+  await host.admin.assignRole(world.staff, { principalId: kerstin, roleKey: CONTACT_BOUND_ROLE, node: node() });
 }, 60_000);
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+const node = () => ({ tenantId: world.substrat.tenant, scopeId: world.substrat.scope });
+const contact = () => ({ entityType: 'contact', entityId: world.substrat.customerContactId });
 const portalOf = async (who: ReturnType<typeof principalId.parse>) =>
   ((await (await host.getScope(who, world.substrat.tenant, world.substrat.scope)).invoke('ticket0/my-conversations', {
     limit: 100,
   })) as Page<{ id: string }>).entries.map((c) => c.id);
+const principalOfContact = async () =>
+  ((await (await host.getScope(world.substrat.admin.principal, world.substrat.tenant, world.substrat.scope)).invoke('ticket0/get-contact', {
+    contactId: world.substrat.customerContactId,
+  })) as { principal: string | null }).principal;
 
-describe('a key the contact portal gains reaches a customer granted before markers (#2083)', () => {
-  it('the seeded customer receives one audited shape grant', async () => {
-    const grants = await host.admin.auditLog(world.staff, {
-      tenantId: world.substrat.tenant,
-      scopeId: world.substrat.scope,
-      action: 'grantEntityShape',
-    });
-    expect(grants.map((entry) => (entry.after as { principalId: string }).principalId)).toEqual([world.substrat.customer.principal]);
-  });
-
-  it('the contact shape is a bootstrap shape whose holder is whoever holds a key of it; a follower is shared', () => {
+describe('the contact portal is a binding shape (#2083, #1686)', () => {
+  it('is declared as one: bootstrap, held by the contact’s principal, bound with contact:invite; a follower is shared', () => {
     expect(ENTITY_GRANTS).toEqual([
-      { entityType: 'contact', permissions: CONTACT_PORTAL, bootstrap: true, holder: 'grantee' },
+      {
+        entityType: 'contact',
+        permissions: CONTACT_PORTAL,
+        bootstrap: true,
+        holder: { table: 'ticket0_contacts', idColumn: 'id', principalColumn: 'principal' },
+        bind: { permission: T0_PERM.contactInvite },
+      },
       { entityType: 'conversation', permissions: [T0_PERM.conversationRead] },
     ]);
   });
 
-  it('before the reconcile she sees no conversation', async () => {
-    expect(await portalOf(kerstin)).toEqual([]);
+  it('the seeded customer is bound by their invite: the contact names them and their portal lists their history', async () => {
+    expect(await principalOfContact()).toBe(world.substrat.customer.principal);
+    expect((await portalOf(world.substrat.customer.principal)).length).toBeGreaterThan(0);
   });
 
-  it('after it, she sees the customer’s conversations, as the customer does', async () => {
+  it('a key the shape gains reaches the bound customer at the next reconcile, once', async () => {
     const grown = ENTITY_GRANTS.map((g) => (g.bootstrap ? { ...g, permissions: [T0_PERM.contactRead, ...g.permissions] } : g));
-    await host.admin.reconcileEntityGrantShapes(world.staff, { tenantId: world.substrat.tenant, scopeId: world.substrat.scope }, grown);
-    const customers = await portalOf(world.substrat.customer.principal);
-    expect(customers.length).toBeGreaterThan(0);
-    expect(await portalOf(kerstin)).toEqual(customers);
+    expect((await host.admin.reconcileEntityGrantShapes(world.staff, node(), grown)).toppedUp).toBe(1);
+    expect((await host.admin.reconcileEntityGrantShapes(world.staff, node(), grown)).toppedUp).toBe(0);
+    await host.admin.reconcileEntityGrantShapes(world.staff, node(), ENTITY_GRANTS);
+  });
+
+  it('a direct grant of a portal key on a contact is refused, a key the shape once carried too; a key it never carried is not', async () => {
+    await expect(
+      host.admin.grant(world.staff, { principalId: kerstin, permission: T0_PERM.conversationReadOwn, node: node(), entity: contact(), grantedBy: world.substrat.admin.principal }),
+    ).rejects.toThrow(/given only by the shape grant/);
+    expect(await portalOf(kerstin)).toEqual([]);
+    // A key the shape carried once — `contact:read`, in the grown shape above — stays refused on a
+    // type that has bound, whatever the registry says now (#1686).
+    await expect(
+      host.admin.grant(world.staff, { principalId: kerstin, permission: T0_PERM.contactRead, node: node(), entity: contact(), grantedBy: world.substrat.admin.principal }),
+    ).rejects.toThrow(/given only by the shape grant/);
+    await host.admin.grant(world.staff, { principalId: kerstin, permission: T0_PERM.kbRead, node: node(), entity: contact(), grantedBy: world.substrat.admin.principal });
+  });
+
+  it('unbinding takes the portal away, and frees the contact for a new invite', async () => {
+    const customer = world.substrat.customer.principal;
+    expect(await host.unbindEntityHolderBounded(world.substrat.tenant, world.substrat.scope, world.substrat.admin.principal, contact())).toEqual({
+      ok: true,
+      unbound: [customer],
+    });
+    expect(await principalOfContact()).toBeNull();
+    expect(await portalOf(customer)).toEqual([]);
+    // An agent holds no contact:invite: refused, naming it.
+    expect(await host.unbindEntityHolderBounded(world.substrat.tenant, world.substrat.scope, world.substrat.agent.principal, contact())).toEqual({
+      ok: false,
+      coverage: { covered: false, missing: [T0_PERM.contactInvite] },
+    });
   });
 });

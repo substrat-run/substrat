@@ -22,7 +22,7 @@ import { ticket0Manifest } from './manifest.js';
 import { ASSISTANT_NAME } from './module.js';
 // The module set and the role table live in `provision.ts` — the ONE place both this
 // node host and the deployed worker read them from. See the note at its head.
-import { CONTACT_PORTAL, ENTITY_GRANTS, MODULES, ROLES } from './provision.js';
+import { ENTITY_GRANTS, MODULES, ROLES } from './provision.js';
 import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 export { MODULES, ROLES };
@@ -416,24 +416,31 @@ async function seedDesk(
   if (!contact) throw new Error('seed: the vouched-for customer has no contact');
 
   /**
-   * The PORTAL grant — what a signed-in customer gets, and nothing the widget needs.
+   * The PORTAL — what a signed-in customer gets, and nothing the widget needs.
    *
-   * Made once per person on their own contact, by a platform actor, because
-   * `ctx.grant` delegates what the caller already holds and nobody holds anything on
-   * a contact that did not exist a moment ago. Their conversations are reached from
-   * it through the declared parent edge, and nobody else's are reachable at all.
+   * Through a real binding invite (#1686), as a deployed desk makes one: the desk-admin mints a
+   * link that binds whoever claims it to this contact, and claiming it sets the contact's
+   * `principal` and gives them the declared portal shape (`ENTITY_GRANTS`) in one transaction.
+   * Their conversations are reached from it through the declared parent edge, and nobody else's
+   * are reachable at all. The desk's registry is reconciled first, which is what lets a scope
+   * bind at all; the claim is the exchange alone, because the seeded customer's login is linked
+   * separately (`linkDevPersonas`).
    *
-   * In a real deployment this is made when the person first signs in. It is not on
-   * the widget path: a stranger in a chat bubble never needs one.
+   * It is not on the widget path: a stranger in a chat bubble never needs one.
    */
   {
-    await host.admin.grantEntityShape(staff, {
-      principalId: spec.customer.principal,
-      node,
-      entity: { entityType: 'contact', entityId: contact.id },
-      permissions: CONTACT_PORTAL,
-      grantedBy: spec.customer.principal,
+    await host.admin.reconcileEntityGrantShapes(staff, node, ENTITY_GRANTS);
+    const binding = host as ScopeHost & Partial<Pick<SqliteScopeHost, 'mintBecomeCapabilityBounded'>>;
+    if (!binding.mintBecomeCapabilityBounded) throw new Error('seed: this host cannot mint a binding invite');
+    const link = await binding.mintBecomeCapabilityBounded(tenant, scope, spec.admin.principal, {
+      principal: spec.customer.principal,
+      maxUses: 1,
+      label: 'customer invite',
+      bind: { entity: { entityType: 'contact', entityId: contact.id } },
     });
+    if (!link.ok) throw new Error(`seed: the customer invite was refused: ${JSON.stringify(link)}`);
+    const claimed = await host.exchangeCapability(tenant, scope, link.minted.secret, { mode: 'become' });
+    if (claimed?.kind !== 'principal' || !claimed.bound) throw new Error('seed: the customer invite did not bind');
   }
 
   await populate(host, { tenant, scope, spec });

@@ -5,12 +5,13 @@
 
 # Permission snapshot — @substrat-run/demo-ticket0
 
-26 keys · 2 modules · 9 roles
+27 keys · 2 modules · 9 roles
 
 ## 1. Registry — every key a registered manifest declares
 
 | Key | Description | Declared by |
 | --- | --- | --- |
+| `contact:invite` | Invite a contact to their portal with a link that binds whoever claims it to that contact, or unbind them — the portal itself is the contact shape, not this key | `@substrat-run/demo-ticket0` |
 | `contact:read` | See the people who have asked something | `@substrat-run/demo-ticket0` |
 | `conversation:assign` | Assign, snooze, wake and tag a conversation, and move a new one in or out of the suspended queue | `@substrat-run/demo-ticket0` |
 | `conversation:discard` | Discard a suspended conversation — deletes what the customer wrote, for good | `@substrat-run/demo-ticket0` |
@@ -48,7 +49,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `assistant` | `conversation:draft`, `conversation:read`, `kb:read`, `metering:configure`, `metering:record` |
 | `assistant-autonomous` | `conversation:draft`, `conversation:read`, `conversation:reply-public`, `kb:read`, `metering:configure`, `metering:record` |
 | `customer` | `notification:read-own` |
-| `desk-admin` | `contact:read`, `conversation:assign`, `conversation:discard`, `conversation:draft`, `conversation:forward`, `conversation:merge`, `conversation:read`, `conversation:reply-public`, `conversation:resolve`, `desk:configure`, `kb:manage`, `kb:read`, `kb:refresh`, `metering:close`, `metering:configure`, `metering:read`, `metering:record`, `notification:read-own`, `saved-reply:manage`, `signup:read`, `usage:read` |
+| `desk-admin` | `contact:invite`, `contact:read`, `conversation:assign`, `conversation:discard`, `conversation:draft`, `conversation:forward`, `conversation:merge`, `conversation:read`, `conversation:reply-public`, `conversation:resolve`, `desk:configure`, `kb:manage`, `kb:read`, `kb:refresh`, `metering:close`, `metering:configure`, `metering:read`, `metering:record`, `notification:read-own`, `saved-reply:manage`, `signup:read`, `usage:read` |
 | `ingest` | `kb:refresh` |
 | `relay` | `conversation:relay` |
 | `signup` | `signup:submit` |
@@ -58,6 +59,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Key | Held by |
 | --- | --- |
+| `contact:invite` | `desk-admin` |
 | `contact:read` | `agent`, `desk-admin` |
 | `conversation:assign` | `agent`, `desk-admin` |
 | `conversation:discard` | `desk-admin` |
@@ -90,10 +92,10 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 Reachable WITHOUT a role, narrowed to one entity per principal. A key held by
 no role in §3 but listed here is deliberate, not a gap.
 
-| Entity type | Permissions granted per entity | Given on arrival, topped up when it grows |
-| --- | --- | --- |
-| `contact` | `conversation:read-own` | yes — live holders of current or retired keys here; direct grants cannot give these keys |
-| `conversation` | `conversation:read` | no — shared |
+| Entity type | Permissions granted per entity | Given on arrival, topped up when it grows | Bound by a link: whoever holds this key on the record may invite its person, or unbind them |
+| --- | --- | --- | --- |
+| `contact` | `conversation:read-own` | yes — `ticket0_contacts.principal` names the principal; direct grants cannot give these keys | `contact:invite` |
+| `conversation` | `conversation:read` | no — shared | — |
 
 ## 5. Scheduled work — the system principal's grants
 

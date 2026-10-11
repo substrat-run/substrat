@@ -62,6 +62,12 @@ export const ROLES: RoleDefinition[] = [
       // knowledge base.
       T0_PERM.kbRefresh,
       T0_PERM.deskConfigure,
+      /**
+       * #1686: binding a customer to their contact — a customer invite, and its unbind. Here
+       * and in no other role, which is where inviting anyone already was (`desk:configure`
+       * gated every invite); handing it to agents too is a permission-checkpoint decision.
+       */
+      T0_PERM.contactInvite,
       // The money. Held here and in no other role.
       T0_PERM.usageRead,
       /**
@@ -181,12 +187,15 @@ export const CONTACT_PORTAL: PermissionKey[] = [T0_PERM.conversationReadOwn];
  * conversations are reached from it through the declared parent edge. That is what
  * makes one customer's history unreachable to another.
  *
- * It is a BOOTSTRAP shape (#2083): given whole (`grantEntityShape`) when a customer is
- * invited onto their contact, and topped up for every such customer when it grows. A
- * contact names no principal (`ticket0_contacts.principal` is never written) and one
- * contact can have several people, so its holder is `'grantee'`: whoever holds a key of
- * it on a contact. That stays true because `ctx.grant` cannot give these keys on a
- * contact once the platform has reconciled this declaration.
+ * It is a BOOTSTRAP shape (#2083), topped up for every holder when it grows, and since
+ * #1686 a BINDING one: a customer invite is a link that, when claimed, sets the contact's
+ * `ticket0_contacts.principal` to the claimant and gives them this shape, in one
+ * transaction. The rights are this declaration's, reviewed here, never the link's; the link
+ * names only which contact. Whoever holds `contact:invite` on a contact may mint such a link
+ * and may unbind its person (`POST /api/bindings/contact/:id/unbind`), and an erasure of
+ * the contact or of its person unbinds too. `ctx.grant` cannot give these keys on a contact,
+ * so on a contact the column decides who holds them. A customer invited before #1686 holds
+ * the shape with the column still empty, and an unbind cannot reach them (#2175).
  *
  * The second is a FOLLOWER (#1086), and it is the one shape here whose key a role
  * also holds. That is deliberate rather than a duplicate: `conversation:read` is held
@@ -201,7 +210,8 @@ export const ENTITY_GRANTS: EntityGrantShape[] = [
     entityType: 'contact',
     permissions: CONTACT_PORTAL,
     bootstrap: true,
-    holder: 'grantee',
+    holder: { table: 'ticket0_contacts', idColumn: 'id', principalColumn: 'principal' },
+    bind: { permission: T0_PERM.contactInvite },
   },
   {
     entityType: 'conversation',

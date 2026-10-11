@@ -82,11 +82,11 @@ import {
   type InstanceAuth,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
+import { mountUnbindRoute } from '@substrat-run/vertical-auth/invite-routes';
 import { API_DOCUMENT } from './api.js';
 import { TICKET0_ENV, ticket0Manifest } from './manifest.js';
 import {
   CONTACT_BOUND_ROLE,
-  CONTACT_PORTAL,
   HUMAN_ROLES,
   MODULES,
   OWNER_ROLE_KEY,
@@ -604,20 +604,19 @@ mountInvites(app, {
   appOrigin: (c) => new URL(c.req.raw.url).origin,
   subjectOf: async (c) => (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers),
   /**
-   * Gate an admin-only action. `get-desk` IS the check — it asserts `desk:configure`
-   * inside the operation, which only `desk-admin` holds — so the authority comes from
-   * this desk's own grants rather than from a second role table out here.
+   * Gate an admin-only action, and say who passed it. `get-desk` IS the check — it asserts
+   * `desk:configure` inside the operation, which only `desk-admin` holds — so the authority
+   * comes from this desk's own grants rather than from a second role table out here.
    *
-   * No assignment bound (`host.canAssign`, #1931) is applied here, and none is needed while
-   * `desk-admin` holds every permission of every role in HUMAN_ROLES (`test/invites.test.ts`
-   * holds that). Adding an invitable role that `desk-admin` does not cover makes this gate an
-   * escalation, so add the bound then. The one grant outside that role check is a customer
-   * invite's portal grant, `conversation:read-own` narrowed to ONE contact. `desk-admin` does
-   * not hold that key, and it is justified separately: it is strictly narrower than the
-   * `contact:read` and `conversation:read` that `desk-admin` holds over every contact.
+   * What an invite may confer is the kernel's to bound, past this gate (#1931, #1686): a staff
+   * invite's role under the assignment bound, a customer invite's bind onto their contact under
+   * `contact:invite` on that contact — both asked about the principal returned here.
    */
   requireAdmin: async (c) => {
     await (await stub(c)).invoke('ticket0/get-desk', {});
+    const principal = await principalFor(c.env, c.req.raw);
+    if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
+    return { principal };
   },
   deskOf: async (c) => {
     const node = nodeFor(c.req.raw, c.env);
@@ -638,40 +637,37 @@ mountInvites(app, {
             email: i.email,
             created_at: new Date(i.createdAt).toISOString(),
           })),
-        create: ({ principal, roleKey, email, tokenHash }) =>
-          directory.createInvite(node.scopeId, principal, roleKey, email, tokenHash),
-        // The desk's invites are hash-only rows (its own flow, not vertical-auth's capability
-        // links, #1686), so there is never a link to revoke beside the row.
+        create: ({ principal, roleKey, email, tokenHash, capabilityId }) =>
+          directory.createInvite(node.scopeId, principal, roleKey, email, tokenHash, capabilityId),
+        linkOf: (principal) => directory.inviteLink(node.scopeId, principal),
         revoke: async (principal) => {
           await directory.revokeInvite(node.scopeId, principal);
         },
+        matches: (tokenHash) => directory.inviteMatches(node.scopeId, tokenHash),
         /**
          * The role is read BEFORE the claim consumes the invite — afterwards the row
          * is gone and nothing can still say whether this person works the desk. The
          * worker always knows its scope (the router asserted it), so listing is free
          * here in a way it is not on a node holding two desks.
          */
+        claimByCapability: async (sub, capabilityId, principal) => {
+          const pending = await directory.listInvites(node.scopeId);
+          const bound = await directory.claimInviteByCapability(node.scopeId, sub, capabilityId, principal);
+          return bound ? { principal: bound, roleKey: pending.find((i) => i.principal === bound)?.roleKey ?? '' } : null;
+        },
+        // LEGACY: a hash-only invite minted before #1686 (#2175 tracks retiring it).
         claim: async (sub, tokenHash) => {
           const pending = await directory.listInvites(node.scopeId);
           const principal = await directory.claimInvite(node.scopeId, sub, tokenHash);
-          if (!principal) return null;
-          return {
-            principal,
-            roleKey: pending.find((i) => i.principal === principal)?.roleKey ?? '',
-          };
+          return principal ? { principal, roleKey: pending.find((i) => i.principal === principal)?.roleKey ?? '' } : null;
         },
       },
-      assignRole: (principal, roleKey) =>
-        host.assignScopeRole(node.scopeId, principalId.parse(principal), roleKey),
-      // The declared shape (#2083): the marker it leaves is what lets a key
-      // CONTACT_PORTAL gains later reach this customer at the platform's next reconcile.
-      grantContactPortal: (principal, contactId) =>
-        host.grantEntityShapeLocal(
-          node.scopeId,
-          principalId.parse(principal),
-          { entityType: 'contact', entityId: contactId },
-          CONTACT_PORTAL,
-        ),
+      grantRole: (caller, principal, roleKey) =>
+        host.assignScopeRoleBounded(node.tenantId, node.scopeId, caller, principal, roleKey),
+      revokeRole: (principal, roleKey) => host.revokeScopeRole(node.scopeId, principal, roleKey),
+      mintLink: (caller, input) => host.mintBecomeCapabilityBounded(node.tenantId, node.scopeId, caller, input),
+      revokeLink: (caller, capabilityId) => host.revokeBecomeCapability(node.tenantId, node.scopeId, capabilityId, caller),
+      exchange: (secret) => host.exchangeCapability(node.tenantId, node.scopeId, secret, { mode: 'become' }),
       invokeAs: async (principal, operation, input) =>
         (await host.getScope(principalId.parse(principal), node.tenantId, node.scopeId)).invoke(
           operation,
@@ -679,6 +675,22 @@ mountInvites(app, {
         ),
     };
   },
+});
+
+/**
+ * Unbind a customer from their contact (#1686) — vertical-auth's one route, for whoever holds
+ * `contact:invite` on that contact: the contact's `principal` cleared, and the portal it gave
+ * them taken back. The kernel's bound is the gate, so any signed-in caller may ask.
+ */
+mountUnbindRoute(app, {
+  nodeFor,
+  callerOf: async (c) => {
+    const principal = await principalFor(c.env, c.req.raw);
+    if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
+    return { principal };
+  },
+  unbindEntityHolderBounded: (env, node, caller, entity) =>
+    hostFor(env).unbindEntityHolderBounded(node.tenantId, node.scopeId, caller, entity),
 });
 // ── The knowledge base: the fetching half ────────────────────────────────────
 

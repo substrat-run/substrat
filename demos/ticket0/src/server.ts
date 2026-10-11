@@ -41,14 +41,15 @@ import { mountPortalLive } from '../harness/portal-live.js';
 import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
 import { senderFor, sweepOutbound, type OutboundSender } from '../harness/relay.js';
 import { buildHost, linkDevPersonas, reconcilePortalGrants, seed, type Desk, type World } from './seed.js';
-import { CONTACT_BOUND_ROLE, CONTACT_PORTAL, HUMAN_ROLES, STAFF_ROLES } from './provision.js';
+import { CONTACT_BOUND_ROLE, HUMAN_ROLES, STAFF_ROLES } from './provision.js';
 import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
 import { startDemoSites } from '../harness/demo-site.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 import { confirmationEmail, mountSignupSurface } from '../harness/signups.js';
 import { mountInvites } from '../harness/invites.js';
-import { devInviteDesk } from '../harness/dev-invites.js';
+import { devInviteDesk, type DevNode } from '../harness/dev-invites.js';
+import { mountUnbindRoute } from '@substrat-run/vertical-auth/invite-routes';
 
 /**
  * Local secrets, if there are any.
@@ -179,14 +180,14 @@ async function boot() {
     appOrigin: () => webOrigin,
     subjectOf: (c) => login.subject(c.req.raw.headers),
     // `get-desk` IS the check: it asserts `desk:configure` inside the operation, so
-    // the authority is the desk's own grants and not a role list out here. No assignment
-    // bound (#1931) is applied: `desk-admin` covers every role in HUMAN_ROLES
-    // (`test/invites.test.ts` holds that), so add `host.canAssign` if a role it does not
-    // cover becomes invitable. A customer invite's portal grant (`conversation:read-own`
-    // on ONE contact) is justified separately: strictly narrower than the `contact:read`
-    // and `conversation:read` `desk-admin` holds over every contact.
+    // the authority is the desk's own grants and not a role list out here. What an invite
+    // may confer is the kernel's to bound past it (#1931, #1686), as the worker's is: a staff
+    // role under the assignment bound, a customer's bind under `contact:invite` on the contact.
     requireAdmin: async (c) => {
       await (await staffStub(c)).invoke('ticket0/get-desk', {});
+      const caller = await login.caller(c.req.raw.headers);
+      if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
+      return { principal: caller.principal };
     },
     deskOf: async (c) => {
       const caller = await login.caller(c.req.raw.headers);
@@ -195,10 +196,25 @@ async function boot() {
         host,
         actor: staff,
         provider: DEV_PROVIDER,
-        portalPermissions: CONTACT_PORTAL,
         caller: caller ? { tenantId: caller.tenantId, scopeId: caller.scopeId } : null,
       });
     },
+  });
+  // Unbind a customer from their contact (#1686) — the route the worker mounts, over this host.
+  // The node server's app carries no bindings; the route reads none.
+  mountUnbindRoute(app as unknown as Hono<{ Bindings: object }>, {
+    nodeFor: async (req): Promise<DevNode> => {
+      const caller = await login.caller(req.headers);
+      if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
+      return { tenantId: caller.tenantId, scopeId: caller.scopeId };
+    },
+    callerOf: async (c) => {
+      const caller = await login.caller(c.req.raw.headers);
+      if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
+      return { principal: caller.principal };
+    },
+    unbindEntityHolderBounded: (_env, node, caller, entity) =>
+      host.unbindEntityHolderBounded(node.tenantId, node.scopeId, caller, entity),
   });
   // Settings → Assistant: the model this process would answer with, beside the failed
   // turns. One model for both desks here, since one process serves both.
