@@ -175,7 +175,7 @@ export interface BindingShapeBreak {
 }
 
 /** Every binding shape `from` binds with that `to` would strand (see {@link BindingShapeBreak}). */
-export function bindingShapeBreaks(from: RegistryLike, to: RegistryLike): BindingShapeBreak[] {
+export function bindingShapeBreaks(from: Pick<RegistryLike, 'entityGrants'>, to: Pick<RegistryLike, 'entityGrants'>): BindingShapeBreak[] {
   const toGrants = new Map(to.entityGrants.map((g) => [g.entityType, g]));
   const breaks: BindingShapeBreak[] = [];
   for (const before of from.entityGrants) {

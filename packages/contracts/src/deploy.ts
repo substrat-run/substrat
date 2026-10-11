@@ -5,6 +5,8 @@ import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
+import { substratError } from './errors.js';
+import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
 // module files (self-serve-deploy.md). It lives here — not in the transport
@@ -375,7 +377,7 @@ export type ManifestImports =
  */
 function registryRowsOfManifestJson<T>(
   manifestJson: string | null | undefined,
-  key: 'imports' | 'exports',
+  key: 'imports' | 'exports' | 'entityGrants',
   row: z.ZodType<T>,
 ): { rows: T[] } | { unreadable: string } | null {
   if (!manifestJson) return null;
@@ -422,6 +424,29 @@ export function exportsOfManifestJson(manifestJson: string | null | undefined): 
   if (read === null) return { kind: 'none' };
   if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
   return { kind: 'exports', rows: read.rows.map((r) => ({ type: r.type, schemaVersion: r.schemaVersion })) };
+}
+
+/**
+ * #2178: the binding-shape gate over two STORED manifests — the version that runs now and the one
+ * that would run instead — refused `precondition_failed` with {@link bindingShapeRefusal} when the
+ * move strands people a link bound (`bindingShapeBreaks`). A manifest with no registry declares no
+ * shape. One whose grant shapes cannot be read is refused too, saying so: the gate cannot tell
+ * that it strands nobody, and no acknowledgement passes it.
+ */
+export function assertNoBindingShapeBreak(outgoingManifest: string | null | undefined, incomingManifest: string | null | undefined): void {
+  const grants = (json: string | null | undefined, which: string) => {
+    const read = registryRowsOfManifestJson(json, 'entityGrants', entityGrantShape);
+    if (read === null) return [];
+    if ('unreadable' in read) {
+      throw substratError(
+        'precondition_failed',
+        `the ${which} version's grant shapes cannot be read (${read.unreadable}), so whether this strands anyone a link bound is unknown — refused`,
+      );
+    }
+    return read.rows;
+  };
+  const breaks = bindingShapeBreaks({ entityGrants: grants(outgoingManifest, 'the running') }, { entityGrants: grants(incomingManifest, 'the incoming') });
+  if (breaks.length > 0) throw substratError('precondition_failed', bindingShapeRefusal(breaks));
 }
 
 /**
