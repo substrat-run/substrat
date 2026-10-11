@@ -214,7 +214,7 @@ export async function recordStaffProfile(
 }
 
 /** A customer invite the kernel refused for its contact (#1686), as the admin is told. */
-function bindRefused(refused: string): HTTPException {
+function bindRefused(refused: Extract<BoundedBecomeMint, { refused: string }>['refused']): HTTPException {
   if (refused === 'bind-record-missing') return new HTTPException(404, { message: 'no such contact on this desk' });
   if (refused === 'bind-record-bound') {
     return new HTTPException(409, { message: 'this contact already has a portal login — unbind it before inviting someone else' });

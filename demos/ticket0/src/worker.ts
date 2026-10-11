@@ -622,6 +622,12 @@ mountInvites(app, {
     const node = nodeFor(c.req.raw, c.env);
     const directory = identityDo(c.env, node);
     const host = hostFor(c.env);
+    /** Claim, and say at which role — read from the pending list before the claim consumes the row. */
+    const withRole = async (claim: () => Promise<string | null>) => {
+      const pending = await directory.listInvites(node.scopeId);
+      const principal = await claim();
+      return principal ? { principal, roleKey: pending.find((i) => i.principal === principal)?.roleKey ?? '' } : null;
+    };
     return {
       store: {
         /**
@@ -650,17 +656,10 @@ mountInvites(app, {
          * worker always knows its scope (the router asserted it), so listing is free
          * here in a way it is not on a node holding two desks.
          */
-        claimByCapability: async (sub, capabilityId, principal) => {
-          const pending = await directory.listInvites(node.scopeId);
-          const bound = await directory.claimInviteByCapability(node.scopeId, sub, capabilityId, principal);
-          return bound ? { principal: bound, roleKey: pending.find((i) => i.principal === bound)?.roleKey ?? '' } : null;
-        },
+        claimByCapability: (sub, capabilityId, principal) =>
+          withRole(() => directory.claimInviteByCapability(node.scopeId, sub, capabilityId, principal)),
         // LEGACY: a hash-only invite minted before #1686 (#2175 tracks retiring it).
-        claim: async (sub, tokenHash) => {
-          const pending = await directory.listInvites(node.scopeId);
-          const principal = await directory.claimInvite(node.scopeId, sub, tokenHash);
-          return principal ? { principal, roleKey: pending.find((i) => i.principal === principal)?.roleKey ?? '' } : null;
-        },
+        claim: (sub, tokenHash) => withRole(() => directory.claimInvite(node.scopeId, sub, tokenHash)),
       },
       grantRole: (caller, principal, roleKey) =>
         host.assignScopeRoleBounded(node.tenantId, node.scopeId, caller, principal, roleKey),
