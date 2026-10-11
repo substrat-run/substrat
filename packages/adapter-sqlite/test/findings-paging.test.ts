@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { FINDINGS_LIMIT_DEFAULT, FINDINGS_LIMIT_MAX, findingCursorOf, parseFindingCursor, type FindingEntry, type FindingFilter } from '@substrat-run/contracts';
-import { FINDINGS_DDL, listFindings } from '@substrat-run/kernel';
+import { FINDINGS_DDL, listFindings, observeFinding } from '@substrat-run/kernel';
 
 /**
  * `listFindings`' keyset walk (#2198), against the real table rather than a fake executor:
@@ -13,7 +13,12 @@ describe('listFindings paging (#2198)', () => {
   const T = '01JZ000000000000000000TNTA';
   const U = '01JZ000000000000000000TNTB';
   let db: Database.Database;
-  const sql = (q: string, params: readonly (string | number | null)[]) => db.prepare(q).all(...params);
+  const sql = (q: string, params: readonly (string | number | null)[]) => {
+    const stmt = db.prepare(q);
+    if (stmt.reader) return stmt.all(...params);
+    stmt.run(...params);
+    return [];
+  };
   const instantAt = (n: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, n)).toISOString();
   const at = (lastSeen: string, id: string) => findingCursorOf({ lastSeen: lastSeen as FindingEntry['lastSeen'], id });
 
@@ -42,6 +47,8 @@ describe('listFindings paging (#2198)', () => {
     const pages: string[][] = [];
     let cursor: string | undefined;
     for (;;) {
+      // A walk that replays a row never ends: fail it rather than hang the suite.
+      if (pages.length > 100) throw new Error('walk did not end');
       const page = listFindings(sql, { ...filter, ...(cursor === undefined ? {} : { cursor }) });
       pages.push(page.map((f) => f.id));
       // pageOf's rule: a full page may have more behind it, a short one is the end.
@@ -117,6 +124,46 @@ describe('listFindings paging (#2198)', () => {
     // The table survived the injection-shaped one, and a minted cursor is accepted.
     expect(ids()).toEqual(['F1']);
     expect(parseFindingCursor(`${instantAt(1)}${sep}F1`)).toEqual({ lastSeen: instantAt(1), id: 'F1' });
+  });
+
+  describe('an occurrence stamped in a non-canonical instant form', () => {
+    // `at` reaches observeFinding as a plain string (OpsFailureInput.at, SweepRunInput.at). The
+    // cursor is minted from the entry, which the contract normalises to toISOString form, so the
+    // stored string must be that form too or the seek compares two spellings of one moment.
+    const observe = (subject: string, at: string) =>
+      observeFinding(
+        sql,
+        { tenantId: T as never, kind: 'recurring', subject, severity: 'warning', title: subject, operation: null, code: null, vertical: null, scopeId: null, version: null, evidence: { source: 'ops-failures', fingerprint: subject } },
+        at,
+      );
+    const stored = () => (db.prepare('SELECT last_seen, first_seen FROM _substrat_findings ORDER BY subject').all() as { last_seen: string; first_seen: string }[]);
+
+    it('is stored canonical, so a stamp without milliseconds is not skipped by the walk', () => {
+      observe('A', '2026-01-01T10:00:01.000Z');
+      observe('B', '2026-01-01T10:00:00.500Z');
+      observe('C', '2026-01-01T10:00:00Z'); // no milliseconds
+      expect(stored().every((r) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(r.last_seen) && r.first_seen === r.last_seen)).toBe(true);
+      const whole = ids();
+      expect(whole).toHaveLength(3);
+      expect(walk({ limit: 1 }).flat()).toEqual(whole);
+    });
+
+    it('is stored canonical, so a +00:00 stamp does not replay its own row forever', () => {
+      observe('A', '2026-01-01T10:00:00+00:00');
+      observe('B', '2026-01-01T09:00:00.000Z');
+      const pages = walk({ limit: 1 });
+      expect(pages.length).toBeLessThan(5);
+      expect(pages.flat()).toEqual(ids());
+      // An offset that is not UTC is the same moment, written once in UTC.
+      observe('C', '2026-01-01T12:00:00+02:00');
+      expect(stored().find((_, i) => i === 2)!.last_seen).toBe('2026-01-01T10:00:00.000Z');
+    });
+
+    it('stays canonical on the second occurrence, and the twin canonical stamp is untouched', () => {
+      observe('A', '2026-01-01T10:00:00.000Z');
+      observe('A', '2026-01-01T11:00:00Z');
+      expect(stored()).toEqual([{ last_seen: '2026-01-01T11:00:00.000Z', first_seen: '2026-01-01T10:00:00.000Z' }]);
+    });
   });
 
   describe('a finding seen again while the walk is in progress', () => {
