@@ -232,8 +232,12 @@ describe('the retirements a receipt records as finished (#2185)', () => {
       return { tenantId: T, scopeId: input.scopeId, owner, ...answer };
     },
     provisionInstance: async (input: { scopeId: string }) => ({ tenantId: T, scopeId: input.scopeId, owner }),
-    restoreScope: async () => {
-      if (restoreFails) throw new Error('the deployment lost the restore after the host loaded it');
+    restoreScope: async (_t: string, s: string) => {
+      if (restoreFails) {
+        // A sweep reconcile lands between the clear before the load and this failure (round 3).
+        await host.admin.markScopeProvisioned(staff, T, s as ScopeId, retiring, { retirementsFinished: true });
+        throw new Error('the deployment lost the restore after the host loaded it');
+      }
       return { tables: 0 };
     },
   } as unknown as VerticalClient;
@@ -388,7 +392,8 @@ describe('the retirements a receipt records as finished (#2185)', () => {
   /**
    * Review of #2218, round 2: steps after the load can still throw (the deployment's half of the
    * restore, the switch re-assert), and the route then answers 422 over data that has landed. The
-   * receipt is cleared before the load as well as after, so such a failure cannot leave it set.
+   * receipt is cleared before the load, after it, and on a failure (round 3: a sweep reconcile can
+   * write it between the clear before the load and the throw), so such a failure cannot leave it set.
    */
   it('a restore that fails after the data landed still leaves the receipt cleared', async () => {
     const s = await scopeOn(retiring);

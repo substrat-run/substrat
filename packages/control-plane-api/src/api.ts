@@ -5927,6 +5927,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
+      // #2185: and once more on the way out of a failure, for a sweep reconcile that wrote the
+      // receipt between the clear above and the throw. Clearing is always safe (at worst one more
+      // reconcile); a clear that fails here must not hide the restore's own error.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, failedWith(c, e));
       }
@@ -6323,13 +6327,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
     // re-assert) cannot leave the receipt set over older data.
     await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
-    const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
-      scopeId,
-      exact: true,
-      loadStamp: ulid(),
-      expect: liveMarker,
-    });
-    await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
+    try {
+      const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
+        scopeId,
+        exact: true,
+        loadStamp: ulid(),
+        expect: liveMarker,
+      });
+      await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
+    } catch (e) {
+      // And on a failure, for a sweep reconcile that wrote the receipt after the clear above.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
+      throw e;
+    }
     // #2185: the kept copy is an older store's data, which may predate a reconcile the live store
     // ran (a finished retirement included), so the receipt is cleared as after a restore.
     await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
