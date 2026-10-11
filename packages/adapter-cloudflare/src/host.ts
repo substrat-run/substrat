@@ -22,6 +22,7 @@ import {
   type ImportState,
   importsOfManifestJson,
   exportsOfManifestJson,
+  assertNoBindingShapeBreak,
   type ExportBreak,
   type ManifestImports,
   importCursorMove,
@@ -450,6 +451,8 @@ import {
   exportBreakRefusal,
   bindExportBreaksOf,
   bindExportBreakRefusal,
+  scopeMoveOf,
+  type ServingPointer,
   collectPeers,
   peerSeats,
   connectorCallRecord,
@@ -7226,6 +7229,24 @@ export class CloudflareScopeHost implements ScopeHost {
         const outgoing = current ? await this.cp.readVersion(current.version_id) : undefined;
         const ack = promotionAcknowledgement.parse(acknowledge ?? {});
 
+        // The owning tenant's live scopes a PRIVATE embedded promote re-points below (#321's
+        // exception aside), read before anything moves so the #2178 gate can judge each one.
+        const owning = channel === 'prod' && !incoming.deployment_ref ? await this.cp.readVertical(verticalSlug) : undefined;
+        const rebound =
+          owning && owning.owner_tenant !== null && !owning.listed
+            ? (await this.cp.listScopes({ tenantId: owning.owner_tenant, vertical: verticalSlug, status: ['active'] })).filter(isPrimaryScopeRow)
+            : [];
+
+        // #2178, ahead of the acknowledgements below because none of them passes it: the channel
+        // moves from what it serves, and each re-pointed scope from what it was bound to.
+        const judged = new Set<string>();
+        for (const from of [outgoing?.id, ...rebound.map((s) => s.vertical_version_id)]) {
+          if (!from || from === versionId || judged.has(from)) continue;
+          judged.add(from);
+          const manifest = from === outgoing?.id ? outgoing.manifest_json : (await this.cp.readVersion(from))?.manifest_json;
+          assertNoBindingShapeBreak(manifest, incoming.manifest_json);
+        }
+
         // §4's checkpoints, at the moment of exposure. A first promotion has
         // nothing to diff against — the gate is about change, not existence.
         if (outgoing) {
@@ -7279,28 +7300,20 @@ export class CloudflareScopeHost implements ScopeHost {
         // rebind here for them. An EMBEDDED vertical (no per-version script;
         // deployment_ref null — builtins, the contract tests) has no such hazard and
         // keeps the rebind here, which is the only place it happens for that path.
-        if (channel === 'prod' && !incoming.deployment_ref) {
-          const owning = await this.cp.readVertical(verticalSlug);
-          if (owning && owning.owner_tenant !== null && !owning.listed) {
-            const bound = (
-              await this.cp.listScopes({ tenantId: owning.owner_tenant, vertical: verticalSlug, status: ['active'] })
-            ).filter(isPrimaryScopeRow);
-            for (const s of bound) {
-              if (s.vertical_version_id === versionId) continue;
-              const prev = s.vertical_version_id ? await this.cp.readVersion(s.vertical_version_id) : undefined;
-              if (prev && prev.migration_digest !== incoming.migration_digest) {
-                await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
-              }
-              await this.cp.bindScopeVersion(s.scope_id, versionId, verticalSlug);
-              await this.recordAdmin(
-                actor,
-                'bindScopeVersion',
-                { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
-                prev ? { versionId: prev.id, version: prev.version } : null,
-                { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
-              );
-            }
+        for (const s of rebound) {
+          if (s.vertical_version_id === versionId) continue;
+          const prev = s.vertical_version_id ? await this.cp.readVersion(s.vertical_version_id) : undefined;
+          if (prev && prev.migration_digest !== incoming.migration_digest) {
+            await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
           }
+          await this.cp.bindScopeVersion(s.scope_id, versionId, verticalSlug);
+          await this.recordAdmin(
+            actor,
+            'bindScopeVersion',
+            { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
+            prev ? { versionId: prev.id, version: prev.version } : null,
+            { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
+          );
         }
         await this.recordAdmin(
           actor,
@@ -7360,6 +7373,8 @@ export class CloudflareScopeHost implements ScopeHost {
           throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
         }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #2178 first: no acknowledgement passes it, so none should be asked for ahead of it.
+        await this.assertBindingShapesKept(mapScope(scope), v);
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
         if (!ack.exportBreak) {
@@ -7480,6 +7495,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // #1756: onto (or off) a serving script, the scope runs other code before its pointer
         // moves. Judged here, so no caller that routes first and binds second passes unasked.
         const bound = scope.vertical_version_id ? await this.cp.readVersion(scope.vertical_version_id) : undefined;
+        if (bound) await this.assertBindingShapesKept(mapScope(scope), bound, servingRef);
         if (!ack.exportBreak && bound) {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
@@ -11036,23 +11052,40 @@ export class CloudflareScopeHost implements ScopeHost {
     incoming: VersionRow,
     servingRef?: string | null,
   ): Promise<ExportBreak[]> {
-    const vertical = scope.vertical && (scope.servingRef || servingRef) ? await this.cp.readVertical(scope.vertical) : undefined;
     return bindExportBreaksOf({
       admin: this.admin,
       actor,
       scope,
       incoming: { id: incoming.id, verticalSlug: incoming.vertical_slug },
       ...(servingRef !== undefined ? { servingRef } : {}),
-      serving:
-        vertical?.serving_ref && vertical.serving_version_id
-          ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id }
-          : null,
-      readExports: async (versionId) =>
-        exportsOfManifestJson(
-          versionId === incoming.id ? incoming.manifest_json : ((await this.cp.readVersion(versionId))?.manifest_json ?? null),
-        ),
+      serving: await this.servingPointerOf(scope, servingRef),
+      readExports: async (versionId) => exportsOfManifestJson(await this.manifestOf(versionId, incoming)),
       readImports: (slug, versionId) => this.versionImports(slug, versionId),
     });
+  }
+
+  /**
+   * The serving pointer of `scope`'s vertical, read only when the scope is on a serving script
+   * before or after a move (`servingRef`), the one case it decides what the scope runs.
+   */
+  private async servingPointerOf(scope: Scope, servingRef?: string | null): Promise<ServingPointer | null> {
+    const vertical = scope.vertical && (scope.servingRef || servingRef) ? await this.cp.readVertical(scope.vertical) : undefined;
+    return vertical?.serving_ref && vertical.serving_version_id ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id } : null;
+  }
+
+  /** A version's stored manifest, from the row the caller already holds when it is that one. */
+  private async manifestOf(versionId: string, held: VersionRow): Promise<string | null> {
+    return versionId === held.id ? held.manifest_json : ((await this.cp.readVersion(versionId))?.manifest_json ?? null);
+  }
+
+  /**
+   * #2178: refuse moving `scope` (a bind, or a route with `servingRef`) onto code that strands
+   * people a link bound — any scope, fork or preview included, since bound people live in its own
+   * spine. No acknowledgement passes it.
+   */
+  private async assertBindingShapesKept(scope: Scope, incoming: VersionRow, servingRef?: string | null): Promise<void> {
+    const move = scopeMoveOf(scope, incoming.id, servingRef, await this.servingPointerOf(scope, servingRef));
+    if (move) assertNoBindingShapeBreak(await this.manifestOf(move.before, incoming), await this.manifestOf(move.after, incoming));
   }
 
   /**
