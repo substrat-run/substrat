@@ -24,6 +24,11 @@
  * the next stamp. Virtual tables and their shadow tables carry no trigger; their writes come
  * from writes to tables that do.
  *
+ * The fence row guards itself too: triggers on `_k3s_fence` refuse any change from a
+ * connection `stampFence` did not open (a second function, `k3s_stamping()`). What no trigger
+ * can stop is DDL: code that drops the triggers or the table. A real adapter reserves the
+ * name, as `ctx.sql` reserves `_substrat_*`; the spike does not.
+ *
  * How it reaches the connection: `SqliteScopeHost` opens its own connections and offers no
  * hook, so this patches better-sqlite3's `prepare`/`exec` to register the function on a
  * connection's first statement, as `tools/vitest/like-pattern-limit.cjs` does for its limit.
@@ -45,6 +50,9 @@ export function holdEpoch(scope: string, epoch: number): void {
 /** A scope file lives at `…/scopes/<scopeId>/<file>.sqlite`. */
 const SCOPE_IN_PATH = /[\\/]scopes[\\/]([^\\/]+)[\\/][^\\/]+$/;
 
+/** The connections `stampFence` opened: the only ones allowed to change `_k3s_fence`. */
+const stampers = new WeakSet<object>();
+
 let installed = false;
 
 /** Register `k3s_holder_epoch()` on every connection this process opens, from now on. */
@@ -62,6 +70,7 @@ export function installEpochFunction(): void {
         this.function('k3s_holder_epoch', { deterministic: false }, () =>
           scope === undefined ? null : (holding.get(scope) ?? null),
         );
+        this.function('k3s_stamping', { deterministic: false }, () => (stampers.has(this) ? 1 : 0));
       }
       return original.apply(this, args);
     };
@@ -69,6 +78,7 @@ export function installEpochFunction(): void {
 }
 
 export const FENCE_REFUSAL = 'k3s fence: stale holder';
+export const FENCE_GUARD_REFUSAL = 'k3s fence: only a takeover stamp may change the fence';
 
 /**
  * The stamp could not take a file's write lock in time: a holder is inside a write
@@ -103,9 +113,18 @@ export function isFenceRefusal(e: unknown): boolean {
 export function stampFence(dir: string, epoch: number): void {
   for (const name of readdirSync(dir).filter((n) => n.endsWith('.sqlite'))) {
     const db = new Database(join(dir, name), { fileMustExist: true, timeout: STAMP_LOCK_WAIT_MS });
+    stampers.add(db);
     try {
       db.exec('BEGIN IMMEDIATE');
       db.exec('CREATE TABLE IF NOT EXISTS _k3s_fence (epoch INTEGER NOT NULL)');
+      // The fence row guards itself: only a connection this function opened may change it, so
+      // a stale holder cannot write its own epoch into the row and then write past it.
+      for (const op of ['INSERT', 'UPDATE', 'DELETE']) {
+        db.exec(
+          `CREATE TRIGGER IF NOT EXISTS "_k3s_fence_guard_${op.toLowerCase()}" BEFORE ${op} ON _k3s_fence ` +
+            `WHEN k3s_stamping() IS NOT 1 BEGIN SELECT RAISE(ABORT, '${FENCE_GUARD_REFUSAL}'); END`,
+        );
+      }
       // Only ever upward. A takeover that lost the race to a newer one learns here that it is
       // stale, instead of lowering the epoch under the newer holder's feet.
       const current = db.prepare<[], { epoch: number }>('SELECT MAX(epoch) AS epoch FROM _k3s_fence').get()?.epoch ?? null;

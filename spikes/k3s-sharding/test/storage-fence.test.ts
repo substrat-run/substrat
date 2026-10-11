@@ -12,7 +12,7 @@ import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { principalId, scopeId as scopeIdOf, tenantId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { FENCE_REFUSAL, holdEpoch, installEpochFunction, StaleStamp, stampFence } from '../src/storage-fence.js';
+import { FENCE_GUARD_REFUSAL, FENCE_REFUSAL, holdEpoch, installEpochFunction, StaleStamp, stampFence } from '../src/storage-fence.js';
 import { scopeDir, seedScope, type ScopeWorld } from '../src/todo-scope.js';
 
 installEpochFunction();
@@ -99,5 +99,20 @@ describe('storage fence', () => {
     expect(() => stampFence(dir, 1)).toThrow(StaleStamp);
     expect(fenceEpochs()).toEqual([2, 2]);
     await expect(add('d')).resolves.toMatchObject({ text: 'd' });
+  });
+
+  it('guards the fence row itself: a stale holder cannot stamp its own epoch and then write', () => {
+    holdEpoch(scope, 1);
+    const db = new Database(todoFile());
+    try {
+      expect(() => db.prepare('UPDATE _k3s_fence SET epoch = k3s_holder_epoch()').run()).toThrow(FENCE_GUARD_REFUSAL);
+      expect(() => db.prepare('DELETE FROM _k3s_fence').run()).toThrow(FENCE_GUARD_REFUSAL);
+      expect(() => db.prepare('INSERT INTO _k3s_fence (epoch) VALUES (1)').run()).toThrow(FENCE_GUARD_REFUSAL);
+    } finally {
+      db.close();
+    }
+    expect(fenceEpochs()).toEqual([2, 2]);
+    expect(() => silentWrite()).toThrow(FENCE_REFUSAL);
+    holdEpoch(scope, 2);
   });
 });
