@@ -2137,6 +2137,69 @@ export function bindExportBreakRefusal(breaks: readonly ExportBreak[]): string {
 }
 
 /**
+ * What a bind or a route change moves `scope` between (#1756, #2178): the version it runs before
+ * and the one it runs after (`runningVersionOf` on both of its inputs), or null when the move
+ * changes nothing it runs — a re-point that stays on the serving script — or it ran nothing before
+ * (a first bind). `servingRef` omitted: the route is unchanged.
+ */
+export function scopeMoveOf(
+  scope: Pick<Scope, 'verticalVersionId' | 'servingRef'>,
+  incomingVersionId: string,
+  servingRef: string | null | undefined,
+  serving: ServingPointer | null,
+): { before: string; after: string } | null {
+  const before = runningVersionOf(scope, serving);
+  const after = runningVersionOf(
+    { verticalVersionId: incomingVersionId, servingRef: servingRef === undefined ? scope.servingRef : servingRef },
+    serving,
+  );
+  return before === null || after === null || before === after ? null : { before, after };
+}
+
+/**
+ * #2178: the versions the active primary scopes of a vertical that a promote or a serve moves were
+ * last provisioned against (`provisionedVersionId`, written only after a provision or reconcile
+ * succeeds): those routed on a serving ref, and those of an owner tenant. A retirement reaches a
+ * scope only at its reconcile, so a scope provisioned behind the retiring version still holds the
+ * keys. One row per version, with how many installs and one of them to name, however many installs
+ * there are. Installs with NO receipt are a row too (`version_id` null): a switch clears the receipt
+ * (#2045), a rewind does, and a new install has none until its first reconcile. The sweep reconciles
+ * every one of them on its next pass, so a refusal they cause is transient unless that reconcile
+ * keeps failing or answers 'unsupported'. Binds `(vertical, servingRef, ownerTenant)`; a null matches nothing. The directory has
+ * no index on `vertical`, so this scans its scopes table: once per promote or serve.
+ */
+export const PROVISIONED_VERSIONS_SQL = `SELECT provisioned_version_id AS version_id, COUNT(*) AS installs, MIN(scope_id) AS example
+  FROM scopes
+  WHERE vertical = ? AND status = 'active' AND forked_from IS NULL AND COALESCE(kind, '') != 'preview'
+    AND (serving_ref = ? OR tenant_id = ?)
+  GROUP BY provisioned_version_id`;
+
+/** One row of `PROVISIONED_VERSIONS_SQL`: the installs that last reconciled one version. */
+export interface InstallsReconciled {
+  /** Null: installs with no receipt, which may not have reconciled anything they run. */
+  versionId: string | null;
+  installs: number;
+  /** One of them, so a refusal can say which install to look at. */
+  example: string;
+}
+
+/** `PROVISIONED_VERSIONS_SQL`'s rows, as either adapter's driver returns them. */
+export function installsReconciledOf(rows: readonly Record<string, unknown>[]): InstallsReconciled[] {
+  return rows.map((r) => ({ versionId: r.version_id == null ? null : String(r.version_id), installs: Number(r.installs), example: String(r.example) }));
+}
+
+/** What a refusal judged from installs' receipts says it was judged from. */
+export function installsReconciledNote(g: InstallsReconciled): string {
+  const which = g.versionId === null ? 'with no reconcile receipt (a switch or a rewind cleared it, or none was written yet)' : `that last reconciled ${g.versionId}`;
+  return (
+    `${g.installs} install(s) ${which} (one is ${g.example}); the drop waits for their reconcile. ` +
+    "If that install's reconcile keeps failing or answers 'unsupported' (a vertical built on a vertical-host " +
+    'that cannot reconcile), no sweep writes its receipt: fix the reconcile or push a version built on a ' +
+    'current vertical-host, so the retirement reaches it'
+  );
+}
+
+/**
  * Whom moving `scope` breaks (#1756): the promote gate's question (`exportBreaksOf`), asked of
  * ONE install in its own tenant, since an edge never crosses one.
  *
@@ -2181,13 +2244,9 @@ export async function bindExportBreaksOf(input: {
   // ref this host cannot name), and what the scope runs there is not this vertical's code at all:
   // the same known gap as above, never a phantom move judged against the wrong vertical.
   if (typeof input.servingRef === 'string' && input.servingRef !== input.serving?.ref) return [];
-  const before = runningVersionOf(scope, input.serving);
-  const after = runningVersionOf(
-    { verticalVersionId: input.incoming.id, servingRef: input.servingRef === undefined ? scope.servingRef : input.servingRef },
-    input.serving,
-  );
-  if (before === null || after === null || before === after) return [];
-  const [outgoing, incoming] = await Promise.all([input.readExports(before), input.readExports(after)]);
+  const move = scopeMoveOf(scope, input.incoming.id, input.servingRef, input.serving);
+  if (move === null) return [];
+  const [outgoing, incoming] = await Promise.all([input.readExports(move.before), input.readExports(move.after)]);
   return exportBreaksOf({
     admin: input.admin,
     actor: input.actor,

@@ -2770,7 +2770,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * #1756: refuse, BEFORE any data moves, a move of this scope that would break apps in its
    * tenant, unless acknowledged. The host refuses the same move whoever calls; this is what keeps
    * a route that exports, restores or snapshots first from doing so for a move that is refused.
-   * `servingRef` is the route the scope takes in the same act (an adopt).
+   * `servingRef` is the route the scope takes in the same act (an adopt). The host's read also
+   * refuses, whatever is acknowledged, a move that strands people a link bound (#2178).
    */
   const refuseOnBreaks = async (
     actor: PlatformActorId,
@@ -2779,11 +2780,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     versionId: string,
     opts: { servingRef?: string | null; acknowledge?: BindAcknowledgement },
   ): Promise<void> => {
-    if (opts.acknowledge?.exportBreak) return;
+    // Asked even when acknowledged: the read also refuses a move that strands people a link
+    // bound (#2178), which no acknowledgement passes.
     const breaks = await host.admin.bindingImpact(
       actor, tenantId, scopeId, versionId,
       opts.servingRef !== undefined ? { servingRef: opts.servingRef } : undefined,
     );
+    if (opts.acknowledge?.exportBreak) return;
     if (breaks.length > 0) throw new ExportBreakRefused(breaks);
   };
   /** The host's own export-break refusal (the move changed since it was asked), as the same 409. */

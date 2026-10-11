@@ -821,6 +821,51 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     ]);
   });
 
+  /**
+   * #2178 (review of #2181, round 2): a switch clears the scope's reconcile receipt here (and only
+   * here: SQLite keeps it). Until the sweep reconciles the install again, it may not have run the
+   * retirement its version declares, so a drop that would strand its bound people waits for it.
+   */
+  it('a switch that clears the receipt holds a binding-shape drop until the install reconciles again (#2178)', async () => {
+    const slug = `acme/sw-${ulid().slice(-8).toLowerCase()}`;
+    const { host, t, s } = await setup(() => ({ held: true, changed: true, permissions: ['sched:tick'] }), slug);
+    await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+    const HOLDER = { table: 'bind_records', idColumn: 'id', principalColumn: 'principal' };
+    const publish = async (permissions: string[], retired?: string[]) => {
+      const id = ulid();
+      const shape = { entityType: 'contact', permissions, ...(retired ? { retired } : {}), bootstrap: true, holder: HOLDER, bind: { permission: 'contact:invite' } };
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+        permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+        manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [shape] } }),
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const binds = await publish(['contact:read-own']);
+    const retired = await publish([], ['contact:read-own']);
+    const dropped = ulid();
+    await host.admin.publishVersion(staff, {
+      id: dropped, verticalSlug: slug, version: '9.0.0', manifestDigest: 'm-d', permissionDigest: 'p', migrationDigest: 'g',
+      deploymentRef: null, manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [] } }),
+    });
+    await host.admin.admitVersion(staff, dropped);
+    await host.admin.bindScopeVersion(staff, t, s, binds);
+    await host.admin.markScopeProvisioned(staff, t, s, binds);
+    await host.admin.bindScopeVersion(staff, t, s, retired);
+    await host.admin.markScopeProvisioned(staff, t, s, retired);
+    // The switch clears the receipt in the same write as its record.
+    await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' });
+    expect((await host.admin.getScopeRecord(staff, t, s))?.provisionedVersionId).toBeNull();
+    const refused = await host.admin.bindScopeVersion(staff, t, s, dropped).then(() => null, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('precondition_failed');
+    expect(String((refused as Error).message)).toMatch(new RegExp(`drops the shape.*no reconcile receipt.*\\(one is ${s}\\)`));
+    // The twin: the sweep's reconcile writes the receipt again, and the drop binds.
+    await host.admin.markScopeProvisioned(staff, t, s, retired);
+    await host.admin.bindScopeVersion(staff, t, s, dropped);
+    expect((await host.admin.getScopeRecord(staff, t, s))?.verticalVersionId).toBe(dropped);
+  });
+
   it('refuses a scope the directory does not have before reaching anything', async () => {
     const { host, t, calls } = await setup(() => ({ held: true, changed: true, permissions: [] }));
     const refused = await host.admin

@@ -29,6 +29,7 @@ import {
   importCursorMove,
   type ImportCursorMoved,
   exportsOfManifestJson,
+  assertNoBindingShapeBreak,
   importsOfManifestJson,
   type ExportBreak,
   type ManifestImports,
@@ -641,6 +642,14 @@ import {
   exportBreakRefusal,
   bindExportBreaksOf,
   bindExportBreakRefusal,
+  scopeMoveOf,
+  runningVersionOf,
+  isPrimaryScope,
+  PROVISIONED_VERSIONS_SQL,
+  installsReconciledOf,
+  installsReconciledNote,
+  type InstallsReconciled,
+  type ServingPointer,
   CrossVerticalRegistry,
   exportReadPlan,
   exportReadQuery,
@@ -4491,25 +4500,69 @@ export class SqliteScopeHost implements ScopeHost {
     incoming: { id: string; verticalSlug: string },
     servingRef?: string | null,
   ): Promise<ExportBreak[]> {
-    const vertical =
-      scope.vertical && (scope.servingRef || servingRef)
-        ? (this.directory
-            .prepare('SELECT serving_ref, serving_version_id FROM verticals WHERE slug = ?')
-            .get(scope.vertical) as { serving_ref: string | null; serving_version_id: string | null } | undefined)
-        : undefined;
     return bindExportBreaksOf({
       admin: this.admin,
       actor,
       scope,
       incoming: { id: incoming.id, verticalSlug: incoming.verticalSlug },
       ...(servingRef !== undefined ? { servingRef } : {}),
-      serving:
-        vertical?.serving_ref && vertical.serving_version_id
-          ? { ref: vertical.serving_ref, versionId: vertical.serving_version_id }
-          : null,
+      serving: this.servingPointerOf(scope, servingRef),
       readExports: async (versionId) => exportsOfManifestJson(this.manifestJsonOf(versionId) ?? null),
       readImports: async (slug, versionId) => this.versionImports(slug, versionId),
     });
+  }
+
+  /**
+   * The serving pointer of `scope`'s vertical, read only when the scope is on a serving script
+   * before or after a move (`servingRef`), the one case it decides what the scope runs.
+   */
+  private servingPointerOf(scope: Scope, servingRef?: string | null): ServingPointer | null {
+    return scope.vertical && (scope.servingRef || servingRef) ? this.servingPointerOfVertical(scope.vertical) : null;
+  }
+
+  /** What `slug` serves in place, or null when nothing is. */
+  private servingPointerOfVertical(slug: string): ServingPointer | null {
+    const v = this.directory
+      .prepare('SELECT serving_ref, serving_version_id FROM verticals WHERE slug = ?')
+      .get(slug) as { serving_ref: string | null; serving_version_id: string | null } | undefined;
+    return v?.serving_ref && v.serving_version_id ? { ref: v.serving_ref, versionId: v.serving_version_id } : null;
+  }
+
+  /**
+   * #2178: refuse running `incomingId` where any of `froms` ran, each distinct version judged once,
+   * and where installs last reconciled one of `receipts` — a refusal from those names them.
+   */
+  private assertNoStrandFrom(froms: readonly (string | null | undefined)[], incomingId: string, receipts: readonly InstallsReconciled[] = []): void {
+    const incoming = this.manifestJsonOf(incomingId);
+    const judged = [...new Set(froms)].filter((f): f is string => !!f && f !== incomingId);
+    for (const from of judged) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming);
+    for (const r of receipts) {
+      const judgedFrom = installsReconciledNote(r);
+      // No receipt: the installs run one of `froms` and may not have reconciled its retirements.
+      // Judged against every one of `froms`, including versions this group never ran: that can
+      // only over-refuse, and only while the receipts are missing, never under-refuse.
+      if (r.versionId === null) for (const from of judged) assertNoBindingShapeBreak(this.manifestJsonOf(from), incoming, { judgedFrom, retiredStillHeld: true });
+      else if (r.versionId !== incomingId) assertNoBindingShapeBreak(this.manifestJsonOf(r.versionId), incoming, { judgedFrom });
+    }
+  }
+
+  /**
+   * #2178: refuse moving `scope` (a bind, or a route with `servingRef`) onto code that strands
+   * people a link bound — any scope, fork or preview included, since bound people live in its own
+   * spine. No acknowledgement passes it.
+   */
+  private assertBindingShapesKept(scope: Scope, incomingId: string, servingRef?: string | null): void {
+    const move = scopeMoveOf(scope, incomingId, servingRef, this.servingPointerOf(scope, servingRef));
+    // A primary scope is also judged from the version it last reconciled: until then, a retirement
+    // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
+    if (!move) return;
+    const receipt = isPrimaryScope(scope) ? [{ versionId: scope.provisionedVersionId, installs: 1, example: scope.id }] : [];
+    this.assertNoStrandFrom([move.before], move.after, receipt);
+  }
+
+  /** `PROVISIONED_VERSIONS_SQL` over the directory. */
+  private provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): InstallsReconciled[] {
+    return installsReconciledOf(this.directory.prepare(PROVISIONED_VERSIONS_SQL).all(vertical, servingRef, ownerTenant) as Record<string, unknown>[]);
   }
 
   /** What one version of `slug` imports, from the registry; `not_found` for a version it does not know. */
@@ -8891,6 +8944,36 @@ export class SqliteScopeHost implements ScopeHost {
         const outgoing = current ? readVersion(current.version_id) : undefined;
         const ack = promotionAcknowledgement.parse(acknowledge ?? {});
 
+        // The owning tenant's live scopes a PRIVATE prod promote re-points — below for an embedded
+        // vertical, after the in-place serve for a dispatch-backed one (#321) — read before
+        // anything moves so the #2178 gate can judge each one.
+        const owning = channel === 'prod' ? readVertical(verticalSlug) : undefined;
+        const owned =
+          owning && owning.ownerTenant !== null && !owning.listed
+            ? (this.directory
+                .prepare(
+                  `SELECT * FROM scopes
+                   WHERE vertical = ? AND tenant_id = ? AND status = 'active' AND forked_from IS NULL AND kind != 'preview'`,
+                )
+                .all(verticalSlug, owning.ownerTenant) as ScopeRow[])
+            : [];
+
+        // #2178, ahead of the acknowledgements below because none of them passes it. What the promote
+        // moves something from: the channel's version, the version served in place (a prod promote
+        // serves the incoming one next, and a failed serve leaves it behind the channel), and what each
+        // re-pointed scope RUNS (`runningVersionOf`: on the serving script, the served version).
+        const served = channel === 'prod' ? this.servingPointerOfVertical(verticalSlug) : null;
+        // And what each scope it moves last reconciled (`PROVISIONED_VERSIONS_SQL`).
+        this.assertNoStrandFrom(
+          [
+            outgoing?.id,
+            served?.versionId,
+            ...owned.map((s) => runningVersionOf(mapScope(s), served)),
+          ],
+          versionId,
+          served || owned.length > 0 ? this.provisionedVersionsOf(verticalSlug, served?.ref ?? null, owned.length > 0 ? owning!.ownerTenant : null) : [],
+        );
+
         // §4's two checkpoints, fired where the blast radius is. A FIRST promotion
         // has nothing to diff against, so there is nothing to acknowledge — the
         // gate is about change, not about existence.
@@ -8948,37 +9031,22 @@ export class SqliteScopeHost implements ScopeHost {
         // adopt-then-rebind for those (serve → adopt legacy scopes → advance versions),
         // so we skip the rebind here. An EMBEDDED vertical (deploymentRef null) has no
         // per-version script and keeps the rebind here. See adapter-cloudflare parity.
-        if (channel === 'prod' && !incoming.deploymentRef) {
-          const owning = readVertical(verticalSlug);
-          if (owning && owning.ownerTenant !== null && !owning.listed) {
-            const bound = this.directory
-              .prepare(
-                `SELECT scope_id, tenant_id, vertical_version_id FROM scopes
-                 WHERE vertical = ? AND tenant_id = ? AND status = 'active' AND forked_from IS NULL AND kind != 'preview'`,
-              )
-              .all(verticalSlug, owning.ownerTenant) as {
-              scope_id: string;
-              tenant_id: string;
-              vertical_version_id: string | null;
-            }[];
-            for (const s of bound) {
-              if (s.vertical_version_id === versionId) continue;
-              const prev = s.vertical_version_id ? readVersion(s.vertical_version_id) : undefined;
-              if (prev && prev.migrationDigest !== incoming.migrationDigest) {
-                await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
-              }
-              this.directory
-                .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
-                .run(versionId, verticalSlug, s.scope_id);
-              this.recordAdmin(
-                actor,
-                'bindScopeVersion',
-                { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
-                prev ? { versionId: prev.id, version: prev.version } : null,
-                { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
-              );
-            }
+        for (const s of incoming.deploymentRef ? [] : owned) {
+          if (s.vertical_version_id === versionId) continue;
+          const prev = s.vertical_version_id ? readVersion(s.vertical_version_id) : undefined;
+          if (prev && prev.migrationDigest !== incoming.migrationDigest) {
+            await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
           }
+          this.directory
+            .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
+            .run(versionId, verticalSlug, s.scope_id);
+          this.recordAdmin(
+            actor,
+            'bindScopeVersion',
+            { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
+            prev ? { versionId: prev.id, version: prev.version } : null,
+            { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
+          );
         }
 
         // The acknowledgement is recorded, not just enforced: that is what turns
@@ -9048,6 +9116,9 @@ export class SqliteScopeHost implements ScopeHost {
       },
       bindingImpact: async (actor, tenantId, scopeId, versionId: string, opts): Promise<ExportBreak[]> => {
         const { v, scope } = bindTarget(tenantId, scopeId, versionId);
+        // #2178: a move no acknowledgement passes is refused here too, so a caller asking first
+        // (an adopt, an Update) stops before anything is copied.
+        this.assertBindingShapesKept(mapScope(scope), versionId, opts?.servingRef);
         const breaks = await this.bindBreaks(actor, mapScope(scope), v, opts?.servingRef);
         this.recordAccess(actor, 'bindingImpact', { tenantId, scopeId }, { versionId, ...opts }, breaks.length);
         return breaks;
@@ -9063,6 +9134,8 @@ export class SqliteScopeHost implements ScopeHost {
           throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
         }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #2178 first: no acknowledgement passes it, so none should be asked for ahead of it.
+        this.assertBindingShapesKept(mapScope(scope), versionId);
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
         if (!ack.exportBreak) {
@@ -9222,6 +9295,12 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT * FROM verticals WHERE slug = ?')
           .get(verticalSlug) as VerticalRow | undefined;
         if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
+        // #2178: every install on the serving script runs the new version from this moment.
+        this.assertNoStrandFrom(
+          [r.serving_version_id],
+          parsed.versionId,
+          r.serving_ref ? this.provisionedVersionsOf(verticalSlug, r.serving_ref, null) : [],
+        );
         this.directory
           .prepare(
             `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
@@ -9263,6 +9342,7 @@ export class SqliteScopeHost implements ScopeHost {
         // #1756: onto (or off) a serving script, the scope runs other code before its pointer
         // moves. Judged here, so no caller that routes first and binds second passes unasked.
         const bound = scope.vertical_version_id ? readVersion(scope.vertical_version_id) : undefined;
+        if (bound) this.assertBindingShapesKept(mapScope(scope), bound.id, servingRef);
         if (!ack.exportBreak && bound) {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));

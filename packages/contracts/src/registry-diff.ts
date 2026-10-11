@@ -14,9 +14,13 @@ export interface RegistryLike {
     permissions: readonly string[];
     bootstrap?: true;
     retired?: readonly string[];
+    holder?: EntityGrantHolder;
     bind?: { permission: string };
   }>;
 }
+
+/** How a bootstrap shape's holder is found from the data (`entityGrantShape.holder`), stated structurally. */
+export type EntityGrantHolder = 'self' | 'grantee' | { table: string; idColumn: string; principalColumn: string };
 
 export interface RegistryDiff {
   addedKeys: string[];
@@ -41,6 +45,11 @@ export interface RegistryDiff {
      * may bind its person with a link (null: the shape did not bind). Absent when unchanged.
      */
     bind?: { from: string | null; to: string | null };
+    /**
+     * #2178: where the shape's holder is read from moved — `from`/`to` as {@link holderLabel}
+     * writes it (null: none declared). Absent when unchanged.
+     */
+    holder?: { from: string | null; to: string | null };
     isNew: boolean;
     isGone: boolean;
   }>;
@@ -50,6 +59,12 @@ export interface RegistryDiff {
 function gained(before: readonly string[] | undefined, after: readonly string[] | undefined): string[] {
   const had = new Set(before ?? []);
   return (after ?? []).filter((p) => !had.has(p));
+}
+
+/** A holder as one readable string: `'self'`, `'grantee'`, or `table.principalColumn (by idColumn)`. */
+export function holderLabel(h: EntityGrantHolder | undefined): string | null {
+  if (h === undefined) return null;
+  return typeof h === 'string' ? h : `${h.table}.${h.principalColumn} (by ${h.idColumn})`;
 }
 
 /**
@@ -89,8 +104,22 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
     const bindFrom = before?.bind?.permission ?? null;
     const bindTo = after?.bind?.permission ?? null;
     const bindChanged = bindFrom !== bindTo;
-    if (added.length || removed.length || retired.length || isNew || isGone || bindChanged) {
-      grantChanges.push({ entityType, added, removed, retired, kept, ...(bindChanged ? { bind: { from: bindFrom, to: bindTo } } : {}), isNew, isGone });
+    // A shape appearing or vanishing is said by `isNew`/`isGone`; its holder moves only between two.
+    const holderFrom = holderLabel(before?.holder);
+    const holderTo = holderLabel(after?.holder);
+    const holderChanged = !!before && !!after && holderFrom !== holderTo;
+    if (added.length || removed.length || retired.length || isNew || isGone || bindChanged || holderChanged) {
+      grantChanges.push({
+        entityType,
+        added,
+        removed,
+        retired,
+        kept,
+        ...(bindChanged ? { bind: { from: bindFrom, to: bindTo } } : {}),
+        ...(holderChanged ? { holder: { from: holderFrom, to: holderTo } } : {}),
+        isNew,
+        isGone,
+      });
     }
   }
   return {
@@ -109,14 +138,86 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
  * A key dropped without being retired stays with them: the reconcile takes back only what a
  * version declares retired.
  */
-export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][number], 'retired' | 'kept' | 'bind'>): string[] {
+export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][number], 'retired' | 'kept' | 'bind' | 'holder'>): string[] {
   return [
     ...g.retired.map((k) => `existing holders lose ${k}, including any direct grant of ${k} on the same entity`),
     ...g.kept.map((k) => `existing holders keep ${k}: dropped from the shape but not retired`),
     // #1686: who may hand the shape out — a binding invite — is part of what a shape confers.
     ...(g.bind?.to ? [`whoever holds ${g.bind.to} on a record may bind its person to it with a link`] : []),
     ...(g.bind?.from && !g.bind.to ? [`links may no longer bind a person to a record (was ${g.bind.from})`] : []),
+    // #2178: existing holders are not moved with it — they were found where the shape used to say.
+    ...(g.holder ? [`holders are now read from ${g.holder.to ?? 'nowhere'} (was ${g.holder.from ?? 'nowhere'}); existing holders are not moved`] : []),
   ];
+}
+
+/**
+ * #2178: one binding shape a version would leave its bound people holding with no lever left —
+ * the gate's unit. People a link bound keep the shape until they are released (#1686): an unbind
+ * needs the shape to still bind, an erasure finds them through the holder the scope recorded, and
+ * a retirement needs the shape to still be a bootstrap shape. So a version that serves where one
+ * binds may not:
+ *
+ * - `removed`: drop the shape;
+ * - `holder`: read its holder from another table or column (the people bound through the old one
+ *   are not moved, and the scope's record of where they are is replaced);
+ * - `sharing`: keep it, but no longer as a bootstrap shape, which `retired` cannot be declared on;
+ * - `kept`: keep it, but drop a key from `permissions` without listing it in `retired`. Bound
+ *   people keep that key (`grantShapeHolderNotes`' "existing holders keep"), and a later version
+ *   that retires the rest and drops the shape would never have to name it.
+ *
+ * — unless it retires every key the shape carried (`unretired` is what it does not). A shape with
+ * no current key binds nothing to anyone, which is how a retirement makes the drop allowed: keep
+ * the shape with `permissions: []` and the keys in `retired`, then drop it in a later version.
+ * Dropping only `bind` is not one of these: the holder stays recorded and a retirement stays possible.
+ */
+export interface BindingShapeBreak {
+  entityType: string;
+  change: 'removed' | 'holder' | 'sharing' | 'kept';
+  /** The keys of the outgoing shape the incoming version does not retire: what bound people keep. */
+  unretired: string[];
+}
+
+/** Every binding shape `from` binds with that `to` would strand (see {@link BindingShapeBreak}). */
+export function bindingShapeBreaks(from: Pick<RegistryLike, 'entityGrants'>, to: Pick<RegistryLike, 'entityGrants'>): BindingShapeBreak[] {
+  const toGrants = new Map(to.entityGrants.map((g) => [g.entityType, g]));
+  const breaks: BindingShapeBreak[] = [];
+  for (const before of from.entityGrants) {
+    if (!before.bind || before.permissions.length === 0) continue;
+    const after = toGrants.get(before.entityType);
+    const change = !after ? 'removed' : !after.bootstrap ? 'sharing' : holderLabel(after.holder) !== holderLabel(before.holder) ? 'holder' : 'kept';
+    // A shape kept where it was strands only the keys it drops; any other change, every key.
+    const still = new Set(change === 'kept' ? after!.permissions : []);
+    const retired = new Set(after?.retired ?? []);
+    const unretired = before.permissions.filter((k) => !still.has(k) && !retired.has(k));
+    if (unretired.length > 0) breaks.push({ entityType: before.entityType, change, unretired });
+  }
+  return breaks;
+}
+
+/** How {@link bindingShapeRefusal} begins: what a reader of the refusal recognises it by. */
+export const BINDING_SHAPE_REFUSAL = 'this version would strand people bound to';
+
+const BREAK_WORDS: Record<BindingShapeBreak['change'], string> = {
+  removed: 'drops the shape',
+  holder: 'reads its holder from elsewhere',
+  sharing: 'makes it a sharing shape',
+  kept: 'drops keys from it without retiring them',
+};
+
+/**
+ * The refusal for a non-empty {@link bindingShapeBreaks}. No acknowledgement answers it: the way
+ * through is the retirement, which is what takes the keys back from the people it strands.
+ */
+export function bindingShapeRefusal(breaks: readonly BindingShapeBreak[]): string {
+  const each = breaks.map((b) => `${b.entityType} (${BREAK_WORDS[b.change]}; bound people keep ${b.unretired.join(', ')})`);
+  return (
+    `${BINDING_SHAPE_REFUSAL} ${each.join(', ')}. Retire those keys first: keep the shape with the keys ` +
+    'in `retired` and none of them in `permissions`, then drop or move it in a later version. A ' +
+    'version from before the shape existed (a rollback) is refused the same way, and no ' +
+    'acknowledgement passes it: retire the keys in a new version instead. A retirement reaches an ' +
+    'install only when it reconciles the retiring version, so the drop stays refused until every ' +
+    'install it would move has'
+  );
 }
 
 /** Whether the diff holds anything at all — a key, a role or a grant shape moved. */
@@ -146,8 +247,9 @@ export function registryDirection(d: RegistryDiff): RegistryDirection {
     d.removedKeys.length > 0 ||
     d.roleChanges.some((r) => r.isGone || r.removed.length > 0) ||
     d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0 || !!g.bind?.from);
-  // A description re-worded is a change that is neither: it keeps a diff from being "only".
-  const other = d.changedKeys.length > 0;
+  // A description re-worded, or a holder moved, is a change that is neither: it keeps a diff
+  // from being "only".
+  const other = d.changedKeys.length > 0 || d.grantChanges.some((g) => !!g.holder);
   if (!hasRegistryChange(d)) return 'none';
   if (adds && !removes && !other) return 'adds';
   if (removes && !adds && !other) return 'removes';

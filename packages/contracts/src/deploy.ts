@@ -5,6 +5,8 @@ import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
+import { substratError } from './errors.js';
+import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
 // module files (self-serve-deploy.md). It lives here — not in the transport
@@ -375,7 +377,7 @@ export type ManifestImports =
  */
 function registryRowsOfManifestJson<T>(
   manifestJson: string | null | undefined,
-  key: 'imports' | 'exports',
+  key: 'imports' | 'exports' | 'entityGrants',
   row: z.ZodType<T>,
 ): { rows: T[] } | { unreadable: string } | null {
   if (!manifestJson) return null;
@@ -422,6 +424,46 @@ export function exportsOfManifestJson(manifestJson: string | null | undefined): 
   if (read === null) return { kind: 'none' };
   if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
   return { kind: 'exports', rows: read.rows.map((r) => ({ type: r.type, schemaVersion: r.schemaVersion })) };
+}
+
+/**
+ * #2178: the binding-shape gate over two STORED manifests — the version that runs now and the one
+ * that would run instead — refused `precondition_failed` with {@link bindingShapeRefusal} when the
+ * move strands people a link bound (`bindingShapeBreaks`). A manifest with no registry declares no
+ * shape. One whose grant shapes cannot be read is refused too, saying so: the gate cannot tell
+ * that it strands nobody, and no acknowledgement passes it.
+ */
+export function assertNoBindingShapeBreak(
+  outgoingManifest: string | null | undefined,
+  incomingManifest: string | null | undefined,
+  opts: {
+    /** What the outgoing version is, when the refusal should say (the installs that last reconciled it). */
+    judgedFrom?: string;
+    /**
+     * Judge as if the outgoing version's retirements had not run: for installs with no receipt,
+     * which may not have reconciled it, so may still hold every key it retires.
+     */
+    retiredStillHeld?: boolean;
+  } = {},
+): void {
+  const grants = (json: string | null | undefined, which: string) => {
+    const read = registryRowsOfManifestJson(json, 'entityGrants', entityGrantShape);
+    if (read === null) return [];
+    if ('unreadable' in read) {
+      throw substratError(
+        'precondition_failed',
+        `the ${which} version's grant shapes cannot be read (${read.unreadable}), so whether this strands anyone a link bound is unknown — refused`,
+      );
+    }
+    return read.rows;
+  };
+  const outgoing = grants(outgoingManifest, 'the running').map((g) =>
+    opts.retiredStillHeld && g.retired?.length ? { ...g, permissions: [...g.permissions, ...g.retired], retired: undefined } : g,
+  );
+  const breaks = bindingShapeBreaks({ entityGrants: outgoing }, { entityGrants: grants(incomingManifest, 'the incoming') });
+  if (breaks.length > 0) {
+    throw substratError('precondition_failed', bindingShapeRefusal(breaks) + (opts.judgedFrom ? `. Judged from ${opts.judgedFrom}` : ''));
+  }
 }
 
 /**
@@ -640,8 +682,20 @@ export const entityGrantShape = z.object({
    * People already bound KEEP the shape until they are released — an unbind while the shape binds,
    * an erasure (which reaches every type that ever bound in the scope), or `retired` — whatever a
    * later version does to the declaration: dropping `bind` keeps the holder recorded but leaves no
-   * unbind; removing the shape or moving its holder leaves erasure and retirement (#2178 would
-   * refuse that change). Omitted when unset, so a registry that binds nothing keeps its digest.
+   * unbind. A version that removes the shape, moves its holder, drops `bootstrap` or drops a key
+   * from `permissions` without listing it in `retired` is refused
+   * wherever it would come to run where the shape binds — a promote, a bind, a route onto a serving
+   * script — unless it retires every key (`bindingShapeBreaks`, #2178); a rollback to a version from
+   * before the shape is refused the same way. Retiring is the way through: keep the shape with the
+   * keys in `retired` and none in `permissions`, then drop or move it in a later version. A
+   * retirement reaches an install only at its reconcile, so each primary install the move reaches is
+   * also judged from the version it last reconciled (`provisionedVersionId`): the drop stays refused
+   * until every one has reconciled the retiring version. An install with no receipt (a switch or a
+   * rewind cleared it, or it is new) counts as not having run the retirements of what it runs, until
+   * the sweep's next reconcile writes one. That receipt proves less than the scope's own retirement
+   * record would: a reconcile that left a retirement open still writes it, and a copy (fork,
+   * snapshot, preview) never reconciles and is not judged from one. Omitted when unset, so a
+   * registry that binds nothing keeps its digest.
    */
   bind: z.object({ permission: permissionKey }).optional(),
 });
