@@ -11,7 +11,6 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import Database from 'better-sqlite3';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,19 +47,6 @@ export interface FaultReport {
   node: string;
 }
 
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.unref();
-    srv.on('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address();
-      const port = typeof addr === 'object' && addr ? addr.port : 0;
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
 interface Proc {
   name: string;
   child: ChildProcess;
@@ -83,7 +69,12 @@ export class Cluster {
     this.members = statefulSetMembers('todo', opts.shards);
   }
 
-  private async spawn(name: string, file: string, env: Record<string, string>, port: number): Promise<Proc> {
+  /**
+   * Start `file` as `name`. It binds `port` — 0, the first time, so the operating system picks a
+   * free one and no other suite can take it in between — and reports what it bound in `ready`,
+   * which is the port `restart()` hands the next incarnation.
+   */
+  private async spawn(name: string, file: string, env: Record<string, string>, port = 0): Promise<Proc> {
     const log: string[] = [];
     const child = fork(join(SRC, file), [], {
       cwd: SPIKE,
@@ -100,8 +91,9 @@ export class Cluster {
     });
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`${name} did not start: ${log.join('')}`)), 30_000);
-      child.on('message', (m: { ready?: string }) => {
+      child.on('message', (m: { ready?: string; port?: number }) => {
         if (m.ready) {
+          proc.port = Number(m.port);
           clearTimeout(timer);
           resolve();
         }
@@ -116,9 +108,7 @@ export class Cluster {
   }
 
   async start(): Promise<this> {
-    const cpPort = await freePort();
-    this.cpUrl = `http://127.0.0.1:${cpPort}`;
-    await this.spawn(
+    const cp = await this.spawn(
       'control-plane',
       'control-plane.ts',
       {
@@ -128,14 +118,12 @@ export class Cluster {
         PROVISION: this.opts.implicitProvision ? 'implicit' : 'explicit',
         CLOCK: this.opts.manualClock ? 'manual' : 'monotonic',
       },
-      cpPort,
     );
+    this.cpUrl = `http://127.0.0.1:${cp.port}`;
     const urls = this.shardUrls;
     await Promise.all(
       this.members.map(async (name) => {
-        const port = await freePort();
-        urls[name] = `http://127.0.0.1:${port}`;
-        await this.spawn(
+        const shard = await this.spawn(
           name,
           'shard.ts',
           {
@@ -146,8 +134,8 @@ export class Cluster {
             LEASES: this.opts.leases ?? 'on',
             BG_PERIOD_MS: String(this.opts.bgPeriodMs ?? 0),
           },
-          port,
         );
+        urls[name] = `http://127.0.0.1:${shard.port}`;
       }),
     );
     for (const [i, timeout] of (this.opts.routerTimeoutsMs ?? [1500]).entries()) {
@@ -160,7 +148,6 @@ export class Cluster {
           MEMBERS: JSON.stringify(this.routed(this.opts.routedShards ?? this.members.length)),
           REQUEST_TIMEOUT_MS: String(timeout),
         },
-        await freePort(),
       );
     }
     return this;
