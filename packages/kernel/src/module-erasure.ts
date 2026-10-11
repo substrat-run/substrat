@@ -506,7 +506,7 @@ export function eraseSubjectFromModules(input: {
 
   // #1686: the erased record no longer names its person, and the erased person holds nothing
   // through a record — the column cleared where the row survived, the shape taken back either way.
-  for (const { binding } of bound) secure(binding.table);
+  for (const { binding } of bound.columns) secure(binding.table);
   releaseBound(sql, bound, at);
 
   for (const idx of secured) sql.exec(`INSERT INTO ${idx}(${idx}, rank) VALUES('secure-delete', 0)`);

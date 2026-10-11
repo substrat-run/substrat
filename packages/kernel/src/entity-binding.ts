@@ -182,32 +182,45 @@ export function bindIn(
 }
 
 /**
- * Release `principal` from `entity`: the column cleared where the row is there and still names
- * them, and the shape's marker and every key, current and retired, tombstoned — one statement, so
- * one tuple is one authority: a key of a binding shape is refused to every grant but the shape's,
- * so whatever row holds it there came from the shape. The keys it took, sorted.
+ * Release the record's shape holders from the SPINE: every principal holding a live marker on
+ * `object` (or only `only`), and with each marker everything that principal holds on the record —
+ * every `granted:` tuple there, whatever the shape's keys are now. A binding shape's marker and keys
+ * come only from its own grant (the keys are refused to every other grant), so the marker is the
+ * person's holding of the record, and what they hold on it goes with it: a key the shape has since
+ * dropped without retiring it included. Judged by the spine, never the column, so a column module
+ * code rewrote cannot strand the person a link bound. One tombstone statement per holder (K-21).
  */
-function release(sql: ScopedSql, binding: EntityBinding, entityId: string, principal: string, now: string): PermissionKey[] {
-  if (tableExists(switchSqlOf(sql), binding.table)) {
-    sql.exec(
-      `UPDATE "${binding.table}" SET "${binding.principalColumn}" = NULL WHERE "${binding.idColumn}" = ? AND "${binding.principalColumn}" = ?`,
-      [entityId, principal],
-    );
-  }
-  return sql
-    .query<{ relation: string }>(
-      `UPDATE _substrat_tuples SET revoked_at = ?
-        WHERE subject = ? AND object = ? AND revoked_at IS NULL AND relation IN (SELECT value FROM json_each(?))
-        RETURNING relation`,
-      [
-        now,
-        `${PRINCIPAL}${principal}`,
-        entityObjectRef({ entityType: binding.entityType, entityId }, 'unbind'),
-        JSON.stringify([ENTITY_SHAPE_MARKER_RELATION, ...binding.every.map((k) => `${GRANTED}${k}`)]),
-      ],
-    )
-    .flatMap((r) => (r.relation === ENTITY_SHAPE_MARKER_RELATION ? [] : [permissionKey.parse(r.relation.slice(GRANTED.length))]))
-    .sort();
+function releaseHolders(sql: ScopedSql, object: string, now: string, only?: string): { principal: PrincipalId; removed: PermissionKey[] }[] {
+  const holders = sql.query<{ subject: string }>(
+    `SELECT subject FROM _substrat_tuples
+      WHERE object = ? AND relation = '${ENTITY_SHAPE_MARKER_RELATION}' AND revoked_at IS NULL
+        AND subject >= '${PRINCIPAL}' AND subject < 'principal;'${only === undefined ? '' : ' AND subject = ?'}`,
+    only === undefined ? [object] : [object, `${PRINCIPAL}${only}`],
+  );
+  return holders.map(({ subject }) => ({
+    principal: subject.slice(PRINCIPAL.length) as PrincipalId,
+    removed: sql
+      .query<{ relation: string }>(
+        `UPDATE _substrat_tuples SET revoked_at = ?
+          WHERE subject = ? AND object = ? AND revoked_at IS NULL
+            AND (relation = '${ENTITY_SHAPE_MARKER_RELATION}' OR (relation >= '${GRANTED}' AND relation < 'granted;'))
+          RETURNING relation`,
+        [now, subject, object],
+      )
+      .flatMap((r) => (r.relation === ENTITY_SHAPE_MARKER_RELATION ? [] : [permissionKey.parse(r.relation.slice(GRANTED.length))]))
+      .sort(),
+  }));
+}
+
+/** Clear the record's column — every row carrying its id, or only where it still names `principal`. */
+function clearColumn(sql: ScopedSql, binding: EntityBinding, entityId: string, principal?: string): void {
+  if (!tableExists(switchSqlOf(sql), binding.table)) return;
+  sql.exec(
+    `UPDATE "${binding.table}" SET "${binding.principalColumn}" = NULL WHERE "${binding.idColumn}" = ? AND ${
+      principal === undefined ? `"${binding.principalColumn}" IS NOT NULL` : `"${binding.principalColumn}" = ?`
+    }`,
+    principal === undefined ? [entityId] : [entityId, principal],
+  );
 }
 
 /** The pseudo-operation an unbind's spine event names, on `capabilities.mint-become`'s pattern. */
@@ -216,9 +229,11 @@ export const ENTITY_UNBIND_OPERATION = 'entities.unbind';
 /**
  * A principal's unbind of `entity` (#1686) — the lever beside a binding invite, run by a host in one
  * scope task and transaction. Bounded here: the caller must hold the binding's key on the record
- * (`allowed`, the checker's `check` for the caller). Writes the unbind and its
- * `entity.holder-unbound` event through `emit`, whose actor the host stamps as the caller; a
- * refusal, or a record naming nobody, writes nothing.
+ * (`allowed`, the checker's `check` for the caller). Clears the record's column (every row with
+ * its id) and releases every holder of the shape on it from the spine — whoever a link bound,
+ * whatever the column says now, and a holder given the shape before the column was written —
+ * with one `entity.holder-unbound` event each through `emit`, whose actor the host stamps as the
+ * caller. `unbound` names everyone released; a refusal writes nothing.
  */
 export async function unbindEntityHolderBounded(
   deps: {
@@ -229,47 +244,65 @@ export async function unbindEntityHolderBounded(
   },
   entity: EntityRef,
 ): Promise<BoundedUnbind> {
-  entityObjectRef(entity, 'unbind');
+  const object = entityObjectRef(entity, 'unbind');
   const binding = entityBindingOf(deps.sql, entity.entityType);
   if (!binding) return { ok: false, refused: 'bind-not-declared' };
   if (!(await deps.allowed(binding.permission, entity))) return lacking(binding.permission);
-  const record = boundRecord(deps.sql, binding, entity.entityId);
-  if (!record.exists || record.principal === null) return { ok: true, unbound: null };
-  const principal = record.principal as PrincipalId;
-  const payload: EntityHolderUnboundPayload = {
-    entity,
-    principal,
-    removed: release(deps.sql, binding, entity.entityId, principal, deps.now),
-  };
-  deps.emit({ type: ENTITY_HOLDER_UNBOUND, schemaVersion: 1, entity, piiClass: 'none', payload });
-  return { ok: true, unbound: principal };
+  clearColumn(deps.sql, binding, entity.entityId);
+  const released = releaseHolders(deps.sql, object, deps.now);
+  for (const { principal, removed } of released) {
+    const payload: EntityHolderUnboundPayload = { entity, principal, removed };
+    deps.emit({ type: ENTITY_HOLDER_UNBOUND, schemaVersion: 1, entity, piiClass: 'none', payload });
+  }
+  return { ok: true, unbound: released.map((r) => r.principal) };
+}
+
+/** What an erasure releases, read before any of it runs. */
+export interface ErasureBindings {
+  /** Shape holders to release: on a record that IS the subject (any holder), or the subject's own markers. */
+  holders: { object: string; only?: string }[];
+  /** Rows whose column names someone the erasure reaches, to clear where they survive. */
+  columns: { binding: EntityBinding; entityId: string; principal: string }[];
 }
 
 /**
- * Every bound record the erasure of `subjectId` reaches: those whose column names the subject
- * (the person erased) and the record that IS the subject (the record erased). Read BEFORE any
- * declared blank, delete or hook runs, so a record a module's erasure deletes is still released.
- * A scope whose registry binds nothing pays the one read of its shape records.
+ * Every binding the erasure of `subjectId` reaches, by the spine and by the column: on each type the
+ * scope binds, the record that IS the subject (every holder on it) and every record the subject
+ * holds the shape on (their own marker), plus the rows whose column names the subject or that are
+ * the subject. Read BEFORE any declared blank, delete or hook runs, so a row a module's erasure
+ * deletes is still known. A scope that binds nothing pays the one read of its shape records.
  */
-export function captureBoundOf(sql: ScopedSql, subjectId: string): { binding: EntityBinding; entityId: string; principal: string }[] {
-  return entityBindingsOf(sql).flatMap((binding) =>
-    tableExists(switchSqlOf(sql), binding.table)
-      ? sql
-          .query<{ id: string; principal: string }>(
-            `SELECT "${binding.idColumn}" AS id, "${binding.principalColumn}" AS principal FROM "${binding.table}"
-              WHERE ("${binding.idColumn}" = ? OR "${binding.principalColumn}" = ?) AND "${binding.principalColumn}" IS NOT NULL`,
-            [subjectId, subjectId],
-          )
-          .map((r) => ({ binding, entityId: String(r.id), principal: r.principal }))
-      : [],
-  );
+export function captureBoundOf(sql: ScopedSql, subjectId: string): ErasureBindings {
+  const out: ErasureBindings = { holders: [], columns: [] };
+  for (const binding of entityBindingsOf(sql)) {
+    const prefix = `${binding.entityType}:`;
+    out.holders.push({ object: `${prefix}${subjectId}` });
+    for (const { object } of sql.query<{ object: string }>(
+      `SELECT object FROM _substrat_tuples
+        WHERE subject = ? AND relation = '${ENTITY_SHAPE_MARKER_RELATION}' AND revoked_at IS NULL AND object >= ? AND object < ?`,
+      [`${PRINCIPAL}${subjectId}`, prefix, `${binding.entityType};`],
+    )) {
+      out.holders.push({ object, only: subjectId });
+    }
+    if (!tableExists(switchSqlOf(sql), binding.table)) continue;
+    for (const r of sql.query<{ id: string; principal: string }>(
+      `SELECT "${binding.idColumn}" AS id, "${binding.principalColumn}" AS principal FROM "${binding.table}"
+        WHERE ("${binding.idColumn}" = ? OR "${binding.principalColumn}" = ?) AND "${binding.principalColumn}" IS NOT NULL`,
+      [subjectId, subjectId],
+    )) {
+      out.columns.push({ binding, entityId: String(r.id), principal: r.principal });
+    }
+  }
+  return out;
 }
 
 /**
- * The erasure's unbind, after the module hooks: each captured record's shape taken back from the
- * person it named, and its column cleared where the row survived and still names them. No event:
- * an event naming the erased subject would be a new copy of what is being erased.
+ * The erasure's unbind, after the module hooks: each captured column cleared where the row survived
+ * and still names that person, and each captured holder released from the spine whether or not
+ * its row survived. No event: an event naming the erased subject would be a new copy of what is
+ * being erased.
  */
-export function releaseBound(sql: ScopedSql, captured: ReturnType<typeof captureBoundOf>, now: string): void {
-  for (const { binding, entityId, principal } of captured) release(sql, binding, entityId, principal, now);
+export function releaseBound(sql: ScopedSql, captured: ErasureBindings, now: string): void {
+  for (const { binding, entityId, principal } of captured.columns) clearColumn(sql, binding, entityId, principal);
+  for (const { object, only } of captured.holders) releaseHolders(sql, object, now, only);
 }

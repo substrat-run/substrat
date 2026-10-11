@@ -95,15 +95,15 @@ describe('the unbind route over the SQLite host (#1686)', () => {
     expect(await reads(who, id)).toBe(true);
   });
 
-  it("unbinds for the clerk: the column cleared, the portal gone; a second unbind names nobody", async () => {
+  it("unbinds for the clerk: the column cleared, the portal gone; a second unbind releases nobody", async () => {
     const { id, who } = await bound();
     const res = await call(`/api/bindings/brecord/${id}/unbind`, clerk);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ unbound: who });
+    expect(await res.json()).toEqual({ unbound: [who] });
     expect(await principalOf(id)).toBeNull();
     expect(await reads(who, id)).toBe(false);
     const again = await call(`/api/bindings/brecord/${id}/unbind`, clerk);
-    expect(await again.json()).toEqual({ unbound: null });
+    expect(await again.json()).toEqual({ unbound: [] });
   });
 
   it('answers 404 for a type the registry binds nothing on, and the vertical\'s 401 for nobody', async () => {

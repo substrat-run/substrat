@@ -338,7 +338,7 @@ export function bindingInviteContractSuite(
         const { id, target } = await claimed();
         // A retired key left from before the shape dropped it — only the kernel's own writes can put it here now.
         await raw(t1, s1, 'INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', [`principal:${target}`, `granted:${BIND_OLD}`, `brecord:${id}`]);
-        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: target });
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target] });
         expect((await rowOf(id))?.principal).toBeNull();
         expect(await tuplesOn(id)).toEqual([
           { subject: `principal:${target}`, relation: 'bootstrap', live: false },
@@ -352,13 +352,40 @@ export function bindingInviteContractSuite(
         ]);
         // Nothing left to unbind: an answer, and nothing written.
         const before = await snapshot();
-        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: null });
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [] });
         expect(await snapshot()).toEqual(before);
         // The record is free again: a new invite binds a new person.
         const next = await invitee();
         expect((await exchange((await minted(clerk, next, rec(id))).secret))?.kind).toBe('principal');
         expect(await reads(next, id)).toBe(true);
         expect(await reads(target, id)).toBe(false);
+      });
+
+      it('releases from the spine: the person a link bound, though module code has since rewritten the column', async () => {
+        const { id, target } = await claimed();
+        const other = p();
+        await put('UPDATE bind_records SET principal = ? WHERE id = ?', [other, id]);
+        // `other` holds no marker here — the column alone is no holding — so only the bound person is released.
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target] });
+        expect((await rowOf(id))?.principal).toBeNull();
+        expect(await reads(target, id)).toBe(false);
+        expect((await tuplesOn(id)).filter((t) => t.live)).toEqual([]);
+      });
+
+      it('takes back a key the shape has since dropped without retiring it — everything the holder holds on the record', async () => {
+        const kept = { ...BIND_SHAPE, permissions: [BIND_OLD, BIND_READ_OWN], retired: undefined };
+        await reconcile([kept]);
+        try {
+          const { id, target } = await claimed();
+          await reconcile([{ ...BIND_SHAPE, retired: undefined }]);
+          expect((await tuplesOn(id)).filter((t) => t.live).map((t) => t.relation)).toEqual(['bootstrap', `granted:${BIND_OLD}`, `granted:${BIND_READ_OWN}`]);
+          expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target] });
+          expect((await tuplesOn(id)).filter((t) => t.live)).toEqual([]);
+          const event = (await outbox(ENTITY_HOLDER_UNBOUND)).find((e) => e.entity_id === id);
+          expect(event?.payload).toMatchObject({ removed: [BIND_OLD, BIND_READ_OWN] });
+        } finally {
+          await reconcile([BIND_SHAPE]);
+        }
       });
 
       it('answers bind-not-declared for a type the registry binds nothing on', async () => {

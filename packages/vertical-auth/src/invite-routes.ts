@@ -481,15 +481,15 @@ export interface UnbindRouteDeps<E extends object, N extends { scopeId: string }
  * Mount the one generic UNBIND route (#1686), the lever beside a binding invite, for every
  * vertical that declares a binding shape:
  *
- *   POST /api/bindings/:entityType/:entityId/unbind  → { unbound: <principal> | null }
+ *   POST /api/bindings/:entityType/:entityId/unbind  → { unbound: [<principal>, …] }
  *
- * Clears the record's declared principal column and takes back the shape its person held there
- * through it (the marker and every key, tombstoned), with `entity.holder-unbound` on the spine.
- * `unbound: null` when the record named nobody — nothing written. A caller without the binding's
- * key on the record is refused 403, naming it; a type the scope's reconciled registry binds is
- * otherwise unknown here, so one it does not bind is 404. The person keeps their login and any
- * role; what goes is what the record gave them. A person given the shape before the column was
- * ever written (a legacy holder) is not named by it, so this cannot reach them.
+ * Clears the record's declared principal column and releases everyone holding the record's shape
+ * there — found by their marker on the spine, not by the column, so a holder given the shape
+ * before the column was ever written (a legacy holder) is released too — tombstoning the marker
+ * and everything they hold on the record, with one `entity.holder-unbound` each on the spine.
+ * `unbound: []` when nobody held it. A caller without the binding's key on the record is refused
+ * 403, naming it; a type the scope's reconciled registry does not bind is 404. A person keeps
+ * their login and any role; what goes is what the record gave them.
  */
 export function mountUnbindRoute<E extends object, N extends { scopeId: string }>(
   app: Hono<{ Bindings: E }>,
