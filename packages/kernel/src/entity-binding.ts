@@ -213,11 +213,14 @@ export function bindIn(
 /**
  * Release the record's shape holders from the SPINE: every principal holding a live marker on
  * `object` (or only `only`), and with each marker everything that principal holds on the record —
- * every `granted:` tuple there, whatever the shape's keys are now. A binding shape's marker and keys
- * come only from its own grant (the keys are refused to every other grant), so the marker is the
- * person's holding of the record, and what they hold on it goes with it: a key the shape has since
- * dropped without retiring it included. Judged by the spine, never the column, so a column module
- * code rewrote cannot strand the person a link bound. One tombstone statement per holder (K-21).
+ * every `granted:` tuple there, whatever the shape's keys are now. A binding shape's marker and its
+ * keys come only from its own grant (its keys are refused to every direct grant on a record of the
+ * type), so the marker is the person's holding of the record, and what they hold on it goes with it:
+ * a key the shape has since dropped without retiring it included. That is broader than the shape:
+ * it ALSO revokes a direct grant of a key the shape does not declare, made to the same holder on the
+ * same record (a `bind:member` granted to a bound person goes with the unbind) — reported in
+ * `removed`, never silent. Judged by the spine, never the column, so a column module code rewrote
+ * cannot strand the person a link bound. One tombstone statement per holder (K-21).
  */
 function releaseHolders(sql: ScopedSql, object: string, now: string, only?: string): { principal: PrincipalId; removed: PermissionKey[] }[] {
   const holders = sql.query<{ subject: string }>(
@@ -296,7 +299,9 @@ export interface ErasureBindings {
 
 /**
  * Every binding the erasure of `subjectId` reaches, by the spine and by the column: on each type the
- * scope binds or has ever bound (`shape-bound`), the record that IS the subject (every holder on it) and every record the subject
+ * scope binds or has ever bound (`shape-bound`) — the id matched against every such type, as a
+ * module's declared erasure matches its subject columns whatever the type, so ids that are not
+ * ULIDs (an integer, say) can collide across types — the record that IS the subject (every holder on it) and every record the subject
  * holds the shape on (their own marker), plus the rows whose column names the subject or that are
  * the subject. Read BEFORE any declared blank, delete or hook runs, so a row a module's erasure
  * deletes is still known. A scope that binds nothing pays the one read of its shape records.
