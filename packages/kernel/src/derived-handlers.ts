@@ -27,7 +27,7 @@ type Row = Record<string, unknown>;
 type Input = Record<string, unknown> | undefined;
 
 /** `"col"` — a declared column is an identifier, quoted so a keyword-named one still reads as a column. */
-const quoted = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
+export const quoted = (identifier: string): string => `"${identifier.replace(/"/g, '""')}"`;
 
 /** The handler a plan describes. */
 export function derivedHandler(plan: DerivationPlan): OperationHandler<never, unknown> {
@@ -90,11 +90,13 @@ function bodyOf(
         const sent = plan.fields.filter(({ field }) => input?.[field] !== undefined);
         // Nothing sent is nothing changed — no write, and no event to move the version.
         if (sent.length === 0) return existing;
+        // The sent fields, then the updated pair (#2166), which every write moves.
+        const set = [...sent.map(({ column }) => column), ...plan.stamps.map(({ column }) => column)];
         ctx.sql.exec(
-          `UPDATE ${quoted(plan.table)} SET ${sent.map(({ column }) => `${quoted(column)} = ?`).join(', ')} ` +
+          `UPDATE ${quoted(plan.table)} SET ${set.map((column) => `${quoted(column)} = ?`).join(', ')} ` +
             `WHERE ${quoted(plan.primaryKey)} = ?`,
           // The plan admits only string and number columns, and the host parsed the input against them.
-          [...sent.map(({ field }) => input?.[field] as SqlValue), id],
+          [...sent.map(({ field }) => input?.[field] as SqlValue), ...stamped(ctx, plan.stamps), id],
         );
         const row = rowOrThrow(ctx, id);
         ctx.emit(eventOf(plan.emit, ref(id), row));
@@ -191,7 +193,7 @@ function parentLookup(parent: DerivedParent): (ctx: OperationContext, input: Inp
 function stamped(ctx: OperationContext, stamps: readonly DerivedStamp[]): SqlValue[] {
   const now = ctx.now();
   const caller = String(ctx.principal);
-  return stamps.map(({ kind }) => (kind === 'createdAt' ? now : caller));
+  return stamps.map(({ kind }) => (kind === 'createdAt' || kind === 'updatedAt' ? now : caller));
 }
 
 /** The page the platform supplied with the input (`limit`, `cursor`, `sort`, `order`). */

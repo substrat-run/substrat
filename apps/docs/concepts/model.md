@@ -588,7 +588,7 @@ These shapes are derivable, and each is matched exactly:
 |---|---|---|
 | `get` | served as `GET`, input is the id alone, output is the entity's own `fields`, emits nothing | the check, then the row by its declared columns, or `not_found` |
 | `list` | served as `GET`, `paged.over` the entity, output is its `fields`, emits nothing, every input a declared `filterable` column of the same type — or, on an entity that declares `archive`, an optional `view: z.enum(['active', 'archived'])` | the check, then `ctx.page` with those filters and that view; a check narrowed to a **parent** scopes the page to that parent's rows, through the link column `<parent>_id`, and a parent that does not exist is `not_found` rather than an empty page |
-| `update` | served as `PATCH`, narrowed to the row, `concurrency` over it, emits about it, output is its `fields` | absent fields are left alone, `null` clears a nullable column, one event whose payload is the declared fields of the row as written; nothing sent means nothing written and nothing emitted |
+| `update` | served as `PATCH`, narrowed to the row, `concurrency` over it, emits about it, output is its `fields` | absent fields are left alone, `null` clears a nullable column, the entity's updated `stamps` are set to the time and the caller, one event whose payload is the declared fields of the row as written; nothing sent means nothing written and nothing emitted |
 | `delete` | served as `DELETE`, narrowed to the row, emits about it, answers `{ id, deleted }`, no entity declares it as parent | removes the row and emits |
 | `create` | served as `POST`, emits about the row by its id, output is its `fields`, and every column is filled by exactly one thing the model names (below) | mints the id, inserts, links the row to its parent, emits; with a natural `key`, a row already holding that key is the answer, with no write and no event |
 | `archive` · `unarchive` · `trash` · `restore` | served as `POST`, input is the id alone, narrowed to the row under the key the entity declares for that move, answers `entityStateOutput`, declares no `emits`; `restore` alone declares `trashed: 'admits'` | the check, then the kernel move (`ctx.archive` and its siblings), which emits it — see [archive and trash](./archive-and-trash.md) |
@@ -618,14 +618,80 @@ your decision, so that create is written by hand. Without a key it derives as us
 ```ts
 savedReplyFolder: {
   table: 'acme_folders',
-  fields: z.object({ id: z.string(), name: z.string(), created_by: z.string(), created_at: z.string() }),
+  fields: z.object({
+    id: z.string(),
+    name: z.string(),
+    created_by: z.string(),
+    created_at: z.string(),
+    updated_by: z.string(),
+    updated_at: z.string(),
+  }),
   key: ['name'],
-  // What a derived create fills from the call: the time, and the caller. No migration — the
-  // columns are fields. The created pair only: an updated pair waits for the host to hold it on
-  // every write, authored ones included.
-  stamps: { created_by: 'createdBy', created_at: 'createdAt' },
+  // What the platform fills from the call: the time, and the caller. No migration — the
+  // columns are fields.
+  stamps: {
+    created_by: 'createdBy',
+    created_at: 'createdAt',
+    updated_by: 'updatedBy',
+    updated_at: 'updatedAt',
+  },
 },
 ```
+
+`stamps` names four kinds, each at most one string column that is not the primary key:
+
+| Kind | Holds | Written |
+|---|---|---|
+| `createdAt` | `ctx.now()` | on insert |
+| `createdBy` | the calling principal | on insert |
+| `updatedAt` | `ctx.now()` | on insert, and whenever the row is written and emitted about |
+| `updatedBy` | the calling principal | on insert, and whenever the row is written and emitted about |
+
+A derived `create` writes all of them and a derived `update` writes the updated pair. No derived
+body field may write a stamped column.
+
+The declaration lands in `model.json`, so the host holds it, not only the derived handlers. The
+host reads what a call **emitted**, not what it wrote. After an operation, a consumer or an
+imported-event handler runs, and inside its transaction, every row it named in a `ctx.emit`, if
+that row's entity declares the pair, must hold the call's `ctx.now()` and principal. If not, the
+call fails `internal` and everything it wrote rolls back. A consumer's principal is its own, not
+the principal of the caller whose event it reacts to.
+
+That rule cuts both ways:
+
+- **An emit about a stamped row counts as a write to it.** A handler that announces a row (a
+  share, a link, an audit-style event) must stamp that row too, even if it changed nothing else in
+  it.
+- **A write with no emit about the row is not checked.** A handler that changes a stamped row and
+  emits only about another entity, such as its parent, leaves the pair as it wrote it, and the host
+  does not notice. The platform's rule that every mutation emits a fat event about what it changed
+  is what closes that gap: emit about the row you wrote.
+
+**An authored handler on such an entity that forgets to stamp a row it emits about fails**, which
+is the point. Write the pair wherever you write the row:
+
+```ts
+ctx.sql.exec('UPDATE acme_folders SET name = ?, updated_at = ?, updated_by = ? WHERE id = ?', [
+  input.name,
+  ctx.now(),
+  String(ctx.principal),
+  input.id,
+]);
+ctx.emit({ type: 'acme.folder-renamed', /* … */ entity: { entityType: 'savedReplyFolder', entityId: input.id } });
+```
+
+Five things are not checked:
+
+- **A write that emits about another entity.** See above: the host holds the rows a call names.
+- **A row that is gone.** A delete has nothing left to stamp.
+- **Kernel writes.** `ctx.archive`, `ctx.trash`, `ctx.restore`, a link, an attachment or a grant
+  change only the platform's own state. They emit the kernel's own event types, and they leave the
+  updated pair as it was.
+- **An emit rolled back inside `ctx.atomic`.** It is gone with the write it described.
+- **An entity that declares no updated stamp.** The host reads nothing for it. A scope with no
+  such entity reads nothing at all.
+
+An event names one id, so an entity with an updated stamp needs a single-column primary key.
 
 A derived handler checks the declared key first, so a caller without it learns nothing about
 whether the row exists; the bin is the exception, checked on every row by `ctx.pageTrashed`

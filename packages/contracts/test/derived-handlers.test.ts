@@ -10,7 +10,8 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { entityStateName, entityStateOutput } from '../src/entity-state.js';
-import { defineEntities, emitModel, emittedModel } from '../src/model.js';
+import { moduleManifest } from '../src/manifest.js';
+import { defineEntities, emitModel, emittedModel, manifestEntities, updatedStampsOf } from '../src/model.js';
 import { defineOperations, derivationOf, derivationPlanOf } from '../src/operations.js';
 
 const entities = defineEntities({
@@ -69,6 +70,19 @@ const entities = defineEntities({
     stamps: { created_at: 'createdAt' },
   },
   counter: { table: 't_counters', fields: z.object({ id: z.number(), label: z.string() }) },
+  // Every stamp (#2166): the updated pair is written by every write, the created pair on insert.
+  doc: {
+    table: 't_docs',
+    fields: z.object({
+      id: z.string(),
+      title: z.string(),
+      created_at: z.string(),
+      created_by: z.string(),
+      updated_at: z.string(),
+      updated_by: z.string(),
+    }),
+    stamps: { updated_by: 'updatedBy', created_at: 'createdAt', updated_at: 'updatedAt', created_by: 'createdBy' },
+  },
   // A natural key on an entity the kernel hides rows of (#119): binned, archived, and both.
   binnedKeyed: {
     table: 't_binned_keyed',
@@ -300,7 +314,7 @@ describe('derivationOf — update', () => {
     });
   });
 
-  it('writes no stamp, and refuses a body field that would rewrite one (#2157)', () => {
+  it('writes no created stamp, and refuses a body field that would rewrite one (#2157)', () => {
     const tagUpdate = {
       ...UPDATE,
       permission: { key: 'note:write', entity: 'tag', idFrom: 'tagId' },
@@ -312,11 +326,35 @@ describe('derivationOf — update', () => {
     } as const;
     const plan = derivationOf(tagUpdate, entities);
     expect(plan).toMatchObject({ kind: 'update', fields: [{ field: 'note', column: 'note' }] });
-    expect(plan).not.toHaveProperty('stamps');
+    expect(plan).toMatchObject({ stamps: [] });
     const writesStamp = { ...tagUpdate, input: z.object({ tagId: z.string(), createdBy: z.string().optional() }) };
     expect(kindOf(writesStamp)).toBeUndefined();
     expect(() => define({ 't/upd': { ...writesStamp, derive: 'update' } })).toThrow(
       "model: 't/upd' declares `derive: 'update'`, but body field 'createdBy' writes 'created_by', which is stamped.",
+    );
+  });
+
+  it('writes the updated pair, and only that pair, with every write (#2166)', () => {
+    const docUpdate = {
+      ...UPDATE,
+      permission: { key: 'note:write', entity: 'doc', idFrom: 'docId' },
+      input: z.object({ docId: z.string(), title: z.string().optional() }),
+      output: entities.doc.fields,
+      http: { method: 'PATCH', path: '/docs/{docId}' },
+      concurrency: { over: 'doc', idFrom: 'docId' },
+      emits: { entity: 'doc', entityIdFrom: 'id', type: 'd.updated', schemaVersion: 1, piiClass: 'none', payload: ['id'] },
+    } as const;
+    expect(derivationOf(docUpdate, entities)).toMatchObject({
+      kind: 'update',
+      fields: [{ field: 'title', column: 'title' }],
+      stamps: [
+        { column: 'updated_by', kind: 'updatedBy' },
+        { column: 'updated_at', kind: 'updatedAt' },
+      ],
+    });
+    const writesStamp = { ...docUpdate, input: z.object({ docId: z.string(), updatedAt: z.string().optional() }) };
+    expect(() => define({ 'd/upd': { ...writesStamp, derive: 'update' } })).toThrow(
+      "model: 'd/upd' declares `derive: 'update'`, but body field 'updatedAt' writes 'updated_at', which is stamped.",
     );
   });
 
@@ -535,20 +573,62 @@ describe('stamps (#2157)', () => {
       },
     });
 
-  it('accepts a string column, either of the two kinds', () => {
-    expect(stamped({ at: 'createdAt' })).not.toThrow();
-    expect(stamped({ at: 'createdBy' })).not.toThrow();
+  it('accepts a string column, any of the four kinds', () => {
+    for (const kind of ['createdAt', 'createdBy', 'updatedAt', 'updatedBy']) expect(stamped({ at: kind })).not.toThrow();
   });
 
   it.each([
     [{ gone: 'createdAt' }, "model: e.stamps names 'gone', which is not a field"],
     [{ id: 'createdAt' }, "model: e.stamps names 'id', which is the primary key"],
     [{ n: 'createdAt' }, "model: e.stamps names 'n', which is not a string column"],
-    [{ at: 'deletedAt' }, "model: e.stamps.at is 'deletedAt' — a stamp is one of createdAt, createdBy"],
-    // Not yet: an updated pair waits for the host to hold it on every write (#2166).
-    [{ at: 'updatedAt' }, "model: e.stamps.at is 'updatedAt' — a stamp is one of createdAt, createdBy"],
+    [{ at: 'deletedAt' }, "model: e.stamps.at is 'deletedAt' — a stamp is one of createdAt, createdBy, updatedAt, updatedBy"],
   ])('refuses %j', (stamps, message) => {
     expect(stamped(stamps)).toThrow(message);
+  });
+
+  it('names each kind once: two columns cannot both be the time a row was written (#2166)', () => {
+    const twice = () =>
+      defineEntities({
+        e: { table: 't_e', fields: z.object({ id: z.string(), a: z.string(), b: z.string() }), stamps: { a: 'updatedAt', b: 'updatedAt' } },
+      });
+    expect(twice).toThrow("model: e.stamps names 'updatedAt' twice — each kind is one column");
+  });
+
+  it('refuses an updated stamp on a composite key, which no event can name; a created one is fine (#2166)', () => {
+    const composite = (kind: string) => () =>
+      defineEntities({
+        e: {
+          table: 't_e',
+          fields: z.object({ a: z.string(), b: z.string(), at: z.string() }),
+          primaryKey: ['a', 'b'],
+          stamps: { at: kind } as never,
+        },
+      });
+    expect(composite('createdAt')).not.toThrow();
+    for (const kind of ['updatedAt', 'updatedBy']) {
+      expect(composite(kind)).toThrow("model: e.stamps declares an updated stamp, and 'e' has a composite primary key");
+    }
+  });
+
+  it('a derived create writes all four, the updated pair on insert too (#2166)', () => {
+    const docCreate = {
+      ...CREATE,
+      permission: 'note:write',
+      input: z.object({ title: z.string() }),
+      output: entities.doc.fields,
+      http: { method: 'POST', path: '/docs' },
+      emits: { entity: 'doc', entityIdFrom: 'id', type: 'd.created', schemaVersion: 1, piiClass: 'none', payload: ['id'] },
+    } as const;
+    expect(derivationOf(docCreate, entities)).toMatchObject({
+      kind: 'create',
+      values: [{ field: 'title', column: 'title' }],
+      stamps: [
+        { column: 'updated_by', kind: 'updatedBy' },
+        { column: 'created_at', kind: 'createdAt' },
+        { column: 'updated_at', kind: 'updatedAt' },
+        { column: 'created_by', kind: 'createdBy' },
+      ],
+    });
   });
 
   it('renders into the model, sorted, in a shape the artifact schema parses', () => {
@@ -557,6 +637,30 @@ describe('stamps (#2157)', () => {
     expect(Object.keys(model.entities.tag?.stamps ?? {})).toEqual(['created_at', 'created_by']);
     expect(model.entities.note).not.toHaveProperty('stamps');
     expect(emittedModel.parse(model).entities.tag?.stamps).toEqual(model.entities.tag?.stamps);
+    expect(Object.keys(model.entities.doc?.stamps ?? {})).toEqual(['created_at', 'created_by', 'updated_at', 'updated_by']);
+    expect(emittedModel.parse(model).entities.doc?.stamps).toEqual(model.entities.doc?.stamps);
+  });
+
+  it('reaches the host through the manifest: only the updated pair, only where declared (#2166)', () => {
+    expect(updatedStampsOf(entities)).toEqual([
+      { entityType: 'doc', table: 't_docs', idColumn: 'id', at: 'updated_at', by: 'updated_by' },
+    ]);
+    const { updatedStamps } = manifestEntities(entities, {});
+    expect(updatedStamps).toEqual(updatedStampsOf(entities));
+    // Absent, not empty, when nothing declares the pair: a manifest stays what it was.
+    const { doc: _doc, ...withoutDoc } = entities;
+    expect(manifestEntities(withoutDoc, {})).not.toHaveProperty('updatedStamps');
+    // One column of the pair is enough.
+    const atOnly = defineEntities({ e: { table: 't_e', fields: z.object({ id: z.string(), at: z.string() }), stamps: { at: 'updatedAt' } } });
+    expect(updatedStampsOf(atOnly)).toEqual([{ entityType: 'e', table: 't_e', idColumn: 'id', at: 'at' }]);
+  });
+
+  it('the manifest field parses what manifestEntities derives, and refuses a declaration naming neither column', () => {
+    const declaration = updatedStampsOf(entities);
+    expect(moduleManifest.shape.updatedStamps.parse(declaration)).toEqual(declaration);
+    expect(() => moduleManifest.shape.updatedStamps.parse([{ entityType: 'e', table: 't', idColumn: 'id' }])).toThrow(
+      'an updated stamp names `at`, `by` or both',
+    );
   });
 });
 

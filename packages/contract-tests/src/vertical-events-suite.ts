@@ -236,6 +236,8 @@ export const boardImportModManifest = moduleManifest.parse({
   peers: [{ vertical: CRM_VERTICAL, operations: [], permissions: ['association:sync', 'association:read'] }],
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   attachmentTargets: [],
+  // #2166: an association holds its updated stamps, so an IMPORT handler is held to them too.
+  updatedStamps: [{ entityType: 'association', table: 'board_associations', idColumn: 'crm_id', at: 'updated_at', by: 'updated_by' }],
   entitlementKey: 'board-import',
 });
 
@@ -291,7 +293,7 @@ export const boardImportMod: ModuleRegistration = {
     {
       version: '0001-init',
       sql: `
-        CREATE TABLE board_associations (crm_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+        CREATE TABLE board_associations (crm_id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at TEXT, updated_by TEXT);
         CREATE TABLE board_noted (event_id TEXT PRIMARY KEY);
       `,
     },
@@ -313,10 +315,13 @@ export const boardImportMod: ModuleRegistration = {
         const c = customerCreated.parse(event.payload);
         // The name is quoted, so a handler's own sentence can carry a subject's id (#1757).
         if (c.name.startsWith('poison')) throw new Error(`board refuses the poison customer ${c.name}`);
+        // #2166: a 'stale' customer is written with a time that is not this delivery's.
+        const at = c.name.startsWith('stale') ? '2000-01-01T00:00:00.000Z' : ctx.now();
         ctx.sql.exec(
-          `INSERT INTO board_associations (crm_id, name) VALUES (?, ?)
-           ON CONFLICT (crm_id) DO UPDATE SET name = excluded.name`,
-          [c.id, c.name],
+          `INSERT INTO board_associations (crm_id, name, updated_at, updated_by) VALUES (?, ?, ?, ?)
+           ON CONFLICT (crm_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at,
+                                             updated_by = excluded.updated_by`,
+          [c.id, c.name, at, String(ctx.principal)],
         );
         ctx.emit({
           type: 'board.association-created',
@@ -333,6 +338,12 @@ export const boardImportMod: ModuleRegistration = {
       'crm.customer-touched': async (ctx, event) => {
         assertAllowed(await ctx.check(key('association:sync')));
         const { id } = z.object({ id: z.string() }).parse(event.payload);
+        // #2166: an event about an association is a write to it, so it moves the stamps.
+        ctx.sql.exec('UPDATE board_associations SET updated_at = ?, updated_by = ? WHERE crm_id = ?', [
+          ctx.now(),
+          String(ctx.principal),
+          id,
+        ]);
         ctx.emit({
           type: 'board.association-linked',
           schemaVersion: 1,
@@ -730,6 +741,24 @@ export function verticalEventsContractSuite(
       const refused = view.imports.find((i) => i.type === 'crm.customer-created' && i.withheld === null && view.deliveries.some((d) => d.event_id === i.event_id && d.error?.includes('poison')));
       expect(refused).toBeTruthy();
       expect(poison).toBeTruthy();
+    });
+
+    it('an import handler is held to the updated stamps (#2166): a stale one is dead-lettered and rolls back', async () => {
+      const t = await newTenant();
+      const p = await install(t, CRM_VERTICAL);
+      const c = await install(t, BOARD_VERTICAL);
+      await create(t, p, 'stale customer');
+      await create(t, p, 'Fresh customer');
+
+      const { report } = await sweep();
+      expect(into(report, c)).toMatchObject({ state: 'delivered', delivered: 1, deadLettered: 1 });
+      const view = await board(t, c);
+      expect(view.associations.map((r) => r.name)).toEqual(['Fresh customer']);
+      const refused = view.deliveries.filter((d) => d.error?.includes("'updated_at' does not hold this call's time"));
+      expect(refused).toHaveLength(1);
+      expect(refused[0]?.error).toContain('consuming crm.customer-created');
+      // Its event rolled back with its row.
+      expect(view.outbox.filter((o) => o.type === 'board.association-created')).toHaveLength(1);
     });
 
     it('at-least-once across the edge: a batch delivered twice runs each handler once', async () => {

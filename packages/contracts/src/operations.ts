@@ -29,6 +29,7 @@ import { z } from 'zod';
 import { entityStateName, entityStateOutput } from './entity-state.js';
 import {
   DERIVED_KINDS,
+  isUpdatedStamp,
   primaryKeyOf,
   stampsOf,
   type DerivedKind,
@@ -1388,6 +1389,8 @@ export type DerivationPlan = {
       readonly idFrom: string;
       /** input field → the column it writes. */
       readonly fields: readonly { readonly field: string; readonly column: string }[];
+      /** The updated pair, when declared (#2166): written with every write. */
+      readonly stamps: readonly DerivedStamp[];
       readonly emit: DerivedEmit;
     }
   | { readonly kind: 'delete'; readonly idFrom: string; readonly emit: DerivedEmit }
@@ -1736,6 +1739,7 @@ function updatePlan(decl: DeclarationRead, entities: Record<string, EntityDef>):
     permission: target.permission,
     idFrom,
     fields,
+    stamps: stampList(stamps).filter(({ kind }) => isUpdatedStamp(kind)),
     emit: emitOf(decl),
   };
 }

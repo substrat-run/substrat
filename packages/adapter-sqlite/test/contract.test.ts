@@ -49,6 +49,7 @@ import {
   entityStateMigrationContractSuite,
   entityTrashContractSuite,
   derivedHandlersContractSuite,
+  updatedStampsContractSuite,
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
@@ -647,6 +648,19 @@ entityStateMigrationContractSuite(
 // checker: the derived check coming first is a permission property.
 derivedHandlersContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-derived-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2166: the updated stamps the host holds on every write, on this adapter's SQL.
+updatedStampsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-stamps-'));
   const host = new SqliteScopeHost({ dir });
   return {
     host,

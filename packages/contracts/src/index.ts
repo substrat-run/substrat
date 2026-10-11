@@ -61,6 +61,7 @@ export * from './attachments.js';
 export * from './kernel-events.js';
 export * from './email-intent.js';
 export * from './entity-state.js';
+export * from './entity-stamps.js';
 export * from './subject-erasure.js';
 export * from './model.js';
 export * from './operations.js';
