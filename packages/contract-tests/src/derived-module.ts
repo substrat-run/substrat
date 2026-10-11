@@ -257,12 +257,11 @@ export const derivedOperations = defineOperations(derivedEntities, PERMISSIONS)(
   },
   'derived/relabel-and-archive': {
     summary: 'Relabel a shelf and file it away, in one call',
-    authored: 'a content write and a state move in one transaction, which no derived kind is',
     permission: { key: 'dnote:write', entity: 'dshelf', idFrom: 'shelfId' },
     input: z.object({ shelfId: z.string(), label: z.string() }),
-    output: ok,
+    output: derivedEntities.dshelf.fields,
     concurrency: { over: 'dshelf', idFrom: 'shelfId' },
-    emits: { entity: 'dshelf', entityIdFrom: 'shelfId', type: 'dshelf.updated', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] },
+    emits: { entity: 'dshelf', entityIdFrom: 'id', type: 'dshelf.updated', schemaVersion: 1, piiClass: 'none', payload: ['id', 'label'] },
   },
   'derived/trashed-shelves': {
     summary: 'The bin',
@@ -349,7 +348,7 @@ export const derivedMod: ModuleRegistration = {
       const entity = { entityType: 'dshelf', entityId: i.shelfId };
       ctx.emit({ type: 'dshelf.updated', schemaVersion: 1, entity, piiClass: 'none', payload: { id: i.shelfId, label: i.label } });
       await ctx.archive(entity);
-      return { ok: true };
+      return { id: i.shelfId, label: i.label };
     },
     'derived/history': async (ctx, i) => {
       assertAllowed(await ctx.check(READ));
