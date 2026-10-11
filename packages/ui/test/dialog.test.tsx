@@ -174,7 +174,7 @@ describe('focus', () => {
     expect(document.activeElement).toBe(panel());
   });
 
-  it('returns focus to the opener on close, and does not steal it when the opener is gone', async () => {
+  it('returns focus to the opener on close', async () => {
     const opener = document.createElement('button');
     document.body.append(opener);
     opener.focus();
@@ -182,16 +182,30 @@ describe('focus', () => {
     expect(document.activeElement).not.toBe(opener);
     await render(<Dialog {...props({ open: false })} />);
     expect(document.activeElement).toBe(opener);
-
-    const gone = document.createElement('button');
-    document.body.append(gone);
-    gone.focus();
-    await render(<Dialog {...props()} />);
-    gone.remove();
-    opener.focus();
-    await render(<Dialog {...props({ open: false })} />);
-    expect(document.activeElement).toBe(opener);
     opener.remove();
+  });
+
+  it('does not call focus() on an opener that left the document — and the twin that is still there gets exactly one', async () => {
+    // jsdom's focus() on a detached element is a silent no-op, so the activeElement cannot tell
+    // the guard from its absence; the call itself can.
+    const stays = document.createElement('button');
+    const leaves = document.createElement('button');
+    document.body.append(stays, leaves);
+    stays.focus();
+    const staysFocus = vi.spyOn(stays, 'focus');
+    await render(<Dialog {...props()} />);
+    await render(<Dialog {...props({ open: false })} />);
+    expect(staysFocus).toHaveBeenCalledTimes(1);
+
+    leaves.focus();
+    const leavesFocus = vi.spyOn(leaves, 'focus');
+    await render(<Dialog {...props()} />);
+    leaves.remove();
+    await render(<Dialog {...props({ open: false })} />);
+    expect(leavesFocus).not.toHaveBeenCalled();
+    // Nowhere to go back to: focus rests on body, predictably, not on a stale node.
+    expect(document.activeElement).toBe(document.body);
+    stays.remove();
   });
 
   it('returns focus on unmount too — a caller that renders it conditionally', async () => {
