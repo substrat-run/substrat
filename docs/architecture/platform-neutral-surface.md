@@ -356,8 +356,8 @@ least as durable as the data: the spike fails closed when it is lost, refusing e
 rather than reseeding one. A scope is unavailable for about one lease TTL when its holder
 fails, but a holder frozen *inside* a write transaction keeps the file's lock. The takeover
 cannot fence it until it wakes, so the scope stays unavailable for as long as the freeze
-lasts. That is safe, but only stopping the old holder bounds it. The contract-suite pass §6 calls for needs the directory as a separate service first
-(#1638, question 5).
+lasts. That is safe, but only stopping the old holder bounds it. The contract-suite pass
+described in §6 requires the directory as a separate service first (#1638, question 5).
 
 ---
 
