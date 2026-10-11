@@ -20,6 +20,8 @@ import {
   type PermissionTupleRow,
   type ScopeTupleReader,
 } from '../src/permission-eval.js';
+import { isWriteStatement } from '../src/carried-copy.js';
+import { shapeProtectedTypesQuery } from '../src/entity-grant.js';
 
 /**
  * The four-rule algebra, tested where it now LIVES (#969) rather than twice over in two
@@ -71,7 +73,7 @@ const readerFor = (world: World): PermissionTupleReader => {
         (r) => r.subject === subject && r.relation === relation && r.object === object,
       ),
     parents: (object) => scopeRows.filter((r) => r.subject === object && r.relation === 'parent'),
-    // `SHAPE_PROTECTED_TYPES_QUERY`, over rows: the `shape:<type>` subjects protecting the relation.
+    // `shapeProtectedTypesQuery`, over rows: the `shape:<type>` subjects protecting the relation.
     shapeProtectedTypes: (relation) => {
       world.onProtectedRead?.();
       return scopeRows
@@ -658,6 +660,11 @@ describe('a key a shape protects reaches its record only through the record (#21
     const nested = [shape, row('customer:c2', 'parent', 'customer:c1'), row(`principal:${ALICE}`, `granted:${WO_READ}`, 'customer:c1')];
     expect(await allowed(nested, WO_READ, { entityType: 'customer', entityId: 'c2' })).toBe(false);
     expect(await allowed(nested, WO_READ, c1)).toBe(true);
+  });
+
+  it('asks with a statement the scope DO reads as a read, so a check that asks counts no write', () => {
+    // The DO judges a statement by its text, splitting at `;`: a bound in a literal would split it.
+    expect(isWriteStatement(shapeProtectedTypesQuery(`granted:${WO_READ}`).sql)).toBe(false);
   });
 
   it('reads the protecting types at most once per walk, and not at all for a walk that never climbs', async () => {

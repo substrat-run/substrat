@@ -125,7 +125,7 @@ export interface ScopeTupleReader {
   parents(object: string): MaybePromise<PermissionTupleRow[]>;
   /**
    * The entity types whose declared shape protects `relation` (`granted:<key>`) in this scope —
-   * `SHAPE_PROTECTED_TYPES_QUERY`, the spelling the explicit writer refuses by (#2083, #1686).
+   * `shapeProtectedTypesQuery`, the spelling the explicit writer refuses by (#2083, #1686).
    * The entity walk stops climbing at a record of such a type for that key (#2177). Required, so
    * no reader can leave it out and let a grant on a parent reach through the record.
    */
