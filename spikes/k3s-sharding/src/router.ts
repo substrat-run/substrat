@@ -11,7 +11,10 @@
  * A write that got no answer is retried, with its `Idempotency-Key`, on the next shard in
  * the order: the router cannot know whether the dead shard committed it, so the retry must
  * be one the scope can recognise. That is the kernel's idempotency recording (#116), carried
- * from the client unchanged.
+ * from the client unchanged. A write WITHOUT a key is never retried once it may have run:
+ * after a timeout or a `503` the router answers with the uncertainty instead, because a
+ * replay could apply it twice. (A `421` is always safe to follow — the shard refused before
+ * invoking anything.)
  */
 import { setTimeout as sleep } from 'node:timers/promises';
 import { candidates } from './placement.js';
@@ -48,6 +51,11 @@ async function route(scope: string, f: Forward): Promise<{ status: number; json:
   const suspects = new Set<string>();
   const order = candidates(scope, Object.keys(members));
   let target = cache.get(scope) ?? order[0]!;
+  const replaySafe = f.method === 'GET' || f.headers['idempotency-key'] !== undefined;
+  const unknownOutcome = (why: string) => ({
+    status: 503,
+    json: { error: `${why}; not retried: the write carries no Idempotency-Key, so it may or may not have applied` },
+  });
   while (Date.now() < until) {
     try {
       const r = await attempt(target, f);
@@ -64,6 +72,7 @@ async function route(scope: string, f: Forward): Promise<{ status: number; json:
       }
       if (r.status === 503) {
         // Fenced: the shard lost the scope while running this request. Start over.
+        if (!replaySafe) return unknownOutcome(`${target} lost the scope during the write`);
         cache.delete(scope);
         target = order.find((m) => !suspects.has(m)) ?? order[0]!;
         continue;
@@ -73,6 +82,7 @@ async function route(scope: string, f: Forward): Promise<{ status: number; json:
     } catch {
       // No answer: timed out or the connection died. The shard may or may not have
       // committed — only the idempotency key can tell, on whoever serves the retry.
+      if (!replaySafe) return unknownOutcome(`no answer from ${target}`);
       suspects.add(target);
       cache.delete(scope);
       const next = order.find((m) => !suspects.has(m));

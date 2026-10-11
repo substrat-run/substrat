@@ -243,10 +243,16 @@ export class Cluster {
     await this.spawn(name, p.file, p.env, p.port);
   }
 
-  async write(router: string, scope: string, text: string): Promise<{ status: number; json: Record<string, unknown> }> {
+  /** A write keyed `w:<text>`, or with no key at all when `key` is `null`. */
+  async write(
+    router: string,
+    scope: string,
+    text: string,
+    key: string | null = `w:${text}`,
+  ): Promise<{ status: number; json: Record<string, unknown> }> {
     const res = await fetch(`${this.url(router)}/scopes/${scope}/items`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'idempotency-key': `w:${text}` },
+      headers: { 'content-type': 'application/json', ...(key === null ? {} : { 'idempotency-key': key }) },
       body: JSON.stringify({ text }),
       signal: AbortSignal.timeout(30_000),
     });
