@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { ulid } from '@substrat-run/kernel';
-import { LeaseClient, LeaseGuard, NotHolder } from '../src/lease-client.js';
+import { LeaseClient, LeaseGuard, NotHolder, UnknownScope } from '../src/lease-client.js';
 import { Cluster } from './cluster.js';
 
 const TTL = 400;
@@ -21,6 +21,12 @@ afterAll(() => cluster.stop());
 /** One incarnation per pod name unless a test asks for a second one. */
 const client = (node: string, incarnation = 'first') => new LeaseClient(cluster.controlPlane, node, 50, incarnation);
 
+async function provisioned(): Promise<string> {
+  const scope = ulid();
+  await cluster.provision(scope);
+  return scope;
+}
+
 async function refusal(p: Promise<unknown>): Promise<NotHolder> {
   const e = await p.then(
     () => undefined,
@@ -32,7 +38,7 @@ async function refusal(p: Promise<unknown>): Promise<NotHolder> {
 
 describe('control-plane lease table', () => {
   it('grants an unheld scope, refuses it to anyone else until it expires, then bumps the epoch', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const a = await client('todo-0').acquire(scope);
     expect(a).toMatchObject({ epoch: 1, dataOn: null });
     const refused = await refusal(client('todo-1').acquire(scope));
@@ -46,7 +52,7 @@ describe('control-plane lease table', () => {
   });
 
   it('hands the next holder the node with the latest data, once the holder settled it', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const a = await client('todo-0').acquire(scope);
     await client('todo-0').settle(scope, a);
     await sleep(TTL + 50);
@@ -54,7 +60,7 @@ describe('control-plane lease table', () => {
   });
 
   it('refuses renew and settle to a holder whose epoch moved on — the stale holder learns it is fenced', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const a = await client('todo-0').acquire(scope);
     await sleep(TTL + 50);
     await client('todo-1').acquire(scope);
@@ -63,7 +69,7 @@ describe('control-plane lease table', () => {
   });
 
   it('lets a holder renew after its expiry when nobody took the scope — no one else can have written', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const a = await client('todo-0').acquire(scope);
     await sleep(TTL + 50);
     await client('todo-0').renew(scope, a);
@@ -72,7 +78,7 @@ describe('control-plane lease table', () => {
   });
 
   it('a second incarnation under the same pod name is another holder — the force-deleted pod case', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     await client('todo-1', 'old').acquire(scope);
     const refused = await refusal(client('todo-1', 'new').acquire(scope));
     expect(refused.holder).toBe('todo-1');
@@ -81,16 +87,31 @@ describe('control-plane lease table', () => {
   });
 
   it('a release ends the lease at once (a planned move)', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const a = await client('todo-0').acquire(scope);
     await client('todo-0').release(scope, a);
     expect((await client('todo-1').acquire(scope)).epoch).toBe(2);
   });
 });
 
+describe('provisioning', () => {
+  it('refuses a scope it was never told about — "no row" is never "new scope"', async () => {
+    const e = await client('todo-0').acquire(ulid()).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(e).toBeInstanceOf(UnknownScope);
+  });
+
+  it('grants a provisioned scope with no data yet: the first holder seeds it', async () => {
+    const scope = await provisioned();
+    expect(await client('todo-0').acquire(scope)).toMatchObject({ epoch: 1, dataOn: null });
+  });
+});
+
 describe('lease guard', () => {
   it('re-checks an expired grant before admitting, and refuses once the epoch moved on', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const guard = new LeaseGuard(client('todo-0'));
     await guard.admit(scope);
     expect(guard.stillHeld(scope)).toBe(true);
@@ -104,7 +125,7 @@ describe('lease guard', () => {
   });
 
   it('renews an expired but untaken grant in place on admit', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const guard = new LeaseGuard(client('todo-0'));
     await guard.admit(scope);
     await sleep(TTL + 50);
@@ -114,7 +135,7 @@ describe('lease guard', () => {
   });
 
   it('places the data before a new grant is usable', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const placed: number[] = [];
     const guard = new LeaseGuard(client('todo-0'), {
       onAcquire: async (_s, g) => {
@@ -128,7 +149,7 @@ describe('lease guard', () => {
   });
 
   it('with fencing off (the control), never re-checks and never fences', async () => {
-    const scope = ulid();
+    const scope = await provisioned();
     const guard = new LeaseGuard(client('todo-0'), { fencing: false });
     await guard.admit(scope);
     await sleep(TTL + 50);

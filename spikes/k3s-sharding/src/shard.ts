@@ -29,11 +29,11 @@
  * with that text reaches `point`, the shard reports it and sends itself `signal`. Signalling
  * itself is what makes the kill land at exactly that point, every run.
  */
-import { existsSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { principalId, scopeId as scopeIdOf, tenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
-import { LeaseClient, LeaseGuard, NotHolder, type Grant } from './lease-client.js';
+import { LeaseClient, LeaseGuard, NotHolder, UnknownScope, type Grant } from './lease-client.js';
 import { Fenced, fenceScopeHost, wrapStubs } from './fence.js';
 import { readJson, send, serveLocal } from './http.js';
 import { copyScope, openScope, scopeDir, seedScope, type ScopeWorld } from './todo-scope.js';
@@ -100,9 +100,17 @@ function serialized<T>(scope: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** This shard will not place the scope: doing so could destroy or shadow data. */
+class PlacementRefused extends Error {}
+
 /**
  * A new grant: put the scope's latest state on this node's volume before anything runs on
  * it. Called by the guard inside `admit`, so always inside the scope's queue.
+ *
+ * It fails closed. It deletes a directory only when the control plane names ANOTHER node as
+ * holding the latest copy (so this one is a stale duplicate), and it seeds only where nothing
+ * exists. A grant with no `data_on` over an existing directory means the control plane's
+ * record and the volume disagree, and that is refused and reported, never repaired.
  */
 async function place(scope: string, grant: Grant): Promise<void> {
   const dir = scopeDir(volume, node, scope);
@@ -117,7 +125,11 @@ async function place(scope: string, grant: Grant): Promise<void> {
   await stale?.host.close();
   let placed: { host: ScopeHost; world: ScopeWorld };
   if (grant.dataOn === null) {
-    rmSync(dir, { recursive: true, force: true });
+    if (existsSync(dir)) {
+      throw new PlacementRefused(
+        `scope ${scope} has data on ${node}, but the control plane has no copy on record; refusing to seed over it`,
+      );
+    }
     placed = await seedScope(dir, scope);
   } else if (grant.dataOn === node && existsSync(join(dir, 'world.json'))) {
     placed = openScope(dir);
@@ -249,6 +261,8 @@ serveLocal(node, port, async (req, res, path) => {
       return send(res, 421, { holder: e.holder, epoch: e.epoch, retryAfterMs: e.retryAfterMs, node });
     }
     if (e instanceof Fenced) return send(res, 503, { error: e.message, node });
+    if (e instanceof UnknownScope) return send(res, 404, { error: e.message, node });
+    if (e instanceof PlacementRefused) return send(res, 409, { error: e.message, node });
     return send(res, 500, { error: e instanceof Error ? e.message : String(e), node });
   }
 });

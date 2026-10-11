@@ -31,6 +31,7 @@ describe('resharding', () => {
     }
     const before = new Map<string, { node: string; epoch: number }>();
     for (const scope of scopes) {
+      await c.provision(scope);
       for (const text of ['a', 'b', 'c']) expect((await c.write('router-0', scope, `${scope}:${text}`)).status).toBe(200);
       const r = await c.read('router-0', scope);
       before.set(scope, { node: r.node, epoch: r.epoch });

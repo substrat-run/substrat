@@ -45,6 +45,7 @@ describe('background work across a handover', () => {
     const c = (cluster = await new Cluster({ shards: 2, bgPeriodMs: 250 }).start());
     let scope = ulid();
     while (home(scope, c.members) !== 'todo-0') scope = ulid();
+    await c.provision(scope);
 
     // 1–2. Placed on todo-0; it freezes in the middle of bg:3.
     c.arm('todo-0', { text: 'bg:3', point: 'pre-write', signal: 'SIGSTOP' });

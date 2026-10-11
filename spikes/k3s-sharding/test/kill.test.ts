@@ -52,6 +52,7 @@ interface Run {
 
 async function freezeFailoverKill(c: Cluster): Promise<Run> {
   const scope = scopeHomedOn('todo-0', c.members);
+  await c.provision(scope);
   const acked: string[] = [];
   const by: Run['by'] = {};
   const write = async (router: string, text: string) => {

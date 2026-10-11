@@ -25,6 +25,7 @@ describe('router retries', () => {
   it('does not replay a keyless write whose outcome it cannot know', async () => {
     const c = (cluster = await new Cluster({ shards: 2, routerTimeoutsMs: [1500, 1500] }).start());
     const scope = homedOn('todo-0', c.members);
+    await c.provision(scope);
     expect((await c.write('router-0', scope, 'w0')).json.node).toBe('todo-0');
 
     // `todo-0` commits k1 and freezes before answering. The router times out on it.
@@ -48,6 +49,7 @@ describe('router retries', () => {
     // A 400 ms attempt timeout against a 700 ms pause, well inside the 2 s lease.
     const c = (cluster = await new Cluster({ shards: 2, routerTimeoutsMs: [400] }).start());
     const scope = homedOn('todo-0', c.members);
+    await c.provision(scope);
     expect((await c.write('router-0', scope, 'w0')).json).toMatchObject({ node: 'todo-0', epoch: 1 });
 
     c.signal('todo-0', 'SIGSTOP');

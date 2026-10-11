@@ -39,7 +39,7 @@ afterAll(() => {
 });
 
 scopeHostContractSuite('k3s-sharding: sqlite behind the lease fence', async () => {
-  const cluster = await new Cluster({ shards: 0, routerTimeoutsMs: [], leaseTtlMs: 5_000 }).start();
+  const cluster = await new Cluster({ shards: 0, routerTimeoutsMs: [], leaseTtlMs: 5_000, implicitProvision: true }).start();
   const guard = new LeaseGuard(new LeaseClient(cluster.controlPlane, 'todo-0', 500));
   guard.startRenewing(1_000);
   const dir = mkdtempSync(join(tmpdir(), 'k3s-sharding-contract-'));

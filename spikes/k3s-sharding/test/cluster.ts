@@ -9,7 +9,8 @@
  * survived — a leftover process on a shared machine is a failure of the run, not noise.
  */
 import { fork, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import Database from 'better-sqlite3';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +34,8 @@ export interface ClusterOptions {
    * running pods the StatefulSet has not been scaled onto yet — see `scale()`.
    */
   routedShards?: number;
+  /** Let the control plane create a lease row on first acquire (the contract binding only). */
+  implicitProvision?: boolean;
   /** Run each held scope's background slots every this many ms (`shard.ts`); off by default. */
   bgPeriodMs?: number;
 }
@@ -120,6 +123,7 @@ export class Cluster {
         CP_DIR: join(this.dir, 'control-plane'),
         LEASE_TTL_MS: String(this.opts.leaseTtlMs ?? 2000),
         LEASES: this.opts.leases ?? 'on',
+        PROVISION: this.opts.implicitProvision ? 'implicit' : 'explicit',
       },
       cpPort,
     );
@@ -244,6 +248,12 @@ export class Cluster {
   }
 
   /** A write keyed `w:<text>`, or with no key at all when `key` is `null`. */
+  /** The control plane's half of provisioning a scope; a shard places nothing it was not given. */
+  async provision(scope: string): Promise<void> {
+    const res = await fetch(`${this.cpUrl}/lease/provision`, { method: 'POST', body: JSON.stringify({ scope }) });
+    if (res.status !== 200 && res.status !== 201) throw new Error(`provision ${scope}: ${res.status}`);
+  }
+
   async write(
     router: string,
     scope: string,
@@ -269,6 +279,34 @@ export class Cluster {
   async lease(scope: string): Promise<{ holder: string; epoch: number; expires_at: number; now: number; data_on: string | null }> {
     const res = await fetch(`${this.cpUrl}/lease/${scope}`);
     return (await res.json()) as never;
+  }
+
+  /**
+   * The item texts in `node`'s own files for `scope`, read straight off the volume — what is on
+   * disk there, whether or not anyone serves it. `null` when the volume has no such scope.
+   */
+  itemsOnVolume(node: string, scope: string): string[] | null {
+    const dir = join(this.dir, 'volumes', node, 'scopes', scope);
+    if (!existsSync(dir)) return null;
+    const texts: string[] = [];
+    for (const name of readdirSync(dir).filter((n) => n.endsWith('.sqlite'))) {
+      const db = new Database(join(dir, name), { readonly: true, fileMustExist: true });
+      try {
+        const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todo_items'").get();
+        if (has) texts.push(...db.prepare<[], { text: string }>('SELECT text FROM todo_items ORDER BY id').all().map((r) => r.text));
+      } finally {
+        db.close();
+      }
+    }
+    return texts;
+  }
+
+  /** The control plane loses its lease table: killed, its files deleted, started again. */
+  async loseControlPlaneState(): Promise<void> {
+    this.signal('control-plane', 'SIGKILL');
+    await this.exited('control-plane');
+    rmSync(join(this.dir, 'control-plane'), { recursive: true, force: true });
+    await this.restart('control-plane');
   }
 
   async stop(): Promise<void> {

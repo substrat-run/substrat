@@ -36,6 +36,13 @@ export class NotHolder extends Error {
  * be running when its replacement starts: two live processes named `todo-1` must not share
  * one lease. The name is still what the volume and the router are keyed by (`node`).
  */
+/** The control plane has no row for the scope: never provisioned, or its lease table was lost. */
+export class UnknownScope extends Error {
+  constructor(readonly scope: string) {
+    super(`unknown scope ${scope}: the control plane has no lease row for it`);
+  }
+}
+
 export class LeaseClient {
   readonly holder: string;
 
@@ -70,6 +77,7 @@ export class LeaseClient {
   async acquire(scope: string): Promise<Grant> {
     const sent = performance.now();
     const { status, json } = await this.post('/lease/acquire', { scope });
+    if (status === 404) throw new UnknownScope(scope);
     if (status !== 200) throw this.refused(scope, json);
     return {
       epoch: Number(json.epoch),
@@ -90,6 +98,12 @@ export class LeaseClient {
     const { status, json } = await this.post('/lease/settle', { scope, epoch: grant.epoch, node: this.node });
     if (status !== 200) throw this.refused(scope, json);
     grant.dataOn = this.node;
+  }
+
+  /** Create the scope's lease row — the control plane's half of provisioning a scope. */
+  async provision(scope: string): Promise<void> {
+    const { status } = await this.post('/lease/provision', { scope });
+    if (status !== 200 && status !== 201) throw new Error(`provision ${scope}: ${status}`);
   }
 
   async release(scope: string, grant: Grant): Promise<void> {
