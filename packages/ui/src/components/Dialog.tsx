@@ -62,9 +62,10 @@ function radioTabbable(el: HTMLInputElement, root: HTMLElement): boolean {
 
 /**
  * Tabbable descendants, in DOM order. jsdom has no layout, so this reads what it does have:
- * the `inert`/`aria-hidden` attributes, closed <details>, disabled <fieldset>, and
- * computed `display`/`visibility` (inline and stylesheet rules alike — which is how `hidden` is seen). What only a real
- * browser can answer — an element clipped to zero size, off-screen, covered — it cannot.
+ * the `inert`/`aria-hidden` attributes, closed <details>, disabled <fieldset>, and computed
+ * `display`/`visibility` (inline and stylesheet rules alike — which is how `hidden` is seen).
+ * What only a real browser can answer — an element clipped to zero size, off-screen, covered —
+ * it cannot.
  */
 function tabbables(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
@@ -100,6 +101,8 @@ function register(el: HTMLElement, before: HTMLElement | null): () => HTMLElemen
     if (at < stack.length) {
       // Closed beneath others: whoever sits above and would hand focus back into this dialog
       // inherits this one's opener instead, so the page still gets focus when the last closes.
+      // (An opener of `null` — focus was on <body> — is inherited by nobody: focus then ends on
+      // <body>, not on the page, as it would have with no dialog above. Not a regression.)
       for (const o of stack.slice(at)) if (o.before && el.contains(o.before)) o.before = entry.before;
       return false;
     }
