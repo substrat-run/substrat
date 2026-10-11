@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   errorCodeOf,
+  FINDINGS_LIMIT_MAX,
+  findingCursorOf,
   instant,
   platformActorId,
   scopeId,
@@ -439,6 +441,62 @@ export function findingsContractSuite(adapterName: string, makeFixture: () => Pr
         // A second pass changes nothing: the stale-resolved finding's resolve is recent.
         await host.admin.pruneFindings!(staff, 500);
         expect((await host.admin.listFindings(staff, { tenantId: tb, kind: 'invariant' })).find((f) => f.id === stale.id)).toBeDefined();
+      });
+    });
+
+    describe('paging (#2198)', () => {
+      it('walks a tenant’s findings page by page: every one once, in the unpaged order, ending on a short page', async () => {
+        const tc = tenantId.parse(ulid());
+        const ops = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((x) => `deploy.paged-${x}`);
+        for (const op of ops) await fail(tc, op);
+
+        const whole = await host.admin.listFindings(staff, { tenantId: tc });
+        expect(whole).toHaveLength(ops.length);
+
+        const walked: FindingEntry[] = [];
+        const sizes: number[] = [];
+        let cursor: string | undefined;
+        for (;;) {
+          const page = await host.admin.listFindings(staff, { tenantId: tc, limit: 3, ...(cursor === undefined ? {} : { cursor }) });
+          sizes.push(page.length);
+          walked.push(...page);
+          if (page.length < 3) break;
+          cursor = findingCursorOf(page[page.length - 1]!);
+        }
+        expect(sizes).toEqual([3, 3, 1]);
+        expect(walked.map((f) => f.id)).toEqual(whole.map((f) => f.id));
+        expect(new Set(walked.map((f) => f.id)).size).toBe(ops.length);
+        // The order is the documented one, whatever the clock's resolution.
+        for (let i = 1; i < walked.length; i++) {
+          const [p, n] = [walked[i - 1]!, walked[i]!];
+          expect(p.lastSeen > n.lastSeen || (p.lastSeen === n.lastSeen && p.id < n.id)).toBe(true);
+        }
+      });
+
+      it('keeps a status narrowing on every page', async () => {
+        const tc = tenantId.parse(ulid());
+        for (const x of ['a', 'b', 'c', 'd']) await fail(tc, `deploy.narrow-${x}`);
+        const [first, second] = await host.admin.listFindings(staff, { tenantId: tc });
+        await host.admin.setFindingStatus(staff, tc, first!.id, 'acked');
+        await host.admin.setFindingStatus(staff, tc, second!.id, 'acked');
+        const page = await host.admin.listFindings(staff, { tenantId: tc, status: 'acked', limit: 1 });
+        expect(page).toHaveLength(1);
+        const next = await host.admin.listFindings(staff, { tenantId: tc, status: 'acked', limit: 1, cursor: findingCursorOf(page[0]!) });
+        expect(next.map((f) => f.status)).toEqual(['acked']);
+        expect(next[0]!.id).not.toBe(page[0]!.id);
+        expect(await host.admin.listFindings(staff, { tenantId: tc, status: 'acked', limit: 1, cursor: findingCursorOf(next[0]!) })).toEqual([]);
+      });
+
+      it('refuses a limit out of bounds and a cursor it did not mint', async () => {
+        const tc = tenantId.parse(ulid());
+        await fail(tc, 'deploy.bounds');
+        for (const limit of [0, -1, FINDINGS_LIMIT_MAX + 1]) {
+          await expect(host.admin.listFindings(staff, { tenantId: tc, limit })).rejects.toThrow(/limit must be/);
+        }
+        await expect(host.admin.listFindings(staff, { tenantId: tc, cursor: 'not-a-cursor' })).rejects.toThrow(/cursor is not a findings cursor/);
+        // The twin: the bounds themselves, and no cursor at all, are fine.
+        expect(await host.admin.listFindings(staff, { tenantId: tc, limit: FINDINGS_LIMIT_MAX })).toHaveLength(1);
+        expect(await host.admin.listFindings(staff, { tenantId: tc, limit: 1 })).toHaveLength(1);
       });
     });
   });

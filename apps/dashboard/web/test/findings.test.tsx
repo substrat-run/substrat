@@ -6,13 +6,14 @@ import { Observability } from '../src/views/Observability';
 import { ApiError, createClient, type FindingEntry, type FindingRuleEntry } from '../src/lib/api.generated';
 import { mockFindingsClient, type FindingsClient } from '../src/lib/mock-findings';
 import {
-  LIST_LIMIT,
   canSuppress,
   countByStatus,
   draftFor,
   draftReady,
   findingsError,
   inTab,
+  mergeFindings,
+  countIsExact,
   mayManageFromRole,
   movesFrom,
   REASON_MAX,
@@ -159,13 +160,28 @@ describe('Findings view', () => {
     [...within.querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
   const row = (id: string) => host.querySelector(`[data-finding="${id}"]`)!;
 
-  function fake(entries: FindingEntry[], initialRules: FindingRuleEntry[] = []): FindingsClient & { calls: Record<string, unknown[]> } {
+  function fake(
+    entries: FindingEntry[],
+    initialRules: FindingRuleEntry[] = [],
+    /** The plane's page size, so a test can make a tab longer than one page. */
+    pageSize = 100,
+  ): FindingsClient & { calls: Record<string, unknown[]> } {
     // Like the plane: `active` keeps the unexpired rules, and a revoke pulls the expiry back to now.
     let rules = initialRules;
-    const calls: Record<string, unknown[]> = { set: [], create: [], revoke: [] };
+    const calls: Record<string, unknown[]> = { set: [], create: [], revoke: [], list: [] };
     return {
       calls,
-      listFindings: async () => ({ available: true, entries }),
+      // Like the plane: narrowed by status, newest first with id breaking a tie, a cursor naming the
+      // last row read, and a full page carrying a cursor (pageOf) even when nothing follows it.
+      listFindings: async (input) => {
+        calls.list!.push(input);
+        const all = entries
+          .filter((e) => input.status === undefined || e.status === input.status)
+          .sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen) || (a.id < b.id ? -1 : 1));
+        const after = input.cursor === undefined ? 0 : all.findIndex((e) => e.id === input.cursor) + 1;
+        const page = all.slice(after, after + pageSize);
+        return { available: true, entries: page, nextCursor: page.length >= pageSize ? page[page.length - 1]!.id : null, cut: false };
+      },
       listFindingRules: async ({ active }) => ({ entries: active ? rules.filter((r) => Date.parse(r.expiresAt) > Date.now()) : rules }),
       setFindingStatus: async (input) => {
         calls.set!.push(input);
@@ -231,14 +247,162 @@ describe('Findings view', () => {
     expect(client.calls.set!.at(-1)).toEqual({ id: 'a', status: 'resolved' });
   });
 
-  it('says when the list is cut at the plane’s limit and leaves the counts off — and the twin below it keeps them', async () => {
-    const many = Array.from({ length: LIST_LIMIT }, (_, i) => finding({ id: `m${i}`, title: `finding ${i}` }));
-    await mount(fake(many));
-    expect(host.textContent).toContain(`Showing the latest ${LIST_LIMIT} findings`);
-    expect([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Open'))?.textContent).toBe('Open');
-    await mount(fake(many.slice(1)));
-    expect(host.textContent).not.toContain('Showing the latest');
-    expect([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Open'))?.textContent).toContain(String(LIST_LIMIT - 1));
+  describe('paging (#2198)', () => {
+    const open = (n: number, over: Partial<FindingEntry> = {}) =>
+      Array.from({ length: n }, (_, i) =>
+        finding({ id: `m${String(i).padStart(3, '0')}`, title: `finding ${i}`, lastSeen: new Date(Date.UTC(2026, 9, 1, 0, 0, 1000 - i)).toISOString(), ...over }),
+      );
+
+    it('reads the first page of every tab, each narrowed to its status, and counts a tab whose walk ended', async () => {
+      const client = fake(entries);
+      await mount(client);
+      expect((client.calls.list as { status: string }[]).map((c) => c.status).sort()).toEqual(['acked', 'open', 'resolved', 'suppressed']);
+      expect(button('Load more')).toBeUndefined();
+      expect([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Open'))?.textContent).toContain('1');
+    });
+
+    it('offers Load more on a tab with more behind it, leaves that tab uncounted, and counts the others', async () => {
+      await mount(fake([...open(5), ...entries.slice(1)], [], 3));
+      expect(button('Load more')).toBeTruthy();
+      expect(host.textContent).toContain('Showing 3');
+      expect(host.textContent).not.toContain('Showing the latest');
+      const label = (prefix: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith(prefix))?.textContent;
+      expect(label('Open')).toBe('Open'); // a floor is not a total: no number
+      expect(label('Acked')).toContain('1'); // a tab that fit in one page keeps its exact count
+    });
+
+    it('follows that tab’s cursor, appends the next page and ends when the cursor is null', async () => {
+      const client = fake(open(7), [], 3);
+      await mount(client);
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(3);
+      await click(button('Load more'));
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(6);
+      expect(client.calls.list!.at(-1)).toEqual({ status: 'open', cursor: 'm002' });
+      await click(button('Load more'));
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(7);
+      // The last page was short, so the walk is over: no button, and the tab now carries its exact count.
+      expect(button('Load more')).toBeUndefined();
+      expect([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Open'))?.textContent).toContain('7');
+      // In the plane's order, oldest last.
+      expect([...host.querySelectorAll('[data-finding]')].map((r) => r.getAttribute('data-finding'))).toEqual(
+        open(7).map((e) => e.id),
+      );
+    });
+
+    it('walks only the tab it is on: another tab’s older findings do not ride along', async () => {
+      const client = fake([...open(4), ...open(4).map((e) => ({ ...e, id: `a${e.id}`, status: 'acked' as const }))], [], 3);
+      await mount(client, 'acked');
+      await click(button('Load more'));
+      expect(client.calls.list!.at(-1)).toMatchObject({ status: 'acked' });
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(4);
+    });
+
+    it('shows a row once when a later page repeats one already loaded, and keeps the newer copy', async () => {
+      const rows = open(4);
+      const client = fake(rows, [], 2);
+      await mount(client);
+      // The plane re-sends the boundary row on the next page, changed since.
+      const real = client.listFindings;
+      client.listFindings = async (i) => {
+        const out = await real(i);
+        return i.cursor === undefined ? out : { ...out, entries: [{ ...rows[1]!, title: 'finding 1 (seen again)' }, ...out.entries] };
+      };
+      await click(button('Load more'));
+      const ids = [...host.querySelectorAll('[data-finding]')].map((r) => r.getAttribute('data-finding'));
+      expect(ids).toEqual([...new Set(ids)]);
+      expect(ids).toHaveLength(4);
+      expect(host.textContent).toContain('finding 1 (seen again)');
+    });
+
+    it('keeps the loaded pages and the cursor when a page fails, says why, and retries the same page', async () => {
+      const client = fake(open(5), [], 2);
+      await mount(client);
+      await click(button('Load more'));
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(4);
+      const real = client.listFindings;
+      client.listFindings = async () => {
+        throw new ApiError(502, 'bad gateway', null);
+      };
+      await click(button('Load more'));
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(4); // nothing lost
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('502');
+      expect(button('Load more')).toBeTruthy();
+      client.listFindings = real;
+      await click(button('Load more'));
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(5);
+      expect(host.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it('drops a page that lands after a refresh began, rather than mixing it into the new list', async () => {
+      const client = fake(open(5), [], 2);
+      await mount(client);
+      let release!: () => void;
+      const real = client.listFindings;
+      client.listFindings = (i) => (i.cursor === undefined ? real(i) : new Promise((resolve) => { release = () => resolve(real(i)); }));
+      await click(button('Load more')); // in flight
+      client.listFindings = real;
+      await act(async () => root.render(<Findings client={client} tab="open" canManage nonce={1} onTab={vi.fn()} />));
+      await settle();
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(2); // the fresh first page
+      await act(async () => release());
+      await settle();
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(2); // the stale page did not land
+    });
+
+    it('takes a plane that sends no cursor at all as the end of the walk', async () => {
+      const client = fake(open(2));
+      const real = client.listFindings;
+      client.listFindings = async (i) => {
+        const { nextCursor: _drop, ...old } = await real(i);
+        return old as Awaited<ReturnType<typeof real>>;
+      };
+      await mount(client);
+      expect(button('Load more')).toBeUndefined();
+    });
+
+    it('does not call a page exact when an older control plane cut it: no count, a note, no Load more', async () => {
+      const client = fake(open(3), [], 3);
+      const real = client.listFindings;
+      // The dashboard's `cut`: a plane that predates paging returned a full page it cannot continue.
+      client.listFindings = async (i) => ({ ...(await real(i)), nextCursor: null, cut: i.status === 'open' });
+      await mount(client);
+      expect(button('Load more')).toBeUndefined();
+      expect(host.textContent).toContain('Showing the latest 3 findings');
+      const label = (prefix: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith(prefix))?.textContent;
+      expect(label('Open')).toBe('Open'); // cut: no number
+      expect(label('Acked')).toContain('0'); // the twin: an uncut tab keeps its exact count
+    });
+
+    it('moves a finding between tabs without disturbing the walk of the others', async () => {
+      const client = fake([...open(4), ...entries.slice(1)], [], 3);
+      await mount(client);
+      await click(button('Acknowledge', row('m000')));
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(2); // m000 left; two of the first page remain
+      await click(button('Load more'));
+      expect(host.querySelectorAll('[data-finding]')).toHaveLength(3);
+      await mount(client, 'acked');
+      expect(host.querySelector('[data-finding="m000"]')).toBeTruthy();
+    });
+  });
+
+  describe('the paging rules, pure', () => {
+    it('merges by id with the newer copy winning, in the plane’s order', () => {
+      const a = finding({ id: 'a', lastSeen: '2026-10-01T10:00:00.000Z' });
+      const b = finding({ id: 'b', lastSeen: '2026-10-01T10:00:00.000Z' });
+      const c = finding({ id: 'c', lastSeen: '2026-10-01T12:00:00.000Z' });
+      const merged = mergeFindings([b, a], [c, { ...a, title: 'newer' }]);
+      expect(merged.map((e) => e.id)).toEqual(['c', 'a', 'b']); // tie on lastSeen: id ascending
+      expect(merged.find((e) => e.id === 'a')!.title).toBe('newer');
+      expect(mergeFindings([], [])).toEqual([]);
+    });
+
+    it('calls a count exact only once that tab’s walk has ended', () => {
+      const ended = { next: null, cut: false };
+      const cursors = { open: { next: 'x', cut: false }, acked: ended, resolved: { next: null, cut: true }, suppressed: ended };
+      expect(countIsExact(cursors, 'open')).toBe(false);
+      expect(countIsExact(cursors, 'resolved')).toBe(false); // cut: not over, just not walkable
+      expect(countIsExact(cursors, 'acked')).toBe(true);
+    });
   });
 
   it('offers a suppressed finding no move', async () => {
@@ -279,7 +443,7 @@ describe('Findings view', () => {
 
   it('says the store is not there yet when the read is unavailable', async () => {
     const client = fake(entries);
-    client.listFindings = async () => ({ available: false, entries: [] });
+    client.listFindings = async () => ({ available: false, entries: [], nextCursor: null, cut: false });
     await mount(client);
     expect(host.textContent).toContain('not available on this platform yet');
   });
@@ -481,7 +645,14 @@ describe('Findings view', () => {
       expect(host.textContent).toContain('acked one');
       expect(host.textContent).not.toContain('open one');
       expect(button('Resolve')).toBeUndefined(); // the viewer's page
-      expect(urls.sort()).toEqual(['/api/teams/T1/findings', '/api/teams/T1/findings/rules?active=true']);
+      // One first page per tab, each narrowed to its status (#2198), and the active rules.
+      expect(urls.sort()).toEqual([
+        '/api/teams/T1/findings/rules?active=true',
+        '/api/teams/T1/findings?status=acked',
+        '/api/teams/T1/findings?status=open',
+        '/api/teams/T1/findings?status=resolved',
+        '/api/teams/T1/findings?status=suppressed',
+      ]);
       await click([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Resolved')));
       expect(onNav).toHaveBeenCalledWith({ view: 'findings', tab: 'resolved' });
       await render(true);
@@ -496,10 +667,14 @@ describe('Findings view', () => {
     const client = fake([]);
     const release: Array<() => void> = [];
     let calls = 0;
-    client.listFindings = () => {
-      const n = ++calls;
+    // A read is one call per tab; only the Open tab's call carries the finding.
+    const perRead = 4;
+    const pending: Array<Array<() => void>> = [];
+    client.listFindings = ({ status }) => {
+      const n = Math.floor(calls++ / perRead) + 1;
       return new Promise((resolve) => {
-        release[n] = () => resolve({ available: true, entries: [finding({ id: `r${n}`, title: `read ${n}` })] });
+        (pending[n] ??= []).push(() => resolve({ available: true, entries: status === 'open' ? [finding({ id: `r${n}`, title: `read ${n}` })] : [], nextCursor: null, cut: false }));
+        release[n] = () => pending[n]!.forEach((r) => r());
       });
     };
     const render = (nonce: number) => act(async () => root.render(<Findings client={client} tab="open" canManage nonce={nonce} onTab={vi.fn()} />));
@@ -520,6 +695,32 @@ describe('Findings view', () => {
     await click(button('Acknowledge', host.querySelector('[data-finding="F2"]')!));
     const after = (await client.listFindings({})).entries.find((e) => e.id === 'F2');
     expect(after?.status).toBe('acked');
+  });
+});
+
+describe('the preview client pages like the plane (keyset)', () => {
+  it('walks a status by cursor, ties on lastSeen broken by id, each once', async () => {
+    const c = mockFindingsClient();
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await c.listFindings({ status: 'open', limit: 1, ...(cursor === undefined ? {} : { cursor }) });
+      seen.push(...page.entries.map((e) => e.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    // The two open rows share a lastSeen, so the id tiebreak decides; the walk is the unpaged order, no repeats.
+    expect(seen).toEqual((await c.listFindings({ status: 'open' })).entries.map((e) => e.id));
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('does not skip a row when the row before the cursor leaves the tab between pages', async () => {
+    const c = mockFindingsClient();
+    const first = await c.listFindings({ status: 'open', limit: 1 });
+    // The offset-paged mock skipped the next row here: the first one left Open, shifting everything up.
+    await c.setFindingStatus({ id: first.entries[0]!.id, status: 'acked' });
+    const rest = await c.listFindings({ status: 'open', limit: 1, cursor: first.nextCursor! });
+    expect(first.entries.map((e) => e.id)).toEqual(['F1']);
+    expect(rest.entries.map((e) => e.id)).toEqual(['F2']);
   });
 });
 
@@ -574,11 +775,13 @@ describe('the generated client the view is built on', () => {
     await client.setFindingStatus({ id: 'F 1', status: 'acked' });
     await client.createFindingRule({ operation: 'a/b', expiresAt: '2026-10-08T00:00:00.000Z', reason: 'r' });
     await client.revokeFindingRule({ ruleId: 'R1' });
+    await client.listFindings({ status: 'open', limit: 50, cursor: 'a b' });
     expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
       'GET /api/teams/T1/findings',
       'PUT /api/teams/T1/findings/F%201/status',
       'POST /api/teams/T1/findings/rules',
       'DELETE /api/teams/T1/findings/rules/R1',
+      'GET /api/teams/T1/findings?status=open&limit=50&cursor=a+b',
     ]);
     expect(seen[1]!.body).toEqual({ status: 'acked' });
   });
