@@ -27,4 +27,13 @@ A vertical sees one tenant. Any cross-tenant list handed to one hands a tenant d
 
 **Deferred, not rejected.** A pushed per-login projection into verticals, for an in-app place switcher or "shared with me". It would put cross-tenant data inside verticals and needs its own decision.
 
-Shipped in [#1694](https://github.com/substrat-run/substrat/pull/1694); the open parts of the rollout are listed on the issue.
+## Shipped, and not yet
+
+Shipped in [#1694](https://github.com/substrat-run/substrat/pull/1694) (the index, the account page, ticket0) and #2197 (meridian and manyfold). Not done:
+
+- **Managed tenants.** A tenant provisioned through the platform-request drain, whose delivered `substrat:auth` names another team's auth-server, is registered as a place by nothing.
+- **Hand-typed identities** that name another team's auth-server as an external issuer are not registered either.
+- **Multi-site.** Only an app's own routed scope is a place; a scope selected with `x-site` is refused by the issuer and not reported by manyfold.
+- **Repair at sign-in.** A lost removal lingers until the next platform reconcile.
+- **External issuers** keep no index: they are asked once and sent nothing.
+- **Hosted manyfold is inert.** It mounts no `onConfigure`, so it never receives a delivered `substrat:auth` and has no identity to report with, until it stores per-instance config.
