@@ -126,6 +126,14 @@ function boundRecord(sql: ScopedSql, b: EntityBinding, entityId: string): { exis
   return { exists: rows.length > 0, principal: rows.find((r) => r.principal !== null)?.principal ?? null };
 }
 
+/** Does anyone hold a live shape marker on `object`? */
+const heldBySomeone = (sql: ScopedSql, object: string): boolean =>
+  sql.query(
+    `SELECT 1 FROM _substrat_tuples WHERE object = ? AND relation = '${ENTITY_SHAPE_MARKER_RELATION}' AND revoked_at IS NULL
+        AND subject >= '${PRINCIPAL}' AND subject < 'principal;' LIMIT 1`,
+    [object],
+  ).length > 0;
+
 /** The bind key's refusal, in the shape every bounded verb answers a missing key with. */
 const lacking = (permission: PermissionKey): { ok: false; coverage: Extract<Coverage, { covered: false }> } => ({
   ok: false,
@@ -134,7 +142,8 @@ const lacking = (permission: PermissionKey): { ok: false; coverage: Extract<Cove
 
 /**
  * May `entity` be bound by a link its minter vouches for, now? The scope's recorded binding for
- * the type, the record present, its column naming nobody, and the minter holding the binding's
+ * the type, the record present, its column naming nobody, nobody holding its shape there on the
+ * spine (`bind-record-held`: unbind them first), and the minter holding the binding's
  * permission on it (`allowed`, the checker's `check` for the minter). The same judgement at mint
  * and at the exchange, so a link whose minter has since lost the key, or left, is refused.
  */
@@ -144,7 +153,7 @@ export async function judgeBind(
   entity: EntityRef,
 ): Promise<
   | { ok: true; binding: EntityBinding }
-  | { ok: false; refused: 'bind-not-declared' | 'bind-record-missing' | 'bind-record-bound' }
+  | { ok: false; refused: 'bind-not-declared' | 'bind-record-missing' | 'bind-record-bound' | 'bind-record-held' }
   | ReturnType<typeof lacking>
 > {
   entityObjectRef(entity, 'bind');
@@ -153,6 +162,10 @@ export async function judgeBind(
   const record = boundRecord(sql, binding, entity.entityId);
   if (!record.exists) return { ok: false, refused: 'bind-record-missing' };
   if (record.principal !== null) return { ok: false, refused: 'bind-record-bound' };
+  // The spine as well as the column: someone already holding the record's shape there — given it
+  // before the column was written, or left by a holder column a later version moved — is a holder
+  // a new link would bind a second person beside. Unbind them first.
+  if (heldBySomeone(sql, entityObjectRef(entity, 'bind'))) return { ok: false, refused: 'bind-record-held' };
   if (!(await allowed(binding.permission, entity))) return lacking(binding.permission);
   return { ok: true, binding };
 }

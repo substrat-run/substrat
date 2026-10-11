@@ -175,6 +175,17 @@ export function bindingInviteContractSuite(
         expect(await snapshot()).toEqual(before);
       });
 
+      it('is refused, distinctly, for a record someone already holds the shape on with its column empty — until they are unbound', async () => {
+        const id = await record();
+        // A holder the column never named: given the shape directly, as before the column existed.
+        await host.admin.grantEntityShape(staff, { principalId: p(), node: node(), entity: rec(id), permissions: [BIND_READ_OWN], grantedBy: clerk });
+        const before = await snapshot();
+        expect(await mint(clerk, await invitee(), rec(id))).toEqual({ ok: false, refused: 'bind-record-held' });
+        expect(await snapshot()).toEqual(before);
+        expect((await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))) as { unbound: unknown[] }).toMatchObject({ ok: true });
+        expect((await mint(clerk, await invitee(), rec(id))).ok).toBe(true);
+      });
+
       it('is refused for a minter without the key, naming it — and the clerk, who holds it, mints', async () => {
         const id = await record();
         const target = await invitee();
@@ -253,6 +264,12 @@ export function bindingInviteContractSuite(
         refusedThenAllowed(
           ({ id }) => put('UPDATE bind_records SET principal = ? WHERE id = ?', [p(), id]),
           ({ id }) => put('UPDATE bind_records SET principal = NULL WHERE id = ?', [id]),
+        ));
+
+      it('is refused, unspent, when someone came to hold the record’s shape meanwhile — and goes through once they are unbound', () =>
+        refusedThenAllowed(
+          ({ id }) => host.admin.grantEntityShape(staff, { principalId: p(), node: node(), entity: rec(id), permissions: [BIND_READ_OWN], grantedBy: clerk }),
+          ({ id }) => fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id)),
         ));
 
       it('is refused, unspent, when the record is gone — and goes through once it is back', () =>
