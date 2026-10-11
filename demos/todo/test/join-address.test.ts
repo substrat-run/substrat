@@ -4,12 +4,12 @@
  * `createApp` — the dev server's own wiring — with the issuer's answer stubbed, since the
  * claim is what is under test and the round-trip is the dev issuer's suite.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
-import { principalId } from '@substrat-run/contracts';
+import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import type { AuthSubject, DevCaller } from '@substrat-run/dev-issuer';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { EmailIdentityEnv } from '@substrat-run/oidc-rp';
@@ -19,22 +19,30 @@ import { buildHost, seed, type World } from '../src/seed.js';
 let dir: string;
 let host: ScopeHost;
 let world: World;
+let app: Hono;
 
-/** Who each `x-test-sub` is, as the issuer answered and as the directory resolved them. */
-const subjects = new Map<string, AuthSubject>();
-const callers = new Map<string, DevCaller>();
+/** Who each `x-test-sub` is: what the issuer answered, and what the directory resolved. */
+const sessions = new Map<string, { subject: AuthSubject; caller: DevCaller }>();
 
 function appWith(env: EmailIdentityEnv = {}): Hono {
-  const sub = (h: Headers) => h.get('x-test-sub') ?? '';
+  const session = (h: Headers) => sessions.get(h.get('x-test-sub') ?? '');
   return createApp({
     host,
     env,
     login: {
       handle: async () => new Response(null, { status: 404 }),
-      subject: async (h) => subjects.get(sub(h)) ?? null,
-      caller: async (h) => callers.get(sub(h)) ?? null,
+      subject: async (h) => session(h)?.subject ?? null,
+      caller: async (h) => session(h)?.caller ?? null,
     },
   });
+}
+
+function signIn(sub: string, principal: PrincipalId, email: string | null, verified: boolean | undefined): string {
+  sessions.set(sub, {
+    subject: { sub, email, name: null, ...(verified === undefined ? {} : { emailVerified: verified }) },
+    caller: { principal, tenantId: world.tenant, scopeId: world.scope, sub, display: sub },
+  });
+  return sub;
 }
 
 /** A new member of the seeded scope, signed in with `email` and the issuer's `verified` claim. */
@@ -45,10 +53,7 @@ async function member(email: string | null, verified: boolean | undefined): Prom
     roleKey: 'member',
     node: { tenantId: world.tenant, scopeId: world.scope },
   });
-  const sub = `sub-${principal}`;
-  subjects.set(sub, { sub, email, name: null, ...(verified === undefined ? {} : { emailVerified: verified }) });
-  callers.set(sub, { principal, tenantId: world.tenant, scopeId: world.scope, sub, display: sub });
-  return sub;
+  return signIn(`sub-${principal}`, principal, email, verified);
 }
 
 const send = (app: Hono, path: string, sub: string, body: unknown) =>
@@ -61,20 +66,11 @@ beforeAll(async () => {
   host = buildHost(dir);
   world = await seed(host);
   // Ada is seeded and joined; she is the one sharing.
-  subjects.set('ada', { sub: 'ada', email: world.ada.email, name: 'Ada', emailVerified: true });
-  callers.set('ada', { principal: world.ada.principal, tenantId: world.tenant, scopeId: world.scope, sub: 'ada', display: 'Ada' });
-});
-
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
-
-let app: Hono;
-beforeEach(() => {
+  signIn('ada', world.ada.principal, world.ada.email, true);
   app = appWith();
 });
 
-async function message(res: Response): Promise<string> {
-  return JSON.stringify(await res.json());
-}
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('joining records only the session’s own verified address', () => {
   it('admits the verified address the session signed in with', async () => {
@@ -93,7 +89,7 @@ describe('joining records only the session’s own verified address', () => {
     const sub = await member('mallory@example.com', true);
     const res = await joinAs(app, sub, 'frida@example.com');
     expect(res.status).toBe(403);
-    expect(await message(res)).toContain('join with the verified email address you signed in with');
+    expect(await res.text()).toContain('join with the verified email address you signed in with');
   });
 
   it.each([
@@ -104,14 +100,14 @@ describe('joining records only the session’s own verified address', () => {
     const sub = await member(email, verified);
     const res = await joinAs(app, sub, email);
     expect(res.status).toBe(403);
-    expect(await message(res)).toContain(says);
+    expect(await res.text()).toContain(says);
   });
 
   it('refuses a session that carries no address at all', async () => {
     const sub = await member(null, true);
     const res = await joinAs(app, sub, 'nobody@example.com');
     expect(res.status).toBe(403);
-    expect(await message(res)).toContain('no email address');
+    expect(await res.text()).toContain('no email address');
   });
 
   it('leaves a malformed body to the operation’s own parse', async () => {

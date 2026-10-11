@@ -1,9 +1,6 @@
 /**
  * The HTTP app the dev server serves — built here, not in `server.ts`, so a test drives
  * the same wiring a browser does (the scenario suite never reaches it).
- *
- * Authentication is an ordinary OIDC round-trip against whatever `OIDC_ISSUER` names —
- * locally `@substrat-run/dev-issuer`, a real provider you sign into by picking a name.
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -14,6 +11,9 @@ import { emailRefusalMessage, identifyEmail, type EmailIdentityEnv } from '@subs
 import { problemResponse } from '@substrat-run/vertical-host';
 import { API_DOCUMENT } from './api.js';
 import { mountApi } from './routes.js';
+
+/** Where `todo/join` is mounted — the model's `/join` under the mount's `/api` base. */
+const JOIN_PATH = '/api/join';
 
 export interface AppOptions {
   host: Pick<ScopeHost, 'getScope'>;
@@ -45,42 +45,34 @@ export function createApp({ host, login, env }: AppOptions): Hono {
   // to prove the document is reachable.
   app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
 
-  /**
-   * Joining records the address `todo/share-list` finds you by, so it must be one the
-   * issuer verified this session controls (#1359) — never whatever the body claims. The
-   * operation cannot see the session, so the check sits here, in front of its route.
-   * Anything else wrong with the body is left to the operation's own input parse.
-   */
-  app.post('/api/join', async (c, next) => {
+  // `todo/share-list` finds people by the address they joined with, so joining takes only
+  // the session's own, issuer-verified address (#1359). The operation cannot see the
+  // session, so the check sits in front of its route; a malformed body is left to its parse.
+  app.post(JOIN_PATH, async (c, next) => {
     const subject = await login.subject(c.req.raw.headers);
     if (!subject) return next(); // the mount answers 401
     const own = identifyEmail(env, { id: subject.sub, email: subject.email ?? undefined, emailVerified: subject.emailVerified });
     if (own.email === null) {
       return problemResponse(c, substratError('permission_denied', `joining needs a verified email address: ${emailRefusalMessage(own.refused)}`));
     }
-    const claimed = emailIn(await c.req.text());
+    const claimed = ((await c.req.json().catch(() => null)) as { email?: unknown } | null)?.email;
     if (typeof claimed === 'string' && claimed.toLowerCase() !== own.email.toLowerCase()) {
       return problemResponse(c, substratError('permission_denied', 'join with the verified email address you signed in with'));
     }
     return next();
   });
 
-  mountApi(app, async (c) => {
+  const mounted = mountApi(app, async (c) => {
     // The identity directory says which tenant this login is in and which principal it is
     // there, so Cleo lands in the other tenant without this file knowing she is special.
     const caller = await login.caller(c.req.raw.headers);
     if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
     return host.getScope(caller.principal, caller.tenantId, caller.scopeId);
   });
+  // The guard is keyed on a path, so a moved route would leave it guarding nothing.
+  if (!mounted.some((r) => r.operation === 'todo/join' && r.method === 'POST' && r.path === JOIN_PATH)) {
+    throw new Error(`todo/join is no longer served at POST ${JOIN_PATH} — move the address guard with it`);
+  }
 
   return app;
-}
-
-/** The body's `email`, when it parses as JSON — otherwise the operation's parse says why not. */
-function emailIn(body: string): unknown {
-  try {
-    return (JSON.parse(body) as { email?: unknown } | null)?.email;
-  } catch {
-    return undefined;
-  }
 }

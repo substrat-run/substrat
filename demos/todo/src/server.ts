@@ -5,8 +5,9 @@
  * host answers every request from an empty world, which every test that bypasses
  * HTTP would fail to notice.
  *
- * Authentication is an ordinary OIDC round-trip, wired in `./app.ts`. It replaced an `x-principal` header, which was an impersonation bypass and, in a vertical
- * with no worker, the ONLY login anyone reading this would ever see.
+ * Authentication is an ordinary OIDC round-trip, wired in `./app.ts`. It replaced an
+ * `x-principal` header, which was an impersonation bypass and, in a vertical with no
+ * worker, the ONLY login anyone reading this would ever see.
  *
  * The cast is persisted so restarts reuse the same principals — ULIDs minted afresh each
  * boot would orphan every list written before it — and the identity links are re-applied on
