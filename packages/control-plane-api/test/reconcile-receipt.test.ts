@@ -439,6 +439,23 @@ describe('the retirements a receipt records as finished (#2185)', () => {
       expect(await bound(s)).toEqual({ versionId: plain, types: [] });
     });
 
+    it('a restore clears them with the receipt, a failed one included: the data loaded may predate a binding', async () => {
+      for (const fails of [false, true]) {
+        const s = await scopeOn(plain);
+        await reconcile(s, { retirementsLeftOpen: 0, boundShapeTypes: ['contact'] });
+        expect(await bound(s)).toEqual({ versionId: plain, types: ['contact'] });
+        const backup = await host.admin.exportScope(staff, T, s);
+        restoreFails = fails;
+        try {
+          const res = await app().request(`/tenants/${T}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(backup) });
+          expect(res.status).toBe(fails ? 422 : 200);
+        } finally {
+          restoreFails = false;
+        }
+        expect(await bound(s)).toBeNull();
+      }
+    });
+
     it('records nothing (unknown) for an answer without the list, unless the version holds no shape by a table', async () => {
       const s = await scopeOn(plain);
       await reconcile(s, { retirementsLeftOpen: 0 });
