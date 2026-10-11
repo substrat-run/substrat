@@ -428,11 +428,8 @@ app.get('/api/me', async (c) => {
     country: 'SE' | 'ES';
     employeeId: string | null;
   };
-  // The display name the issuer asserted — cheap to re-resolve, and it keeps the SPA's
-  // shape total whether or not the issuer sends `name`.
-  const subject = await authProviderFor(c.env, c.req.raw)
-    .then((p) => p.resolve(c.req.raw.headers))
-    .catch(() => null);
+  // The display name the issuer asserted, which keeps the SPA's shape total whether or not the
+  // issuer sends `name`.
   return c.json({
     key: principal,
     display: subject?.name ?? subject?.email ?? 'You',
