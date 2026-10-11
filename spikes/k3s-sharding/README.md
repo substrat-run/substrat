@@ -12,7 +12,7 @@ shard builds, in one process, and the process boundary is shown by the cluster t
 
 ```
 pnpm --filter '@substrat-run/spike-k3s-sharding^...' build   # the workspace packages it imports
-pnpm --filter @substrat-run/spike-k3s-sharding test           # deterministic; what CI runs
+pnpm --filter @substrat-run/spike-k3s-sharding test           # no real-time races; what CI runs
 pnpm --filter @substrat-run/spike-k3s-sharding test:cluster   # the multi-process runs, opt-in
 ```
 
@@ -53,7 +53,7 @@ scheduler's part (`restart()` brings a pod back under the same name, port and vo
 | `test/contract.test.ts` | test | — | `scopeHostContractSuite`, unchanged, through the lease layer (in-process; see FINDINGS.md) |
 | `test/kill.test.ts` | cluster | 2 | freeze, failover, wake, SIGKILL mid-write: no acknowledged write lost or doubled, and the woken holder's commit refused by its own files; a holder frozen inside its transaction (unavailable for the freeze, nothing lost); plus the `LEASES=off` control, which must lose writes |
 | `test/router.test.ts` | cluster | 1, 2 | a keyless write is never replayed; a holder paused for less than its lease is asked again |
-| `test/background.test.ts` | cluster | 6 | per-scope background slots exactly once across a freeze, a handover and a SIGKILL |
+| `test/background.test.ts` | cluster | 6 | per-scope background slots once each across a freeze, a handover and a SIGKILL (within the 24 h idempotency retention, FINDINGS §6) |
 | `test/reshard.test.ts` | cluster | 4 | 2 → 3: only the scopes whose home moved move, with all their writes |
 | `test/control-plane-loss.test.ts` | cluster | — | the lease table lost, or the copy on record incomplete: writes refused, nothing reseeded or deleted |
 

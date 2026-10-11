@@ -14,7 +14,7 @@ Layer 1 does not show that.** What it shows is narrower:
   builds: a `SqliteScopeHost` behind the lease layer (`src/fence.ts`), with its leases taken
   from the real control-plane process over HTTP. Every operation the suite invokes goes
   through the lease's admit and re-check; the file counts them, so the wrapper cannot pass by
-  wrapping nothing. That proves the lease layer breaks no part of the contract. It runs in the
+  wrapping nothing. That shows the lease layer breaks nothing the contract suite checks. It runs in the
   test process, against one host, on a stopped clock, and without the storage-side fence
   (§2), which needs a shard's placement to stamp the files.
 - The process boundary is shown by the cluster tests instead (`kill`, `router`,
@@ -214,7 +214,7 @@ slower, lossier path to the same bytes. Two things this does not settle: in a cl
 copy is a volume reattach or a restore from a replica (question 3), and here the scope's
 directory carries a slice of the directory database (question 5).
 
-## 6. Background work: exactly once per scope, on the owner, across a handover
+## 6. Background work: once per scope, on the owner, across a handover (with limits)
 
 **The loop runs only for scopes the shard holds, through the same fenced stub as a request,
 and every unit of work carries an idempotency key** (`src/shard.ts`, `test/background.test.ts`).
@@ -291,7 +291,8 @@ What the guarantees above rest on. A real adapter has to make each one true, not
 ## Which tests run where
 
 `pnpm test`, the set CI's affected selection runs: placement, lease, storage fence, the
-process sentinel, and the contract binding. None of them races real time. The lease and
+process sentinel, and the contract binding. None of them races real time, except that the
+sentinel test waits on a 250 ms poll, with ten seconds to spare. The lease and
 contract files run the control plane on a manual clock and move it explicitly.
 
 `pnpm test:cluster` is opt-in: kill, router, background, reshard and control-plane loss.
