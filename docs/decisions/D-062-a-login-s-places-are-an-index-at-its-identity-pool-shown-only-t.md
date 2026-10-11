@@ -6,7 +6,7 @@ title: "A login's places are an index at its identity pool, shown only to that l
 status: accepted
 aliases: []
 amends: []
-tracking: ["#1670", "#1694"]
+tracking: ["#1670", "#1694", "#2201"]
 ---
 # D-62 — A login's places are an index at its identity pool, shown only to that login on the issuer's own origin; verticals report into it and never read it
 
@@ -36,4 +36,4 @@ Shipped in [#1694](https://github.com/substrat-run/substrat/pull/1694) (the inde
 - **Multi-site.** Only an app's own routed scope is a place; a scope selected with `x-site` is refused by the issuer and not reported by manyfold.
 - **Repair at sign-in.** A lost removal lingers until the next platform reconcile.
 - **External issuers** keep no index: they are asked once and sent nothing.
-- **Hosted manyfold is inert.** It mounts no `onConfigure`, so it never receives a delivered `substrat:auth` and has no identity to report with, until it stores per-instance config.
+- **Hosted manyfold is inert.** It mounts no `onConfigure`, so it never receives a delivered `substrat:auth` and has no identity to report with, until it stores per-instance config ([#2201](https://github.com/substrat-run/substrat/issues/2201)).
