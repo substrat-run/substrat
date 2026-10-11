@@ -245,10 +245,15 @@ including the two OIDC ones where Better Auth stays dormant:
   rights come from it, not from the link. The minter must hold the bind key on the record,
   both at mint and again at the claim, so a link whose minter has lost the key, or left, is
   refused with the one refusal and stays unspent. A record that already names someone refuses
-  the link; nothing is ever re-bound. `POST /api/bindings/:entityType/:entityId/unbind` calls
-  the host's `unbindEntityHolderBounded`. It clears the column and takes back the shape the
-  person held there through it, answering `{ unbound: <principal> | null }`, or 403 naming the
-  bind key the caller lacks on that record, or 404 for a type the scope does not bind. A
+  the link, and so does one someone already holds the shape on with its column empty (a person
+  given it before the column was written: unbind them first). Nothing is ever re-bound.
+  `POST /api/bindings/:entityType/:entityId/unbind` calls the host's
+  `unbindEntityHolderBounded`. It clears the column and releases everyone holding the shape on
+  the record, found by their marker rather than by the column, answering
+  `{ unbound: [<principal>, …] }`, or 403 naming the bind key the caller lacks on that record,
+  or 404 for a type the scope does not bind. People already bound keep the shape until an
+  unbind, an erasure or a retirement of its keys releases them, whatever a later version
+  declares. A
   vertical supplies `nodeFor`, `callerOf` (who is asking, 401 for nobody) and the host verb.
   There is no admin gate, because the kernel's bound is the key on the record. An erasure of
   the record, or of its person, unbinds too.

@@ -616,10 +616,17 @@ export const entityGrantShape = z.object({
    * `erasable` field: an erasure of the record or of its person unbinds it (the kernel clears the
    * column and takes the shape back, after the module's erasure hook has read the rows).
    *
-   * Its keys are refused to every grant but the shape's own, as a `'grantee'` shape's are, so
-   * holding them on such a record means the column names you, or named you once — a person given
-   * the shape before the column was written (a legacy holder) keeps it, and an unbind cannot
-   * reach them. Omitted when unset, so a registry that binds nothing keeps its digest.
+   * Its keys are refused to every direct grant on a record of this type, as a `'grantee'` shape's
+   * are (a grant on a parent of another type is not refused yet: #2177). A claim refuses a record
+   * whose column names someone, and one someone already holds the shape on (`bind-record-held` — a
+   * person given it before the column was written: unbind them first). An unbind releases every
+   * holder of the shape on the record from the spine, whatever the column names now.
+   *
+   * People already bound KEEP the shape until they are released — an unbind while the shape binds,
+   * an erasure (which reaches every type that ever bound in the scope), or `retired` — whatever a
+   * later version does to the declaration: dropping `bind` keeps the holder recorded but leaves no
+   * unbind; removing the shape or moving its holder leaves erasure and retirement (#2178 would
+   * refuse that change). Omitted when unset, so a registry that binds nothing keeps its digest.
    */
   bind: z.object({ permission: permissionKey }).optional(),
 });

@@ -31,11 +31,14 @@ import { switchSqlOf } from './system-switch.js';
  * - {@link bindIn}: inside a `become` exchange's transaction, once {@link judgeBind} said yes and
  *   the use is taken — the column set to the claimant, the shape granted (marker and keys), and
  *   `entity.holder-bound` emitted.
- * - {@link unbindEntityHolderBounded}: the column cleared, and the marker and every key of the
- *   shape, current and retired, tombstoned for the person it named (K-21).
- * - {@link captureBoundOf} / {@link releaseBound}: the erasure's half — every record bound to the
- *   erased subject, or that IS the erased subject, captured before any module erasure runs, and
- *   released after the hooks whether or not the row survived them.
+ * - {@link unbindEntityHolderBounded}: the column cleared, and every holder of the shape on the
+ *   record released from the SPINE — their marker and everything they hold there tombstoned (K-21).
+ * - {@link captureBoundOf} / {@link releaseBound}: the erasure's half — on every type that binds or
+ *   ever bound here, the holders on the erased record and the erased person's own markers, read
+ *   before any module erasure runs and released after the hooks whether or not a row survived.
+ *
+ * People already bound keep the shape until they are released — an unbind (while the shape still
+ * binds), an erasure, or the retirement of its keys — whatever a later version declares.
  *
  * Read from the scope's record of its reconciled registry (`shape-bind-*` tuples), never from the
  * vertical's code: a scope not yet reconciled with a binding declaration binds nothing.
