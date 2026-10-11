@@ -66,7 +66,7 @@ describe('grant-scoped depth-first walk', () => {
     const scope: ScopeTupleReader = {
       tuples: (s, prefix) => s === grant.subject && grant.relation.startsWith(prefix) ? [grant] : [],
       grant: (s, relation, object) => s === grant.subject && relation === grant.relation && object === grant.object ? grant : undefined,
-      parents: () => [], switchedOff: () => false,
+      parents: () => [], shapeProtectedTypes: () => [], switchedOff: () => false,
     };
     const checker = createTupleEvaluator({
       now: () => '2026-01-01T00:00:00Z', tenantTuples: () => [], getRole: () => undefined,
@@ -160,6 +160,7 @@ describe('grant-scoped depth-first walk', () => {
       tuples: (s, prefix) => rows.filter((r) => r.subject === s && r.relation.startsWith(prefix)),
       grant: (s, relation, object) => rows.find((r) => r.subject === s && r.relation === relation && r.object === object),
       parents: (ref) => rows.filter((r) => r.subject === ref && r.relation === 'parent'),
+      shapeProtectedTypes: () => [],
       switchedOff: () => false,
     };
     const checker = createTupleEvaluator({

@@ -93,6 +93,8 @@ const readerFor = (opts: {
   cap?: CapabilityRow;
   aliceHolds?: boolean;
   withCapabilityRead?: boolean;
+  /** The types whose shape protects `doc:read` here (#2177). */
+  protectedTypes?: string[];
 }): PermissionTupleReader => {
   const rows: PermissionTupleRow[] = [
     tuple('doc:d1', 'parent', 'folder:F'),
@@ -104,6 +106,7 @@ const readerFor = (opts: {
     grant: (subject, relation, object) =>
       rows.find((r) => r.subject === subject && r.relation === relation && r.object === object),
     parents: (object) => rows.filter((r) => r.subject === object && r.relation === 'parent'),
+    shapeProtectedTypes: (relation) => (relation === `granted:${READ}` ? (opts.protectedTypes ?? []) : []),
     switchedOff: () => false,
     ...(opts.withCapabilityRead === false
       ? {}
@@ -162,6 +165,8 @@ describe('the evaluator’s capability branch', () => {
     ['a row whose permissions do not decode', { cap: capRow({ permissions: 'not json' }) }, {}],
     ['an unknown capability', {}, {}],
     ['a reader with no capability read at all', { cap: capRow(), withCapabilityRead: false }, {}],
+    // #2177: a key a `doc` shape protects reaches a doc only through the doc's own grant.
+    ['a protected key on a record beneath its root', { cap: capRow(), protectedTypes: ['doc'] }, {}],
   ];
   for (const [what, world, over] of denials) {
     it(`denies ${what}`, async () => {
@@ -174,6 +179,12 @@ describe('the evaluator’s capability branch', () => {
       expect(decision.allowed).toBe(false);
     });
   }
+
+  it('a protected key still reaches the record it is rooted on, and a key protected on another type passes through (#2177)', async () => {
+    const onDoc = capRow({ entity_type: 'doc', entity_id: 'd1' });
+    expect((await createTupleEvaluator(readerFor({ cap: onDoc, protectedTypes: ['doc'] })).check(capability, READ, NODE, d1)).allowed).toBe(true);
+    expect((await createTupleEvaluator(readerFor({ cap: capRow(), protectedTypes: ['other'] })).check(capability, READ, NODE, d1)).allowed).toBe(true);
+  });
 
   it('an expiry one moment in the future still allows — the boundary is exclusive of now', async () => {
     const decision = await createTupleEvaluator(

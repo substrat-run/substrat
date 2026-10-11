@@ -2,6 +2,7 @@ import type { EntitlementView, RoleDefinition } from '@substrat-run/contracts';
 import {
   capabilityByIdQuery,
   createTupleEvaluator,
+  shapeProtectedTypesQuery,
   SYSTEM_SWITCH_OFF_QUERY,
   type CapabilityRow,
   type PermissionChecker,
@@ -156,6 +157,11 @@ export const scopeTupleReader = (sql: SqlStorage): ScopeTupleReader => ({
         object,
       )
       .toArray() as unknown as TupleRow[],
+  // #2177: the types whose shape protects a key — where the entity walk stops climbing for it.
+  shapeProtectedTypes: (relation) => {
+    const q = shapeProtectedTypesQuery(relation);
+    return (sql.exec(q.sql, ...q.params).toArray() as unknown as { entity_type: string }[]).map((r) => r.entity_type);
+  },
   // #1672: a capability subject is resolved against its own directory row, which lives in
   // this ScopeDO's spine beside the entities it reaches — read synchronously, like the rest.
   capability: (id) => {

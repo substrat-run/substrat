@@ -483,6 +483,7 @@ export const INDEX_VALUE_EXPORTS = [
   'settleLifecycleAfterLoad',
   'settleOutcomeParamsOf',
   'settlePlatformRequestIn',
+  'shapeProtectedTypesQuery',
   'shapeTopUpBatch',
   'spineColumnAdditions',
   'splitManifestMigrations',

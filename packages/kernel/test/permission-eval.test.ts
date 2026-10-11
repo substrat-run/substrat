@@ -20,6 +20,8 @@ import {
   type PermissionTupleRow,
   type ScopeTupleReader,
 } from '../src/permission-eval.js';
+import { isWriteStatement } from '../src/carried-copy.js';
+import { shapeProtectedTypesQuery } from '../src/entity-grant.js';
 
 /**
  * The four-rule algebra, tested where it now LIVES (#969) rather than twice over in two
@@ -56,6 +58,8 @@ interface World {
   now?: string;
   /** Omit the scope store entirely — the "no open database for this scope" case. */
   noScope?: boolean;
+  /** Called on every `shapeProtectedTypes` read, so a case can count them. */
+  onProtectedRead?: () => void;
 }
 
 const readerFor = (world: World): PermissionTupleReader => {
@@ -69,6 +73,13 @@ const readerFor = (world: World): PermissionTupleReader => {
         (r) => r.subject === subject && r.relation === relation && r.object === object,
       ),
     parents: (object) => scopeRows.filter((r) => r.subject === object && r.relation === 'parent'),
+    // `shapeProtectedTypesQuery`, over rows: the `shape:<type>` subjects protecting the relation.
+    shapeProtectedTypes: (relation) => {
+      world.onProtectedRead?.();
+      return scopeRows
+        .filter((r) => r.subject.startsWith('shape:') && r.relation === 'shape-grantee-key' && r.object === relation)
+        .map((r) => r.subject.slice('shape:'.length));
+    },
     // `SYSTEM_SWITCH_OFF_PREDICATE`, over rows: a live `switch:off` tuple naming the subject.
     switchedOff: (subject) =>
       scopeRows.some((r) => r.subject === subject && r.relation === 'switch:off' && r.revoked_at === null),
@@ -596,5 +607,105 @@ describe('the entity walk reads each distinct node once (#1853)', () => {
       readerFor({ scope: [...world.rows, row(`principal:${ALICE}`, 'granted:todo:read', 'contact:k')] }),
     );
     expect((await checker.check(alice, TODO_READ, NODE, m)).allowed).toBe(true);
+  });
+});
+
+describe('a key a shape protects reaches its record only through the record (#2177)', () => {
+  // A `customer` shape protects `workorder:read`: a customer record's people are its shape's
+  // holders. Work orders hang off customers, and customers off a region.
+  const shape = row('shape:customer', 'shape-grantee-key', `granted:${WO_READ}`);
+  const edges = [
+    row('customer:c1', 'parent', 'region:r1'),
+    row('workorder:w1', 'parent', 'customer:c1'),
+    // A work order filed straight under the region, by no customer.
+    row('workorder:w2', 'parent', 'region:r1'),
+  ];
+  const c1 = { entityType: 'customer', entityId: 'c1' };
+  const w1 = { entityType: 'workorder', entityId: 'w1' };
+  const w2 = { entityType: 'workorder', entityId: 'w2' };
+  const r1 = { entityType: 'region', entityId: 'r1' };
+  const allowed = async (scope: PermissionTupleRow[], permission: PermissionKey, entity: { entityType: string; entityId: string }, world: Partial<World> = {}) =>
+    (await createTupleEvaluator(readerFor({ ...world, scope })).check(alice, permission, NODE, entity)).allowed;
+
+  it('a grant of the key on an ancestor reaches neither the record nor anything beneath it through the record', async () => {
+    const onRegion = [shape, ...edges, row(`principal:${ALICE}`, `granted:${WO_READ}`, 'region:r1')];
+    expect(await allowed(onRegion, WO_READ, c1)).toBe(false);
+    expect(await allowed(onRegion, WO_READ, w1)).toBe(false);
+    // Positive twins: it still holds on the ancestor, and on a descendant reached by no such record.
+    expect(await allowed(onRegion, WO_READ, r1)).toBe(true);
+    expect(await allowed(onRegion, WO_READ, w2)).toBe(true);
+  });
+
+  it('a record with a protected parent and a direct path to the ancestor is reached by the direct path alone', async () => {
+    // A diamond: w3 is filed under the customer AND straight under the region.
+    const w3 = { entityType: 'workorder', entityId: 'w3' };
+    const grant = row(`principal:${ALICE}`, `granted:${WO_READ}`, 'region:r1');
+    const viaCustomer = row('workorder:w3', 'parent', 'customer:c1');
+    const direct = row('workorder:w3', 'parent', 'region:r1');
+    expect(await allowed([shape, ...edges, viaCustomer, direct, grant], WO_READ, w3)).toBe(true);
+    // Without the direct edge the only path passes through the customer, where the walk stops.
+    expect(await allowed([shape, ...edges, viaCustomer, grant], WO_READ, w3)).toBe(false);
+  });
+
+  it('a grant written before the scope recorded the shape stops reaching through the record once it is recorded', async () => {
+    const old = [...edges, row(`principal:${ALICE}`, `granted:${WO_READ}`, 'region:r1')];
+    expect(await allowed(old, WO_READ, w1)).toBe(true);
+    expect(await allowed([shape, ...old], WO_READ, w1)).toBe(false);
+  });
+
+  it("the shape's own grant on the record reaches the record and what is beneath it", async () => {
+    const onRecord = [shape, ...edges, row(`principal:${ALICE}`, `granted:${WO_READ}`, 'customer:c1')];
+    expect(await allowed(onRecord, WO_READ, c1)).toBe(true);
+    expect(await allowed(onRecord, WO_READ, w1)).toBe(true);
+  });
+
+  it('a key the shape does not protect still climbs past the record, and a role at the node is untouched', async () => {
+    expect(await allowed([shape, ...edges, row(`principal:${ALICE}`, `granted:${WO_WRITE}`, 'region:r1')], WO_WRITE, w1)).toBe(true);
+    expect(
+      await allowed([shape, ...edges, row(`principal:${ALICE}`, 'role:staff', `scope:${S}`)], WO_READ, w1, { roles: { staff: staff([WO_READ]) } }),
+    ).toBe(true);
+  });
+
+  it('a record of the protecting type is a stop wherever the walk meets it, not only at its start', async () => {
+    // A customer beneath another customer: the parent customer's holders do not reach the child's.
+    const nested = [shape, row('customer:c2', 'parent', 'customer:c1'), row(`principal:${ALICE}`, `granted:${WO_READ}`, 'customer:c1')];
+    expect(await allowed(nested, WO_READ, { entityType: 'customer', entityId: 'c2' })).toBe(false);
+    expect(await allowed(nested, WO_READ, c1)).toBe(true);
+  });
+
+  it('a within walk made for a key stops where that key\'s check stops; without a key it walks every edge', async () => {
+    const rows = [shape, ...edges];
+    const scope = {
+      parents: (o: string) => rows.filter((r) => r.subject === o && r.relation === 'parent'),
+      shapeProtectedTypes: (relation: string) => rows.filter((r) => r.subject.startsWith('shape:') && r.object === relation).map((r) => r.subject.slice('shape:'.length)),
+    };
+    const NOW = '2026-01-01T00:00:00.000Z';
+    expect(await reachesWithin(scope, w1, r1, NOW, WO_READ)).toBe(false);
+    expect([...(await ancestorsWithin(scope, w1, NOW, WO_READ))].sort()).toEqual(['customer:c1', 'workorder:w1']);
+    // Positive twins: no key, and a key the shape does not protect, both reach the region.
+    expect(await reachesWithin(scope, w1, r1, NOW)).toBe(true);
+    expect(await reachesWithin(scope, w1, r1, NOW, WO_WRITE)).toBe(true);
+    expect(await reachesWithin(scope, w2, r1, NOW, WO_READ)).toBe(true);
+    // A keyed walk over a reader that cannot name the protecting types refuses rather than guess.
+    await expect(reachesWithin({ parents: scope.parents }, w1, r1, NOW, WO_READ)).rejects.toThrow(/shapeProtectedTypes/);
+  });
+
+  it('asks with a statement the scope DO reads as a read, so a check that asks counts no write', () => {
+    // The DO judges a statement by its text, splitting at `;`: a bound in a literal would split it.
+    expect(isWriteStatement(shapeProtectedTypesQuery(`granted:${WO_READ}`).sql)).toBe(false);
+  });
+
+  it('reads the protecting types at most once per walk, and not at all for a walk with no edge to climb', async () => {
+    let reads = 0;
+    const onProtectedRead = () => void (reads += 1);
+    const deep = [...[1, 2, 3, 4].map((i) => row(`n:${i}`, 'parent', `n:${i + 1}`)), row(`principal:${ALICE}`, `granted:${WO_READ}`, 'n:5')];
+    expect(await allowed(deep, WO_READ, { entityType: 'n', entityId: '1' }, { onProtectedRead })).toBe(true);
+    expect(reads).toBe(1);
+    reads = 0;
+    // A hit at the start, a node-level check, and a miss on an entity with no parents never climb.
+    expect(await allowed([row(`principal:${ALICE}`, `granted:${WO_READ}`, 'n:1')], WO_READ, { entityType: 'n', entityId: '1' }, { onProtectedRead })).toBe(true);
+    expect((await createTupleEvaluator(readerFor({ scope: [], onProtectedRead })).check(alice, WO_READ, NODE)).allowed).toBe(false);
+    expect(await allowed([], WO_READ, { entityType: 'n', entityId: 'leaf' }, { onProtectedRead })).toBe(false);
+    expect(reads).toBe(0);
   });
 });

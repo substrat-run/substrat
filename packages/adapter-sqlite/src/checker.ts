@@ -3,6 +3,7 @@ import type { Node, RoleDefinition } from '@substrat-run/contracts';
 import {
   capabilityByIdQuery,
   createTupleEvaluator,
+  shapeProtectedTypesQuery,
   SYSTEM_SWITCH_OFF_QUERY,
   type CapabilityRow,
   type Clock,
@@ -57,6 +58,7 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
   let tuplesStmt: Database.Statement | undefined;
   let grantStmt: Database.Statement | undefined;
   let parentsStmt: Database.Statement | undefined;
+  let protectedStmt: Database.Statement | undefined;
   let capabilityStmt: Database.Statement | undefined;
   let switchedOffStmt: Database.Statement | undefined;
   let nextGrantStmt: Database.Statement | undefined;
@@ -87,6 +89,11 @@ const scopeReader = (db: Database.Database): ScopeTupleReader => {
         `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
          WHERE subject = ? AND relation = 'parent'`,
       )).all(object) as PermissionTupleRow[],
+    // #2177: the types whose shape protects a key — where the entity walk stops climbing for it.
+    shapeProtectedTypes: (relation) => {
+      const q = shapeProtectedTypesQuery(relation);
+      return ((protectedStmt ??= db.prepare(q.sql)).all(...q.params) as { entity_type: string }[]).map((r) => r.entity_type);
+    },
     // #1672: a capability subject is resolved against its own directory row, which lives
     // in this scope's spine beside the entities it reaches.
     capability: (id) =>

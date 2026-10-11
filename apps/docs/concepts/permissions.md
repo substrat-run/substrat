@@ -138,7 +138,11 @@ derivation algebra**:
 2. **Tenancy-tree inheritance** — permission at a node flows down to child scopes.
 3. **Entity parent edges** — declared in module manifests (`workorder → facility`) and
    written at runtime via `ctx.link` and moved via `ctx.relink`; entity-narrowed grants
-   flow along these edges, depth-capped.
+   flow along these edges, depth-capped. The one exception: a key that an entity-grant
+   shape protects (a `'grantee'` or binding shape's keys) does not flow past a record of
+   the shape's type. A grant of it on a parent never reaches that record or anything
+   beneath it through the record. On such a record the key is held only by the shape's own
+   grant there, or at the node, by a role or a scope-level grant.
 4. **Org/group membership** — grants to an organization reach its members.
 
 No negation, no configurable rewrite rules. Verticals never see or author tuples — roles

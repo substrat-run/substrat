@@ -664,7 +664,8 @@ export const entityGrantShape = z.object({
    * column and takes the shape back, after the module's erasure hook has read the rows).
    *
    * Its keys are refused to every direct grant on a record of this type, as a `'grantee'` shape's
-   * are (a grant on a parent of another type is not refused yet: #2177). A claim refuses a record
+   * are, and a grant of one on a parent of another type never reaches such a record: the permission
+   * walk stops climbing at a record whose shape protects the key (#2177). A claim refuses a record
    * whose column names someone, and one someone already holds the shape on (`bind-record-held` — a
    * person given it before the column was written: unbind them first). An unbind releases every
    * holder of the shape on the record from the spine, whatever the column names now.

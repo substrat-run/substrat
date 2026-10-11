@@ -124,6 +124,13 @@ export interface ScopeTupleReader {
   /** The declared `parent` edges out of `object`. */
   parents(object: string): MaybePromise<PermissionTupleRow[]>;
   /**
+   * The entity types whose declared shape protects `relation` (`granted:<key>`) in this scope —
+   * `shapeProtectedTypesQuery`, the spelling the explicit writer refuses by (#2083, #1686).
+   * The entity walk stops climbing at a record of such a type for that key (#2177). Required, so
+   * no reader can leave it out and let a grant on a parent reach through the record.
+   */
+  shapeProtectedTypes(relation: string): MaybePromise<string[]>;
+  /**
    * The capability row a `{ kind: 'capability' }` subject names (#1672), read with
    * `capabilityByIdQuery` — capabilities live in the scope's own spine beside the entities
    * they reach. Optional so a reader written before capabilities still compiles; ABSENT
@@ -225,12 +232,18 @@ async function switchedOff(subject: CheckSubject, node: Node, scope: ScopeTupleR
  * capability subject — so both subjects travel exactly the same edges, to exactly the same
  * depth, skipping exactly the same revoked edges. A capability that reached further than an
  * entity grant (or less far) would be a second algebra.
+ *
+ * `stopsAt`, when given, names the refs the walk probes but never climbs past — the records a
+ * protected key reaches only through their own grant (`protectedStop`). Asked only of a ref the
+ * walk would expand and that has parent edges, so a hit at the start, or a miss at a leaf, costs
+ * nothing.
  */
 async function walkParents<R>(
   scope: Pick<ScopeTupleReader, 'parents'>,
   start: string,
   now: string,
   probe: (ref: string, chain: RelationTuple[]) => Promise<R | undefined>,
+  stopsAt?: (ref: string) => Promise<boolean>,
 ): Promise<R | undefined> {
   type Frontier = { ref: string; chain: RelationTuple[] };
   let frontier: Frontier[] = [{ ref: start, chain: [] }];
@@ -251,7 +264,10 @@ async function walkParents<R>(
     if (depth === ENTITY_WALK_DEPTH) break;
     const next: Frontier[] = [];
     for (const candidate of frontier) {
-      for (const p of await scope.parents(candidate.ref)) {
+      const edges = await scope.parents(candidate.ref);
+      // Asked only of a ref with edges to climb, so a miss at a leaf reads no shapes.
+      if (edges.length === 0 || (stopsAt && (await stopsAt(candidate.ref)))) continue;
+      for (const p of edges) {
         // A revoked parent edge stops expanding. Without this the tombstone would work
         // for grants and membership but silently NOT for entity edges — which is the
         // case open question 15 is actually about (a facility moving management
@@ -270,23 +286,52 @@ async function walkParents<R>(
 }
 
 /**
+ * Where a walk for `permission` stops climbing (#2177): a record whose type's declared shape
+ * protects the key. Such a key is given on such a record only by the shape's own grant — the
+ * explicit writer refuses it there — so a grant of it on an ANCESTOR must not reach the record
+ * either, or anything beneath it through the record. The record itself is still probed, which is
+ * where the shape's grant sits; a grant on an ancestor still reaches the ancestor's other
+ * descendants by any path that does not pass through such a record.
+ *
+ * The protecting types are read once per walk, and only when it first has an edge to climb, so a
+ * check that never walks, hits at its start, or misses on an entity with no parents reads nothing
+ * more.
+ */
+function protectedStop(
+  scope: Pick<ScopeTupleReader, 'shapeProtectedTypes'>,
+  permission: PermissionKey,
+): (ref: string) => Promise<boolean> {
+  let types: Promise<Set<string>> | undefined;
+  return async (ref) => {
+    const protecting = await (types ??= Promise.resolve(scope.shapeProtectedTypes(`granted:${permission}`)).then((t) => new Set(t)));
+    return protecting.has(ref.slice(0, ref.indexOf(':')));
+  };
+}
+
+/**
  * Is `entity` the `root`, or does it lie beneath it along live declared `parent` edges?
  *
  * The walk a capability check makes to its own root (`checkCapability` above), with no
  * subject and no grant: a live read narrowed `within` an entity (#1853) asks exactly this
  * of every frame, so it travels the same edges to the same depth, skipping the same
  * revoked ones. A row linked to two parents (`ctx.link` twice) reaches either root; a row
- * `ctx.relink`ed away from one reaches only the other (#1864).
+ * `ctx.relink`ed away from one reaches only the other (#1864). Given the `key` a root is checked
+ * by, it stops where that key's check stops (`keyedStop`, #2177).
  */
 export async function reachesWithin(
-  scope: Pick<ScopeTupleReader, 'parents'>,
+  scope: WithinReader,
   entity: EntityRef,
   root: EntityRef,
   now: string,
+  key?: PermissionKey,
 ): Promise<boolean> {
   const target = `${root.entityType}:${root.entityId}`;
-  const hit = await walkParents(scope, `${entity.entityType}:${entity.entityId}`, now, async (ref) =>
-    ref === target ? true : undefined,
+  const hit = await walkParents(
+    scope,
+    `${entity.entityType}:${entity.entityId}`,
+    now,
+    async (ref) => (ref === target ? true : undefined),
+    keyedStop(scope, key),
   );
   return hit === true;
 }
@@ -297,16 +342,42 @@ export async function reachesWithin(
  * about many roots: a live fan-out with one socket per widget session (#1853).
  */
 export async function ancestorsWithin(
-  scope: Pick<ScopeTupleReader, 'parents'>,
+  scope: WithinReader,
   entity: EntityRef,
   now: string,
+  key?: PermissionKey,
 ): Promise<Set<string>> {
   const seen = new Set<string>();
-  await walkParents(scope, `${entity.entityType}:${entity.entityId}`, now, async (ref) => {
-    seen.add(ref);
-    return undefined;
-  });
+  await walkParents(
+    scope,
+    `${entity.entityType}:${entity.entityId}`,
+    now,
+    async (ref) => {
+      seen.add(ref);
+      return undefined;
+    },
+    keyedStop(scope, key),
+  );
   return seen;
+}
+
+/**
+ * The reader `reachesWithin` / `ancestorsWithin` walk: the parent edges, and — for a walk on
+ * behalf of a key — the types whose shape protects it.
+ */
+export type WithinReader = Pick<ScopeTupleReader, 'parents'> & Partial<Pick<ScopeTupleReader, 'shapeProtectedTypes'>>;
+
+/**
+ * A `within` walk made on behalf of `key` (#2177) — a live root checked by that key — stops where
+ * a check of the key stops, so a row it places beneath the root is one the key reaches through
+ * the root. Without a key the walk is the plain edge walk. A keyed walk over a reader that cannot
+ * say which types protect the key refuses, rather than climbing past a record it should not.
+ */
+function keyedStop(scope: WithinReader, key: PermissionKey | undefined): ((ref: string) => Promise<boolean>) | undefined {
+  if (key === undefined) return undefined;
+  const { shapeProtectedTypes } = scope;
+  if (!shapeProtectedTypes) throw new TypeError('a keyed within walk needs shapeProtectedTypes on its reader');
+  return protectedStop({ shapeProtectedTypes: (relation) => shapeProtectedTypes.call(scope, relation) }, key);
 }
 
 /**
@@ -401,6 +472,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       now,
       async (ref, walked) =>
         ref === root ? [...walked, t(self, `granted:${permission}`, root)] : undefined,
+      protectedStop(scope, permission),
     );
     if (!chain) return deny;
     const minter = await check(
@@ -506,6 +578,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
           }
           return undefined;
         },
+        protectedStop(scope, permission),
       );
       if (found) return found;
     }

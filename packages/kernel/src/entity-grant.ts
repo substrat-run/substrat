@@ -24,13 +24,32 @@ type Params = [string, string, string];
  */
 export const SHAPE_PROTECTED_KEY_RELATION = 'shape-grantee-key';
 
+/**
+ * The entity types whose shape protects a `granted:<key>` relation, as `entity_type` rows. The
+ * subject range keeps it on the primary key: `shape:` rows only. One spelling for the two places
+ * that ask: the explicit writer below refuses the key on a record of such a type, and the
+ * permission walk stops at one for that key (`permission-eval.ts`, #2177).
+ *
+ * The range's bounds are parameters, not literals: the scope DO judges whether a statement writes
+ * by its text (`isWriteStatement`), and a `;` inside a literal would read as a second statement,
+ * counting every check that asks as a write.
+ */
+export function shapeProtectedTypesQuery(relation: string): { sql: string; params: [string, string, string, string] } {
+  return {
+    sql: `SELECT substr(subject, ${'shape:'.length + 1}) AS entity_type FROM _substrat_tuples
+          WHERE subject >= ? AND subject < ? AND relation = ? AND object = ?`,
+    params: ['shape:', 'shape;', SHAPE_PROTECTED_KEY_RELATION, relation],
+  };
+}
+
 /** Every explicit non-shape scope tuple write uses this guard, including administrative writes. */
 function assertDelegableTuple(db: SwitchSql, relation: string, object: string): void {
   if (!relation.startsWith('granted:')) return;
   const colon = object.indexOf(':');
   if (colon < 0) return;
   const entityType = object.slice(0, colon);
-  if (db.all('SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?', `shape:${entityType}`, SHAPE_PROTECTED_KEY_RELATION, relation).length > 0) {
+  const q = shapeProtectedTypesQuery(relation);
+  if ((db.all(q.sql, ...q.params) as { entity_type: string }[]).some((r) => r.entity_type === entityType)) {
     throw new PermissionDenied(
       `cannot grant '${relation.slice('granted:'.length)}' on ${object} — ` +
         `it is a key of the declared '${entityType}' shape, given only by the shape grant`,
