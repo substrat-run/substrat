@@ -891,6 +891,9 @@ describe('legacy invite measurement (#2175)', () => {
     return { principal, token: token + principal };
   };
 
+  const accept = (token: string) =>
+    app.request('http://app.example/api/accept-invite', json({ token }, { authorization: 'Bearer tok-newcomer' }), env());
+
   beforeEach(() => {
     lines = [];
     clock = 1_700_000_000_000;
@@ -950,7 +953,7 @@ describe('legacy invite measurement (#2175)', () => {
 
     lines.length = 0;
     const minted = await (await app.request('http://app.example/api/invites', json({ roleKey: 'editor' }), env())).json() as { acceptUrl: string };
-    const secret = decodeURIComponent(minted.acceptUrl.split('/').pop()!);
+    const secret = new URL(minted.acceptUrl).searchParams.get('invite')!;
     expect((await accept(secret)).status).toBe(200);
     expect(lines).toEqual([]);
   });
