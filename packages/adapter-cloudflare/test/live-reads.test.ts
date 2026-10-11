@@ -761,16 +761,20 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     try {
       await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'note', permissions: [READ], bootstrap: true, holder: 'grantee' }]);
       await host.admin.grantEntityShape(staff, { principalId: shapeHolder, node, entity: { entityType: 'note', entityId: IN_F1 }, permissions: [READ], grantedBy: writer });
-      await as('live/touch-each', { noteIds: [IN_F1, IN_F1B] });
+      // One note at a time, so each nudge is pinned to the note it is about (a nudge names no entity).
+      await as('live/touch', { noteId: IN_F1B });
       await settle();
-      // The grant above the note reaches neither note: nothing is sent, and the root still holds.
+      // The neighbour: the shape holder holds nothing on it, the node-level holder does.
+      expect(viaShape.frames).toEqual([]);
+      expect(viaNode.frames.map((f) => f.kind)).toEqual(['nudge']);
+      await as('live/touch', { noteId: IN_F1 });
+      await settle();
+      // The note's own shape holder is nudged about that note, and the node-level holder again.
+      expect(viaShape.frames.map((f) => f.kind)).toEqual(['nudge']);
+      expect(viaNode.frames.map((f) => f.kind)).toEqual(['nudge', 'nudge']);
+      // The grant above the notes reaches neither: nothing is sent, and the root still holds.
       expect(viaCabinet.frames).toEqual([]);
       expect(viaCabinet.closedWith).toBeNull();
-      // A node-level holder holds the key on every note: both are nudged.
-      expect(viaNode.frames.map((f) => f.kind)).toEqual(['nudge', 'nudge']);
-      // The note's own shape holder is nudged about that note and not its neighbour.
-      expect(viaShape.frames).toHaveLength(1);
-      expect(viaShape.frames[0]!.kind).toBe('nudge');
     } finally {
       await host.admin.reconcileEntityGrantShapes(staff, node, []);
     }

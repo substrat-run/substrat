@@ -3659,7 +3659,13 @@ export function defineScopeDO(
           if (rootVerdict?.epoch !== e || e.remote) rootVerdict = undefined;
           // Narrowing first: it is memoised across sockets, and a row outside the root
           // is out whatever the principal holds.
-          if (within && !(await reaches(row, within, now))) return 'skip';
+          // A checked root walks with its key first (#2177). The keyed walk is the plain walk with
+          // stops, so whatever it reaches the plain walk reaches too: a hit settles "beneath the
+          // root" in one walk, and only a miss needs the plain walk to tell a row outside the root
+          // from one the key reaches only through a record whose shape protects it.
+          const key = within?.checked as PermissionKey | undefined;
+          const keyed = within && key !== undefined ? await reaches(row, within, now, key) : false;
+          if (within && !keyed && !(await reaches(row, within, now))) return 'skip';
           if (within?.checked !== undefined) {
             if (rootVerdict === undefined) {
               let check: Promise<boolean> | undefined;
@@ -3677,11 +3683,10 @@ export function defineScopeDO(
             // only through a record whose shape protects the key (#2177) is the subscriber's own
             // check on the row: a holder by role or by the record's shape is nudged, a holder by a
             // grant above the record is not — the answer `ctx.check` gives, by asking it.
-            const key = within.checked as PermissionKey;
-            if (!(await reaches(row, within, now, key))) {
+            if (!keyed) {
               const ask = () =>
                 context()
-                  .check(key, { entityType: row.entity_type, entityId: row.entity_id })
+                  .check(within.checked as PermissionKey, { entityType: row.entity_type, entityId: row.entity_id })
                   .then((d) => d.allowed, () => false);
               let allowed: Promise<boolean> | undefined;
               if (e.remote) {

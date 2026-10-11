@@ -141,7 +141,8 @@ derivation algebra**:
    flow along these edges, depth-capped. The one exception: a key that an entity-grant
    shape protects (a `'grantee'` or binding shape's keys) does not flow past a record of
    the shape's type. A grant of it on a parent never reaches that record or anything
-   beneath it through the record, so the shape's own grant on the record is the only way in.
+   beneath it through the record. On such a record the key is held only by the shape's own
+   grant there, or at the node, by a role or a scope-level grant.
 4. **Org/group membership** — grants to an organization reach its members.
 
 No negation, no configurable rewrite rules. Verticals never see or author tuples — roles
