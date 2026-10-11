@@ -167,11 +167,13 @@ export function bindIn(
   link: { capabilityId: CapabilityId; mintedBy: PrincipalId },
   emit: (event: DomainEventInput) => void,
 ): void {
-  const set = sql.exec(
-    `UPDATE "${binding.table}" SET "${binding.principalColumn}" = ? WHERE "${binding.idColumn}" = ? AND "${binding.principalColumn}" IS NULL`,
+  // Counted by RETURNING, never by `changes`: on a Durable Object that is `rowsWritten`, which
+  // counts index entries too, so an index on the principal column reads one row as two.
+  const set = sql.query(
+    `UPDATE "${binding.table}" SET "${binding.principalColumn}" = ? WHERE "${binding.idColumn}" = ? AND "${binding.principalColumn}" IS NULL RETURNING 1 AS one`,
     [principal, entity.entityId],
   );
-  if (set.changes !== 1) {
+  if (set.length !== 1) {
     throw substratError('internal', `capability ${link.capabilityId}: its bind on ${entity.entityType} was refused after it was judged`);
   }
   grantEntityShapeIn(switchSqlOf(sql), principal, entity, binding.keys);

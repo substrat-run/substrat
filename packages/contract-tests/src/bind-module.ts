@@ -82,7 +82,10 @@ export const bindMod: ModuleRegistration = {
   migrations: [
     {
       version: '0001-init',
+      // The index a vertical naturally has on its binding column — its portal and erasure find
+      // rows by it — and the one that makes a Durable Object's write count read one row as two.
       sql: `CREATE TABLE bind_records (id TEXT PRIMARY KEY, principal TEXT, email TEXT, fate TEXT);
+            CREATE INDEX bind_records_by_principal ON bind_records (principal);
             CREATE TABLE bind_seen (subject TEXT NOT NULL, record_id TEXT NOT NULL, PRIMARY KEY (subject, record_id));`,
     },
   ],
