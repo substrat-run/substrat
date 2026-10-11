@@ -603,8 +603,9 @@ export const BIND_HOLDER_RELATION = 'shape-bind-holder';
 export const BIND_PERMISSION_RELATION = 'shape-bind-permission';
 export const BIND_KEY_RELATION = 'shape-bind-key';
 /**
- * `(shape:<type>, shape-bound, bound)`: this scope has bound someone to a record of `<type>` (#1686).
- * Written by the first claim of the type and STICKY — no reconcile removes it, whatever later
+ * `(shape:<type>, shape-bound, bound)`: this scope has declared a binding for `<type>` (#1686).
+ * Written by the first reconcile that records the binding (and by every claim, to the same effect)
+ * and STICKY — no reconcile removes it, whatever later
  * versions declare — so an erasure keeps releasing that type's holders after a version drops the
  * shape, drops its `bind` or moves its holder column. A spine tuple like the others here, so
  * module code can never write one (`ctx.sql` refuses every `_substrat_*` write).
@@ -666,6 +667,10 @@ function recordShapeFacts(db: SwitchSql, shapes: readonly EntityGrantShape[]): v
       .flatMap((s) => keysOf([...s.permissions, ...(s.retired ?? [])]).map((k) => [ref(s), SHAPE_PROTECTED_KEY_RELATION, `granted:${k}`] as [string, string, string])),
     ...bound.map((s) => [ref(s), BIND_HOLDER_RELATION, holderOf(s)] as [string, string, string]),
     ...shapes.filter(binds).map((s) => [ref(s), BIND_PERMISSION_RELATION, s.bind.permission] as [string, string, string]),
+    // A declared binding is sticky from the first reconcile that records it, not only from its first
+    // claim: its keys stay refused and its holders (backfilled ones included) stay reachable by an
+    // erasure, whatever later versions declare. Never deleted: the DELETE below names other relations.
+    ...shapes.filter(binds).map((s) => [ref(s), BOUND_EVER_RELATION, 'bound'] as [string, string, string]),
     ...bound.flatMap((s) => keysOf(s.permissions).map((k) => [ref(s), BIND_KEY_RELATION, `granted:${k}`] as [string, string, string])),
   ];
   const json = JSON.stringify(facts);

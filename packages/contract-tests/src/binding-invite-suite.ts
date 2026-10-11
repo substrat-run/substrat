@@ -395,6 +395,49 @@ export function bindingInviteContractSuite(
       });
     });
 
+    describe('a binding declared in a scope, never claimed there', () => {
+      /** A scope of its own, so nothing another case did there — no claim, no reconcile — counts. */
+      const fresh = async () => {
+        const scope = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t1, scopeId: scope, vertical: 'bind-vertical' });
+        await host.admin.activateScope(staff, t1, scope);
+        await host.admin.assignRole(staff, { principalId: clerk, roleKey: 'clerk', node: node(scope) });
+        const id = ulid();
+        await (await host.getScope(clerk, t1, scope)).invoke('bind/put', {
+          sql: 'INSERT INTO bind_records (id, principal, email, fate) VALUES (?, NULL, NULL, NULL)',
+          params: [id],
+        });
+        return { scope, id, shapes: (shapes: (typeof BIND_SHAPE)[]) => host.admin.reconcileEntityGrantShapes(staff, node(scope), shapes) };
+      };
+
+      it('keeps its keys refused to direct grants after a version removes it — so it cannot later bind a second person', async () => {
+        const { scope, id, shapes } = await fresh();
+        await shapes([BIND_SHAPE]);
+        await shapes([]);
+        await expect(() =>
+          host.admin.grant(staff, { principalId: p(), permission: BIND_READ_OWN, node: node(scope), entity: rec(id), grantedBy: clerk }),
+        ).rejects.toThrow(/given only by the shape grant/);
+        await shapes([BIND_SHAPE]);
+        const target = await invitee(scope);
+        const link = await fixture.verbs.mintBecomeCapabilityBounded(t1, scope, clerk, { principal: target, maxUses: 1, bind: { entity: rec(id) } });
+        expect(link.ok).toBe(true);
+      });
+
+      it('still releases a holder it never bound by a link (given the shape directly) when they are erased after a version removes it', async () => {
+        const { scope, id, shapes } = await fresh();
+        await shapes([BIND_SHAPE]);
+        const legacy = p();
+        await host.admin.grantEntityShape(staff, { principalId: legacy, node: node(scope), entity: rec(id), permissions: [BIND_READ_OWN], grantedBy: clerk });
+        await shapes([]);
+        await host.admin.shredSubject(staff, t1, scope, dataSubjectId.parse(legacy));
+        const live = (await (await host.getScope(clerk, t1, scope)).invoke<Row[]>('bind/sql', {
+          sql: 'SELECT relation FROM _substrat_tuples WHERE object = ? AND subject = ? AND revoked_at IS NULL',
+          params: [`brecord:${id}`, `principal:${legacy}`],
+        }));
+        expect(live).toEqual([]);
+      });
+    });
+
     describe('the unbind', () => {
       const claimed = async () => {
         const id = await record();
