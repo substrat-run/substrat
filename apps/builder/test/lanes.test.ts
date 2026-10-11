@@ -59,6 +59,28 @@ describe('guardPath — the guard judges the path the workspace writes', () => {
 		expect(guardPath('app/../../app/x')).toBe('../app/x');
 	});
 
+	it('EVERY guard refuses an absolute or climbing path itself — none leans on the workspace jail (#2200 r2)', () => {
+		// guardPath drops a leading '/', so '/etc/x' would be judged as 'etc/x',
+		// '/app/x' as 'app/x' and '/spec/x' as 'spec/x' — allowed by the build,
+		// UI and spec guards respectively, refused only by the workspace.
+		const guards = {
+			interview: interviewWriteGuard,
+			model: writeGuardFor('model'),
+			scenario: writeGuardFor('scenario'),
+			build: buildWriteGuard,
+			api: apiLaneWriteGuard,
+			ui: uiLaneWriteGuard,
+		};
+		for (const p of ['/etc/x', '/app/x.tsx', '/spec/concept.md', '/test/a.test.ts', '//src/a.ts', '../spec/x.md', '..']) {
+			for (const [name, guard] of Object.entries(guards)) expect(guard(p), `${name} ${p}`).toMatch(/outside the project/);
+		}
+		// Positive twins: the same paths, relative, are judged by each guard's own rule.
+		expect(buildWriteGuard('etc/x')).toBeNull();
+		expect(uiLaneWriteGuard('app/x.tsx')).toBeNull();
+		expect(interviewWriteGuard('spec/concept.md')).toBeNull();
+		expect(writeGuardFor('scenario')('test/a.test.ts')).toBeNull();
+	});
+
 	it('the complement guards refuse a climbing path themselves — every guard fails closed alone', () => {
 		for (const p of ['../x', '../app/x.tsx', 'src/../../src/a.ts', '..']) {
 			expect(buildWriteGuard(p), p).toMatch(/outside the project/);

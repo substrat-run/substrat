@@ -58,10 +58,9 @@ export function isSpecPhase(phase: BuildPhase): boolean {
  * workspace resolves `.` and `..` lexically before it writes (local.ts), so the
  * guard resolves them the same way first, with the normaliser the studio's file
  * routes use (#1225), so the two cannot answer differently for one path. A path
- * that climbs above the root is returned still climbing: the allowlist guards
- * (interview, model, scenario, UI lane) match no prefix on it, and the build
- * guard — and the API lane through it — refuses it outright, so every guard
- * fails closed on its own rather than leaning on the workspace jail.
+ * that climbs above the root is returned still climbing, and every guard
+ * refuses it — and an absolute path — before its own rule (outsideProject), so
+ * none leans on the workspace jail.
  */
 export const guardPath: (path: string) => string = normalise;
 
@@ -85,6 +84,22 @@ export function foldForGuard(path: string): string {
 }
 
 /**
+ * Every guard's first question: does the path leave the project? An absolute
+ * path does, and `guardPath` would otherwise drop its leading `/` and judge
+ * `/app/x` as `app/x`, `/spec/x` as `spec/x` — allowed by the UI and spec
+ * guards (#2200 r2). A climbing path does, and the complement guards (build,
+ * API lane) would otherwise allow it. Each guard refuses both itself, so none
+ * holds only because the workspace jail is behind it.
+ */
+function outsideProject(path: string): string | null {
+	const p = guardPath(path);
+	if (path.startsWith('/') || path.startsWith('\\') || p === '..' || p.startsWith('../')) {
+		return `${path} resolves outside the project — every write goes inside it`;
+	}
+	return null;
+}
+
+/**
  * The write guard for interview turns — the ladder's teeth. The transcript that
  * motivated it: a model presented the concept in prose, got approval, then
  * scaffolded code without ever writing spec/concept.md — so the phase never
@@ -94,6 +109,8 @@ export function foldForGuard(path: string): string {
  */
 export function interviewWriteGuard(path: string): string | null {
 	const p = guardPath(path);
+	const outside = outsideProject(path);
+	if (outside) return outside;
 	if (p === 'spec' || p.startsWith('spec/')) return null;
 	return (
 		'interview turns write only spec/** — when the builder approves the concept, ' +
@@ -112,6 +129,8 @@ export function interviewWriteGuard(path: string): string | null {
  */
 export function scenarioWriteGuard(path: string): string | null {
 	const p = guardPath(path);
+	const outside = outsideProject(path);
+	if (outside) return outside;
 	if (p === 'test' || p.startsWith('test/')) return null;
 	return (
 		'scenario turns write only test/** — replay the concept\'s scenario as a failing ' +
@@ -125,6 +144,8 @@ export function scenarioWriteGuard(path: string): string | null {
  */
 export function modelWriteGuard(path: string): string | null {
 	const p = guardPath(path);
+	const outside = outsideProject(path);
+	if (outside) return outside;
 	if (p === 'spec' || p.startsWith('spec/')) return null;
 	return (
 		'model turns write only spec/** — declare the entities and operations in ' +
@@ -149,12 +170,8 @@ export function modelWriteGuard(path: string): string | null {
  */
 export function buildWriteGuard(path: string): string | null {
 	const p = guardPath(path);
-	// A complement guard allows what it does not name, so it names this: a path
-	// above the project is never a build's to write (the workspace refuses it
-	// too, but a guard that holds only because of the jail is not a guard).
-	if (p === '..' || p.startsWith('../')) {
-		return `${path} resolves outside the project — build turns write inside it`;
-	}
+	const outside = outsideProject(path);
+	if (outside) return outside;
 	// The oracle is not the build's to rewrite. A suite the build may edit is a
 	// suite that agrees with whatever got built — the same failure as a model
 	// redrawn at continuation 14, one level down. `test/server.test.ts` and any
@@ -252,6 +269,8 @@ const underUiAnyCase = (p: string): boolean => underUi(foldForGuard(p));
  */
 export function apiLaneWriteGuard(path: string): string | null {
 	const p = guardPath(path);
+	const outside = outsideProject(path);
+	if (outside) return outside;
 	if (underUiAnyCase(p)) {
 		return (
 			'the API lane cannot write app/** — the UI lane runs after you in this same ' +
@@ -269,6 +288,8 @@ export function apiLaneWriteGuard(path: string): string | null {
  */
 export function uiLaneWriteGuard(path: string): string | null {
 	const p = guardPath(path);
+	const outside = outsideProject(path);
+	if (outside) return outside;
 	if (underUi(p)) return null;
 	if (underUiAnyCase(p)) {
 		return `the UI lane writes app/** exactly as spelled — spell it app/${p.slice(UI_ROOT.length + 1)}`;
