@@ -3,7 +3,7 @@
 Answers to questions 1, 2, 4 and 6 of #1638, from the code and tests in this directory.
 Layer 1 only: processes on one machine, no cluster. Layers 2 (k3d in CI) and 3 (real
 hardware) were not attempted. Questions 3 and 5 are open; what this run says about them is
-at the end.
+at the end, along with the safety assumptions everything here rests on.
 
 ## Read this first: what is NOT shown
 
@@ -11,14 +11,15 @@ at the end.
 Layer 1 does not show that.** What it shows is narrower:
 
 - `test/contract.test.ts` runs the suite unchanged (all 427 tests) against the host a shard
-  builds: a `SqliteScopeHost` behind the lease/fence layer (`src/fence.ts`), with its leases
-  taken from the real control-plane process over HTTP. Every operation the suite invokes goes
-  through the fence's admit and re-check (the file counts them, so the wrapper cannot pass by
-  wrapping nothing). That proves the fence breaks no part of the contract. It runs in the
-  test process, against one host.
-- The process boundary is shown by the cluster tests instead (`kill`, `background`,
-  `reshard`), which drive real `todo` operations through real routers to real shard
-  processes.
+  builds: a `SqliteScopeHost` behind the lease layer (`src/fence.ts`), with its leases taken
+  from the real control-plane process over HTTP. Every operation the suite invokes goes
+  through the lease's admit and re-check; the file counts them, so the wrapper cannot pass by
+  wrapping nothing. That proves the lease layer breaks no part of the contract. It runs in the
+  test process, against one host, on a stopped clock, and without the storage-side fence
+  (§2), which needs a shard's placement to stamp the files.
+- The process boundary is shown by the cluster tests instead (`kill`, `router`,
+  `background`, `reshard`, `control-plane-loss`), which drive real `todo` operations through
+  real routers to real shard processes.
 
 Why the suite cannot run against a host whose scopes live in other processes:
 
@@ -48,9 +49,12 @@ router computes the same one.
 
 **Placement says where a scope should be. The lease says where it is.** The router caches
 exactly one fact per scope, the shard that last answered for it. A shard asked about a scope
-it does not hold answers `421 {holder, retryAfterMs}`, and the router goes to the holder or
-waits. A stale or divergent router therefore costs a hop and never a write; the kill test
-runs a router that misses a whole failover, and it is turned away.
+it does not hold answers `421 {holder, retryAfterMs}`, and the router goes to the holder.
+That includes a holder the router had just given up on after a timeout: a live lease means
+that shard is slow rather than gone, so the router asks it again with a growing backoff
+(`test/router.test.ts`: a 700 ms pause against a 400 ms attempt timeout is answered by the
+same holder at the same epoch). A stale or divergent router therefore costs hops and never a
+write. The kill test runs a router that misses a whole failover, and it is turned away.
 
 A placement table in the control plane is not needed for routing. The table that does exist
 is the lease table, and it holds the one fact a hash cannot give you: which node's volume has
@@ -62,9 +66,10 @@ router agrees with any other whatever order it lists the members in.
 ## 2. Single writer: what is the lease, and who fences a stale holder?
 
 **The lease** is a row in the control plane: `(scope, holder, epoch, expires_at, data_on)`
-(`src/control-plane.ts`). Each change of holder is one `BEGIN IMMEDIATE` transaction, so two
-shards racing for a scope get one winner, and the epoch goes up. TTL 2 s in the tests,
-renewed every 400 ms.
+(`src/control-plane.ts`). Each change is one `BEGIN IMMEDIATE` transaction, so two shards
+racing for a scope get one winner, and the epoch goes up. Expiry is on the control plane's
+**monotonic** clock (see the assumptions below). TTL 2 s in the cluster tests, renewed
+every 400 ms.
 
 **The holder is a process incarnation (`todo-1/<boot id>`), not the pod name.** This was
 found by a failing test, not reasoned out beforehand. With the pod name as the holder, the
@@ -73,61 +78,81 @@ having the same name. That is harmless when the predecessor really is dead. It i
 split brain when it is not, which is exactly the `kubectl delete pod --force` case: Kubernetes
 starts the replacement without confirming the old pod has stopped.
 
-**Fencing is done by the holder, against its own clock, twice per invocation** (`src/fence.ts`):
+**The stale holder is fenced by the scope's own files, inside its own transaction**
+(`src/storage-fence.ts`). Every SQLite file of a scope carries one row, `_k3s_fence(epoch)`.
+Every table carries INSERT, UPDATE and DELETE triggers that abort when the writing
+connection's `k3s_holder_epoch()` is not that epoch. `k3s_holder_epoch()` is a SQL function
+each shard registers on its connections, answering the epoch under which that process holds
+the scope. A takeover stamps the new epoch into the previous holder's files, under their
+write lock, before it copies them. A holder that wakes from a freeze and tries to commit
+aborts at its first write. In the kill test, the woken holder's `w4` is **absent from its own
+files**, not merely unacknowledged.
 
-- before: admit only under a grant whose `validUntil` has not passed. `validUntil` is
-  measured on the holder's monotonic clock from the moment the acquire or renew was sent,
-  minus a margin, so it always falls before the control plane's own expiry. Past it, the
-  holder renews, and a refused renewal means the epoch moved: it stops;
-- after: if `validUntil` passed while the invocation ran, the result is withheld (`503`,
-  `Fenced`). The write may have committed, but on a copy nobody will serve again, and the
-  caller is not told it succeeded. It retries under its idempotency key, and the new holder
-  applies it once.
+- **Every table, not the outbox.** The host guarantees no row per invocation: an event is
+  written only if the handler emits one, and the idempotency record only when the caller sent
+  a key (the `BEGIN IMMEDIATE` … `COMMIT` of `invoke` in
+  `packages/adapter-sqlite/src/index.ts`). A fence on the outbox would let a non-emitting
+  write through, so the triggers sit on every table. `test/storage-fence.test.ts` refuses
+  both an emitting operation and a write that emits nothing, and lets the new epoch's holder
+  write.
+- **What it does not cover.** Tables are fenced when they exist at stamp time, which is
+  after the host migrated the scope. A table a later migration adds is unfenced until the
+  next stamp. Virtual tables and their shadow tables carry no triggers; their writes follow
+  writes to tables that do.
+- **How the function reaches the host's connections.** `SqliteScopeHost` opens its own
+  connections and offers no hook, so the shard patches better-sqlite3's `prepare` and `exec`
+  to register the function on a connection's first statement, the way
+  `tools/vitest/like-pattern-limit.cjs` installs its limit. That demonstrates the mechanism a
+  real adapter would build into its own connection. It is not a drop-in.
+- **Where it holds.** The fence lives in the file, so it applies however the file is reached:
+  copied between node-local volumes (what is tested), reattached to another node, or shared.
+  Only the first was run. The other two rely on the same row and trigger, plus a storage
+  layer that honours SQLite's write lock across the nodes involved.
 
-**Who fences a stale holder, then?** The stale holder fences itself, and the control plane
-makes sure that is enough: it grants the scope to someone else only after the old grant's
-expiry, and the new holder copies the data only after that. The safety argument is the usual
-one for leases: it assumes the holder's clock and the control plane's do not drift apart by
-more than the margin during one TTL. On one machine that holds trivially. In a cluster it is
-a property of the nodes and has to be stated as a requirement.
+**The holder also checks its own lease, twice per invocation** (`src/fence.ts`). Before the
+invocation it admits only under a grant whose `validUntil` has not passed. `validUntil` is
+measured on the holder's monotonic clock from when the acquire or renew was sent, minus a
+margin, so it falls before the control plane's own expiry. Past it, the holder renews, and a
+refused renewal means the epoch moved. After the invocation, if `validUntil` passed while it
+ran, the result is withheld (`503`). These checks keep a stale holder from serving and from
+acknowledging. The storage fence is what keeps it from writing.
 
-There is no storage-side fencing token in this design: no "refuse epochs below N" check
-inside the scope's own transaction. `SqliteScopeHost` owns its transactions, so adding one
-means a change in `packages/` that this spike was not to make. With node-local volumes it is
-also not needed for the cases tested: a stale holder writes only to its own copy, which the
-`data_on` pointer has already stopped naming. It would be needed with shared storage that
-two nodes can write at once.
-
-**The kill-mid-write test** (`test/kill.test.ts`) uses two shards and three routers. Faults
-are fired by the shard on itself at exact points, so no sleep decides the order. `todo-0`
-freezes (SIGSTOP) mid-write; one router waits on it and another fails over; `todo-0` wakes
-and finishes the write on its stale copy; a third, stale router sends it a fresh write; then
-`todo-1` is SIGKILLed after committing a write and before answering it, and is restarted.
-Every acknowledged write must be present exactly once, through every router.
+**The kill-mid-write test** (`test/kill.test.ts`, opt-in, see below) uses two shards and
+three routers. Faults are fired by the shard on itself at exact points, so no sleep decides
+the order. `todo-0` freezes (SIGSTOP) mid-write; one router waits on it and another fails
+over; `todo-0` wakes and its commit is refused by its own files; a third, stale router sends
+it a fresh write and is turned away; then `todo-1` is SIGKILLed after committing a write and
+before answering it, and is restarted. Every acknowledged write must be present exactly once,
+through every router.
 
 - Before the lease existed (commit `b738dc92c`) it failed: the woken holder kept serving its
-  stale copy, and two writes `todo-1` had acknowledged were lost. The control
-  (`LEASES=off`) keeps that failure reproducible permanently and asserts it.
-- Each fence is held separately. Removing the after-check makes the kill test red (the
-  woken holder's write is acknowledged and lost). Removing the before-check alone leaves the
-  kill test green, because the holder's background renewal fires as soon as it wakes and
-  drops the grant first. So that check is held by `test/lease.test.ts` on its own, and
-  removing it together with the renewal makes the kill test red.
+  stale copy, and two writes `todo-1` had acknowledged were lost. The control (`LEASES=off`:
+  no lease, no fence) keeps that failure reproducible, and asserts that without the fence the
+  woken holder's commit lands in its own files.
+- With the lease and without the storage fence's stamp on the source, the woken holder's
+  `w4` lands in its own files and the test is red. With the triggers made inert, the kill
+  test and both refusals in `test/storage-fence.test.ts` are red.
+- Removing the holder's after-check made the kill test red before the storage fence existed.
+  Removing its before-check alone does not, because the background renewal fires as soon as
+  the holder wakes and drops the grant first. `test/lease.test.ts` holds that check on its own.
 - **A SIGKILL alone cannot make this test fail on one machine.** A dead process writes
   nothing, `SqliteScopeHost`'s `_host.lock` already refuses a second process on the same
   directory (and dies with the process), and the retry is recognised by its idempotency key.
   The hazard the lease closes is a holder that is *not* dead: frozen, partitioned, or
   force-deleted and still running.
 
-**Unavailability on a holder failure is the lease TTL.** In the kill test, the write that
-hit the frozen holder and the one that hit the killed holder were each answered in about
-2.0 s with a 2 s TTL (1915–2023 ms over three runs). The TTL is the dial: shorter means
-faster failover, more renewal traffic, and a tighter clock-drift requirement.
+**Unavailability on a holder failure is the lease TTL.** In the kill test, the write that hit
+the frozen holder and the one that hit the killed holder were each answered in about 2.0 s
+with a 2 s TTL. The TTL is the dial: shorter means faster failover, more renewal traffic, and
+a tighter clock requirement.
 
-**The idempotency key has to travel from the client, through the router, to the scope.** A
-router that retries a write after no answer cannot know whether it committed. Only the
-kernel's idempotency recording (#116) can tell, so the router forwards `Idempotency-Key`
-unchanged and retries only with it.
+**Exactly-once needs the client's idempotency key, end to end.** A router that retries a
+write after no answer cannot know whether it committed. Only the kernel's idempotency record
+(#116) can tell, so the router forwards `Idempotency-Key` unchanged, and **never retries a
+write without one** once it may have run: after a timeout or a `503` it answers with the
+uncertainty instead (`test/router.test.ts`). A `421` is still followed, since the shard
+refused before invoking anything. So the guarantee covers keyed writes. A keyless write is
+applied at most once, and its caller may be told the outcome is unknown.
 
 ## 4. Resharding: N → N+1
 
@@ -139,18 +164,21 @@ top weight is the new pod: about 1/(N+1) of them, all to the new pod (measured f
 move and 16 that do not). Routers learn the new member list, and each shard releases the
 scopes whose home moved: it finishes what is queued, releases the lease, and closes the
 scope. The new home takes each scope on its next request (no TTL to wait out after a
-release) and copies it from the volume `data_on` names. Moved scopes answer from `todo-2` at
-epoch + 1 with every write; unmoved ones keep their shard and epoch.
+release), stamps its epoch into the old copy, and copies it from the volume `data_on` names.
+Moved scopes answer from `todo-2` at epoch + 1 with every write; unmoved ones keep their shard
+and epoch.
 
 **The transfer is a file-level copy, not `snapshotScope` / `importScope`.** `copyScope` takes
-each SQLite file through the online backup API. That gives a consistent snapshot even of a
-file the source still has open, or of one whose process was killed with a WAL that was never
-checkpointed, and it carries everything in the scope's directory without the kernel
-interpreting any of it. `exportScope` / `importScope` remain the right tool across adapters
-(a Durable Object to SQLite and back), since there is no file to copy there. Between two
-SQLite shards they are a slower, lossier path to the same bytes. Two things this does not
-settle: in a cluster the copy is a volume reattach or a restore from a replica (question 3),
-and here the scope's directory carries a slice of the directory database (question 5).
+each SQLite file through the online backup API, which snapshots each file consistently even
+when its process was killed with a WAL never checkpointed. It carries everything in the
+scope's directory without the kernel interpreting any of it. The backup API is consistent
+per file, not per directory. The directory as a whole is consistent because the source was
+stamped before the copy, so no holder can write any of its files while they are read.
+`exportScope` / `importScope` remain the right tool across adapters (a Durable Object to
+SQLite and back), where there is no file to copy. Between two SQLite shards they are a
+slower, lossier path to the same bytes. Two things this does not settle: in a cluster the
+copy is a volume reattach or a restore from a replica (question 3), and here the scope's
+directory carries a slice of the directory database (question 5).
 
 ## 6. Background work: exactly once per scope, on the owner, across a handover
 
@@ -168,11 +196,42 @@ scope back and carries on, with no request needed. In the test that happens afte
 handover, and a SIGKILL mid-slot, and every slot up to the last one seen is present exactly
 once with no gap.
 
-The slots in the test are a stand-in. The kernel's own background work (`drainDue`, the
-platform sweep, schedules) would sit in the same place, with the same two requirements: run
-it only under the scope's lease, and give each unit an identity that a replay can recognise.
-The schedule ledger is the kernel's existing version of that identity. The control plane's
-15-minute tick is not per scope, so it stays a CronJob, as the issue's mapping says.
+**Two limits of replaying from slot 0.** A new holding replays every slot since the scope's
+birth, which is one invocation per slot per handover. And it is exactly-once only while the
+keys are kept: the kernel prunes idempotency records after `IDEMPOTENCY_RETENTION_MS` (24 h),
+and a handover after that would run old slots again. The real design keeps a durable
+per-scope watermark. The kernel's schedule ledger is that watermark, and its own background
+work (`drainDue`, the platform sweep, schedules) would sit where these slots sit, under the
+scope's lease. The control plane's 15-minute tick is not per scope, so it stays a CronJob, as
+the issue's mapping says.
+
+## Safety assumptions, stated
+
+What the guarantees above rest on. A real adapter has to make each one true, not assume it.
+
+- **Bounded clock-rate drift between holder and control plane.** The holder stops at
+  `validUntil`, measured on its own monotonic clock from when it asked, minus a margin. That
+  is before the control plane can grant the scope elsewhere only if, over one TTL, the two
+  clocks do not drift apart by more than the margin. True on one runner; a property of the
+  nodes in a cluster.
+- **Monotonic clocks, not wall clocks, for every TTL decision.** The control plane measures
+  expiry on its monotonic clock, so an NTP step cannot expire every lease at once while
+  holders still admit writes. A monotonic reading means nothing to the next incarnation, so a
+  restarted control plane re-holds every lease for a full TTL before granting it to anyone
+  else (`test/lease.test.ts`).
+- **The lease table is at least as durable as the data.** It is the only record of the
+  epochs and of `data_on`. The spike fails closed when it is lost
+  (`test/control-plane-loss.test.ts`). A scope with no row is refused (`404`), never read as
+  "new scope". A scope is created only by an explicit provision. A shard seeds only where its
+  volume has nothing, and deletes a directory only when the control plane names another node
+  as holding the latest copy. Failing closed protects the data but not availability: every
+  scope is unwritable until the table is restored. In production the table needs its own
+  replication and backup, which belongs to questions 3 and 5.
+- **SQLite's write lock is honoured by the storage under the files.** The stamp and the stale
+  holder's write meet on that lock. On one machine it is. On a network filesystem or a shared
+  volume it has to be checked.
+- **Writes carry idempotency keys.** See §2: a keyless write is applied at most once, and its
+  outcome can be unknown to its caller.
 
 ## 3 and 5: open, with what this run showed
 
@@ -182,27 +241,39 @@ The schedule ledger is the kernel's existing version of that identity. The contr
   needs the volume to reattach there or a current replica to exist. With an asynchronous
   replica (Litestream) the copy can lag, which is exactly the lost-write case the kill test
   catches, so a restore from a stream needs the lease and a replication watermark together.
-  This is the operational gap versus Durable Objects.
+  The lease table's own durability is part of the same question. This is the operational gap
+  versus Durable Objects.
 - **Q5, the directory.** The spike sidestepped it: every scope's directory carries its own
   slice of the directory database (tenant, roles, grants). With two scopes of one tenant on
   two shards, those slices disagree. It is also the reason the contract suite cannot cross
-  the process boundary (see the top of this file). Of everything here, it is the largest
-  piece of work.
+  the process boundary (see the top of this file), and the control plane that holds the
+  lease table is the same service. Of everything here, it is the largest piece of work.
+
+## Which tests run where
+
+`pnpm test`, the set CI's affected selection runs: placement, lease, storage fence, the
+process sentinel, and the contract binding. None of them races real time. The lease and
+contract files run the control plane on a manual clock and move it explicitly.
+
+`pnpm test:cluster` is opt-in: kill, router, background, reshard and control-plane loss.
+They drive real shard processes through freezes and kills with real lease TTLs and router
+timeouts, and a loaded runner can move their timings, so they are run on purpose rather
+than on every PR. Both sets were run 20 times in a row for #2202.
 
 ## Changes to `platform-neutral-surface.md`
 
 §5 says "a per-scope leader lease + a single-consumer queue + SQLite-on-a-PV satisfies" the
-single-writer requirement. The spike shows that it does, with three things the sentence did
-not name: the lease holder must be a process incarnation rather than the pod name; the
-holder must withhold an acknowledgement when its lease ran out during the invocation; and the
-client's idempotency key must reach the scope through the router. The doc is amended with
-that and a pointer here.
+single-writer requirement. The amendment narrows that to what was run here (node-local
+volumes with copy-on-takeover). It names what the run needed: the holder as a process
+incarnation, a fencing epoch checked inside the scope's own transaction on every table,
+idempotency keys carried end to end, and the clock and durability assumptions above.
 
 ## Estimate for the real adapter
 
-**About a quarter, not a few weeks.** The parts built here (placement, lease, fence, router,
-handover) took a spike to show and are maybe three weeks to harden. What remains is larger:
-the directory as a service with every `HostAdmin` call over the network (Q5); the RPC
-`ScopeHost` facade and a code-time module set for the shards, which is what the contract
+**About a quarter, not a few weeks.** The parts built here (placement, lease, the storage
+fence, router, handover) took a spike to show and are maybe three to four weeks to harden;
+the fence in particular belongs on the adapter's own connection, not in a patch. What remains
+is larger: the directory as a service with every `HostAdmin` call over the network (Q5); the
+RPC `ScopeHost` facade and a code-time module set for the shards, which is what the contract
 suite needs; executors and the platform sweep placed per scope; and Q3's volume story, which
 cannot be judged without layers 2 and 3.
