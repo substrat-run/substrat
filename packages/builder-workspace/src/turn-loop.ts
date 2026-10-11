@@ -19,13 +19,15 @@ import {
 } from './gates.js';
 import type { TurnResult } from './turn.js';
 
-export interface TurnLoopHooks {
+export interface TurnLoopHooks<L = string> {
 	/**
 	 * One generator pass; resolves to whether the step ceiling cut it mid-work.
 	 * `carriedReport` is the previous TURN's red-gate state — first pass only;
-	 * repair prompts already embed the fresh report.
+	 * repair prompts already embed the fresh report. `lane` names the lane the
+	 * pass belongs to (#682) — continuations included — and is undefined for an
+	 * unlaned pass, which every repair pass is.
 	 */
-	readonly runPass: (text: string, carriedReport?: string) => Promise<boolean>;
+	readonly runPass: (text: string, carriedReport?: string, lane?: L) => Promise<boolean>;
 	/** Gates + commit for one pass (commit-per-turn lives above the seam, §3). */
 	readonly runChecks: (label: string) => Promise<TurnResult>;
 	/**
@@ -34,15 +36,28 @@ export interface TurnLoopHooks {
 	 * (it hands the same signal to its generator).
 	 */
 	readonly signal?: AbortSignal | undefined;
+	/**
+	 * The part of the carried report a lane can act on (#682). Absent, every
+	 * lane gets all of it. A lane given nothing gets no report.
+	 */
+	readonly carriedFor?: ((report: string, lane: L) => string | undefined) | undefined;
 	readonly onContinuation?: ((attempt: number, max: number) => void) | undefined;
 	readonly onRepair?: ((attempt: number, max: number) => void) | undefined;
 }
 
-export interface TurnLoopInput {
+export interface TurnLoopInput<L = string> {
 	readonly message: string;
 	readonly turnNo: number;
 	/** The previous turn's red-gate report, carried into the first pass only. */
 	readonly lastGateReport?: string | undefined;
+	/**
+	 * Run the message as these lanes, in order, before the gates (#682). Each
+	 * lane runs to completion — continuations drawn from the one per-turn
+	 * budget — and the gates run ONCE, after the last. Absent or empty means one
+	 * unlaned pass, as before. A lane is whatever the host hands `runPass` back:
+	 * a name, or the plan it runs from.
+	 */
+	readonly lanes?: readonly L[] | undefined;
 }
 
 export interface TurnLoopResult {
@@ -65,19 +80,34 @@ export interface TurnLoopResult {
  * turn over a pre-existing red tree must not burn budget, and `blocked` gates
  * never trigger repair (the checker crashed, not the code).
  */
-export async function runTurnLoop(input: TurnLoopInput, hooks: TurnLoopHooks): Promise<TurnLoopResult> {
+export async function runTurnLoop<L = string>(
+	input: TurnLoopInput<L>,
+	hooks: TurnLoopHooks<L>,
+): Promise<TurnLoopResult> {
 	const { signal } = hooks;
 	let continuations = 0;
-	const runToCompletion = async (text: string, carriedReport?: string): Promise<void> => {
-		let truncated = await hooks.runPass(text, carriedReport);
+	const runToCompletion = async (text: string, carriedReport?: string, lane?: L): Promise<void> => {
+		let truncated = await hooks.runPass(text, carriedReport, lane);
 		while (truncated && continuations < MAX_CONTINUATIONS && !signal?.aborted) {
 			continuations += 1;
 			hooks.onContinuation?.(continuations, MAX_CONTINUATIONS);
-			truncated = await hooks.runPass(continuationPrompt(continuations, MAX_CONTINUATIONS));
+			truncated = await hooks.runPass(continuationPrompt(continuations, MAX_CONTINUATIONS), undefined, lane);
 		}
 	};
 
-	await runToCompletion(input.message, input.lastGateReport);
+	// The barrier: every lane before any gate. An unlaned turn is one pass with
+	// no lane. The carried report rides the first pass of EACH lane: "first pass
+	// only" holds because continuations and repairs re-embed the fresh report,
+	// and a second lane is a fresh conversation that embeds nothing — withheld
+	// from it, a red app/ file reaches only the lane that cannot write it.
+	const lanes: readonly (L | undefined)[] = input.lanes?.length ? input.lanes : [undefined];
+	const carried = input.lastGateReport;
+	for (const [i, lane] of lanes.entries()) {
+		if (i > 0 && signal?.aborted) break;
+		const report =
+			carried !== undefined && lane !== undefined && hooks.carriedFor ? hooks.carriedFor(carried, lane) : carried;
+		await runToCompletion(input.message, report, lane);
+	}
 	let turn = await hooks.runChecks(`studio turn ${input.turnNo}: ${input.message.slice(0, 60)}`);
 
 	let repairs = 0;
@@ -91,6 +121,8 @@ export async function runTurnLoop(input: TurnLoopInput, hooks: TurnLoopHooks): P
 	) {
 		repairs = attempt;
 		hooks.onRepair?.(attempt, MAX_GATE_REPAIRS);
+		// Unlaned, even after a laned first pass: a red verdict can sit on either
+		// side of the seam, and routing it to the lane that owns the path is #683.
 		await runToCompletion(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
 		turn = await hooks.runChecks(`studio turn ${input.turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`);
 	}

@@ -30,7 +30,7 @@ import {
 import { LocalWorkspace, standaloneGates } from '@substrat-run/builder-workspace';
 import { loadEnvFiles } from './env.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { skillsForPhase, writeGuardFor, type BuildPhase } from './phase.js';
+import { skillsForPhase, writeGuardFor, type BuildLane, type BuildPhase } from './phase.js';
 import { costOfSteps } from './pricing.js';
 import {
 	DEFAULT_MODEL,
@@ -61,6 +61,7 @@ interface Args {
 	readonly maxTurns?: number;
 	readonly list: boolean;
 	readonly quiet: boolean;
+	readonly lanes: boolean;
 	readonly help: boolean;
 }
 
@@ -84,6 +85,7 @@ function parseArgs(argv: readonly string[]): Args {
 		...(maxTurns ? { maxTurns: Number(maxTurns) } : {}),
 		list: argv.includes('--list'),
 		quiet: argv.includes('--quiet'),
+		lanes: argv.includes('--lanes'),
 		help: argv.includes('--help') || argv.includes('-h'),
 	};
 }
@@ -98,6 +100,9 @@ const USAGE = `pnpm builder evals [options]
   --max-tokens <n>    per-turn uncached-equivalent token ceiling (default 400000)
   --list              list fixtures and exit
   --quiet             suppress the event stream; verdicts only
+  --lanes             run build turns as an API lane then a UI lane with disjoint
+                      write guards, gates once after both (#682); compare with a
+                      run without it
   --help
 
 Grades the generator against frozen concepts (builder-studio.md §9.6): gates
@@ -194,7 +199,7 @@ async function main(): Promise<number> {
 
 	// Fresh generator per turn so the phase ladder binds the right skills —
 	// byte-identical construction to server.ts makeGenerator.
-	const makeGenerator = async (phase: BuildPhase): Promise<VerticalGenerator> => {
+	const makeGenerator = async (phase: BuildPhase, lane?: BuildLane): Promise<VerticalGenerator> => {
 		const resolved = await resolveModel(resolveAutoSpec(chosen.spec, phase));
 		return new AiSdkGenerator({
 			model: resolved.model,
@@ -205,7 +210,7 @@ async function main(): Promise<number> {
 			// 2,036,785 input tokens in that one turn. Uncached-equivalent, so a
 			// long well-cached build is not punished for caching well.
 			maxTokens: args.maxTokens,
-			skills: skillsForPhase(skills.byFile, phase),
+			skills: skillsForPhase(skills.byFile, phase, lane),
 			explainError: explainProviderError(chosen.spec.split(':')[0] ?? 'anthropic'),
 			editTool: editToolFor(chosen.spec),
 			// The phase ladder's teeth, which this construction claimed to share
@@ -213,13 +218,14 @@ async function main(): Promise<number> {
 			// write code instead of spec/concept.md — the ladder would never
 			// advance, and the eval would measure a generator the studio refuses
 			// to run.
-			denyWrite: writeGuardFor(phase),
+			denyWrite: writeGuardFor(phase, lane),
 			...samplingFor(chosen.spec),
 		});
 	};
 
 	process.stdout.write(
-		`builder evals · ${fixtures.length} fixture(s) · model ${chosen.spec} (via ${chosen.source})\n` +
+		`builder evals · ${fixtures.length} fixture(s) · model ${chosen.spec} (via ${chosen.source})` +
+			`${args.lanes ? ' · laned (#682)' : ''}\n` +
 			`  root ${ws.root}\n` +
 			`  env  ${env.loaded.length ? env.loaded.join(', ') : '(shell only)'}\n` +
 			`  mode A — no isolation; the model has shell access here, once per fixture\n\n`,
@@ -244,6 +250,7 @@ async function main(): Promise<number> {
 			projectDir,
 			fixture,
 			makeGenerator,
+			lanes: args.lanes,
 			gates: standaloneGates(projectDir),
 			...(args.maxTurns ? { maxTurns: args.maxTurns } : {}),
 			onEvent,

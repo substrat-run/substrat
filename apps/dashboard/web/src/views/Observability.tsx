@@ -21,6 +21,10 @@ import { RequestsMode } from './RequestsMode';
 import { PatternsMode } from './PatternsMode';
 import { LogStream } from '../components/LogStream';
 import { sectionOf, type ObsSection } from '../lib/obs-sections';
+import { Findings } from './Findings';
+import { tabOf } from '../lib/findings';
+import { mockFindingsClient, type FindingsClient } from '../lib/mock-findings';
+import { teamApi } from '../lib/api';
 
 /**
  * The team Observability page — its three menu children (#1767), each with its own layout.
@@ -59,6 +63,8 @@ export function Observability({
   focusEventType,
   cursor,
   onNav: navigateQuery,
+  teamId,
+  canManageFindings = true,
 }: {
   apps: AppRow[];
   query: string;
@@ -69,6 +75,10 @@ export function Observability({
   /** The instant the page is looking at, as a window — or null for the whole range. */
   cursor: { from: string; to: string } | null;
   onNav: (q: ObsQuery) => void;
+  /** The team the tab is on — the Findings inbox is the team's, addressed by its id. */
+  teamId: string;
+  /** A hint from the caller's role for drawing the Findings actions; the plane is the gate. */
+  canManageFindings?: boolean;
 }) {
   const q = readObsQuery(query);
   const hours = Number(q.hours ?? 24);
@@ -101,6 +111,9 @@ export function Observability({
   // Explicit selections always send exact bounds, including partial edge buckets.
   const requestWindow = q.from && q.to ? window : undefined;
   const panelWindow = { from: window.since, to: window.until };
+
+  // The Findings client is per team and stable across renders, so its list is not re-read by a re-render.
+  const findingsClient = useMemo<FindingsClient>(() => (DEV_MOCK ? mockFindingsClient() : teamApi(teamId)), [teamId]);
 
   const app = scopeId ? apps.find((a) => a.app_scope_id === scopeId) : undefined;
   // Which menu child is open (#1767) — derived from the sub-view, never stored beside it.
@@ -185,6 +198,18 @@ export function Observability({
       />
       {slideOver}
       </>
+    );
+  }
+
+  if (section === 'findings') {
+    return (
+      <Page>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+          <PageHead title="Findings" sub="Anomalies worth a look, triaged like email: acknowledge, resolve or suppress." />
+          {refresh}
+        </div>
+        <Findings client={findingsClient} tab={tabOf(q.tab)} canManage={canManageFindings} nonce={nonce} onTab={(t) => onNav({ view: 'findings', tab: t })} />
+      </Page>
     );
   }
 
