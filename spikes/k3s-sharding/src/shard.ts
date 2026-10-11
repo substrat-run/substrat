@@ -151,19 +151,31 @@ class PlacementRefused extends Error {}
 async function place(scope: string, grant: Grant): Promise<void> {
   const dir = scopeDir(volume, node, scope);
   const stale = held.get(scope);
-  held.delete(scope);
+  /** Close what this shard had open for the scope, then forget it — even if the close throws. */
+  const retire = async () => {
+    try {
+      await stale?.host.close();
+    } finally {
+      held.delete(scope);
+    }
+  };
   // From here this process writes the scope as `grant.epoch`; the stamps below are what make
   // every other holder's writes abort (`storage-fence.ts`).
   const stamp = (d: string) => fencing && stampFence(d, grant.epoch);
   holdEpoch(scope, grant.epoch);
   // Nobody settled anywhere else since this shard last had it: what it has open is the latest.
+  // If the stamp or the settle fails, the open scope is closed rather than dropped still open.
   if (grant.dataOn === node && stale) {
-    stamp(dir);
-    await leases.settle(scope, grant);
-    held.set(scope, stale);
+    try {
+      stamp(dir);
+      await leases.settle(scope, grant);
+    } catch (e) {
+      await retire();
+      throw e;
+    }
     return;
   }
-  await stale?.host.close();
+  await retire();
   let placed: { host: ScopeHost; world: ScopeWorld };
   if (grant.dataOn === null) {
     if (existsSync(dir)) {
