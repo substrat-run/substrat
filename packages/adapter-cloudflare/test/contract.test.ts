@@ -72,6 +72,7 @@ import {
   entityStateMigrationContractSuite,
   entityTrashContractSuite,
   derivedHandlersContractSuite,
+  updatedStampsContractSuite,
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
@@ -5452,6 +5453,16 @@ entityStateMigrationContractSuite(
 // #1773: the handlers the platform derives from a declaration, on a Durable Object's SQL. The
 // DEFAULT tuple checker, for the pure suite's reason. `derivedMod` is in `contractTestModules`.
 derivedHandlersContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #2166: the updated stamps the host holds on every write, on this adapter's SQL — a Durable Object's. `stampsMod` is in `contractTestModules`.
+updatedStampsContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

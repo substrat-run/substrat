@@ -33,6 +33,7 @@ export { trashMod, TRASH_MODULE_ID, TBOX_PURGE_DAYS } from './entity-trash-modul
 export { entityTrashContractSuite } from './entity-trash-suite.js';
 export { derivedMod, DERIVED_MODULE_ID } from './derived-module.js';
 export { derivedHandlersContractSuite } from './derived-suite.js';
+export { updatedStampsContractSuite } from './stamps-suite.js';
 export { subjectErasureContractSuite, type RawScopeQuery } from './subject-erasure-suite.js';
 export { erasureOtherMod, erasureSquatterMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';

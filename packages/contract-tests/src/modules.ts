@@ -32,6 +32,7 @@ import { membershipFixtureMod } from './membership-module.js';
 import { rebuildMod, stateMod } from './entity-state-module.js';
 import { trashMod } from './entity-trash-module.js';
 import { derivedMod } from './derived-module.js';
+import { stampsMod } from './stamps-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { bindMod } from './bind-module.js';
 import { commentedDdlMod } from './migration-comments.js';
@@ -3032,6 +3033,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // #1773: the derived-handler suite's module. Inert for every other suite — nothing else reads
   // its tables or invokes a `derived/*` operation.
   derivedMod,
+  // #2166: the updated-stamps suite's module. Inert for every other suite — nothing else reads
+  // its tables or invokes a `stamps/*` operation.
+  stampsMod,
   // #2068: the subject-erasure suite's modules. Every scope in the kit carries them, so every
   // `shredSubject` in every suite runs their declared erasure and their hook — which reaches
   // only `er_*` tables nothing else writes, and misbehaves only for a subject the erasure suite

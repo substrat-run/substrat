@@ -264,6 +264,8 @@ import {
   searchStateWhere,
   uncheckedView,
   addStatePlans,
+  addUpdatedStampPlans,
+  watchUpdatedStamps,
   entityStateMigrations,
   assertNoCallerPurge,
   isUnreachableParent,
@@ -289,6 +291,7 @@ import {
   StateColumnLost,
   type DerivedPlans,
   type EntityStatePlan,
+  type UpdatedStampPlan,
   exchangeCapability as exchangeCapabilitySecret,
   guardSecrets,
   mintBecomeCapability,
@@ -1872,6 +1875,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly listPlans = new Map<string, ListIndexPlan>();
   /** #119: entity type → its archive/trash plan, from every registered module. */
   private readonly statePlans = new Map<string, EntityStatePlan>();
+  /** #2166: entity type → the updated stamps the host holds, from every registered module. */
+  private readonly updatedStampPlans = new Map<string, UpdatedStampPlan>();
   /** #2068: each registered module's erasure, in registration order — what `shredSubject` runs. */
   private readonly erasurePlans: ModuleErasurePlan[] = [];
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
@@ -2942,6 +2947,7 @@ export class SqliteScopeHost implements ScopeHost {
       seen.add(m.version);
     }
     addStatePlans(this.statePlans, manifest.id, manifest.entityStates, manifest.permissions);
+    addUpdatedStampPlans(this.updatedStampPlans, manifest.id, manifest.updatedStamps);
     for (const plan of listIndexPlans(manifest.id, manifest.lists, manifest.entityStates)) {
       const existing = this.listPlans.get(plan.entityType);
       if (existing) {
@@ -4430,7 +4436,10 @@ export class SqliteScopeHost implements ScopeHost {
             // `{ vertical, scope }` and the authorization they passed (K-34). What it emits was
             // emitted BECAUSE of the producer's event (#1237); the id resolves through
             // `_substrat_imports`, which the row above has just written.
-            await imp.handler(this.deliveryContext(rt, subject, undefined, { causedBy: e.id, invocationId: unit.invocationId }), event);
+            const ctx = this.deliveryContext(rt, subject, undefined, { causedBy: e.id, invocationId: unit.invocationId });
+            const stamps = watchUpdatedStamps(spineSql(rt.db), this.updatedStampPlans);
+            await imp.handler(ctx, event);
+            stamps?.assertHeld(ctx, `${imp.moduleId} consuming ${e.type}`);
             rt.db
               .prepare(
                 `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
@@ -5543,6 +5552,8 @@ export class SqliteScopeHost implements ScopeHost {
             const ref = guarded ? this.concurrencyRef(operation, guarded, parsed) : undefined;
             const seen =
               ref && invokeOptions?.ifMatch !== undefined ? this.versionAt(rt, ref) : undefined;
+            // #2166: what the guards and the handler emit about a stamped entity, held below.
+            const stamps = watchUpdatedStamps(spineSql(rt.db), this.updatedStampPlans);
             // #119: an operation on a TRASHED entity it did not declare it reaches is refused
             // here, before the guards and the handler — the declared key first, so a caller
             // without it meets the same `forbidden` an active entity gives (`entity-trash.ts`).
@@ -5558,6 +5569,7 @@ export class SqliteScopeHost implements ScopeHost {
             // and rolls back exactly like a handler throw — fail closed.
             await this.runGuards(operation, ctx, parsed as I | undefined);
             result = await (handler as OperationHandler<I | undefined, O>)(ctx, parsed as I | undefined);
+            stamps?.assertHeld(ctx, operation);
             // #119: the purge gate's AUTHORITATIVE read. Lifecycle, primacy and tenant live in the
             // directory, which this transaction does not cover and whose writers (a suspend, a
             // tenant status, a reclassification) do not take the scope's actor — so a hold could
@@ -6571,7 +6583,9 @@ export class SqliteScopeHost implements ScopeHost {
             });
             rt.db.exec('BEGIN IMMEDIATE');
             try {
+              const stamps = watchUpdatedStamps(spineSql(rt.db), this.updatedStampPlans);
               await consumer.handler(ctx, event);
+              stamps?.assertHeld(ctx, `${mod.id} consuming ${event.type}`);
               rt.db
                 .prepare(
                   `INSERT INTO _substrat_deliveries

@@ -26,6 +26,7 @@ import { baseDefOf } from './zod-read.js';
 import { emitLifecycles, type EmittedLifecycle, type LifecycleDef } from './lifecycle.js';
 import { isKernelNamespace } from './object-ref.js';
 import type { EntityStateDeclaration } from './entity-state.js';
+import type { UpdatedStampDeclaration } from './entity-stamps.js';
 import {
   subjectErasureDeclaration,
   type EntityErasure,
@@ -157,28 +158,38 @@ export interface EntityDef<Names extends string = string> {
    */
   readonly erasure?: EntityErasureDef;
   /**
-   * Columns a DERIVED write fills from the invocation rather than from the input (#2157) —
+   * Columns filled from the invocation rather than from the input (#2157, #2166) —
    * `{ column: kind }`:
    *
    * - `createdAt` — `ctx.now()`, on insert.
    * - `createdBy` — the calling principal, on insert.
+   * - `updatedAt` — `ctx.now()`, on insert and on every write.
+   * - `updatedBy` — the calling principal, on insert and on every write.
    *
    * What makes a `create` derivable: every column of the row has to come from somewhere the
    * model names, and the time and the caller are the two sources no input carries. A stamped
-   * column is a string column and never the primary key, and no derived body field may write it.
+   * column is a string column and never the primary key, each kind names one column, and no
+   * derived body field may write it.
    *
-   * **The created pair only, because it stays true.** A row is inserted once — by a derived
-   * create, or by an authored one whose author declared the stamp — and no derived update may
-   * rewrite it. An updated pair would be a claim in `model.json` that an authored update could
-   * make false, so it waits for the host to hold it on every write (#2166). Adds no column and no
-   * migration — the column is declared in `fields` like any other.
+   * **Each claim is held true.** A derived create writes every stamp and a derived update writes
+   * the updated pair. A row is inserted once, so the created pair stays true without help. The
+   * updated pair is held by the HOST (#2166): after any operation or consumer, every row it
+   * emitted about (by `ctx.emit`) whose entity declares the pair must carry this invocation's
+   * `ctx.now()` and principal, or the call is refused `internal` and rolls back. A deleted row
+   * is not checked, and neither is a kernel move (archive, trash, restore), which changes only
+   * the platform's own columns. So an entity with an updated stamp needs a single-column primary
+   * key: that is what an event can point at. Adds no column and no migration — the column is
+   * declared in `fields` like any other.
    */
   readonly stamps?: Readonly<Record<string, StampKind>>;
 }
 
-/** What a stamped column is filled with (#2157) — see `EntityDef.stamps`. */
-export const STAMP_KINDS = ['createdAt', 'createdBy'] as const;
+/** What a stamped column is filled with (#2157, #2166) — see `EntityDef.stamps`. */
+export const STAMP_KINDS = ['createdAt', 'createdBy', 'updatedAt', 'updatedBy'] as const;
 export type StampKind = (typeof STAMP_KINDS)[number];
+
+/** The pair every write moves (#2166); the created pair is written once, on insert. */
+export const isUpdatedStamp = (kind: string): boolean => kind === 'updatedAt' || kind === 'updatedBy';
 
 /** An entity's `erasure` declaration, as authored. */
 export type EntityErasureDef<F extends string = string> =
@@ -288,6 +299,16 @@ export function stampsOf(name: string, entity: EntityDef): Readonly<Record<strin
       throw new Error(`model: ${name}.stamps names '${column}', which is not a string column`);
     }
   }
+  const kinds = Object.values(stamps);
+  const twice = kinds.find((kind, i) => kinds.indexOf(kind) !== i);
+  if (twice !== undefined) throw new Error(`model: ${name}.stamps names '${twice}' twice — each kind is one column`);
+  // The host holds the updated pair on the rows an event names, and an event names one id.
+  if (primaryKey.length !== 1 && kinds.some(isUpdatedStamp)) {
+    throw new Error(
+      `model: ${name}.stamps declares an updated stamp, and '${name}' has a composite primary key — ` +
+        'the host holds that stamp on the row an event names, and an event names one id',
+    );
+  }
   return stamps;
 }
 
@@ -378,7 +399,7 @@ export interface EmittedEntity {
   readonly trash?: { readonly permission: string; readonly purgeAfterDays?: number };
   /** How a subject erasure reaches it (#2068), when declared. `subjects` sorted. */
   readonly erasure?: { readonly mode: 'blank' | 'delete' | 'custom'; readonly subjects?: readonly string[] };
-  /** The columns a derived write stamps (#2157), keyed sorted. */
+  /** The columns stamped from the invocation (#2157, #2166), keyed sorted. */
   readonly stamps?: Readonly<Record<string, StampKind>>;
 }
 
@@ -915,6 +936,30 @@ function enrichSearchables(
 }
 
 /**
+ * The `updatedStamps` manifest entries (#2166), derived from each entity's own `stamps` — the
+ * entities whose updated pair the host holds on every write. `stampsOf` has already refused one on
+ * a composite key, so the id column is the key's only column.
+ */
+export function updatedStampsOf(entities: Record<string, EntityDef>): UpdatedStampDeclaration[] {
+  const out: UpdatedStampDeclaration[] = [];
+  for (const name of Object.keys(entities).sort()) {
+    const entity = entities[name] as EntityDef;
+    const stamps = Object.entries(stampsOf(name, entity));
+    const at = stamps.find(([, kind]) => kind === 'updatedAt')?.[0];
+    const by = stamps.find(([, kind]) => kind === 'updatedBy')?.[0];
+    if (at === undefined && by === undefined) continue;
+    out.push({
+      entityType: name,
+      table: entity.table,
+      idColumn: primaryKeyOf(name, entity)[0] as string,
+      ...(at !== undefined ? { at } : {}),
+      ...(by !== undefined ? { by } : {}),
+    });
+  }
+  return out;
+}
+
+/**
  * The `entityStates` manifest entries (#119), derived from each entity's own `archive` /
  * `trash` — never written a second time, as `entityRelations` is derived from `parents`.
  *
@@ -1049,6 +1094,7 @@ export function manifestEntities<
   entityRelations: { entityType: string; parentType: string }[];
   entityStates?: EntityStateDeclaration[];
   erasure?: SubjectErasureDeclaration;
+  updatedStamps?: UpdatedStampDeclaration[];
   ui: { entityViews: M['entityViews'] };
 } {
   // Absent rather than `[]` when nothing declares one, so a manifest that has no archivable
@@ -1056,6 +1102,8 @@ export function manifestEntities<
   const entityStates = entityStatesOf(entities);
   // #2068: absent when nothing is erasable, for the same reason.
   const erasure = subjectErasureOf(entities);
+  // #2166: absent when no entity declares the updated pair, for the same reason.
+  const updatedStamps = updatedStampsOf(entities);
   return {
     attachmentTargets: (refs.attachmentTargets ?? []) as NonNullable<M['attachmentTargets']> | [],
     // `[]` when undeclared, like `attachmentTargets` — and it means the same
@@ -1069,6 +1117,7 @@ export function manifestEntities<
     entityRelations: [...entityRelationsOf(entities), ...(refs.relations ?? [])],
     ...(entityStates.length ? { entityStates } : {}),
     ...(erasure ? { erasure } : {}),
+    ...(updatedStamps.length ? { updatedStamps } : {}),
     ui: { entityViews: refs.entityViews as M['entityViews'] },
   };
 }

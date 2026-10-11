@@ -5,6 +5,7 @@ import { peerSpec } from './peer.js';
 import { isKernelNamespace } from './object-ref.js';
 import { entityStateDeclaration } from './entity-state.js';
 import { subjectErasureDeclaration } from './subject-erasure.js';
+import { updatedStampDeclaration } from './entity-stamps.js';
 
 // The manifest is what makes a module self-describing — to agents now, to
 // strangers buying it later (§5.6 of the plan, §7.1 of the design doc).
@@ -500,6 +501,10 @@ export const moduleManifest = z.object({
   // rows inside `shredSubject`, runs the module's `onSubjectErased` hook within `tables`, and
   // names every `unreached` entity on the receipt. Optional + additive (D-28).
   erasure: subjectErasureDeclaration.optional(),
+  // #2166: the entities that declare `updatedAt`/`updatedBy`, derived from each entity's
+  // `stamps` by `manifestEntities()`. The host holds those columns true on every row an operation
+  // or a consumer emits about. Absent when nothing declares the pair. Optional + additive (D-28).
+  updatedStamps: z.array(updatedStampDeclaration.safeExtend({ entityType: declaredEntityType })).optional(),
   // UI contributions, composed into the vertical's app at BUILD time by the
   // shell (design doc §7.4, K-15). Component values are module-relative import
   // paths. All contributions are permission-keyed; the shell renders them

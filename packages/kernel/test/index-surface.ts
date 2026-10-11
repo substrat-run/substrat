@@ -154,6 +154,8 @@ export const INDEX_VALUE_EXPORTS = [
   'WRITE_REVISION_KEY',
   'actorOf',
   'addStatePlans',
+  // #2166: the host's hold on the updated stamps — both adapters call it, nothing else does.
+  'addUpdatedStampPlans',
   'admissionBackoffMs',
   'admissionMissOutcome',
   'admitPeer',
@@ -534,6 +536,7 @@ export const INDEX_VALUE_EXPORTS = [
   'vouchedWithin',
   'walkEventCause',
   'walkEventEffects',
+  'watchUpdatedStamps',
   'webCryptoSecretBox',
   'withRecorded',
   'withheldKeysFor',

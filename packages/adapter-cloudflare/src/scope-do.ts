@@ -344,6 +344,8 @@ import {
   searchStateWhere,
   uncheckedView,
   addStatePlans,
+  addUpdatedStampPlans,
+  watchUpdatedStamps,
   assertNoCallerPurge,
   isUnreachableParent,
   PURGE_BATCH,
@@ -367,6 +369,7 @@ import {
   StateColumnLost,
   type DerivedPlans,
   type EntityStatePlan,
+  type UpdatedStampPlan,
   exchangeCapability,
   guardSecrets,
   mintBecomeCapability,
@@ -1279,6 +1282,8 @@ export function defineScopeDO(
     private readonly listPlans = new Map<string, ListIndexPlan>();
     /** #119: entity type → its archive/trash plan, from every registered module. */
     private readonly statePlans = new Map<string, EntityStatePlan>();
+    /** #2166: entity type → the updated stamps the host holds, from every registered module. */
+    private readonly updatedStampPlans = new Map<string, UpdatedStampPlan>();
     /** #2068: each registered module's erasure, in registration order — what `redactSubject` runs. */
     private readonly erasurePlans: ModuleErasurePlan[] = [];
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
@@ -1421,6 +1426,7 @@ export function defineScopeDO(
       }
       // #119: the archive/trash plans, refusing a second owner of one entity type.
       addStatePlans(this.statePlans, manifest.id, manifest.entityStates, manifest.permissions);
+      addUpdatedStampPlans(this.updatedStampPlans, manifest.id, manifest.updatedStamps);
       // #811: the list indexes `lists` declares, same placement and same reason.
       for (const plan of listIndexPlans(manifest.id, manifest.lists, manifest.entityStates)) {
         const existing = this.listPlans.get(plan.entityType);
@@ -1978,10 +1984,10 @@ export function defineScopeDO(
                 // As the producer's principal: real checks against the grants this vertical's
                 // `peers` gave it; its emits carry `{ vertical, scope }` and what they passed.
                 // What it emits was emitted BECAUSE of the producer's event (#1237).
-                await imp.handler(
-                  this.importContext(tenantId, scopeId, peerSubject, { causedBy: e.id, invocationId: unit.invocationId }),
-                  event,
-                );
+                const ctx = this.importContext(tenantId, scopeId, peerSubject, { causedBy: e.id, invocationId: unit.invocationId });
+                const stamps = watchUpdatedStamps(doSpineSql(this.sql), this.updatedStampPlans);
+                await imp.handler(ctx, event);
+                stamps?.assertHeld(ctx, `${imp.moduleId} consuming ${e.type}`);
                 this.sql.exec(
                   `INSERT INTO _substrat_deliveries (event_id, consumer_module, delivered_at, invocation_id)
                    VALUES (?, ?, ?, NULL)`,
@@ -2965,6 +2971,8 @@ export function defineScopeDO(
                 : undefined;
             // #119: the host's trash refusal, before the guards and the handler — the pure
             // adapter's, through the same kernel function.
+            // #2166: what the guards and the handler emit about a stamped entity, held below.
+            const stamps = watchUpdatedStamps(doSpineSql(this.sql), this.updatedStampPlans);
             await refuseTrashedTarget(
               { sql: doSpineSql(this.sql), plans: this.statePlans, check: ctx.check },
               operation,
@@ -2974,6 +2982,7 @@ export function defineScopeDO(
             );
             await this.runGuards(operation, ctx, parsed);
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
+            stamps?.assertHeld(ctx, operation);
             if (guardedRef && invokeOptions?.ifMatch !== undefined) {
               assertIfMatch(guardedRef, invokeOptions.ifMatch, seen ?? null);
             }
@@ -7344,7 +7353,9 @@ export function defineScopeDO(
                     causedBy: event.id,
                     invocationId: unit.invocationId,
                   });
+                  const stamps = watchUpdatedStamps(doSpineSql(this.sql), this.updatedStampPlans);
                   await consumer.handler(ctx, event);
+                  stamps?.assertHeld(ctx, `${mod.id} consuming ${event.type}`);
                   this.sql.exec(
                     `INSERT INTO _substrat_deliveries
                        (event_id, consumer_module, delivered_at, invocation_id)
