@@ -1,5 +1,39 @@
 # @substrat-run/demo-ticket0
 
+## 0.6.0
+
+### Minor Changes
+
+- ab97a5a: Customer invites bind the customer to their contact (#1686).
+
+  A customer invite is now a binding invite. Claiming it sets the contact's `principal` to the customer and gives them the portal on that contact, in one transaction. Staff invites are vertical-auth's capability links (`mintMemberInvite`), and the desk writes no hash-only invites any more. Inviting a customer takes the new key `contact:invite`, which only `desk-admin` holds.
+
+  **A contact takes one portal customer now.** Under the earlier `'grantee'` holder, a contact could have several. On a desk that already has portal customers:
+
+  - a contact any of them holds refuses a new customer invite (409, "already has a portal customer from an earlier invite") until it is unbound;
+  - unbinding it (`POST /api/bindings/contact/:id/unbind`) releases **all** of the customers holding the portal there;
+  - withdrawing a pending customer invite from before this change leaves its pre-minted principal holding the portal, because that invite granted it at creation. That contact therefore also answers the 409 until it is unbound.
+
+  Operators should unbind a contact before re-inviting to it. Existing portal customers keep their portal until then.
+
+### Patch Changes
+
+- Updated dependencies [e47eb53]
+- Updated dependencies [835409e]
+- Updated dependencies [f84eb3a]
+- Updated dependencies [e286f87]
+- Updated dependencies [f6d671b]
+- Updated dependencies [134e6c2]
+- Updated dependencies [6dc8097]
+  - @substrat-run/adapter-cloudflare@0.144.0
+  - @substrat-run/contracts@0.144.0
+  - @substrat-run/kernel@0.144.0
+  - @substrat-run/adapter-sqlite@0.144.0
+  - @substrat-run/vertical-auth@0.23.0
+  - @substrat-run/vertical-host@0.144.0
+  - @substrat-run/engine-metering@0.6.28
+  - @substrat-run/dev-issuer@0.2.26
+
 ## 0.5.4
 
 ### Patch Changes
