@@ -3563,19 +3563,26 @@ export function defineScopeDO(
         }
         return epoch;
       };
+      /**
+       * A root checked by a key is walked to with that key (#2177): the walk stops where the key's
+       * own check would, at a record whose shape protects it, so a row the key reaches only through
+       * such a record is never nudged to someone the check on the row would refuse. A vouched root
+       * has no key and walks the plain edges. Memoised per (row, key), since the stop depends on it.
+       */
       const reaches = async (
         row: (typeof announceable)[number],
-        root: { entityType: string; entityId: string },
+        root: { entityType: string; entityId: string; checked?: string },
         now: string,
       ) => {
-        let up = ancestors.get(row.id);
+        const memo = `${row.id}\n${root.checked ?? ''}`;
+        let up = ancestors.get(memo);
         if (!up) {
           // A walk that cannot answer is a frame not sent — the same fail-closed rule as the check.
           // Walked at the decision's own instant; remembered only while its epoch holds.
-          up = ancestorsWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, now).catch(
-            () => new Set<string>(),
-          );
-          ancestors.set(row.id, up);
+          up = Promise.resolve()
+            .then(() => ancestorsWithin(parents, { entityType: row.entity_type, entityId: row.entity_id }, now, root.checked as PermissionKey | undefined))
+            .catch(() => new Set<string>());
+          ancestors.set(memo, up);
         }
         return (await up).has(`${root.entityType}:${root.entityId}`);
       };

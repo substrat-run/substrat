@@ -311,17 +311,23 @@ function protectedStop(
  * subject and no grant: a live read narrowed `within` an entity (#1853) asks exactly this
  * of every frame, so it travels the same edges to the same depth, skipping the same
  * revoked ones. A row linked to two parents (`ctx.link` twice) reaches either root; a row
- * `ctx.relink`ed away from one reaches only the other (#1864).
+ * `ctx.relink`ed away from one reaches only the other (#1864). Given the `key` a root is checked
+ * by, it stops where that key's check stops (`keyedStop`, #2177).
  */
 export async function reachesWithin(
-  scope: Pick<ScopeTupleReader, 'parents'>,
+  scope: WithinReader,
   entity: EntityRef,
   root: EntityRef,
   now: string,
+  key?: PermissionKey,
 ): Promise<boolean> {
   const target = `${root.entityType}:${root.entityId}`;
-  const hit = await walkParents(scope, `${entity.entityType}:${entity.entityId}`, now, async (ref) =>
-    ref === target ? true : undefined,
+  const hit = await walkParents(
+    scope,
+    `${entity.entityType}:${entity.entityId}`,
+    now,
+    async (ref) => (ref === target ? true : undefined),
+    keyedStop(scope, key),
   );
   return hit === true;
 }
@@ -332,16 +338,42 @@ export async function reachesWithin(
  * about many roots: a live fan-out with one socket per widget session (#1853).
  */
 export async function ancestorsWithin(
-  scope: Pick<ScopeTupleReader, 'parents'>,
+  scope: WithinReader,
   entity: EntityRef,
   now: string,
+  key?: PermissionKey,
 ): Promise<Set<string>> {
   const seen = new Set<string>();
-  await walkParents(scope, `${entity.entityType}:${entity.entityId}`, now, async (ref) => {
-    seen.add(ref);
-    return undefined;
-  });
+  await walkParents(
+    scope,
+    `${entity.entityType}:${entity.entityId}`,
+    now,
+    async (ref) => {
+      seen.add(ref);
+      return undefined;
+    },
+    keyedStop(scope, key),
+  );
   return seen;
+}
+
+/**
+ * The reader `reachesWithin` / `ancestorsWithin` walk: the parent edges, and — for a walk on
+ * behalf of a key — the types whose shape protects it.
+ */
+export type WithinReader = Pick<ScopeTupleReader, 'parents'> & Partial<Pick<ScopeTupleReader, 'shapeProtectedTypes'>>;
+
+/**
+ * A `within` walk made on behalf of `key` (#2177) — a live root checked by that key — stops where
+ * a check of the key stops, so a row it places beneath the root is one the key reaches through
+ * the root. Without a key the walk is the plain edge walk. A keyed walk over a reader that cannot
+ * say which types protect the key refuses, rather than climbing past a record it should not.
+ */
+function keyedStop(scope: WithinReader, key: PermissionKey | undefined): ((ref: string) => Promise<boolean>) | undefined {
+  if (key === undefined) return undefined;
+  const { shapeProtectedTypes } = scope;
+  if (!shapeProtectedTypes) throw new TypeError('a keyed within walk needs shapeProtectedTypes on its reader');
+  return protectedStop({ shapeProtectedTypes: (relation) => shapeProtectedTypes.call(scope, relation) }, key);
 }
 
 /**

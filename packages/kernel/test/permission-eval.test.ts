@@ -662,6 +662,23 @@ describe('a key a shape protects reaches its record only through the record (#21
     expect(await allowed(nested, WO_READ, c1)).toBe(true);
   });
 
+  it('a within walk made for a key stops where that key\'s check stops; without a key it walks every edge', async () => {
+    const rows = [shape, ...edges];
+    const scope = {
+      parents: (o: string) => rows.filter((r) => r.subject === o && r.relation === 'parent'),
+      shapeProtectedTypes: (relation: string) => rows.filter((r) => r.subject.startsWith('shape:') && r.object === relation).map((r) => r.subject.slice('shape:'.length)),
+    };
+    const NOW = '2026-01-01T00:00:00.000Z';
+    expect(await reachesWithin(scope, w1, r1, NOW, WO_READ)).toBe(false);
+    expect([...(await ancestorsWithin(scope, w1, NOW, WO_READ))].sort()).toEqual(['customer:c1', 'workorder:w1']);
+    // Positive twins: no key, and a key the shape does not protect, both reach the region.
+    expect(await reachesWithin(scope, w1, r1, NOW)).toBe(true);
+    expect(await reachesWithin(scope, w1, r1, NOW, WO_WRITE)).toBe(true);
+    expect(await reachesWithin(scope, w2, r1, NOW, WO_READ)).toBe(true);
+    // A keyed walk over a reader that cannot name the protecting types refuses rather than guess.
+    await expect(reachesWithin({ parents: scope.parents }, w1, r1, NOW, WO_READ)).rejects.toThrow(/shapeProtectedTypes/);
+  });
+
   it('asks with a statement the scope DO reads as a read, so a check that asks counts no write', () => {
     // The DO judges a statement by its text, splitting at `;`: a bound in a literal would split it.
     expect(isWriteStatement(shapeProtectedTypesQuery(`granted:${WO_READ}`).sql)).toBe(false);

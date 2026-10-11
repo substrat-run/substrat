@@ -745,6 +745,28 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     expect(seen.closedWith).toBeNull();
   });
 
+  it("walks to the root with the key it was checked by: a row whose shape protects that key is not nudged (#2177)", async () => {
+    // `live:read` reaches a note through its folder by the reader's grant on the cabinet. Once a
+    // `note` shape protects the key, the reader's own check on a note refuses, so the walk the
+    // nudge rides on must stop at the note too: the root still passes, and nothing is sent.
+    const node = { tenantId: t, scopeId: sc };
+    const seen = await watchChecked(reader, F1);
+    try {
+      await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'note', permissions: [READ], bootstrap: true, holder: 'grantee' }]);
+      await as('live/touch', { noteId: IN_F1 });
+      await settle();
+      expect(seen.frames).toEqual([]);
+      expect(seen.closedWith).toBeNull();
+    } finally {
+      await host.admin.reconcileEntityGrantShapes(staff, node, []);
+    }
+    // The positive twin, on the same socket: with no shape protecting the key, the row is nudged.
+    await as('live/touch', { noteId: IN_F1 });
+    await settle();
+    expect(seen.frames).toHaveLength(1);
+    expect(seen.frames[0]!.kind).toBe('nudge');
+  });
+
   // -- the gate on every pass -------------------------------------------------
 
   it('asks the gate once per socket per pass, and not at all on a pass with nothing beneath the root', async () => {
