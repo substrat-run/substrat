@@ -39,7 +39,7 @@ import type {
 	StepUsage,
 	VerticalGenerator,
 } from '@substrat-run/builder-generator';
-import { buildContext, detectPhase, type BuildPhase } from '../phase.js';
+import { buildContext, detectPhase, planLanes, type BuildLane, type BuildPhase } from '../phase.js';
 import { runProbe, type ProbeFn, type ProbeResult } from './probe.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -319,6 +319,11 @@ export interface EvalUsage {
 export interface EvalResult {
 	readonly fixture: string;
 	readonly generatorId: string;
+	/**
+	 * Whether build turns ran as lanes (#682). Recorded so two run artifacts are
+	 * never compared across the arm they differ on without saying so.
+	 */
+	readonly laned: boolean;
 	readonly passed: boolean;
 	/** Generator passes that were full build/continue turns (repairs not included). */
 	readonly turns: number;
@@ -356,7 +361,13 @@ export interface RunEvalOptions {
 	 * Fresh generator per turn, so the phase ladder binds the right skills —
 	 * the same contract as server.ts makeGenerator.
 	 */
-	readonly makeGenerator: (phase: BuildPhase) => Promise<VerticalGenerator>;
+	readonly makeGenerator: (phase: BuildPhase, lane?: BuildLane) => Promise<VerticalGenerator>;
+	/**
+	 * Run build turns as lanes (#682) — API then UI, disjoint write guards, the
+	 * gates once after both — so the sweep can compare laned and unlaned runs of
+	 * the same fixture. Repairs stay unlaned, as in the studio's turn loop.
+	 */
+	readonly lanes?: boolean;
 	readonly gates: readonly GateSpec[];
 	/** Injectable for tests; defaults to the tsx probe. */
 	readonly probe?: ProbeFn;
@@ -411,6 +422,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		text: string,
 		phase: BuildPhase,
 		carriedReport?: string,
+		laneContext?: string,
 	): Promise<void> => {
 		let prose = '';
 		for await (const event of generator.run({
@@ -419,7 +431,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			// `buildContext`, not a raw read of spec/concept.md — the same seam
 			// server.ts uses, and the only one that answers during the interview
 			// phase, where the file does not exist yet.
-			concept: await buildContext(projectWs, phase),
+			concept: laneContext ?? (await buildContext(projectWs, phase)),
 			message: text,
 			workspaceBrief: await workspaceBrief(ws, projectDir).catch(() => undefined),
 			...(carriedReport ? { gateReport: carriedReport } : {}),
@@ -487,7 +499,16 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			questionsThisTurn = 0;
 			turns += 1;
 
-			await runPass(generator, message, phase, lastGateReport);
+			const lanes = opts.lanes ? await planLanes(projectWs, phase) : [];
+			if (lanes.length === 0) {
+				await runPass(generator, message, phase, lastGateReport);
+			}
+			for (const [i, plan] of lanes.entries()) {
+				if (fatal || opts.signal?.aborted) break;
+				// The carried report rides the first lane only, as in runTurnLoop.
+				const carried = i === 0 ? lastGateReport : undefined;
+				await runPass(await opts.makeGenerator(phase, plan.lane), message, phase, carried, plan.context);
+			}
 			let turn = await runChecks(`eval ${fixture.name} · turn ${turnNo}`);
 			for (
 				let attempt = 1;
@@ -525,6 +546,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	return {
 		fixture: fixture.name,
 		generatorId,
+		laned: opts.lanes ?? false,
 		passed,
 		turns,
 		repairs,
@@ -649,7 +671,7 @@ export function formatEvalResult(r: EvalResult): string {
 	const lines: string[] = [];
 	const verdict = r.passed ? 'PASS' : 'FAIL';
 	lines.push(
-		`${verdict} ${r.fixture} — ${r.turns} turn(s), ${r.repairs} repair(s), ${r.questions} question(s), ` +
+		`${verdict} ${r.fixture}${r.laned ? ' (laned)' : ''} — ${r.turns} turn(s), ${r.repairs} repair(s), ${r.questions} question(s), ` +
 			`${r.usage.inputTokens}+${r.usage.outputTokens} tokens in ${(r.durationMs / 1000).toFixed(0)}s`,
 	);
 	const score = forkScore(r);

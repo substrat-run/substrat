@@ -12,6 +12,13 @@
  * It holds the provider credential and the turn loop; the workspace only ever
  * sees tool calls (§5.3). Binds to 127.0.0.1 — mode A has no isolation (§3.1)
  * and this must never listen on a routable interface.
+ *
+ * Flags: `--root <path>` (monorepo root), `--max-steps <n>` (tool-loop ceiling
+ * per pass, default 40), `--vertical <dir>` (adopt a project directory), and
+ * `--lanes` (or `SUBSTRAT_BUILDER_LANES=1`): run each build turn as an API lane
+ * then a UI lane with disjoint write guards, gates once after both (#682,
+ * phase.ts `planLanes`). Off by default — whether lanes save tokens is for the
+ * eval sweep (#630, `pnpm builder evals --lanes`) to say.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -61,9 +68,13 @@ import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
 	detectPhase,
 	skillsForPhase,
+	skillsForLane,
+	type BuildLane,
 	type BuildPhase,
 	buildContext,
+	planLanes,
 	writeGuardFor,
+	writeGuardForLane,
 } from './phase.js';
 import { underProject, withinProject } from './project-path.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
@@ -78,6 +89,7 @@ function flag(name: string): string | undefined {
 const ROOT = flag('--root') ?? process.env.INIT_CWD ?? process.cwd();
 const PORT = Number(process.env.PORT ?? 8879);
 const MAX_STEPS = Number(flag('--max-steps') ?? 40);
+const LANES = process.argv.includes('--lanes') || process.env.SUBSTRAT_BUILDER_LANES === '1';
 const PROJECTS_DIR = '.builder/projects';
 
 const env = loadEnvFiles(ROOT);
@@ -139,13 +151,18 @@ function ndjson(res: ServerResponse): (e: BuildEvent) => void {
 	return (e) => res.write(`${JSON.stringify(e)}\n`);
 }
 
-async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promise<VerticalGenerator> {
+async function makeGenerator(
+	spec: string,
+	phase: BuildPhase = 'iterate',
+	lane?: BuildLane,
+): Promise<VerticalGenerator> {
 	// `<provider>:auto` becomes concrete here — fast for interview, strong for
 	// build (model-pairs.ts). The generator label carries what actually ran.
 	const resolved = await resolveModel(resolveAutoSpec(spec, phase));
 	// The phase ladder (phase.ts): prefix content changes only at phase
 	// boundaries, so each phase's prefix is byte-stable and caches independently.
-	const phaseSkills = skillsForPhase(skills.byFile, phase);
+	// A lane narrows both the prefix and the guard (#682).
+	const phaseSkills = lane ? skillsForLane(skills.byFile, phase, lane) : skillsForPhase(skills.byFile, phase);
 	return new AiSdkGenerator({
 		model: resolved.model,
 		label: resolved.label,
@@ -161,7 +178,7 @@ async function makeGenerator(spec: string, phase: BuildPhase = 'iterate'): Promi
 		// dead-end this prevents). The SAME dispatch the hosted agent uses —
 		// local dev previously guarded only the interview, so a local run could
 		// write code during the model phase and a hosted one could not.
-		denyWrite: writeGuardFor(phase),
+		denyWrite: lane ? writeGuardForLane(lane) : writeGuardFor(phase),
 	});
 }
 
@@ -260,8 +277,17 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 
 	let generator: VerticalGenerator;
 	const phase = await detectPhase(cur.projectWs);
+	// Laned build turns (#682): one generator and one context per lane, in order.
+	const lanePlans = LANES ? await planLanes(cur.projectWs, phase) : [];
+	const laneRuns = new Map<BuildLane, { generator: VerticalGenerator; context: string }>();
 	try {
 		generator = await makeGenerator(modelSpec, phase);
+		for (const plan of lanePlans) {
+			laneRuns.set(plan.lane, {
+				generator: await makeGenerator(modelSpec, phase, plan.lane),
+				context: plan.context,
+			});
+		}
 	} catch (err) {
 		return json(res, 422, { error: err instanceof ProviderError ? err.message : String(err) });
 	}
@@ -302,13 +328,14 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		 * `carriedReport` is the previous TURN's red-gate state — first pass only;
 		 * repair prompts already embed the fresh report.
 		 */
-		const runPass = async (text: string, carriedReport?: string): Promise<boolean> => {
+		const runPass = async (text: string, carriedReport?: string, lane?: BuildLane): Promise<boolean> => {
 			let prose = '';
 			let truncated = false;
-			for await (const event of generator.run({
+			const laneRun = lane ? laneRuns.get(lane) : undefined;
+			for await (const event of (laneRun?.generator ?? generator).run({
 				workspace: cur.projectWs,
 				verticalDir: '.',
-				concept,
+				concept: laneRun?.context ?? concept,
 				message: text,
 				workspaceBrief: await workspaceBrief(ws, cur.entry.dir).catch(() => undefined),
 				...(carriedReport ? { gateReport: carriedReport } : {}),
@@ -351,7 +378,12 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		// pass → continuations → checks → capped repair, abort-guarded between
 		// passes — the one shared loop (builder-workspace turn-loop.ts, #974).
 		const loop = await runTurnLoop(
-			{ message, turnNo: cur.state.turnNo, lastGateReport: cur.state.lastGateReport },
+			{
+				message,
+				turnNo: cur.state.turnNo,
+				lastGateReport: cur.state.lastGateReport,
+				lanes: lanePlans.map((p) => p.lane),
+			},
 			{ runPass, runChecks, signal },
 		);
 

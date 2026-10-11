@@ -572,6 +572,7 @@ describe('forkScore — forks correct AT a question count (#740)', () => {
 	): EvalResult => ({
 		fixture: 'fx',
 		generatorId: 'scripted',
+		laned: false,
 		passed: expectations.every((o) => o.ok),
 		turns: 1,
 		repairs: 0,
