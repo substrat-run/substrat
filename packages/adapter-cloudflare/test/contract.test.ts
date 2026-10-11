@@ -91,7 +91,7 @@ import {
 } from '../src/host.js';
 import type { DoReply } from '../src/do-reply.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
-import { PROVISIONED_VERSIONS_SQL, installsReconciledOf, runPlatformSweep, type ScopeHost } from '@substrat-run/kernel';
+import { PROVISIONED_VERSIONS_SQL, installsReconciledOf, provisionedVersionsParams, runPlatformSweep, type ScopeHost } from '@substrat-run/kernel';
 import { SYSTEM_DOOR_REGATES } from '../src/system-door.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
@@ -5968,19 +5968,19 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
       const cp = new ControlPlaneDO(state, env);
       const row = () => state.storage.sql.exec('SELECT provisioned_version_id, retirements_finished_version_id FROM scopes WHERE scope_id = ?', 'old-scope').toArray()[0];
       const migrated = row();
-      const groups = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, 'old-vertical', 'old-script', null).toArray());
+      const groups = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, ...provisionedVersionsParams('old-vertical', { ref: 'old-script', versionId: 'v1' }, null)).toArray());
       cp.markScopeProvisioned('old-scope', 'v1', true);
       const converged = row();
-      const after = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, 'old-vertical', 'old-script', null).toArray());
+      const after = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, ...provisionedVersionsParams('old-vertical', { ref: 'old-script', versionId: 'v1' }, null)).toArray());
       return { before, after: columns().includes('retirements_finished_version_id'), migrated, groups, converged, finishedGroups: after };
     });
     expect(seen).toEqual({
       before: false,
       after: true,
       migrated: { provisioned_version_id: 'v1', retirements_finished_version_id: null },
-      groups: [{ versionId: 'v1', retirementsFinished: false, boundShapes: null, installs: 1, example: 'old-scope' }],
+      groups: [{ versionId: 'v1', runningVersionId: 'v1', retirementsFinished: false, boundShapes: null, installs: 1, example: 'old-scope' }],
       converged: { provisioned_version_id: 'v1', retirements_finished_version_id: 'v1' },
-      finishedGroups: [{ versionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 1, example: 'old-scope' }],
+      finishedGroups: [{ versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 1, example: 'old-scope' }],
     });
   });
 
@@ -6120,7 +6120,7 @@ describe('#2184 — wedge risk: the bound-shapes column added to an existing dir
       // A deploy: new code over the old storage, twice (the addition is re-runnable).
       new ControlPlaneDO(state, env);
       const cp = new ControlPlaneDO(state, env);
-      const groups = () => installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, 'old-vertical', 'old-script', null).toArray());
+      const groups = () => installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, ...provisionedVersionsParams('old-vertical', { ref: 'old-script', versionId: 'v1' }, null)).toArray());
       const migrated = groups();
       // Reported: three bound `contact`, one bound nothing, one is left unknown.
       for (const id of ['s1', 's2', 's3']) cp.markScopeProvisioned(id, 'v1', true, ['contact']);
@@ -6133,14 +6133,15 @@ describe('#2184 — wedge risk: the bound-shapes column added to an existing dir
     });
     expect(seen.before).toBe(false);
     expect(seen.after).toBe(true);
-    expect(seen.migrated).toEqual([{ versionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 5, example: 's1' }]);
+    expect(seen.migrated).toEqual([{ versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 5, example: 's1' }]);
     // One row per (version, finished, set), however many installs share it.
     expect([...seen.reported].sort((a, b) => a.example.localeCompare(b.example))).toEqual([
-      { versionId: 'v1', retirementsFinished: true, boundShapes: ['contact'], installs: 3, example: 's1' },
-      { versionId: 'v1', retirementsFinished: true, boundShapes: [], installs: 1, example: 's4' },
-      { versionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 1, example: 's5' },
+      { versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: ['contact'], installs: 3, example: 's1' },
+      { versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: [], installs: 1, example: 's4' },
+      { versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 1, example: 's5' },
     ]);
-    expect(seen.rolledBack).toEqual({ versionId: 'v2', retirementsFinished: true, boundShapes: null, installs: 1, example: 's1' });
+    // …and it lags what the install runs (v1, served): judged as unreported either way (review of #2220).
+    expect(seen.rolledBack).toEqual({ versionId: 'v2', runningVersionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 1, example: 's1' });
   });
 
   it('meanwhile refuses only a strand of a table-held shape, and the sweep re-converges every migrated install', async () => {

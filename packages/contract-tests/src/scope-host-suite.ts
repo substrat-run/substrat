@@ -7182,7 +7182,9 @@ export function scopeHostContractSuite(
         await host.admin.promoteVersion(staff, slug, 'prod', added);
         const retiredBoth = await publishShaped(slug, [binding({ permissions: [], retired: [KEY, 'contact:other'], holder: { ...HOLDER, principalColumn: 'owner' } })]);
         await host.admin.promoteVersion(staff, slug, 'prod', retiredBoth);
-        // The twin: reconciled again, its retirements finished, the drop passes.
+        // The twin: served, reconciled again with its retirements finished, the drop passes. (Review of
+        // #2220: a receipt counts only for the version the install runs, as the sweep writes it.)
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: retiredBoth, doClasses: [], migrationTag: 'g' });
         await host.admin.markScopeProvisioned(staff, t1, routed, retiredBoth, FINISHED);
         await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
         expect(await prodOf(slug)).toBe(v.dropped);
@@ -7257,7 +7259,7 @@ export function scopeHostContractSuite(
         });
 
         it('refuses only a move that would strand with the retirement unrun: a key added, a key dropped and retired still move', async () => {
-          const { slug, v, routed, pinned } = await retiringFleet();
+          const { slug, v, ref, routed, pinned } = await retiringFleet();
           for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v.retired, LEFT_OPEN);
           const added = await publishShaped(slug, [binding({ permissions: ['contact:other'], retired: [KEY], holder: { ...HOLDER, principalColumn: 'owner' } })]);
           await host.admin.promoteVersion(staff, slug, 'prod', added);
@@ -7266,6 +7268,9 @@ export function scopeHostContractSuite(
           expect(await prodOf(slug)).toBe(retiredBoth);
           // And the version retiring every key, retire-all, then the drop: refused until finished.
           await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v.dropped), 'precondition_failed', /retirements not finished/);
+          // Served and bound, then reconciled: a receipt counts only for what the install runs (review of #2220).
+          await host.admin.setVerticalServing(staff, slug, { ref, versionId: retiredBoth, doClasses: [], migrationTag: 'g' });
+          await host.admin.bindScopeVersion(staff, t1, pinned, retiredBoth);
           for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, retiredBoth, FINISHED);
           await host.admin.promoteVersion(staff, slug, 'prod', v.dropped);
           expect(await prodOf(slug)).toBe(v.dropped);
@@ -7405,6 +7410,51 @@ export function scopeHostContractSuite(
           await host.admin.markScopeProvisioned(staff, t1, routed, plain, reported([]));
           await host.admin.promoteVersion(staff, slug, 'prod', dropped);
           expect(await prodOf(slug)).toBe(dropped);
+        });
+
+        /**
+         * Review of #2220: a receipt behind what the installs run speaks for none of it. V2 adds
+         * `bind`, and its reconcile commits in the scope and people claim, but its receipt never lands
+         * (the re-assert after it failed, or the answer was lost); V3 drops `bind`; V4 removes the
+         * shape. Judged from the V1 receipt's `[]` and V3's registry, V4 passed and stranded them.
+         */
+        it("judges a lagging receipt's running version as unreported: V1 [] → V2 binds, no receipt → V3 drops bind → V4 removes", async () => {
+          const slug = `acme/lag-${ulid().slice(-8).toLowerCase()}`;
+          await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+          const [v1, v2, v3, v4] = [await publishShaped(slug, [unbound()]), await publishShaped(slug, [binding()]), await publishShaped(slug, [unbound()]), await publishShaped(slug, [])];
+          const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+          const serve = (versionId: string) => host.admin.setVerticalServing(staff, slug, { ref, versionId, doClasses: [], migrationTag: 'g' });
+          await host.admin.promoteVersion(staff, slug, 'prod', v1);
+          await serve(v1);
+          const routed = await install(slug, v1);
+          const pinned = await install(slug, v1);
+          await host.admin.setScopeServingRef(staff, t1, pinned, null);
+          for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v1, reported([]));
+          // V2 and V3 reach both installs; no receipt is written for either.
+          for (const v of [v2, v3]) {
+            await host.admin.promoteVersion(staff, slug, 'prod', v);
+            await serve(v);
+            await host.admin.bindScopeVersion(staff, t1, pinned, v);
+          }
+          // A legitimate evolution that strands nothing still moves while the receipts lag: a key added.
+          const more = await publishShaped(slug, [unbound({ permissions: [KEY, 'contact:other'] })]);
+          await host.admin.promoteVersion(staff, slug, 'prod', more);
+          await host.admin.promoteVersion(staff, slug, 'prod', v3);
+          // The drop is refused at every door, naming the receipt and what the install runs.
+          const lags = (sc: ScopeId) =>
+            new RegExp(`drops the shape.*Judged from 1 install\\(s\\) that last reconciled ${v1} \\(one is ${sc}\\), and run ${v3}, which that receipt does not speak for`);
+          await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v4), 'precondition_failed', lags(routed));
+          await expectRefusal(serve(v4), 'precondition_failed', lags(routed));
+          await expectRefusal(host.admin.bindScopeVersion(staff, t1, pinned, v4), 'precondition_failed', lags(pinned));
+          // Reconciled: a scope that reports `contact` bound stays held, now from its own report…
+          for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v3, reported(['contact']));
+          await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', v4), 'precondition_failed', boundBy(v3, routed));
+          // …and the twin: a receipt that is what the installs run, reporting nothing bound, is trusted.
+          for (const sc of [routed, pinned]) await host.admin.markScopeProvisioned(staff, t1, sc, v3, reported([]));
+          await host.admin.promoteVersion(staff, slug, 'prod', v4);
+          await serve(v4);
+          await host.admin.bindScopeVersion(staff, t1, pinned, v4);
+          expect(await prodOf(slug)).toBe(v4);
         });
 
         it('(b) a copy is judged on what it runs, as before: its record is not read', async () => {

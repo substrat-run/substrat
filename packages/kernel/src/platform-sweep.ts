@@ -2206,8 +2206,13 @@ export function scopeMoveOf(
  * null (unknown). Grouped by it too, so the rows are at most (versions × 2 × distinct type sets),
  * still independent of how many installs there are: each set is a subset of one version's
  * table-held bootstrap shapes, sorted, so a fleet of one vertical has a handful.
+ *
+ * Review of #2220: and by the version each install RUNS (`runningVersionOf`: the served version on
+ * the serving script, else its pointer), since a receipt behind it speaks for neither the bindings
+ * nor the retirements of what it runs now. Bind its parameters with {@link provisionedVersionsParams}.
  */
 export const PROVISIONED_VERSIONS_SQL = `SELECT provisioned_version_id AS version_id,
+    CASE WHEN serving_ref = ? THEN ? ELSE vertical_version_id END AS running_version_id,
     COALESCE(retirements_finished_version_id = provisioned_version_id, 0) AS finished,
     CASE WHEN json_extract(bound_shapes, '$.version') = provisioned_version_id
       THEN json_extract(bound_shapes, '$.types') END AS bound_types,
@@ -2215,7 +2220,15 @@ export const PROVISIONED_VERSIONS_SQL = `SELECT provisioned_version_id AS versio
   FROM scopes
   WHERE vertical = ? AND status = 'active' AND forked_from IS NULL AND COALESCE(kind, '') != 'preview'
     AND (serving_ref = ? OR tenant_id = ?)
-  GROUP BY provisioned_version_id, finished, bound_types`;
+  GROUP BY provisioned_version_id, running_version_id, finished, bound_types`;
+
+/**
+ * `PROVISIONED_VERSIONS_SQL`'s parameters: the installs of `vertical` on `serving`'s script (which
+ * run its version) or owned by `ownerTenant`. Null for either matches nothing.
+ */
+export function provisionedVersionsParams(vertical: string, serving: ServingPointer | null, ownerTenant: string | null): (string | null)[] {
+  return [serving?.ref ?? null, serving?.versionId ?? null, vertical, serving?.ref ?? null, ownerTenant];
+}
 
 /**
  * #2184: the directory's `bound_shapes` value — the version the reconcile ran against and the types
@@ -2244,6 +2257,11 @@ export interface InstallsReconciled {
   /** Null: installs with no receipt, which may not have reconciled anything they run. */
   versionId: string | null;
   /**
+   * Review of #2220: the version they run now, when the caller knows it. One that differs from
+   * `versionId` is a receipt lagging what runs: judged as if nothing about it had been reported.
+   */
+  runningVersionId: string | null;
+  /**
    * #2185: whether their reconcile of `versionId` finished every retirement it declares. False
    * judges them as still holding the keys it retires. Meaningless when `versionId` is null.
    */
@@ -2263,6 +2281,7 @@ export interface InstallsReconciled {
 export function installsReconciledOf(rows: readonly Record<string, unknown>[]): InstallsReconciled[] {
   return rows.map((r) => ({
     versionId: r.version_id == null ? null : String(r.version_id),
+    runningVersionId: r.running_version_id == null ? null : String(r.running_version_id),
     retirementsFinished: Number(r.finished) === 1,
     boundShapes: r.bound_types == null ? null : (JSON.parse(String(r.bound_types)) as string[]),
     installs: Number(r.installs),
@@ -2272,14 +2291,17 @@ export function installsReconciledOf(rows: readonly Record<string, unknown>[]): 
 
 /**
  * #2185: one install's own receipt as a {@link InstallsReconciled} group, for a bind or a route of
- * that install, judged by the same rule as the promote's `PROVISIONED_VERSIONS_SQL` rows.
+ * that install, judged by the same rule as the promote's `PROVISIONED_VERSIONS_SQL` rows, with the
+ * version it runs before the move (`scopeMoveOf`'s `before`).
  */
 export function installReconciled(
   scope: Pick<Scope, 'id' | 'provisionedVersionId' | 'retirementsFinishedVersionId' | 'boundShapes'>,
+  runningVersionId: string | null,
 ): InstallsReconciled {
   const versionId = scope.provisionedVersionId;
   return {
     versionId,
+    runningVersionId,
     retirementsFinished: versionId !== null && scope.retirementsFinishedVersionId === versionId,
     boundShapes: versionId !== null && scope.boundShapes?.versionId === versionId ? scope.boundShapes.types : null,
     installs: 1,
@@ -2295,18 +2317,57 @@ export function boundEverOf(g: InstallsReconciled): readonly string[] | 'unknown
   return g.versionId !== null && g.boundShapes !== null ? g.boundShapes : 'unknown';
 }
 
+/** Review of #2220: whether a group's receipt is behind the version its installs run. */
+const receiptLags = (g: InstallsReconciled) => g.versionId !== null && g.runningVersionId !== null && g.runningVersionId !== g.versionId;
+
+/** One judgment of the binding-shape gate: a version to judge a move from, and how (`assertNoBindingShapeBreak`). */
+export interface StrandJudgment {
+  from: string;
+  opts: { judgedFrom: string; retiredStillHeld: boolean; boundEver: readonly string[] | 'unknown' };
+}
+
+/**
+ * What the binding-shape gate judges a move onto `afterId` from, for one group of installs, given
+ * the versions the move leaves (`froms`). One rule for both adapters' doors:
+ *
+ * - no receipt: every one of `froms`, as if nothing about it had run or been reported (the installs
+ *   run one of them; judging the others too can only over-refuse, and only while it lasts);
+ * - a receipt behind the version they run (review of #2220): that running version the same way,
+ *   since whatever it bound or retired since the receipt is not in it — a version that added `bind`
+ *   may have reconciled and been claimed through without its receipt landing;
+ * - a receipt: its own version, from its own report (#2185, #2184).
+ *
+ * Each is transient: the sweep reconciles every such install on its next pass.
+ */
+export function strandJudgmentsOf(g: InstallsReconciled, froms: readonly string[], afterId: string): StrandJudgment[] {
+  const judgedFrom = installsReconciledNote(g);
+  const unreported = { judgedFrom, retiredStillHeld: true, boundEver: 'unknown' as const };
+  if (g.versionId === null) return froms.filter((f) => f !== afterId).map((from) => ({ from, opts: unreported }));
+  const out: StrandJudgment[] = [];
+  if (receiptLags(g) && g.runningVersionId !== afterId) out.push({ from: g.runningVersionId!, opts: unreported });
+  if (g.versionId !== afterId) {
+    out.push({ from: g.versionId, opts: { judgedFrom, retiredStillHeld: !g.retirementsFinished, boundEver: boundEverOf(g) } });
+  }
+  return out;
+}
+
 /** What a refusal judged from installs' receipts says it was judged from. */
 export function installsReconciledNote(g: InstallsReconciled): string {
   // #2184: the types a link has bound people to, where the reconcile reported any.
   const bound = g.versionId !== null && g.boundShapes?.length ? `, where links have bound people to ${g.boundShapes.join(', ')}` : '';
   const unfinished = g.versionId !== null && !g.retirementsFinished;
   const unknown = g.versionId !== null && g.boundShapes === null;
+  // Review of #2220: a receipt behind what they run speaks for none of it.
+  const lags = receiptLags(g)
+    ? `, and run ${g.runningVersionId}, which that receipt does not speak for: every bootstrap shape of ${g.runningVersionId} ` +
+      'with a table holder counts as bound and its retirements as not run'
+    : '';
   if (unfinished || unknown) {
     const gaps = [unfinished && 'with its retirements not finished', unknown && 'without reporting which binding shapes links have bound'];
     const waits = [unfinished && 'their retirements to finish', unknown && 'their report'];
     const report = unfinished && unknown ? 'retirement and binding reports (#2185, #2184)' : unfinished ? 'retirement report (#2185)' : 'binding report (#2184)';
     return (
-      `${g.installs} install(s) that reconciled ${g.versionId} ${gaps.filter(Boolean).join(' and ')}${bound} (one is ${g.example})` +
+      `${g.installs} install(s) that reconciled ${g.versionId} ${gaps.filter(Boolean).join(' and ')}${bound} (one is ${g.example})${lags}` +
       (unknown ? `, so every bootstrap shape of ${g.versionId} with a table holder counts as bound` : '') +
       `; the drop waits for ${waits.filter(Boolean).join(' and ')}: the sweep reconciles them again each pass. ` +
       "An install whose vertical's @substrat-run/adapter-cloudflare or @substrat-run/vertical-host predates the " +
@@ -2315,7 +2376,7 @@ export function installsReconciledNote(g: InstallsReconciled): string {
   }
   const which = g.versionId === null ? 'with no reconcile receipt (a switch, a rewind or a restore cleared it, or none was written yet)' : `that last reconciled ${g.versionId}${bound}`;
   return (
-    `${g.installs} install(s) ${which} (one is ${g.example}); the drop waits for their reconcile. ` +
+    `${g.installs} install(s) ${which} (one is ${g.example})${lags}; the drop waits for their reconcile. ` +
     "If that install's reconcile keeps failing or answers 'unsupported' (a vertical built on a vertical-host " +
     'that cannot reconcile), no sweep writes its receipt: fix the reconcile or push a version built on a ' +
     'current vertical-host, so the retirement reaches it'

@@ -454,8 +454,7 @@ import {
   bindExportBreakRefusal,
   scopeMoveOf,
   runningVersionOf,
-  installsReconciledNote,
-  boundEverOf,
+  strandJudgmentsOf,
   boundShapesOfColumn,
   installReconciled,
   type InstallsReconciled,
@@ -714,7 +713,7 @@ interface ControlPlaneStub {
   ): Promise<ScopeRow[]>;
   getScopeRecord(tenantId: string, scopeId: string): Promise<ScopeRow | undefined>;
   /** #2178: `PROVISIONED_VERSIONS_SQL` — the versions the scopes a promote or a serve moves last reconciled. */
-  provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): Promise<InstallsReconciled[]>;
+  provisionedVersionsOf(vertical: string, serving: ServingPointer | null, ownerTenant: string | null): Promise<InstallsReconciled[]>;
   /** The getScope gate's refusal as data, null when access is allowed (#1718). */
   scopeAccessRefusal(
     tenantId: string,
@@ -7268,7 +7267,7 @@ export class CloudflareScopeHost implements ScopeHost {
           incoming.id,
           incoming,
           served || owned.length > 0
-            ? await this.cp.provisionedVersionsOf(verticalSlug, served?.ref ?? null, owned.length > 0 ? owning!.owner_tenant : null)
+            ? await this.cp.provisionedVersionsOf(verticalSlug, served, owned.length > 0 ? owning!.owner_tenant : null)
             : [],
         );
 
@@ -7495,7 +7494,7 @@ export class CloudflareScopeHost implements ScopeHost {
               [r.serving_version_id],
               incoming.id,
               incoming,
-              r.serving_ref ? await this.cp.provisionedVersionsOf(verticalSlug, r.serving_ref, null) : [],
+              r.serving_ref ? await this.cp.provisionedVersionsOf(verticalSlug, { ref: r.serving_ref, versionId: r.serving_version_id }, null) : [],
             );
           }
         }
@@ -11144,17 +11143,9 @@ export class CloudflareScopeHost implements ScopeHost {
     const after = await this.manifestOf(afterId, held);
     const judged = [...new Set(froms)].filter((f): f is string => !!f && f !== afterId);
     for (const from of judged) assertNoBindingShapeBreak(await this.manifestOf(from, held), after);
+    // What each group of installs is judged from, and how (`strandJudgmentsOf`, one rule for both adapters).
     for (const r of receipts) {
-      const judgedFrom = installsReconciledNote(r);
-      // No receipt: the installs run one of `froms` and may not have reconciled its retirements.
-      // Judged against every one of `froms`, including versions this group never ran: that can
-      // only over-refuse, and only while the receipts are missing, never under-refuse.
-      if (r.versionId === null) {
-        for (const from of judged) assertNoBindingShapeBreak(await this.manifestOf(from, held), after, { judgedFrom, retiredStillHeld: true, boundEver: boundEverOf(r) });
-      } else if (r.versionId !== afterId) {
-        // #2185: a reconcile that did not finish the version's retirements leaves its keys held.
-        assertNoBindingShapeBreak(await this.manifestOf(r.versionId, held), after, { judgedFrom, retiredStillHeld: !r.retirementsFinished, boundEver: boundEverOf(r) });
-      }
+      for (const j of strandJudgmentsOf(r, judged, afterId)) assertNoBindingShapeBreak(await this.manifestOf(j.from, held), after, j.opts);
     }
   }
 
@@ -11173,7 +11164,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // A primary scope is also judged from the version it last reconciled: until then, a retirement
     // the running version declares has not reached it (`PROVISIONED_VERSIONS_SQL`).
     if (!move) return;
-    const receipt = isPrimaryScope(scope) ? [installReconciled(scope)] : [];
+    const receipt = isPrimaryScope(scope) ? [installReconciled(scope, move.before)] : [];
     await this.assertNoStrandFrom([move.before], move.after, incoming, receipt);
   }
 
