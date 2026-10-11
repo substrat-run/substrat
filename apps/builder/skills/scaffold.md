@@ -173,6 +173,3 @@ const result = await stub.invoke('app/op-name', input);
 Ids minted in-process by seed/provisioning are already branded — pass them
 through; parse only what crossed a serialization boundary (headers, JSON
 files, env).
-
-**The screens** live in `app/` and have their own skill (ui.md). The API's
-part is to proxy or serve `app/` from `src/server.ts`.

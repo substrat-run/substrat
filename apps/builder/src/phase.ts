@@ -290,10 +290,13 @@ export const SKILL_MANIFEST: readonly SkillManifestEntry[] = [
 	{ file: 'apps/builder/skills/model.md', phases: ['model'] },
 	{ file: 'apps/builder/skills/scenario.md', phases: ['scenario'] },
 	{ file: 'apps/builder/skills/scaffold.md', phases: ['scaffold'] },
-	{ file: 'apps/builder/skills/iterate.md', phases: ['scenario', 'scaffold', 'iterate'] },
-	// The screens, moved out of scaffold.md: unlaned, in the phase scaffold.md
-	// carried them; laned, the UI lane's whole prefix in every build phase.
+	// scaffold.md's closing `app/` paragraph, split out VERBATIM and placed right
+	// after it, so an unlaned scaffold reads main's rules in main's order (#2200
+	// r1 pins the two rejoined against main's file). A laned build gives it to
+	// the UI lane instead, with the lane's own skill after it.
 	{ file: 'apps/builder/skills/ui.md', phases: ['scaffold'], lanes: { ui: ['scaffold', 'iterate'] } },
+	{ file: 'apps/builder/skills/ui-lane.md', phases: [], lanes: { ui: ['scaffold', 'iterate'] } },
+	{ file: 'apps/builder/skills/iterate.md', phases: ['scenario', 'scaffold', 'iterate'] },
 ];
 
 /** The phases an entry rides in: unlaned, or in one lane of a laned turn. */
@@ -409,26 +412,35 @@ export async function planLanes(ws: ContextWorkspace, phase: BuildPhase): Promis
 	const ledger = parseContractGaps(
 		(await ws.exists(CONTRACT_GAPS_FILE)) ? await ws.readFile(CONTRACT_GAPS_FILE) : '',
 	);
-	const api: LanePlan = {
-		lane: 'api',
-		context:
-			(await buildContext(ws, phase)) +
-			gapsBlock(
-				ledger,
-				'gaps the UI lane recorded — implement any the model declares; one that needs a new operation is a model change: say so and stop',
-			),
-	};
+	const apiContext =
+		(await buildContext(ws, phase)) +
+		gapsBlock(
+			ledger,
+			'gaps the UI lane recorded — implement any the model declares; one that needs a new operation is a model change: say so and stop',
+		);
 	const concept = await ws.readFile('spec/concept.md');
 	const screens = screensSection(concept);
-	if (screens === null || apiOnly(screens) || !(await ws.exists('spec/model.ts'))) return [api];
+	if (screens === null || apiOnly(screens) || !(await ws.exists('spec/model.ts'))) {
+		return [{ lane: 'api', context: apiContext }];
+	}
 	const model = await ws.readFile('spec/model.ts');
-	const ui: LanePlan = {
-		lane: 'ui',
-		context:
-			`${screens}\n\n${modelBlock(model, 'the operations you build screens against')}` +
-			gapsBlock(ledger, 'already recorded — do not repeat; remove a line once the API offers it'),
-	};
-	return [api, ui];
+	return [
+		{
+			lane: 'api',
+			// What scaffold.md's split-out `app/` paragraph told an unlaned build
+			// about the API's side of the screens — ui.md rides the UI lane only.
+			context:
+				`${apiContext}\n\n` +
+				'--- lanes ---\n\nThe screens in app/ are the UI lane\'s, built after you in this turn. ' +
+				'The API proxies or serves app/ from src/server.ts.\n\n--- end lanes ---',
+		},
+		{
+			lane: 'ui',
+			context:
+				`${screens}\n\n${modelBlock(model, 'the operations you build screens against')}` +
+				gapsBlock(ledger, 'already recorded — do not repeat; remove a line once the API offers it'),
+		},
+	];
 }
 
 /**

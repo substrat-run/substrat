@@ -10,7 +10,8 @@
  * `AiSdkGenerator` hands its `denyWrite` to — so the refusal a lane meets here
  * is the exact string a model would read.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -148,24 +149,63 @@ describe('the lanes are disjoint and cover the tree', () => {
 
 describe('skills per lane', () => {
 	const loaded = new Map(SKILL_MANIFEST.map((e) => [e.file, e.file]));
+	const UI = 'apps/builder/skills/ui.md';
+	const UI_LANE = 'apps/builder/skills/ui-lane.md';
 
-	it('the UI lane carries ui.md alone, in every build phase', () => {
-		expect(skillsForPhase(loaded, 'scaffold', 'ui')).toEqual(['apps/builder/skills/ui.md']);
-		expect(skillsForPhase(loaded, 'iterate', 'ui')).toEqual(['apps/builder/skills/ui.md']);
+	it('the UI lane carries the app/ rules and its own skill, and nothing else, in every build phase', () => {
+		expect(skillsForPhase(loaded, 'scaffold', 'ui')).toEqual([UI, UI_LANE]);
+		expect(skillsForPhase(loaded, 'iterate', 'ui')).toEqual([UI, UI_LANE]);
 	});
 
-	it('the API lane carries the phase skills minus ui.md', () => {
+	it('the API lane carries the phase skills minus the screens', () => {
 		for (const phase of ['scaffold', 'iterate'] as const) {
 			expect(skillsForPhase(loaded, phase, 'api')).toEqual(
-				skillsForPhase(loaded, phase).filter((f) => f !== 'apps/builder/skills/ui.md'),
+				skillsForPhase(loaded, phase).filter((f) => f !== UI),
 			);
 		}
 	});
 
-	it('an unlaned scaffold still carries the app/ rules, which moved rather than vanished', () => {
-		expect(skillsForPhase(loaded, 'scaffold')).toContain('apps/builder/skills/ui.md');
-		// …and only where scaffold.md carried them before the move.
-		expect(skillsForPhase(loaded, 'iterate')).not.toContain('apps/builder/skills/ui.md');
+	it('no unlaned phase carries the lane-only skill — on every host, hosted included', () => {
+		// agent.ts calls skillsForPhase with no lane; this is the set it gets.
+		for (const phase of PHASES) expect(skillsForPhase(loaded, phase)).not.toContain(UI_LANE);
+	});
+});
+
+describe('an unlaned build reads what it read on main (#2200 r1)', () => {
+	const root = join(import.meta.dirname, '..', '..', '..');
+	const skill = (f: string) => readFile(join(root, f), 'utf8');
+	const loaded = new Map(SKILL_MANIFEST.map((e) => [e.file, e.file]));
+
+	it('scaffold.md and ui.md, rejoined, are main\'s scaffold.md byte for byte', async () => {
+		// sha256 of apps/builder/skills/scaffold.md at f2683d45d (main when #682
+		// branched). ui.md is its closing paragraph, split out verbatim, so the
+		// unlaned scaffold carries the same rules in the same order — the only
+		// difference in the prompt is the separator the generator puts between
+		// two skills.
+		const rejoined = `${await skill('apps/builder/skills/scaffold.md')}\n${await skill('apps/builder/skills/ui.md')}`;
+		expect(createHash('sha256').update(rejoined).digest('hex')).toBe(
+			'308be40091f0d5071ccd96ffb1aad2be146675e626e45a1de723ab1ee31ef542',
+		);
+	});
+
+	it('the unlaned scaffold set is main\'s, in main\'s order, with ui.md where scaffold.md ended', () => {
+		expect(skillsForPhase(loaded, 'scaffold')).toEqual([
+			'apps/builder/skills/platform.md',
+			'apps/builder/skills/scaffold.md',
+			'apps/builder/skills/ui.md',
+			'apps/builder/skills/iterate.md',
+		]);
+	});
+
+	it('no unlaned skill tells the model it is a lane', async () => {
+		const files = new Set(PHASES.flatMap((p) => SKILL_MANIFEST.filter((e) => e.phases.includes(p)).map((e) => e.file)));
+		for (const f of files) {
+			const text = await skill(f);
+			expect(text, f).not.toContain('CONTRACT-GAPS');
+			expect(text, f).not.toMatch(/UI lane|API lane/);
+		}
+		// Positive twin: the lane-only text exists, and says it.
+		expect(await skill('apps/builder/skills/ui-lane.md')).toContain('CONTRACT-GAPS');
 	});
 });
 
@@ -223,6 +263,8 @@ describe('planLanes — what each lane is given', () => {
 		const [api, ui] = plans;
 		expect(api?.context).toContain('engine material');
 		expect(api?.context).toContain('MODEL');
+		// The API's side of the screens, which an unlaned build reads in ui.md.
+		expect(api?.context).toMatch(/proxies or serves app\//);
 		expect(ui?.context).toContain('- Office: list of things');
 		expect(ui?.context).toContain('MODEL');
 		expect(ui?.context).not.toContain('engine material');
