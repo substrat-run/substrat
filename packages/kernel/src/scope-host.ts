@@ -406,7 +406,8 @@ export interface OperationContext {
    *
    * **Conservative, by construction.** Every event about the entity moves this
    * but a kernel state move (`ctx.archive`/`unarchive`/`trash`/`restore`, #2191),
-   * which changes no content — including one that changed nothing the caller read. A precondition built on
+   * which changes no content. Every other event counts, even one that changed
+   * nothing the caller read — a grant top-up, say. A precondition built on
    * it can refuse a write that would have been safe; it cannot admit one that
    * would not. That is the correct direction to fail, and it is a real
    * difference from a per-row counter.

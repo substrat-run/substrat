@@ -41,9 +41,11 @@ import { ENTITY_STATE_MOVE_TYPES, ifMatchAdmits, substratError, type EntityRef }
  * to refuse a write over content the caller has not seen, and a move changes no content — it
  * sets a `_substrat_*_at` column no read hands a client. Counting it refused, with a 412
  * "changed since you read it", the next guarded write of a client that had only moved the row.
- * A trashed row refuses writes anyway (the host's trash refusal); an ARCHIVED row does not, so a
- * write made with a tag read before the archive is admitted and lands on the archived row, which
- * stays archived. Nothing it read was overwritten.
+ * A trashed row is refused (`not_found`) to every operation whose declared check names it except one that
+ * declares `trashed: 'admits'` or `'purges'` — a restore, a delete for good, the purge — and a
+ * guarded one of those still compares its tag. An ARCHIVED row is refused to none, so a write
+ * made with a tag read before the archive is admitted and lands on the archived row, which stays
+ * archived. Nothing it read was overwritten.
  *
  * Every other event still counts, including one that changed nothing the caller read — a grant
  * top-up, say. A precondition built on this is therefore conservative: it can refuse a write

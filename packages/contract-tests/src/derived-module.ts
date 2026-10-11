@@ -352,8 +352,8 @@ export const derivedMod: ModuleRegistration = {
     },
     'derived/history': async (ctx, i) => {
       assertAllowed(await ctx.check(READ));
-      // Any entity's history: a note's, a tag's or a label's — the id is enough to find it.
-      for (const entityType of ['dnote', 'dtag', 'dlabel']) {
+      // Any entity's history: a note's, a tag's, a label's or a shelf's — the id is enough to find it.
+      for (const entityType of ['dnote', 'dtag', 'dlabel', 'dshelf']) {
         const { entries } = readHistory({ sql: ctx.sql }, { entityType, entityId: i.noteId });
         if (entries.length > 0) return { entries };
       }

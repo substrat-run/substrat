@@ -90,9 +90,11 @@ export const ENTITY_RESTORED = 'entity.restored';
  * The version exists to refuse a write over content the caller has not seen, and a move
  * changes no content: it sets one of the kernel's own `_substrat_*_at` columns, which no read
  * hands a client. So the kernel's version query skips these, and a tag read before a trash and
- * restore, or before an archive, still matches afterwards. A trashed row refuses writes anyway;
- * an ARCHIVED one does not, so an edit made with a tag read before the archive lands on the
- * archived row, and the archive stays.
+ * restore, or before an archive, still matches afterwards. A trashed row is refused to every
+ * operation whose declared check names it except one that declares `trashed: 'admits'` or `'purges'` — a
+ * restore, a delete for good, the purge — and a guarded one of those still compares its tag. An
+ * ARCHIVED row is refused to none, so an edit made with a tag read before the archive lands on
+ * the archived row, and the archive stays.
  *
  * Only these four. The other kernel-authored types about an entity — a link or relink, a grant
  * top-up, an attachment — still move the version: whether those are content is its own decision.

@@ -573,7 +573,11 @@ export function derivedHandlersContractSuite(adapterName: string, makeFixture: (
           await as.invoke('derived/relabel-and-archive', { shelfId: sh.id, label: 'relabelled' }, sink);
           const tag = etagOf(tags.at(-1) as string);
           expect(await ids(as, 'derived/list-shelves', { view: 'archived' })).toContain(sh.id);
-          // The archive in the same call did not move it past the tag it handed back.
+          // The tag is the content event's id, not the archive's that followed it in the same call.
+          const [updated, archived] = (await history(sh.id)).slice(-2);
+          expect([updated?.type, archived?.type]).toEqual(['dshelf.updated', 'entity.archived']);
+          expect(tag).toBe(etagOf(updated?.id as string));
+          // And the archive did not move it past the tag it handed back.
           await expect(rename(as, sh.id, 'after', { ifMatch: tag })).resolves.toEqual({ id: sh.id, label: 'after' });
         });
 
