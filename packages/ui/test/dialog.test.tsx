@@ -311,7 +311,9 @@ describe('stacked dialogs', () => {
   it('a lower dialog closing under an open one does not steal focus back from it', async () => {
     const lower = document.createElement('div');
     const upper = document.createElement('div');
-    document.body.append(lower, upper);
+    const page = document.createElement('button');
+    document.body.append(page, lower, upper);
+    page.focus(); // what the lower dialog would hand focus back to
     const a = createRoot(lower), b = createRoot(upper);
     await act(async () => a.render(<Dialog {...props({ title: 'Lower' })}><input aria-label="l" /></Dialog>));
     await act(async () => b.render(<Dialog {...props({ title: 'Upper' })}><input aria-label="u" /></Dialog>));
@@ -322,6 +324,23 @@ describe('stacked dialogs', () => {
     await act(async () => { a.unmount(); b.unmount(); });
     lower.remove();
     upper.remove();
+    page.remove();
+  });
+
+  it('with focus lost to body, the newest sibling answers Escape and Tab alone', async () => {
+    const first = vi.fn(), second = vi.fn();
+    await render(
+      <>
+        <Dialog {...props({ title: 'One', onCancel: first })}><input aria-label="one" /></Dialog>
+        <Dialog {...props({ title: 'Two', onCancel: second })}><input aria-label="two" /></Dialog>
+      </>,
+    );
+    (document.activeElement as HTMLElement).blur();
+    key('Escape', {}, document.body);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+    key('Tab', {}, document.body);
+    expect(document.activeElement).toBe(document.querySelector('input[aria-label="two"]'));
   });
 
   it('two sibling dialogs: the later one answers Escape alone', async () => {
