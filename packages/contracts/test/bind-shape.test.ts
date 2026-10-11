@@ -131,6 +131,27 @@ describe('the binding-shape gate (#2178)', () => {
     else expect(breaks).toEqual([{ entityType: 'contact', change, unretired: ['desk:read-own'] }]);
   });
 
+  it('refuses a key dropped from a binding shape without being retired: v1 {a, b} → v2 {a} → v3 retires a → v4 drops (review of #2181)', () => {
+    const v1 = grants(shape({ permissions: ['desk:a', 'desk:b'] }));
+    const v2 = grants(shape({ permissions: ['desk:a'] }));
+    expect(bindingShapeBreaks(v1, v2)).toEqual([{ entityType: 'contact', change: 'kept', unretired: ['desk:b'] }]);
+    // Directly to the version that retires only `a` is the same strand of `b`.
+    const v3 = grants(shape({ permissions: [], retired: ['desk:a'] }));
+    expect(bindingShapeBreaks(v1, v3)).toEqual([{ entityType: 'contact', change: 'kept', unretired: ['desk:b'] }]);
+    // The positive twin: `b` retired in the step that drops it, then `a`, then the shape goes.
+    const v2ok = grants(shape({ permissions: ['desk:a'], retired: ['desk:b'] }));
+    const v3ok = grants(shape({ permissions: [], retired: ['desk:a', 'desk:b'] }));
+    expect(bindingShapeBreaks(v1, v2ok)).toEqual([]);
+    expect(bindingShapeBreaks(v2ok, v3ok)).toEqual([]);
+    expect(bindingShapeBreaks(v3ok, grants())).toEqual([]);
+  });
+
+  it('passes a legitimate evolution: a key added, a key dropped and retired in the same version', () => {
+    const from = grants(shape({ permissions: ['desk:a', 'desk:b'] }));
+    expect(bindingShapeBreaks(from, grants(shape({ permissions: ['desk:a', 'desk:b', 'desk:c'] })))).toEqual([]);
+    expect(bindingShapeBreaks(from, grants(shape({ permissions: ['desk:a', 'desk:c'], retired: ['desk:b'] })))).toEqual([]);
+  });
+
   it('names only the keys left unretired', () => {
     const from = grants(shape({ permissions: ['desk:read-own', 'desk:write-own'] }));
     expect(bindingShapeBreaks(from, grants(shape({ permissions: [], retired: ['desk:read-own'], holder: moved })))).toEqual([

@@ -160,7 +160,10 @@ export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][numbe
  * - `removed`: drop the shape;
  * - `holder`: read its holder from another table or column (the people bound through the old one
  *   are not moved, and the scope's record of where they are is replaced);
- * - `sharing`: keep it, but no longer as a bootstrap shape, which `retired` cannot be declared on.
+ * - `sharing`: keep it, but no longer as a bootstrap shape, which `retired` cannot be declared on;
+ * - `kept`: keep it, but drop a key from `permissions` without listing it in `retired`. Bound
+ *   people keep that key (`grantShapeHolderNotes`' "existing holders keep"), and a later version
+ *   that retires the rest and drops the shape would never have to name it.
  *
  * — unless it retires every key the shape carried (`unretired` is what it does not). A shape with
  * no current key binds nothing to anyone, which is how a retirement makes the drop allowed: keep
@@ -169,7 +172,7 @@ export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][numbe
  */
 export interface BindingShapeBreak {
   entityType: string;
-  change: 'removed' | 'holder' | 'sharing';
+  change: 'removed' | 'holder' | 'sharing' | 'kept';
   /** The keys of the outgoing shape the incoming version does not retire: what bound people keep. */
   unretired: string[];
 }
@@ -181,10 +184,11 @@ export function bindingShapeBreaks(from: Pick<RegistryLike, 'entityGrants'>, to:
   for (const before of from.entityGrants) {
     if (!before.bind || before.permissions.length === 0) continue;
     const after = toGrants.get(before.entityType);
-    const change = !after ? 'removed' : !after.bootstrap ? 'sharing' : holderLabel(after.holder) !== holderLabel(before.holder) ? 'holder' : null;
-    if (change === null) continue;
+    const change = !after ? 'removed' : !after.bootstrap ? 'sharing' : holderLabel(after.holder) !== holderLabel(before.holder) ? 'holder' : 'kept';
+    // A shape kept where it was strands only the keys it drops; any other change, every key.
+    const still = new Set(change === 'kept' ? after!.permissions : []);
     const retired = new Set(after?.retired ?? []);
-    const unretired = before.permissions.filter((k) => !retired.has(k));
+    const unretired = before.permissions.filter((k) => !still.has(k) && !retired.has(k));
     if (unretired.length > 0) breaks.push({ entityType: before.entityType, change, unretired });
   }
   return breaks;
@@ -197,6 +201,7 @@ const BREAK_WORDS: Record<BindingShapeBreak['change'], string> = {
   removed: 'drops the shape',
   holder: 'reads its holder from elsewhere',
   sharing: 'makes it a sharing shape',
+  kept: 'drops keys from it without retiring them',
 };
 
 /**

@@ -665,7 +665,8 @@ export const entityGrantShape = z.object({
    * People already bound KEEP the shape until they are released — an unbind while the shape binds,
    * an erasure (which reaches every type that ever bound in the scope), or `retired` — whatever a
    * later version does to the declaration: dropping `bind` keeps the holder recorded but leaves no
-   * unbind. A version that removes the shape, moves its holder or drops `bootstrap` is refused
+   * unbind. A version that removes the shape, moves its holder, drops `bootstrap` or drops a key
+   * from `permissions` without listing it in `retired` is refused
    * wherever it would come to run where the shape binds — a promote, a bind, a route onto a serving
    * script — unless it retires every key (`bindingShapeBreaks`, #2178); a rollback to a version from
    * before the shape is refused the same way. Retiring is the way through: keep the shape with the

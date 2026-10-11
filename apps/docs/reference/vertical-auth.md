@@ -253,8 +253,8 @@ including the two OIDC ones where Better Auth stays dormant:
   `{ unbound: [<principal>, …] }`, or 403 naming the bind key the caller lacks on that record,
   or 404 for a type the scope does not bind. People already bound keep the shape until an
   unbind, an erasure or a retirement of its keys releases them, whatever a later version
-  declares. So a version that removes the shape, moves its holder or makes it a sharing shape
-  is refused wherever it would run where the shape binds (a promote, a bind, a route onto the
+  declares. So a version that removes the shape, moves its holder, makes it a sharing shape or
+  drops a key from it without retiring that key is refused wherever it would run where the shape binds (a promote, a bind, a route onto the
   serving script), a rollback to a version from before the shape included, until it retires
   every key (#2178): keep the shape with the keys in `retired` and none in `permissions`, then
   drop or move it in a later version. Dropping only `bind` is allowed. A
