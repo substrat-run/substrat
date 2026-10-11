@@ -39,7 +39,7 @@
  * runtime's own, so the DST answers are proven where a hosted desk computes them.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
   errorCodeOf,
   moduleId,
@@ -2744,7 +2744,7 @@ describe('ticket0 on workerd — every load names its tenant, so none leaves a t
     e instanceof Error && errorCodeOf(e) === 'not_found' && e.message.includes(`unknown scope for tenant: (${x}, ${s})`);
   const MISSING_TENANT = { code: 'validation_failed', errors: [{ path: 'tenantId', message: 'Invalid input: expected string, received undefined' }] };
 
-  let warn: ReturnType<typeof vi.spyOn<Console, 'warn'>>;
+  let warn: MockInstance<typeof console.warn>;
   const unrecorded = () => warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"substrat":"tenant-unrecorded"'));
   beforeAll(async () => {
     expect((await platform('/internal/provision', { tenantId: tenant, scopeId: source, owner, entitlements })).status).toBe(201);
