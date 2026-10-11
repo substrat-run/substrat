@@ -20,6 +20,7 @@
  */
 import {
   defineRoutes,
+  FINDINGS_LIMIT_MAX,
   findingEntry,
   findingKind,
   findingRuleEntry,
@@ -32,10 +33,17 @@ import {
 export const dashboardRoutes = defineRoutes({
   // -- findings (#1748) ------------------------------------------------------
   'dashboard/list-findings': {
-    summary: "This team's findings, most recently seen first",
-    input: z.object({ status: findingStatus.optional(), kind: findingKind.optional() }),
+    summary: "One page of this team's findings, most recently seen first",
+    // `limit` defaults to 100 and tops out at 500; `cursor` is the previous page's `nextCursor`, opaque.
+    input: z.object({
+      status: findingStatus.optional(),
+      kind: findingKind.optional(),
+      limit: z.number().int().min(1).max(FINDINGS_LIMIT_MAX).optional(),
+      cursor: z.string().min(1).optional(),
+    }),
     // `available: false` is a plane that predates findings — said as such, never as an empty inbox.
-    output: z.object({ available: z.boolean(), entries: z.array(findingEntry) }),
+    // `nextCursor` is null when the walk is over.
+    output: z.object({ available: z.boolean(), entries: z.array(findingEntry), nextCursor: z.string().nullable() }),
     http: { method: 'GET', path: '/findings' },
   },
   'dashboard/set-finding-status': {

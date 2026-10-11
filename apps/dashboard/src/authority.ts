@@ -2144,17 +2144,23 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
-   * This tenant's findings (#1748), most recently seen first. `null` on a plane predating the
-   * route (deploy skew), never `[]`: an empty inbox says nothing is wrong, which a plane that
-   * cannot answer has not said.
+   * One page of this tenant's findings (#1748), most recently seen first; `cursor` is the previous
+   * page's `nextCursor`. `null` on a plane predating the route (deploy skew), never an empty page:
+   * an empty inbox says nothing is wrong, which a plane that cannot answer has not said. A plane
+   * that predates PAGING answers `entries` alone, read as the end of the walk (`nextCursor: null`)
+   * rather than a cursor to follow: it would ignore that cursor and replay its first page forever.
    */
-  async listFindings(filter: { status?: FindingStatus; kind?: FindingKind; limit?: number } = {}): Promise<FindingEntry[] | null> {
+  async listFindings(
+    filter: { status?: FindingStatus; kind?: FindingKind; limit?: number; cursor?: string } = {},
+  ): Promise<{ entries: FindingEntry[]; nextCursor: string | null } | null> {
     const q = new URLSearchParams({ tenantId: this.tenantId });
     if (filter.status) q.set('status', filter.status);
     if (filter.kind) q.set('kind', filter.kind);
     if (filter.limit !== undefined) q.set('limit', String(filter.limit));
+    if (filter.cursor !== undefined) q.set('cursor', filter.cursor);
     try {
-      return (await this.call<{ entries: FindingEntry[] }>(`/findings?${q}`)).entries;
+      const page = await this.call<{ entries: FindingEntry[]; nextCursor?: string | null }>(`/findings?${q}`);
+      return { entries: page.entries, nextCursor: page.nextCursor ?? null };
     } catch (e) {
       if (e instanceof ControlPlaneError && e.status === 404) return null;
       throw e;

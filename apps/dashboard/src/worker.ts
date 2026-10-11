@@ -5356,8 +5356,8 @@ async function findingsPlane({ c, host, node }: TeamContext, may: 'read' | 'mana
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
 const routeHandlers = {
   'dashboard/list-findings': async (ctx, filter) => {
-    const entries = await (await findingsPlane(ctx, 'read')).listFindings(filter);
-    return entries === null ? { available: false, entries: [] } : { available: true, entries };
+    const page = await (await findingsPlane(ctx, 'read')).listFindings(filter);
+    return page === null ? { available: false, entries: [], nextCursor: null } : { available: true, ...page };
   },
   'dashboard/set-finding-status': async (ctx, { id, status }) =>
     (await findingsPlane(ctx, 'manage')).setFindingStatus(id, status),
