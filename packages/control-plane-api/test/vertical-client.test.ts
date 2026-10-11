@@ -1122,6 +1122,25 @@ it('restoreScope sends the stamp a carry leaves on its copy, and none when not g
   ]);
 });
 
+// #2035: the vertical refuses a load that names no tenant, so both copy verbs always send one.
+it('restoreScope and snapshotScope send the tenant on every call (#2035)', async () => {
+  const sent: { path: string; body: unknown }[] = [];
+  const client = new VerticalClient({
+    fetch: (async (u: string, init?: RequestInit) => {
+      sent.push({ path: new URL(u, 'https://v.test').pathname, body: JSON.parse(String(init?.body)) });
+      return Response.json({ tables: 0 });
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  const fork = scopeId.parse(ulid());
+  await client.restoreScope(t, s, []);
+  await client.snapshotScope({ sourceScopeId: s, newScopeId: fork, tenantId: t });
+  expect(sent).toEqual([
+    { path: '/internal/restore', body: expect.objectContaining({ tenantId: t, scopeId: s }) },
+    { path: '/internal/snapshot', body: { sourceScopeId: s, newScopeId: fork, tenantId: t } },
+  ]);
+});
+
 it('restoreScope sends the recorded-off peers and their tenant-held ones, and reads back a peer move (#2029)', async () => {
   const bodies: unknown[] = [];
   const moved = { vertical: 'acme/board-room', held: true, changed: true, permissions: [] };
