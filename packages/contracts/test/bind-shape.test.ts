@@ -283,7 +283,7 @@ describe('the keys a retirement takes back (#2185)', () => {
   });
 
   it('is nothing for a sharing shape, which is never reconciled, or a shape retiring nothing', () => {
-    expect(retiredKeysOf({ entityType: 'list', permissions: [], retired: ['list:read'] })).toEqual([]);
+    expect(retiredKeysOf(shape({ entityType: 'list', permissions: [], retired: ['list:read'], bootstrap: undefined, bind: undefined }))).toEqual([]);
     expect(retiredKeysOf(shape())).toEqual([]);
   });
 });
