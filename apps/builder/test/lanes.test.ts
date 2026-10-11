@@ -58,6 +58,17 @@ describe('guardPath — the guard judges the path the workspace writes', () => {
 		expect(guardPath('app/../../app/x')).toBe('../app/x');
 	});
 
+	it('the complement guards refuse a climbing path themselves — every guard fails closed alone', () => {
+		for (const p of ['../x', '../app/x.tsx', 'src/../../src/a.ts', '..']) {
+			expect(buildWriteGuard(p), p).toMatch(/outside the project/);
+			expect(apiLaneWriteGuard(p), p).not.toBeNull();
+			expect(uiLaneWriteGuard(p), p).not.toBeNull();
+		}
+		// Positive twin: a .. that stays inside the project is judged where it lands.
+		expect(buildWriteGuard('src/../README.md')).toBeNull();
+		expect(apiLaneWriteGuard('app/../src/a.ts')).toBeNull();
+	});
+
 	it('closes the traversal hole in the guards that predate lanes too', () => {
 		// `src/../spec/model.ts` starts with `src/` and lands on the model.
 		expect(buildWriteGuard('src/../spec/model.ts')).not.toBeNull();

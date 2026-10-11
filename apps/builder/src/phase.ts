@@ -58,8 +58,10 @@ export function isSpecPhase(phase: BuildPhase): boolean {
  * workspace resolves `.` and `..` lexically before it writes (local.ts), so the
  * guard resolves them the same way first, with the normaliser the studio's file
  * routes use (#1225), so the two cannot answer differently for one path. A path
- * that climbs above the root is returned still climbing, so it matches no
- * allowed prefix (the workspace refuses it anyway).
+ * that climbs above the root is returned still climbing: the allowlist guards
+ * (interview, model, scenario, UI lane) match no prefix on it, and the build
+ * guard — and the API lane through it — refuses it outright, so every guard
+ * fails closed on its own rather than leaning on the workspace jail.
  */
 export const guardPath: (path: string) => string = normalise;
 
@@ -128,6 +130,12 @@ export function modelWriteGuard(path: string): string | null {
  */
 export function buildWriteGuard(path: string): string | null {
 	const p = guardPath(path);
+	// A complement guard allows what it does not name, so it names this: a path
+	// above the project is never a build's to write (the workspace refuses it
+	// too, but a guard that holds only because of the jail is not a guard).
+	if (p === '..' || p.startsWith('../')) {
+		return `${path} resolves outside the project — build turns write inside it`;
+	}
 	// The oracle is not the build's to rewrite. A suite the build may edit is a
 	// suite that agrees with whatever got built — the same failure as a model
 	// redrawn at continuation 14, one level down. `test/server.test.ts` and any
