@@ -423,8 +423,14 @@ What a hosted desk does **not** get from a seed, and how it gets it instead:
   still decides what that account may do, so turning the flag on grants nothing by
   itself — `test/scenario.test.ts` pins exactly that.
 - **Teammates and portal customers.** `POST /api/invites` — `desk-admin` / `agent` at
-  scope level, or `customer` with a `contactId`, which grants `conversation:read-own`
-  on that one contact and nothing else.
+  scope level (a `become` link, minted under the assignment bound), or `customer` with a
+  `contactId`: a binding invite (#1686) whose claim sets the contact's `principal` to the
+  claimant and gives them the portal shape (`conversation:read-own` on that one contact),
+  minted only by someone holding `contact:invite` there. A contact takes **one** portal
+  customer now: a contact that already names someone, or that a customer from an earlier,
+  hash-only invite holds, refuses a new invite (409) until it is unbound with
+  `POST /api/bindings/contact/:id/unbind` — which releases every customer holding the portal
+  there, the earlier ones included.
 - **A knowledge base.** A worker has no boot and a dispatch user-worker has no cron, so
   the ingest is a button: `POST /api/kb/sources/:sourceId/refresh`, running as the
   caller and refused unless they hold `kb:refresh`. Settings → Knowledge base adds a
