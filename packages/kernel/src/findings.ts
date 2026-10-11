@@ -2,6 +2,7 @@ import {
   FINDING_RULE_MAX_DAYS,
   FINDINGS_LIMIT_DEFAULT,
   FINDINGS_LIMIT_MAX,
+  instant,
   findingEntry,
   findingRuleEntry,
   opsFailureFingerprint,
@@ -300,7 +301,11 @@ const MAX_CODES = 5;
  * - it was `suppressed` and no rule covers it any longer → `open`;
  * - otherwise the status stands (`acked` stays acked: somebody is already on it).
  */
-export function observeFinding(sql: RedactionSql, o: FindingObservation, at: string): void {
+export function observeFinding(sql: RedactionSql, o: FindingObservation, occurredAt: string): void {
+  // Stored in the one canonical spelling (`toISOString`), which is also the spelling the
+  // contract reads it back in and `findingCursorOf` mints a cursor from: the keyset seek compares
+  // strings, so a stamp without milliseconds or with an offset would be skipped or replayed (#2198).
+  const at = instant.parse(occurredAt);
   const ruleId = activeRule(sql, o, at);
   const existing = sql(
     `SELECT id, status, regressed, codes, resolved_version, likely_cause
