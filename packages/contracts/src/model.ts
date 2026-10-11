@@ -177,10 +177,11 @@ export interface EntityDef<Names extends string = string> {
    * emitted about (by `ctx.emit`) whose entity declares the pair must carry this invocation's
    * `ctx.now()` and principal, or the call is refused `internal` and rolls back. The host reads
    * the emits, not the writes: an emit about a stamped row counts as a write to it, and a write
-   * that emits only about another entity is not checked. A deleted row is not checked, and neither is a kernel move (archive, trash, restore), which changes only
-   * the platform's own columns. So an entity with an updated stamp needs a single-column primary
-   * key: that is what an event can point at. Adds no column and no migration — the column is
-   * declared in `fields` like any other.
+   * that emits only about another entity is not checked. A deleted row is not checked, and
+   * neither is a kernel move (archive, trash, restore), which changes only the platform's own
+   * columns. So an entity with an updated stamp needs a single-column primary key: that is what
+   * an event can point at. Adds no column and no migration — the column is declared in `fields`
+   * like any other.
    */
   readonly stamps?: Readonly<Record<string, StampKind>>;
 }
@@ -938,8 +939,8 @@ function enrichSearchables(
 
 /**
  * The `updatedStamps` manifest entries (#2166), derived from each entity's own `stamps` — the
- * entities whose updated pair the host holds on every row a call emits about. `stampsOf` has already refused one on
- * a composite key, so the id column is the key's only column.
+ * entities whose updated pair the host holds on every row a call emits about. `stampsOf` has
+ * already refused one on a composite key, so the id column is the key's only column.
  */
 export function updatedStampsOf(entities: Record<string, EntityDef>): UpdatedStampDeclaration[] {
   const out: UpdatedStampDeclaration[] = [];
