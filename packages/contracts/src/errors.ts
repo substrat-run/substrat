@@ -127,18 +127,29 @@ export type ValidationIssue = z.infer<typeof validationIssue>;
  * one object does and buys a narrowing no client asked for. Per-code narrowing of the
  * emitted document is RFC §6 Q1, deferred with the model layer that would own it.
  */
+/**
+ * What a scope store's own error carries onto the platform's problem (#2207).
+ * The taxonomy code is derived from the status. These two are the store's, and
+ * they are not a code a client branches on as if it were one of ours.
+ */
+const storeCarry = {
+  storeCode: z.string().min(1).max(64).optional(),
+  storeBody: z.unknown().optional(),
+};
+
 export const PROBLEM_EXTENSIONS = {
-  unauthenticated: z.strictObject({}),
+  unauthenticated: z.strictObject({ ...storeCarry }),
   permission_denied: z.object({
     /** The permission key the check refused. */
     permission: z.string().min(1).optional(),
     /** Set when the refusal was a per-entity check rather than a node-level one. */
     entity: entityRef.optional(),
+    ...storeCarry,
   }),
-  forbidden: z.object({ reason: z.string().min(1).optional() }),
+  forbidden: z.object({ reason: z.string().min(1).optional(), ...storeCarry }),
   /** `reason` narrows a refusal one surface answers differently: `scope_unrecorded` (#113). */
-  not_found: z.strictObject({ reason: z.string().min(1).optional() }),
-  conflict: z.object({ reason: z.string().min(1).optional() }),
+  not_found: z.strictObject({ reason: z.string().min(1).optional(), ...storeCarry }),
+  conflict: z.object({ reason: z.string().min(1).optional(), ...storeCarry }),
   validation_failed: z.object({
     errors: z.array(validationIssue).optional(),
     /**
@@ -146,6 +157,7 @@ export const PROBLEM_EXTENSIONS = {
      * (#2001): the page cursor belongs to another walk, so read the first page again.
      */
     reason: z.string().min(1).optional(),
+    ...storeCarry,
   }),
   precondition_failed: z.object({
     /**
@@ -159,14 +171,15 @@ export const PROBLEM_EXTENSIONS = {
      * gives its user something to merge.
      */
     entity: entityRef.optional(),
+    ...storeCarry,
   }),
-  rate_limited: z.object({ retryAfter: z.number().int().nonnegative().optional() }),
+  rate_limited: z.object({ retryAfter: z.number().int().nonnegative().optional(), ...storeCarry }),
   /**
    * `reason` narrows a refusal a caller should wait out rather than report, as `forbidden`'s does:
    * `system_door_wait` (#1834), a scope that kept restarting under a module's system door.
    */
-  unavailable: z.object({ reason: z.string().min(1).optional() }),
-  internal: z.strictObject({}),
+  unavailable: z.object({ reason: z.string().min(1).optional(), ...storeCarry }),
+  internal: z.strictObject({ ...storeCarry }),
 } as const satisfies Record<ErrorCode, z.ZodType>;
 
 /**
@@ -239,6 +252,10 @@ export const problem = z.object({
   reason: z.string().min(1).optional(),
   errors: z.array(validationIssue).optional(),
   retryAfter: z.number().int().nonnegative().optional(),
+  /** The code the scope store itself answered with (#2207). The kind's, not this taxonomy's. */
+  storeCode: z.string().min(1).max(64).optional(),
+  /** The scope store's error body, as it sent it. */
+  storeBody: z.unknown().optional(),
 });
 export type Problem = z.infer<typeof problem>;
 
@@ -368,6 +385,41 @@ export function errorCodeOf(err: unknown): ErrorCode | undefined {
  * and parsed at runtime, so a `retryAfter` on a `not_found` is caught at the throw
  * site rather than discovered in a response body.
  */
+const CODE_FOR_STORE_STATUS: Partial<Record<number, ErrorCode>> = {
+  400: 'validation_failed',
+  401: 'unauthenticated',
+  403: 'forbidden',
+  404: 'not_found',
+  409: 'conflict',
+  412: 'precondition_failed',
+  422: 'validation_failed',
+  429: 'rate_limited',
+};
+
+/**
+ * A scope store refused or failed (#2207). The taxonomy code comes from the HTTP
+ * status the store answered with. The store's own `code` and `body` ride in
+ * `extensions`, and again on the fields below for a caller in this isolate.
+ * A status with no row maps to `unavailable`, including 500: the failure is the
+ * store's, and `internal` would drop the detail on the way to a client.
+ */
+export class StoreError extends SubstratError {
+  readonly storeCode: string;
+  readonly storeStatus: number;
+  readonly storeBody: unknown;
+
+  constructor(error: { code: string; status: number; body?: unknown }) {
+    const code = CODE_FOR_STORE_STATUS[error.status] ?? 'unavailable';
+    super(code, `scope store answered ${error.status} (${error.code})`, {
+      storeCode: error.code,
+      ...(error.body !== undefined ? { storeBody: error.body } : {}),
+    });
+    this.storeCode = error.code;
+    this.storeStatus = error.status;
+    this.storeBody = error.body;
+  }
+}
+
 export function substratError<C extends ErrorCode>(
   code: C,
   message: string,

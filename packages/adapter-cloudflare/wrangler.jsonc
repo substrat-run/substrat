@@ -75,6 +75,8 @@
       { "name": "SPINE_DROP_SCOPE", "class_name": "SpineDropScopeDO" },
       // #113: a wiped carried copy whose module set has no migrations — attachments.test.ts.
       { "name": "WIPED_COPY_SCOPE", "class_name": "WipedCopyScopeDO" },
+      // #2209: the scope-store door's same-script counter. The cross-script binding is the spike's.
+      { "name": "SUBSTRAT_STORE_GRAPH", "class_name": "ScopeStoreCounterDO" },
       // #1686: vertical-auth's real identity directory, for the owner claim link suite — the
       // claim link is a capability in a ScopeDO and a record in this, and both are held here.
       { "name": "AUTH", "class_name": "IdentityDO" }
@@ -143,6 +145,10 @@
     {
       "tag": "v15",
       "new_sqlite_classes": ["WipedCopyScopeDO"]
+    },
+    {
+      "tag": "v16",
+      "new_sqlite_classes": ["ScopeStoreCounterDO"]
     }
   ]
 }

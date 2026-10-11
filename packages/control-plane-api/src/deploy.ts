@@ -1,4 +1,14 @@
-import { ADMISSIBLE_BINDING_TYPES, assertDeclaredScopeStores, PLATFORM_BINDING_PREFIX, substratError, verticalScriptStem } from '@substrat-run/contracts';
+import {
+  ADMISSIBLE_BINDING_TYPES,
+  assertDeclaredScopeStores,
+  PLATFORM_BINDING_PREFIX,
+  scopeStoreBindingName,
+  STORE_KINDS,
+  substratError,
+  verticalScriptStem,
+  type ScopeStoreNeed,
+  type StoreKindRegistration,
+} from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**
@@ -198,6 +208,35 @@ const NAMED_REFUSALS: Record<string, string> = {
  * stops applying. (The kernel seam is `provisionTenantStore`/`openTenantStore`; on Cloudflare
  * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
  */
+/**
+ * The cross-script bindings a serving upload adds for declared scope stores (#2207).
+ * One per declaration, named `SUBSTRAT_STORE_<BINDING>`, aimed at the kind's script
+ * and class. A kind that is not in `kinds` is refused: the upload does not invent
+ * a target. The default registry is empty, so a declaration does not inject until
+ * a kind is registered.
+ */
+export function scopeStoreScriptBindings(
+  stores: readonly ScopeStoreNeed[],
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+): DeclaredBinding[] {
+  return stores.map((store) => {
+    const kind = kinds.find((candidate) => candidate.kind === store.kind);
+    if (!kind) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
+          `A store kind is platform code, pinned to a release the way a connector is.`,
+      );
+    }
+    return {
+      type: 'durable_object_namespace',
+      name: scopeStoreBindingName(store.binding),
+      class_name: kind.className,
+      script_name: kind.script,
+    };
+  });
+}
+
 export function assertSandboxContract(m: DeployManifest): void {
   assertDeclaredScopeStores({
     tenantStores: m.tenantStores,

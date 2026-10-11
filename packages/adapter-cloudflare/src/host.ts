@@ -495,7 +495,8 @@ import {
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callScopeStore, type StoreStub } from '@substrat-run/kernel';
+import { scopeStoreBindingName, scopeStoreObjectName } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -2467,8 +2468,26 @@ const undeniedMessage = (scopeId: ScopeId, moduleId: string): string =>
  * platform's per-tenant binding, read off this script's own env, named by the one shared
  * encoding (`blobStoreBindingName`) for the tenant the caller passed in.
  */
+function ambientBinding(name: string): unknown {
+  return (ambientEnv as unknown as Record<string, unknown>)[name] ?? null;
+}
+
 function ambientAttachmentBucket(tenantId: string): unknown {
-  return (ambientEnv as unknown as Record<string, unknown>)[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)] ?? null;
+  return ambientBinding(blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId));
+}
+
+interface ScopeStoreNamespace {
+  idFromName(name: string): DurableObjectId;
+  get(id: DurableObjectId): { fetch(input: RequestInfo, init?: RequestInit): Promise<Response> };
+}
+
+function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof Reflect.get(value, 'idFromName') === 'function' &&
+    typeof Reflect.get(value, 'get') === 'function'
+  );
 }
 
 /**
@@ -4584,6 +4603,40 @@ export class CloudflareScopeHost implements ScopeHost {
 
     await this.migrateAndRecord(scopeId);
     return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options);
+  }
+
+  async getScopeStore(
+    _principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    binding: string,
+  ): Promise<StoreStub> {
+    await this.assertLive(tenantId, scopeId);
+    const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+    const vertical = scope?.vertical;
+    if (!vertical) {
+      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
+    }
+    const bound = ambientBinding(scopeStoreBindingName(binding));
+    if (!isScopeStoreNamespace(bound)) {
+      throw substratError('not_found', `no scope store is bound for '${binding}'`);
+    }
+    const objectName = scopeStoreObjectName(tenantId, vertical, scopeId, binding);
+    const object = bound.get(bound.idFromName(objectName));
+    return {
+      tenantId,
+      scopeId,
+      subjectKind: 'principal',
+      invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
+        callScopeStore(async (request) => {
+          const response = await object.fetch('https://scope-store/', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(request),
+          });
+          return response.json();
+        }, operation, input, ...extra),
+    };
   }
 
   /**
