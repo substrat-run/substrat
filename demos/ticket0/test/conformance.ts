@@ -110,6 +110,24 @@ export const conformance = declareEntityChecks({
     // The macro rule (#1087), met by the kit exactly as it is met by a person: a
     // macro needs every key its parts need, and a public reply is a part. The kit's
     // saved reply carries no actions, so reply-public is the whole of the rest.
+    // The kit's saved reply is the desk's, shared (#2161): changing, binning, restoring or
+    // deleting one is curation, so the probe needs the curator's key on it as well.
+    'ticket0/update-saved-reply': {
+      permissions: ['saved-reply:manage'],
+      because: 'a shared reply is changed only by the holder of saved-reply:manage, checked on that reply',
+    },
+    'ticket0/delete-saved-reply': {
+      permissions: ['saved-reply:manage'],
+      because: 'a shared reply is deleted only by the holder of saved-reply:manage, checked on that reply',
+    },
+    'ticket0/trash-saved-reply': {
+      permissions: ['saved-reply:manage'],
+      because: 'a shared reply is binned only by the holder of saved-reply:manage, checked on that reply',
+    },
+    'ticket0/restore-saved-reply': {
+      permissions: ['saved-reply:manage'],
+      because: 'a shared reply is restored only by the holder of saved-reply:manage, checked on that reply',
+    },
     'ticket0/apply-saved-reply': {
       permissions: ['conversation:reply-public'],
       because:

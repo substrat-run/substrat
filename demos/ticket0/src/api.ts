@@ -88,7 +88,19 @@ export const API = apiCatalogFrom(SERVED, {
     description:
       'Send `If-Match` with the tag the last read handed back; without one, a colleague’s edit is overwritten silently.',
   },
-  'ticket0/delete-saved-reply': { tag: 'Saved replies' },
+  'ticket0/delete-saved-reply': {
+    tag: 'Saved replies',
+    description: 'For good, and from the trash too. The screens move a reply to the trash instead.',
+  },
+  'ticket0/trash-saved-reply': {
+    tag: 'Saved replies',
+    description: 'Restorable for 30 days, then deleted for good. Who may is who may delete it.',
+  },
+  'ticket0/restore-saved-reply': { tag: 'Saved replies' },
+  'ticket0/trashed-saved-replies': {
+    tag: 'Saved replies',
+    description: 'The desk’s shared replies and the caller’s own in the trash. A colleague’s personal reply is never listed.',
+  },
   'ticket0/share-saved-reply': {
     tag: 'Saved replies',
     description: 'One way: the reply is the desk’s from then on. Refused with `conflict` if the desk already has the title.',
