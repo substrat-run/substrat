@@ -2528,6 +2528,6 @@ describe('installs judged from their receipt and retirements (#2185)', () => {
     expect(installsReconciledNote({ versionId: 'v3', retirementsFinished: true, installs: 1, example: 's1' })).toMatch(
       /^1 install\(s\) that last reconciled v3 \(one is s1\); the drop waits for their reconcile/,
     );
-    expect(installsReconciledNote({ versionId: null, retirementsFinished: false, installs: 1, example: 's1' })).toMatch(/with no reconcile receipt/);
+    expect(installsReconciledNote({ versionId: null, retirementsFinished: false, installs: 1, example: 's1' })).toMatch(/with no reconcile receipt \(a switch, a rewind or a restore cleared it, or none was written yet\)/);
   });
 });

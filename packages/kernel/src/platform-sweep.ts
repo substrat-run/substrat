@@ -2193,7 +2193,7 @@ export function scopeMoveOf(
  * (`retirementsFinishedVersionId` equal to the receipt), since one that left a retirement open still
  * writes the receipt. One row per (version, finished), with how many installs and one of them to
  * name, however many installs there are. Installs with NO receipt are a row too (`version_id` null):
- * a switch clears the receipt (#2045), a rewind does, and a new install has none until its first
+ * a switch clears the receipt (#2045), a rewind and a restore do (#2185), and a new install has none until its first
  * reconcile. The sweep reconciles every unfinished or receiptless install on its next pass, so a
  * refusal they cause is transient unless that reconcile keeps failing, answers 'unsupported', or
  * cannot report its retirements (an `adapter-cloudflare` or `vertical-host` that predates the report). Binds
@@ -2253,7 +2253,7 @@ export function installsReconciledNote(g: InstallsReconciled): string {
       'retirement report (#2185) stays here: push a version built on current releases of both packages'
     );
   }
-  const which = g.versionId === null ? 'with no reconcile receipt (a switch or a rewind cleared it, or none was written yet)' : `that last reconciled ${g.versionId}`;
+  const which = g.versionId === null ? 'with no reconcile receipt (a switch, a rewind or a restore cleared it, or none was written yet)' : `that last reconciled ${g.versionId}`;
   return (
     `${g.installs} install(s) ${which} (one is ${g.example}); the drop waits for their reconcile. ` +
     "If that install's reconcile keeps failing or answers 'unsupported' (a vertical built on a vertical-host " +

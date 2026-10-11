@@ -2572,7 +2572,8 @@ export interface HostAdmin {
    *
    * `null` clears it back to "unknown", which the sweep reconciles on its next pass. That
    * is for something that undid what a provision did — a PITR rewind (#1674) takes the
-   * scope's grants and its schedule switch back to the bookmark.
+   * scope's grants and its schedule switch back to the bookmark, and (#2185) a restore of a backup
+   * or a kept copy loads data that may predate a reconcile, a finished retirement included.
    *
    * #2185: `outcome.retirementsFinished` is whether that reconcile finished every retirement
    * the version declares (`retiredKeysOf`), and writes `retirementsFinishedVersionId` in the same

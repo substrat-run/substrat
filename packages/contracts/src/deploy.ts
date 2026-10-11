@@ -696,8 +696,8 @@ export const entityGrantShape = z.object({
    * reconcile FINISHED the version's retirements (`retirementsFinishedVersionId`, #2185): the drop
    * stays refused until the retirement has finished in every one. An install whose reconcile left a
    * retirement open, whose vertical was built on packages that predate that report (its count comes
-   * from `adapter-cloudflare` and is answered by `vertical-host`), or that has no receipt (a switch or a
-   * rewind cleared it, or it is new) counts as still holding the keys, until the sweep's next
+   * from `adapter-cloudflare` and is answered by `vertical-host`), or that has no receipt (a switch, a
+   * rewind or a restore cleared it, or it is new) counts as still holding the keys, until the sweep's next
    * reconcile finishes them. A copy (fork, snapshot, preview) never reconciles, so a retirement never
    * reaches it, and it is judged only on what it runs. Omitted when unset, so a registry that binds
    * nothing keeps its digest.
