@@ -37,10 +37,9 @@ import {
 	PHASES,
 	screensSection,
 	SKILL_MANIFEST,
-	skillsForLane,
 	skillsForPhase,
 	uiLaneWriteGuard,
-	writeGuardForLane,
+	writeGuardFor,
 	type BuildLane,
 } from '../src/phase.js';
 
@@ -126,14 +125,19 @@ describe('the lanes are disjoint and cover the tree', () => {
 
 	it('every path the build may write is writable by exactly one lane', () => {
 		for (const p of paths.filter((p) => buildWriteGuard(p) === null)) {
-			const writers = LANES.filter((l) => writeGuardForLane(l)(p) === null);
+			const writers = LANES.filter((l) => writeGuardFor('iterate', l)(p) === null);
 			expect(writers, p).toHaveLength(1);
 		}
 	});
 
-	it('dispatches each lane to its guard', () => {
-		expect(writeGuardForLane('api')).toBe(apiLaneWriteGuard);
-		expect(writeGuardForLane('ui')).toBe(uiLaneWriteGuard);
+	it('dispatches each lane of a build turn to its guard, through the one phase dispatch', () => {
+		for (const phase of ['scaffold', 'iterate'] as const) {
+			expect(writeGuardFor(phase, 'api')).toBe(apiLaneWriteGuard);
+			expect(writeGuardFor(phase, 'ui')).toBe(uiLaneWriteGuard);
+		}
+		// A lane means nothing outside a build turn: the phase's own guard holds.
+		expect(writeGuardFor('interview', 'ui')).toBe(interviewWriteGuard);
+		expect(writeGuardFor('scenario', 'api')('src/module.ts')).not.toBeNull();
 	});
 
 	it('lanes only the build phases', () => {
@@ -145,13 +149,13 @@ describe('skills per lane', () => {
 	const loaded = new Map(SKILL_MANIFEST.map((e) => [e.file, e.file]));
 
 	it('the UI lane carries ui.md alone, in every build phase', () => {
-		expect(skillsForLane(loaded, 'scaffold', 'ui')).toEqual(['apps/builder/skills/ui.md']);
-		expect(skillsForLane(loaded, 'iterate', 'ui')).toEqual(['apps/builder/skills/ui.md']);
+		expect(skillsForPhase(loaded, 'scaffold', 'ui')).toEqual(['apps/builder/skills/ui.md']);
+		expect(skillsForPhase(loaded, 'iterate', 'ui')).toEqual(['apps/builder/skills/ui.md']);
 	});
 
 	it('the API lane carries the phase skills minus ui.md', () => {
 		for (const phase of ['scaffold', 'iterate'] as const) {
-			expect(skillsForLane(loaded, phase, 'api')).toEqual(
+			expect(skillsForPhase(loaded, phase, 'api')).toEqual(
 				skillsForPhase(loaded, phase).filter((f) => f !== 'apps/builder/skills/ui.md'),
 			);
 		}
@@ -322,8 +326,8 @@ describe('a laned build turn (eval harness, mocked agent)', () => {
 			projectDir: dir,
 			fixture,
 			lanes: true,
-			makeGenerator: async (_phase, lane) =>
-				laneAgent(lane ?? 'unlaned', lane ? writeGuardForLane(lane) : undefined, log, scripts[lane ?? 'unlaned']),
+			makeGenerator: async (phase, lane) =>
+				laneAgent(lane ?? 'unlaned', writeGuardFor(phase, lane), log, scripts[lane ?? 'unlaned']),
 			// Red until the UI lane's second-turn file exists: one gate run per turn
 			// (plus its repair), never one between the lanes.
 			gates: [{ name: 'typecheck', cmd: `test -f ${dir}/app/main.tsx && test -f ${dir}/app/turn2.txt` }],

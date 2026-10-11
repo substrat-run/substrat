@@ -17,8 +17,7 @@
  * per pass, default 40), `--vertical <dir>` (adopt a project directory), and
  * `--lanes` (or `SUBSTRAT_BUILDER_LANES=1`): run each build turn as an API lane
  * then a UI lane with disjoint write guards, gates once after both (#682,
- * phase.ts `planLanes`). Off by default — whether lanes save tokens is for the
- * eval sweep (#630, `pnpm builder evals --lanes`) to say.
+ * phase.ts `planLanes`). Off by default until the eval sweep (#630) measures it.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
@@ -68,13 +67,12 @@ import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
 	detectPhase,
 	skillsForPhase,
-	skillsForLane,
 	type BuildLane,
 	type BuildPhase,
 	buildContext,
 	planLanes,
 	writeGuardFor,
-	writeGuardForLane,
+	type LanePlan,
 } from './phase.js';
 import { underProject, withinProject } from './project-path.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
@@ -89,7 +87,7 @@ function flag(name: string): string | undefined {
 const ROOT = flag('--root') ?? process.env.INIT_CWD ?? process.cwd();
 const PORT = Number(process.env.PORT ?? 8879);
 const MAX_STEPS = Number(flag('--max-steps') ?? 40);
-const LANES = process.argv.includes('--lanes') || process.env.SUBSTRAT_BUILDER_LANES === '1';
+const LANES_ENABLED = process.argv.includes('--lanes') || process.env.SUBSTRAT_BUILDER_LANES === '1';
 const PROJECTS_DIR = '.builder/projects';
 
 const env = loadEnvFiles(ROOT);
@@ -162,7 +160,7 @@ async function makeGenerator(
 	// The phase ladder (phase.ts): prefix content changes only at phase
 	// boundaries, so each phase's prefix is byte-stable and caches independently.
 	// A lane narrows both the prefix and the guard (#682).
-	const phaseSkills = lane ? skillsForLane(skills.byFile, phase, lane) : skillsForPhase(skills.byFile, phase);
+	const phaseSkills = skillsForPhase(skills.byFile, phase, lane);
 	return new AiSdkGenerator({
 		model: resolved.model,
 		label: resolved.label,
@@ -178,7 +176,7 @@ async function makeGenerator(
 		// dead-end this prevents). The SAME dispatch the hosted agent uses —
 		// local dev previously guarded only the interview, so a local run could
 		// write code during the model phase and a hosted one could not.
-		denyWrite: lane ? writeGuardForLane(lane) : writeGuardFor(phase),
+		denyWrite: writeGuardFor(phase, lane),
 	});
 }
 
@@ -278,15 +276,12 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 	let generator: VerticalGenerator;
 	const phase = await detectPhase(cur.projectWs);
 	// Laned build turns (#682): one generator and one context per lane, in order.
-	const lanePlans = LANES ? await planLanes(cur.projectWs, phase) : [];
-	const laneRuns = new Map<BuildLane, { generator: VerticalGenerator; context: string }>();
+	type LaneRun = LanePlan & { readonly generator: VerticalGenerator };
+	const lanes: LaneRun[] = [];
 	try {
 		generator = await makeGenerator(modelSpec, phase);
-		for (const plan of lanePlans) {
-			laneRuns.set(plan.lane, {
-				generator: await makeGenerator(modelSpec, phase, plan.lane),
-				context: plan.context,
-			});
+		for (const plan of LANES_ENABLED ? await planLanes(cur.projectWs, phase) : []) {
+			lanes.push({ ...plan, generator: await makeGenerator(modelSpec, phase, plan.lane) });
 		}
 	} catch (err) {
 		return json(res, 422, { error: err instanceof ProviderError ? err.message : String(err) });
@@ -328,14 +323,13 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		 * `carriedReport` is the previous TURN's red-gate state — first pass only;
 		 * repair prompts already embed the fresh report.
 		 */
-		const runPass = async (text: string, carriedReport?: string, lane?: BuildLane): Promise<boolean> => {
+		const runPass = async (text: string, carriedReport?: string, lane?: LaneRun): Promise<boolean> => {
 			let prose = '';
 			let truncated = false;
-			const laneRun = lane ? laneRuns.get(lane) : undefined;
-			for await (const event of (laneRun?.generator ?? generator).run({
+			for await (const event of (lane?.generator ?? generator).run({
 				workspace: cur.projectWs,
 				verticalDir: '.',
-				concept: laneRun?.context ?? concept,
+				concept: lane?.context ?? concept,
 				message: text,
 				workspaceBrief: await workspaceBrief(ws, cur.entry.dir).catch(() => undefined),
 				...(carriedReport ? { gateReport: carriedReport } : {}),
@@ -382,7 +376,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 				message,
 				turnNo: cur.state.turnNo,
 				lastGateReport: cur.state.lastGateReport,
-				lanes: lanePlans.map((p) => p.lane),
+				lanes,
 			},
 			{ runPass, runChecks, signal },
 		);

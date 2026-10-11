@@ -319,10 +319,7 @@ export interface EvalUsage {
 export interface EvalResult {
 	readonly fixture: string;
 	readonly generatorId: string;
-	/**
-	 * Whether build turns ran as lanes (#682). Recorded so two run artifacts are
-	 * never compared across the arm they differ on without saying so.
-	 */
+	/** Whether build turns ran as lanes (#682) — the arm a laned/unlaned comparison splits on. */
 	readonly laned: boolean;
 	readonly passed: boolean;
 	/** Generator passes that were full build/continue turns (repairs not included). */

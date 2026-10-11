@@ -30,14 +30,7 @@ import {
 import { LocalWorkspace, standaloneGates } from '@substrat-run/builder-workspace';
 import { loadEnvFiles } from './env.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import {
-	skillsForLane,
-	skillsForPhase,
-	writeGuardFor,
-	writeGuardForLane,
-	type BuildLane,
-	type BuildPhase,
-} from './phase.js';
+import { skillsForPhase, writeGuardFor, type BuildLane, type BuildPhase } from './phase.js';
 import { costOfSteps } from './pricing.js';
 import {
 	DEFAULT_MODEL,
@@ -108,8 +101,8 @@ const USAGE = `pnpm builder evals [options]
   --list              list fixtures and exit
   --quiet             suppress the event stream; verdicts only
   --lanes             run build turns as an API lane then a UI lane with disjoint
-                      write guards, gates once after both (#682); compare against
-                      a run without it — the token claim is this sweep's to prove
+                      write guards, gates once after both (#682); compare with a
+                      run without it
   --help
 
 Grades the generator against frozen concepts (builder-studio.md §9.6): gates
@@ -217,7 +210,7 @@ async function main(): Promise<number> {
 			// 2,036,785 input tokens in that one turn. Uncached-equivalent, so a
 			// long well-cached build is not punished for caching well.
 			maxTokens: args.maxTokens,
-			skills: lane ? skillsForLane(skills.byFile, phase, lane) : skillsForPhase(skills.byFile, phase),
+			skills: skillsForPhase(skills.byFile, phase, lane),
 			explainError: explainProviderError(chosen.spec.split(':')[0] ?? 'anthropic'),
 			editTool: editToolFor(chosen.spec),
 			// The phase ladder's teeth, which this construction claimed to share
@@ -225,7 +218,7 @@ async function main(): Promise<number> {
 			// write code instead of spec/concept.md — the ladder would never
 			// advance, and the eval would measure a generator the studio refuses
 			// to run.
-			denyWrite: lane ? writeGuardForLane(lane) : writeGuardFor(phase),
+			denyWrite: writeGuardFor(phase, lane),
 			...samplingFor(chosen.spec),
 		});
 	};

@@ -12,6 +12,7 @@
  */
 
 import type { BuildPhase } from '@substrat-run/builder-generator';
+import { normalise } from './project-path.js';
 
 /** Re-exported: the ladder's semantics live here, the type lives where the event needs it. */
 export type { BuildPhase };
@@ -55,19 +56,12 @@ export function isSpecPhase(phase: BuildPhase): boolean {
  * guard here is a prefix test, and a prefix test over the RAW path is fooled by
  * `app/../src/module.ts`, which starts with `app/` and lands in `src/`. The
  * workspace resolves `.` and `..` lexically before it writes (local.ts), so the
- * guard resolves them the same way first. A path that climbs above the root is
- * returned still climbing, so it matches no allowed prefix (the workspace
- * refuses it anyway).
+ * guard resolves them the same way first, with the normaliser the studio's file
+ * routes use (#1225), so the two cannot answer differently for one path. A path
+ * that climbs above the root is returned still climbing, so it matches no
+ * allowed prefix (the workspace refuses it anyway).
  */
-export function guardPath(path: string): string {
-	const out: string[] = [];
-	for (const seg of path.replace(/\\/g, '/').split('/')) {
-		if (seg === '' || seg === '.') continue;
-		if (seg === '..' && out.length > 0 && out[out.length - 1] !== '..') out.pop();
-		else out.push(seg);
-	}
-	return out.join('/');
-}
+export const guardPath: (path: string) => string = normalise;
 
 /**
  * The write guard for interview turns — the ladder's teeth. The transcript that
@@ -168,9 +162,11 @@ export function buildWriteGuard(path: string): string | null {
  *
  * A harness that drives the generator through a different ladder measures the
  * wrong thing (harness.ts §3), so there is now one function and both hosts call
- * it.
+ * it. A lane of a laned build turn (#682) is part of the same dispatch, for the
+ * same reason.
  */
-export function writeGuardFor(phase: BuildPhase): (path: string) => string | null {
+export function writeGuardFor(phase: BuildPhase, lane?: BuildLane): (path: string) => string | null {
+	if (lane && isLanedPhase(phase)) return lane === 'api' ? apiLaneWriteGuard : uiLaneWriteGuard;
 	if (phase === 'interview') return interviewWriteGuard;
 	if (phase === 'model') return modelWriteGuard;
 	if (phase === 'scenario') return scenarioWriteGuard;
@@ -211,11 +207,9 @@ const underUi = (p: string): boolean => p === UI_ROOT || p.startsWith(`${UI_ROOT
 /**
  * The API lane writes everything EXCEPT `app/**`, under the build guard.
  *
- * The complement rather than the `src/** + test/** + migrations/**` allowlist
- * #682 sketched: the scaffold also writes the project's root `package.json` and
- * `tsconfig.json` (scaffold.md), and an allowlist would refuse a legitimate
- * first build. What makes the lanes disjoint is that `app/**` belongs to exactly
- * one of them, and this keeps that property.
+ * The complement, not a `src/** + test/** + migrations/**` allowlist: the
+ * scaffold also writes the root `package.json` and `tsconfig.json`. The lanes
+ * stay disjoint because `app/**` belongs to exactly one of them.
  */
 export function apiLaneWriteGuard(path: string): string | null {
 	const p = guardPath(path);
@@ -243,11 +237,6 @@ export function uiLaneWriteGuard(path: string): string | null {
 		`${CONTRACT_GAPS_FILE} ("- <operation>: <what the screen needs>") and build the ` +
 		'screen against what exists; the API lane reads that file next turn'
 	);
-}
-
-/** One dispatch for a lane's guard, as `writeGuardFor` is for a phase. */
-export function writeGuardForLane(lane: BuildLane): (path: string) => string | null {
-	return lane === 'api' ? apiLaneWriteGuard : uiLaneWriteGuard;
 }
 
 /**
@@ -282,10 +271,10 @@ export interface SkillManifestEntry {
 	readonly file: string;
 	readonly phases: readonly BuildPhase[];
 	/**
-	 * Which lane of a laned build turn carries it (#682). Absent means the API
-	 * lane: everything but the screens is the API's.
+	 * The phases each lane of a laned build turn carries it in (#682). Absent
+	 * means the API lane, in `phases`: everything but the screens is the API's.
 	 */
-	readonly lanes?: readonly BuildLane[];
+	readonly lanes?: { readonly [L in BuildLane]?: readonly BuildPhase[] };
 }
 
 /**
@@ -302,38 +291,31 @@ export const SKILL_MANIFEST: readonly SkillManifestEntry[] = [
 	{ file: 'apps/builder/skills/scenario.md', phases: ['scenario'] },
 	{ file: 'apps/builder/skills/scaffold.md', phases: ['scaffold'] },
 	{ file: 'apps/builder/skills/iterate.md', phases: ['scenario', 'scaffold', 'iterate'] },
-	// The screens — moved out of scaffold.md, so an unlaned build carries it in
-	// exactly the phase it always did. A laned build gives it to the UI lane
-	// ALONE, in every build phase, as the whole of that lane's prefix.
-	{ file: 'apps/builder/skills/ui.md', phases: ['scaffold'], lanes: ['ui'] },
+	// The screens, moved out of scaffold.md: unlaned, in the phase scaffold.md
+	// carried them; laned, the UI lane's whole prefix in every build phase.
+	{ file: 'apps/builder/skills/ui.md', phases: ['scaffold'], lanes: { ui: ['scaffold', 'iterate'] } },
 ];
 
-const loadedFor = (loaded: ReadonlyMap<string, string>, entries: readonly SkillManifestEntry[]) =>
-	entries.map((e) => loaded.get(e.file)).filter((s): s is string => Boolean(s));
-
-/** Filter loaded skill contents (parallel to SKILL_MANIFEST order) to a phase. */
-export function skillsForPhase(
-	loaded: ReadonlyMap<string, string>,
-	phase: BuildPhase,
-): string[] {
-	return loadedFor(loaded, SKILL_MANIFEST.filter((e) => e.phases.includes(phase)));
+/** The phases an entry rides in: unlaned, or in one lane of a laned turn. */
+function phasesOf(e: SkillManifestEntry, lane: BuildLane | undefined): readonly BuildPhase[] {
+	if (!lane) return e.phases;
+	if (e.lanes) return e.lanes[lane] ?? [];
+	return lane === 'api' ? e.phases : [];
 }
 
 /**
- * The same, narrowed to one lane of a laned build turn. The API lane is the
- * phase's skills minus the UI's; the UI lane is its own skills whatever the
- * build phase, since the screens are its whole job in scaffold and iterate alike.
+ * Filter loaded skill contents (parallel to SKILL_MANIFEST order) to a phase,
+ * or to one lane of a laned build turn (#682).
  */
-export function skillsForLane(
+export function skillsForPhase(
 	loaded: ReadonlyMap<string, string>,
 	phase: BuildPhase,
-	lane: BuildLane,
+	lane?: BuildLane,
 ): string[] {
-	const ridesLane = (e: SkillManifestEntry) => (e.lanes ?? ['api']).includes(lane);
-	return loadedFor(
-		loaded,
-		SKILL_MANIFEST.filter((e) => ridesLane(e) && (lane === 'ui' || e.phases.includes(phase))),
-	);
+	const useLane = lane && isLanedPhase(phase) ? lane : undefined;
+	return SKILL_MANIFEST.filter((e) => phasesOf(e, useLane).includes(phase))
+		.map((e) => loaded.get(e.file))
+		.filter((s): s is string => Boolean(s));
 }
 
 /**
@@ -355,12 +337,12 @@ export async function buildContext(
 	const concept = await ws.readFile('spec/concept.md');
 	if (phase === 'model' || !(await ws.exists('spec/model.ts'))) return concept;
 	const model = await ws.readFile('spec/model.ts');
-	return (
-		`${concept}\n\n` +
-		`--- spec/model.ts (APPROVED — transcribe, do not re-derive) ---\n\n` +
-		`${model}\n\n` +
-		`--- end spec/model.ts ---`
-	);
+	return `${concept}\n\n${modelBlock(model, 'transcribe, do not re-derive')}`;
+}
+
+/** The declared model as a turn sees it: marked approved, with what to do with it. */
+function modelBlock(model: string, note: string): string {
+	return `--- spec/model.ts (APPROVED — ${note}) ---\n\n${model}\n\n--- end spec/model.ts ---`;
 }
 
 type ContextWorkspace = Parameters<typeof buildContext>[0];
@@ -390,9 +372,7 @@ export function screensSection(concept: string): string | null {
 const apiOnly = (section: string): boolean => /\bapi[- ]only\b/i.test(section);
 
 /** The recorded gaps as a context block, bounded by `parseContractGaps`. */
-async function gapsBlock(ws: ContextWorkspace, heading: string): Promise<string> {
-	if (!(await ws.exists(CONTRACT_GAPS_FILE))) return '';
-	const { gaps, dropped } = parseContractGaps(await ws.readFile(CONTRACT_GAPS_FILE));
+function gapsBlock({ gaps, dropped }: ReturnType<typeof parseContractGaps>, heading: string): string {
 	if (gaps.length === 0) return '';
 	const more = dropped ? `\n(${dropped} more not shown — the ledger is capped at ${MAX_CONTRACT_GAPS})` : '';
 	return (
@@ -426,14 +406,17 @@ export interface LanePlan {
  */
 export async function planLanes(ws: ContextWorkspace, phase: BuildPhase): Promise<LanePlan[]> {
 	if (!isLanedPhase(phase)) return [];
+	const ledger = parseContractGaps(
+		(await ws.exists(CONTRACT_GAPS_FILE)) ? await ws.readFile(CONTRACT_GAPS_FILE) : '',
+	);
 	const api: LanePlan = {
 		lane: 'api',
 		context:
 			(await buildContext(ws, phase)) +
-			(await gapsBlock(
-				ws,
+			gapsBlock(
+				ledger,
 				'gaps the UI lane recorded — implement any the model declares; one that needs a new operation is a model change: say so and stop',
-			)),
+			),
 	};
 	const concept = await ws.readFile('spec/concept.md');
 	const screens = screensSection(concept);
@@ -442,11 +425,8 @@ export async function planLanes(ws: ContextWorkspace, phase: BuildPhase): Promis
 	const ui: LanePlan = {
 		lane: 'ui',
 		context:
-			`${screens}\n\n` +
-			`--- spec/model.ts (APPROVED — the operations you build screens against) ---\n\n` +
-			`${model}\n\n` +
-			`--- end spec/model.ts ---` +
-			(await gapsBlock(ws, 'already recorded — do not repeat; remove a line once the API offers it')),
+			`${screens}\n\n${modelBlock(model, 'the operations you build screens against')}` +
+			gapsBlock(ledger, 'already recorded — do not repeat; remove a line once the API offers it'),
 	};
 	return [api, ui];
 }

@@ -19,7 +19,7 @@ import {
 } from './gates.js';
 import type { TurnResult } from './turn.js';
 
-export interface TurnLoopHooks<L extends string = string> {
+export interface TurnLoopHooks<L = string> {
 	/**
 	 * One generator pass; resolves to whether the step ceiling cut it mid-work.
 	 * `carriedReport` is the previous TURN's red-gate state — first pass only;
@@ -40,7 +40,7 @@ export interface TurnLoopHooks<L extends string = string> {
 	readonly onRepair?: ((attempt: number, max: number) => void) | undefined;
 }
 
-export interface TurnLoopInput<L extends string = string> {
+export interface TurnLoopInput<L = string> {
 	readonly message: string;
 	readonly turnNo: number;
 	/** The previous turn's red-gate report, carried into the first pass only. */
@@ -49,7 +49,8 @@ export interface TurnLoopInput<L extends string = string> {
 	 * Run the message as these lanes, in order, before the gates (#682). Each
 	 * lane runs to completion — continuations drawn from the one per-turn
 	 * budget — and the gates run ONCE, after the last. Absent or empty means one
-	 * unlaned pass, as before.
+	 * unlaned pass, as before. A lane is whatever the host hands `runPass` back:
+	 * a name, or the plan it runs from.
 	 */
 	readonly lanes?: readonly L[] | undefined;
 }
@@ -74,7 +75,7 @@ export interface TurnLoopResult {
  * turn over a pre-existing red tree must not burn budget, and `blocked` gates
  * never trigger repair (the checker crashed, not the code).
  */
-export async function runTurnLoop<L extends string = string>(
+export async function runTurnLoop<L = string>(
 	input: TurnLoopInput<L>,
 	hooks: TurnLoopHooks<L>,
 ): Promise<TurnLoopResult> {
@@ -89,15 +90,12 @@ export async function runTurnLoop<L extends string = string>(
 		}
 	};
 
-	if (input.lanes?.length) {
-		// The barrier: every lane before any gate. The carried report rides the
-		// first lane only, the same "first pass only" rule as an unlaned turn.
-		for (const [i, lane] of input.lanes.entries()) {
-			if (i > 0 && signal?.aborted) break;
-			await runToCompletion(input.message, i === 0 ? input.lastGateReport : undefined, lane);
-		}
-	} else {
-		await runToCompletion(input.message, input.lastGateReport);
+	// The barrier: every lane before any gate. An unlaned turn is one pass with
+	// no lane. The carried report rides the first pass only either way.
+	const lanes: readonly (L | undefined)[] = input.lanes?.length ? input.lanes : [undefined];
+	for (const [i, lane] of lanes.entries()) {
+		if (i > 0 && signal?.aborted) break;
+		await runToCompletion(input.message, i === 0 ? input.lastGateReport : undefined, lane);
 	}
 	let turn = await hooks.runChecks(`studio turn ${input.turnNo}: ${input.message.slice(0, 60)}`);
 
