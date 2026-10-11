@@ -66,6 +66,25 @@ export function isSpecPhase(phase: BuildPhase): boolean {
 export const guardPath: (path: string) => string = normalise;
 
 /**
+ * The path a REFUSAL compares, folded the way a filesystem may open it. APFS,
+ * the local studio's usual filesystem, folds case — and not only ASCII case:
+ * `ſpec/model.ts` (long s), `teﬆ/scenario.test.ts` (the st ligature) and
+ * `ẞ` (capital sharp s, to `ss`) all open the protected file (#2200 r2). A
+ * sweep of every code point against files named with every one-, two- and
+ * three-letter ASCII name found exactly the characters this folds — ß ẞ ſ K
+ * ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ — and none that folds onto `.`; the test pins them.
+ *
+ * NFKC, then lower → upper → lower: lower first is what takes ẞ to ß, upper
+ * takes ß and ſ and the ligatures to ASCII capitals, lower lands them. It folds
+ * WIDER than APFS in places (fullwidth letters, dotless ı), which for a refusal
+ * is closed, not open. An ALLOWANCE never uses it: on a case-sensitive host a
+ * folded spelling is a different directory, so allowances compare exactly.
+ */
+export function foldForGuard(path: string): string {
+	return path.normalize('NFKC').toLowerCase().toUpperCase().toLowerCase();
+}
+
+/**
  * The write guard for interview turns — the ladder's teeth. The transcript that
  * motivated it: a model presented the concept in prose, got approval, then
  * scaffolded code without ever writing spec/concept.md — so the phase never
@@ -140,10 +159,11 @@ export function buildWriteGuard(path: string): string | null {
 	// suite that agrees with whatever got built — the same failure as a model
 	// redrawn at continuation 14, one level down. `test/server.test.ts` and any
 	// other suite the build ADDS stay writable; only the scenario is frozen.
-	// Both refusals fold case: on a case-insensitive filesystem (APFS, the local
-	// studio's usual one) `Spec/model.ts` IS the model, and a refusal that folds
-	// holds on either kind of filesystem (#2200 r1).
-	if (/^test\/scenario\.test\./i.test(p)) {
+	// Both refusals compare the folded path: on APFS `Spec/model.ts` and
+	// `ſpec/model.ts` ARE the model, and a refusal that folds holds on either
+	// kind of filesystem (#2200 r1, r2).
+	const folded = foldForGuard(p);
+	if (/^test\/scenario\.test\./.test(folded)) {
 		return (
 			'build turns cannot write test/scenario.test.* — it is the concept\'s claim ' +
 			'about this app, written before the code so it could disagree with it. If an ' +
@@ -151,7 +171,7 @@ export function buildWriteGuard(path: string): string | null {
 			'from, not here'
 		);
 	}
-	if (!/^spec\/model\./i.test(p)) return null;
+	if (!/^spec\/model\./.test(folded)) return null;
 	return (
 		'build turns cannot write spec/model.* — the model changes only from ' +
 		'upstream (a requirement, a corrected understanding of the domain), never ' +
@@ -216,12 +236,12 @@ export const CONTRACT_GAPS_FILE = 'app/CONTRACT-GAPS.md';
 const underUi = (p: string): boolean => p === UI_ROOT || p.startsWith(`${UI_ROOT}/`);
 
 /**
- * `app/` in any case. A REFUSAL of the UI lane's territory uses this, because
+ * `app/` under the guard fold (foldForGuard). A REFUSAL of the UI lane's territory uses this, because
  * on a case-insensitive filesystem `App/main.tsx` lands in `app/`. The UI lane's
  * ALLOWANCE does not: on a case-sensitive one `App/` is a new directory outside
  * the lane, so a wrong-cased path is refused by both lanes — closed, not open.
  */
-const underUiAnyCase = (p: string): boolean => underUi(p.toLowerCase());
+const underUiAnyCase = (p: string): boolean => underUi(foldForGuard(p));
 
 /**
  * The API lane writes everything EXCEPT `app/**`, under the build guard.

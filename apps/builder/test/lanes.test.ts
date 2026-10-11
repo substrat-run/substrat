@@ -27,6 +27,7 @@ import {
 	apiLaneWriteGuard,
 	buildWriteGuard,
 	CONTRACT_GAPS_FILE,
+	foldForGuard,
 	guardPath,
 	historyForLane,
 	interviewWriteGuard,
@@ -124,6 +125,32 @@ describe('the UI lane — app/** only', () => {
 	});
 });
 
+describe('foldForGuard — the fold APFS applies, or a wider one (#2200 r2)', () => {
+	// The nine non-ASCII characters this repo's APFS folds onto ASCII letters,
+	// found by sweeping every code point against files named with every one- and
+	// two-letter ASCII name (and the three-letter ligature names). Each must
+	// fold to what APFS opens.
+	const APFS_FOLDS: [string, string][] = [
+		['ß', 'ss'], ['ẞ', 'ss'], ['ſ', 's'], ['K', 'k'],
+		['ﬀ', 'ff'], ['ﬁ', 'fi'], ['ﬂ', 'fl'], ['ﬅ', 'st'], ['ﬆ', 'st'], ['ﬃ', 'ffi'], ['ﬄ', 'ffl'],
+	];
+
+	it('folds every character APFS folds onto ASCII to what APFS opens', () => {
+		for (const [ch, ascii] of APFS_FOLDS) expect(foldForGuard(ch), ch).toBe(ascii);
+	});
+
+	it('folds ASCII case, and leaves an already-folded path alone', () => {
+		expect(foldForGuard('Spec/Model.TS')).toBe('spec/model.ts');
+		expect(foldForGuard('src/module.ts')).toBe('src/module.ts');
+	});
+
+	it('folds WIDER than APFS where Unicode says to — a refusal that over-matches fails closed', () => {
+		// APFS opens neither, but a refusal that catches them costs nothing.
+		expect(foldForGuard('ＳＰＥＣ/model.ts')).toBe('spec/model.ts');
+		expect(foldForGuard('test/scenarıo.test.ts')).toBe('test/scenario.test.ts');
+	});
+});
+
 describe('case: a guard judges the file the filesystem will open (#2200 r1)', () => {
 	// The local studio's usual filesystem (APFS) is case-insensitive, so
 	// `App/main.tsx` IS `app/main.tsx` and `Spec/model.ts` IS the model. A refusal
@@ -140,6 +167,46 @@ describe('case: a guard judges the file the filesystem will open (#2200 r1)', ()
 	it('the UI lane writes app/ as spelled, and tells a wrong-cased path how to spell it', () => {
 		expect(uiLaneWriteGuard('app/main.tsx')).toBeNull();
 		expect(uiLaneWriteGuard('App/main.tsx')).toMatch(/spell it app\//);
+	});
+
+	it('the build guard refuses the model and the scenario oracle under any Unicode fold APFS applies (#2200 r2)', () => {
+		const model = ['ſpec/model.ts', 'spec/model.tſ', 'SPEC/MODEL.TS', 'ſpec/modeL.Tſ'];
+		const scenario = ['test/ſcenario.test.ts', 'teﬆ/scenario.test.ts', 'teﬅ/scenario.test.ts', 'test/scenario.teﬆ.ts', 'teſt/ſcenario.teſt.tſ'];
+		for (const p of model) {
+			expect(buildWriteGuard(p), p).toMatch(/spec\/model/);
+			expect(apiLaneWriteGuard(p), p).toMatch(/spec\/model/);
+		}
+		for (const p of scenario) {
+			expect(buildWriteGuard(p), p).toMatch(/scenario/);
+			expect(apiLaneWriteGuard(p), p).toMatch(/scenario/);
+		}
+		// Positive twins: a neighbour stays writable however it is spelled.
+		expect(buildWriteGuard('ſpec/concept.md')).toBeNull();
+		expect(buildWriteGuard('teﬆ/server.test.ts')).toBeNull();
+		expect(buildWriteGuard('ſrc/module.ts')).toBeNull();
+	});
+
+	it('the API lane refuses app/** under any fold, and the UI lane still writes only app/ as spelled', () => {
+		for (const p of ['ａｐｐ/x.tsx', 'ＡＰＰ/x.tsx']) {
+			expect(apiLaneWriteGuard(p), p).not.toBeNull();
+			expect(uiLaneWriteGuard(p), p).not.toBeNull();
+		}
+		expect(uiLaneWriteGuard('app/x.tsx')).toBeNull();
+	});
+
+	it('on THIS filesystem, if it folds, each refused spelling would have overwritten the oracle', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'builder-fold-'));
+		roots.push(root);
+		const ws = new LocalWorkspace({ root });
+		await ws.writeFile('spec/model.ts', 'MODEL');
+		await ws.writeFile('test/scenario.test.ts', 'ORACLE');
+		if (!(await ws.exists('ſpec/model.ts'))) return; // this filesystem does not fold ſ
+		for (const p of ['ſpec/model.ts', 'test/ſcenario.test.ts', 'teﬆ/scenario.test.ts']) {
+			expect(buildWriteGuard(p), p).not.toBeNull();
+		}
+		await ws.writeFile('teﬆ/scenario.test.ts', 'OVERWRITTEN');
+		expect(await ws.readFile('test/scenario.test.ts')).toBe('OVERWRITTEN');
+		await ws.dispose();
 	});
 
 	it('the build guard refuses the model and the scenario oracle in any case, the half that predates lanes', () => {
@@ -169,10 +236,10 @@ describe('the lanes are disjoint and cover the tree', () => {
 	const paths = [
 		'app', 'app/x.tsx', 'app/src/a/b.ts', CONTRACT_GAPS_FILE, 'src/module.ts', 'test/server.test.ts',
 		'migrations/0001.sql', 'package.json', 'tsconfig.json', 'README.md', 'apps/y.ts', 'app/../src/z.ts',
-		'App/x.tsx', 'APP/y.ts', 'Spec/model.ts',
+		'App/x.tsx', 'APP/y.ts', 'Spec/model.ts', 'ａｐｐ/x.tsx', 'ſpec/model.ts', 'teﬆ/scenario.test.ts', 'ſrc/a.ts',
 	];
 	/** Wrong-cased app/ paths: refused by both lanes, which is the fail-closed answer. */
-	const miscased = (p: string) => guardPath(p).toLowerCase().startsWith('app/') && !guardPath(p).startsWith('app/');
+	const miscased = (p: string) => foldForGuard(guardPath(p)).startsWith('app/') && !guardPath(p).startsWith('app/');
 
 	it('no path is writable by both lanes', () => {
 		for (const p of paths) {
