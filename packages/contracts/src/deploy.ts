@@ -441,7 +441,8 @@ export function assertNoBindingShapeBreak(
     judgedFrom?: string;
     /**
      * Judge as if the outgoing version's retirements had not run: for installs with no receipt,
-     * which may not have reconciled it, so may still hold every key it retires.
+     * which may not have reconciled it, and (#2185) installs whose reconcile of it did not finish
+     * its retirements. Either may still hold every key it retires (`retiredKeysOf`).
      */
     retiredStillHeld?: boolean;
   } = {},
@@ -457,9 +458,10 @@ export function assertNoBindingShapeBreak(
     }
     return read.rows;
   };
-  const outgoing = grants(outgoingManifest, 'the running').map((g) =>
-    opts.retiredStillHeld && retiredKeysOf(g).length ? { ...g, permissions: [...g.permissions, ...retiredKeysOf(g)], retired: undefined } : g,
-  );
+  const outgoing = grants(outgoingManifest, 'the running').map((g) => {
+    const held = opts.retiredStillHeld ? retiredKeysOf(g) : [];
+    return held.length ? { ...g, permissions: [...g.permissions, ...held], retired: undefined } : g;
+  });
   const breaks = bindingShapeBreaks({ entityGrants: outgoing }, { entityGrants: grants(incomingManifest, 'the incoming') });
   if (breaks.length > 0) {
     throw substratError('precondition_failed', bindingShapeRefusal(breaks) + (opts.judgedFrom ? `. Judged from ${opts.judgedFrom}` : ''));
