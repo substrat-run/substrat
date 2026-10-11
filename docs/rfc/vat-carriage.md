@@ -140,18 +140,25 @@ Its strengths:
 
 Why it is not recommended anyway:
 
-- **`underlag-updated` is not fat enough.** It carries `addedLines`, not the lines. To key a
-  side table by *line* the vertical must read the engine's tables (banned, R5) or keep its own
-  copy of every producer payload — re-deriving the engine's state, the cross-module read the
-  fat-event rule exists to avoid.
+- **The rate and the line id never meet inside the vertical.** A vertical can read the lines
+  back through `invoicing/get`, which returns them with ids, so a side table keyed by line id
+  is reachable without any banned read. The difficulty is correlation and ordering: the
+  vertical knows the rate when it *emits* the delivery, but the engine mints the line id
+  afterwards, in the consumer. `underlag-updated` carries `addedLines` (a count), not the
+  line ids. So the vertical must wait for the event, call `invoicing/get`, and match its
+  rates to lines by position or by `(document, article, description)` — a heuristic, with a
+  window in which a line exists unrated — or keep a parallel record per emitted delivery. It
+  works, and a careful vertical can make it correct; it is the engine's own state being
+  re-joined from outside.
 - **The invariant that matters is the engine's.** "An exported document's decomposition is
   frozen" is only true if the decomposition lives where immutability is enforced. A side table
   is writable by the vertical after export; the engine cannot promise otherwise.
 - **The consumer of the export event cannot see a side table.** `underlag-exported` is the
   artifact an accounting hand-off reads. Under C it would carry a net total with no
   decomposition, and each consumer would have to be told to join a vertical's private table.
-- **Three consumers have now asked.** CLAUDE.md's own evidence test for "shared, not
-  vocabulary" is met on the demand side; C pays for it three times.
+- **Three consumers need it.** One has asked (#326); the other two are inferred in
+  `commerce-gaps.md` §4.1 from the fact that both bill customers who owe VAT. On that
+  evidence C is paid for once per vertical.
 
 C remains the right answer for the parts of tax this spec leaves out (§7): a tax *code*,
 exemption reason or jurisdiction note is exactly what an opaque, vertical-owned extension
@@ -212,24 +219,38 @@ exists for (`events.ts` header).
 
 ### 5.2 The question this spec does not settle: is an additive optional field on the exported payload a replace?
 
-Both readings are defensible, and the rule is silent on the case, so it is a decision (§9 Q1).
+Both readings are defensible, and the rule does not decide the case, so it is a decision
+(§9 Q1). **Be clear about where the recorded positions stand:**
+`commerce-gaps.md` §4.1 says VAT *"lands additively (new optional line fields,
+`schemaVersion` bump on the emitted payload)"*, and #326's third criterion repeats it
+(adding a *"dual-emit window"*, which K-39 has since made unavailable). The repo's own
+earlier analysis therefore leans to a bump. Reading 1 below **departs from §4.1**; it is
+presented because the case for it is real, not because the question is closed.
 
 **Reading 1 — it is additive; no bump, no replace.**
-D-28 freezes fields on **rename, remove, retype**; K-39 *"everything else in D-28 is
-untouched: payload fields stay frozen once shipped"* — a *new* field freezes nothing that
-exists. A consumer using Zod's default object parsing ignores the extra key, so no existing
-consumer breaks and none dead-letters. The field arrives with no loud failure because there
-is nothing to fail. A bump would impose a replace — a guaranteed dead-letter in every
+D-28's text is: *"emitted payload fields frozen once shipped (`schemaVersion` bump +
+dual-emit window for real changes)"*. The turn is on "real changes": a new field leaves every
+existing field as it was. (CLAUDE.md paraphrases the same rule as *"rename/remove/retype means
+a `schemaVersion` bump"*, which reads the same way; that wording is CLAUDE.md's, not D-28's.)
+K-39 keeps the rest of D-28 *"untouched"*. The nearest recorded precedent is D-22's
+export-schema diff (`tools/export-schema-diff.mts`, #1705): for an *exported vertical event*
+it refuses a removed, retyped or newly-required field at an unchanged version and states that
+*"a new export, or a new optional field, is additive"*. That is a different rule (vertical exports, not engine
+events), but it is the closest statement of what the platform treats as breaking. A consumer
+using Zod's default object parsing ignores the extra key; **no consumer in this repo parses
+strictly** — a search for `.strict()` finds only a vertical's own input union
+(`demos/ticket0/spec/model.ts`), not an event consumer, and invoicing's three consumed events
+use plain `z.object`. A bump would impose a replace — a guaranteed dead-letter in every
 consumer that was fine — to protect against a break that does not occur.
 
 **Reading 2 — any payload change is a replace.**
-K-39's text is *"a payload change is a REPLACE"*, not *"a breaking change"*, and the issue's
-own acceptance criterion asks for a `schemaVersion` bump. The reasoning is also not about
-parsing alone: a consumer that ignores `vatBreakdown` and reads `total` is **silently
+K-39's text is *"a payload change is a REPLACE"*, not *"a breaking change"*, and both
+`commerce-gaps.md` §4.1 and #326 ask for a `schemaVersion` bump. The reasoning is also not
+about parsing alone: a consumer that ignores `vatBreakdown` and reads `total` is **silently
 wrong** if `total` ever changes meaning (net vs gross, §5.4), and a consumer cannot tell a
 payload that *has* the breakdown and chose to ignore it from one that lacks it. A version
-number is the only machine-readable "this event now says more". Also, `.strict()` consumers
-exist in principle, and a connector is a third party.
+number is the only machine-readable "this event now says more". Consumers outside this
+repo may parse strictly; the repo cannot see them (the engines are on public npm).
 
 **What each costs.**
 
@@ -239,16 +260,25 @@ exist in principle, and a connector is a third party.
 | Loud signal that the shape changed | none | yes, by design |
 | Safe if `total` keeps its meaning | yes | yes |
 | Safe if `total` changes meaning | **no** | yes |
-| Precedent | none | v2 (`total: Money`) |
-| Consumers today | none found in the repo: `connectors/*` and `apps/*` do not read `underlag-exported`; `connections.md` §1 describes an accounting connector as unwritten | same |
+| Precedent | D-22's diff calls a new optional field additive (vertical exports only); `commerce-gaps.md` §4.1 and #326 say bump | v2 (`total: Money`), which changed a field's type |
+| Consumers today | none **in this repo** (`connectors/*` and `apps/*` do not read `underlag-exported`; `connections.md` §1 describes an accounting connector as unwritten). That says nothing about consumers outside it: the engine is on public npm | same |
 
 **A bridge:** do Reading 1 *and* keep `total` meaning exactly what it means now (the **net**
 sum), so nothing is silently wrong; add the breakdown alongside. That is only available if
 `total` is not redefined, which §5.4 recommends. Under it, Reading 1 is safe; Reading 2 buys
 only the version marker.
 
-**Recommendation, weakly held:** Reading 1 with `total` unchanged — but this is the human's
-call because it sets a precedent for what K-39 means for every other engine.
+**Recommendation, weakly held, and a departure from §4.1:** Reading 1 with `total`
+unchanged. Weigh the D-22 precedent and the absence of strict consumers in the repo against
+§4.1, the issue, and consumers the repo cannot see. It is the human's call because it sets
+a precedent for what K-39 means for every other engine.
+
+**What would gate it.** There is no mechanical gate for an additive field on an *engine*
+event. `lint:export-schemas` reads only a vertical's `model.json` exports. The engine's
+guards are `invoicingEventVersions` and `test/event-versions.test.ts`, which pin the
+*version* — they would fail on a bump to v3 (a deliberate edit of `SHIPPED`), and stay silent
+on a new field. Reading 1 would be held by a test written for it, and a payload-shape check
+for engine events does not exist.
 
 ### 5.3 Upcasting and old data
 
@@ -290,7 +320,7 @@ supplies a rate, or this is not additive.
 - The breakdown's `net` and `tax` per rate are sums over one currency, and reuse `addMoney`,
   which throws on a mismatch — defence in depth, as for `total`.
 - `declaredCurrency` for an **empty** basis is unaffected; an empty breakdown is `[]`.
-- Rounding: `mulDecimal` rounds half-up at the sixth decimal (`packages/contracts/src/money.ts`).
+- Rounding: `mulDecimal` rounds half away from zero at the sixth decimal (it adds half a unit to the absolute value, so a negative line rounds symmetrically) (`packages/contracts/src/money.ts`).
   What that means for a *monetary* minor unit is a question about display and the
   accounting system, not something this spec asserts (§9 Q2).
 
@@ -309,7 +339,7 @@ rows; any connector that consumes the breakdown; platform billing, which is
 |---|---|---|
 | 0 | This RFC; corrected note in `engines/invoicing.md` | human decision on §9 |
 | 1 | Migration `0003` (nullable columns); optional `vatRate` in the three Zod views; lines store it; read shapes extended; tests: seam, `currency_mismatch` with tax, replay | **migration diff** checkpoint |
-| 2 | `vatBreakdown` computed at read and at export; the export-event decision (§5.2); immutability test that an exported breakdown cannot move | human-chosen shape; export schema diff (`lint:export-schemas`) |
+| 2 | `vatBreakdown` computed at read and at export; the export-event decision (§5.2); immutability test that an exported breakdown cannot move | human-chosen shape. No mechanical gate covers an engine event's payload (`lint:export-schemas` reads vertical `model.json` exports only): a bump is held by `invoicingEventVersions` and `test/event-versions.test.ts`; an additive field needs a new payload-shape test written in phase 2 |
 | 3 | Producers: the shop demo and others supply `vatRate` from their own configuration; docs pages and the engines' published `events.md` | none |
 
 Phases 1 and 2 can ship separately: phase 1 alone stores and shows rates with no change to any
@@ -332,8 +362,13 @@ emitted event.
 6. **Whether to also offer Option C's extension point** for tax codes and exemption notes,
    separately from this work.
 7. **Rate representation.** A percentage decimal string, as proposed, or a basis-point integer?
-8. **Scope of the `rate` key in the breakdown** if a vertical later supplies a rate of the same
-   number for different reasons — whether the breakdown groups on rate alone.
+8. **Breakdown grouping key.** Group on the rate alone, or also on something a vertical may
+   later supply (a tax code, §7)? Grouping on rate alone is what this spec assumes.
+9. **`vatRate` validation.** What the engine accepts: range (is above 100 allowed?), scale,
+   negatives, and whether `"0"` and *absent* are distinct at the schema level (this spec
+   says they are: absent is *unspecified*, §5.2).
+10. **Phase order.** May phase 1 (store and show rates; no change to any emitted event) ship
+    **before** Q1 is decided? §8 says it can; this is the explicit ask.
 
 ## 10. Verification this spec relies on
 
