@@ -377,6 +377,22 @@ export function bindingInviteContractSuite(
         await host.admin.grant(staff, { principalId: who, permission: BIND_INVITE, node: node(), entity: rec(id), grantedBy: clerk });
         expect(await tuplesOn(id)).toEqual([{ subject: `principal:${who}`, relation: `granted:${BIND_INVITE}`, live: true }]);
       });
+      it('stay refused to direct grants on a type that has bound, even while a version declares no shape for it', async () => {
+        // A claim has bound brecord in this scope (the suite above), so the type is recorded as bound.
+        const id = await record();
+        await reconcile([]);
+        try {
+          await expect(() =>
+            host.admin.grant(staff, { principalId: p(), permission: BIND_READ_OWN, node: node(), entity: rec(id), grantedBy: clerk }),
+          ).rejects.toThrow(/given only by the shape grant/);
+        } finally {
+          await reconcile([BIND_SHAPE]);
+        }
+        // So nothing slipped in while the shape was out: the record still mints and binds one person.
+        const target = await invitee();
+        expect((await exchange((await minted(clerk, target, rec(id))).secret))?.kind).toBe('principal');
+        expect((await tuplesOn(id)).filter((t) => t.live).map((t) => t.subject)).toEqual([`principal:${target}`, `principal:${target}`]);
+      });
     });
 
     describe('the unbind', () => {

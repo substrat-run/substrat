@@ -632,6 +632,10 @@ function holderNames(holder: { table: string; idColumn: string; principalColumn:
  * - each bound shape's holder column and current keys, and — only while it declares `bind` — its
  *   bind key (#1686).
  *
+ * A type that has ever bound (`shape-bound`) keeps its protected keys whatever later versions
+ * declare, so the keys stay refused to direct grants while its holders keep the shape; a key a
+ * later version gives the shape joins them.
+ *
  * A shape is BOUND while it declares `bind`, and stays bound after a version drops `bind` for as
  * long as it is still a bootstrap shape with the same table holder: records may already name their
  * people in that column, holding the shape through it, and an erasure releases them by these
@@ -671,12 +675,19 @@ function recordShapeFacts(db: SwitchSql, shapes: readonly EntityGrantShape[]): v
         AND NOT EXISTS (SELECT 1 FROM json_each(?) r
                          WHERE json_extract(r.value, '$[0]') = _substrat_tuples.subject
                            AND json_extract(r.value, '$[1]') = _substrat_tuples.relation
-                           AND json_extract(r.value, '$[2]') = _substrat_tuples.object)`,
+                           AND json_extract(r.value, '$[2]') = _substrat_tuples.object)
+        -- A type that ever bound keeps its protected keys whatever this version declares (#1686):
+        -- its holders keep the shape until released, and a direct grant of a key of it made while
+        -- the shape is out of the registry would be a holder no marker, unbind or held check sees.
+        AND NOT (relation = ? AND EXISTS (SELECT 1 FROM _substrat_tuples b
+                                           WHERE b.subject = _substrat_tuples.subject AND b.relation = ?))`,
     SHAPE_PROTECTED_KEY_RELATION,
     BIND_HOLDER_RELATION,
     BIND_PERMISSION_RELATION,
     BIND_KEY_RELATION,
     json,
+    SHAPE_PROTECTED_KEY_RELATION,
+    BOUND_EVER_RELATION,
   );
   db.run(
     `INSERT OR IGNORE INTO _substrat_tuples (subject, relation, object)
