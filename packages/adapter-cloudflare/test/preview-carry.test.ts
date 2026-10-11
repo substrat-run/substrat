@@ -1140,8 +1140,13 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const { kept } = (await read.json()) as { kept: { keptAt: string; revision: string; carriedTo: string } };
       expect(kept).toMatchObject({ carriedTo: refOf.get(version.v2) });
       expect((await resolve(p.scopeId, { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: 'yesterday' } })).status).toBe(409);
+      // #2185: the live store's reconcile receipt, its retirements finished.
+      await dir.admin.markScopeProvisioned(staff, t, p.scopeId, version.v2, { retirementsFinished: true });
       const done = await resolve(p.scopeId, { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: kept.keptAt } });
       expect(done.status).toBe(200);
+      // The kept copy is older data than that reconcile saw, so both are cleared and the sweep runs it again.
+      const receipt = await dir.admin.getScopeRecord(staff, t, p.scopeId);
+      expect({ provisioned: receipt?.provisionedVersionId, finished: receipt?.retirementsFinishedVersionId ?? null }).toEqual({ provisioned: null, finished: null });
       // The late write now lives where the scope runs; the kept copy is wiped, the guard with it.
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried', 'written after the export'] });
       expect(await tombstoneIn('v1', p.scopeId)).not.toBeNull();
