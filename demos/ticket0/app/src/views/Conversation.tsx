@@ -1220,11 +1220,10 @@ function SavedReplies({
   const [draft, setDraft] = useState<ReplyDraft | null>(null);
   /** The folder manager in place of the preview. */
   const [managing, setManaging] = useState(false);
+  /** The trash in place of the preview (#2161): what was moved there, to restore or delete for good. */
+  const [binOpen, setBinOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Which reply's Delete button is asking a second time. A deletion is not undoable
-   *  and the button sits next to Edit, so one stray click must not be enough. */
-  const [confirming, setConfirming] = useState<string | null>(null);
 
   /**
    * A failed load says so and keeps what it had.
@@ -1265,13 +1264,6 @@ function SavedReplies({
     .filter((r) => (r.title + r.body).toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => a.title.localeCompare(b.title));
   const active = shown[Math.min(i, shown.length - 1)];
-
-  // Moving off a row disarms its Delete. An armed confirmation that survives a walk
-  // through the list is a trap: the second click lands on a row the person is no
-  // longer thinking about.
-  useEffect(() => {
-    if (confirming !== null && confirming !== active?.id) setConfirming(null);
-  }, [active?.id, confirming]);
 
   /** Run one write, say what went wrong, and reload the library when it went right. */
   const write = (call: () => Promise<unknown>, fallback: string, after?: () => void) => {
@@ -1326,10 +1318,8 @@ function SavedReplies({
    */
   const edit = (reply: SavedReplyOut) => {
     setError(null);
-    // An armed Delete must not survive the trip through the editor: click Delete,
-    // click Edit, cancel, and the next single click would delete without asking.
-    setConfirming(null);
     setManaging(false);
+    setBinOpen(false);
     setBusy(true);
     void api
       .getSavedReply({ savedReplyId: reply.id })
@@ -1349,8 +1339,8 @@ function SavedReplies({
 
   /** A blank draft, filed where the list is looking and the desk's unless switched. */
   const compose = () => {
-    setConfirming(null);
     setManaging(false);
+    setBinOpen(false);
     setDraft({
       id: null,
       title: '',
@@ -1374,16 +1364,15 @@ function SavedReplies({
     );
   };
 
-  const remove = (reply: SavedReplyOut) => {
-    if (confirming !== reply.id) {
-      setConfirming(reply.id);
-      return;
-    }
-    write(() => api.deleteSavedReply({ savedReplyId: reply.id }), 'Could not delete that reply.', () => {
-      setDraft(null);
-      setConfirming(null);
-    });
-  };
+  /**
+   * Into the trash, in one click (#2161). It used to be a permanent delete behind a second
+   * click; the trash is undoable for 30 days, so the second click would only be in the way.
+   * Deleting for good is the trash's own button, and that one still asks twice.
+   */
+  const remove = (reply: SavedReplyOut) =>
+    write(() => api.trashSavedReply({ savedReplyId: reply.id }), 'Could not move that reply to the trash.', () =>
+      setDraft(null),
+    );
 
   /** One way: a shared reply is the desk's from then on. */
   const share = (reply: SavedReplyOut) =>
@@ -1408,11 +1397,12 @@ function SavedReplies({
         if (e.key === 'Escape') {
           if (draft) setDraft(null);
           else if (managing) setManaging(false);
+          else if (binOpen) setBinOpen(false);
           else onClose();
           return;
         }
         // While the editor is open the arrows belong to the textarea, not the list.
-        if (draft || managing) return;
+        if (draft || managing || binOpen) return;
         if (e.key === 'ArrowDown') setI((n) => Math.min(shown.length - 1, n + 1));
         if (e.key === 'ArrowUp') setI((n) => Math.max(0, n - 1));
         if (e.key === 'Enter' && active) pick(active);
@@ -1543,6 +1533,8 @@ function SavedReplies({
           </div>
         ) : managing ? (
           <FolderManager folders={folders} busy={busy} write={write} onDone={() => setManaging(false)} />
+        ) : binOpen ? (
+          <TrashManager busy={busy} write={write} onDone={() => setBinOpen(false)} />
         ) : (
           <div style={{ padding: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ font: "400 12px/1.65 'Geist', sans-serif", color: 'var(--secondary)', flex: 1 }}>
@@ -1577,8 +1569,13 @@ function SavedReplies({
                     Share with the desk
                   </button>
                 ) : null}
-                <button className="btn btn-ghost" disabled={busy} onClick={() => remove(active)}>
-                  {confirming === active.id ? 'Delete — click again' : 'Delete'}
+                <button
+                  className="btn btn-ghost"
+                  disabled={busy}
+                  title="It stays in the trash for 30 days, where you can restore it."
+                  onClick={() => remove(active)}
+                >
+                  Move to trash
                 </button>
               </div>
             ) : null}
@@ -1601,8 +1598,25 @@ function SavedReplies({
         </span>
         {draft ? null : (
           <span style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-ghost" disabled={busy} onClick={() => setManaging((m) => !m)}>
+            <button
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() => {
+                setBinOpen(false);
+                setManaging((m) => !m);
+              }}
+            >
               {managing ? 'Close folders' : 'Folders…'}
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() => {
+                setManaging(false);
+                setBinOpen((b) => !b);
+              }}
+            >
+              {binOpen ? 'Close trash' : 'Trash…'}
             </button>
             <button className="btn" disabled={busy} onClick={compose}>
               New reply
@@ -1734,6 +1748,88 @@ function FolderManager({
           Add
         </button>
       </div>
+      <div>
+        <button className="btn btn-ghost" disabled={busy} onClick={onDone}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The saved-reply trash (#2161): the desk's shared replies and your own that were moved
+ * there, each restorable, or deleted for good with a second click. The server decides who
+ * may do either — the owner, or a curator for a shared reply — and a refusal is said in the
+ * picker's error line like every other write. After 30 days the desk deletes them itself.
+ */
+function TrashManager({
+  busy,
+  write,
+  onDone,
+}: {
+  busy: boolean;
+  write: (call: () => Promise<unknown>, fallback: string, after?: () => void) => void;
+  onDone: () => void;
+}) {
+  const [binned, setBinned] = useState<SavedReplyOut[] | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  /** Which reply's Delete-for-good is asking a second time: that one is not undoable. */
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const load = () =>
+    everyPage(
+      () => api.trashedSavedReplies({}),
+      (next) => api.follow<SavedReplyOut>(next),
+    )
+      .then((rows) => {
+        setBinned([...rows].sort((a, b) => a.title.localeCompare(b.title)));
+        setFailed(null);
+      })
+      .catch((e: unknown) => setFailed(failure(e, 'Could not load the trash.')));
+  useEffect(() => {
+    void load();
+  }, []);
+  /** A write, then the trash read again: the picker's own reload refreshes the library. */
+  const act = (call: () => Promise<unknown>, fallback: string) =>
+    write(call, fallback, () => {
+      setConfirming(null);
+      void load();
+    });
+
+  return (
+    <div style={{ padding: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {failed ? <div className="t-small">{failed}</div> : null}
+      {binned === null ? null : binned.length === 0 ? (
+        <div className="t-small">The trash is empty.</div>
+      ) : (
+        binned.map((r) => (
+          <div key={r.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ flex: 1, font: "500 12px 'Geist', sans-serif" }}>
+              {r.title}
+              <span className="t-small mono">{r.owner !== null ? ' · yours' : ''}</span>
+            </span>
+            <button
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() => act(() => api.restoreSavedReply({ savedReplyId: r.id }), 'Could not restore that reply.')}
+            >
+              Restore
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() =>
+                confirming === r.id
+                  ? act(() => api.deleteSavedReply({ savedReplyId: r.id }), 'Could not delete that reply.')
+                  : setConfirming(r.id)
+              }
+            >
+              {confirming === r.id ? 'Delete for good — click again' : 'Delete for good'}
+            </button>
+          </div>
+        ))
+      )}
+      <div className="t-small">Replies in the trash are deleted for good after 30 days.</div>
       <div>
         <button className="btn btn-ghost" disabled={busy} onClick={onDone}>
           Done
