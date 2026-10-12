@@ -95,6 +95,7 @@ import {
   DO_SQL_LIMITS,
   ulid,
   isPrimaryScopeRow,
+  samePeerVertical,
   resolveVerticalInstanceFrom,
   resolvePeerInstanceFrom,
   LEGACY_SCOPE_ROWS_BACKFILL,
@@ -2818,7 +2819,7 @@ export class ControlPlaneDO extends DurableObject {
       const target = this.sql.exec(
         'SELECT tenant_id, vertical, status, kind, forked_from FROM scopes WHERE scope_id = ?', targetScopeId,
       ).toArray()[0] as { tenant_id: string; vertical: string | null; status: string; kind: string | null; forked_from: string | null } | undefined;
-      if (!target || target.tenant_id !== tenantId || target.vertical !== vertical || target.status !== 'active' || !isPrimaryScopeRow(target)) {
+      if (!target || target.tenant_id !== tenantId || !samePeerVertical(target.vertical, vertical) || target.status !== 'active' || !isPrimaryScopeRow(target)) {
         return { ok: false as const, code: 'not_found' as const, message: 'target is not a live primary instance of this vertical in this tenant' };
       }
     }
@@ -2889,7 +2890,8 @@ export class ControlPlaneDO extends DurableObject {
            LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
            LEFT JOIN verticals vr ON vr.slug = s.vertical
            LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
-          WHERE s.tenant_id = ? AND s.vertical = ?`,
+          WHERE s.tenant_id = ?1
+            AND (s.vertical = ?2 OR substr(s.vertical, -length(?2) - 1) = '/' || ?2)`,
         tenantId,
         vertical,
       )
@@ -2914,7 +2916,7 @@ export class ControlPlaneDO extends DurableObject {
         : null;
     // The caller's own state, decided HERE — this DO already applies the kernel's one rule
     // for the target, and the router must not carry a second copy of "what is primary".
-    const callerState: PeerCallerState = !caller || caller.tenant_id !== tenantId || caller.vertical !== callerVertical
+    const callerState: PeerCallerState = !caller || caller.tenant_id !== tenantId || !samePeerVertical(caller.vertical, callerVertical)
       ? 'unknown'
       : !isPrimaryScopeRow(caller)
         ? 'not-primary'

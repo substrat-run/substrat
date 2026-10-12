@@ -14,6 +14,7 @@ import {
   collectPeers,
   peerSeats,
   resolvePeerInstanceFrom,
+  samePeerVertical,
   resolveVerticalInstanceFrom,
   seatScopeTuple,
   switchPeer,
@@ -252,5 +253,46 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', kind: 'preview' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id).outcome).toBe('resolved');
     expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id, true)).toEqual(expected);
+  });
+});
+
+describe('a tenant-pinned registration is the same peer vertical', () => {
+  const T2 = tenantIdOf.parse(ulid());
+  const scope = (vertical: string): VerticalInstanceCandidate => ({
+    id: scopeIdOf.parse(ulid()),
+    tenantId: T2,
+    vertical,
+    status: 'active',
+    kind: '',
+    forkedFrom: null,
+  });
+
+  it('matches the bare slug against `<tenant>/<slug>` and nothing else', () => {
+    expect(samePeerVertical('t-abc/styrelse', 'styrelse')).toBe(true);
+    expect(samePeerVertical('styrelse', 'styrelse')).toBe(true);
+    expect(samePeerVertical('t-abc/my-styrelse', 'styrelse')).toBe(false);
+    expect(samePeerVertical(null, 'styrelse')).toBe(false);
+  });
+
+  it('resolves the declared bare name to the one prefixed install', () => {
+    const only = scope('t-abc/styrelse');
+    expect(resolveVerticalInstanceFrom([only, scope('t-abc/other')], T2, 'styrelse')).toEqual({
+      outcome: 'resolved',
+      instance: { tenantId: T2, scopeId: only.id, vertical: 'styrelse' },
+    });
+  });
+
+  it('stays ambiguous when a bare and a prefixed install both match, and honours a binding', () => {
+    const a = scope('styrelse');
+    const b = scope('t-abc/styrelse');
+    expect(resolveVerticalInstanceFrom([a, b], T2, 'styrelse')).toMatchObject({ outcome: 'ambiguous', count: 2 });
+    expect(resolvePeerInstanceFrom([a, b], T2, 'styrelse', b.id)).toMatchObject({ outcome: 'resolved' });
+  });
+
+  it('admits a caller whose dispatch identity carries the prefix, keyed by the declared name', () => {
+    const { sql } = fresh();
+    const peers = collectPeers([{ peers: [peerSpec.parse({ vertical: 'crm-eff', operations: ['doc/list'], permissions: ['doc:read'] })] }]);
+    const subject = admitPeer(sql, peers, { vertical: 't-abc/crm-eff', scope: callerScope }, 'doc/list');
+    expect(subject).toMatchObject({ kind: 'vertical', id: 'crm-eff' });
   });
 });

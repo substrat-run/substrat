@@ -65,3 +65,26 @@ it('the hosted peer read routes only to the caller’s explicit live target', as
   await expect(host.admin.setPeerBinding(actor, tenant, caller, 'acme/crm', foreign)).rejects.toThrow();
   expect((await read()).target?.scope_id).toBe(second);
 });
+
+it('a tenant-pinned install (`<tenant>/<slug>`) is the instance a bare declared name resolves to, and can be bound', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const actor = platformActorId.parse(ulid());
+  const tenant = tenantId.parse(ulid());
+  const caller = scopeId.parse(ulid());
+  const target = scopeId.parse(ulid());
+  await host.admin.createTenant(actor, { id: tenant, slug: `peer-${tenant.toLowerCase()}`, name: 'Peer' });
+  for (const [scope, vertical] of [[caller, `peer-${tenant.toLowerCase()}/board-room`], [target, `peer-${tenant.toLowerCase()}/crm`]] as const) {
+    await host.provisionScope(actor, { tenantId: tenant, scopeId: scope, vertical });
+    await host.admin.activateScope(actor, tenant, scope);
+  }
+  const dir = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as DurableObjectStub<ControlPlaneDO>;
+  // The router hands the caller's identity and the manifest's target as the bare slugs.
+  const row = await dir.peerCallTarget(tenant, caller, 'board-room', 'crm');
+  expect(row.caller.state).toBe('ok');
+  expect(row.outcome).toBe('resolved');
+  expect(row.target?.scope_id).toBe(target);
+  // A longer slug that merely ends the same way is another vertical.
+  expect((await dir.peerCallTarget(tenant, caller, 'board-room', 'rm')).outcome).toBe('not-installed');
+  await host.admin.setPeerBinding(actor, tenant, caller, 'crm', target);
+  expect((await dir.peerCallTarget(tenant, caller, 'board-room', 'crm')).target?.scope_id).toBe(target);
+});

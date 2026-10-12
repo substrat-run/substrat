@@ -26,7 +26,7 @@ import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
-import { globalFetch, ulid, isPrimaryScope, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
+import { globalFetch, ulid, isPrimaryScope, samePeerVertical, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 import { dashboardRoutes, type appEvent, type installAppInput, type installStep } from './routes.js';
@@ -2197,7 +2197,7 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
     targets.map(async (vertical) => {
       const scopes = await cp.listScopes(vertical);
       const binding = bindings.find((b) => b.vertical === vertical);
-      const choices = (scopes ?? []).filter((s) => s.tenantId === node.tenantId && s.vertical === vertical && s.status === 'active' && isPrimaryScope(s))
+      const choices = (scopes ?? []).filter((s) => s.tenantId === node.tenantId && samePeerVertical(s.vertical, vertical) && s.status === 'active' && isPrimaryScope(s))
         .map((s) => ({ scopeId: s.id, name: s.name }));
       const choice = { vertical, boundScopeId: binding?.targetScopeId ?? null, invalidated: binding?.invalidated ?? false, candidates: choices };
       if (declared !== null && !declared.includes(vertical)) {

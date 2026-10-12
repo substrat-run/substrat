@@ -41,6 +41,11 @@ describe('targetScopeOf', () => {
     expect(targetScopeOf([s], TENANT, 'acme/crm')).toEqual({ scopeId: s.id });
   });
 
+  it('resolves a tenant-pinned install (`<tenant>/<slug>`) for the bare slug a manifest declares', () => {
+    const s = scope({ vertical: 't-abc/crm' });
+    expect(targetScopeOf([s], TENANT, 'crm')).toEqual({ scopeId: s.id });
+  });
+
   it('is null when the tenant runs none of that vertical', () => {
     expect(targetScopeOf([], TENANT, 'acme/crm')).toBeNull();
     expect(targetScopeOf([scope({ vertical: 'acme/ledger' })], TENANT, 'acme/crm')).toBeNull();

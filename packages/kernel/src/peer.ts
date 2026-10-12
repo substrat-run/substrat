@@ -143,28 +143,33 @@ export function admitPeer(
   caller: VerticalCaller,
   operation: string | null,
 ): CheckSubject {
-  const declared = peers.get(caller.vertical);
+  // The declaration's own spelling is the seat's key (`vertical:<slug>` grants, the switch
+  // marker), so a prefixed caller identity is mapped onto it before anything else reads it.
+  const name = peers.has(caller.vertical)
+    ? caller.vertical
+    : ([...peers.keys()].find((declaredName) => samePeerVertical(caller.vertical, declaredName)) ?? caller.vertical);
+  const declared = peers.get(name);
   if (!declared) {
     throw substratError(
       'forbidden',
-      `vertical '${caller.vertical}' is not a declared peer of this vertical — a peer is declared in ` +
+      `vertical '${name}' is not a declared peer of this vertical — a peer is declared in ` +
         `the target's module manifest (\`peers\`), and reviewed in its PERMISSIONS.md`,
     );
   }
-  if (subjectSwitchedOff(db, peerSubjectRef(caller.vertical))) {
+  if (subjectSwitchedOff(db, peerSubjectRef(name))) {
     throw substratError(
       'forbidden',
-      `vertical '${caller.vertical}' is switched off on this scope — restoreToPeer turns it back on`,
+      `vertical '${name}' is switched off on this scope — restoreToPeer turns it back on`,
     );
   }
   if (operation !== null && !declared.operations.has(operation)) {
     throw substratError(
       'forbidden',
-      `vertical '${caller.vertical}' may not invoke '${operation}' — it is not among the operations ` +
+      `vertical '${name}' may not invoke '${operation}' — it is not among the operations ` +
         `this vertical's \`peers\` declaration allows it`,
     );
   }
-  return { kind: 'vertical', id: caller.vertical, scope: caller.scope };
+  return { kind: 'vertical', id: name, scope: caller.scope };
 }
 
 /**
@@ -220,6 +225,19 @@ export function peerGrantsStatus(db: SwitchSql, now: string): PeerGrantsRow[] {
   });
 }
 
+/**
+ * Two registered slugs naming the same peer vertical.
+ *
+ * A push pinned to a tenant registers `<tenantSlug>/<slug>` (the directory's `scopes.vertical`
+ * and the dispatch identity both carry it), while `substrat.calls` and `peers` name the bare
+ * slug. So one name may be the other with a prefix: "styrelse" and "t-abc/styrelse" are one
+ * vertical to the resolver, the door and the dashboard alike — as the CLI's `installs` has
+ * always read them. Equal slugs match first, so a slug that itself contains a `/` still works.
+ */
+export function samePeerVertical(a: string | null | undefined, b: string): boolean {
+  return a != null && (a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`));
+}
+
 /** A directory row, as much of it as the resolution reads. */
 export type VerticalInstanceCandidate = Pick<Scope, 'id' | 'tenantId' | 'vertical' | 'status' | 'kind' | 'forkedFrom'>;
 
@@ -241,7 +259,7 @@ export function resolveVerticalInstanceFrom(
 ): VerticalResolution {
   const matches: VerticalInstanceCandidate[] = [];
   for (const scope of scopes) {
-    if (scope.tenantId !== tenantId || scope.vertical !== vertical) continue;
+    if (scope.tenantId !== tenantId || !samePeerVertical(scope.vertical, vertical)) continue;
     if (scope.status !== 'active' || !isPrimaryScope(scope)) continue;
     matches.push(scope);
   }
@@ -269,7 +287,7 @@ export function resolvePeerInstanceFrom(
   if (boundScopeId === null) return resolveVerticalInstanceFrom(candidates, tenantId, vertical);
   if (invalidated) return { outcome: 'bound-unavailable', tenantId, vertical, targetScopeId: boundScopeId };
   const target = candidates.find((scope) =>
-    scope.id === boundScopeId && scope.tenantId === tenantId && scope.vertical === vertical &&
+    scope.id === boundScopeId && scope.tenantId === tenantId && samePeerVertical(scope.vertical, vertical) &&
     scope.status === 'active' && isPrimaryScope(scope),
   );
   return target
