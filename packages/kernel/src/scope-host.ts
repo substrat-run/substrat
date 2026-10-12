@@ -356,9 +356,13 @@ export interface OperationContext {
    * event the call emits, and the request the dashboard opens for it. For module code to put
    * in its own error messages, so a person who saw one can quote it.
    *
-   * In a consumer, the id of the request whose event it is handling; in a schedule run, the
-   * id the host minted for that run. `null` when nothing carried one: an in-process call (a
-   * test, a seed) that passed no `invocationId`. Opaque — read it only to repeat it.
+   * In a consumer, the id of its DELIVERY, the one its async invocation line carries: the
+   * originating request's id when the event is delivered inside that call, and an id minted
+   * for the delivery otherwise — a retry, a drain, or the tail of a call that carried none.
+   * So a consumer's id is never `null`, and on a retry it is one no response carried. In a
+   * schedule run, the id the host minted for that run. `null` only on an operation called
+   * with no `invocationId` (an in-process call: a test, a seed). Opaque — read it only to
+   * repeat it.
    */
   readonly requestId: string | null;
   /** Envelope is stamped kernel-side (id, occurredAt, tenant, scope, actor); input is validated. */

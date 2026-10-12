@@ -453,7 +453,10 @@ export function invocationLog<Env = unknown>(
       await next();
       // #2192: after the handler, so whatever answered — a route's own `Response`, the
       // `onError` envelope — carries it. Set before, Hono would keep it only on a response it
-      // built itself. Not on an upgrade, whose socket a rewritten response would drop.
+      // built itself. Hono's `c.header` on an answered context COPIES the response (every one,
+      // not only an immutable one); the body stream is not read. That is this path only: the
+      // platform's entry copies just when the headers refuse a `set`. Not on an upgrade, whose
+      // socket a copy would drop.
       if (c.res?.status !== 101) c.header?.(REQUEST_ID_HEADER, stamp.invocationId);
     } catch (e) {
       threw = true;

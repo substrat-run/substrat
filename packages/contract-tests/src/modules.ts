@@ -2990,7 +2990,8 @@ export const asyncLogMod: ModuleRegistration = {
   consumers: {
     'asynclog.acted': ((ctx, event) => {
       const { tag, fail } = event.payload as { tag: string; fail: boolean };
-      ctx.log.info('consumed {tag}', { tag });
+      // #2192: the consumer's `ctx.requestId`, held by the suite to the delivery's own id.
+      ctx.log.info('consumed {tag}', { tag, requestId: ctx.requestId });
       if (fail) throw substratError('precondition_failed', `refused ${tag}: ${ASYNC_LOG_SECRET_TEXT}`);
     }) as ConsumerHandler,
   },
