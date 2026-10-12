@@ -1770,12 +1770,13 @@ app.get('/api/apps/:scopeId/audit', async (c) => {
  * `list-apps`, so a foreign scope id is a 404, and the read goes through the tenant-narrowed plane.
  */
 async function auditLogOf(c: Context<{ Bindings: Env }>, host: CloudflareScopeHost, node: DashboardNode, page: ListPageQuery, asked?: string) {
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  if (!asked) return cp.auditLogPage({ limit: page.limit, cursor: page.cursor });
+  if (!asked) return controlPlaneFor(c.env, node.tenantId, node.principal).auditLogPage({ limit: page.limit, cursor: page.cursor });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === asked);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  // After the lookup: a foreign scope id is a 404 whether or not a control plane is bound.
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return cp.auditLogPage({ limit: page.limit, cursor: page.cursor }, scopeId.parse(appRow.app_scope_id));
 }
 
@@ -5373,7 +5374,7 @@ const routeHandlers = {
   'dashboard/list-app-audit': async ({ c, host, node }, { scopeId: appScopeId, ...page }) =>
     auditLogOf(c, host, node, listPageQuery.parse(page), appScopeId),
   'dashboard/list-team-audit': async ({ c, host, node }, { scopeId: asked, ...page }) =>
-    auditLogOf(c, host, node, listPageQuery.parse(page), asked),
+    auditLogOf(c, host, node, listPageQuery.parse(page), asked || undefined),
   'dashboard/list-findings': async (ctx, filter) => {
     const page = await (await findingsPlane(ctx, 'read')).listFindings(filter);
     return page === null ? { available: false, entries: [], nextCursor: null, cut: false } : { available: true, ...page };

@@ -107,7 +107,8 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/list-team-audit': {
     summary: "One page of this team's whole admin log, or one app's with `scopeId`, newest first",
-    input: z.object({ scopeId: z.string().min(1).optional(), ...pageInput }),
+    // An empty `scopeId` is no narrowing — the whole log, as the cookie route reads it.
+    input: z.object({ scopeId: z.string().optional(), ...pageInput }),
     output: pageOutput(adminLogEntry),
     http: { method: 'GET', path: '/audit' },
   },
