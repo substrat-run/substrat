@@ -9681,6 +9681,30 @@ export function scopeHostContractSuite(
           sampled: 1,
         });
 
+        // A later day that no longer names a binding stops billing it. Yesterday's row
+        // stays until retention; the latest day that measured stores is the one read.
+        const vanished = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: vanished, slug: 'gauge-stores-gone', name: 'Gauge Stores Gone' });
+        const gone = await newScope(vanished);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: vanished,
+          scopeId: gone,
+          bytes: 100,
+          readAt: day(-1, '08:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 40 }, { binding: 'BLOBS', bytes: 2 }],
+        }]);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: vanished,
+          scopeId: gone,
+          bytes: 100,
+          readAt: day(0, '08:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 7 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: vanished })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 7,
+          sampled: 1,
+        });
+
         const old = new Date();
         old.setUTCMonth(old.getUTCMonth() - 14);
         const aged = tenantId.parse(ulid());
@@ -9697,6 +9721,8 @@ export function scopeHostContractSuite(
           bytes: 9,
           sampled: 1,
         });
+        // One call deletes at most the limit, shared by the database table and the store table.
+        expect(await host.admin.pruneScopeStorage!(staff, 1)).toBe(1);
         while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
         expect((await host.admin.readMeters(staff, { tenantId: aged })).perTenant[0]!.storage?.stores).toBeUndefined();
         // The recent tenant's sample is inside retention, so the prune leaves it.

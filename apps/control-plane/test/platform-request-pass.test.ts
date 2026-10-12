@@ -19,6 +19,7 @@ import worker, {
   platformRequestSweepRun,
   recordPlatformRequestPass,
   storageReaderFor,
+  storeStorageReaderFor,
   timedDrain,
 } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -450,6 +451,47 @@ describe('storageReaderFor (#1524)', () => {
       return undefined;
     });
     await expect(read(scope(null))).resolves.toBeNull();
+    expect(resolved).toBe(0);
+  });
+});
+
+describe('storeStorageReaderFor (#2212)', () => {
+  const scope = (vertical: string | null) =>
+    ({ id: scopeId.parse(ulid()), tenantId: tenantId.parse(ulid()), vertical }) as unknown as Parameters<
+      ReturnType<typeof storeStorageReaderFor>
+    >[0];
+
+  it('turns a deployment without the route into the standing condition', async () => {
+    for (const [status, res] of [
+      [501, () => Response.json({ error: 'this deployment cannot read scope store sizes (#2212). Redeploy it' }, { status: 501 })],
+      [404, () => new Response('404 Not Found', { status: 404 })],
+    ] as const) {
+      const read = storeStorageReaderFor(
+        async () => new VerticalClient({ fetch: (async () => res()) as unknown as typeof fetch, platformSecret: 'secret' }),
+      );
+      const err = await read(scope('todo')).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StorageReadUnsupported);
+      expect((err as Error).message).toMatch(new RegExp(`cannot read scope store sizes \\(${status}\\)`));
+    }
+  });
+
+  it('passes any other failure on, and skips a scope with no vertical', async () => {
+    const read = storeStorageReaderFor(
+      async () =>
+        new VerticalClient({
+          fetch: (async () => new Response('upstream unavailable', { status: 503 })) as unknown as typeof fetch,
+          platformSecret: 'secret',
+        }),
+    );
+    const err = await read(scope('todo')).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err).not.toBeInstanceOf(StorageReadUnsupported);
+    let resolved = 0;
+    const skip = storeStorageReaderFor(async () => {
+      resolved += 1;
+      return undefined;
+    });
+    await expect(skip(scope(null))).resolves.toBeNull();
     expect(resolved).toBe(0);
   });
 });

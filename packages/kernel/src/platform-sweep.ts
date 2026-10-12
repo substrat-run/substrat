@@ -757,8 +757,9 @@ export interface StorageGaugeSweepOptions {
   /**
    * Scope stores read in the same pass as the database, and only for a scope that pass
    * already decided was due (#2212). Absent means this deployment does not sample stores.
-   * `null` declines, the way `read` does. A throw fails the attempt, so the database
-   * sample is not recorded either and the scope is tried again once it is due.
+   * `null` declines, the way `read` does. A throw records the database sample and
+   * leaves that day's store rows as they are: the attempt carries the error, and a
+   * deployment that cannot read stores (`StorageReadUnsupported`) stays out of the digest.
    */
   readStores?: (scope: Scope) => Promise<{ binding: string; bytes: number }[] | null>;
   /** The instant the pass judges age against. Default the wall clock. */
@@ -2923,7 +2924,21 @@ async function sweepStorageGauge(
             return;
           }
           if (!Number.isInteger(bytes) || bytes < 0) throw new Error(`not a size: ${String(bytes)}`);
-          const stores = gauge.readStores ? await gauge.readStores(s) : undefined;
+          // The store read is its own attempt. A failure here must not throw away the
+          // database size just read, and must not replace the day's store rows.
+          let stores: { binding: string; bytes: number }[] | null | undefined;
+          if (gauge.readStores) {
+            try {
+              stores = await gauge.readStores(s);
+            } catch (err) {
+              out.read += 1;
+              out.failed += 1;
+              attempts.push({ ...attempt, bytes, error: message(err) });
+              if (isUnsupported(err)) out.unsupported += 1;
+              else report.errors.push({ kind: 'storage', id: s.id, error: message(err) });
+              return;
+            }
+          }
           if (stores === null) {
             attempts.push({ ...attempt, bytes });
           } else {

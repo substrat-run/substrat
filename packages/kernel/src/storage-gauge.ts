@@ -298,16 +298,19 @@ export function listScopeStorageAttemptRows(sql: RedactionSql, tenantId?: Tenant
   }));
 }
 
-/** Delete at most `limit` samples older than retention, oldest first. Returns how many went. */
+/** Delete at most `limit` samples older than retention, oldest first, across both tables. Returns how many went. */
 export function pruneScopeStorageRows(sql: RedactionSql, nowMs: number, limit: number): number {
   const horizon = storageRetentionHorizon(nowMs);
   const capped = assertRowLimit('limit', limit);
   const databases = sql(boundedRetentionDelete('_substrat_scope_storage', 'day'), [horizon, capped]).length;
-  const stores = sql(boundedRetentionDelete('_substrat_scope_store_storage', 'day'), [horizon, capped]).length;
+  const remaining = capped - databases;
+  const stores = remaining > 0
+    ? sql(boundedRetentionDelete('_substrat_scope_store_storage', 'day'), [horizon, remaining]).length
+    : 0;
   return databases + stores;
 }
 
-/** The latest store sample of each (scope, binding) that still holds a store. */
+/** Bindings on the latest day that measured stores for the scope. A binding absent that day has stopped. */
 export function listScopeStoreStorageRows(
   sql: RedactionSql,
   tenantId?: TenantId,
@@ -318,7 +321,7 @@ export function listScopeStoreStorageRows(
        JOIN _substrat_scope_store_storage g ON g.scope_id = s.scope_id AND g.tenant_id = s.tenant_id
         AND g.day = (
           SELECT MAX(m.day) FROM _substrat_scope_store_storage m
-           WHERE m.scope_id = g.scope_id AND m.binding = g.binding
+           WHERE m.scope_id = g.scope_id AND m.tenant_id = g.tenant_id
         )
       WHERE ${holdsStoreSql('s.')}${tenantId ? ' AND s.tenant_id = ?' : ''}
       ORDER BY g.scope_id, g.binding`,

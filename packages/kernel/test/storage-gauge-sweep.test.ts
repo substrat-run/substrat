@@ -210,6 +210,28 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     expect(report.storage).toMatchObject({ failed: 2, unsupported: 1 });
   });
 
+  it('a store read that fails still records the database sample and does not replace store rows', async () => {
+    const [old, broken] = [sid(), sid()];
+    const { host, recorded } = gaugeHost({ scopes: [old, broken] });
+    const r = reader();
+    const report = await sweep(host, {
+      drainPlatformRequestsFn: async () => drained,
+      storageGauge: {
+        read: r.read,
+        readStores: async (s) => {
+          if (s.id === old) throw new StorageReadUnsupported('cannot read scope store sizes (501); redeploy it');
+          throw new Error('store down');
+        },
+      },
+    });
+    expect(recorded.find((x) => x.scopeId === old)).toMatchObject({ bytes: 4096, error: expect.stringMatching(/501/) });
+    expect(recorded.find((x) => x.scopeId === old)).not.toHaveProperty('stores');
+    expect(recorded.find((x) => x.scopeId === broken)).toMatchObject({ bytes: 4096, error: 'store down' });
+    expect(recorded.find((x) => x.scopeId === broken)).not.toHaveProperty('stores');
+    expect(report.errors).toEqual([{ kind: 'storage', id: broken, error: 'store down' }]);
+    expect(report.storage).toMatchObject({ read: 2, failed: 2, unsupported: 1 });
+  });
+
   it('does not retry a scope that failed recently: it waits a day, behind nothing', async () => {
     // A batch-full of scopes that failed an hour ago, and one never tried. Without the attempt
     // record the failures would stay due and take every slot on every pass.
