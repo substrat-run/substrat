@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
-import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
+import { api, signIn, signOut, teamApi, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
+import { ApiError as TeamApiError } from './lib/api.generated';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { removalRefusalDetail } from './lib/bound-scopes';
 import { promoteWithCheckpoint, type Acks, type Checkpoint } from './lib/promote-review';
@@ -405,6 +406,14 @@ export function App() {
     return () => clearInterval(t);
   }, [apps, reloadApps]);
 
+  // The team the TAB is on (#2170): the lifecycle writes name it in their own URL, so a
+  // second tab on another team cannot decide which team this tab installs into or deletes from.
+  const currentTeamId = me && !needsOnboarding(me) ? me.currentTeamId : null;
+  const teamClient = useCallback(() => {
+    if (!currentTeamId) throw new Error('no current team');
+    return teamApi(currentTeamId);
+  }, [currentTeamId]);
+
   const createApp = useCallback(
     async (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => {
       let name = input.name;
@@ -413,7 +422,7 @@ export function App() {
           const row: AppRow = { id: String(Date.now()), app_scope_id: `01J${Date.now()}`, vertical_slug: input.verticalSlug, name, status: 'provisioning', hostname: null, created_by: MOCK_ME.email!, created_at: new Date().toISOString() };
           setApps((a) => [row, ...a]);
         } else {
-          const row = await api.createApp(input);
+          const row = await teamClient().installApp(input);
           name = row.name;
           await reloadApps();
         }
@@ -426,7 +435,7 @@ export function App() {
         setToast({ status: 'danger', title: `Couldn’t create ${name}`, detail: e instanceof Error ? e.message : String(e) });
       }
     },
-    [reloadApps],
+    [reloadApps, teamClient],
   );
 
   // The promote checkpoint's open question (#1677): what the dialog is showing, and the
@@ -451,14 +460,14 @@ export function App() {
       try {
         if (DEV_MOCK) setApps((a) => a.filter((x) => x.id !== app.id));
         else {
-          await api.deleteApp(app.id);
+          await teamClient().removeApp({ id: app.id });
           await reloadApps();
         }
         go('/apps');
         setToast({ status: 'success', title: `${app.name} deleted`, detail: 'Its hostname is offline; audit history is retained.' });
       } catch (e) {
         // Already gone (e.g. a slipped double-submit) is the state we wanted, not an error.
-        if (e instanceof ApiError && e.status === 404) {
+        if (e instanceof TeamApiError && e.status === 404) {
           await reloadApps();
           go('/apps');
         } else {
@@ -468,7 +477,7 @@ export function App() {
         deletingRef.current = false;
       }
     },
-    [reloadApps],
+    [reloadApps, teamClient],
   );
 
   const retryingRef = useRef(false);
@@ -481,7 +490,7 @@ export function App() {
         if (DEV_MOCK) {
           setApps((a) => a.map((x) => (x.app_scope_id === scopeId ? { ...x, status: 'provisioning' } : x)));
         } else {
-          await api.retryApp(scopeId);
+          await teamClient().retryApp({ scopeId });
           await reloadApps();
         }
         go('/apps');
@@ -495,7 +504,7 @@ export function App() {
         retryingRef.current = false;
       }
     },
-    [reloadApps],
+    [reloadApps, teamClient],
   );
 
   const resumingRef = useRef(false);
@@ -507,7 +516,7 @@ export function App() {
         if (DEV_MOCK) {
           setApps((a) => a.map((x) => (x.app_scope_id === scopeId ? { ...x, status: 'active' } : x)));
         } else {
-          await api.resumeApp(scopeId);
+          await teamClient().resumeApp({ scopeId });
           await reloadApps();
         }
         setToast({ status: 'success', title: 'Resumed', detail: 'Setup finished — the app is active.' });
@@ -520,7 +529,7 @@ export function App() {
         resumingRef.current = false;
       }
     },
-    [reloadApps],
+    [reloadApps, teamClient],
   );
 
   const promoteDeployment = useCallback(
