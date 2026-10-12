@@ -46,6 +46,45 @@ function defaultErrorMessage(body: unknown): string | undefined {
 }
 
 
+/** `adminLogEntry` — a published schema, not a stored row. */
+export interface AdminLogEntry {
+  id: string;
+  actor: string;
+  action: "defineRole" | "assignRole" | "unassignRole" | "grant" | "grantEntityShape" | "reconcileEntityGrantShapes" | "grantToOrg" | "addMember" | "removeMember" | "createOrg" | "registerIdentityPool" | "registerVertical" | "publishVersion" | "admitVersion" | "rejectVersion" | "setVerticalListed" | "requestPublish" | "setVerticalInstallsBlocked" | "setVerticalTenantProvisioner" | "setVerticalEmailSender" | "deleteVertical" | "bindScopeVersion" | "markScopeProvisioned" | "promoteVersion" | "setVerticalServing" | "setScopeServingRef" | "setScopeExpiresAt" | "resolveKeptCopy" | "backfillScopeCopy" | "bindHostname" | "setHostnameStatus" | "setHostnameIssuance" | "unbindHostname" | "drainAccessLog" | "drainEvents" | "redrainEvents" | "pruneAccessLog" | "createTenant" | "setTenantStatus" | "setTenantName" | "reapTenant" | "provisionScope" | "provisionTenantStore" | "provisionBlobStore" | "importScope" | "restoreScope" | "rewindScope" | "deleteSnapshot" | "suspendScope" | "unsuspendScope" | "archiveScope" | "unarchiveScope" | "reapScope" | "activateScope" | "grantEntitlement" | "revokeEntitlement" | "linkIdentity" | "unlinkIdentity" | "createConnection" | "updateConnectionSecret" | "revokeConnection" | "mintConnectLink" | "revokeConnectLink" | "consumeConnectLink" | "restoreConnectLink" | "grantToConnection" | "grantToSystem" | "revokeFromSystem" | "restoreToSystem" | "reassertSystemSwitch" | "revokeFromPeer" | "restoreToPeer" | "reassertPeerSwitch" | "moveImportCursor" | "restoreDirectory" | "shredSubject" | "setIssueStatus" | "beginImpersonation" | "endImpersonation" | "mintCapability" | "revokeCapability" | "transferOwner" | "markScopeCopy" | "clearScopeCopyMark" | "setFindingStatus" | "createFindingRule" | "revokeFindingRule" | "resolveStaleFinding" | "manageScopeMember" | "setPeerBinding";
+  tenantId: string | null;
+  scopeId: string | null;
+  vertical: string | null;
+  before: unknown | null;
+  after: unknown | null;
+  causedBy: string | null;
+  onBehalfOf?: { principal: string; tenantId: string; impersonation?: { session: string; by: string } } | null;
+  at: string;
+  audited?: { operationId: string; outcome: "pending" | "applied" | "refused" | "failed" | "unknown" | "conflicting"; superseded: boolean };
+}
+
+/** `appEvent` — a published schema, not a stored row. */
+export interface AppEvent {
+  id: string;
+  app_scope_id: string;
+  kind: "created" | "active" | "failed" | "deleted" | "updated" | "snapshotted" | "snapshot-deleted" | "data-exported" | "data-restored" | "hostname-bound" | "hostname-unbound" | "resumed";
+  detail: string | null;
+  actor: string;
+  created_at: string;
+}
+
+/** `appRow` — a published schema, not a stored row. */
+export interface AppRow {
+  id: string;
+  app_scope_id: string;
+  vertical_slug: string;
+  name: string;
+  status: "provisioning" | "active" | "failed";
+  hostname: string | null;
+  provision_result?: string | null;
+  created_by: string;
+  created_at: string;
+}
+
 /** `findingEntry` — a published schema, not a stored row. */
 export interface FindingEntry {
   id: string;
@@ -87,6 +126,17 @@ export interface FindingRuleEntry {
   createdAt: string;
 }
 
+/** `installStep` — a published schema, not a stored row. */
+export interface InstallStep {
+  step: string;
+  seq: number;
+  status: "running" | "done" | "failed";
+  attempts: number;
+  last_error: string | null;
+  started_at: string;
+  settled_at: string | null;
+}
+
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface DashboardClient {
   /**
@@ -95,6 +145,34 @@ export interface DashboardClient {
    * `POST /findings/rules` — `dashboard/create-finding-rule`
    */
   createFindingRule(input: { kind?: "invariant" | "drift" | "recurring"; operation?: string; code?: "unauthenticated" | "permission_denied" | "forbidden" | "not_found" | "conflict" | "validation_failed" | "precondition_failed" | "rate_limited" | "unavailable" | "internal"; subject?: string; expiresAt: string; reason: string }): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
+
+  /**
+   * An app's durable install record: directory, provision, activate, hostname, identity
+   *
+   * `GET /apps/{scopeId}/steps` — `dashboard/get-app-install-steps`
+   */
+  getAppInstallSteps(input: { scopeId: string }): Promise<InstallStep[]>;
+
+  /**
+   * One page of the control-plane admin log for one of this team's apps, newest first
+   *
+   * `GET /apps/{scopeId}/audit` — `dashboard/list-app-audit`
+   */
+  listAppAudit(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
+
+  /**
+   * One page of an app's lifecycle trail (Activity panel), newest first
+   *
+   * `GET /apps/{scopeId}/events` — `dashboard/list-app-events`
+   */
+  listAppEvents(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ entries: AppEvent[]; nextCursor: string | null }>;
+
+  /**
+   * One page of this team's apps, newest first
+   *
+   * `GET /apps` — `dashboard/list-apps`
+   */
+  listApps(input: { limit?: number; cursor?: string }): Promise<{ entries: AppRow[]; nextCursor: string | null }>;
 
   /**
    * This team's suppress rules; `active` keeps the unexpired ones
@@ -109,6 +187,13 @@ export interface DashboardClient {
    * `GET /findings` — `dashboard/list-findings`
    */
   listFindings(input: { status?: "open" | "acked" | "resolved" | "suppressed"; kind?: "invariant" | "drift" | "recurring"; limit?: number; cursor?: string }): Promise<{ available: boolean; entries: FindingEntry[]; nextCursor: string | null; cut: boolean }>;
+
+  /**
+   * One page of this team's whole admin log, or one app's with `scopeId`, newest first
+   *
+   * `GET /audit` — `dashboard/list-team-audit`
+   */
+  listTeamAudit(input: { scopeId?: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
 
   /**
    * End a suppress rule now
@@ -186,10 +271,20 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
   return {
     createFindingRule: (input: Args) =>
       send("/findings/rules", "POST", input, undefined),
+    getAppInstallSteps: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppAudit: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/audit`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppEvents: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/events`, "GET", undefined, omit(input, ["scopeId"])),
+    listApps: (input: Args) =>
+      send("/apps", "GET", undefined, input),
     listFindingRules: (input: Args) =>
       send("/findings/rules", "GET", undefined, input),
     listFindings: (input: Args) =>
       send("/findings", "GET", undefined, input),
+    listTeamAudit: (input: Args) =>
+      send("/audit", "GET", undefined, input),
     revokeFindingRule: (input: Args) =>
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     setFindingStatus: (input: Args) =>
