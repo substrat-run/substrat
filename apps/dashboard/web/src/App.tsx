@@ -212,21 +212,30 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // The team the TAB is on (#2170): the app list and the lifecycle writes name it in their
+  // own URL, so a second tab on another team cannot decide which team this tab lists,
+  // installs into or deletes from.
+  const currentTeamId = me && !needsOnboarding(me) ? me.currentTeamId : null;
+  const teamClient = useCallback(() => {
+    if (!currentTeamId) throw new Error('no current team');
+    return teamApi(currentTeamId);
+  }, [currentTeamId]);
+
   // Refresh = back to the FIRST page (the newest window); "Load more" appends below.
   const reloadApps = useCallback(async () => {
-    if (DEV_MOCK) return;
-    const page = await api.listApps();
+    if (DEV_MOCK || !currentTeamId) return;
+    const page = await teamApi(currentTeamId).listApps({});
     setApps(page.entries);
     setAppsCursor(page.nextCursor);
-  }, []);
+  }, [currentTeamId]);
 
   const appsMoreRef = useRef(false);
   const loadMoreApps = useCallback(async () => {
-    if (DEV_MOCK || appsMoreRef.current || !appsCursor) return;
+    if (DEV_MOCK || appsMoreRef.current || !appsCursor || !currentTeamId) return;
     appsMoreRef.current = true;
     setAppsLoadingMore(true);
     try {
-      const page = await api.listApps({ cursor: appsCursor });
+      const page = await teamApi(currentTeamId).listApps({ cursor: appsCursor });
       // Dedupe against a refresh that raced this append (the provisioning poll).
       setApps((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.id === e.id))]);
       setAppsCursor(page.nextCursor);
@@ -234,7 +243,7 @@ export function App() {
       appsMoreRef.current = false;
       setAppsLoadingMore(false);
     }
-  }, [appsCursor]);
+  }, [appsCursor, currentTeamId]);
 
   /** The install's durable step record (#424), for the cards' live progress list. */
   const loadInstallSteps = useCallback(
@@ -345,7 +354,7 @@ export function App() {
       if (m && !needsOnboarding(m)) {
         const emptyPage = { entries: [] as Member[], nextCursor: null };
         const [a, mem, c, d] = await Promise.all([
-          api.listApps(),
+          teamApi(m.currentTeamId).listApps({}),
           api.listMembers().catch(() => emptyPage),
           api.catalog(),
           api.listDeployments().catch(() => []),
@@ -405,14 +414,6 @@ export function App() {
     const t = setInterval(() => void reloadApps().catch(() => {}), 5000);
     return () => clearInterval(t);
   }, [apps, reloadApps]);
-
-  // The team the TAB is on (#2170): the lifecycle writes name it in their own URL, so a
-  // second tab on another team cannot decide which team this tab installs into or deletes from.
-  const currentTeamId = me && !needsOnboarding(me) ? me.currentTeamId : null;
-  const teamClient = useCallback(() => {
-    if (!currentTeamId) throw new Error('no current team');
-    return teamApi(currentTeamId);
-  }, [currentTeamId]);
 
   const createApp = useCallback(
     async (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => {
