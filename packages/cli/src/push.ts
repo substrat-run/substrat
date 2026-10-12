@@ -1449,6 +1449,22 @@ export function declaredStoresOf(cfg: Record<string, unknown>): {
 }
 
 /**
+ * Static binding names that are not already an own store (#2224).
+ *
+ * An own store is declared twice in a push: once as `runtimeNeeds.stores` and
+ * once as the wrangler durable-object binding `declaredStoresOf` reads back.
+ * Those are the same store. Passing the name in both lists makes the distinct
+ * check refuse `SCOPE` on every vertical that has one.
+ */
+export function bindingsBesideOwnStores(
+  own: readonly { binding: string }[] | undefined,
+  bindings: readonly { name: string }[],
+): string[] {
+  const ownNames = new Set((own ?? []).map((store) => store.binding));
+  return bindings.map((binding) => binding.name).filter((name) => !ownNames.has(name));
+}
+
+/**
  * A vertical's own static binding may not take the attachment store's name (#1995). When the
  * push declares that store, the platform binds `ATTACHMENTS__<tenant>` once per installed
  * tenant on the same script, and the host reads attachment bytes through exactly that name —
@@ -1579,7 +1595,7 @@ export async function push(
     tenantStores: stores.tenantStores,
     blobStores: stores.blobStores,
     scopeStores: needs?.scopeStores,
-    bindingNames: bindings.map((b) => b.name),
+    bindingNames: bindingsBesideOwnStores(needs?.stores, bindings),
   });
   assertAttachmentBindingFree(bindings, stores.blobStores);
 

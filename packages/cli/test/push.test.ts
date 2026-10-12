@@ -17,7 +17,7 @@ import {
   type PermissionRegistry,
 } from '@substrat-run/contracts';
 import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, flattenDeclaredSchedules,
-  flattenDeclaredFreshness, flattenDeclaredEvents, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
+  flattenDeclaredFreshness, flattenDeclaredEvents, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath, declaredStoresOf, bindingsBesideOwnStores } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -158,6 +158,26 @@ describe('readRuntimeNeeds', () => {
       },
     });
     expect(() => manifestStoresOf(readRuntimeNeeds(dir), false)).toThrow(/twice/);
+  });
+
+  it('an own store that is also the wrangler binding is one store, and no scope store is required', () => {
+    const needs = runtimeNeeds.parse({
+      entry: 'src/worker.ts',
+      stores: [
+        { binding: 'SCOPE', class: 'ScopeDO' },
+        { binding: 'AUTH', class: 'IdentityDO' },
+      ],
+    });
+    const { bindings } = declaredStoresOf(wranglerConfigFor(needs));
+    expect(needs.scopeStores).toEqual([]);
+    expect(bindings.map((b) => b.name)).toEqual(['SCOPE', 'AUTH']);
+    expect(() =>
+      assertDeclaredScopeStores({
+        own: needs.stores,
+        scopeStores: needs.scopeStores,
+        bindingNames: bindingsBesideOwnStores(needs.stores, bindings),
+      }),
+    ).not.toThrow();
   });
 
   it('reads a scope store, and refuses it while the kind has no registration', () => {

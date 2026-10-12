@@ -8,7 +8,11 @@ import {
   runtimeNeeds,
   scopeStoreBindingName,
   storeKindRegistration,
+  tenantStoreBindingName,
 } from '../src/index.js';
+
+/** A tenant id the per-tenant runtime name can be built from. */
+const TENANT = '01JTESTATTACHTENANT000000A';
 
 const baseManifest = {
   version: '1.0.0',
@@ -55,30 +59,63 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   it('refuses a binding declared twice, including across store lists', () => {
     expect(() =>
       assertStoreBindingsDistinct({
-        scopeStores: [
-          { binding: 'GRAPH', kind: 'ontomate' },
-          { binding: 'GRAPH', kind: 'ontomate' },
-        ],
+        scopeStores: [{ binding: 'GRAPH' }, { binding: 'GRAPH' }],
       }),
     ).toThrow(/binding 'GRAPH' is declared as/);
     expect(() =>
       assertStoreBindingsDistinct({
-        tenantStores: [{ binding: 'FILES', kind: 'relational' }],
-        scopeStores: [{ binding: 'FILES', kind: 'ontomate' }],
+        tenantStores: [{ binding: 'FILES' }],
+        scopeStores: [{ binding: 'FILES' }],
       }),
     ).toThrow(/binding 'FILES' is declared as/);
     expect(() =>
       assertStoreBindingsDistinct({
         own: [{ binding: 'SCOPE' }],
-        scopeStores: [{ binding: 'SCOPE', kind: 'ontomate' }],
+        scopeStores: [{ binding: 'SCOPE' }],
       }),
     ).toThrow(/binding 'SCOPE' is declared as/);
   });
 
-  it('refuses ATTACHMENTS as a scope store', () => {
+  it('compares a static binding to the name that lands on the worker', () => {
+    // The declared spelling is not the injected binding. DB becomes DB__<tenant>,
+    // GRAPH becomes SUBSTRAT_STORE_GRAPH, so a static binding of the declared
+    // spelling is a different store.
     expect(() =>
-      assertStoreBindingsDistinct({ scopeStores: [{ binding: 'ATTACHMENTS', kind: 'ontomate' }] }),
-    ).toThrow(/attachment blob store/);
+      assertStoreBindingsDistinct({
+        tenantStores: [{ binding: 'DB' }],
+        bindingNames: ['DB'],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertStoreBindingsDistinct({
+        scopeStores: [{ binding: 'GRAPH' }],
+        bindingNames: ['GRAPH'],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertStoreBindingsDistinct({
+        tenantStores: [{ binding: 'DB' }],
+        bindingNames: [tenantStoreBindingName('DB', TENANT)],
+      }),
+    ).toThrow(/runtime name of per-tenant store 'DB'/);
+    expect(() =>
+      assertStoreBindingsDistinct({
+        scopeStores: [{ binding: 'GRAPH' }],
+        bindingNames: [scopeStoreBindingName('GRAPH')],
+      }),
+    ).toThrow(/runtime name of scope store 'GRAPH'/);
+    expect(() =>
+      assertStoreBindingsDistinct({
+        own: [{ binding: 'SCOPE' }],
+        bindingNames: ['SCOPE'],
+      }),
+    ).toThrow(/an own store and as a static binding/);
+  });
+
+  it('refuses ATTACHMENTS as a scope store', () => {
+    expect(() => assertStoreBindingsDistinct({ scopeStores: [{ binding: 'ATTACHMENTS' }] })).toThrow(
+      /attachment blob store/,
+    );
   });
 
   it('refuses ontomate while no kind is registered', () => {

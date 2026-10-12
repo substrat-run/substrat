@@ -470,10 +470,28 @@ export function manifestStoresOf(
 }
 
 /**
- * One binding name is one store (#2207, #2221). Compared across the vertical's own
- * Durable Object classes, the per-tenant stores, the scope stores, and — when the
- * caller has them — the static binding names on the manifest. `ATTACHMENTS` stays
- * the attachment blob store and cannot be a scope store.
+ * Whether `name` is the binding a per-tenant store is injected as
+ * ({@link tenantStoreBindingName}): `<BINDING>__<tenant>`. The declared spelling
+ * `DB` is a different name from `DB__<tenant>`, and a static binding of the
+ * declared spelling does not collide with the store.
+ */
+function isPerTenantRuntimeName(name: string, binding: string): boolean {
+  const prefix = `${binding}__`;
+  return name.startsWith(prefix) && tenantId.safeParse(name.slice(prefix.length)).success;
+}
+
+/**
+ * One binding name is one store (#2207, #2221). The names a vertical declares —
+ * an own store, a per-tenant store, a blob store, a scope store — are compared
+ * as written. `ATTACHMENTS` stays the attachment blob store and cannot be a
+ * scope store.
+ *
+ * A static wrangler binding is compared to the name that lands on the worker,
+ * not to the declaration. An own store's durable-object binding IS that store,
+ * so passing it again counts the name twice; push omits those names. A
+ * per-tenant store is injected as `BINDING__<tenant>`, and a scope store as
+ * `SUBSTRAT_STORE_<BINDING>`. A static binding spelled `DB` or `GRAPH` is not
+ * either of those.
  */
 export function assertStoreBindingsDistinct(input: {
   readonly own?: readonly { binding: string }[];
@@ -494,7 +512,6 @@ export function assertStoreBindingsDistinct(input: {
     seen.set(binding, where);
   };
   for (const store of input.own ?? []) claim(store.binding, 'an own store');
-  for (const name of input.bindingNames ?? []) claim(name, 'a static binding');
   for (const store of input.tenantStores ?? []) claim(store.binding, 'a per-tenant store');
   for (const store of input.blobStores ?? []) claim(store.binding, 'a per-tenant blob store');
   for (const store of input.scopeStores ?? []) {
@@ -505,6 +522,30 @@ export function assertStoreBindingsDistinct(input: {
       );
     }
     claim(store.binding, 'a scope store');
+  }
+  const perTenant = [...(input.tenantStores ?? []), ...(input.blobStores ?? [])];
+  for (const name of input.bindingNames ?? []) {
+    const own = (input.own ?? []).find((store) => store.binding === name);
+    if (own) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: binding '${name}' is declared as an own store and as a static binding. One name is one store.`,
+      );
+    }
+    const tenant = perTenant.find((store) => isPerTenantRuntimeName(name, store.binding));
+    if (tenant) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: binding '${name}' is the runtime name of per-tenant store '${tenant.binding}'. One name is one store.`,
+      );
+    }
+    const scope = (input.scopeStores ?? []).find((store) => name === scopeStoreBindingName(store.binding));
+    if (scope) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: binding '${name}' is the runtime name of scope store '${scope.binding}'. One name is one store.`,
+      );
+    }
   }
 }
 
