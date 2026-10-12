@@ -7,6 +7,7 @@ import {
   entityGrantsToppedUpPayload,
   entityObjectRef,
   eventId,
+  retiredKeysOf,
   type DomainEvent,
   type EntityGrantShape,
   type EntityRef,
@@ -263,7 +264,7 @@ export function topUpEntityGrantShapes(
     if (!shape.bootstrap) continue;
     const keys = keysOf(shape.permissions);
     // A key the shape grants is never taken back, whatever the declaration says.
-    const gone = keysOf(shape.retired ?? []).filter((k) => !keys.includes(k));
+    const gone = retiredKeysOf(shape);
     if (keys.length === 0 && gone.length === 0) continue;
     // Where this shape starts: the cursor's step if it points here, else the beginning.
     const resume = from?.shape === i ? from : null;

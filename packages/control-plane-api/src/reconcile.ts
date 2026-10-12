@@ -13,6 +13,7 @@
  * intent, the sweep records a receipt.
  */
 import {
+  retiredKeysOf,
   storedDeployManifest,
   type EntityGrantShape,
   type ModuleId,
@@ -21,7 +22,7 @@ import {
   type SwitchedOffInUnit,
   type TenantId,
 } from '@substrat-run/contracts';
-import { switchSubjectOf, type HostAdmin } from '@substrat-run/kernel';
+import { switchSubjectOf, type HostAdmin, type ReconcileOutcome } from '@substrat-run/kernel';
 import { connectionGrantsForScope } from './vertical-client.js';
 
 /** The slice of `HostAdmin` a gather needs. Narrow on purpose: this reads, never writes. */
@@ -63,6 +64,21 @@ export async function reviewedEntityGrants(
   const json = await admin.versionManifest(actor, vertical, versionId);
   if (!json) return undefined;
   return storedDeployManifest.parse(JSON.parse(json)).registry?.entityGrants;
+}
+
+/**
+ * #2185: what the receipt of a reconcile or provision records beside it. Its retirements count as
+ * finished when the shapes it carried retire nothing (`retiredKeysOf`), or when the deployment
+ * answered that it left none open. Anything else, an answer without the count (a deployment whose
+ * `adapter-cloudflare` or `vertical-host` predates it) included, is not finished: the install is judged as still holding the keys its
+ * version retires, and the sweep reconciles it again.
+ */
+export function reconcileOutcomeOf(
+  sent: readonly EntityGrantShape[] | undefined,
+  answer: { retirementsLeftOpen?: number } | null,
+): ReconcileOutcome {
+  const retires = (sent ?? []).some((shape) => retiredKeysOf(shape).length > 0);
+  return { retirementsFinished: !retires || answer?.retirementsLeftOpen === 0 };
 }
 
 /**

@@ -1652,3 +1652,21 @@ describe("VerticalClient — a restore names the dump's source (#1869)", () => {
     ]);
   });
 });
+
+it('reconcileInstance reads back how many retirements the reconcile left open, and only a whole count of them (#2185)', async () => {
+  const owner = 'principal-1';
+  const replies: unknown[] = [0, 2, undefined, -1, 1.5, '0'];
+  const client = new VerticalClient({
+    fetch: (async () => {
+      const leftOpen = replies.shift();
+      return Response.json({ tenantId: t, scopeId: s, owner, ...(leftOpen === undefined ? {} : { retirementsLeftOpen: leftOpen }) });
+    }) as unknown as typeof fetch,
+    platformSecret: 'secret',
+  });
+  const read = async () => (await client.reconcileInstance({ tenantId: t, scopeId: s, entitlements: [] } as never)).retirementsLeftOpen;
+  expect(await read()).toBe(0);
+  expect(await read()).toBe(2);
+  // A vertical-host that predates the report sends none, and a malformed count is dropped: the
+  // platform then counts the retirements not finished.
+  for (let i = 0; i < 4; i++) expect(await read()).toBeUndefined();
+});

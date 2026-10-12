@@ -1206,6 +1206,30 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     expect(host.calls).toContain('provisionScopeLocal');
   });
 
+  /**
+   * #2185: how many retirements the reconcile left open is what the platform records beside its
+   * receipt. It never reached the platform before, so a retirement left open read as done.
+   */
+  it('reconcile answers how many retirements the host left open, and none when the host reports none or nonsense', async () => {
+    const answers: unknown[] = [{ retirementsLeftOpen: 0 }, { retirementsLeftOpen: 2 }, undefined, { retirementsLeftOpen: -1 }];
+    const host = fakeHost({ provisionScopeLocal: async () => answers.shift() as never });
+    const leftOpen: unknown[] = [];
+    for (let i = 0; i < 4; i++) {
+      const res = await appWith(host, { resolveOwner: async () => OWNER as never }).request(
+        '/internal/reconcile',
+        {
+          method: 'POST',
+          headers: authed({ 'content-type': 'application/json' }),
+          body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE }),
+        },
+        ENV,
+      );
+      expect(res.status).toBe(200);
+      leftOpen.push(((await res.json()) as { retirementsLeftOpen?: number }).retirementsLeftOpen);
+    }
+    expect(leftOpen).toEqual([0, 2, undefined, undefined]);
+  });
+
   it('delete-scope runs the host then the onDeleteScope hook', async () => {
     const host = fakeHost();
     let forgotten: { scopeId: string; tenantId: string | undefined } | null = null;

@@ -294,6 +294,7 @@ export const INDEX_VALUE_EXPORTS = [
   'importCursorSourceOf',
   'inUnitMovesToAudit',
   'insertConnectLink',
+  'installReconciled',
   'installsReconciledNote',
   'installsReconciledOf',
   'intentPayloadCarriesSubject',

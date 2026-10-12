@@ -90,6 +90,8 @@ import {
   SWITCH_HOLDS_NAME,
 } from '../src/host.js';
 import type { DoReply } from '../src/do-reply.js';
+import { ControlPlaneDO } from '../src/control-plane-do.js';
+import { PROVISIONED_VERSIONS_SQL, installsReconciledOf, runPlatformSweep, type ScopeHost } from '@substrat-run/kernel';
 import { SYSTEM_DOOR_REGATES } from '../src/system-door.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
@@ -852,17 +854,20 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     });
     await host.admin.admitVersion(staff, dropped);
     await host.admin.bindScopeVersion(staff, t, s, binds);
-    await host.admin.markScopeProvisioned(staff, t, s, binds);
+    await host.admin.markScopeProvisioned(staff, t, s, binds, { retirementsFinished: true });
     await host.admin.bindScopeVersion(staff, t, s, retired);
-    await host.admin.markScopeProvisioned(staff, t, s, retired);
-    // The switch clears the receipt in the same write as its record.
+    await host.admin.markScopeProvisioned(staff, t, s, retired, { retirementsFinished: true });
+    expect((await host.admin.getScopeRecord(staff, t, s))?.retirementsFinishedVersionId).toBe(retired);
+    // The switch clears the receipt in the same write as its record, and (#2185) the version whose
+    // retirements finished with it.
     await host.admin.revokeFromSystem(staff, { moduleId: SCHED, node: { tenantId: t, scopeId: s }, reason: 'r' });
     expect((await host.admin.getScopeRecord(staff, t, s))?.provisionedVersionId).toBeNull();
+    expect((await host.admin.getScopeRecord(staff, t, s))?.retirementsFinishedVersionId).toBeNull();
     const refused = await host.admin.bindScopeVersion(staff, t, s, dropped).then(() => null, (e: unknown) => e);
     expect(errorCodeOf(refused)).toBe('precondition_failed');
     expect(String((refused as Error).message)).toMatch(new RegExp(`drops the shape.*no reconcile receipt.*\\(one is ${s}\\)`));
-    // The twin: the sweep's reconcile writes the receipt again, and the drop binds.
-    await host.admin.markScopeProvisioned(staff, t, s, retired);
+    // The twin: the sweep's reconcile writes the receipt again, its retirements finished, and the drop binds.
+    await host.admin.markScopeProvisioned(staff, t, s, retired, { retirementsFinished: true });
     await host.admin.bindScopeVersion(staff, t, s, dropped);
     expect((await host.admin.getScopeRecord(staff, t, s))?.verticalVersionId).toBe(dropped);
   });
@@ -5927,5 +5932,153 @@ describe('#113 — a refusal raised inside a Durable Object keeps its code acros
     };
     const reply = await stub.reply('wipeDirectory', []);
     expect(reply.failure?.message).toBe('not a replied directory method: wipeDirectory');
+  });
+});
+
+/**
+ * #2185 — THE WEDGE-RISK TEST for the `retirements_finished_version_id` migration, on DO SQLite.
+ *
+ * The column is added to an EXISTING directory with no backfill, so every install it already
+ * holds reads null: "its retirements are not known to have finished". That is the strict
+ * direction, and the question is whether it wedges anyone. It must not: the gate may refuse ONLY a
+ * binding-shape drop from a version that declares a retirement, nothing else, and the sweep must
+ * re-converge every such install on its own (a reconcile answering "finished" writes the version
+ * beside the receipt), after which the drop passes.
+ *
+ * The sweep's reconcile is STUBBED here (it answers "finished"): this proves the predicate and the
+ * write converge on DO SQLite, not that a real deployment's answer becomes "finished". That half is
+ * apps/control-plane's `reconcileReachedScope` test ("answers whether the reconcile finished the
+ * retirements its payload carried") and control-plane-api's route tests in reconcile-receipt.test.ts.
+ */
+describe('#2185 — wedge risk: the retirements-finished column added to an existing directory', () => {
+  const staff = platformActorId.parse(ulid());
+
+  it('ALTERs an existing directory DO: the column appears, existing rows read null and group not finished, and re-running is a no-op', async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`retirements-finished-${ulid()}`));
+    const seen = await runInDurableObject(stub, (_instance, state) => {
+      // The directory as a control plane from before #2185 left it.
+      state.storage.sql.exec('ALTER TABLE scopes DROP COLUMN retirements_finished_version_id');
+      state.storage.sql.exec(`INSERT INTO scopes (scope_id, tenant_id, vertical, vertical_version_id, provisioned_version_id, serving_ref, created_at)
+        VALUES ('old-scope', 'old-tenant', 'old-vertical', 'v1', 'v1', 'old-script', '2026-01-01T00:00:00.000Z')`);
+      const columns = () => state.storage.sql.exec("SELECT name FROM pragma_table_info('scopes')").toArray().map((r) => r.name);
+      const before = columns().includes('retirements_finished_version_id');
+      // A deploy: new code over the old storage, twice (the addition is re-runnable).
+      new ControlPlaneDO(state, env);
+      const cp = new ControlPlaneDO(state, env);
+      const row = () => state.storage.sql.exec('SELECT provisioned_version_id, retirements_finished_version_id FROM scopes WHERE scope_id = ?', 'old-scope').toArray()[0];
+      const migrated = row();
+      const groups = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, 'old-vertical', 'old-script', null).toArray());
+      cp.markScopeProvisioned('old-scope', 'v1', true);
+      const converged = row();
+      const after = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, 'old-vertical', 'old-script', null).toArray());
+      return { before, after: columns().includes('retirements_finished_version_id'), migrated, groups, converged, finishedGroups: after };
+    });
+    expect(seen).toEqual({
+      before: false,
+      after: true,
+      migrated: { provisioned_version_id: 'v1', retirements_finished_version_id: null },
+      groups: [{ versionId: 'v1', retirementsFinished: false, installs: 1, example: 'old-scope' }],
+      converged: { provisioned_version_id: 'v1', retirements_finished_version_id: 'v1' },
+      finishedGroups: [{ versionId: 'v1', retirementsFinished: true, installs: 1, example: 'old-scope' }],
+    });
+  });
+
+  it('meanwhile refuses only a binding-shape drop from a retiring version, and the sweep re-converges every migrated install', async () => {
+    const host = new CloudflareScopeHost({
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      fetch: connectorTestFetch,
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      checker: UNSAFE_allowAllChecker,
+    });
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `wedge-${t.slice(-10).toLowerCase()}`, name: 'Wedge' });
+    const HOLDER = { table: 'bind_records', idColumn: 'id', principalColumn: 'principal' };
+    const shape = (permissions: string[], retired?: string[]) => ({
+      entityType: 'contact', permissions, ...(retired ? { retired } : {}), bootstrap: true, holder: HOLDER, bind: { permission: 'contact:invite' },
+    });
+    const publish = async (slug: string, entityGrants: object[]) => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: `m-${id}`,
+        permissionDigest: `p-${id}`, migrationDigest: 'g', deploymentRef: null,
+        manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const ACKS = { permissionChange: true, migrationChange: true, exportBreak: true } as const;
+    /** A listed vertical serving `version` in place, with one install on it whose receipt names it. */
+    const servedInstall = async (version: (slug: string) => Promise<string>) => {
+      const slug = `acme/wedge-${ulid().slice(-8).toLowerCase()}`;
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      const v = await version(slug);
+      const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+      await host.admin.promoteVersion(staff, slug, 'prod', v, ACKS);
+      await host.admin.setVerticalServing(staff, slug, { ref, versionId: v, doClasses: [], migrationTag: 'g' });
+      const sc = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: sc, vertical: slug });
+      await host.admin.activateScope(staff, t, sc);
+      await host.admin.bindScopeVersion(staff, t, sc, v);
+      expect((await host.admin.getScopeRecord(staff, t, sc))?.servingRef).toBe(ref);
+      await host.admin.markScopeProvisioned(staff, t, sc, v, { retirementsFinished: true });
+      return { slug, v, sc };
+    };
+    // A vertical whose served version retires every key of its binding shape, and one that retires nothing.
+    const retiring = await servedInstall(async (slug) => {
+      await publish(slug, [shape(['contact:read-own'])]);
+      return publish(slug, [shape([], ['contact:read-own'])]);
+    });
+    const plain = await servedInstall((slug) => publish(slug, [shape(['contact:read-own'])]));
+    const mine = [retiring.sc, plain.sc];
+
+    // The migration's state for these two rows: a receipt, and null beside it (no backfill).
+    await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      for (const sc of mine) state.storage.sql.exec('UPDATE scopes SET retirements_finished_version_id = NULL WHERE scope_id = ?', sc);
+    });
+
+    // Refused: the binding-shape drop from the retiring version, naming the install and what it waits for.
+    const dropped = await publish(retiring.slug, []);
+    const refused = await host.admin.promoteVersion(staff, retiring.slug, 'prod', dropped, ACKS).then(() => null, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('precondition_failed');
+    expect(String((refused as Error).message)).toMatch(
+      new RegExp(`drops the shape.*that reconciled ${retiring.v} with its retirements not finished \\(one is ${retiring.sc}\\); the drop waits for their retirements to finish`),
+    );
+    // Nothing else: the retiring vertical republishing its shape, and the plain one adding a key, promote.
+    const same = await publish(retiring.slug, [shape([], ['contact:read-own'])]);
+    await host.admin.promoteVersion(staff, retiring.slug, 'prod', same, ACKS);
+    const more = await publish(plain.slug, [shape(['contact:read-own', 'contact:other'])]);
+    await host.admin.promoteVersion(staff, plain.slug, 'prod', more, ACKS);
+
+    // The sweep, over the real directory (only these two installs listed), with a reconcile that
+    // answers what a current vertical-host does: every retirement finished.
+    const sweepHost = {
+      admin: {
+        listScopes: async (a: never, f: never) => (await host.admin.listScopes(a, f)).filter((sc) => mine.includes(sc.id)),
+        listVerticals: (a: never) => host.admin.listVerticals(a),
+        listConnections: async () => [],
+        markScopeProvisioned: (...args: Parameters<typeof host.admin.markScopeProvisioned>) => host.admin.markScopeProvisioned(...args),
+      },
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+    } as unknown as ScopeHost;
+    const sweep = () =>
+      runPlatformSweep(sweepHost, {
+        actor: staff,
+        fetch: connectorTestFetch,
+        sweepers: {},
+        runSchedules: false,
+        reconcileScopeFn: async () => ({ retirementsFinished: true }),
+      });
+    const first = await sweep();
+    expect(first.provisionReconcile).toMatchObject({ behind: 2, reconciled: 2, failed: 0 });
+    for (const sc of mine) {
+      const r = await host.admin.getScopeRecord(staff, t, sc);
+      expect(r?.retirementsFinishedVersionId).toBe(r?.provisionedVersionId);
+    }
+    // Converged: the next pass has nothing to do, and the drop passes.
+    expect((await sweep()).provisionReconcile).toMatchObject({ behind: 0, reconciled: 0 });
+    await host.admin.promoteVersion(staff, retiring.slug, 'prod', dropped, ACKS);
+    await host.close();
   });
 });
