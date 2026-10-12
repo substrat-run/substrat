@@ -80,9 +80,9 @@ export function readSource(source: string, file = 'file.ts'): { hosts: { host: s
     else if (node.type === 'ImportDeclaration' || node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') {
       const spec = (node.source as { value?: string } | null)?.value;
       if (spec?.startsWith('.')) imports.push(spec);
-    } else if (node.type === 'ImportExpression' || (node.type === 'CallExpression' && (node.callee as { type: string }).type === 'Import')) {
+    } else if (node.type === 'CallExpression' && (node.callee as { type: string }).type === 'Import') {
       // `await import('./x.js')`: a lazily loaded integration still ships.
-      const arg = (node.source ?? (node.arguments as unknown[] | undefined)?.[0]) as { type: string; value?: string } | undefined;
+      const arg = (node.arguments as { type: string; value?: string }[])[0];
       if (arg?.type === 'StringLiteral' && arg.value?.startsWith('.')) imports.push(arg.value);
     }
     if (!text) continue;
