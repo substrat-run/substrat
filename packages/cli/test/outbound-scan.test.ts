@@ -185,6 +185,15 @@ describe('checkOutboundDeclared — the report', () => {
     ]);
   });
 
+  it('a declaration a dynamic URL starts with is not called stale', () => {
+    const d = tree({ 'src/worker.ts': "export default { f: (p: string) => fetch('https://api.acme.com' + p) };\n" });
+    const out: string[] = [];
+    checkOutboundDeclared(d, 'src/worker.ts', ['api.acme.com', 'gone.acme.com'], { log: (m) => out.push(m) });
+    expect(out.join('\n')).toContain('is built dynamically');
+    expect(out.join('\n')).toContain('declares gone.acme.com,');
+    expect(out.join('\n')).not.toMatch(/declares [^\n]*api\.acme\.com/);
+  });
+
   it('is silent when every host is declared, and a stale entry alone never throws', () => {
     const out: string[] = [];
     checkOutboundDeclared(dir(), 'src/worker.ts', ['wb.acme.com'], { strict: true, log: (m) => out.push(m) });

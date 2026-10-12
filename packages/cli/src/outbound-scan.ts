@@ -205,12 +205,18 @@ export interface OutboundReport {
   stale: string[];
 }
 
-export function judgeOutbound(sightings: readonly OutboundSighting[], declared: readonly string[]): OutboundReport {
+export function judgeOutbound(
+  sightings: readonly OutboundSighting[],
+  declared: readonly string[],
+  /** Hosts a dynamically built URL starts with: not judged, but they keep a declaration from reading as stale. */
+  dynamicHosts: readonly string[] = [],
+): OutboundReport {
   const undeclared: OutboundSighting[] = [];
   for (const s of sightings) {
     if (!matchesOutboundHost(s.host, declared) && !undeclared.some((u) => u.host === s.host)) undeclared.push(s);
   }
-  const stale = declared.filter((d) => !sightings.some((s) => matchesOutboundHost(s.host, [d])));
+  const named = [...sightings.map((s) => s.host), ...dynamicHosts];
+  const stale = declared.filter((d) => !named.some((h) => matchesOutboundHost(h, [d])));
   return { undeclared, stale };
 }
 
@@ -233,7 +239,11 @@ export function checkOutboundDeclared(
   }
   if (dynamic.length > 0) log(`note: ${dynamic.length} dynamically built URL(s) were not judged against substrat.outbound.`);
   const hosts = (declared ?? []).filter((h): h is string => typeof h === 'string');
-  const { undeclared, stale } = judgeOutbound(sightings, hosts);
+  const { undeclared, stale } = judgeOutbound(
+    sightings,
+    hosts,
+    dynamic.map((d) => new URL(d.url).hostname.toLowerCase().replace(/\.$/, '')),
+  );
   if (undeclared.length > 0) {
     const lines = undeclared.map((u) => `  ${u.host}  (${u.file}:${u.line})`);
     const add = JSON.stringify([...hosts, ...undeclared.map((u) => u.host)]);
