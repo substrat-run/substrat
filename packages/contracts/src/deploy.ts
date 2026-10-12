@@ -207,22 +207,38 @@ export function declaresAttachmentTargets(
  * {@link ATTACHMENT_BLOB_BINDING} when any module declares an attachment target — derived
  * from the same module manifests the permission surface is, so the need cannot drift from
  * the declaration that creates it. A hand-declared blob store of that name IS the attachment
- * store (the kind is a single literal), so it is kept once. A per-tenant RELATIONAL store
+ * store (the kind is a single literal), so it is kept once. The same declaration written
+ * as `tenantStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }]` is that store too: a raw
+ * `RuntimeNeeds` still carries the blob there, and this function reads the kind rather
+ * than treating every entry of that name as relational. A per-tenant RELATIONAL store
  * of that name is refused: it would be bound under the very `ATTACHMENTS__<tenant>` name the
  * host reads attachment bytes through. (A static binding of the name is the push's to refuse,
  * since only it reads the wrangler config those come from.)
  */
 export function withAttachmentBlobStore(
-  needs: { readonly blobStores?: readonly BlobStoreNeed[]; readonly tenantStores?: readonly { binding: string }[] } | undefined,
+  needs:
+    | {
+        readonly blobStores?: readonly BlobStoreNeed[];
+        readonly tenantStores?: readonly { binding: string; kind?: 'relational' | 'blob' }[];
+      }
+    | undefined,
   /** {@link declaresAttachmentTargets} over the vertical's modules. */
   attaches: boolean,
 ): BlobStoreNeed[] {
   const stores = [...(needs?.blobStores ?? [])];
-  if (needs?.tenantStores?.some((s) => s.binding === ATTACHMENT_BLOB_BINDING)) {
-    throw new Error(
-      `runtimeNeeds.tenantStores declares '${ATTACHMENT_BLOB_BINDING}', the binding the platform keeps for ` +
-        `attachment bytes (#1995) — rename that store; attachments need no declaration of their own`,
-    );
+  for (const store of needs?.tenantStores ?? []) {
+    if (store.kind !== 'blob') {
+      if (store.binding === ATTACHMENT_BLOB_BINDING) {
+        throw new Error(
+          `runtimeNeeds.tenantStores declares '${ATTACHMENT_BLOB_BINDING}', the binding the platform keeps for ` +
+            `attachment bytes (#1995) — rename that store; attachments need no declaration of their own`,
+        );
+      }
+      continue;
+    }
+    if (!stores.some((kept) => kept.binding === store.binding)) {
+      stores.push({ binding: store.binding, kind: 'blob' });
+    }
   }
   if (attaches && !stores.some((s) => s.binding === ATTACHMENT_BLOB_BINDING)) {
     stores.push({ binding: ATTACHMENT_BLOB_BINDING, kind: 'blob' });
