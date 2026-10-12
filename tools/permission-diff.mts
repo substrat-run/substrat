@@ -671,7 +671,7 @@ for (const { rel, dir, entry, pkg } of verticals) {
   for (const { path, content } of artifacts) {
     // Repo-relative in the sweep; relative to where the caller stands in `--root`
     // mode, where the project is not under this repo's root at all.
-    const shown = projectDir === undefined ? path.slice(root.length) : relative(process.cwd(), path);
+    const shown = projectDir === undefined ? toPosix(relative(root, path)) : toPosix(relative(process.cwd(), path));
     if (!check) {
       writeFileSync(path, content);
       continue;

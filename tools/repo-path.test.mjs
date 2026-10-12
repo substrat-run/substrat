@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { repoRoot, toPosix } from './repo-path.mjs';
 
 test('repoRoot is the checkout, where URL.pathname is not', () => {
@@ -13,6 +13,13 @@ test('repoRoot is the checkout, where URL.pathname is not', () => {
   if (process.platform === 'win32') {
     assert.equal(existsSync(join(broken, 'package.json')), false);
   }
+});
+
+test('a child of the root is a posix path with no leading separator', () => {
+  const root = 'C:\\repo';
+  const child = 'C:\\repo\\demos\\todo\\PERMISSIONS.md';
+  assert.equal(toPosix(win32.relative(root, child)), 'demos/todo/PERMISSIONS.md');
+  assert.equal(child.slice(root.length).startsWith('\\'), true);
 });
 
 test('toPosix turns a Windows relative path into the spelling source uses', () => {

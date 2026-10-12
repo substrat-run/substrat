@@ -55,9 +55,9 @@
  * must never print a green light.
  */
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { repoRoot } from './repo-path.mjs';
+import { repoRoot, toPosix } from './repo-path.mjs';
 // The PURE half of the conformance kit, imported by path rather than by package
 // name: the root workspace depends on nothing, and `entity-check-suite.ts` next to
 // it imports vitest at module load. The split exists for this call site (#866).
@@ -507,7 +507,7 @@ function renderNodeOnly(decl: Declaration): string[] {
       `What it buys: the day someone narrows an operation here, this goes red, and the change`,
       `has to either declare the check and wire the real kit or rewrite the assessment.`,
       ``,
-      `Source covered: ${decl.sources!.map((s) => code(s.slice(root.length))).join(', ')}`,
+      `Source covered: ${decl.sources!.map((s) => code(toPosix(relative(root, s)))).join(', ')}`,
       ``,
     );
   }
@@ -677,7 +677,7 @@ for (const { rel, dir, entry, pkg } of targets) {
 
   const path = join(dir, 'CONFORMANCE.md');
   const content = render(pkg, decl);
-  const shown = path.slice(root.length);
+  const shown = toPosix(relative(root, path));
   if (!check) {
     writeFileSync(path, content);
     continue;
