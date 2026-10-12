@@ -874,6 +874,8 @@ interface ControlPlaneStub {
     /** #1524: the stored gauge's latest sample per non-reaped scope. */
     storage: ScopeStorageSample[];
     storageAttempts: ScopeStorageAttempt[];
+    /** #2212: the latest sample per (scope, binding). */
+    storeStorage: { tenantId: TenantId; bytes: number; readAt: string }[];
   }>;
   /** #1524: the stored storage gauge — kernel `storage-gauge.ts`, run inside the directory DO. */
   recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
