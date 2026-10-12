@@ -73,10 +73,23 @@ export function readSource(source: string, file = 'file.ts'): { hosts: { host: s
   const ast = parseSource(source, file);
   const hosts: { host: string; line: number }[] = [];
   const imports: string[] = [];
+  /** Literals a `+` continues: `'https://api.acme' + '.com'` ends mid-host, and the host is not `api.acme`. */
+  const continued = new Set<unknown>();
   for (const node of nodesOf(ast.program)) {
     let text: string | undefined;
-    if (node.type === 'StringLiteral') text = node.value as string;
-    else if (node.type === 'TemplateElement') text = (node.value as { cooked?: string | null }).cooked ?? undefined;
+    let open = false;
+    if (node.type === 'BinaryExpression' && node.operator === '+') {
+      let left = node.left as Record<string, unknown>;
+      while (left.type === 'BinaryExpression' && left.operator === '+') left = left.right as Record<string, unknown>;
+      continued.add(left);
+    }
+    if (node.type === 'StringLiteral') {
+      text = node.value as string;
+      open = continued.has(node);
+    } else if (node.type === 'TemplateElement') {
+      text = (node.value as { cooked?: string | null }).cooked ?? undefined;
+      open = node.tail === false;
+    }
     else if (node.type === 'ImportDeclaration' || node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') {
       const spec = (node.source as { value?: string } | null)?.value;
       if (spec?.startsWith('.')) imports.push(spec);
@@ -88,6 +101,8 @@ export function readSource(source: string, file = 'file.ts'): { hosts: { host: s
     if (!text) continue;
     const line = (node.loc as { start: { line: number } }).start.line;
     for (const match of text.matchAll(URL_LITERAL)) {
+      // Running to the end of a literal that something continues, with no delimiter, is a host cut short.
+      if (open && match.index + match[0].length === text.length && !/[/?#:]$/.test(match[0])) continue;
       const host = hostOf(match[0]);
       if (host) hosts.push({ host, line });
     }

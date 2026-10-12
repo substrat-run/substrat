@@ -46,6 +46,18 @@ describe('readSource — which hosts a file names', () => {
     expect(hostsOf("fetch('https://' + host + '/x'); fetch(`https://${host}/x`); fetch(env.API_URL);")).toEqual([]);
   });
 
+  it('skips a host cut short by a continuation, and keeps its positive twin', () => {
+    expect(hostsOf("fetch('https://api.acme' + '.com');")).toEqual([]);
+    expect(hostsOf("fetch('https://api.' + sub + '.acme.com');")).toEqual([]);
+    expect(hostsOf('fetch(`https://cdn.acme${sfx}`);')).toEqual([]);
+    // the host is whole when a delimiter follows it, or nothing continues the literal
+    expect(hostsOf("fetch('https://api.acme.com' + path);")).toEqual([]);
+    expect(hostsOf("fetch('https://api.acme.com/' + path);")).toEqual(['api.acme.com']);
+    expect(hostsOf('fetch(`https://cdn.acme.com/${id}`);')).toEqual(['cdn.acme.com']);
+    expect(hostsOf('fetch(`https://cdn.acme.com:${port}/x`);')).toEqual(['cdn.acme.com']);
+    expect(hostsOf("fetch('https://api.acme.com');")).toEqual(['api.acme.com']);
+  });
+
   it('never reads a comment', () => {
     expect(hostsOf("// see https://docs.acme.com/api\n/* https://old.acme.com */\nconst x = 1;")).toEqual([]);
   });
