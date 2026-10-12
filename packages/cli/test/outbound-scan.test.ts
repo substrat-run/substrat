@@ -92,7 +92,31 @@ describe('readSource — which hosts a file names', () => {
 
   it('reads TypeScript and finds relative imports, static and dynamic', () => {
     const src = "import type { T } from './t.js';\nexport * from './a';\nconst m = await import('./lazy.js');\nimport x from 'pkg';\n";
-    expect(readSource(src).imports).toEqual(['./t.js', './a', './lazy.js']);
+    expect(readSource(src).imports).toEqual(['./a', './lazy.js']);
+  });
+
+  it('does not follow an edge the build erases, and follows every one that survives', () => {
+    const imports = (src: string) => readSource(src).imports;
+    expect(imports("import { type T } from './t.js';")).toEqual([]);
+    expect(imports("import { type T, type U } from './t.js';")).toEqual([]);
+    expect(imports("export type { T } from './t.js';")).toEqual([]);
+    expect(imports("export { type T } from './t.js';")).toEqual([]);
+    expect(imports("import { type T, v } from './t.js';")).toEqual(['./t.js']);
+    expect(imports("export { type T, v } from './t.js';")).toEqual(['./t.js']);
+    expect(imports("import './t.js';")).toEqual(['./t.js']);
+    expect(imports("import {} from './t.js';")).toEqual(['./t.js']);
+    expect(imports("import d from './t.js';")).toEqual(['./t.js']);
+    expect(imports("import * as ns from './t.js';")).toEqual(['./t.js']);
+    expect(imports("export * from './t.js';")).toEqual(['./t.js']);
+  });
+
+  it('does not scan a file reached only by a type-only edge', () => {
+    const dir = tree({
+      'src/worker.ts': "import type { T } from './types.js';\nimport { type U } from './u.js';\nexport default 1;\n",
+      'src/types.ts': "export type T = 'https://types-only.acme.com';\n",
+      'src/u.ts': "export const u = 'https://also-types.acme.com';\n",
+    });
+    expect(scanOutboundHosts(dir, 'src/worker.ts').sightings).toEqual([]);
   });
 });
 

@@ -95,6 +95,17 @@ function startOf(node: Node): string | undefined {
   return undefined;
 }
 
+/**
+ * Whether an import/export declaration is erased at build time: `import type` / `export type`, or
+ * a braced list whose every specifier is inline `type`. An empty `import {} from` still loads the
+ * module, so it is not type-only.
+ */
+function isTypeOnly(node: Node): boolean {
+  if (node.importKind === 'type' || node.importKind === 'typeof' || node.exportKind === 'type') return true;
+  const specifiers = (node.specifiers as Node[] | undefined) ?? [];
+  return specifiers.length > 0 && specifiers.every((s) => s.importKind === 'type' || s.importKind === 'typeof' || s.exportKind === 'type');
+}
+
 /** What one source file contributes: the host literals it names and the relative modules it loads. */
 export function readSource(
   source: string,
@@ -120,8 +131,9 @@ export function readSource(
       // A quasi that is not the last is followed by a `${}`: an expression.
       if (node.tail === false) next = { type: 'TemplateExpression' };
     } else if (node.type === 'ImportDeclaration' || node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') {
+      // A type-only edge is erased by the build: it cannot make a request, so it is not followed.
       const spec = (node.source as { value?: string } | null)?.value;
-      if (spec?.startsWith('.')) imports.push(spec);
+      if (spec?.startsWith('.') && !isTypeOnly(node)) imports.push(spec);
     } else if (node.type === 'CallExpression' && (node.callee as { type: string }).type === 'Import') {
       // `await import('./x.js')`: a lazily loaded integration still ships.
       const arg = (node.arguments as { type: string; value?: string }[])[0];
