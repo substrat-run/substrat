@@ -23,6 +23,14 @@
 /** The response header carrying a request's record from the vertical to the router. */
 export const INVOCATION_RECORD_HEADER = 'x-substrat-invocation-record';
 
+/**
+ * #2192: the response header carrying the id the platform minted for a request — the
+ * invocation id, the one the dashboard's request view and the invocation log line name. Unlike
+ * the record header it is meant for the caller and leaves the router untouched, so someone who
+ * saw an error can quote it. Opaque: a ULID, nothing about the tenant or the scope.
+ */
+export const REQUEST_ID_HEADER = 'x-substrat-request-id';
+
 /** The fields the header carries. Every one is optional: a request may reach no operation. */
 export interface InvocationRecordFields {
   operation?: string | null | undefined;

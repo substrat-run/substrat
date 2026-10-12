@@ -12680,6 +12680,10 @@ export class SqliteScopeHost implements ScopeHost {
         },
         this.logSink,
       ),
+      // #2192: the same id the log lines carry, read when asked for the same reason.
+      get requestId() {
+        return rt.invocationId ?? delivery?.invocationId ?? null;
+      },
       emit: (event: DomainEventInput) => writeEvent(event, 'module'),
       requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
         assertImpersonationWrites(impersonation, 'ctx.requestPlatform');

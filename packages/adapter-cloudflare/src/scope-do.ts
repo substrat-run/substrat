@@ -7732,6 +7732,8 @@ export function defineScopeDO(
           full.payload === undefined ? null : JSON.stringify(full.payload),
         );
       };
+      // #2192: read through the DO, not `this` inside the literal below, which is the context.
+      const requestIdNow = (): string | null => this.invocationId ?? delivery?.invocationId ?? null;
       const ctxRef: OperationContext = {
         tenantId,
         scopeId,
@@ -7771,6 +7773,10 @@ export function defineScopeDO(
           // log's text is not JSON.
           redact: (text) => redactSecretText(text, minted),
         }),
+        // #2192: the same id the log lines carry, read when asked for the same reason.
+        get requestId() {
+          return requestIdNow();
+        },
         emit: (event: DomainEventInput) => writeEvent(event, 'module'),
         requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
           assertImpersonationWrites(impersonation, 'ctx.requestPlatform');

@@ -350,6 +350,17 @@ export interface OperationContext {
    * the operation later rolls back, and a call never throws (`module-log.ts` says why).
    */
   readonly log: ModuleLog;
+  /**
+   * The id the platform minted for the request this call belongs to (#2192) — the value of
+   * the response's `x-substrat-request-id` header, the id on every `ctx.log` line and every
+   * event the call emits, and the request the dashboard opens for it. For module code to put
+   * in its own error messages, so a person who saw one can quote it.
+   *
+   * In a consumer, the id of the request whose event it is handling; in a schedule run, the
+   * id the host minted for that run. `null` when nothing carried one: an in-process call (a
+   * test, a seed) that passed no `invocationId`. Opaque — read it only to repeat it.
+   */
+  readonly requestId: string | null;
   /** Envelope is stamped kernel-side (id, occurredAt, tenant, scope, actor); input is validated. */
   emit(event: DomainEventInput): void;
   /**
