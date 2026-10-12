@@ -101,7 +101,9 @@ request names its team in its own URL. Routes move into the declared surface
 (`apps/dashboard/src/routes.ts`), mounted under `/api/teams/:teamId` by `mountRoutes`. There,
 anything but that exact team is a 404, never a fallback to your default team. The browser reaches
 them through the generated client, built per team (`teamApi(teamId)`). Areas move one at a time;
-findings is first. When the last area has moved, `sb_team` survives only as "last team used",
+findings went first, then the Apps read side (list, install steps, events, audit): the cookie routes
+keep answering beside the declared ones and call the same implementation, so the two cannot drift.
+When the last area has moved, `sb_team` survives only as "last team used",
 read to decide where `/` lands.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
