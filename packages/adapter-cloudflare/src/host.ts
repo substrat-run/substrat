@@ -9006,6 +9006,7 @@ export class CloudflareScopeHost implements ScopeHost {
           })),
           storage: rows.storage,
           storageAttempts: rows.storageAttempts,
+          storeStorage: rows.storeStorage,
         });
         // Tenants covered, not totals: "read one tenant's meter" and "metered the whole
         // fleet" are different acts, and K-24 exists to tell them apart.

@@ -47,6 +47,16 @@ export const SCOPE_STORAGE_DDL = `
     attempted_at TEXT NOT NULL,
     error TEXT
   );
+  CREATE TABLE IF NOT EXISTS _substrat_scope_store_storage (
+    scope_id TEXT NOT NULL,
+    binding TEXT NOT NULL,
+    day TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (scope_id, binding, day)
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_scope_store_storage_tenant ON _substrat_scope_store_storage (tenant_id, day);
 `;
 
 /**
@@ -95,6 +105,11 @@ export interface ScopeStorageReadingInput {
   error?: string;
   /** When the read was made. Its UTC date is the sample's day. */
   readAt: string;
+  /**
+   * Scope stores read in the same attempt (#2212). Present means this attempt measured
+   * them: an empty list replaces the day's store rows with nothing. Absent leaves them.
+   */
+  stores?: readonly { binding: string; bytes: number }[];
 }
 
 /** When the phase last tried a scope (#1524), and why it failed if it did. */
@@ -171,8 +186,34 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
        RETURNING 1`,
       [storageGaugeDay(readAt), r.bytes, readAt, r.scopeId, r.tenantId],
     ).length;
+    if (r.stores) recordScopeStoreRows(sql, r, readAt);
   }
   return recorded;
+}
+
+/** Replace one scope's store samples for the day. A binding that is gone leaves no row. */
+function recordScopeStoreRows(sql: RedactionSql, reading: ScopeStorageReadingInput, readAt: string): void {
+  const day = storageGaugeDay(readAt);
+  sql(
+    `DELETE FROM _substrat_scope_store_storage
+      WHERE scope_id = ? AND tenant_id = ? AND day = ?
+        AND EXISTS (
+          SELECT 1 FROM scopes
+           WHERE scope_id = ? AND tenant_id = ? AND ${holdsStoreSql()}
+        )`,
+    [reading.scopeId, reading.tenantId, day, reading.scopeId, reading.tenantId],
+  );
+  for (const store of reading.stores ?? []) {
+    if (!Number.isInteger(store.bytes) || store.bytes < 0 || store.binding.length === 0) continue;
+    sql(
+      `INSERT INTO _substrat_scope_store_storage (scope_id, binding, day, tenant_id, bytes, read_at)
+       SELECT scope_id, ?, ?, tenant_id, ?, ? FROM scopes
+        WHERE scope_id = ? AND tenant_id = ? AND ${holdsStoreSql()}
+       ON CONFLICT (scope_id, binding, day) DO UPDATE SET bytes = excluded.bytes, read_at = excluded.read_at
+        WHERE excluded.read_at >= _substrat_scope_store_storage.read_at`,
+      [store.binding, day, store.bytes, readAt, reading.scopeId, reading.tenantId],
+    );
+  }
 }
 
 interface SampleRow {
@@ -259,16 +300,38 @@ export function listScopeStorageAttemptRows(sql: RedactionSql, tenantId?: Tenant
 
 /** Delete at most `limit` samples older than retention, oldest first. Returns how many went. */
 export function pruneScopeStorageRows(sql: RedactionSql, nowMs: number, limit: number): number {
-  return sql(boundedRetentionDelete('_substrat_scope_storage', 'day'), [
-    storageRetentionHorizon(nowMs),
-    assertRowLimit('limit', limit),
-  ]).length;
+  const horizon = storageRetentionHorizon(nowMs);
+  const capped = assertRowLimit('limit', limit);
+  const databases = sql(boundedRetentionDelete('_substrat_scope_storage', 'day'), [horizon, capped]).length;
+  const stores = sql(boundedRetentionDelete('_substrat_scope_store_storage', 'day'), [horizon, capped]).length;
+  return databases + stores;
+}
+
+/** The latest store sample of each (scope, binding) that still holds a store. */
+export function listScopeStoreStorageRows(
+  sql: RedactionSql,
+  tenantId?: TenantId,
+): { tenantId: TenantId; bytes: number; readAt: string }[] {
+  const rows = sql(
+    `SELECT g.tenant_id, g.bytes, g.read_at
+       FROM scopes s
+       JOIN _substrat_scope_store_storage g ON g.scope_id = s.scope_id AND g.tenant_id = s.tenant_id
+        AND g.day = (
+          SELECT MAX(m.day) FROM _substrat_scope_store_storage m
+           WHERE m.scope_id = g.scope_id AND m.binding = g.binding
+        )
+      WHERE ${holdsStoreSql('s.')}${tenantId ? ' AND s.tenant_id = ?' : ''}
+      ORDER BY g.scope_id, g.binding`,
+    tenantId ? [tenantId] : [],
+  ) as { tenant_id: string; bytes: number; read_at: string }[];
+  return rows.map((r) => ({ tenantId: r.tenant_id as TenantId, bytes: r.bytes, readAt: r.read_at }));
 }
 
 /** Drop a scope's samples and attempt: its storage is gone, so its history describes nothing billable. */
 export function forgetScopeStorage(sql: RedactionSql, scopeId: string): void {
   sql('DELETE FROM _substrat_scope_storage WHERE scope_id = ?', [scopeId]);
   sql('DELETE FROM _substrat_scope_storage_attempts WHERE scope_id = ?', [scopeId]);
+  sql('DELETE FROM _substrat_scope_store_storage WHERE scope_id = ?', [scopeId]);
 }
 
 /**
@@ -281,6 +344,7 @@ export function foldStorageGauge(
   samples: readonly { bytes: number; readAt: string }[],
   total: number,
   attempts: readonly { attemptedAt: string; error: string | null }[] = [],
+  stores?: readonly { bytes: number }[],
 ): StorageGauge {
   let failing = 0;
   let lastFailed: string | null = null;
@@ -297,6 +361,7 @@ export function foldStorageGauge(
     if (oldest === null || s.readAt < oldest) oldest = s.readAt;
     if (newest === null || s.readAt > newest) newest = s.readAt;
   }
+  const storeBytes = stores?.reduce((sum, row) => sum + row.bytes, 0);
   return {
     basis: 'scope-databases',
     excluded: [...STORAGE_EXCLUSIONS],
@@ -307,5 +372,6 @@ export function foldStorageGauge(
     newestReadAt: newest as StorageGauge['newestReadAt'],
     failing,
     lastFailedAt: lastFailed as StorageGauge['lastFailedAt'],
+    ...(stores && stores.length > 0 ? { stores: { bytes: storeBytes ?? 0, sampled: stores.length } } : {}),
   };
 }

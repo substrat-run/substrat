@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { manualClock } from '../src/clock.js';
 import { runPlatformSweep, STORAGE_SAMPLE_BATCH, StorageReadUnsupported, type PlatformSweepOptions } from '../src/platform-sweep.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, type ScopeStorageAttempt, type ScopeStorageReadingInput } from '../src/storage-gauge.js';
 import type { FetchLike, ScopeHost } from '../src/scope-host.js';
@@ -280,6 +281,44 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     const r = reader();
     await sweep(host, { drainRetries: false, storageGauge: { read: r.read } });
     expect(r.asked).toEqual([archived]);
+  });
+
+  it('samples scope stores with the database, and a second pass the same day does not (#2212)', async () => {
+    const clock = manualClock('2026-06-01T12:00:00.000Z');
+    const scope = sid();
+    const tried: Record<string, string> = {};
+    const { host, recorded } = gaugeHost({ scopes: [scope], tried });
+    const record = host.admin.recordScopeStorage!;
+    host.admin.recordScopeStorage = async (actor, readings) => {
+      for (const reading of readings) tried[reading.scopeId] = reading.readAt;
+      return record(actor, readings);
+    };
+    const storesAsked: string[] = [];
+    const r = reader();
+    const gauge = {
+      read: r.read,
+      readStores: async (s: { id: string }) => {
+        storesAsked.push(s.id);
+        return [{ binding: 'GRAPH', bytes: 12 }];
+      },
+      now: () => clock.now(),
+    };
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(r.asked).toEqual([scope]);
+    expect(storesAsked).toEqual([scope]);
+    expect(recorded[0]?.stores).toEqual([{ binding: 'GRAPH', bytes: 12 }]);
+
+    recorded.length = 0;
+    r.asked.length = 0;
+    storesAsked.length = 0;
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(r.asked).toEqual([]);
+    expect(storesAsked).toEqual([]);
+
+    clock.advance(DAY);
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(r.asked).toEqual([scope]);
+    expect(storesAsked).toEqual([scope]);
   });
 
   it('is off when the option is unset, or the host keeps no gauge', async () => {

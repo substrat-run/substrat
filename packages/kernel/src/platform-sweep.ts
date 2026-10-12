@@ -754,6 +754,15 @@ export interface StorageGaugeSweepOptions {
   maxAgeMs?: number;
   /** Samples past retention deleted per pass. Default `STORAGE_GAUGE_PRUNE_BATCH`. */
   pruneBatch?: number;
+  /**
+   * Scope stores read in the same pass as the database, and only for a scope that pass
+   * already decided was due (#2212). Absent means this deployment does not sample stores.
+   * `null` declines, the way `read` does. A throw fails the attempt, so the database
+   * sample is not recorded either and the scope is tried again once it is due.
+   */
+  readStores?: (scope: Scope) => Promise<{ binding: string; bytes: number }[] | null>;
+  /** The instant the pass judges age against. Default the wall clock. */
+  now?: () => string;
 }
 
 /**
@@ -2877,6 +2886,7 @@ async function sweepStorageGauge(
   };
   const batch = gauge.batch ?? STORAGE_SAMPLE_BATCH;
   const maxAgeMs = gauge.maxAgeMs ?? STORAGE_SAMPLE_MAX_AGE_MS;
+  const now = gauge.now ?? (() => new Date().toISOString());
   try {
     if (batch > 0) {
       // Not one archived before it ever held data (`holdsStore`): reading it would create the
@@ -2889,7 +2899,7 @@ async function sweepStorageGauge(
       const tried = new Map(
         (await admin.listScopeStorageAttempts!(options.actor)).map((a) => [a.scopeId as string, a.attemptedAt]),
       );
-      const staleBefore = new Date(Date.now() - maxAgeMs).toISOString();
+      const staleBefore = new Date(Date.parse(now()) - maxAgeMs).toISOString();
       // Never-tried scopes first (by id), then the longest since their last attempt.
       const due = candidates
         .filter((s) => {
@@ -2902,7 +2912,7 @@ async function sweepStorageGauge(
       out.deferred = due.length - take.length;
       const attempts: ScopeStorageReadingInput[] = [];
       await mapBounded(take, options.concurrency ?? 8, async (s) => {
-        const attempt = { tenantId: s.tenantId, scopeId: s.id, readAt: new Date().toISOString() };
+        const attempt = { tenantId: s.tenantId, scopeId: s.id, readAt: now() };
         try {
           const bytes = await gauge.read(s);
           if (bytes === null) {
@@ -2913,7 +2923,12 @@ async function sweepStorageGauge(
             return;
           }
           if (!Number.isInteger(bytes) || bytes < 0) throw new Error(`not a size: ${String(bytes)}`);
-          attempts.push({ ...attempt, bytes });
+          const stores = gauge.readStores ? await gauge.readStores(s) : undefined;
+          if (stores === null) {
+            attempts.push({ ...attempt, bytes });
+          } else {
+            attempts.push({ ...attempt, bytes, ...(stores ? { stores } : {}) });
+          }
           out.read += 1;
         } catch (err) {
           out.failed += 1;

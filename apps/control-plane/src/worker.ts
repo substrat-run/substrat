@@ -1364,6 +1364,31 @@ export function storageReaderFor(
 }
 
 /**
+ * The same phase's scope-store reader (#2212). One call lists every binding. A deployment
+ * that predates the route is unsupported, the same standing condition as a missing
+ * database-size route, and the phase records it without mailing it every pass.
+ */
+export function storeStorageReaderFor(
+  resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'scopeStoreSizes'> | undefined>,
+): (scope: Scope) => Promise<{ binding: string; bytes: number }[] | null> {
+  return async (scope) => {
+    if (!scope.vertical) return null;
+    const client = await resolve(scope);
+    if (!client) throw new Error(`no deployment resolves for vertical '${scope.vertical}'`);
+    try {
+      return await client.scopeStoreSizes(scope.tenantId, scope.id);
+    } catch (err) {
+      if (err instanceof ControlPlaneError && (err.status === 501 || isRouteMiss(err))) {
+        throw new StorageReadUnsupported(
+          `vertical '${scope.vertical}' cannot read scope store sizes (${err.status}); redeploy it`,
+        );
+      }
+      throw err;
+    }
+  };
+}
+
+/**
  * Drain one scope's pending platform-intents now: pull them from the vertical's
  * `/internal` surface (its DO lives in the vertical's deployment, K-31), execute each
  * with platform authority via the registered handlers, settle back. The unit shared by
@@ -1874,7 +1899,10 @@ export default {
       drainPlatformRequestsFn: platformDrain.drain,
       // #1524: the stored storage gauge. The kernel reads only scopes the drain above just
       // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
-      storageGauge: { read: storageReaderFor(resolveVerticalForScopeFor(env)) },
+      storageGauge: {
+        read: storageReaderFor(resolveVerticalForScopeFor(env)),
+        readStores: storeStorageReaderFor(resolveVerticalForScopeFor(env)),
+      },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
       // missing whatever that hook mints, and nothing else would ever deliver it.

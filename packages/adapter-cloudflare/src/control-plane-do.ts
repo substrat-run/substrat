@@ -24,6 +24,7 @@ import {
   forgetScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
+  listScopeStoreStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
   type ScopeStorageAttempt,
@@ -2020,6 +2021,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_finding_rules', // #1748: the tenant's suppress rules
       '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
       '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
+      '_substrat_scope_store_storage', // #2212: scope-store samples, gone with the tenant
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -3842,6 +3844,7 @@ export class ControlPlaneDO extends DurableObject {
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
     storage: ScopeStorageSample[];
     storageAttempts: ScopeStorageAttempt[];
+    storeStorage: { tenantId: TenantId; bytes: number; readAt: string }[];
   } {
     const where = tenantId ? ' WHERE tenant_id = ?' : '';
     const args = tenantId ? [tenantId] : [];
@@ -3863,6 +3866,7 @@ export class ControlPlaneDO extends DurableObject {
       // #1524: the stored gauge's latest sample per non-reaped scope. A directory read only.
       storage: listScopeStorageRows(doRedactionSql(this.sql), { tenantId: tenantId as TenantId | undefined, latest: true }),
       storageAttempts: listScopeStorageAttemptRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
+      storeStorage: listScopeStoreStorageRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
     };
   }
 

@@ -332,6 +332,7 @@ export const INDEX_VALUE_EXPORTS = [
   'listQuery',
   'listScopeStorageAttemptRows',
   'listScopeStorageRows',
+  'listScopeStoreStorageRows',
   'listSystemSwitchRecords',
   'loadDirectoryDump',
   'manualClock',

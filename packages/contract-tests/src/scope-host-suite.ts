@@ -9653,6 +9653,59 @@ export function scopeHostContractSuite(
         expect(fleet.storage!.sampled).toBe(fleet.perTenant.reduce((n, r) => n + (r.storage?.sampled ?? 0), 0));
       });
 
+      it('folds scope-store samples into the gauge, and drops them past retention (#2212)', async () => {
+        const ta = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: ta, slug: 'gauge-stores', name: 'Gauge Stores' });
+        const s = await newScope(ta);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: ta,
+          scopeId: s,
+          bytes: 100,
+          readAt: day(0, '08:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 40 }, { binding: 'BLOBS', bytes: 2 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 42,
+          sampled: 2,
+        });
+        // The day's reading is replaced, so a binding that is gone is not still billed.
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: ta,
+          scopeId: s,
+          bytes: 100,
+          readAt: day(0, '09:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 7 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 7,
+          sampled: 1,
+        });
+
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        const aged = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: aged, slug: 'gauge-stores-old', name: 'Gauge Stores Old' });
+        const agedScope = await newScope(aged);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: aged,
+          scopeId: agedScope,
+          bytes: 1,
+          readAt: old.toISOString(),
+          stores: [{ binding: 'GRAPH', bytes: 9 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: aged })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 9,
+          sampled: 1,
+        });
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        expect((await host.admin.readMeters(staff, { tenantId: aged })).perTenant[0]!.storage?.stores).toBeUndefined();
+        // The recent tenant's sample is inside retention, so the prune leaves it.
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 7,
+          sampled: 1,
+        });
+      });
+
       it("forgets a reaped scope's samples, and never writes one for it again", async () => {
         const tr = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tr, slug: 'gauge-reap', name: 'Gauge Reap' });
