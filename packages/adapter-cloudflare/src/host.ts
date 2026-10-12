@@ -216,6 +216,7 @@ import {
   type Scope,
   type DirectoryDump,
   type ScopeDump,
+  type ScopeDumpInput,
   type ScopeDumpTable,
   type ScopeLineage,
   subjectShredReceipt,
@@ -2606,6 +2607,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly scopeNs: DurableObjectNamespace;
   private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
   private readonly scopeStoreVertical?: string;
+  private readonly scopeStoreKinds: Readonly<Record<string, string>>;
   private scopeStoreStart: Promise<void> | null = null;
   private readonly cp: ControlPlaneStub;
   private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
@@ -2725,6 +2727,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
     this.scopeStoreVertical = options.scopeStores?.vertical;
+    this.scopeStoreKinds = options.scopeStores?.kinds ?? {};
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.cpLess = !options.controlPlane;
     this.cp = options.controlPlane
@@ -4473,7 +4476,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async importScope(
     actor: PlatformActorId,
     input: ProvisionScopeInput,
-    dump: ScopeDump,
+    dump: ScopeDumpInput,
   ): Promise<void> {
     this.refuseUnboundScopeStores(dump.stores);
     // Create the destination scope (directory row + DO + lazy migrate); the DO then
@@ -4505,7 +4508,7 @@ export class CloudflareScopeHost implements ScopeHost {
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    dump: ScopeDump,
+    dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
   ): Promise<void> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
@@ -4874,6 +4877,15 @@ export class CloudflareScopeHost implements ScopeHost {
     return erasures;
   }
 
+  /** A runner's kind, or the kind declared for an ambient binding. Never invented. */
+  private scopeStoreKind(binding: string): string {
+    const kind = this.scopeStoreRunners.get(binding)?.kind ?? this.scopeStoreKinds[binding];
+    if (!kind) {
+      throw substratError('unavailable', `scope store '${binding}' has no declared kind`);
+    }
+    return kind;
+  }
+
   /** A dump that names a binding this host does not have is refused before any write. */
   private refuseUnboundScopeStores(stores: readonly { binding: string }[] | undefined): void {
     const bound = new Set(this.scopeStoreBindingNames());
@@ -4903,7 +4915,11 @@ export class CloudflareScopeHost implements ScopeHost {
       const exported = storeExportResult.parse(
         await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export'),
       );
-      stores.push({ binding, kind: this.scopeStoreRunners.get(binding)?.kind ?? 'bound', tables: exported.tables });
+      stores.push({
+        binding,
+        kind: this.scopeStoreKind(binding),
+        tables: exported.tables,
+      });
     }
     return stores;
   }
@@ -4916,9 +4932,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const listed = stores ?? [];
     if (listed.length === 0) return;
     const scope = await this.scopeRecordForRead(tenantId, scopeId);
-    if (!scope.vertical) {
-      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
-    }
+    if (!scope.vertical) return;
     if (this.scopeStoreVertical !== undefined && scope.vertical !== this.scopeStoreVertical) {
       throw substratError(
         'forbidden',
@@ -4938,9 +4952,10 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /** `substrat.wipe` on each declared binding, before the scope's own storage goes. */
   private async wipeScopeStores(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
-    const scope = await this.scopeRecordForRead(tenantId, scopeId);
     const bindings = this.scopeStoreBindingNames();
-    if (bindings.length === 0 || !scope.vertical) return;
+    if (bindings.length === 0) return;
+    const scope = await this.scopeRecordForRead(tenantId, scopeId);
+    if (!scope.vertical) return;
     if (this.scopeStoreVertical !== undefined && scope.vertical !== this.scopeStoreVertical) {
       throw substratError(
         'forbidden',

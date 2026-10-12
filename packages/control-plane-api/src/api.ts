@@ -5964,17 +5964,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const origin = { tenantId: tenantIdSchema.parse(dump.tenantId), scopeId: scopeIdSchema.parse(dump.scopeId) };
       const tables = await openDump(dump.tables, sealerFor(c, origin.tenantId, origin.scopeId));
       const vertical = await verticalForScope(c, scope);
-      // Store tables are opaque and live in the vertical, not in the co-located scope file.
-      // Import them before the scope write so an unbound binding refuses with nothing written
-      // here. A co-located host (no vertical) imports them itself, inside restoreScope.
+      // Bindings are checked inside the deployment's import, which writes no store row
+      // until every named binding is one it has. The scope's own tables are restored
+      // first. A co-located host does the same check itself, before it writes, and then
+      // imports; handing it an empty store list is how this route avoids importing twice.
+      const landing = { ...dump, tables, stores: vertical ? [] : dump.stores };
+      await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
       if (vertical && dump.stores.length > 0) {
         if (typeof vertical.scopeStoreImport !== 'function') {
           throw new ControlPlaneError(501, 'this deployment cannot import scope stores (#2211). Redeploy it');
         }
         await vertical.scopeStoreImport(tenantId, scopeId, dump.stores);
       }
-      const landing = { ...dump, tables, stores: vertical ? [] : dump.stores };
-      await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
       const restored = vertical

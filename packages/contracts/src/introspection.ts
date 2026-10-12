@@ -317,7 +317,13 @@ export const scopeDump = z.object({
    */
   stores: z.array(scopeStoreDump).default([]),
 });
-export type ScopeDump = z.infer<typeof scopeDump>;
+/** A dump a caller reads back. `stores` is always present; the schema fills `[]`. */
+export type ScopeDump = z.output<typeof scopeDump>;
+/**
+ * A dump a caller hands in. `stores` may be omitted — `z.output` would require it,
+ * because `.default([])` fills the field on the way out, not on the way in.
+ */
+export type ScopeDumpInput = z.input<typeof scopeDump>;
 
 /**
  * One stored scope BACKUP, as the list/reap surfaces report it (#493) — metadata about a

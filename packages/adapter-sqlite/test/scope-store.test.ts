@@ -146,4 +146,36 @@ describe('scope store door (pure adapter, #2209)', () => {
       await host.close();
     }
   });
+
+  it('a scope with no vertical has nothing to export, and the runner is not asked', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
+    let asked = false;
+    const runner: ScopeStoreRunner = {
+      kind: 'counter',
+      async start() {},
+      async stop() {},
+      async invoke() {
+        asked = true;
+        return { result: { tables: [] } };
+      },
+    };
+    const host = new SqliteScopeHost({
+      dir,
+      checker: UNSAFE_allowAllChecker,
+      scopeStores: { runners: [{ binding: 'GRAPH', runner }] },
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s });
+      await host.admin.activateScope(staff, t, s);
+      const dump = await host.admin.exportScope(staff, t, s);
+      expect(dump.stores).toEqual([]);
+      expect(asked).toBe(false);
+    } finally {
+      await host.close();
+    }
+  });
 });

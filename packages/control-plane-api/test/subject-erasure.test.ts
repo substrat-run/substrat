@@ -321,4 +321,35 @@ describe('subject erasure (#37)', () => {
     expect(res.status).toBe(200);
     expect(asked).toBe(false);
   });
+
+  it('a hosted restore imports the dump stores on the deployment', async () => {
+    const imported: { binding: string; tables: unknown[] }[][] = [];
+    const scoped = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: 'docs' });
+    await host.admin.activateScope(staff, t, scoped);
+    const dump = await host.admin.exportScope(staff, t, scoped);
+    const table = { name: 'nodes', ddl: 'CREATE TABLE nodes(id TEXT)', columns: ['id'], rows: [['a']] };
+    const api = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: {
+        docs: {
+          restoreScope: async () => ({ tables: dump.tables.length }),
+          scopeStoreImport: async (_tenant: string, _scope: string, stores: { binding: string; tables: unknown[] }[]) => {
+            imported.push(stores);
+          },
+        },
+      } as never,
+    });
+    const res = await api.request(`/tenants/${t}/scopes/${scoped}/restore`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        ...dump,
+        stores: [{ binding: 'GRAPH', kind: 'counter', tables: [table] }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(imported).toEqual([[{ binding: 'GRAPH', kind: 'counter', tables: [table] }]]);
+  });
 });

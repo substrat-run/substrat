@@ -189,6 +189,7 @@ import {
   type Scope,
   type DirectoryDump,
   type ScopeDump,
+  type ScopeDumpInput,
   type ScopeDumpTable,
   type ScopeId,
   storeEraseResult,
@@ -3833,7 +3834,7 @@ export class SqliteScopeHost implements ScopeHost {
   async importScope(
     actor: PlatformActorId,
     input: ProvisionScopeInput,
-    dump: ScopeDump,
+    dump: ScopeDumpInput,
   ): Promise<void> {
     this.refuseUnboundScopeStores(dump.stores);
     // Create the destination scope (directory row + storage). Its migration step
@@ -4003,7 +4004,7 @@ export class SqliteScopeHost implements ScopeHost {
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    dump: ScopeDump,
+    dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
   ): Promise<void> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
@@ -4202,20 +4203,27 @@ export class SqliteScopeHost implements ScopeHost {
     return slot.current;
   }
 
-  /** The scope's vertical, refused when this host is limited to another one. */
-  private scopeStoreVerticalOf(scopeId: ScopeId): string {
+  /** The scope's vertical when it has one. No vertical means this host has no store to touch. */
+  private scopeStoreVerticalIfPresent(scopeId: ScopeId): string | undefined {
     const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
       | { vertical: string | null }
       | undefined;
     const vertical = row?.vertical;
-    if (!vertical) {
-      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
-    }
+    if (!vertical) return undefined;
     if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
       throw substratError(
         'forbidden',
         `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
       );
+    }
+    return vertical;
+  }
+
+  /** The scope's vertical, refused when this host is limited to another one. */
+  private scopeStoreVerticalOf(scopeId: ScopeId): string {
+    const vertical = this.scopeStoreVerticalIfPresent(scopeId);
+    if (!vertical) {
+      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
     }
     return vertical;
   }
@@ -4305,7 +4313,8 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
     const bindings = [...this.scopeStoreRunners.keys()];
     if (bindings.length === 0) return [];
-    const vertical = this.scopeStoreVerticalOf(scopeId);
+    const vertical = this.scopeStoreVerticalIfPresent(scopeId);
+    if (!vertical) return [];
     const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
     for (const binding of bindings) {
       const runner = this.scopeStoreRunners.get(binding);
@@ -4325,7 +4334,8 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<void> {
     const listed = stores ?? [];
     if (listed.length === 0) return;
-    const vertical = this.scopeStoreVerticalOf(scopeId);
+    const vertical = this.scopeStoreVerticalIfPresent(scopeId);
+    if (!vertical) return;
     for (const store of listed) {
       storeImportResult.parse(
         await this.invokeReservedStore(
@@ -4341,7 +4351,8 @@ export class SqliteScopeHost implements ScopeHost {
   private async wipeScopeStores(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const bindings = [...this.scopeStoreRunners.keys()];
     if (bindings.length === 0) return;
-    const vertical = this.scopeStoreVerticalOf(scopeId);
+    const vertical = this.scopeStoreVerticalIfPresent(scopeId);
+    if (!vertical) return;
     for (const binding of bindings) {
       storeWipeResult.parse(
         await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.wipe'),
