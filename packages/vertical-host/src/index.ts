@@ -25,7 +25,7 @@
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { classifyError, messageOf, problemOf } from './errors.js';
+import { classifyError, messageOf, problemOf, withRequestIdMember } from './errors.js';
 import { externalInput, externalJson } from './wire.js';
 import {
   type CarriedAway,
@@ -2351,7 +2351,7 @@ export function mountPlatformSurface<Env extends object>(
     // The returned status, not `seen`'s: a scope-gate refusal answers the neutral 404 whatever a
     // mapper decided (#113).
     const { status, body } = problemOf(seen, err, c.req.path);
-    return c.body(JSON.stringify(body), status, {
+    return c.body(JSON.stringify(withRequestIdMember(body, c)), status, {
       'content-type': PROBLEM_CONTENT_TYPE,
     });
   });

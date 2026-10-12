@@ -115,6 +115,8 @@ export function asyncLogContractSuite(adapterName: string, makeFixture: () => Pr
       expect(line!.eventId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
       // The handler's ctx.log line joins it: same id, so the call's drill-down shows both.
       expect(fixture.logs().find((l) => l.fields['tag'] === tag)).toMatchObject({ invocationId, operation: null });
+      // #2192: delivered inside the call, the consumer's ctx.requestId is the call's id.
+      expect(fixture.logs().find((l) => l.fields['tag'] === tag)!.fields['requestId']).toBe(invocationId);
     });
 
     it('outside any call, a delivery mints its own id, and its ctx.log line still joins it', async () => {
@@ -127,6 +129,9 @@ export function asyncLogContractSuite(adapterName: string, makeFixture: () => Pr
       expect(linesAbout(tag, '@test/asynclog')).toEqual([
         expect.objectContaining({ kind: 'consumer', outcome: 'delivered', invocationId: log!.invocationId }),
       ]);
+      // #2192: the operation's ctx.requestId was null, and the consumer's is NOT — it is the id
+      // the delivery minted, the one its line and its ctx.log line carry.
+      expect(log!.fields['requestId']).toBe(log!.invocationId);
     });
 
     it('a consumer that throws is an error line, dead-lettered, with the code and none of the text', async () => {

@@ -233,6 +233,12 @@ export const problem = z.object({
    * so this is not where it grows.
    */
   code: errorCode.optional(),
+  /**
+   * #2192: the id the platform minted for the request that failed — the same value as its
+   * `x-substrat-request-id` header, and the id the dashboard's request view opens. Present
+   * when a transport knows one; a caller quotes it, and nothing else reads meaning into it.
+   */
+  requestId: z.string().min(1).optional(),
   // -- declared extensions (see PROBLEM_EXTENSIONS) ---------------------------
   permission: z.string().min(1).optional(),
   entity: entityRef.optional(),
