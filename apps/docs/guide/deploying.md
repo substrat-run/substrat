@@ -563,6 +563,25 @@ missing:
 traffic. A repo that declares none of the three still deploys — the file is regenerated into
 projects that predate the gate — but the run says so, loudly.
 
+### Declared outbound hosts
+
+A vertical may only call the third-party hosts it lists in `substrat.outbound`; any other call is
+refused at run time with `403 outbound refused`, which from the outside reads like an upstream
+error. `substrat push`, `substrat preview` and `substrat push --check` read the worker entry and
+the modules it imports for `https://host` literals (and `new URL('https://…')`) and name each one
+`outbound` does not cover, with the file, the line and the exact line to add:
+
+```text
+warning: the code names a host package.json substrat.outbound does not declare — …
+  api.partner-co.com  (src/integrations/sync.ts:12)
+  add to package.json: "outbound": ["api.partner-co.com"]
+```
+
+It is a warning by default; **`--strict`** makes it an error, which is the form to run in CI. A
+host you declared that no literal names comes back as a `note:` only, since declarations are
+reviewed rather than trimmed for you. The scan is best effort: a host assembled at runtime or read
+from configuration is not found, so a clean run does not prove every call is declared.
+
 If you never connect the GitHub App — you own your CI, you are not on GitHub-hosted runners, or
 you want the release-train shape instead of merge-deploys-prod — generate the same file locally:
 

@@ -263,6 +263,13 @@ output.
 `--json` prints `{ registry, digest }` and nothing else on stdout (the gate's notes move to
 stderr), so `substrat push --check --json > permissions.json` is a diffable artifact.
 
+`--check` (and `push`, and `preview`) also reads the worker entry and the modules it imports for
+`https://host` literals and `new URL('https://…')`, and warns about each host
+`"substrat": { "outbound" }` does not cover, with the file, the line and the line to add — the
+egress worker refuses such a call at run time. `--strict` makes it an error. A declared host no
+literal names is only a `note:`. It is best effort: a host built at runtime or read from config is
+not found. See [declared outbound hosts](/guide/deploying#declared-outbound-hosts).
+
 The push builds the bundle (`wrangler deploy --dry-run`, running your own `build.command`),
 reads the declared surface (your own DO classes, D1 databases, compatibility date/flags, entry
 module), computes the three digests, and POSTs to `{cp}/verticals/{slug}/deploy`. The slug is

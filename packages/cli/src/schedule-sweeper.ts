@@ -186,7 +186,7 @@ export function exportedSweeperNames(source: string): string[] {
 const SOURCE_EXTENSIONS = ['.ts', '.mts', '.tsx', '.js', '.mjs'];
 
 /** A relative specifier as the bundler would find it on disk, or undefined. */
-function resolveRelative(fromFile: string, specifier: string): string | undefined {
+export function resolveRelative(fromFile: string, specifier: string): string | undefined {
   const base = resolve(dirname(fromFile), specifier);
   const stem = base.replace(/\.(?:[cm]?js|jsx)$/, '');
   const candidates = [
