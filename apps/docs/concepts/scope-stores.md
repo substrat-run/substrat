@@ -22,7 +22,7 @@ A kind is registered before a push that names it can succeed. No kind is registe
 
 ## Calling it
 
-`getScopeStore` is the door. It makes the same directory check as `getScope`, then reaches the binding:
+`getScopeStore` is the door. It checks that the tenant and the scope are a pair the directory has, and it checks no permission. A binding that is not on the host is refused before that read. A host with no control plane takes the vertical from its own configuration (`scopeStores.vertical`) instead of from a scope row:
 
 ```ts
 const store = await host.getScopeStore(principal, tenantId, scopeId, 'GRAPH');
