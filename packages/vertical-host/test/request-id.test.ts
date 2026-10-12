@@ -107,11 +107,13 @@ describe.each([
 ])('the request id, stamped by $layer', ({ middleware }) => {
   it.each(CASES)('$method $path ($status): header, body, line, scope and Hono context agree', async (c) => {
     const { app, seen, fromHono } = vertical({ middleware });
-    const fetcher = middleware ? { fetch: app.fetch } : withInvocationLog<Env>(app as never, { routerSecret: (e) => e.ROUTER_SECRET });
+    const fetcher = middleware
+      ? { fetch: (req: Request, e: Env) => app.fetch(req, e) }
+      : withInvocationLog<Env>(app as never, { routerSecret: (e) => e.ROUTER_SECRET });
     const { lines, restore } = capture();
     let res: Response;
     try {
-      res = (await fetcher.fetch!(request(c.path, c.method), env, {})) as Response;
+      res = (await fetcher.fetch!(request(c.path, c.method) as never, env, {})) as Response;
     } finally {
       restore();
     }
