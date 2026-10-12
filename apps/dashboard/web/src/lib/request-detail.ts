@@ -284,6 +284,13 @@ export interface RelatedRequest {
   via: string;
 }
 
+/** What the related-requests read could cover, and whether it covered it all. */
+export interface RelatedResult {
+  requests: RelatedRequest[];
+  /** Why the list may be missing some, or null when every read was made and none failed. */
+  incomplete: string | null;
+}
+
 export function relatedRequests(own: string, trees: EffectsTree[], causes: CauseChain[]): RelatedRequest[] {
   const out = new Map<string, RelatedRequest>();
   const add = (r: RelatedRequest) => {

@@ -1581,13 +1581,15 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     // sentence, then the deprecated duplicate every SPA read before it. The `probe`
     // beside it is the dashboard's own extension (#605) and stays read here.
     const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView; requestId?: unknown } | null;
-    const fromBody = typeof body?.requestId === 'string' && body.requestId !== '' ? body.requestId : undefined;
+    // Only something shaped like an id is surfaced as one: it is shown, and people copy it.
+    const plausible = (v: unknown): string | undefined => (typeof v === 'string' && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/i.test(v) ? v : undefined);
+    const fromBody = plausible(body?.requestId);
     throw new ApiError(
       res.status,
       problemDetail(body) ?? `${res.status} ${res.statusText}`,
       body?.probe,
       exportBreaksIn<ExportBreakRow>(body),
-      res.headers.get(REQUEST_ID_HEADER) || fromBody,
+      plausible(res.headers.get(REQUEST_ID_HEADER)) ?? fromBody,
     );
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);

@@ -112,8 +112,10 @@ export const REQUEST_WINDOW_MS = 72 * 3_600_000;
  */
 export function parseRequestId(text: string): string | null {
   const t = text.trim();
-  const labelled = /(?:^|[?&#\s,{])["']?(?:req|requestId|x-substrat-request-id)["']?\s*[=:]\s*["'`]?([^&\s#"'`]+)/i.exec(t);
-  const candidate = (labelled ? labelled[1]! : t.replace(/^["'`]+|["'`,.;]+$/g, '')).toUpperCase();
+  const labelled = [...t.matchAll(/(?:^|[?&#\s,{])["']?(?:req|requestId|x-substrat-request-id)["']?\s*[=:]\s*["'`]?([^&\s#"'`]+)/gi)];
+  // A second labelled id is as ambiguous as a second bare one.
+  if (labelled.length > 1) return null;
+  const candidate = (labelled[0] ? labelled[0][1]! : t.replace(/^["'`]+|["'`,.;]+$/g, '')).toUpperCase();
   return ULID.test(candidate) && ulidTime(candidate) !== null ? candidate : null;
 }
 

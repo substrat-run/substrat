@@ -23,6 +23,7 @@ const ulidAt = (ms: number, tail = 'A'): string => {
   return t + tail.repeat(16);
 };
 const ID = ulidAt(MINTED);
+const OTHER_ID = ulidAt(MINTED - 60_000, 'B');
 
 describe('parseRequestId', () => {
   it('reads the bare id in any case, with whitespace or quotes around it', () => {
@@ -40,7 +41,7 @@ describe('parseRequestId', () => {
   });
 
   it('opens nothing for text that names no single id', () => {
-    for (const bad of ['', '   ', 'hello', ID.slice(1), `${ID}A`, ID.replace(/^./, 'I'), ID.replace(/^./, 'U'), `${ID} ${ID}`, 'req=', `req=${ID.slice(2)}`]) {
+    for (const bad of ['', '   ', 'hello', ID.slice(1), `${ID}A`, ID.replace(/^./, 'I'), ID.replace(/^./, 'U'), `${ID} ${ID}`, `req=${ID}&req=${OTHER_ID}`, `?req=${ID}&requestId=${ID}`, `8${ID.slice(1)}`, 'Z'.repeat(26), 'req=', `req=${ID.slice(2)}`]) {
       expect(parseRequestId(bad), JSON.stringify(bad)).toBeNull();
     }
   });
@@ -109,6 +110,12 @@ describe('ApiError.requestId', () => {
   it('reads the id from the response header, and from the problem body when there is no header', async () => {
     expect((await failWith({ headers: { 'x-substrat-request-id': ID } }, { detail: 'no' }))?.requestId).toBe(ID);
     expect((await failWith({}, { detail: 'no', requestId: OTHER }))?.requestId).toBe(OTHER);
+  });
+
+  it('ignores an id that is not shaped like one, from the body and from the header', async () => {
+    expect((await failWith({}, { detail: 'no', requestId: 'x'.repeat(500) }))?.requestId).toBeUndefined();
+    expect((await failWith({}, { detail: 'no', requestId: `8${ID.slice(1)}` }))?.requestId).toBeUndefined();
+    expect((await failWith({ headers: { 'x-substrat-request-id': 'nonsense' } }, { detail: 'no', requestId: OTHER }))?.requestId).toBe(OTHER);
   });
 
   it('has none when the answer named none', async () => {
@@ -204,6 +211,53 @@ describe('the request-finding surfaces', () => {
     expect(text).toContain('Set off');
     expect(text).toContain('acme.root');
     expect(text).toContain('acme.assigned → notify');
+  });
+
+  describe('related requests that could not all be checked', () => {
+    const reacting = (n: number) => Array.from({ length: n }, (_, i) => entry(`R${i}`, 'acme.react', OWN, { causedBy: 'E0' }));
+    const plain = (n: number) => Array.from({ length: n }, (_, i) => entry(`P${i}`, 'acme.plain', OWN));
+    const noTree = tree(null);
+    const text = () => container.textContent!;
+
+    it('does not say none are recorded when a read was rejected', async () => {
+      vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
+      vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: reacting(1), truncated: false } as InvocationEvents);
+      vi.spyOn(api, 'appEventEffects').mockRejectedValue(new ApiError(503, 'busy'));
+      vi.spyOn(api, 'appEventCause').mockResolvedValue({ chain: [], terminal: 'operation' } as unknown as CauseChain);
+      await renderPanel(OWN, MINTED);
+      expect(text()).toContain('Some related requests could not be checked: 1 read failed');
+      expect(text()).not.toContain('No other request is recorded');
+    });
+
+    it('says how many events were not traced back past the cause cap, and still lists what was found', async () => {
+      vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
+      vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: reacting(4), truncated: false } as InvocationEvents);
+      vi.spyOn(api, 'appEventEffects').mockResolvedValue(noTree);
+      const cause = vi.spyOn(api, 'appEventCause').mockResolvedValue({ chain: [entry('R', 'acme.react', OWN), entry('E0', 'acme.root', OTHER)], terminal: 'operation' } as unknown as CauseChain);
+      await renderPanel(OWN, MINTED);
+      expect(cause).toHaveBeenCalledTimes(3);
+      expect(text()).toContain('only the first 3 of 4 events that reacted to another were traced back');
+      expect(text()).toContain('acme.root');
+    });
+
+    it('says so past the effects cap', async () => {
+      vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
+      vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: plain(11), truncated: false } as InvocationEvents);
+      const effects = vi.spyOn(api, 'appEventEffects').mockResolvedValue(noTree);
+      await renderPanel(OWN, MINTED);
+      expect(effects).toHaveBeenCalledTimes(10);
+      expect(text()).toContain('only the first 10 of 11 events were followed');
+      expect(text()).not.toContain('No other request is recorded');
+    });
+
+    it('keeps the plain none sentence when every read was made (the positive twin)', async () => {
+      vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
+      vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: plain(2), truncated: false } as InvocationEvents);
+      vi.spyOn(api, 'appEventEffects').mockResolvedValue(noTree);
+      await renderPanel(OWN, MINTED);
+      expect(text()).toContain('No other request is recorded as sharing a cause');
+      expect(text()).not.toContain('could not be checked');
+    });
   });
 
   it('renders a request id to quote, and nothing without one', async () => {

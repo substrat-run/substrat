@@ -15,6 +15,7 @@ import {
   isInvocationLine,
   relatedRequests,
   type RelatedRequest,
+  type RelatedResult,
   msLabel,
   parseEntity,
   recordFromLogs,
@@ -62,7 +63,7 @@ interface Detail {
   followUpsError: string | null;
   transitions: Part<CausedTransition[]>;
   /** Other requests that share a cause with this one (#2192). */
-  related: Part<RelatedRequest[]>;
+  related: Part<RelatedResult>;
   /** The running model's lifecycles, read for the transitions and handed on to a record's history. */
   lifecycles: Record<string, EmittedLifecycle>;
 }
@@ -82,7 +83,7 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
         followUps: { state: 'ready', value: { flat: m.followUps } },
         followUpsError: null,
         transitions: { state: 'ready', value: m.transitions },
-        related: { state: 'ready', value: [] },
+        related: { state: 'ready', value: { requests: [], incomplete: null } },
         lifecycles: {},
       });
       return;
@@ -129,10 +130,17 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
         const failed = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
         set({ followUps: { state: 'ready', value: { trees } }, followUpsError: failed ? errorText(failed.reason) : null });
         // Who set this request off: walk back from the events that were themselves a reaction.
-        const reacting = r.events.filter((e) => e.causedBy !== null).slice(0, CAUSES_MAX);
+        const allReacting = r.events.filter((e) => e.causedBy !== null);
+        const reacting = allReacting.slice(0, CAUSES_MAX);
         const causeReads = await Promise.allSettled(reacting.map((e) => api.appEventCause(scopeId, e.id)));
         const causes = causeReads.flatMap((c) => (c.status === 'fulfilled' ? [c.value] : []));
-        set({ related: { state: 'ready', value: relatedRequests(invocationId, trees, causes) } });
+        const rejected = settled.length - trees.length + causeReads.length - causes.length;
+        const reasons = [
+          rejected > 0 ? `${rejected} read${rejected === 1 ? '' : 's'} failed` : null,
+          r.events.length > EFFECTS_MAX ? `only the first ${EFFECTS_MAX} of ${r.events.length} events were followed` : null,
+          allReacting.length > CAUSES_MAX ? `only the first ${CAUSES_MAX} of ${allReacting.length} events that reacted to another were traced back` : null,
+        ].filter(Boolean);
+        set({ related: { state: 'ready', value: { requests: relatedRequests(invocationId, trees, causes), incomplete: reasons.length ? reasons.join('; ') : null } } });
       })
       .catch((e) => set({ events: { state: 'error', message: errorText(e) }, followUps: { state: 'error', message: errorText(e) }, related: { state: 'error', message: errorText(e) } }));
     return () => {
@@ -264,7 +272,7 @@ export function RequestSlideOver({
             />
           </Section>
 
-          <Section title="Related requests" hint={d.related.state === 'ready' && d.related.value.length > 0 ? 'share a cause with this one' : undefined}>
+          <Section title="Related requests" hint={d.related.state === 'ready' && d.related.value.requests.length > 0 ? 'share a cause with this one' : undefined}>
             <Related part={d.related} scopeId={scopeId} />
           </Section>
 
@@ -533,12 +541,22 @@ const RELATION: Record<RelatedRequest['relation'], string> = { 'caused-by': 'Cau
 function Related({ part, scopeId }: { part: Detail['related']; scopeId: string }) {
   if (part.state === 'loading') return <Quiet>Looking for related requests…</Quiet>;
   if (part.state === 'error') return <Quiet tone="danger">Related requests are unavailable ({part.message}).</Quiet>;
-  if (part.value.length === 0) {
-    return <Quiet>No other request is recorded as sharing a cause with this one. A schedule, peer or MCP call that started another request leaves no link to follow.</Quiet>;
+  const { requests, incomplete } = part.value;
+  const partial = incomplete ? <Quiet>Some related requests could not be checked: {incomplete}.</Quiet> : null;
+  if (requests.length === 0) {
+    return incomplete ? (
+      <>
+        <Quiet>No related request was found in what could be checked.</Quiet>
+        {partial}
+      </>
+    ) : (
+      <Quiet>No other request is recorded as sharing a cause with this one. A schedule, peer or MCP call that started another request leaves no link to follow.</Quiet>
+    );
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {part.value.map((r) => (
+      {partial}
+      {requests.map((r) => (
         <div key={r.invocationId} style={{ display: 'flex', alignItems: 'baseline', gap: 10, fontSize: 13, flexWrap: 'wrap' }}>
           <span style={caps}>{RELATION[r.relation]}</span>
           <span style={mono} title={r.invocationId}>{shortId(r.invocationId)}</span>
