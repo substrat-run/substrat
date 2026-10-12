@@ -1889,7 +1889,7 @@ export class SqliteScopeHost implements ScopeHost {
   /** operation names whose default binding some manifest withdrew (K-17). */
   private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
   private readonly scopeStoreVertical?: string;
-  private scopeStoresStarted = false;
+  private scopeStoreStart: Promise<void> | null = null;
   private readonly withdrawn = new Map<string, string>(); // operation → withdrawing module
   private readonly relations = new Map<string, Set<string>>();
   /** entityType → its derived FTS5 index (#827). One entity type, one index. */
@@ -4184,10 +4184,22 @@ export class SqliteScopeHost implements ScopeHost {
     };
   }
 
-  private async ensureScopeStoresStarted(): Promise<void> {
-    if (this.scopeStoresStarted) return;
-    for (const runner of this.scopeStoreRunners.values()) await runner.start();
-    this.scopeStoresStarted = true;
+  private ensureScopeStoresStarted(): Promise<void> {
+    if (this.scopeStoreStart) return this.scopeStoreStart;
+    const seen = new Set<ScopeStoreRunner>();
+    const slot: { current: Promise<void> | null } = { current: null };
+    slot.current = (async () => {
+      for (const runner of this.scopeStoreRunners.values()) {
+        if (seen.has(runner)) continue;
+        seen.add(runner);
+        await runner.start();
+      }
+    })().catch((err: unknown) => {
+      if (this.scopeStoreStart === slot.current) this.scopeStoreStart = null;
+      throw err;
+    });
+    this.scopeStoreStart = slot.current;
+    return slot.current;
   }
 
   /**
@@ -5861,10 +5873,13 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   async close(): Promise<void> {
-    for (const runner of this.scopeStoreRunners.values()) await runner.stop();
-    for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
-    this.directory.close();
-    this.owner.release();
+    try {
+      for (const runner of new Set(this.scopeStoreRunners.values())) await runner.stop();
+    } finally {
+      for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
+      this.directory.close();
+      this.owner.release();
+    }
   }
 
   // -------------------------------------------------------------------------

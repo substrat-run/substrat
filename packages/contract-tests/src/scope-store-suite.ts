@@ -18,6 +18,16 @@ function counterRunner(): ScopeStoreRunner {
     async invoke(address, request) {
       const current = objects.get(key(address)) ?? 0;
       if (request.operation === 'read') return { result: current };
+      if (request.operation === 'address') {
+        return {
+          result: {
+            tenantId: address.tenantId,
+            vertical: address.vertical,
+            scopeId: address.scopeId,
+            binding: address.binding,
+          },
+        };
+      }
       if (request.operation === 'increment') {
         const by =
           typeof request.input === 'object' &&
@@ -67,6 +77,63 @@ export function scopeStoreContractSuite(
     });
     afterAll(async () => {
       await fixture?.cleanup();
+    });
+
+    it('the runner is handed the tenant, the vertical, the scope and the binding', async () => {
+      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      expect(await store.invoke('address')).toEqual({
+        tenantId: tenant,
+        vertical: 'docs',
+        scopeId: scopeA,
+        binding: 'GRAPH',
+      });
+    });
+
+    it('one runner starts once when the first calls overlap', async () => {
+      let started = 0;
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const slow: ScopeStoreRunner = {
+        kind: 'slow',
+        async start() {
+          started += 1;
+          await gate;
+        },
+        async stop() {},
+        async invoke() {
+          return { result: started };
+        },
+      };
+      const extra = await makeFixture({
+        runners: [
+          { binding: 'A', runner: slow },
+          { binding: 'B', runner: slow },
+        ],
+      });
+      try {
+        const t = tenantId.parse(ulid());
+        const scope = scopeId.parse(ulid());
+        await extra.host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+        await extra.host.provisionScope(staff, { tenantId: t, scopeId: scope, vertical: 'docs' });
+        await extra.host.admin.activateScope(staff, t, scope);
+        const pending = Promise.all([
+          extra.host.getScopeStore(principal, t, scope, 'A'),
+          extra.host.getScopeStore(principal, t, scope, 'B'),
+          extra.host.getScopeStore(principal, t, scope, 'A'),
+        ]);
+        const deadline = Date.now() + 2000;
+        while (started === 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(started).toBe(1);
+        release();
+        await pending;
+        expect(started).toBe(1);
+      } finally {
+        await extra.cleanup();
+      }
     });
 
     it('a declared binding reaches its object', async () => {
