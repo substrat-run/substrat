@@ -165,6 +165,7 @@ export function guideSidebar() {
       text: 'Concepts',
       items: [
         { text: 'Tenants & scopes', link: '/concepts/tenancy' },
+        { text: 'Scope stores', link: '/concepts/scope-stores' },
         { text: 'The platform layer', link: '/concepts/platform' },
         { text: 'Operations & the scope host', link: '/concepts/scope-host' },
         { text: 'Permissions', link: '/concepts/permissions' },
