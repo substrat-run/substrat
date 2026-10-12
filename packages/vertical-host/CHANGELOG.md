@@ -1,5 +1,69 @@
 # @substrat-run/vertical-host
 
+## 0.145.0
+
+### Minor Changes
+
+- f49cc49: A binding shape whose `bind` a version dropped stays guarded: a later version may not remove it, move its holder, or drop one of its keys unretired while any install has people bound through it (#2184).
+
+  Dropping `bind` stops new links and leaves the people already bound holding the shape. The binding-shape gate judged only the registry's `bind`, so once a version dropped it, a later version could remove the shape and strand them. Each install's reconcile now reports the binding shapes links have ever bound in it (the scope's sticky `shape-bound` records), the directory records them beside the receipt, and the gate counts a bootstrap shape with a table holder as binding wherever an install bound it.
+
+  - contracts: `bindingShapeBreaks(from, to, boundEver?)` and `assertNoBindingShapeBreak(…, { boundEver })`; `mayHoldBound(shape)`. `Scope.boundShapes` (`{ versionId, types }`, counting only while `versionId` is the receipt's).
+  - kernel: `topUpEntityGrantShapes`'s last pass answers `boundEver`. `ReconcileOutcome.boundShapes`, written by `markScopeProvisioned` in the same write as the receipt. `PROVISIONED_VERSIONS_SQL` groups by the reported set and by the version each install runs (rows stay per version and set, not per install), and **takes five parameters now: bind them with `provisionedVersionsParams(vertical, serving, ownerTenant)`**. `installReconciled(scope, runningVersionId)` takes the version the scope runs. A receipt behind what its installs run is judged as unreported for what they run (`strandJudgmentsOf`, the one rule both adapters' doors apply). `boundEverOf`, `boundShapesColumn`, `boundShapesOfColumn`. An install that has not reported is behind, in the same share of the sweep's window as one behind on its retirements, and **a `reconcileScopeFn` must now resolve `{ retirementsFinished, boundShapes }`** for an install to stop being reconciled each pass.
+  - adapters: a directory migration adds `scopes.bound_shapes` (nullable, no backfill: every existing install reconciles once more, and until it does it is judged as having bound every table-held bootstrap shape of its version). The hosted `provisionScopeLocal` (adapter-cloudflare) answers `boundShapeTypes` whenever it reconciled shapes; a kill switch clears the column with the receipt.
+  - vertical-host: `/internal/reconcile` answers `boundShapeTypes`. As with the retirement count, a vertical needs **both** packages at this release to report it; a version with no bootstrap shape held by a table needs neither.
+  - control-plane-api: `reconcileOutcomeOf` reads the answer, keeping the types of the sent shapes held by a table.
+
+- 55d60cf: A vertical's internal `POST /internal/restore` and `POST /internal/snapshot` routes now require `tenantId` (#2035). This changes the behaviour of an internal route and **breaks any caller that sends no tenant**. The repo has no such caller: the control plane's `VerticalClient` sends the tenant on both.
+
+  A body without one is refused before any scope store is touched, so the refusal writes nothing. The answer is `400`, `application/problem+json`:
+
+  ```json
+  {
+    "code": "validation_failed",
+    "error": "the input did not parse",
+    "errors": [
+      {
+        "path": "tenantId",
+        "message": "Invalid input: expected string, received undefined"
+      }
+    ]
+  }
+  ```
+
+  To fix it, send the tenant the scope belongs to. The restore records it as the scope's tenant in the load's own transaction, then re-projects the vertical's roles for it. That repair now always runs. The snapshot records it on the copy and refuses a source that belongs to another tenant.
+
+  Why: a load that named no tenant could land a scope holding neither a tenant record nor role rows. A dump from a world that keeps its roles outside the scope is one example. A control-plane-less host's doors have nothing to check the (tenant, scope) pair against in such a scope, which is the compatibility state #2035 is meant to end.
+
+  `VerticalClient.snapshotScope` now types `tenantId` as required.
+
+  Deploy order: the control plane must be running a release that carries #2033 (control-plane-api 0.137.0 or later) before a vertical re-pushed on this vertical-host is snapshotted. An older control plane sends no tenant on a snapshot, and the snapshot is refused with the `400` above.
+
+- 48e9503: A binding-shape drop now waits for the retirement to have finished in every install, not only for each install to have reconciled the retiring version (#2185).
+
+  A reconcile that gave a retirement up (`retirementsLeftOpen`) used to write its receipt all the same, and its answer about retirements never reached the control plane, so the install read as done and the retirement was never run again. The reconcile now reports how many retirements it left open, and the directory records, beside the receipt, the version whose retirements finished in that scope. The gate judges an install whose retirements did not finish as still holding the keys its version retires, and the sweep counts it behind, so the next pass runs the retirement again.
+
+  - contracts: `retiredKeysOf(shape)`, the keys a retirement takes back, reused by the kernel's reconcile and the gate. `Scope.retirementsFinishedVersionId`.
+  - kernel: `HostAdmin.markScopeProvisioned` takes an optional `ReconcileOutcome` (`{ retirementsFinished }`) and writes both columns in one write. `PROVISIONED_VERSIONS_SQL` groups by (version, finished); `installReconciled` makes one install's group. An install whose retirements did not finish is behind. The sweep's window is shared between installs whose receipt is behind, which take most of it, and installs behind on their retirements alone, which are owed a quarter (at least one slot); a slot one class does not need goes to the other, so neither class starves the other. **A `reconcileScopeFn` that resolves `void` now means "not finished, ask again"**: it writes the receipt with no finished version, so every install it reconciles stays behind and is reconciled on every pass. A host running its own sweep should resolve `{ retirementsFinished }`.
+  - adapters: a directory migration adds `scopes.retirements_finished_version_id` (nullable, no backfill: every existing install reconciles once more). The hosted `provisionScopeLocal` (adapter-cloudflare) counts `retirementsLeftOpen` whenever it reconciled shapes; a kill switch clears both columns.
+  - vertical-host: `/internal/reconcile` answers the count adapter-cloudflare's host returns. A vertical needs **both** packages at this release to report it: an older `@substrat-run/adapter-cloudflare` counts nothing and an older `@substrat-run/vertical-host` answers nothing, and either way the platform counts the retirements of a version that retires a key as not finished. Push a version built on current releases of both before dropping a shape you retired.
+  - control-plane-api: `reconcileOutcomeOf`, and the reconcile and provision routes record the outcome. A governed restore, and a kept copy restored forward, now clear the receipt (and the finished version with it), as a rewind already did: the data loaded may predate a reconcile, a finished retirement included, so the sweep reconciles the install again.
+
+### Patch Changes
+
+- Updated dependencies [e786ff0]
+- Updated dependencies [f49cc49]
+- Updated dependencies [6aaf822]
+- Updated dependencies [bb4f18d]
+- Updated dependencies [2c75a0d]
+- Updated dependencies [48e9503]
+- Updated dependencies [5554b23]
+- Updated dependencies [3782c4c]
+- Updated dependencies [fac4f0a]
+  - @substrat-run/contracts@0.145.0
+  - @substrat-run/kernel@0.145.0
+  - @substrat-run/model-providers@0.5.35
+
 ## 0.144.0
 
 ### Minor Changes
