@@ -215,6 +215,79 @@ const NAMED_REFUSALS: Record<string, string> = {
  * a target. The default registry is empty, so a declaration does not inject until
  * a kind is registered.
  */
+/**
+ * The script a kind is uploaded as, for one vertical (#2210).
+ *
+ * Stable across releases. A new release of the kind is uploaded into this same
+ * name, so the objects — addressed by {@link scopeStoreObjectName}, which also
+ * carries no version — stay where they are. A vertical's own deploy version is
+ * not part of it either: pushing the vertical again does not move the store.
+ */
+export function scopeStoreScriptName(vertical: string, kind: string): string {
+  return `substrat-store-${kind}-${verticalScriptStem(vertical)}`;
+}
+
+/** One store script to upload, and the bindings that point at it. */
+export interface ScopeStoreUploadPlan {
+  readonly scripts: readonly {
+    readonly kind: string;
+    readonly release: string;
+    readonly vertical: string;
+    readonly scriptName: string;
+    readonly className: string;
+  }[];
+  readonly bindings: readonly DeclaredBinding[];
+}
+
+/**
+ * Which store scripts a vertical's push uploads, and which bindings it injects
+ * (#2210). One script per (kind, vertical), shared by every binding of that
+ * kind. The script name does not include the kind's release. A kind that is
+ * not in `kinds` is refused, the same way {@link scopeStoreScriptBindings}
+ * refuses it. The default registry is empty.
+ */
+export function scopeStoreUploadPlan(input: {
+  readonly vertical: string;
+  readonly stores: readonly ScopeStoreNeed[];
+  readonly kinds?: readonly StoreKindRegistration[];
+}): ScopeStoreUploadPlan {
+  const kinds = input.kinds ?? STORE_KINDS;
+  const scripts: ScopeStoreUploadPlan['scripts'][number][] = [];
+  const seen = new Set<string>();
+  for (const store of input.stores) {
+    const kind = kinds.find((candidate) => candidate.kind === store.kind);
+    if (!kind) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
+          `A store kind is platform code, pinned to a release the way a connector is.`,
+      );
+    }
+    if (seen.has(kind.kind)) continue;
+    seen.add(kind.kind);
+    scripts.push({
+      kind: kind.kind,
+      release: kind.release,
+      vertical: input.vertical,
+      scriptName: scopeStoreScriptName(input.vertical, kind.kind),
+      className: kind.className,
+    });
+  }
+  const bindings = input.stores.map((store) => {
+    const script = scripts.find((candidate) => candidate.kind === store.kind);
+    if (!script) {
+      throw substratError('forbidden', `deploy refused: scope store '${store.binding}' has no script to bind`);
+    }
+    return {
+      type: 'durable_object_namespace' as const,
+      name: scopeStoreBindingName(store.binding),
+      class_name: script.className,
+      script_name: script.scriptName,
+    };
+  });
+  return { scripts, bindings };
+}
+
 export function scopeStoreScriptBindings(
   stores: readonly ScopeStoreNeed[],
   kinds: readonly StoreKindRegistration[] = STORE_KINDS,

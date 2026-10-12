@@ -177,7 +177,7 @@ import { createPseudonymizer } from './pseudonymize.js';
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
-  scopeStoreScriptBindings,
+  scopeStoreUploadPlan,
   deployManifest,
   storedDeployManifest,
   pushedPermissionRegistry,
@@ -7319,7 +7319,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses,
-        bindings: [...manifest.bindings, ...storeBindings, ...scopeStoreScriptBindings(manifest.scopeStores)],
+        bindings: [
+          ...manifest.bindings,
+          ...storeBindings,
+          ...scopeStoreUploadPlan({ vertical: slug, stores: manifest.scopeStores }).bindings,
+        ],
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
         // stable script updated in place, so this refresh is what keeps the binding

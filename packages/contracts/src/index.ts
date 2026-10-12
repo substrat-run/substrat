@@ -21,6 +21,7 @@ export { z } from 'zod';
 export * from './ids.js';
 export * from './registry.js';
 export * from './script-names.js';
+export * from './scope-store-mac.js';
 export * from './routing.js';
 export * from './invocation-record.js';
 export * from './wire-headers.js';

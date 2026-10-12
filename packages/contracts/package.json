@@ -21,6 +21,10 @@
       "types": "./dist/invocation-record.d.ts",
       "default": "./dist/invocation-record.js"
     },
+    "./scope-store-mac": {
+      "types": "./dist/scope-store-mac.d.ts",
+      "default": "./dist/scope-store-mac.js"
+    },
     "./wire-headers": {
       "types": "./dist/wire-headers.d.ts",
       "default": "./dist/wire-headers.js"

@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { errorCodeOf, RESERVED_STORE_OPERATIONS } from '@substrat-run/contracts';
+import { errorCodeOf, RESERVED_STORE_OPERATIONS, scopeStoreObjectName, STORE_KINDS } from '@substrat-run/contracts';
 import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 import {
   assertSandboxContract,
   deploymentRefFor,
   scopeStoreScriptBindings,
+  scopeStoreScriptName,
+  scopeStoreUploadPlan,
   stableDeploymentRefFor,
   nextMigrationTag,
 } from '../src/deploy.js';
@@ -189,6 +191,65 @@ describe('scope store bindings injected at upload (#2209)', () => {
         script_name: 'ontomate-store',
       },
     ]);
+  });
+});
+
+describe('scope store upload plan (#2210)', () => {
+  const kind = (release: string) => ({
+    kind: 'ontomate' as const,
+    release,
+    script: `ontomate-store-${release}`,
+    className: 'Store',
+    operations: ['read'],
+    platformOperations: [...RESERVED_STORE_OPERATIONS],
+  });
+
+  it('the production registry stays empty until a release is pinned', () => {
+    expect(STORE_KINDS).toEqual([]);
+  });
+
+  it('uploads one script per kind and vertical, and a new release keeps the name', () => {
+    const stores = [
+      { binding: 'GRAPH' as const, kind: 'ontomate' as const },
+      { binding: 'BLOBS' as const, kind: 'ontomate' as const },
+    ];
+    const first = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('1.0.0')] });
+    const next = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('2.0.0')] });
+    expect(first.scripts).toHaveLength(1);
+    expect(first.scripts[0]).toMatchObject({
+      kind: 'ontomate',
+      release: '1.0.0',
+      vertical: 'acme/crm',
+      className: 'Store',
+      scriptName: scopeStoreScriptName('acme/crm', 'ontomate'),
+    });
+    expect(first.scripts[0]?.scriptName).toBe(next.scripts[0]?.scriptName);
+    expect(first.scripts[0]?.scriptName).not.toContain('1.0.0');
+    expect(first.scripts[0]?.scriptName).not.toContain('2.0.0');
+    expect(first.bindings).toEqual([
+      {
+        type: 'durable_object_namespace',
+        name: 'SUBSTRAT_STORE_GRAPH',
+        class_name: 'Store',
+        script_name: first.scripts[0]?.scriptName,
+      },
+      {
+        type: 'durable_object_namespace',
+        name: 'SUBSTRAT_STORE_BLOBS',
+        class_name: 'Store',
+        script_name: first.scripts[0]?.scriptName,
+      },
+    ]);
+    expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe(
+      '01TENANT/acme/crm/01SCOPE/GRAPH',
+    );
+    expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).not.toContain('1.0.0');
+  });
+
+  it('refuses a kind that is not registered', () => {
+    expect(() =>
+      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', kind: 'ontomate' }] }),
+    ).toThrow(/not registered/);
   });
 });
 
