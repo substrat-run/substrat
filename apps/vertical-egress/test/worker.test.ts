@@ -158,6 +158,31 @@ describe('outbound policy (#303)', () => {
     expect(internet).not.toHaveBeenCalled();
   });
 
+  it('marks a platform refusal with x-substrat-egress and logs it; an upstream 403 carries neither', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 403 })));
+    const env = envWith({ OUTBOUND_POLICY: policy(['api.scrive.com']) });
+
+    const refused = await worker.fetch(new Request('https://exfil.example.com/x'), env);
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get('x-substrat-egress')).toBe('refused');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warn.mock.calls[0]![0] as string)).toEqual({
+      event: 'egress.refused',
+      verdict: 'refused',
+      host: 'exfil.example.com',
+      vertical: 'acme-crm',
+      tenant: '01TENANT',
+    });
+
+    // The twin: the destination's own 403 passes through untouched and unlogged.
+    const upstream = await worker.fetch(new Request('https://api.scrive.com/x'), env);
+    expect(upstream.status).toBe(403);
+    expect(upstream.headers.get('x-substrat-egress')).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it('an empty declared surface refuses every third party (the new-CLI default)', async () => {
     const internet = vi.fn();
     vi.stubGlobal('fetch', internet);
@@ -401,6 +426,7 @@ describe('a non-primary scope reaches no third party (#2005)', () => {
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'api.scrive.com' });
       expect(internet).not.toHaveBeenCalled();
+      expect(res.headers.get('x-substrat-egress')).toBe('refused');
       expect(points).toEqual([{ indexes: ['acme-crm'], blobs: ['api.scrive.com', 'inert', '01TENANT'] }]);
     });
   }
@@ -455,6 +481,7 @@ describe("a non-primary scope reads other platform apps and writes only its own 
       const { res, calls } = await send('https://crm-acme.global.substrat.run/api/write', method, false);
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'crm-acme.global.substrat.run' });
+      expect(res.headers.get('x-substrat-egress')).toBe('refused');
       expect(calls).toHaveLength(0);
     });
   }
@@ -520,6 +547,7 @@ describe("a non-primary scope reads other platform apps and writes only its own 
       const { res } = await post('https://other.example.com/api/write', own);
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'other.example.com' });
+      expect(res.headers.get('x-substrat-egress')).toBe('refused');
       expect(internet).not.toHaveBeenCalled();
     });
 

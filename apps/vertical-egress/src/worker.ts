@@ -274,11 +274,37 @@ function relayHost(env: Env): string | null {
   }
 }
 
-/** The one refusal shape a vertical's subrequest meets: what was refused, for whom, and why. */
-function outboundRefused(hostname: string, slug: string | null, detail: string): Response {
+/** The response header that says the PLATFORM refused a subrequest, not the destination. A
+ *  vertical's code sees a bare 403 either way; this is what tells them apart (#2192). */
+const EGRESS_HEADER = 'x-substrat-egress';
+
+/**
+ * The one refusal a vertical's subrequest meets: meters the verdict, logs it, and answers 403
+ * with what was refused, for whom and why. The `x-substrat-egress: refused` header marks it as
+ * the platform's, and the `console.warn` puts it in Workers Logs, where a bare 403 from a
+ * destination would never be (#2192). The policy carries no version, so the line names the
+ * vertical and tenant but not the version.
+ */
+function outboundRefused(
+  env: Env,
+  verdict: 'refused' | 'inert',
+  hostname: string,
+  slug: string | null,
+  detail: string,
+): Response {
+  meter(env, hostname, verdict);
+  console.warn(
+    JSON.stringify({
+      event: 'egress.refused',
+      verdict,
+      host: hostname,
+      vertical: slug,
+      tenant: env.OUTBOUND_POLICY?.tenant ?? null,
+    }),
+  );
   return new Response(JSON.stringify({ error: 'outbound refused', host: hostname, vertical: slug, detail }), {
     status: 403,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', [EGRESS_HEADER]: 'refused' },
   });
 }
 
@@ -375,8 +401,9 @@ export default {
       // refuses its writes — the destination's own auth is not the boundary here, inertness is.
       const policy = env.OUTBOUND_POLICY;
       if (policy?.primary === false && !SAFE_METHODS.has(request.method.toUpperCase()) && !isOwnHost(hostname, policy)) {
-        meter(env, hostname, 'inert');
         return outboundRefused(
+          env,
+          'inert',
           hostname,
           policy.slug,
           'this scope is a preview or a fork, and those cause no outbound effects: it may ' +
@@ -407,8 +434,9 @@ export default {
       // addresses are the exception on every path — a custom domain of the scope is outside the
       // platform's base domains, and is still the scope talking to itself; it then meets the
       // same declared-surface policy below that the install's request would.
-      meter(env, hostname, 'inert');
       return outboundRefused(
+        env,
+        'inert',
         hostname,
         policy.slug,
         'this scope is a preview or a fork, and those cause no outbound effects: a ' +
@@ -427,8 +455,9 @@ export default {
       meter(env, hostname, 'allowed');
       return passThrough((r) => fetch(r), request, hostname, env);
     }
-    meter(env, hostname, 'refused');
     return outboundRefused(
+      env,
+      'refused',
       hostname,
       policy.slug,
       `'${hostname}' is not in this vertical's declared outbound surface. ` +
