@@ -4260,7 +4260,14 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<{ binding: string; erased: number }[]> {
     const bindings = [...this.scopeStoreRunners.keys()];
     if (bindings.length === 0) return [];
-    const vertical = this.scopeStoreVerticalOf(scopeId);
+    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { vertical: string | null }
+      | undefined;
+    const vertical = row?.vertical;
+    // Shred calls this for every scope. One this host cannot name a store for is
+    // nothing to erase, and the key is still destroyed.
+    if (!vertical) return [];
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return [];
     const erasures: { binding: string; erased: number }[] = [];
     for (const binding of bindings) {
       const { erased } = storeEraseResult.parse(

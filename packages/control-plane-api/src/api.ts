@@ -5180,11 +5180,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       redactions.push(await script.redactSubject(scopeId, subjectId));
     }
     if (bySlug) redactions.push(await bySlug.redactSubject(scopeId, subjectId));
-    // Store objects are per vertical, not per script copy, so one serving script is
-    // asked. A failure here is before finalize, and the key stays.
     const serving = currentRef ? await options.resolveVerticalRef(currentRef) : bySlug;
+    // A version that declares no scope store is not asked. An older deployment
+    // answers 501 for the route, and that must not stop an erasure with no store.
+    // An unreadable manifest is asked: failing closed beats skipping a store that exists.
+    let declaresStores = false;
+    if (scope.vertical && scope.verticalVersionId) {
+      const json = await c.var.admin.versionManifest(c.get('actor'), scope.vertical, scope.verticalVersionId);
+      if (json) {
+        try {
+          const parsed = storedDeployManifest.safeParse(JSON.parse(json));
+          declaresStores = !parsed.success || parsed.data.scopeStores.length > 0;
+        } catch {
+          declaresStores = true;
+        }
+      }
+    }
     const storeErasures =
-      serving && typeof serving.scopeStoreErase === 'function'
+      declaresStores && serving && typeof serving.scopeStoreErase === 'function'
         ? await serving.scopeStoreErase(tenantId, scopeId, subjectId)
         : [];
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {

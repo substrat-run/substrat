@@ -4825,26 +4825,19 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * `substrat.erase` on each declared binding (#2068). A store error throws so the
-   * caller can leave the subject key untouched. No bindings means nothing to erase.
+   * caller can leave the subject key untouched. No bindings, or a scope this host
+   * cannot name a store for, means nothing to erase — shred continues and the key
+   * is still destroyed. A missing vertical used to throw here and the key survived.
    */
   private async eraseScopeStores(
     tenantId: TenantId,
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<{ binding: string; erased: number }[]> {
-    const scope = await this.scopeRecordForRead(tenantId, scopeId);
     const bindings = this.scopeStoreBindingNames();
     if (bindings.length === 0) return [];
-    const vertical = scope.vertical;
-    if (!vertical) {
-      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
-    }
-    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
-      throw substratError(
-        'forbidden',
-        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
-      );
-    }
+    const vertical = await this.erasureStoreVertical(tenantId, scopeId);
+    if (!vertical) return [];
     const erasures: { binding: string; erased: number }[] = [];
     for (const binding of bindings) {
       const { erased } = storeEraseResult.parse(
@@ -4857,6 +4850,21 @@ export class CloudflareScopeHost implements ScopeHost {
       erasures.push({ binding, erased });
     }
     return erasures;
+  }
+
+  /**
+   * The vertical an erasure may name a store for. Missing, or not the vertical
+   * this host serves, means this host has no store to erase — an empty answer,
+   * not a refusal. Shred calls this unconditionally, including for a scope that
+   * never had a vertical.
+   */
+  private async erasureStoreVertical(tenantId: TenantId, scopeId: ScopeId): Promise<string | undefined> {
+    if (this.cpLess) return this.scopeStoreVertical;
+    const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+    const vertical = scope?.vertical ?? undefined;
+    if (!vertical) return undefined;
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return undefined;
+    return vertical;
   }
 
   /**
