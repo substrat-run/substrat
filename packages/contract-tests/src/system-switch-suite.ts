@@ -456,7 +456,7 @@ export function systemSwitchContractSuite(
     const records = (s: ScopeId) => host.admin.listSystemSwitches(staff, { tenantId: t, scopeId: s });
     /** The scope's storage, gone: an empty restore re-asserts the bare spine (#321). */
     const wipe = (s: ScopeId) =>
-      host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+      host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] });
     const reassert = (s: ScopeId) => host.admin.reassertSystemSwitches(staff, { tenantId: t, scopeId: s });
 
     it('the record follows every move — off, on, off — and agrees with the per-scope read each time', async () => {

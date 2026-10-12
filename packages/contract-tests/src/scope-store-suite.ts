@@ -10,6 +10,7 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 function counterRunner(): ScopeStoreRunner {
   const objects = new Map<string, number>();
   const erased = new Map<string, Set<string>>();
+  const wiped = new Set<string>();
   const key = (address: ScopeStoreAddress) =>
     `${address.tenantId}/${address.vertical}/${address.scopeId}/${address.binding}`;
   return {
@@ -43,8 +44,10 @@ function counterRunner(): ScopeStoreRunner {
       if (request.operation === 'substrat.size') return { result: { bytes: current } };
       if (request.operation === 'substrat.wipe') {
         objects.set(key(address), 0);
+        wiped.add(key(address));
         return { result: {} };
       }
+      if (request.operation === 'wiped') return { result: [...wiped] };
       if (request.operation === 'substrat.erase') {
         const subjectId =
           typeof request.input === 'object' && request.input !== null
@@ -239,6 +242,60 @@ export function scopeStoreContractSuite(
       expect(await store.invoke('erased')).toEqual([subject]);
       const again = await host.admin.shredSubject(staff, tenant, scopeA, subject);
       expect(again.storeErasures).toEqual([{ binding: 'GRAPH', erased: 0 }]);
+    });
+
+    it('a snapshot carries the store, and the fork then diverges', async () => {
+      const original = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      const before = await original.invoke('read');
+      const fork = await host.snapshotScope(staff, tenant, scopeA);
+      const forked = await host.getScopeStore(principal, tenant, fork, 'GRAPH');
+      expect(await forked.invoke('read')).toBe(before);
+      await original.invoke('increment', { by: 1 });
+      expect(await forked.invoke('read')).toBe(before);
+      expect(await original.invoke('read')).toBe(Number(before) + 1);
+    });
+
+    it('a restore replaces the store', async () => {
+      const store = await host.getScopeStore(principal, tenant, scopeB, 'GRAPH');
+      await store.invoke('increment', { by: 4 });
+      const dump = await host.admin.exportScope(staff, tenant, scopeB);
+      expect(dump.stores).toEqual([
+        expect.objectContaining({ binding: 'GRAPH', kind: 'counter' }),
+      ]);
+      await store.invoke('increment', { by: 1 });
+      await host.restoreScope(staff, tenant, scopeB, dump);
+      expect(await store.invoke('read')).toBe(4);
+    });
+
+    it('a dump that names an unbound store is refused before a scope is created', async () => {
+      const dump = await host.admin.exportScope(staff, tenant, scopeA);
+      const dest = scopeId.parse(ulid());
+      const refusal = await host.importScope(staff, {
+        tenantId: tenant,
+        scopeId: dest,
+        vertical: 'docs',
+      }, { ...dump, stores: [...dump.stores, { binding: 'MISSING', kind: 'counter', tables: [] }] }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(refusal)).toBe('not_found');
+      expect(await host.admin.getScopeRecord(staff, tenant, dest)).toBeUndefined();
+    });
+
+    it('deleting a fork wipes its store', async () => {
+      const fork = await host.snapshotScope(staff, tenant, scopeA);
+      await host.deleteSnapshot(staff, tenant, fork);
+      const live = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      const names = await live.invoke('wiped');
+      expect(names).toContain(`${tenant}/docs/${fork}/GRAPH`);
+    });
+
+    it('reaping a scope wipes its store', async () => {
+      await host.admin.archiveScope(staff, tenant, scopeB);
+      await host.admin.reapScope(staff, tenant, scopeB);
+      const live = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      const names = await live.invoke('wiped');
+      expect(names).toContain(`${tenant}/docs/${scopeB}/GRAPH`);
     });
 
     it('a reserved operation is refused through the stub', async () => {

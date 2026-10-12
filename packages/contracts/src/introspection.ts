@@ -297,12 +297,25 @@ export const scopeDumpTable = z.object({
 });
 export type ScopeDumpTable = z.infer<typeof scopeDumpTable>;
 
+/** One scope store inside a dump (#2211). Opaque tables: they are not sealed per subject. */
+export const scopeStoreDump = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  kind: z.string().min(1),
+  tables: z.array(scopeDumpTable),
+});
+export type ScopeStoreDump = z.infer<typeof scopeStoreDump>;
+
 export const scopeDump = z.object({
   tenantId: z.string().min(1),
   scopeId: z.string().min(1),
   /** ISO 8601 capture time — the fork's `forked_at`. */
   capturedAt: z.string().min(1),
   tables: z.array(scopeDumpTable),
+  /**
+   * Scope stores captured with the scope (#2211). Defaulted so a dump from before
+   * scope stores still loads, as a scope that had none.
+   */
+  stores: z.array(scopeStoreDump).default([]),
 });
 export type ScopeDump = z.infer<typeof scopeDump>;
 

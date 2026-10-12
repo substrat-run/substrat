@@ -2713,7 +2713,7 @@ describe('#1742 — the CP-full seat and restore switch off in their own unit', 
   it("a wiped scope's re-provision switches the module off in the seat's unit", async () => {
     const s = await newScope();
     await off(s);
-    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] });
     await host.provisionScope(staff, { tenantId: t, scopeId: s });
     expect(await reasserts(s)).toEqual([inUnit]);
     expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });

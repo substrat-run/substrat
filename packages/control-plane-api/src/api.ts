@@ -4885,6 +4885,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await c.var.admin.recordScopeScriptCopy(actor, tenantId, snapId, ref, moveId, { role: 'destination', leaseMs: copyLeaseMs });
       }
       await retryTransient(() => copier.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId, tenantId }));
+      // The scope file was copied inside the script. The store objects are per scope, so the
+      // fork gets its own copy through the reserved export and import. A deployment that
+      // predates the routes has no stores to copy.
+      if (typeof copier.scopeStoreExport === 'function' && typeof copier.scopeStoreImport === 'function') {
+        let stores: Awaited<ReturnType<typeof copier.scopeStoreExport>> = [];
+        try {
+          stores = await copier.scopeStoreExport(tenantId, scope.id);
+        } catch (e) {
+          if (!(e instanceof ControlPlaneError) || e.status !== 501) throw e;
+        }
+        if (stores.length > 0) await copier.scopeStoreImport(tenantId, snapId, stores);
+      }
       await c.var.admin.activateScope(actor, tenantId, snapId);
       // Bound to the SOURCE's current version: source and fork share a deployment, so
       // the fork resolves to the DO namespace its bytes actually live in.
@@ -5064,6 +5076,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const dump = await c.var.admin.exportScope(c.get('actor'), tenantId, scope.id);
     const vertical = await verticalForScope(c, scope);
     const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
+    // Store tables are opaque and stay unsealed. A deployment that predates the route
+    // has no stores to copy; any other failure refuses the backup rather than omitting them.
+    let stores = dump.stores;
+    if (vertical && typeof vertical.scopeStoreExport === 'function') {
+      try {
+        stores = await vertical.scopeStoreExport(tenantId, scope.id);
+      } catch (e) {
+        if (!(e instanceof ControlPlaneError) || e.status !== 501) throw e;
+      }
+    }
     // Seal classified payloads per subject on the way in (#37). This copy is full-fidelity
     // and the platform keeps it, which is precisely why an erasure could never reach it: a
     // redaction fixes the live scope and does nothing to the object already in R2. Sealed
@@ -5071,7 +5093,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Restores open it again (`restoreFromBackup`) — except for subjects shredded in the
     // meantime, which is the mechanism working rather than the copy being damaged.
     const sealed = await sealDump(tables, sealerFor(c, tenantId, scope.id));
-    return store.put({ vertical: scope.vertical, dump: { ...dump, tables: sealed } });
+    return store.put({ vertical: scope.vertical, dump: { ...dump, tables: sealed, stores } });
   };
 
   // The copies held for one scope — metadata only, so listing a reaped scope's backups
@@ -5735,13 +5757,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const dump = await c.var.admin.exportScope(actor, tenantId, scopeId);
       const vertical = await verticalForScope(c, scope);
       const tables = vertical ? await vertical.exportScope(scopeId) : dump.tables;
-      if (full) return c.json({ ...dump, tables, masked: false });
+      if (full) {
+        // Store tables are opaque. A vertical holds them, so a full pull asks it.
+        // A deployment that predates the route has none to add.
+        let stores = dump.stores;
+        if (vertical && typeof vertical.scopeStoreExport === 'function') {
+          try {
+            stores = await vertical.scopeStoreExport(tenantId, scopeId);
+          } catch (e) {
+            if (!(e instanceof ControlPlaneError) || e.status !== 501) throw e;
+          }
+        }
+        return c.json({ ...dump, tables, stores, masked: false });
+      }
       // One pseudonymizer for the whole response (#1034): the same customer has to read
       // the same in their own row, in every event payload that quoted them, and in the
       // timeline — a per-table generator would break exactly the joins that make a
       // masked copy worth pulling.
       const mask = await createPseudonymizer(options.maskSalt ?? crypto.randomUUID());
-      return c.json({ ...dump, tables: await maskDump(tables, mask), masked: true });
+      // A masked pull cannot see inside a scope store, so it ships none rather than
+      // the raw tables beside pseudonymized scope rows.
+      return c.json({ ...dump, tables: await maskDump(tables, mask), stores: [], masked: true });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, failedWith(c, e));
@@ -5833,7 +5869,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const dump = await c.var.admin.exportScope(actor, tenantId, scope.id);
         const vertical = await verticalForScope(c, scope);
         const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
-        data.push({ ...dump, tables: mask ? await maskDump(tables, mask) : tables });
+        data.push({
+          ...dump,
+          tables: mask ? await maskDump(tables, mask) : tables,
+          // A scope store's tables are opaque, so the pseudonymizer cannot see inside them.
+          // A masked export omits them rather than shipping them unmasked.
+          stores: mask ? [] : dump.stores,
+        });
       }
 
       // The admin log is FULL-only (#36): it records what STAFF did, so it is not the
@@ -5921,9 +5963,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // the destination's would find no key, null every payload, and call it a restore.
       const origin = { tenantId: tenantIdSchema.parse(dump.tenantId), scopeId: scopeIdSchema.parse(dump.scopeId) };
       const tables = await openDump(dump.tables, sealerFor(c, origin.tenantId, origin.scopeId));
-      const landing = { ...dump, tables };
-      await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
       const vertical = await verticalForScope(c, scope);
+      // Store tables are opaque and live in the vertical, not in the co-located scope file.
+      // Import them before the scope write so an unbound binding refuses with nothing written
+      // here. A co-located host (no vertical) imports them itself, inside restoreScope.
+      if (vertical && dump.stores.length > 0) {
+        if (typeof vertical.scopeStoreImport !== 'function') {
+          throw new ControlPlaneError(501, 'this deployment cannot import scope stores (#2211). Redeploy it');
+        }
+        await vertical.scopeStoreImport(tenantId, scopeId, dump.stores);
+      }
+      const landing = { ...dump, tables, stores: vertical ? [] : dump.stores };
+      await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
       const restored = vertical

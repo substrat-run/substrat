@@ -467,6 +467,7 @@ export function scheduleContractSuite(
         tenantId: t,
         scopeId: s,
         capturedAt: '2026-09-01T00:00:00.000Z',
+        stores: [],
         tables: [
           {
             name: '_substrat_schedule_state',

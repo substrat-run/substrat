@@ -496,7 +496,7 @@ import {
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, storeEraseResult, storeSizeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
+import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, storeEraseResult, storeExportResult, storeImportResult, storeSizeResult, storeWipeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -3688,7 +3688,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * control plane, which calls the vertical's `/internal/delete-scope` before deleting
    * the row; this end just destroys its own bytes.
    */
-  async deleteScopeLocal(scopeId: ScopeId): Promise<void> {
+  async deleteScopeLocal(scopeId: ScopeId, tenantId?: TenantId): Promise<void> {
+    if (tenantId) await this.wipeScopeStores(tenantId, scopeId);
     await this.scopeStub(scopeId).destroyStorage();
     // #1819: a deleted scope runs nothing; its claims go with it. Best effort, never a failed reap.
     await this.switchHoldsStub()
@@ -3782,6 +3783,22 @@ export class CloudflareScopeHost implements ScopeHost {
    * Erase one subject from each scope store in this deployment (#2068). The control
    * plane calls this once on the serving script, then destroys the key itself.
    */
+  async scopeStoreExportLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+    return this.exportScopeStores(tenantId, scopeId);
+  }
+
+  async scopeStoreImportLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    stores: { binding: string; tables: ScopeDumpTable[] }[],
+  ): Promise<void> {
+    this.refuseUnboundScopeStores(stores);
+    await this.importScopeStores(tenantId, scopeId, stores);
+  }
+
   async scopeStoreEraseLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -4458,6 +4475,7 @@ export class CloudflareScopeHost implements ScopeHost {
     input: ProvisionScopeInput,
     dump: ScopeDump,
   ): Promise<void> {
+    this.refuseUnboundScopeStores(dump.stores);
     // Create the destination scope (directory row + DO + lazy migrate); the DO then
     // replaces its provisioned schema with the dump wholesale (drop-then-replay), so
     // the end state is the dump, at the source's frontier. Provenance is stamped from
@@ -4472,6 +4490,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // A fork: its callers (snapshotScope) hand it a dump the platform exported.
       exact: true,
     });
+    await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     await this.recordAdmin(
       actor,
@@ -4492,6 +4511,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+    this.refuseUnboundScopeStores(dump.stores);
     // #1742: a dump from before a switch was pulled brings the module's grants back live, so
     // the directory's recorded-off modules go back off in the replay's own event. Only where
     // this is the scope's real store, as for the provision's seat above; a hosted scope is
@@ -4503,6 +4523,7 @@ export class CloudflareScopeHost implements ScopeHost {
       switchOff: carry ? { at: replayAt, ...carry } : undefined,
       sourceScopeId: opts?.sourceScopeId ?? (dump.scopeId as ScopeId),
     });
+    await this.importScopeStores(tenantId, scopeId, dump.stores);
     await this.recordAdmin(
       actor,
       'restoreScope',
@@ -4602,6 +4623,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // Storage BEFORE the directory row: a crash between the two leaves a visible row
     // over empty storage — re-running deleteSnapshot converges — never orphaned bytes
     // with no record (the §9 hazard). Hostname rows go with the directory delete.
+    await this.wipeScopeStores(tenantId, scopeId);
     await this.scopeStub(scopeId).destroyStorage();
     await this.cp.deleteScopeDirectory(scopeId);
     await this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
@@ -4850,6 +4872,89 @@ export class CloudflareScopeHost implements ScopeHost {
       erasures.push({ binding, erased });
     }
     return erasures;
+  }
+
+  /** A dump that names a binding this host does not have is refused before any write. */
+  private refuseUnboundScopeStores(stores: readonly { binding: string }[] | undefined): void {
+    const bound = new Set(this.scopeStoreBindingNames());
+    for (const store of stores ?? []) {
+      if (!bound.has(store.binding)) {
+        throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
+      }
+    }
+  }
+
+  private async exportScopeStores(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+    const scope = await this.scopeRecordForRead(tenantId, scopeId);
+    const bindings = this.scopeStoreBindingNames();
+    if (bindings.length === 0 || !scope.vertical) return [];
+    const vertical = scope.vertical;
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
+      );
+    }
+    const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
+    for (const binding of bindings) {
+      const exported = storeExportResult.parse(
+        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export'),
+      );
+      stores.push({ binding, kind: this.scopeStoreRunners.get(binding)?.kind ?? 'bound', tables: exported.tables });
+    }
+    return stores;
+  }
+
+  private async importScopeStores(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    stores: readonly { binding: string; tables: ScopeDumpTable[] }[] | undefined,
+  ): Promise<void> {
+    const listed = stores ?? [];
+    if (listed.length === 0) return;
+    const scope = await this.scopeRecordForRead(tenantId, scopeId);
+    if (!scope.vertical) {
+      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
+    }
+    if (this.scopeStoreVertical !== undefined && scope.vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${scope.vertical}'`,
+      );
+    }
+    for (const store of listed) {
+      storeImportResult.parse(
+        await this.invokeReservedStore(
+          { tenantId, vertical: scope.vertical, scopeId, binding: store.binding },
+          'substrat.import',
+          { tables: store.tables },
+        ),
+      );
+    }
+  }
+
+  /** `substrat.wipe` on each declared binding, before the scope's own storage goes. */
+  private async wipeScopeStores(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    const scope = await this.scopeRecordForRead(tenantId, scopeId);
+    const bindings = this.scopeStoreBindingNames();
+    if (bindings.length === 0 || !scope.vertical) return;
+    if (this.scopeStoreVertical !== undefined && scope.vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${scope.vertical}'`,
+      );
+    }
+    for (const binding of bindings) {
+      storeWipeResult.parse(
+        await this.invokeReservedStore(
+          { tenantId, vertical: scope.vertical, scopeId, binding },
+          'substrat.wipe',
+        ),
+      );
+    }
   }
 
   /**
@@ -8453,7 +8558,8 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.scopeRecordForRead(tenantId, scopeId);
         const tables = await this.scopeStub(scopeId).exportDump();
         await this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
-        return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables };
+        const stores = await this.exportScopeStores(tenantId, scopeId);
+        return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables, stores };
       },
       exportDirectory: async (actor): Promise<DirectoryDump> => {
         // No K-3 cross-check to make: there is one directory, and it is the thing that
@@ -8557,6 +8663,7 @@ export class CloudflareScopeHost implements ScopeHost {
               `unbind it before reaping (reap wipes storage and cannot be undone)`,
           );
         }
+        await this.wipeScopeStores(tenantId, scopeId);
         await this.scopeStub(scopeId).destroyStorage();
         // The recoverable copy the caller stored first (#493), named in the audit entry so
         // the trail answers "was there a backup" without correlating two timestamps.

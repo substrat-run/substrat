@@ -611,6 +611,27 @@ describe('VerticalClient — database size (#1524)', () => {
     expect(JSON.parse(seen[0]!.body)).toEqual({ tenantId: t, scopeId: s, subjectId: 'subject-1' });
   });
 
+  it('asks the scope-store export and import routes', async () => {
+    const table = { name: 'counter', ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)', columns: ['n'], rows: [[4]] };
+    const seen: { url: string; body: string }[] = [];
+    const client = new VerticalClient({
+      fetch: (async (input: string, init?: RequestInit) => {
+        seen.push({ url: String(input), body: String(init?.body ?? '') });
+        return new Response(JSON.stringify({ stores: [{ binding: 'GRAPH', kind: 'counter', tables: [table] }] }), { status: 200 });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    await expect(client.scopeStoreExport(t, s)).resolves.toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [table] }]);
+    expect(new URL(seen[0]!.url).pathname).toBe('/internal/scope-store-export');
+    await expect(client.scopeStoreImport(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [table] }])).resolves.toBeUndefined();
+    expect(new URL(seen[1]!.url).pathname).toBe('/internal/scope-store-import');
+    expect(JSON.parse(seen[1]!.body)).toEqual({ tenantId: t, scopeId: s, stores: [{ binding: 'GRAPH', tables: [table] }] });
+  });
+
+  it('a 200 without a store list is a wire disagreement, not an empty scope', async () => {
+    await expect(answering(200, JSON.stringify({})).scopeStoreExport(t, s)).rejects.toThrow(/without a store list/);
+  });
+
   it('a 200 without an erasure list is a wire disagreement, not an empty store', async () => {
     await expect(answering(200, JSON.stringify({})).scopeStoreErase(t, s, 'subject-1')).rejects.toThrow(/without an erasure list/);
   });

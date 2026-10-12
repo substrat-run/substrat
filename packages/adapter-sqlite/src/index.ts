@@ -192,7 +192,10 @@ import {
   type ScopeDumpTable,
   type ScopeId,
   storeEraseResult,
+  storeExportResult,
+  storeImportResult,
   storeSizeResult,
+  storeWipeResult,
   type ReservedStoreOperation,
   subjectShredReceipt,
   type SubjectShredReceipt,
@@ -3832,6 +3835,7 @@ export class SqliteScopeHost implements ScopeHost {
     input: ProvisionScopeInput,
     dump: ScopeDump,
   ): Promise<void> {
+    this.refuseUnboundScopeStores(dump.stores);
     // Create the destination scope (directory row + storage). Its migration step
     // creates some tables; the dump then replaces them wholesale, so the end state
     // is the dump, not whatever the local module set would have built. Provenance is
@@ -3844,6 +3848,7 @@ export class SqliteScopeHost implements ScopeHost {
     });
     // A fork: its callers (snapshotScope) hand it a dump the platform exported.
     await this.loadDump(input.tenantId, input.scopeId, { ...dump, exact: true });
+    await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     this.recordAdmin(
       actor,
@@ -4004,6 +4009,7 @@ export class SqliteScopeHost implements ScopeHost {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+    this.refuseUnboundScopeStores(dump.stores);
     // #1742: a dump from before a switch was pulled brings the module's grants back live, so
     // the directory's recorded-off modules go back off in the load's own turn, as a
     // provision's seat does — no schedule pass can run in between.
@@ -4014,6 +4020,7 @@ export class SqliteScopeHost implements ScopeHost {
     await this.loadDump(tenantId, scopeId, source, (rt) =>
       this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (action, after) => rows.push([action, after])),
     );
+    await this.importScopeStores(tenantId, scopeId, dump.stores);
     for (const [action, after] of rows) this.recordAdmin(actor, action, { tenantId, scopeId }, null, after);
     this.recordAdmin(
       actor,
@@ -4067,6 +4074,7 @@ export class SqliteScopeHost implements ScopeHost {
           `archive a primary scope instead`,
       );
     }
+    await this.wipeScopeStores(tenantId, scopeId);
     // Close and evict the runtime handle before touching the file.
     const rt = this.scopes.get(`${tenantId}/${scopeId}`);
     if (rt) this.closeRuntime(rt);
@@ -4280,6 +4288,65 @@ export class SqliteScopeHost implements ScopeHost {
       erasures.push({ binding, erased });
     }
     return erasures;
+  }
+
+  /** A dump that names a binding this host does not have is refused before any write. */
+  private refuseUnboundScopeStores(stores: readonly { binding: string }[] | undefined): void {
+    for (const store of stores ?? []) {
+      if (!this.scopeStoreRunners.has(store.binding)) {
+        throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
+      }
+    }
+  }
+
+  private async exportScopeStores(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+    const bindings = [...this.scopeStoreRunners.keys()];
+    if (bindings.length === 0) return [];
+    const vertical = this.scopeStoreVerticalOf(scopeId);
+    const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
+    for (const binding of bindings) {
+      const runner = this.scopeStoreRunners.get(binding);
+      if (!runner) throw substratError('not_found', `no scope store is bound for '${binding}'`);
+      const exported = storeExportResult.parse(
+        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export'),
+      );
+      stores.push({ binding, kind: runner.kind, tables: exported.tables });
+    }
+    return stores;
+  }
+
+  private async importScopeStores(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    stores: readonly { binding: string; tables: ScopeDumpTable[] }[] | undefined,
+  ): Promise<void> {
+    const listed = stores ?? [];
+    if (listed.length === 0) return;
+    const vertical = this.scopeStoreVerticalOf(scopeId);
+    for (const store of listed) {
+      storeImportResult.parse(
+        await this.invokeReservedStore(
+          { tenantId, vertical, scopeId, binding: store.binding },
+          'substrat.import',
+          { tables: store.tables },
+        ),
+      );
+    }
+  }
+
+  /** `substrat.wipe` on each declared binding, before the scope's own storage goes. */
+  private async wipeScopeStores(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    const bindings = [...this.scopeStoreRunners.keys()];
+    if (bindings.length === 0) return;
+    const vertical = this.scopeStoreVerticalOf(scopeId);
+    for (const binding of bindings) {
+      storeWipeResult.parse(
+        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.wipe'),
+      );
+    }
   }
 
   /**
@@ -10421,7 +10488,8 @@ export class SqliteScopeHost implements ScopeHost {
           return { name, ddl: sql, columns, rows };
         });
         this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
-        return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables };
+        const stores = await this.exportScopeStores(tenantId, scopeId);
+        return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables, stores };
       },
       // -- directory disaster recovery (#40) ----------------------------------
       // The self-hosted half of the same story. A self-host has no DO point-in-time
@@ -10575,6 +10643,7 @@ export class SqliteScopeHost implements ScopeHost {
         // reading the unlinked bytes, which is the reaped data answering as if it were live.
         const rt = this.scopes.get(`${tenantId}/${scopeId}`);
         if (rt) this.closeRuntime(rt);
+        await this.wipeScopeStores(tenantId, scopeId);
         rmSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`), { force: true });
         // The recoverable copy the caller stored first (#493), named in the audit entry so
         // the trail answers "was there a backup" without correlating two timestamps.

@@ -1,4 +1,4 @@
-import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, tenantId } from '@substrat-run/contracts';
+import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, scopeStoreDump, tenantId } from '@substrat-run/contracts';
 /**
  * `substrat scope pull <scopeId>` — bring a scope's data to the local inner loop
  * (preview-and-snapshots.md §8; the substrat analog of `vercel env pull`).
@@ -25,6 +25,8 @@ interface Backup {
   tables: DumpTable[];
   origin?: { tenantId: string; scopeId: string };
   capturedAt?: string;
+  /** Present when the file named scope stores. Absent leaves them untouched on restore. */
+  stores?: { binding: string; kind: string; tables: DumpTable[] }[];
 }
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
@@ -163,7 +165,13 @@ async function readDump(file: string): Promise<Backup> {
     if (capturedAt !== undefined && (typeof capturedAt !== 'string' || capturedAt.length === 0)) {
       throw new Error(`${file} has an invalid capturedAt`);
     }
-    return { tables: orderTablesByForeignKeys(parsed.tables), origin, capturedAt };
+    let stores: Backup['stores'];
+    if (parsed.stores !== undefined) {
+      const parsedStores = scopeStoreDump.array().safeParse(parsed.stores);
+      if (!parsedStores.success) throw new Error(`${file} has an invalid stores list`);
+      stores = parsedStores.data;
+    }
+    return { tables: orderTablesByForeignKeys(parsed.tables), origin, capturedAt, stores };
   }
   let DatabaseSync: (typeof import('node:sqlite'))['DatabaseSync'];
   try {
@@ -211,7 +219,7 @@ export async function restoreScope(opts: {
   scopeId: string;
   file: string;
 }): Promise<void> {
-  const { tables, origin, capturedAt } = await readDump(opts.file);
+  const { tables, origin, capturedAt, stores } = await readDump(opts.file);
   const source = origin ?? { tenantId: opts.tenantId, scopeId: opts.scopeId };
   const rows = tables.reduce((n, t) => n + t.rows.length, 0);
   await viaPlane(
@@ -223,6 +231,7 @@ export async function restoreScope(opts: {
         scopeId: source.scopeId,
         capturedAt: capturedAt ?? new Date().toISOString(),
         tables,
+        ...(stores === undefined ? {} : { stores }),
       }),
     (e) => {
       // The CP shapes an unloadable-dump failure as `{ error, detail }` (#321); surface the detail
