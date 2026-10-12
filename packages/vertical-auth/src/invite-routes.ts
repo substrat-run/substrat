@@ -133,13 +133,18 @@ export function legacyInviteListReporter(opts: { log?: (line: string) => void; n
     if (!count || !scopeId) return;
     const last = reported.get(scopeId);
     if (last !== undefined && now() - last < LEGACY_INVITES_LIST_REPORT_MS) return;
-    const pending = await countOrNull(count);
-    // Absence is the signal: a settled scope writes nothing and is not throttled.
-    if (pending === 0) return;
     // Evict what has aged out, so the map stays the size of the scopes reported this hour.
     for (const [id, at] of reported) if (now() - at >= LEGACY_INVITES_LIST_REPORT_MS) reported.delete(id);
-    // An unreadable count is throttled too (it warned once): a mid-deploy list does not retry per read.
+    // Reserve the scope BEFORE awaiting the count: a second list that overlaps this one sees the
+    // reservation and returns, so one hour's window yields one count and at most one line. An
+    // unreadable count keeps the reservation too (it warned once): a mid-deploy list does not retry per read.
     reported.set(scopeId, now());
+    const pending = await countOrNull(count);
+    // Absence is the signal: a settled scope writes nothing and is not throttled.
+    if (pending === 0) {
+      reported.delete(scopeId);
+      return;
+    }
     if (pending !== null) log(JSON.stringify(legacyInvitesLine(scopeId, pending, 'list')));
   };
   /** Scopes currently remembered — what the eviction keeps bounded. */

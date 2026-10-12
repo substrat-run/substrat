@@ -1026,4 +1026,24 @@ describe('legacy invite measurement (#2175)', () => {
     expect(lines).toEqual([]);
     warn.mockRestore();
   });
+
+  it('counts and writes once for two overlapping lists of one scope', async () => {
+    const report = legacyInviteListReporter({ log: (l) => lines.push(l), now: () => clock });
+    let release!: (n: number) => void;
+    const count = vi.fn(() => new Promise<number>((resolve) => (release = resolve)));
+    const first = report('scope-a', count);
+    const second = report('scope-a', count);
+    release(2);
+    await Promise.all([first, second]);
+    expect(count).toHaveBeenCalledTimes(1);
+    expect(lines).toHaveLength(1);
+  });
+
+  it('releases the reservation when the count is zero, so the next list asks again', async () => {
+    const report = legacyInviteListReporter({ log: (l) => lines.push(l), now: () => clock });
+    await report('scope-a', async () => 0);
+    expect(report.tracked()).toBe(0);
+    await report('scope-a', async () => 1);
+    expect(lines).toHaveLength(1);
+  });
 });
