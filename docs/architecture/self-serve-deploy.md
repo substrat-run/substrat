@@ -358,7 +358,8 @@ the meter datapoint and with no sampling (`{event: "egress.refused", verdict, ho
 tenant}`; `verdict` is `refused`, `inert` or `peer`) to Workers Logs. The dispatch policy carries
 no version, so the line does not name one. **Not covered:** the statuses a peer call gets back
 from the router (target not installed, operation denied, …) pass through as the router chose them,
-unmarked, and so does the `503` of an environment with no `PEER_CALLS` binding.
+unmarked, and so do the `503` of an environment with no `PEER_CALLS` binding and the `400` for a
+peer-call body that names no target and operation.
 Tying a refusal to the request that caused it is still open on #2192.
 
 **The surface bounds where a request lands, not only where it starts (#2011).** The egress
