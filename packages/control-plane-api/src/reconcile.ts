@@ -13,6 +13,7 @@
  * intent, the sweep records a receipt.
  */
 import {
+  mayHoldBound,
   retiredKeysOf,
   storedDeployManifest,
   type EntityGrantShape,
@@ -72,13 +73,21 @@ export async function reviewedEntityGrants(
  * answered that it left none open. Anything else, an answer without the count (a deployment whose
  * `adapter-cloudflare` or `vertical-host` predates it) included, is not finished: the install is judged as still holding the keys its
  * version retires, and the sweep reconciles it again.
+ *
+ * #2184: and which of the sent shapes the scope has bound through a link: the bootstrap shapes with a
+ * table holder (`mayHoldBound`) whose type the deployment answered in `boundShapeTypes`. When the
+ * sent shapes have none, that is `[]` without asking; otherwise an answer without the list leaves it
+ * unknown, so the gate counts every such shape as bound and the sweep reconciles the install again.
  */
 export function reconcileOutcomeOf(
   sent: readonly EntityGrantShape[] | undefined,
-  answer: { retirementsLeftOpen?: number } | null,
+  answer: { retirementsLeftOpen?: number; boundShapeTypes?: readonly string[] } | null,
 ): ReconcileOutcome {
   const retires = (sent ?? []).some((shape) => retiredKeysOf(shape).length > 0);
-  return { retirementsFinished: !retires || answer?.retirementsLeftOpen === 0 };
+  const holding = [...new Set((sent ?? []).filter(mayHoldBound).map((s) => s.entityType))].sort();
+  const reported = answer?.boundShapeTypes;
+  const boundShapes = holding.length === 0 ? [] : reported ? holding.filter((t) => reported.includes(t)) : undefined;
+  return { retirementsFinished: !retires || answer?.retirementsLeftOpen === 0, ...(boundShapes ? { boundShapes } : {}) };
 }
 
 /**

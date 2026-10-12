@@ -1029,6 +1029,12 @@ export interface ReconcileOutcome {
    * answered that it left none open, or the version retires nothing. Absent reads as not finished.
    */
   retirementsFinished?: boolean;
+  /**
+   * #2184: the types of the reconciled version's bootstrap shapes with a table holder that the
+   * scope has ever bound through a link (its sticky `shape-bound` records), sorted. Absent reads as
+   * unknown: every such shape of the version counts as bound.
+   */
+  boundShapes?: string[];
 }
 
 export type MigrateScopeOutcome =
@@ -2582,6 +2588,10 @@ export interface HostAdmin {
    * write: `versionId` when true, null otherwise, absent included. So a caller that cannot say
    * (a provision with no shapes, a reconcile answered by a host that predates the report) leaves the
    * install judged as still holding the keys its version retires, and the sweep reconciles it again.
+   *
+   * #2184: `outcome.boundShapes` likewise writes `boundShapes` in the same write, paired with
+   * `versionId` — null when `versionId` is null or the outcome does not say, which the gate reads
+   * as unknown and the sweep reconciles again.
    */
   markScopeProvisioned(
     actor: PlatformActorId,

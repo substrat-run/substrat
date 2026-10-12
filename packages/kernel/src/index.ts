@@ -781,6 +781,11 @@ export {
   installsReconciledOf,
   installsReconciledNote,
   installReconciled,
+  boundEverOf,
+  boundShapesColumn,
+  boundShapesOfColumn,
+  provisionedVersionsParams,
+  strandJudgmentsOf,
   bindExportBreakRefusal,
   BIND_EXPORT_BREAK_REFUSAL,
   isBindExportBreakRefusal,
@@ -794,6 +799,7 @@ export type {
   ProvisionReconcileReport,
   ServingPointer,
   InstallsReconciled,
+  StrandJudgment,
 } from './platform-sweep.js';
 export {
   migrationProgress,

@@ -263,7 +263,13 @@ including the two OIDC ones where Better Auth stays dormant:
   `adapter-cloudflare` or `vertical-host` that predates the report, and one with no receipt, such
   as just after a kill switch or a restore, all wait; the
   sweep reconciles them again on its next pass. A copy never reconciles, so a retirement never
-  reaches it, and its own bind is judged only on what it runs). Dropping only `bind` is allowed. A
+  reaches it, and its own bind is judged only on what it runs). Dropping only `bind` is allowed:
+  it stops new links, and the people already bound keep the shape. They stay guarded after it
+  (#2184): each install's reconcile reports the binding shapes links have ever bound in it, and a
+  later version that removes such a shape, moves its holder, or drops one of its keys unretired is
+  refused the same way while any install bound it, or has not reported yet (an install built on an
+  `adapter-cloudflare` or `vertical-host` that predates the report counts every table-held bootstrap
+  shape of its version as bound, until the vertical pushes on current releases of both). A
   vertical supplies `nodeFor`, `callerOf` (who is asking, 401 for nobody) and the host verb.
   There is no admin gate, because the kernel's bound is the key on the record. An erasure of
   the record, or of its person, unbinds too.

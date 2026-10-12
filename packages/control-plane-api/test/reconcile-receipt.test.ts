@@ -223,7 +223,7 @@ describe('the retirements a receipt records as finished (#2185)', () => {
   let retiring: string;
   let plain: string;
   /** What the deployment answers about its retirements, and the shapes it was sent. */
-  let answer: { retirementsLeftOpen?: number } = {};
+  let answer: { retirementsLeftOpen?: number; boundShapeTypes?: string[] } = {};
   const sent = new Map<string, unknown>();
 
   const client = {
@@ -255,7 +255,7 @@ describe('the retirements a receipt records as finished (#2185)', () => {
     const r = await host.admin.getScopeRecord(staff, T, s);
     return { provisioned: r?.provisionedVersionId, finished: r?.retirementsFinishedVersionId ?? null };
   };
-  const reconcile = async (s: ScopeId, says: { retirementsLeftOpen?: number }) => {
+  const reconcile = async (s: ScopeId, says: { retirementsLeftOpen?: number; boundShapeTypes?: string[] }) => {
     answer = says;
     const res = await app().request(`/tenants/${T}/scopes/${s}/provision`, { method: 'POST', headers: auth });
     expect({ status: res.status, body: res.status === 200 ? null : await res.text() }).toEqual({ status: 200, body: null });
@@ -415,7 +415,89 @@ describe('the retirements a receipt records as finished (#2185)', () => {
     expect(reconcileOutcomeOf([retires as never], { retirementsLeftOpen: 2 })).toEqual({ retirementsFinished: false });
     expect(reconcileOutcomeOf([retires as never], null)).toEqual({ retirementsFinished: false });
     // A sharing shape's `retired` is never run, so it is nothing to wait for.
-    expect(reconcileOutcomeOf([{ entityType: 'list', permissions: [], retired: ['list:read'] } as never], null)).toEqual({ retirementsFinished: true });
-    expect(reconcileOutcomeOf(undefined, null)).toEqual({ retirementsFinished: true });
+    expect(reconcileOutcomeOf([{ entityType: 'list', permissions: [], retired: ['list:read'] } as never], null)).toEqual({
+      retirementsFinished: true,
+      boundShapes: [],
+    });
+    expect(reconcileOutcomeOf(undefined, null)).toEqual({ retirementsFinished: true, boundShapes: [] });
+  });
+
+  /**
+   * #2184: the receipt also carries which binding shapes links have bound in the scope, so the gate
+   * can hold a shape whose `bind` a later version dropped. Recorded only for the version's
+   * table-held bootstrap shapes, and unknown where the deployment did not say.
+   */
+  describe('the binding shapes a receipt records as bound (#2184)', () => {
+    const bound = async (s: ScopeId) => (await host.admin.getScopeRecord(staff, T, s))?.boundShapes ?? null;
+
+    it('records the types the deployment answered, of the shapes its version holds by a table', async () => {
+      const s = await scopeOn(plain);
+      // `other` is a type this version does not hold by a table: not recorded.
+      await reconcile(s, { retirementsLeftOpen: 0, boundShapeTypes: ['contact', 'other'] });
+      expect(await bound(s)).toEqual({ versionId: plain, types: ['contact'] });
+      await reconcile(s, { retirementsLeftOpen: 0, boundShapeTypes: [] });
+      expect(await bound(s)).toEqual({ versionId: plain, types: [] });
+    });
+
+    it('a restore clears them with the receipt, a failed one included: the data loaded may predate a binding', async () => {
+      for (const fails of [false, true]) {
+        const s = await scopeOn(plain);
+        await reconcile(s, { retirementsLeftOpen: 0, boundShapeTypes: ['contact'] });
+        expect(await bound(s)).toEqual({ versionId: plain, types: ['contact'] });
+        const backup = await host.admin.exportScope(staff, T, s);
+        restoreFails = fails;
+        try {
+          const res = await app().request(`/tenants/${T}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(backup) });
+          expect(res.status).toBe(fails ? 422 : 200);
+        } finally {
+          restoreFails = false;
+        }
+        expect(await bound(s)).toBeNull();
+      }
+    });
+
+    it('records nothing (unknown) for an answer without the list, unless the version holds no shape by a table', async () => {
+      const s = await scopeOn(plain);
+      await reconcile(s, { retirementsLeftOpen: 0 });
+      expect(await bound(s)).toBeNull();
+      const sharing = { id: ulid() };
+      await host.admin.publishVersion(staff, {
+        id: sharing.id, verticalSlug: SLUG, version: '4.0.0', manifestDigest: 'm-4', permissionDigest: 'p-4', migrationDigest: 'g',
+        deploymentRef: `${SLUG}-4.0.0`,
+        manifestJson: JSON.stringify({
+          version: '4.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
+          digests: { manifest: 'm-4', permission: 'p-4', migration: 'g' },
+          registry: { permissions: [], roles: [], entityGrants: [{ entityType: 'list', permissions: ['list:read'] }] },
+        }),
+      });
+      await host.admin.admitVersion(staff, sharing.id);
+      const other = await scopeOn(sharing.id);
+      await reconcile(other, { retirementsLeftOpen: 0 });
+      expect(await bound(other)).toEqual({ versionId: sharing.id, types: [] });
+    });
+
+    it('a provision of an already-bound scope asks nothing: recorded only when its version holds no shape by a table', async () => {
+      const s = await scopeOn(plain);
+      const res = await app().request(`/verticals/${SLUG}/instances`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ tenantId: T, scopeId: s, owner, slug: 'acme-r', name: 'Acme' }),
+      });
+      expect(res.status).toBe(201);
+      expect(await bound(s)).toBeNull();
+    });
+
+    it('reads the answer through `reconcileOutcomeOf`: the reported types the sent shapes hold by a table, sorted', () => {
+      const ticket = { entityType: 'ticket', permissions: ['ticket:read'], bootstrap: true, holder: HOLDER };
+      expect(reconcileOutcomeOf([ticket, keeps] as never, { retirementsLeftOpen: 0, boundShapeTypes: ['ticket', 'contact', 'gone'] })).toEqual({
+        retirementsFinished: true,
+        boundShapes: ['contact', 'ticket'],
+      });
+      expect(reconcileOutcomeOf([keeps] as never, { retirementsLeftOpen: 0 })).toEqual({ retirementsFinished: true });
+      // A 'grantee' or 'self' shape is not held by a table: nothing to ask.
+      for (const holder of ['grantee', 'self']) {
+        expect(reconcileOutcomeOf([{ ...keeps, holder }] as never, null)).toEqual({ retirementsFinished: true, boundShapes: [] });
+      }
+    });
   });
 });

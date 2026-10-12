@@ -91,7 +91,7 @@ import {
 } from '../src/host.js';
 import type { DoReply } from '../src/do-reply.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
-import { PROVISIONED_VERSIONS_SQL, installsReconciledOf, runPlatformSweep, type ScopeHost } from '@substrat-run/kernel';
+import { PROVISIONED_VERSIONS_SQL, installsReconciledOf, provisionedVersionsParams, runPlatformSweep, type ScopeHost } from '@substrat-run/kernel';
 import { SYSTEM_DOOR_REGATES } from '../src/system-door.js';
 
 // Absorb the inter-file DO reload before any suite's first directory call
@@ -5968,19 +5968,19 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
       const cp = new ControlPlaneDO(state, env);
       const row = () => state.storage.sql.exec('SELECT provisioned_version_id, retirements_finished_version_id FROM scopes WHERE scope_id = ?', 'old-scope').toArray()[0];
       const migrated = row();
-      const groups = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, 'old-vertical', 'old-script', null).toArray());
+      const groups = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, ...provisionedVersionsParams('old-vertical', { ref: 'old-script', versionId: 'v1' }, null)).toArray());
       cp.markScopeProvisioned('old-scope', 'v1', true);
       const converged = row();
-      const after = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, 'old-vertical', 'old-script', null).toArray());
+      const after = installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, ...provisionedVersionsParams('old-vertical', { ref: 'old-script', versionId: 'v1' }, null)).toArray());
       return { before, after: columns().includes('retirements_finished_version_id'), migrated, groups, converged, finishedGroups: after };
     });
     expect(seen).toEqual({
       before: false,
       after: true,
       migrated: { provisioned_version_id: 'v1', retirements_finished_version_id: null },
-      groups: [{ versionId: 'v1', retirementsFinished: false, installs: 1, example: 'old-scope' }],
+      groups: [{ versionId: 'v1', runningVersionId: 'v1', retirementsFinished: false, boundShapes: null, installs: 1, example: 'old-scope' }],
       converged: { provisioned_version_id: 'v1', retirements_finished_version_id: 'v1' },
-      finishedGroups: [{ versionId: 'v1', retirementsFinished: true, installs: 1, example: 'old-scope' }],
+      finishedGroups: [{ versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 1, example: 'old-scope' }],
     });
   });
 
@@ -6022,7 +6022,8 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
       await host.admin.activateScope(staff, t, sc);
       await host.admin.bindScopeVersion(staff, t, sc, v);
       expect((await host.admin.getScopeRecord(staff, t, sc))?.servingRef).toBe(ref);
-      await host.admin.markScopeProvisioned(staff, t, sc, v, { retirementsFinished: true });
+      // #2184: as a reconcile of a binding version reports it, `contact` bound.
+      await host.admin.markScopeProvisioned(staff, t, sc, v, { retirementsFinished: true, boundShapes: ['contact'] });
       return { slug, v, sc };
     };
     // A vertical whose served version retires every key of its binding shape, and one that retires nothing.
@@ -6043,7 +6044,10 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
     const refused = await host.admin.promoteVersion(staff, retiring.slug, 'prod', dropped, ACKS).then(() => null, (e: unknown) => e);
     expect(errorCodeOf(refused)).toBe('precondition_failed');
     expect(String((refused as Error).message)).toMatch(
-      new RegExp(`drops the shape.*that reconciled ${retiring.v} with its retirements not finished \\(one is ${retiring.sc}\\); the drop waits for their retirements to finish`),
+      new RegExp(
+        `drops the shape.*that reconciled ${retiring.v} with its retirements not finished, where links have bound people to contact \\(one is ${retiring.sc}\\); ` +
+          'the drop waits for their retirements to finish',
+      ),
     );
     // Nothing else: the retiring vertical republishing its shape, and the plain one adding a key, promote.
     const same = await publish(retiring.slug, [shape([], ['contact:read-own'])]);
@@ -6068,7 +6072,7 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
         fetch: connectorTestFetch,
         sweepers: {},
         runSchedules: false,
-        reconcileScopeFn: async () => ({ retirementsFinished: true }),
+        reconcileScopeFn: async () => ({ retirementsFinished: true, boundShapes: ['contact'] }),
       });
     const first = await sweep();
     expect(first.provisionReconcile).toMatchObject({ behind: 2, reconciled: 2, failed: 0 });
@@ -6079,6 +6083,159 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
     // Converged: the next pass has nothing to do, and the drop passes.
     expect((await sweep()).provisionReconcile).toMatchObject({ behind: 0, reconciled: 0 });
     await host.admin.promoteVersion(staff, retiring.slug, 'prod', dropped, ACKS);
+    await host.close();
+  });
+});
+
+/**
+ * #2184 — THE WEDGE-RISK TEST for the `bound_shapes` migration, on DO SQLite.
+ *
+ * The column is added to an EXISTING directory with no backfill, so every install it already holds
+ * reads null: "which binding shapes links have bound here is unknown", which the gate judges as every
+ * table-held bootstrap shape of the version bound. That is the strict direction, and it must not
+ * wedge: it may refuse only a move that strands a table-held bootstrap shape's keys, and the sweep
+ * must re-converge every such install on its own (a reconcile that reports writes the types beside
+ * the receipt), after which a vertical that never bound moves freely and one that did is held for
+ * exactly the type it bound.
+ *
+ * The sweep's reconcile is STUBBED here (it answers what a current deployment would): this proves
+ * the predicate, the write, and `json_extract` in `PROVISIONED_VERSIONS_SQL` on DO SQLite. The answer
+ * half is apps/control-plane's `reconcileReachedScope` test and control-plane-api's route tests.
+ */
+describe('#2184 — wedge risk: the bound-shapes column added to an existing directory', () => {
+  const staff = platformActorId.parse(ulid());
+
+  it('ALTERs an existing directory DO: the column appears, existing rows read unknown, re-running is a no-op, and the groups stay one per set', async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`bound-shapes-${ulid()}`));
+    const seen = await runInDurableObject(stub, (_instance, state) => {
+      // The directory as a control plane from before #2184 left it.
+      state.storage.sql.exec('ALTER TABLE scopes DROP COLUMN bound_shapes');
+      const add = (id: string) =>
+        state.storage.sql.exec(`INSERT INTO scopes (scope_id, tenant_id, vertical, vertical_version_id, provisioned_version_id, retirements_finished_version_id, serving_ref, created_at)
+          VALUES (?, 'old-tenant', 'old-vertical', 'v1', 'v1', 'v1', 'old-script', '2026-01-01T00:00:00.000Z')`, id);
+      for (const id of ['s1', 's2', 's3', 's4', 's5']) add(id);
+      const columns = () => state.storage.sql.exec("SELECT name FROM pragma_table_info('scopes')").toArray().map((r) => r.name);
+      const before = columns().includes('bound_shapes');
+      // A deploy: new code over the old storage, twice (the addition is re-runnable).
+      new ControlPlaneDO(state, env);
+      const cp = new ControlPlaneDO(state, env);
+      const groups = () => installsReconciledOf(state.storage.sql.exec(PROVISIONED_VERSIONS_SQL, ...provisionedVersionsParams('old-vertical', { ref: 'old-script', versionId: 'v1' }, null)).toArray());
+      const migrated = groups();
+      // Reported: three bound `contact`, one bound nothing, one is left unknown.
+      for (const id of ['s1', 's2', 's3']) cp.markScopeProvisioned(id, 'v1', true, ['contact']);
+      cp.markScopeProvisioned('s4', 'v1', true, []);
+      const reported = groups();
+      // A receipt rewritten for another version by code that does not know the column: the pair no longer counts.
+      state.storage.sql.exec("UPDATE scopes SET provisioned_version_id = 'v2', retirements_finished_version_id = 'v2' WHERE scope_id = 's1'");
+      const rolledBack = groups().find((g) => g.versionId === 'v2');
+      return { before, after: columns().includes('bound_shapes'), migrated, reported, rolledBack };
+    });
+    expect(seen.before).toBe(false);
+    expect(seen.after).toBe(true);
+    expect(seen.migrated).toEqual([{ versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 5, example: 's1' }]);
+    // One row per (version, finished, set), however many installs share it.
+    expect([...seen.reported].sort((a, b) => a.example.localeCompare(b.example))).toEqual([
+      { versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: ['contact'], installs: 3, example: 's1' },
+      { versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: [], installs: 1, example: 's4' },
+      { versionId: 'v1', runningVersionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 1, example: 's5' },
+    ]);
+    // …and it lags what the install runs (v1, served): judged as unreported either way (review of #2220).
+    expect(seen.rolledBack).toEqual({ versionId: 'v2', runningVersionId: 'v1', retirementsFinished: true, boundShapes: null, installs: 1, example: 's1' });
+  });
+
+  it('meanwhile refuses only a strand of a table-held shape, and the sweep re-converges every migrated install', async () => {
+    const host = new CloudflareScopeHost({
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      fetch: connectorTestFetch,
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      checker: UNSAFE_allowAllChecker,
+    });
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `bound-${t.slice(-10).toLowerCase()}`, name: 'Bound' });
+    const HOLDER = { table: 'bind_records', idColumn: 'id', principalColumn: 'principal' };
+    // `bind` dropped (or never declared): judged from the registry alone, nothing binds.
+    const shape = (permissions: string[]) => ({ entityType: 'contact', permissions, bootstrap: true, holder: HOLDER });
+    const publish = async (slug: string, entityGrants: object[]) => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: `m-${id}`,
+        permissionDigest: `p-${id}`, migrationDigest: 'g', deploymentRef: null,
+        manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const ACKS = { permissionChange: true, migrationChange: true, exportBreak: true } as const;
+    const servedInstall = async () => {
+      const slug = `acme/bound-${ulid().slice(-8).toLowerCase()}`;
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      const v = await publish(slug, [shape(['contact:read-own'])]);
+      const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+      await host.admin.promoteVersion(staff, slug, 'prod', v, ACKS);
+      await host.admin.setVerticalServing(staff, slug, { ref, versionId: v, doClasses: [], migrationTag: 'g' });
+      const sc = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: sc, vertical: slug });
+      await host.admin.activateScope(staff, t, sc);
+      await host.admin.bindScopeVersion(staff, t, sc, v);
+      await host.admin.markScopeProvisioned(staff, t, sc, v, { retirementsFinished: true, boundShapes: [] });
+      return { slug, v, sc };
+    };
+    // One vertical whose install bound `contact` before its `bind` was dropped, one that never bound.
+    const bound = await servedInstall();
+    const never = await servedInstall();
+    const mine = [bound.sc, never.sc];
+    // The migration's state for these two rows: a receipt, and null beside it (no backfill).
+    await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      for (const sc of mine) state.storage.sql.exec('UPDATE scopes SET bound_shapes = NULL WHERE scope_id = ?', sc);
+    });
+    const unknown = (v: string, sc: string) =>
+      new RegExp(`drops the shape.*that reconciled ${v} without reporting which binding shapes links have bound \\(one is ${sc}\\), so every bootstrap shape`);
+    const refusalOf = (p: Promise<unknown>) => p.then(() => null, (e: unknown) => e as Error);
+
+    // Refused while unknown: the drop of the table-held shape, for both.
+    const boundDrop = await publish(bound.slug, []);
+    const neverDrop = await publish(never.slug, []);
+    for (const { slug, v, sc } of [bound, never]) {
+      const refused = await refusalOf(host.admin.promoteVersion(staff, slug, 'prod', slug === bound.slug ? boundDrop : neverDrop, ACKS));
+      expect(errorCodeOf(refused)).toBe('precondition_failed');
+      expect(String(refused?.message)).toMatch(unknown(v, sc));
+    }
+    // Nothing else: adding a key promotes.
+    const more = await publish(never.slug, [shape(['contact:read-own', 'contact:other'])]);
+    await host.admin.promoteVersion(staff, never.slug, 'prod', more, ACKS);
+    await host.admin.setVerticalServing(staff, never.slug, {
+      ref: (await host.admin.getScopeRecord(staff, t, never.sc))!.servingRef!, versionId: more, doClasses: [], migrationTag: 'g',
+    });
+
+    // The sweep, over the real directory (only these two installs listed), with a reconcile that
+    // answers what a current deployment does: the types its sticky records name.
+    const sweepHost = {
+      admin: {
+        listScopes: async (a: never, f: never) => (await host.admin.listScopes(a, f)).filter((sc) => mine.includes(sc.id)),
+        listVerticals: (a: never) => host.admin.listVerticals(a),
+        listConnections: async () => [],
+        markScopeProvisioned: (...args: Parameters<typeof host.admin.markScopeProvisioned>) => host.admin.markScopeProvisioned(...args),
+      },
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+    } as unknown as ScopeHost;
+    const sweep = () =>
+      runPlatformSweep(sweepHost, {
+        actor: staff,
+        fetch: connectorTestFetch,
+        sweepers: {},
+        runSchedules: false,
+        reconcileScopeFn: async (_t, sc) => ({ retirementsFinished: true, boundShapes: sc === bound.sc ? ['contact'] : [] }),
+      });
+    expect((await sweep()).provisionReconcile).toMatchObject({ behind: 2, reconciled: 2, failed: 0 });
+    expect((await host.admin.getScopeRecord(staff, t, bound.sc))?.boundShapes).toEqual({ versionId: bound.v, types: ['contact'] });
+    // Converged: the next pass has nothing to do.
+    expect((await sweep()).provisionReconcile).toMatchObject({ behind: 0, reconciled: 0 });
+    // The vertical that never bound moves freely; the one that did is held for `contact`, naming it.
+    await host.admin.promoteVersion(staff, never.slug, 'prod', neverDrop, ACKS);
+    const refused = await refusalOf(host.admin.promoteVersion(staff, bound.slug, 'prod', boundDrop, ACKS));
+    expect(String(refused?.message)).toMatch(new RegExp(`that last reconciled ${bound.v}, where links have bound people to contact \\(one is ${bound.sc}\\)`));
     await host.close();
   });
 });

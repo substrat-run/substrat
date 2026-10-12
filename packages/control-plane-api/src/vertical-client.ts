@@ -364,6 +364,11 @@ function retirementsLeftOpenFrom(raw: unknown): { retirementsLeftOpen?: number }
   return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? { retirementsLeftOpen: raw } : {};
 }
 
+/** #2184: the types the scope has ever bound, kept only when every entry is a non-empty string. */
+function boundShapeTypesFrom(raw: unknown): { boundShapeTypes?: string[] } {
+  return Array.isArray(raw) && raw.every((t) => typeof t === 'string' && t.length > 0) ? { boundShapeTypes: raw as string[] } : {};
+}
+
 /** The backstop: a vertical that still returns credential-shaped keys has them dropped, not persisted. */
 const SECRETLIKE_KEY = /password|secret|token|private/i;
 
@@ -476,6 +481,12 @@ export interface ReconciledInstance {
    * does not parse: both count as not finished (`reconcileOutcomeOf`).
    */
   retirementsLeftOpen?: number;
+  /**
+   * #2184: with `entityGrants`, every entity type the scope has ever bound through a link
+   * (`shape-bound`). Absent from a deployment built on packages that predate it, and from an
+   * answer that does not parse: both read as unknown (`reconcileOutcomeOf`).
+   */
+  boundShapeTypes?: string[];
 }
 
 export class VerticalClient {
@@ -536,10 +547,19 @@ export class VerticalClient {
    * idempotent provision. Entitlements are re-gathered and re-delivered exactly as at provision.
    */
   async reconcileInstance(input: ReconcileInstanceInput): Promise<ReconciledInstance> {
-    const { switchedOff, retirementsLeftOpen, ...ack } = await this.postInternal<
-      Omit<ReconciledInstance, 'switchedOff' | 'retirementsLeftOpen'> & { switchedOff?: unknown; retirementsLeftOpen?: unknown }
+    const { switchedOff, retirementsLeftOpen, boundShapeTypes, ...ack } = await this.postInternal<
+      Omit<ReconciledInstance, 'switchedOff' | 'retirementsLeftOpen' | 'boundShapeTypes'> & {
+        switchedOff?: unknown;
+        retirementsLeftOpen?: unknown;
+        boundShapeTypes?: unknown;
+      }
     >('/internal/reconcile', input, 'reconcile');
-    return { ...ack, ...switchedOffFrom(switchedOff), ...retirementsLeftOpenFrom(retirementsLeftOpen) };
+    return {
+      ...ack,
+      ...switchedOffFrom(switchedOff),
+      ...retirementsLeftOpenFrom(retirementsLeftOpen),
+      ...boundShapeTypesFrom(boundShapeTypes),
+    };
   }
 
   /**

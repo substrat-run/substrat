@@ -118,7 +118,16 @@ import {
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
 import { switchSqlOver } from './scope-do.js';
-import { blankSqlComments, executableSqlStatements, installsReconciledOf, PROVISIONED_VERSIONS_SQL, type InstallsReconciled } from '@substrat-run/kernel';
+import {
+  blankSqlComments,
+  boundShapesColumn,
+  executableSqlStatements,
+  installsReconciledOf,
+  PROVISIONED_VERSIONS_SQL,
+  provisionedVersionsParams,
+  type InstallsReconciled,
+  type ServingPointer,
+} from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
@@ -253,6 +262,8 @@ export interface ScopeRow {
   provisioned_version_id: string | null;
   /** #2185: added by `SCOPE_COLUMNS_ADDED`. */
   retirements_finished_version_id: string | null;
+  /** #2184: added by `SCOPE_COLUMNS_ADDED` (`boundShapesColumn`). */
+  bound_shapes: string | null;
   migration_failed_version: string | null;
   migration_error: string | null;
   migration_attempts: number;
@@ -1326,6 +1337,8 @@ const SCOPE_COLUMNS_ADDED = [
   'provisioned_version_id TEXT',
   // #2185: null on every existing row, which reads as "not finished" (the sweep reconciles it once more).
   'retirements_finished_version_id TEXT',
+  // #2184: null on every existing row, which reads as unknown (the sweep reconciles it once more).
+  'bound_shapes TEXT',
   'migration_failed_version TEXT',
   'migration_error TEXT',
   'migration_attempts INTEGER NOT NULL DEFAULT 0',
@@ -2412,8 +2425,8 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** #2178: `PROVISIONED_VERSIONS_SQL` over the directory — one row per version, however many scopes. */
-  provisionedVersionsOf(vertical: string, servingRef: string | null, ownerTenant: string | null): InstallsReconciled[] {
-    return installsReconciledOf(this.sql.exec(PROVISIONED_VERSIONS_SQL, vertical, servingRef, ownerTenant).toArray());
+  provisionedVersionsOf(vertical: string, serving: ServingPointer | null, ownerTenant: string | null): InstallsReconciled[] {
+    return installsReconciledOf(this.sql.exec(PROVISIONED_VERSIONS_SQL, ...provisionedVersionsParams(vertical, serving, ownerTenant)).toArray());
   }
 
   /** Cross-checks the pair (K-3): a scope under a DIFFERENT tenant reads as absent. */
@@ -3413,15 +3426,16 @@ export class ControlPlaneDO extends DurableObject {
    * the field is that it is a receipt. Marked optimistically it would silence the sweep
    * for a repair that failed, which is the one outcome that must keep being retried.
    */
-  markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean): void {
+  markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean, boundShapes?: string[]): void {
     // #2045: a scope owed a switch re-assert keeps no receipt, so the sweep reconciles it again
     // until its re-assert has settled every mark — including a mark written while this
     // reconcile ran, after its re-assert had read none.
     if (versionId !== null && scopeOwesSwitch(this.kernelSql, scopeId)) versionId = null;
     // #2185: in the same write, the version whose retirements finished — this receipt's, or none.
+    // #2184: and the binding shapes it reported bound, paired with this receipt's version.
     this.sql.exec(
-      'UPDATE scopes SET provisioned_version_id = ?, retirements_finished_version_id = ? WHERE scope_id = ?',
-      versionId, versionId !== null && retirementsFinished === true ? versionId : null, scopeId,
+      'UPDATE scopes SET provisioned_version_id = ?, retirements_finished_version_id = ?, bound_shapes = ? WHERE scope_id = ?',
+      versionId, versionId !== null && retirementsFinished === true ? versionId : null, boundShapesColumn(versionId, boundShapes), scopeId,
     );
   }
 
@@ -4369,7 +4383,7 @@ export class ControlPlaneDO extends DurableObject {
       const prior = write(this.kernelSql, row);
       if (recordWriteSuperseded(prior, row)) return prior;
       markSwitchOwed(this.kernelSql, row.kind, row.tenantId, row.scopeId, row.key, row.operationId);
-      this.sql.exec('UPDATE scopes SET provisioned_version_id = NULL, retirements_finished_version_id = NULL WHERE scope_id = ?', row.scopeId);
+      this.sql.exec('UPDATE scopes SET provisioned_version_id = NULL, retirements_finished_version_id = NULL, bound_shapes = NULL WHERE scope_id = ?', row.scopeId);
       return prior;
     });
   }
