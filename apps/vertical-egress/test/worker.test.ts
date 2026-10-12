@@ -33,7 +33,16 @@ const envWith = (over: Partial<Env> = {}): Env => ({
 const meterInto = (points: unknown[]) =>
   ({ writeDataPoint: (p: unknown) => void points.push(p) }) as unknown as AnalyticsEngineDataset;
 
-afterEach(() => vi.unstubAllGlobals());
+/** The one `egress.refused` line a refusal wrote, parsed; fails unless there was exactly one. */
+const refusalLog = (warn: { mock: { calls: unknown[][] } }): Record<string, unknown> => {
+  expect(warn.mock.calls).toHaveLength(1);
+  return JSON.parse(warn.mock.calls[0]![0] as string) as Record<string, unknown>;
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe('vertical egress worker', () => {
   it('loops a platform host back through the router, never to the internet', async () => {
@@ -418,6 +427,7 @@ describe('a non-primary scope reaches no third party (#2005)', () => {
     it(`refuses ${name}, and meters it as inert`, async () => {
       const internet = vi.fn(async () => new Response('external', { status: 200 }));
       vi.stubGlobal('fetch', internet);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const points: unknown[] = [];
       const res = await worker.fetch(
         new Request('https://api.scrive.com/api/v2/documents'),
@@ -428,6 +438,7 @@ describe('a non-primary scope reaches no third party (#2005)', () => {
       expect(internet).not.toHaveBeenCalled();
       expect(res.headers.get('x-substrat-egress')).toBe('refused');
       expect(points).toEqual([{ indexes: ['acme-crm'], blobs: ['api.scrive.com', 'inert', '01TENANT'] }]);
+      expect(refusalLog(warn)).toMatchObject({ event: 'egress.refused', verdict: 'inert', host: 'api.scrive.com' });
     });
   }
 
@@ -478,18 +489,22 @@ describe("a non-primary scope reads other platform apps and writes only its own 
 
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
     it(`refuses a ${method} to another platform app, before the router sees it`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { res, calls } = await send('https://crm-acme.global.substrat.run/api/write', method, false);
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'crm-acme.global.substrat.run' });
       expect(res.headers.get('x-substrat-egress')).toBe('refused');
       expect(calls).toHaveLength(0);
+      expect(refusalLog(warn)).toMatchObject({ verdict: 'inert', host: 'crm-acme.global.substrat.run' });
     });
   }
 
   for (const method of ['GET', 'HEAD', 'OPTIONS']) {
     it(`lets a ${method} to another platform app through`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { res, calls } = await send('https://crm-acme.global.substrat.run/api/read', method, false);
       expect(res.status).toBe(200);
+      expect(warn).not.toHaveBeenCalled();
       expect(calls).toHaveLength(1);
     });
   }
@@ -544,10 +559,12 @@ describe("a non-primary scope reads other platform apps and writes only its own 
       const internet = vi.fn(async () => new Response('x', { status: 200 }));
       vi.stubGlobal('fetch', internet);
       const own = { ...withSiblings([OWN, 'preview.example.com']), hosts: ['other.example.com'] };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { res } = await post('https://other.example.com/api/write', own);
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ error: 'outbound refused', host: 'other.example.com' });
       expect(res.headers.get('x-substrat-egress')).toBe('refused');
+      expect(refusalLog(warn)).toMatchObject({ verdict: 'inert', host: 'other.example.com' });
       expect(internet).not.toHaveBeenCalled();
     });
 
