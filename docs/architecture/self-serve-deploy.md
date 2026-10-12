@@ -349,12 +349,16 @@ it re-deploys. Every verdict — `platform` / `relay` / `allowed` / `unenforced`
 verdict, tenant]; D-30 *meter, don't bill*), so the unenforced tail is a chart, not a
 guess, and a refusal spike or an exfiltration attempt shows up attributed to a vertical.
 
-**A refusal says it is the platform's (#2192).** Every refusal — a host outside the declared
-surface, or a third party reached from a non-primary scope — answers `403` with an
-`x-substrat-egress: refused` header, so a vertical's code can tell "the platform said no" from
-"the service said no" (a destination's own 403 never carries it). The egress worker also writes one
-structured `console.warn` per refusal (`{event: "egress.refused", verdict, host, vertical,
-tenant}`) to Workers Logs. The dispatch policy carries no version, so the line does not name one.
+**A refusal says it is the platform's (#2192).** Every refusal the egress worker itself makes —
+a host outside the declared surface, a third party reached from a non-primary scope, a peer call
+that carries no caller identity — answers `403` with an `x-substrat-egress: refused` header, so a
+vertical's code can tell "the platform said no" from "the service said no" (a destination's own
+403 never carries it). The worker also writes one structured `console.warn` per refused call, like
+the meter datapoint and with no sampling (`{event: "egress.refused", verdict, host, vertical,
+tenant}`; `verdict` is `refused`, `inert` or `peer`) to Workers Logs. The dispatch policy carries
+no version, so the line does not name one. **Not covered:** the statuses a peer call gets back
+from the router (target not installed, operation denied, …) pass through as the router chose them,
+unmarked, and so does the `503` of an environment with no `PEER_CALLS` binding.
 Tying a refusal to the request that caused it is still open on #2192.
 
 **The surface bounds where a request lands, not only where it starts (#2011).** The egress

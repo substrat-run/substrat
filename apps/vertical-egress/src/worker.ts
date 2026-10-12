@@ -293,6 +293,16 @@ function outboundRefused(
   detail: string,
 ): Response {
   meter(env, hostname, verdict);
+  logRefusal(env, verdict, hostname, slug);
+  return new Response(JSON.stringify({ error: 'outbound refused', host: hostname, vertical: slug, detail }), {
+    status: 403,
+    headers: { 'content-type': 'application/json', [EGRESS_HEADER]: 'refused' },
+  });
+}
+
+/** The structured `egress.refused` line; `verdict` tells the refusals apart (`peer` is a peer
+ *  call refused for carrying no caller identity — already metered as `peer`, so not again). */
+function logRefusal(env: Env, verdict: 'refused' | 'inert' | 'peer', hostname: string, slug: string | null): void {
   console.warn(
     JSON.stringify({
       event: 'egress.refused',
@@ -302,10 +312,6 @@ function outboundRefused(
       tenant: env.OUTBOUND_POLICY?.tenant ?? null,
     }),
   );
-  return new Response(JSON.stringify({ error: 'outbound refused', host: hostname, vertical: slug, detail }), {
-    status: 403,
-    headers: { 'content-type': 'application/json', [EGRESS_HEADER]: 'refused' },
-  });
 }
 
 /** What the router's peer entrypoint answers. */
@@ -339,9 +345,9 @@ function meter(env: Env, hostname: string, verdict: Verdict | 'redirect', to?: s
  * refused here rather than forwarded, because a peer call whose caller cannot be named is
  * exactly what this whole mechanism exists to prevent.
  */
-async function peerCall(request: Request, env: Env): Promise<Response> {
-  const problem = (status: number, error: string): Response =>
-    new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
+async function peerCall(request: Request, hostname: string, env: Env): Promise<Response> {
+  const problem = (status: number, error: string, headers: Record<string, string> = {}): Response =>
+    new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json', ...headers } });
   const policy = env.OUTBOUND_POLICY;
   if (!env.PEER_CALLS) {
     // Name the binding and the worker it belongs on. A refusal that says only "not
@@ -356,11 +362,15 @@ async function peerCall(request: Request, env: Env): Promise<Response> {
     );
   }
   if (!policy?.slug || !policy.tenant || !policy.scope) {
+    // The platform's own decision, so it is marked and logged like an outbound refusal. The
+    // router's outcomes below are not: the target's door and the router answer those.
+    logRefusal(env, 'peer', hostname, policy?.slug ?? null);
     return problem(
       403,
       'peer call refused: this call carries no caller identity. A peer call is made from a ' +
         "vertical's request handler, through the platform — not from inside a Durable Object, " +
         'and not from a script the router did not dispatch (#1706).',
+      { [EGRESS_HEADER]: 'refused' },
     );
   }
   const parsed = peerCallRequest.safeParse(await request.json().catch(() => null));
@@ -393,7 +403,7 @@ export default {
     // outbound workers do not intercept) fails to resolve instead of leaving the isolate.
     if (isPeerCallHost(hostname)) {
       meter(env, hostname, 'peer');
-      return peerCall(request, env);
+      return peerCall(request, hostname, env);
     }
     if (isPlatformHost(hostname, baseDomains(env))) {
       // #2005: a fork or a preview may write to its own addresses only — any surface of the
