@@ -491,9 +491,12 @@ export async function signInSocial(
   providerId: string,
   oauthQuery?: string | null,
   returnTo = '/',
+  loginHint?: string,
 ): Promise<void> {
   const { error } = await authClient.signIn.social({
     provider: providerId,
+    // Pre-fills the upstream's own account picker with the address already typed here.
+    ...(loginHint ? { loginHint } : {}),
     callbackURL: returnTo,
     errorCallbackURL: socialErrorTarget(oauthQuery, returnTo),
     ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
@@ -688,6 +691,30 @@ export interface ClientSignIn {
   password: boolean;
   restricted: boolean;
   passwordSecondFactor?: 'sms';
+  /** Ask for an email or BankID first; the method follows from the address. */
+  identifierFirst?: true;
+}
+
+/** What the second step does for one address (`resolveSignInRoute` on the server). */
+export type SignInRoute =
+  | { kind: 'provider'; provider: PublicProvider }
+  | { kind: 'password'; secondFactor?: 'sms' }
+  | { kind: 'none' };
+
+/**
+ * The identifier-first screen's second step. The answer comes from the client's policy and
+ * the address's domain alone — the same whether or not an account exists. A failed read is an
+ * error shown to the person, never a guess: guessing "password" for an address that is
+ * routed to a directory would only send them to a form the issuer then refuses.
+ */
+export async function resolveSignInRoute(clientId: string | null, identifier: string): Promise<SignInRoute> {
+  const res = await fetch('/api/sign-in-route', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ client_id: clientId, identifier }),
+  });
+  if (!res.ok) throw new Error('Could not look up how to sign in. Try again.');
+  return (await res.json()) as SignInRoute;
 }
 
 /** Theme + sign-in methods for a client id, in one read. */
