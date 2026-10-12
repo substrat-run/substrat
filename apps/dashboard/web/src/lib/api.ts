@@ -1,4 +1,4 @@
-import { problemDetail } from '@substrat-run/contracts';
+import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { createClient, type DashboardClient } from './api.generated';
 import { tenantLogsQuery } from './logs-query';
 import type { PromoteReviewWire } from './promote-review';
@@ -1529,6 +1529,12 @@ export class ApiError extends Error {
     readonly probe?: ConnectionProbeView,
     /** #1756: the apps an Update or a Bind would break, when that is why it was refused. */
     readonly exportBreaks?: ExportBreakRow[],
+    /**
+     * #2192: the id of the request that failed, when the answering worker named one — the
+     * `x-substrat-request-id` header, else the problem body's `requestId`. What a person
+     * quotes to find the request. Absent where the answer carried none.
+     */
+    readonly requestId?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -1574,12 +1580,14 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     // `problemDetail` is the one reading of a failed body (#971) — the problem body's
     // sentence, then the deprecated duplicate every SPA read before it. The `probe`
     // beside it is the dashboard's own extension (#605) and stays read here.
-    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView } | null;
+    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView; requestId?: unknown } | null;
+    const fromBody = typeof body?.requestId === 'string' && body.requestId !== '' ? body.requestId : undefined;
     throw new ApiError(
       res.status,
       problemDetail(body) ?? `${res.status} ${res.statusText}`,
       body?.probe,
       exportBreaksIn<ExportBreakRow>(body),
+      res.headers.get(REQUEST_ID_HEADER) || fromBody,
     );
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);

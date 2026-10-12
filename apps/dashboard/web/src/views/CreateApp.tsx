@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { RequestIdNote, requestIdOf } from '../components/RequestIdNote';
 import { Button, Input, Select } from '@substrat-run/ui';
 import { type AppAuthChoice, type AppRow, type CatalogEntry, type EnvVarSpec } from '../lib/api';
 import { ENV_OPTS, verticalMeta } from '../lib/demo';
@@ -188,6 +189,7 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
   const [name, setName] = useState(source.defaultName);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorRequestId, setErrorRequestId] = useState<string>();
   // The vertical's declared config (#426), collected HERE so first-run values ride with
   // provisioning — the instance is born configured (an issuer with its admin) instead of
   // live-but-unconfigured until someone finds the Env tab. Non-secrets prefill their
@@ -243,6 +245,7 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
   const submit = async () => {
     setBusy(true);
     setError(undefined);
+    setErrorRequestId(undefined);
     // Only touched fields ride: an empty optional stays undelivered, so the vertical's
     // own defaults apply instead of an explicit empty string overriding them.
     const filled = Object.fromEntries(Object.entries(config).filter(([, v]) => v.trim() !== ''));
@@ -255,6 +258,7 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
       });
     } catch (e) {
       setError((e as Error).message);
+      setErrorRequestId(requestIdOf(e));
       setBusy(false);
     }
   };
@@ -342,6 +346,7 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
         )}
 
         {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
+        <RequestIdNote id={errorRequestId} />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
           <Button onClick={submit} disabled={busy || disabled || externalIncomplete || requiredMissing.length > 0}>{busy ? 'Creating…' : 'Create app'}</Button>
