@@ -40,7 +40,7 @@ const IGNORED = /(^|\.)(localhost|internal|local|test|example|invalid)$|(^|\.)(e
 function hostOf(text: string): string | undefined {
   let host: string;
   try {
-    host = new URL(text).hostname.toLowerCase();
+    host = new URL(text).hostname.toLowerCase().replace(/\.$/, ''); // `api.acme.com.` is the same host
   } catch {
     return undefined;
   }

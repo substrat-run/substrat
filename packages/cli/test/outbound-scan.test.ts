@@ -58,6 +58,10 @@ describe('readSource — which hosts a file names', () => {
     expect(hostsOf("fetch('https://api.acme.com');")).toEqual(['api.acme.com']);
   });
 
+  it('judges a fully-qualified host (trailing dot) as the host without it', () => {
+    expect(hostsOf("fetch('https://api.acme.com./x');")).toEqual(['api.acme.com']);
+  });
+
   it('never reads a comment', () => {
     expect(hostsOf("// see https://docs.acme.com/api\n/* https://old.acme.com */\nconst x = 1;")).toEqual([]);
   });
