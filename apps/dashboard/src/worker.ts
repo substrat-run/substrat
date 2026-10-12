@@ -4515,11 +4515,8 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   return c.json({ delivered, ...(note ? { note } : {}) });
 });
 
-/**
- * The app lifecycle writes — install, remove, retry, resume (#2170). Declared routes under
- * `/api/teams/:teamId` (`routes.ts`); each is a function of the resolved team, so the
- * team is the path's and never the cookie's.
- */
+// The app lifecycle writes — install, remove, retry, resume (#2170) — are declared routes
+// under `/api/teams/:teamId` (`routes.ts`); each is a function of the team the path names.
 
 /** Create an app — provisioned into the team's tenant, authorized in-scope. */
 async function installAppIn({ c, host, node }: TeamContext, body: z.infer<typeof installAppInput>): Promise<DashboardAppRow> {
