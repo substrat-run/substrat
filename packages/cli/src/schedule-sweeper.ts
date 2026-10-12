@@ -183,7 +183,7 @@ export function exportedSweeperNames(source: string): string[] {
   return parseEntry(source).own;
 }
 
-const SOURCE_EXTENSIONS = ['.ts', '.mts', '.tsx', '.js', '.mjs'];
+export const SOURCE_EXTENSIONS = ['.ts', '.mts', '.tsx', '.js', '.mjs'];
 
 /** A relative specifier as the bundler would find it on disk, or undefined. */
 export function resolveRelative(fromFile: string, specifier: string): string | undefined {

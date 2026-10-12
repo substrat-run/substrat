@@ -76,7 +76,36 @@ describe('scanOutboundHosts — the entry and what it imports', () => {
       'src/integrations/sync.ts': "import './worker.js';\nexport const sync = () => fetch('https://api.acme.com/sync');\n",
       'src/unused.ts': "export const u = 'https://not-imported.acme.com';\n",
     });
-    expect(scanOutboundHosts(dir, 'src/worker.ts')).toEqual([{ host: 'api.acme.com', file: 'src/integrations/sync.ts', line: 2 }]);
+    expect(scanOutboundHosts(dir, 'src/worker.ts').sightings).toEqual([{ host: 'api.acme.com', file: 'src/integrations/sync.ts', line: 2 }]);
+  });
+});
+
+describe('scanOutboundHosts — a file it cannot use never ends the check', () => {
+  it('does not read a .sql, .json or .md import as code, and still reports the entry', () => {
+    const dir = tree({
+      'src/worker.ts': "import s from './schema.sql';\nimport d from './data.json';\nimport n from './notes.md';\nfetch('https://good.acme.com');\n",
+      'src/schema.sql': 'CREATE TABLE t (id TEXT);',
+      'src/data.json': '{"url": "https://in-json.acme.com"}',
+      'src/notes.md': '# see https://in-md.acme.com',
+    });
+    const r = scanOutboundHosts(dir, 'src/worker.ts');
+    expect(r.sightings.map((s) => s.host)).toEqual(['good.acme.com']);
+    expect(r.unread).toEqual([]);
+  });
+
+  it('keeps what it collected when one file does not parse, and says which file it skipped', () => {
+    const dir = tree({
+      'src/worker.ts': "import './bad.js';\nimport './ok.js';\nfetch('https://first.acme.com');\n",
+      'src/bad.ts': 'export const = ;;; {{{',
+      'src/ok.ts': "fetch('https://second.acme.com');\n",
+    });
+    const r = scanOutboundHosts(dir, 'src/worker.ts');
+    expect(r.sightings.map((s) => s.host).sort()).toEqual(['first.acme.com', 'second.acme.com']);
+    expect(r.unread).toEqual(['src/bad.ts']);
+  });
+
+  it('a missing entry is an unread file', () => {
+    expect(scanOutboundHosts(tree({}), 'src/nope.ts').unread).toEqual(['src/nope.ts']);
   });
 });
 
@@ -128,9 +157,19 @@ describe('checkOutboundDeclared — the report', () => {
     expect(out[0]).toMatch(/^note:/);
   });
 
-  it('does nothing without an entry, or when the entry is missing', () => {
+  it('does nothing without an entry', () => {
     expect(() => checkOutboundDeclared(dir(), undefined, [], { strict: true })).not.toThrow();
-    expect(() => checkOutboundDeclared(dir(), 'src/nope.ts', [], { strict: true })).not.toThrow();
+  });
+
+  it('under strict, an unreadable file is a note beside the host that was found — never a silent pass', () => {
+    const d = tree({
+      'src/worker.ts': "import s from './bad.js';\nfetch('https://wb.acme.com/x');\n",
+      'src/bad.ts': 'export const = ;;;',
+    });
+    const out: string[] = [];
+    expect(() => checkOutboundDeclared(d, 'src/worker.ts', ['wb.acme.com'], { strict: true, log: (m) => out.push(m) })).not.toThrow();
+    expect(out).toEqual(['note: could not read src/bad.ts, its hosts were not checked.']);
+    expect(() => checkOutboundDeclared(d, 'src/worker.ts', [], { strict: true })).toThrow(/wb\.acme\.com/);
   });
 });
 

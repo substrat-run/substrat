@@ -23,7 +23,7 @@ import { readFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { parse } from '@babel/parser';
 import { matchesOutboundHost, outboundHost } from '@substrat-run/contracts';
-import { resolveRelative } from './schedule-sweeper.js';
+import { resolveRelative, SOURCE_EXTENSIONS } from './schedule-sweeper.js';
 
 export interface OutboundSighting {
   host: string;
@@ -95,22 +95,40 @@ export function readSource(source: string, file = 'file.ts'): { hosts: { host: s
   return { hosts, imports };
 }
 
-/** Every host literal in the entry's relative import graph. */
-export function scanOutboundHosts(dir: string, entry: string): OutboundSighting[] {
+export interface OutboundScan {
+  sightings: OutboundSighting[];
+  /** Files that could not be read or parsed: their hosts were NOT checked. */
+  unread: string[];
+}
+
+/**
+ * Every host literal in the entry's relative import graph. Only source files are followed — a
+ * `.sql`, `.json` or `.md` import (a Workers text rule) is not JavaScript — and a file that
+ * cannot be read or parsed is reported in `unread` rather than ending the walk, so what the
+ * rest of the graph named still counts and a skipped file is never a silent pass.
+ */
+export function scanOutboundHosts(dir: string, entry: string): OutboundScan {
   const seen = new Set<string>();
   const sightings: OutboundSighting[] = [];
+  const unread: string[] = [];
   const visit = (file: string): void => {
     if (seen.has(file)) return;
     seen.add(file);
-    const { hosts, imports } = readSource(readFileSync(file, 'utf8'), file);
-    for (const hit of hosts) sightings.push({ ...hit, file: relative(dir, file) });
-    for (const spec of imports) {
+    let read: ReturnType<typeof readSource>;
+    try {
+      read = readSource(readFileSync(file, 'utf8'), file);
+    } catch {
+      unread.push(relative(dir, file));
+      return;
+    }
+    for (const hit of read.hosts) sightings.push({ ...hit, file: relative(dir, file) });
+    for (const spec of read.imports) {
       const target = resolveRelative(file, spec);
-      if (target) visit(target);
+      if (target && SOURCE_EXTENSIONS.some((ext) => target.endsWith(ext))) visit(target);
     }
   };
   visit(resolve(dir, entry));
-  return sightings;
+  return { sightings, unread };
 }
 
 export interface OutboundReport {
@@ -130,8 +148,8 @@ export function judgeOutbound(sightings: readonly OutboundSighting[], declared: 
 }
 
 /**
- * Scan, report through `log`, and throw only under `strict`. A tree whose entry cannot be read
- * is not this check's business (the build says so).
+ * Scan, report through `log`, and throw only under `strict`. A file that cannot be read is a
+ * note, never a failure and never silence.
  */
 export function checkOutboundDeclared(
   dir: string,
@@ -141,12 +159,8 @@ export function checkOutboundDeclared(
 ): void {
   const log = opts.log ?? console.log;
   if (!entry) return;
-  let sightings: OutboundSighting[];
-  try {
-    sightings = scanOutboundHosts(dir, entry);
-  } catch {
-    return;
-  }
+  const { sightings, unread } = scanOutboundHosts(dir, entry);
+  for (const file of unread) log(`note: could not read ${file}, its hosts were not checked.`);
   const hosts = (declared ?? []).filter((h): h is string => typeof h === 'string');
   const { undeclared, stale } = judgeOutbound(sightings, hosts);
   if (undeclared.length > 0) {
