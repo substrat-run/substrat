@@ -33,6 +33,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { repoRoot, toPosix } from './repo-path.mjs';
 
 // Structural shapes — deliberately not imported from the kernel. The tool needs
 // four fields, and depending on the packages it inspects would be a cycle.
@@ -112,7 +113,7 @@ const bootstrapCell = (g: EntityGrantLike): string => {
   return g.bind ? `yes — ${whose}; direct grants cannot give these keys` : `yes — ${whose}`;
 };
 
-const root = new URL('..', import.meta.url).pathname;
+const root = repoRoot(import.meta.url);
 const argv = process.argv.slice(2);
 const check = argv.includes('--check');
 
@@ -149,7 +150,7 @@ const projectDir = rootArg === undefined ? undefined : resolve(rootArg);
  * to run from the repo root.
  */
 function regenerateFor(dir: string): string {
-  const rel = relative(root, dir);
+  const rel = toPosix(relative(root, dir));
   if (/^(demos|apps)\/[^/]+$/.test(rel)) return 'pnpm lint:permissions';
   return `pnpm exec tsx tools/permission-diff.mts --root ${shellArg(rel)}`;
 }

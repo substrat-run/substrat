@@ -93,6 +93,10 @@ jobs:
       # forbidden edges — the kernel and the adapters never depend on the attachment parsers —
       # and the test first proves that rule still refuses.
       - run: pnpm test:declared-deps
+      # `URL.pathname` is `/C:/...` on Windows and `path.relative` returns
+      # backslashes, so a gate rooted that way scans nothing and passes. The
+      # helper is what the tools use instead.
+      - run: pnpm test:repo-path
       - run: node tools/declared-deps.mjs
       # The package.json each public package SHIPS — out of the tarball `pnpm pack` writes,
       # not the source file — resolves from npm (tools/publish-manifests.mjs says why). Test

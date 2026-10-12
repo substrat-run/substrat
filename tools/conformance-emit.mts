@@ -57,12 +57,13 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { repoRoot } from './repo-path.mjs';
 // The PURE half of the conformance kit, imported by path rather than by package
 // name: the root workspace depends on nothing, and `entity-check-suite.ts` next to
 // it imports vitest at module load. The split exists for this call site (#866).
 import { planEntityCheckCoverage } from '../packages/contract-tests/src/entity-check-plan.js';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = repoRoot(import.meta.url);
 const check = process.argv.includes('--check');
 const GROUPS = ['demos', 'engines'] as const;
 
