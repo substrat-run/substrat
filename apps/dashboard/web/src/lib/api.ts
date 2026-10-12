@@ -1490,7 +1490,7 @@ export interface DnsRecord {
   type: 'hostname' | 'txt';
   name: string;
   value: string;
-  status: string | null;
+  status?: string | null;
 }
 
 /** One custom domain row for the account-level Domains view (`GET /api/domains`). */
@@ -1774,16 +1774,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
-  /** My apps, one page newest-first; follow `nextCursor` for older ones. */
-  listApps: (opts?: PageOpts) => call<ListPage<AppRow>>(`/apps${pageQs(opts)}`),
-  // -- custom domains (§4.7) -------------------------------------------------
-  listDomains: (opts?: PageOpts) => call<ListPage<DomainRow>>(`/domains${pageQs(opts)}`),
-  addDomain: (input: { hostname: string; appScopeId: string; surface?: string }) =>
-    call<HostnameBinding>('/domains', { method: 'POST', body: JSON.stringify(input) }),
-  verifyDomain: (hostname: string) =>
-    call<HostnameBinding>(`/domains/${encodeURIComponent(hostname)}/verify`, { method: 'POST' }),
-  removeDomain: (hostname: string) =>
-    call<void>(`/domains/${encodeURIComponent(hostname)}`, { method: 'DELETE' }),
   /** One page of the app's audit trail, newest first; `nextCursor` walks older activity. */
   appEvents: (scopeId: string, opts?: PageOpts) =>
     call<ListPage<AppEvent>>(`/apps/${encodeURIComponent(scopeId)}/events${pageQs(opts)}`),
@@ -2003,20 +1993,6 @@ export const api = {
     ),
   /** The account-level integrations overview: all providers, connections, and connectable apps. */
   integrations: () => call<AccountIntegrationsView>('/integrations'),
-  /** The app's hostname bindings + the vertical's declared surfaces (Domains tab). */
-  appHostnames: (scopeId: string) => call<AppHostnamesView>(`/apps/${encodeURIComponent(scopeId)}/hostnames`),
-  /** Bind a hostname to a surface: platform-minted (`domain` omitted, lands active) or a custom domain (lands pending). */
-  addAppHostname: (scopeId: string, input: { surface: string; domain?: string }) =>
-    call<AppHostnameRow>(`/apps/${encodeURIComponent(scopeId)}/hostnames`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  /** Unbind one hostname (the default hostname is refused). */
-  removeAppHostname: (scopeId: string, hostname: string) =>
-    call<{ deleted: string }>(
-      `/apps/${encodeURIComponent(scopeId)}/hostnames/${encodeURIComponent(hostname)}`,
-      { method: 'DELETE' },
-    ),
   /** The app's Identity choice (secret redacted) + its OIDC callback URL. */
   appAuth: (scopeId: string) => call<AppAuthView>(`/apps/${encodeURIComponent(scopeId)}/auth`),
   /** Update the Identity choice; a blank clientSecret keeps the stored one. */

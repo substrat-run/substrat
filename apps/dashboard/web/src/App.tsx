@@ -954,6 +954,7 @@ export function App() {
         />
       ) : route.section === 'apps' && openApp ? (
         <AppDetail
+          teamId={me.currentTeamId}
           app={openApp}
           tab={route.tab ?? 'overview'}
           onTab={(t) => go(`/apps/${openApp.app_scope_id}/${t}`)}
@@ -1007,7 +1008,7 @@ export function App() {
           onLoadMore={() => void loadMoreMembers()}
         />
       ) : route.section === 'domains' ? (
-        <Domains />
+        <Domains teamId={me.currentTeamId} />
       ) : route.section === 'integrations' ? (
         <Integrations />
       ) : route.section === 'billing' ? (

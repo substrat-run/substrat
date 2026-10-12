@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Dialog, Input, Select } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type DnsRecord, type DomainRow } from '../lib/api';
+import { teamApi, type AppRow, type DnsRecord, type DomainRow } from '../lib/api';
+import { ApiError } from '../lib/api.generated';
 import { DEV_MOCK } from '../lib/mock';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
@@ -39,7 +40,7 @@ const STATUS: Record<DomainRow['status'], { kind: 'success' | 'warning' | 'dange
 };
 
 /** Domains — account level (screens 1o, 1p). Custom hostnames across the team's apps. */
-export function Domains() {
+export function Domains({ teamId }: { teamId: string }) {
   const [domains, setDomains] = useState<DomainRow[]>([]);
   // Non-null ⇒ older domains exist beyond the loaded page window ("Load more").
   const [cursor, setCursor] = useState<string | null>(null);
@@ -57,16 +58,18 @@ export function Domains() {
       setLoading(false);
       return;
     }
+    // The team the TAB is on, named in each request's URL (#2170), not the shared cookie's.
+    const client = teamApi(teamId);
     const [d, a] = await Promise.all([
-      api.listDomains(),
+      client.listDomains({}),
       // The Add-domain picker wants every app — one max-size page covers it.
-      api.listApps({ limit: 200 }).then((p) => p.entries).catch(() => []),
+      client.listApps({ limit: 200 }).then((p) => p.entries).catch(() => []),
     ]);
     setDomains(d.entries);
     setCursor(d.nextCursor);
     setApps(a);
     setLoading(false);
-  }, []);
+  }, [teamId]);
 
   useEffect(() => {
     void load();
@@ -76,26 +79,26 @@ export function Domains() {
     if (DEV_MOCK || loadingMore || !cursor) return;
     setLoadingMore(true);
     try {
-      const page = await api.listDomains({ cursor });
+      const page = await teamApi(teamId).listDomains({ cursor });
       setDomains((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.hostname === e.hostname))]);
       setCursor(page.nextCursor);
     } finally {
       setLoadingMore(false);
     }
-  }, [cursor, loadingMore]);
+  }, [cursor, loadingMore, teamId]);
 
   const onVerify = useCallback(
     async (hostname: string) => {
       if (DEV_MOCK) return;
       setBusy(hostname);
       try {
-        await api.verifyDomain(hostname);
+        await teamApi(teamId).verifyDomain({ hostname });
         await load();
       } finally {
         setBusy(null);
       }
     },
-    [load],
+    [load, teamId],
   );
 
   const onRemove = useCallback(
@@ -106,13 +109,13 @@ export function Domains() {
       }
       setBusy(hostname);
       try {
-        await api.removeDomain(hostname);
+        await teamApi(teamId).removeDomain({ hostname });
         await load();
       } finally {
         setBusy(null);
       }
     },
-    [load],
+    [load, teamId],
   );
 
   return (
@@ -178,7 +181,7 @@ export function Domains() {
         automatically and not listed here.
       </div>
 
-      <AddDomainDialog open={add} apps={apps} onClose={() => setAdd(false)} onAdded={load} />
+      <AddDomainDialog teamId={teamId} open={add} apps={apps} onClose={() => setAdd(false)} onAdded={load} />
     </Page>
   );
 }
@@ -293,8 +296,9 @@ function RecordRow({ r }: { r: DnsRecord }) {
 }
 
 function AddDomainDialog({
-  open, apps, onClose, onAdded,
+  teamId, open, apps, onClose, onAdded,
 }: {
+  teamId: string;
   open: boolean;
   apps: AppRow[];
   onClose: () => void;
@@ -324,7 +328,7 @@ function AddDomainDialog({
     }
     setSaving(true);
     try {
-      const row = await api.addDomain({ hostname: hostname.trim().toLowerCase(), appScopeId: chosen });
+      const row = await teamApi(teamId).addDomain({ hostname: hostname.trim().toLowerCase(), appScopeId: chosen });
       if (row.status === 'failed') {
         // The bind recorded the row but issuance failed right away (e.g. Cloudflare
         // rejected the create) — show the reason here, not just a "failed" pill later.
