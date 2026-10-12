@@ -119,7 +119,9 @@ export function SignInPolicyEditor({
             )}
           </fieldset>
 
-          {staged && (
+          {/* Also while rules exist but the start screen was switched back to one screen: they
+              still fail validation, so they must stay visible and removable. */}
+          {!builtin && (staged || draft.routes.length > 0) && (
             <fieldset className="signin-group">
               <legend>3 · Reserved for an email domain</legend>
               <p className="muted small">
