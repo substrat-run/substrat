@@ -66,7 +66,7 @@ export interface AdminLogEntry {
 export interface AppEvent {
   id: string;
   app_scope_id: string;
-  kind: "created" | "active" | "failed" | "deleted" | "updated" | "snapshotted" | "snapshot-deleted" | "data-exported" | "data-restored";
+  kind: "created" | "active" | "failed" | "deleted" | "updated" | "snapshotted" | "snapshot-deleted" | "data-exported" | "data-restored" | "hostname-bound" | "hostname-unbound" | "resumed";
   detail: string | null;
   actor: string;
   created_at: string;
