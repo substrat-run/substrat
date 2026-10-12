@@ -31,6 +31,7 @@ import {
   findingStatusInput,
   z,
 } from '@substrat-run/contracts';
+import { APP_EVENT_KINDS } from './app-event-kinds.js';
 
 /** The shared page query: the platform's `limit`/`cursor` (default 20, `LIST_PAGE_MAX`), cursor opaque. */
 const pageInput = {
@@ -71,7 +72,7 @@ export const installStep = z.object({
 export const appEvent = z.object({
   id: z.string(),
   app_scope_id: z.string(),
-  kind: z.enum(['created', 'active', 'failed', 'deleted', 'updated', 'snapshotted', 'snapshot-deleted', 'data-exported', 'data-restored']),
+  kind: z.enum(APP_EVENT_KINDS),
   /** Failure reason / bound hostname / the version move / the vertical slug — depending on `kind`. */
   detail: z.string().nullable(),
   actor: z.string(),
