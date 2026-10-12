@@ -468,6 +468,7 @@ export const INDEX_VALUE_EXPORTS = [
   'scopeOwesSwitch',
   'scopeRoleHolders',
   'scopeScriptCopyOf',
+  'scopeStoreRunnersOf',
   'scopesSwitchedOffFor',
   'sealTo',
   'searchAttachments',

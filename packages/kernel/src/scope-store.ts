@@ -7,8 +7,49 @@ import {
   type ScopeId,
   type StoreOperationCatalog,
   type StoreRequest,
+  type StoreResponse,
   type TenantId,
 } from '@substrat-run/contracts';
+
+/** Who a scope-store object belongs to. The host builds it. The runner keys on it. */
+export interface ScopeStoreAddress {
+  readonly tenantId: string;
+  readonly vertical: string;
+  readonly scopeId: string;
+  readonly binding: string;
+}
+
+/**
+ * What a kind ships for the pure adapter and for tests (#2213). One runner per
+ * kind. `invoke` speaks the envelope. `start` runs on the first store call.
+ * `stop` runs from `close`, including when `start` never ran, so it tolerates that.
+ */
+export interface ScopeStoreRunner {
+  readonly kind: string;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  invoke(address: ScopeStoreAddress, request: StoreRequest): Promise<StoreResponse>;
+}
+
+/** The runners a host was given, by binding. A binding named twice is refused. */
+export interface ScopeStoreHostOptions {
+  /** When set, a scope running any other vertical is refused. */
+  readonly vertical?: string;
+  readonly runners: readonly { readonly binding: string; readonly runner: ScopeStoreRunner }[];
+}
+
+export function scopeStoreRunnersOf(
+  options: ScopeStoreHostOptions | undefined,
+): Map<string, ScopeStoreRunner> {
+  const runners = new Map<string, ScopeStoreRunner>();
+  for (const entry of options?.runners ?? []) {
+    if (runners.has(entry.binding)) {
+      throw new Error(`scope store binding '${entry.binding}' is configured twice`);
+    }
+    runners.set(entry.binding, entry.runner);
+  }
+  return runners;
+}
 
 /**
  * The capability a `getScopeStore` door returns (#2207).

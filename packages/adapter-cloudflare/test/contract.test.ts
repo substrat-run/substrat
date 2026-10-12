@@ -44,6 +44,7 @@ import {
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
   findingsContractSuite,
+  scopeStoreContractSuite,
   findingsAtomicContractSuite,
   billedMod,
   connectorTestFetch,
@@ -151,6 +152,16 @@ connectLinkContractSuite(
 
 // #1748: findings — the directory half lives in the ControlPlaneDO, so this is the proof that
 // the kernel's statements (json_each, RETURNING, the upsert) run on DO SQLite.
+scopeStoreContractSuite('adapter-cloudflare', async (scopeStores) => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+    scopeStores,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
 findingsContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,

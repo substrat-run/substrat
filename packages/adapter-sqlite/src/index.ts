@@ -721,6 +721,10 @@ import {
   unknownRoleError,
   type ConsumerDelivery,
   type StoreStub,
+  callScopeStore,
+  scopeStoreRunnersOf,
+  type ScopeStoreHostOptions,
+  type ScopeStoreRunner,
 } from '@substrat-run/kernel';
 import {
   attributedView,
@@ -938,6 +942,12 @@ export interface SqliteScopeHostOptions {
    * the lock is what keeps another thread or process from doing so.
    */
   dir: string;
+  /**
+   * Scope stores this host answers (#2213). A binding with no runner is refused.
+   * Absent, every `getScopeStore` is refused after the directory check: this host
+   * has no runner at all. `vertical`, when set, is the only vertical it serves.
+   */
+  scopeStores?: ScopeStoreHostOptions;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
   checker?: PermissionChecker;
   /**
@@ -1877,6 +1887,9 @@ export class SqliteScopeHost implements ScopeHost {
   /** predicate name → the module-contributed implementation. Names are global. */
   private readonly predicates = new Map<string, { module: string; handler: GuardPredicate }>();
   /** operation names whose default binding some manifest withdrew (K-17). */
+  private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
+  private readonly scopeStoreVertical?: string;
+  private scopeStoresStarted = false;
   private readonly withdrawn = new Map<string, string>(); // operation → withdrawing module
   private readonly relations = new Map<string, Set<string>>();
   /** entityType → its derived FTS5 index (#827). One entity type, one index. */
@@ -1970,6 +1983,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
+    this.scopeStoreVertical = options.scopeStores?.vertical;
+    this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.logSink = options.logSink ?? consoleLogSink;
     this.invocationLineSink = options.invocationLineSink ?? consoleInvocationLineSink;
     // Every option is read above and here, BEFORE the directory is claimed: an option that throws
@@ -4131,10 +4146,48 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     binding: string,
   ): Promise<StoreStub> {
-    // The directory check is the same one `getScope` makes. A runner for the
-    // binding is the pure adapter's other half, and this host has none yet.
+    // The directory check is the same one `getScope` makes. With no runners
+    // configured, the binding is refused after that check.
     await this.getScope(principal, tenantId, scopeId);
-    throw substratError('unavailable', `no scope-store runner is configured for binding '${binding}'`);
+    if (this.scopeStoreRunners.size === 0) {
+      throw substratError('unavailable', `no scope-store runner is configured for binding '${binding}'`);
+    }
+    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { vertical: string | null }
+      | undefined;
+    const vertical = row?.vertical;
+    if (!vertical) {
+      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
+    }
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
+      );
+    }
+    const runner = this.scopeStoreRunners.get(binding);
+    if (!runner) {
+      throw substratError('not_found', `no scope store is bound for '${binding}'`);
+    }
+    await this.ensureScopeStoresStarted();
+    return {
+      tenantId,
+      scopeId,
+      subjectKind: 'principal',
+      invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
+        callScopeStore(
+          (request) => runner.invoke({ tenantId, vertical, scopeId, binding }, request),
+          operation,
+          input,
+          ...extra,
+        ),
+    };
+  }
+
+  private async ensureScopeStoresStarted(): Promise<void> {
+    if (this.scopeStoresStarted) return;
+    for (const runner of this.scopeStoreRunners.values()) await runner.start();
+    this.scopeStoresStarted = true;
   }
 
   /**
@@ -5808,6 +5861,7 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   async close(): Promise<void> {
+    for (const runner of this.scopeStoreRunners.values()) await runner.stop();
     for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
     this.directory.close();
     this.owner.release();

@@ -495,7 +495,7 @@ import {
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callScopeStore, type StoreStub } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callScopeStore, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
 import { scopeStoreBindingName, scopeStoreObjectName, StoreError } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
@@ -2156,17 +2156,18 @@ export interface CloudflareScopeHostOptions {
    */
   controlPlane?: DurableObjectNamespace;
   /**
-   * The vertical this worker serves. A deployed vertical has no control plane,
-   * so the slug cannot be read from a scope row; it is a fact about the worker.
-   * When a control plane is present, a scope running any other vertical is refused.
-   */
-  scopeStores?: { readonly vertical?: string };
-  /**
    * Accepted for parity with the pure adapter's constructor. In milestone 1 the
    * ScopeDO owns permission evaluation (a checker function cannot cross the RPC
    * boundary), so this is informational only — the DO builds the tuple checker.
    */
   checker?: PermissionChecker;
+  /**
+   * Scope stores answered in this isolate (#2213). When a binding has a runner
+   * here, `getScopeStore` uses it. Otherwise it reads `SUBSTRAT_STORE_<BINDING>`
+   * from the worker env. `vertical`, when set, is the only vertical this host serves.
+   * A deployed vertical has no control plane, so that field is where the slug comes from.
+   */
+  scopeStores?: ScopeStoreHostOptions;
   /**
    * Seals per-tenant credentials at rest (#101). Lives on the COORDINATOR, not
    * in the ControlPlaneDO: the DO stores ciphertext and has never held a key.
@@ -2583,13 +2584,14 @@ export class CloudflareScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
 
   private readonly scopeNs: DurableObjectNamespace;
+  private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
+  private readonly scopeStoreVertical?: string;
+  private scopeStoresStarted = false;
   private readonly cp: ControlPlaneStub;
   private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
 
   /** No control plane bound — `this.cp` is the throwing null object (Phase 3, CP-less). */
   private readonly cpLess: boolean;
-  /** The vertical a CP-less host serves, and a filter when the directory is present. */
-  private readonly scopeStoreVertical: string | undefined;
   /** Project + evaluate permissions scope-locally (scope-local-permissions.md). */
   private readonly scopeLocalPermissions: boolean;
 
@@ -2702,8 +2704,9 @@ export class CloudflareScopeHost implements ScopeHost {
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
-    this.cpLess = !options.controlPlane;
     this.scopeStoreVertical = options.scopeStores?.vertical;
+    this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
+    this.cpLess = !options.controlPlane;
     this.cp = options.controlPlane
       ? (options.controlPlane.get(options.controlPlane.idFromName('control-plane')) as unknown as ControlPlaneStub)
       : nullControlPlane();
@@ -4622,14 +4625,31 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<StoreStub> {
     // A missing binding is answered before any directory read. A CP-less host's
     // directory throws a plain Error, and a vertical with no store must not meet it.
-    const bound = ambientBinding(scopeStoreBindingName(binding));
-    if (!isScopeStoreNamespace(bound)) {
+    const runner = this.scopeStoreRunners.get(binding);
+    const bound = runner ? undefined : ambientBinding(scopeStoreBindingName(binding));
+    if (!runner && (this.scopeStoreRunners.size > 0 || !isScopeStoreNamespace(bound))) {
       throw substratError('not_found', `no scope store is bound for '${binding}'`);
     }
     const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
     await this.assertLive(tenantId, scopeId);
+    if (runner) {
+      await this.ensureScopeStoresStarted();
+      return {
+        tenantId,
+        scopeId,
+        subjectKind: 'principal',
+        invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
+          callScopeStore(
+            (request) => runner.invoke({ tenantId, vertical, scopeId, binding }, request),
+            operation,
+            input,
+            ...extra,
+          ),
+      };
+    }
+    const namespace = bound as ScopeStoreNamespace;
     const objectName = scopeStoreObjectName(tenantId, vertical, scopeId, binding);
-    const object = bound.get(bound.idFromName(objectName));
+    const object = namespace.get(namespace.idFromName(objectName));
     return {
       tenantId,
       scopeId,
@@ -4648,6 +4668,12 @@ export class CloudflareScopeHost implements ScopeHost {
           }
         }, operation, input, ...extra),
     };
+  }
+
+  private async ensureScopeStoresStarted(): Promise<void> {
+    if (this.scopeStoresStarted) return;
+    for (const runner of this.scopeStoreRunners.values()) await runner.start();
+    this.scopeStoresStarted = true;
   }
 
   /**
@@ -5789,7 +5815,7 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   async close(): Promise<void> {
-    // Nothing to drain: every admin write awaits its RPC to completion inline.
+    for (const runner of this.scopeStoreRunners.values()) await runner.stop();
   }
 
   // -- admin surface --------------------------------------------------------
