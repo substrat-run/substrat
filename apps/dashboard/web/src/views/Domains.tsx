@@ -10,7 +10,7 @@ import { relativeTime } from '../lib/format';
 
 const COLS = '2.2fr 1.4fr 1.6fr 1fr 40px';
 
-/** DEV_MOCK preview data — the real shape `GET /api/domains` returns, no backend. */
+/** DEV_MOCK preview data — the real shape `GET /api/teams/:teamId/domains` returns, no backend. */
 const MOCK_DOMAINS: DomainRow[] = [
   {
     hostname: 'hr.acme.com', appScopeId: '01J1', app: 'Acme HR', surface: 'app',

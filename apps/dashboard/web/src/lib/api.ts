@@ -9,7 +9,7 @@ import type { EdgeHealthReport, ImportCursorMove, ImportCursorMoved, CauseChain,
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
  *
  * The worker serves everything under `/api`: `/api/me` (who am I — and, on first
- * call, bootstraps my tenant), `/api/catalog`, `/api/apps`. Auth is an OIDC
+ * call, bootstraps my tenant), `/api/catalog`, and the team-scoped surface under `/api/teams/:teamId` (`teamApi`). Auth is an OIDC
  * redirect to the platform's AuthHero instance — there is no password here, so
  * sign-in/out are full-page navigations, not fetches. `credentials: 'include'`
  * carries the same-origin session cookie the worker sets.
@@ -1455,7 +1455,7 @@ export interface DeclaredSurface {
   label: string;
 }
 
-/** `GET /api/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
+/** `GET /api/teams/:teamId/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
 export interface AppHostnamesView {
   bindings: AppHostnameRow[];
   surfaces: DeclaredSurface[];
@@ -1493,7 +1493,7 @@ export interface DnsRecord {
   status?: string | null;
 }
 
-/** One custom domain row for the account-level Domains view (`GET /api/domains`). */
+/** One custom domain row for the account-level Domains view (`GET /api/teams/:teamId/domains`). */
 export interface DomainRow {
   hostname: string;
   appScopeId: string;
@@ -1509,7 +1509,7 @@ export interface DomainRow {
   validationRecords: DnsRecord[];
 }
 
-/** The raw binding a bind/verify returns (`POST /api/domains`, `/verify`). */
+/** The raw binding a bind/verify returns (`POST /api/teams/:teamId/domains`, `/verify`). */
 export interface HostnameBinding {
   hostname: string;
   status: 'pending' | 'verifying' | 'active' | 'failed';
