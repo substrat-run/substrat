@@ -102,7 +102,7 @@ request names its team in its own URL. Routes move into the declared surface
 anything but that exact team is a 404, never a fallback to your default team. The browser reaches
 them through the generated client, built per team (`teamApi(teamId)`). Areas move one at a time;
 findings went first, then the Apps read side (list, install steps, events, audit): the cookie routes
-keep answering beside the declared ones and call the same implementation, so the two cannot drift.
+keep answering beside the declared ones and call the same implementation, so the two cannot drift. One difference is deliberate: the declared audit routes re-parse the plane's rows with `adminLogEntry` on the way out, where the cookie routes pass them through raw, so a dashboard deployed with older contracts than the control plane (an `adminAction` it does not know) fails that parse on the team routes only.
 When the last area has moved, `sb_team` survives only as "last team used",
 read to decide where `/` lands.
 
