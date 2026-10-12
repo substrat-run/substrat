@@ -274,6 +274,13 @@ You get all of this by throwing `substratError('conflict', 'the cart is empty', 
 'cart_empty' })` and letting `problemResponse` render it. `code` is the platform's, `reason`
 is yours.
 
+**Every failure names its request.** A request the platform stamped answers with an
+`x-substrat-request-id` header, on every response it gets, and a problem body rendered for it
+carries the same value as `requestId`. It is the id the dashboard's request view opens, so a
+person who saw only an error can quote the request that explains it. It is opaque: a ULID,
+nothing about the tenant or the scope. Module code reads it as `ctx.requestId`, a route as
+`requestIdOf(c)`, for its own errors and log lines.
+
 ::: warning A status read from the sentence is deprecated
 A throw that declares nothing still gets a status from its wording, for now: "permission
 denied" answers 403, "not found" or "unknown scope" 404, "invalid transition" or "immutable"
