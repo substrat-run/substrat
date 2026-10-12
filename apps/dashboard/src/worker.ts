@@ -23,13 +23,13 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, isPrimaryScope, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes } from './routes.js';
+import { dashboardRoutes, type appEvent, type installStep } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
@@ -773,7 +773,7 @@ function resolveAuthChoice(
  * registered at or cleared from, which the Apps list's reconcile converges later.
  */
 async function teamIssuersFor(
-  host: ReturnType<typeof hostFor>,
+  host: DashboardHost,
   cp: TenantNarrowedControlPlane,
   apps: readonly DashboardAppRow[],
 ): Promise<TeamIssuer[]> {
@@ -803,7 +803,7 @@ const mcpReconcile = new McpReconcileGate();
  * slug for rows pushed before `provides` existed.
  */
 async function oidcProviderSlugsFor(
-  host: ReturnType<typeof hostFor>,
+  host: DashboardHost,
   cp: TenantNarrowedControlPlane,
 ): Promise<Set<string>> {
   await ensureCatalogOnce(host);
@@ -848,7 +848,7 @@ mountOidcRoutes(app);
  * vertical is unknown to both. This is what lets a pushed vertical install with no catalog edit.
  */
 async function installSpecFor(
-  host: ReturnType<typeof hostFor>,
+  host: DashboardHost,
   slug: string,
   cp: TenantNarrowedControlPlane,
 ): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[]; envSpec: EnvVarSpec[] }> {
@@ -1474,7 +1474,13 @@ app.get('/api/apps', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const page = pageParams(c);
+  return c.json(await listAppsPage(c, host, node, pageParams(c)));
+});
+
+type DashboardHost = ReturnType<typeof hostFor>;
+
+/** The Apps list, healed and reconciled — ONE implementation behind the cookie route and the team-path one (#2170). */
+async function listAppsPage(c: Context<{ Bindings: Env }>, host: DashboardHost, node: DashboardNode, page: ListPageQuery) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', { limit: page.limit, cursor: page.cursor })) as DashboardAppRow[];
   // Self-heal the URL from the live directory: the hostname column is a snapshot
@@ -1583,8 +1589,8 @@ app.get('/api/apps', async (c) => {
       ),
     );
   }
-  return c.json(pageOf(apps, page.limit, (a) => a.id));
-});
+  return pageOf(apps, page.limit, (a) => a.id);
+}
 
 /**
  * A 'provisioning' row older than this is reconciled against the directory on read.
@@ -1604,9 +1610,13 @@ app.get('/api/apps/:scopeId/steps', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  return c.json(await dash.invoke('dashboard/install-steps', { appScopeId: c.req.param('scopeId') }));
+  return c.json(await installStepsOf(host, node, c.req.param('scopeId')));
 });
+
+async function installStepsOf(host: DashboardHost, node: DashboardNode, appScopeId: string) {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  return (await dash.invoke('dashboard/install-steps', { appScopeId })) as z.infer<typeof installStep>[];
+}
 
 /**
  * The account-level Domains view (#305, §4.7). A "domain" here is a CUSTOM hostname —
@@ -1725,15 +1735,18 @@ app.get('/api/apps/:scopeId/events', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const page = pageParams(c);
+  return c.json(await appEventsPage(host, node, c.req.param('scopeId'), pageParams(c)));
+});
+
+async function appEventsPage(host: DashboardHost, node: DashboardNode, appScopeId: string, page: ListPageQuery) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const events = (await dash.invoke('dashboard/app-events', {
-    appScopeId: c.req.param('scopeId'),
+    appScopeId,
     limit: page.limit,
     cursor: page.cursor,
-  })) as Array<{ id: string }>;
-  return c.json(pageOf(events, page.limit, (e) => e.id));
-});
+  })) as z.infer<typeof appEvent>[];
+  return pageOf(events, page.limit, (e) => e.id);
+}
 
 /**
  * One app's Audit tab (#479) — the control-plane admin log filtered to THIS scope,
@@ -1751,15 +1764,22 @@ app.get('/api/apps/:scopeId/audit', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  return c.json(await auditLogOf(c, host, node, pageParams(c), c.req.param('scopeId')));
+});
+
+/**
+ * The admin log, whole or narrowed to one app. The app is resolved from the caller's OWN
+ * `list-apps`, so a foreign scope id is a 404, and the read goes through the tenant-narrowed plane.
+ */
+async function auditLogOf(c: Context<{ Bindings: Env }>, host: DashboardHost, node: DashboardNode, page: ListPageQuery, asked?: string) {
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  if (!asked) return cp.auditLogPage({ limit: page.limit, cursor: page.cursor });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  const appRow = apps.find((a) => a.app_scope_id === asked);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const page = pageParams(c);
-  const scope = scopeId.parse(appRow.app_scope_id);
-  return c.json(await cp.auditLogPage({ limit: page.limit, cursor: page.cursor }, scope));
-});
+  return cp.auditLogPage({ limit: page.limit, cursor: page.cursor }, scopeId.parse(appRow.app_scope_id));
+}
 
 /**
  * The TEAM's audit log (#1447) — the same admin log, one page newest-first, behind the
@@ -1774,15 +1794,7 @@ app.get('/api/audit', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const page = pageParams(c);
-  const asked = c.req.query('scopeId');
-  if (!asked) return c.json(await cp.auditLogPage({ limit: page.limit, cursor: page.cursor }));
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === asked);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  return c.json(await cp.auditLogPage({ limit: page.limit, cursor: page.cursor }, scopeId.parse(appRow.app_scope_id)));
+  return c.json(await auditLogOf(c, host, node, pageParams(c), c.req.query('scopeId') || undefined));
 });
 
 /**
@@ -5320,7 +5332,7 @@ async function assertMay(
 /** What every declared route runs against: the caller, resolved in the team its URL names. */
 interface TeamContext {
   readonly c: Context<{ Bindings: Env }>;
-  readonly host: ScopeHost;
+  readonly host: DashboardHost;
   readonly node: DashboardNode;
 }
 
@@ -5353,8 +5365,20 @@ async function findingsPlane({ c, host, node }: TeamContext, may: 'read' | 'mana
   return controlPlaneFor(c.env, node.tenantId, node.principal);
 }
 
+/** A declared list route's page: the platform default and ceiling, resolved the way the query string is. */
+const pageOfInput = (i: { limit?: number; cursor?: string }) => listPageQuery.parse({ limit: i.limit, cursor: i.cursor });
+
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
 const routeHandlers = {
+  'dashboard/list-apps': async ({ c, host, node }, input) => listAppsPage(c, host, node, pageOfInput(input)),
+  'dashboard/get-app-install-steps': async ({ host, node }, { scopeId: appScopeId }) =>
+    installStepsOf(host, node, appScopeId),
+  'dashboard/list-app-events': async ({ host, node }, { scopeId: appScopeId, ...page }) =>
+    appEventsPage(host, node, appScopeId, pageOfInput(page)),
+  'dashboard/list-app-audit': async ({ c, host, node }, { scopeId: appScopeId, ...page }) =>
+    auditLogOf(c, host, node, pageOfInput(page), appScopeId),
+  'dashboard/list-team-audit': async ({ c, host, node }, { scopeId: asked, ...page }) =>
+    auditLogOf(c, host, node, pageOfInput(page), asked),
   'dashboard/list-findings': async (ctx, filter) => {
     const page = await (await findingsPlane(ctx, 'read')).listFindings(filter);
     return page === null ? { available: false, entries: [], nextCursor: null, cut: false } : { available: true, ...page };
@@ -5812,7 +5836,7 @@ app.get('/api/github/callback', async (c) => {
  * `account` selects — omitted, the oldest connection is the default namespace.
  */
 async function githubConnectionFor(
-  host: ReturnType<typeof hostFor>,
+  host: DashboardHost,
   tenantId: DashboardNode['tenantId'],
   account?: string,
 ) {
@@ -5826,7 +5850,7 @@ async function githubConnectionFor(
 
 /** The selected connection's installationId for this tenant, or null (worker-local helper). */
 async function githubInstallationFor(
-  host: ReturnType<typeof hostFor>,
+  host: DashboardHost,
   tenantId: DashboardNode['tenantId'],
   account?: string,
 ): Promise<string | null> {

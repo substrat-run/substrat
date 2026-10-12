@@ -19,7 +19,9 @@
  * schemas and only its implementation moves.
  */
 import {
+  adminLogEntry,
   defineRoutes,
+  LIST_PAGE_MAX,
   FINDINGS_LIMIT_MAX,
   findingEntry,
   findingKind,
@@ -30,7 +32,85 @@ import {
   z,
 } from '@substrat-run/contracts';
 
+/** The shared page query: the platform's `limit`/`cursor` (default 20, `LIST_PAGE_MAX`), cursor opaque. */
+const pageInput = {
+  limit: z.number().int().min(1).max(LIST_PAGE_MAX).optional(),
+  cursor: z.string().min(1).optional(),
+};
+
+/** `{ entries, nextCursor }` — null once the keyset walk is over (contracts `pagination.ts`). */
+const pageOutput = <T extends z.ZodTypeAny>(entry: T) =>
+  z.object({ entries: z.array(entry), nextCursor: z.string().nullable() });
+
+/** One installed app, as the Apps list shows it. */
+export const appRow = z.object({
+  id: z.string(),
+  app_scope_id: z.string(),
+  vertical_slug: z.string(),
+  name: z.string(),
+  status: z.enum(['provisioning', 'active', 'failed']),
+  hostname: z.string().nullable(),
+  /** The vertical's non-secret provision result as JSON (#426); null for a bare ack. */
+  provision_result: z.string().nullable().optional(),
+  created_by: z.string(),
+  created_at: z.string(),
+});
+
+/** One step of an app's install sequence (#424); a failed step carries the downstream error verbatim. */
+export const installStep = z.object({
+  step: z.string(),
+  seq: z.number().int(),
+  status: z.enum(['running', 'done', 'failed']),
+  attempts: z.number().int(),
+  last_error: z.string().nullable(),
+  started_at: z.string(),
+  settled_at: z.string().nullable(),
+});
+
+/** One lifecycle transition in an app's Activity panel. */
+export const appEvent = z.object({
+  id: z.string(),
+  app_scope_id: z.string(),
+  kind: z.enum(['created', 'active', 'failed', 'deleted', 'updated', 'snapshotted', 'snapshot-deleted', 'data-exported', 'data-restored']),
+  /** Failure reason / bound hostname / the version move / the vertical slug — depending on `kind`. */
+  detail: z.string().nullable(),
+  actor: z.string(),
+  created_at: z.string(),
+});
+
 export const dashboardRoutes = defineRoutes({
+  // -- apps: the read side (#2170) --------------------------------------------
+  'dashboard/list-apps': {
+    summary: "One page of this team's apps, newest first",
+    input: z.object(pageInput),
+    output: pageOutput(appRow),
+    http: { method: 'GET', path: '/apps' },
+  },
+  'dashboard/get-app-install-steps': {
+    summary: "An app's durable install record: directory, provision, activate, hostname, identity",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.array(installStep),
+    http: { method: 'GET', path: '/apps/{scopeId}/steps' },
+  },
+  'dashboard/list-app-events': {
+    summary: "One page of an app's lifecycle trail (Activity panel), newest first",
+    input: z.object({ scopeId: z.string().min(1), ...pageInput }),
+    output: pageOutput(appEvent),
+    http: { method: 'GET', path: '/apps/{scopeId}/events' },
+  },
+  'dashboard/list-app-audit': {
+    summary: "One page of the control-plane admin log for one of this team's apps, newest first",
+    input: z.object({ scopeId: z.string().min(1), ...pageInput }),
+    output: pageOutput(adminLogEntry),
+    http: { method: 'GET', path: '/apps/{scopeId}/audit' },
+  },
+  'dashboard/list-team-audit': {
+    summary: "One page of this team's whole admin log, or one app's with `scopeId`, newest first",
+    input: z.object({ scopeId: z.string().min(1).optional(), ...pageInput }),
+    output: pageOutput(adminLogEntry),
+    http: { method: 'GET', path: '/audit' },
+  },
+
   // -- findings (#1748) ------------------------------------------------------
   'dashboard/list-findings': {
     summary: "One page of this team's findings, most recently seen first",
@@ -76,4 +156,4 @@ export const dashboardRoutes = defineRoutes({
 
 // Re-exported so the generated client names them (`substrat.client.schemas`) instead of
 // inlining each one at every method that returns it.
-export { findingEntry, findingRuleEntry };
+export { adminLogEntry, findingEntry, findingRuleEntry };
