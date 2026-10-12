@@ -31,6 +31,7 @@ import {
   findingStatusInput,
   z,
 } from '@substrat-run/contracts';
+import { appAuthChoiceBody } from './app-auth-body.js';
 import { APP_EVENT_KINDS } from './app-event-kinds.js';
 
 /** The shared page query: the platform's `limit`/`cursor` (default 20, `LIST_PAGE_MAX`), cursor opaque. */
@@ -79,6 +80,20 @@ export const appEvent = z.object({
   created_at: z.string(),
 });
 
+/** What the install form posts. */
+export const installAppInput = z.object({
+  verticalSlug: z.string().min(1),
+  name: z.string().min(1),
+  /** The Identity section's choice (vertical-auth-detach.md §2.4). Absent ⇒ builtin. */
+  auth: appAuthChoiceBody.optional(),
+  /**
+   * The install form's config values (#426), keyed by env-spec key. The handler narrows
+   * them to the vertical's DECLARED spec (the manifest is the allow-list, exactly as
+   * `resolveScopedEnvSpec` reads) — an undeclared key is dropped, not delivered.
+   */
+  config: z.record(z.string(), z.string()).optional(),
+});
+
 export const dashboardRoutes = defineRoutes({
   // -- apps: the read side (#2170) --------------------------------------------
   'dashboard/list-apps': {
@@ -111,6 +126,38 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().optional(), ...pageInput }),
     output: pageOutput(adminLogEntry),
     http: { method: 'GET', path: '/audit' },
+  },
+
+  // -- apps: the lifecycle writes (#2170) -------------------------------------
+  // Each is gated in the dashboard scope by `dashboard:provision-app` (the operations the
+  // provisioning helpers invoke), exactly as the cookie routes they replace were.
+  'dashboard/install-app': {
+    summary: 'Install a vertical into this team as a new app',
+    input: installAppInput,
+    output: appRow,
+    http: { method: 'POST', path: '/apps' },
+    status: 201,
+  },
+  'dashboard/remove-app': {
+    summary: "Delete one of this team's apps: deprovision its scope and take its hostname offline",
+    // `id` is the app's row id (`appRow.id`), as the cookie route took it — not its scope id.
+    input: z.object({ id: z.string().min(1) }),
+    // A declared route owes an output; the cookie route's empty 204 becomes this 200.
+    output: z.object({ removed: z.literal(true) }),
+    http: { method: 'DELETE', path: '/apps/{id}' },
+  },
+  'dashboard/retry-app': {
+    summary: 'Re-provision a failed app under a fresh scope (409 unless it failed)',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: appRow,
+    http: { method: 'POST', path: '/apps/{scopeId}/retry' },
+    status: 201,
+  },
+  'dashboard/resume-app': {
+    summary: 'Finish the install of an app stuck provisioning, in place (409 unless it is)',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: appRow,
+    http: { method: 'POST', path: '/apps/{scopeId}/resume' },
   },
 
   // -- findings (#1748) ------------------------------------------------------

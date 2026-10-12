@@ -154,6 +154,13 @@ export interface DashboardClient {
   getAppInstallSteps(input: { scopeId: string }): Promise<InstallStep[]>;
 
   /**
+   * Install a vertical into this team as a new app
+   *
+   * `POST /apps` — `dashboard/install-app`
+   */
+  installApp(input: { verticalSlug: string; name: string; auth?: { source: "auth-server"; scopeId: string } | { source: "external"; issuer: string; clientId: string; clientSecret?: string; audience?: string }; config?: Record<string, string> }): Promise<AppRow>;
+
+  /**
    * One page of the control-plane admin log for one of this team's apps, newest first
    *
    * `GET /apps/{scopeId}/audit` — `dashboard/list-app-audit`
@@ -194,6 +201,27 @@ export interface DashboardClient {
    * `GET /audit` — `dashboard/list-team-audit`
    */
   listTeamAudit(input: { scopeId?: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
+
+  /**
+   * Delete one of this team's apps: deprovision its scope and take its hostname offline
+   *
+   * `DELETE /apps/{id}` — `dashboard/remove-app`
+   */
+  removeApp(input: { id: string }): Promise<{ removed: true }>;
+
+  /**
+   * Finish the install of an app stuck provisioning, in place (409 unless it is)
+   *
+   * `POST /apps/{scopeId}/resume` — `dashboard/resume-app`
+   */
+  resumeApp(input: { scopeId: string }): Promise<AppRow>;
+
+  /**
+   * Re-provision a failed app under a fresh scope (409 unless it failed)
+   *
+   * `POST /apps/{scopeId}/retry` — `dashboard/retry-app`
+   */
+  retryApp(input: { scopeId: string }): Promise<AppRow>;
 
   /**
    * End a suppress rule now
@@ -273,6 +301,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/findings/rules", "POST", input, undefined),
     getAppInstallSteps: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
+    installApp: (input: Args) =>
+      send("/apps", "POST", input, undefined),
     listAppAudit: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/audit`, "GET", undefined, omit(input, ["scopeId"])),
     listAppEvents: (input: Args) =>
@@ -285,6 +315,12 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/findings", "GET", undefined, input),
     listTeamAudit: (input: Args) =>
       send("/audit", "GET", undefined, input),
+    removeApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.id))}`, "DELETE", undefined, omit(input, ["id"])),
+    resumeApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/resume`, "POST", omit(input, ["scopeId"]), undefined),
+    retryApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/retry`, "POST", omit(input, ["scopeId"]), undefined),
     revokeFindingRule: (input: Args) =>
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     setFindingStatus: (input: Args) =>

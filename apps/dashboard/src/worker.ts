@@ -29,7 +29,7 @@ import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, isPrimaryScope, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, type appEvent, type installStep } from './routes.js';
+import { dashboardRoutes, type appEvent, type installAppInput, type installStep } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
@@ -722,19 +722,6 @@ async function createTeam(host: ScopeHost, env: Env, user: SessionUser, name: st
   await mirrorBuilderIdentity(env, host, user.id, t);
   return { tenantId: t, scopeId: s, principal: owner };
 }
-
-const createAppBody = z.object({
-  verticalSlug: z.string().min(1),
-  name: z.string().min(1),
-  /** The Identity section's choice (vertical-auth-detach.md §2.4). Absent ⇒ builtin. */
-  auth: appAuthChoiceBody.optional(),
-  /**
-   * The install form's config values (#426), keyed by env-spec key. The handler narrows
-   * them to the vertical's DECLARED spec (the manifest is the allow-list, exactly as
-   * `resolveScopedEnvSpec` reads) — an undeclared key is dropped, not delivered.
-   */
-  config: z.record(z.string(), z.string()).optional(),
-});
 
 /**
  * Resolve an API Identity choice to a concrete issuer. An `auth-server` choice names
@@ -4528,12 +4515,11 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   return c.json({ delivered, ...(note ? { note } : {}) });
 });
 
-/** Create an app — provisioned into MY tenant (from the session), authorized in-scope. */
-app.post('/api/apps', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const body = createAppBody.parse(await c.req.json());
+// The app lifecycle writes — install, remove, retry, resume (#2170) — are declared routes
+// under `/api/teams/:teamId` (`routes.ts`); each is a function of the team the path names.
+
+/** Create an app — provisioned into the team's tenant, authorized in-scope. */
+async function installAppIn({ c, host, node }: TeamContext, body: z.infer<typeof installAppInput>): Promise<DashboardAppRow> {
   // Provision on the shared control plane through the tenant-narrowed seam, so the app
   // is reachable via the router.
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -4550,7 +4536,6 @@ app.post('/api/apps', async (c) => {
   const appConfig = envSpec
     .filter((s) => (body.config?.[s.key] ?? '') !== '')
     .map((s) => ({ key: s.key, value: body.config![s.key]!, secret: s.secret }));
-  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   // The team's human handle, suffixed into the default hostname
   // (`callout-sesamy.global.substrat.run`). From the TEAM record, not the user.
   const team = await host.admin.getTenant(STAFF, node.tenantId);
@@ -4567,7 +4552,7 @@ app.post('/api/apps', async (c) => {
     // marked shared at install (#1683), exactly as an Identity change marks it.
     installIssuers = await teamIssuersFor(host, cp, apps);
   }
-  const appRow = await createApp(host, {
+  return createApp(host, {
     node,
     appScopeId: scopeId.parse(ulid()),
     verticalSlug: body.verticalSlug,
@@ -4582,19 +4567,15 @@ app.post('/api/apps', async (c) => {
     ...(appAuth ? { appAuth, teamIssuers: installIssuers } : {}),
     ...(appConfig.length > 0 ? { appConfig } : {}),
   });
-  return c.json(appRow, 201);
-});
+}
 
-/** Delete an app — deprovisions its scope + takes its hostname offline, in MY tenant. */
-app.delete('/api/apps/:id', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  // Resolve the app to its scope id + hostname from the caller's OWN apps only — the
-  // :id is theirs or it does not exist to them (list-apps is tenant-scoped).
+/** Delete an app — deprovisions its scope + takes its hostname offline, in the team's tenant. */
+async function removeAppIn({ c, host, node }: TeamContext, id: string): Promise<void> {
+  // Resolve the app to its scope id + hostname from the team's OWN apps only — the
+  // id is theirs or it does not exist to them (list-apps is tenant-scoped).
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.id === c.req.param('id'));
+  const appRow = apps.find((a) => a.id === id);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   // Where its MCP endpoint is registered, so the delete can un-register it (#1619).
@@ -4610,8 +4591,7 @@ app.delete('/api/apps/:id', async (c) => {
     controlPlane: cp,
     ...(mcpIssuerScopeId ? { mcpIssuerScopeId } : {}),
   });
-  return c.body(null, 204);
-});
+}
 
 /**
  * Retry a FAILED app — re-attempt provisioning for real. A first attempt can leave
@@ -4620,21 +4600,18 @@ app.delete('/api/apps/:id', async (c) => {
  * scope with the same vertical + name via the proven create path. That path marks
  * the row `failed` again and surfaces the REAL error if it still can't come up, so
  * Retry re-tries instead of showing a placeholder. Only a `failed` app is retryable;
- * the app must be one of the caller's own (list-apps is tenant-scoped).
+ * the app must be one of the team's own (list-apps is tenant-scoped).
  */
-app.post('/api/apps/:scopeId/retry', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function retryAppIn({ c, host, node }: TeamContext, failedScopeId: string): Promise<DashboardAppRow> {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  const appRow = apps.find((a) => a.app_scope_id === failedScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   if (appRow.status !== 'failed') throw new HTTPException(409, { message: 'only a failed app can be retried' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const { entitlements, ownerGrants } = await installSpecFor(host, appRow.vertical_slug, cp);
   const team = await host.admin.getTenant(STAFF, node.tenantId);
-  const appRowNew = await retryApp(host, {
+  return retryApp(host, {
     node,
     failedScopeId: scopeId.parse(appRow.app_scope_id),
     newScopeId: scopeId.parse(ulid()),
@@ -4646,8 +4623,7 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
     // The TEAM's name, never the login's (same as create).
     tenantName: team?.name ?? 'Workspace',
   });
-  return c.json(appRowNew, 201);
-});
+}
 
 /**
  * Resume an app STUCK at `provisioning` (#424 case 4) — the worker died between the
@@ -4655,15 +4631,12 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
  * has rendered as an eternal spinner ever since. Re-runs the idempotent install tail in
  * place, against the SAME scope (unlike Retry's fresh-scope re-create), so it converges
  * to `active` — or surfaces the real blocker and marks the row `failed`, which unlocks
- * Retry. Only a `provisioning` app is resumable; it must be the caller's own.
+ * Retry. Only a `provisioning` app is resumable; it must be the team's own.
  */
-app.post('/api/apps/:scopeId/resume', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function resumeAppIn({ c, host, node }: TeamContext, appScopeId: string): Promise<DashboardAppRow> {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  const appRow = apps.find((a) => a.app_scope_id === appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   if (appRow.status !== 'provisioning') {
     throw new HTTPException(409, { message: 'only an app stuck provisioning can be resumed' });
@@ -4671,7 +4644,7 @@ app.post('/api/apps/:scopeId/resume', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const { entitlements, ownerGrants } = await installSpecFor(host, appRow.vertical_slug, cp);
   const team = await host.admin.getTenant(STAFF, node.tenantId);
-  const resumed = await resumeApp(host, {
+  return resumeApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     verticalSlug: appRow.vertical_slug,
@@ -4683,8 +4656,7 @@ app.post('/api/apps/:scopeId/resume', async (c) => {
     controlPlane: cp,
     tenantName: team?.name ?? 'Workspace',
   });
-  return c.json(resumed);
-});
+}
 
 /**
  * My deployments (builder-plane.md Phase 4) — the verticals THIS tenant pushed, with
@@ -5386,6 +5358,13 @@ const routeHandlers = {
   }),
   'dashboard/create-finding-rule': async (ctx, rule) => (await findingsPlane(ctx, 'manage')).createFindingRule(rule),
   'dashboard/revoke-finding-rule': async (ctx, { ruleId }) => (await findingsPlane(ctx, 'manage')).revokeFindingRule(ruleId),
+  'dashboard/install-app': async (ctx, body) => installAppIn(ctx, body),
+  'dashboard/remove-app': async (ctx, { id }) => {
+    await removeAppIn(ctx, id);
+    return { removed: true as const };
+  },
+  'dashboard/retry-app': async (ctx, { scopeId: failed }) => retryAppIn(ctx, failed),
+  'dashboard/resume-app': async (ctx, { scopeId: stuck }) => resumeAppIn(ctx, stuck),
 } satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
 
 mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: teamContext })(routeHandlers);

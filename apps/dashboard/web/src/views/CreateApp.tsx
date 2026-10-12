@@ -37,7 +37,7 @@ const TEMPLATE_BLURBS: Record<string, string> = {
  * Create App — pure INSTANTIATION (the demand side of the marketplace split). Step 1
  * picks a vertical from the live catalog (`GET /api/catalog`), grouped **Marketplace**
  * (published) and **Your verticals** (your team's own, private unless published). Step 2
- * configures + creates: `POST /api/apps` provisions an instance — your data, your domain.
+ * configures + creates: `POST /api/teams/:teamId/apps` provisions an instance — your data, your domain.
  * Building a NEW vertical (GitHub import, CLI push) lives on the Verticals page: a repo
  * import produces a pushed version, not a running app, so it isn't a create-app source.
  */

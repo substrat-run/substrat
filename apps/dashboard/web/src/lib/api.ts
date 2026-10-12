@@ -1776,8 +1776,6 @@ export const api = {
     }),
   /** My apps, one page newest-first; follow `nextCursor` for older ones. */
   listApps: (opts?: PageOpts) => call<ListPage<AppRow>>(`/apps${pageQs(opts)}`),
-  createApp: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) =>
-    call<AppRow>('/apps', { method: 'POST', body: JSON.stringify(input) }),
   // -- custom domains (§4.7) -------------------------------------------------
   listDomains: (opts?: PageOpts) => call<ListPage<DomainRow>>(`/domains${pageQs(opts)}`),
   addDomain: (input: { hostname: string; appScopeId: string; surface?: string }) =>
@@ -1786,10 +1784,6 @@ export const api = {
     call<HostnameBinding>(`/domains/${encodeURIComponent(hostname)}/verify`, { method: 'POST' }),
   removeDomain: (hostname: string) =>
     call<void>(`/domains/${encodeURIComponent(hostname)}`, { method: 'DELETE' }),
-  deleteApp: (id: string) => call<void>(`/apps/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  retryApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/retry`, { method: 'POST' }),
-  /** Resume an app stuck at 'provisioning' — re-runs the idempotent install tail in place (#424). */
-  resumeApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/resume`, { method: 'POST' }),
   /** One page of the app's audit trail, newest first; `nextCursor` walks older activity. */
   appEvents: (scopeId: string, opts?: PageOpts) =>
     call<ListPage<AppEvent>>(`/apps/${encodeURIComponent(scopeId)}/events${pageQs(opts)}`),
