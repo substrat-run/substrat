@@ -848,7 +848,7 @@ mountOidcRoutes(app);
  * vertical is unknown to both. This is what lets a pushed vertical install with no catalog edit.
  */
 async function installSpecFor(
-  host: CloudflareScopeHost,
+  host: ReturnType<typeof hostFor>,
   slug: string,
   cp: TenantNarrowedControlPlane,
 ): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[]; envSpec: EnvVarSpec[] }> {
