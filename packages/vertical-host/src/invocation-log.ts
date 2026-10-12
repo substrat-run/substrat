@@ -283,7 +283,7 @@ function withRequestId<R>(response: R, id: string): R {
   }
   try {
     const r = response as unknown as Response;
-    if (r.status === 101 || typeof Response !== 'function') return response;
+    if (r.status === 101) return response;
     const copy = new Response(r.body, r);
     copy.headers.set(REQUEST_ID_HEADER, id);
     return copy as unknown as R;

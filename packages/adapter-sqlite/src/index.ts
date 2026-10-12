@@ -12636,6 +12636,8 @@ export class SqliteScopeHost implements ScopeHost {
           full.payload === undefined ? null : JSON.stringify(full.payload),
         );
     };
+    // #2192: the call's invocation id, one reader for `ctx.log` and `ctx.requestId`.
+    const requestIdNow = (): string | null => rt.invocationId ?? delivery?.invocationId ?? null;
     const ctxRef: OperationContext = {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
@@ -12671,7 +12673,7 @@ export class SqliteScopeHost implements ScopeHost {
           tenantId: rt.tenantId,
           scopeId: rt.scopeId,
           operation: operation ?? null,
-          invocationId: () => rt.invocationId ?? delivery?.invocationId ?? null,
+          invocationId: requestIdNow,
           // A consumer runs under the system override, so it logs as `system`.
           principalKind: overrideActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
@@ -12680,9 +12682,9 @@ export class SqliteScopeHost implements ScopeHost {
         },
         this.logSink,
       ),
-      // #2192: the same id the log lines carry, read when asked for the same reason.
+      // #2192: the same id the log lines carry.
       get requestId() {
-        return rt.invocationId ?? delivery?.invocationId ?? null;
+        return requestIdNow();
       },
       emit: (event: DomainEventInput) => writeEvent(event, 'module'),
       requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {

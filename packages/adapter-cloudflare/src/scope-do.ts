@@ -7732,7 +7732,8 @@ export function defineScopeDO(
           full.payload === undefined ? null : JSON.stringify(full.payload),
         );
       };
-      // #2192: read through the DO, not `this` inside the literal below, which is the context.
+      // #2192: the call's invocation id, one reader for `ctx.log` and `ctx.requestId` — through
+      // the DO, not `this` inside the literal below, which is the context.
       const requestIdNow = (): string | null => this.invocationId ?? delivery?.invocationId ?? null;
       const ctxRef: OperationContext = {
         tenantId,
@@ -7767,13 +7768,13 @@ export function defineScopeDO(
           tenantId,
           scopeId,
           operation: operation ?? null,
-          invocationId: () => this.invocationId ?? delivery?.invocationId ?? null,
+          invocationId: requestIdNow,
           principalKind: systemActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
           // log's text is not JSON.
           redact: (text) => redactSecretText(text, minted),
         }),
-        // #2192: the same id the log lines carry, read when asked for the same reason.
+        // #2192: the same id the log lines carry.
         get requestId() {
           return requestIdNow();
         },
