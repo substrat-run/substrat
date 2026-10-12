@@ -23,13 +23,13 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, hostnameStatus, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, isPrimaryScope, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, type appEvent, type installAppInput, type installStep } from './routes.js';
+import { dashboardRoutes, domainBinding, type appEvent, type domainRow, type installAppInput, type installStep } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
@@ -1615,7 +1615,7 @@ async function listDomainsIn({ c, host, node }: TeamContext, page: ListPageQuery
   // Walk the CP's hostname pages (keyset on the hostname — the cursor passes straight
   // through) until this page of CUSTOM domains is full: the defaults filter can shrink
   // a CP page below the limit, so one CP page is not necessarily one page here.
-  const domains: Array<Record<string, unknown> & { hostname: string }> = [];
+  const domains: Array<z.infer<typeof domainRow>> = [];
   let cursor = page.cursor;
   for (;;) {
     const res = await cp
@@ -1628,7 +1628,7 @@ async function listDomainsIn({ c, host, node }: TeamContext, page: ListPageQuery
         appScopeId: h.scopeId,
         app: appName.get(h.scopeId) ?? h.scopeId,
         surface: h.surface,
-        status: h.status,
+        status: hostnameStatus.parse(h.status),
         statusNote: h.statusNote ?? null,
         primary: h.canonical,
         createdAt: h.createdAt,
@@ -1659,12 +1659,14 @@ async function addDomainIn(
   if (!apps.some((a) => a.app_scope_id === body.appScopeId)) {
     throw new HTTPException(404, { message: 'app not found' });
   }
-  return cp.bindHostname({
-    hostname: body.hostname.toLowerCase(),
-    scopeId: scopeId.parse(body.appScopeId),
-    surface: body.surface,
-    canonical: false,
-  });
+  return domainBinding.parse(
+    await cp.bindHostname({
+      hostname: body.hostname.toLowerCase(),
+      scopeId: scopeId.parse(body.appScopeId),
+      surface: body.surface,
+      canonical: false,
+    }),
+  );
 }
 
 /** Remove a custom domain — releases the CF custom hostname and drops the binding. */
@@ -5330,7 +5332,7 @@ const routeHandlers = {
   'dashboard/list-domains': async (ctx, page) => listDomainsIn(ctx, listPageQuery.parse(page)),
   'dashboard/add-domain': async (ctx, body) => addDomainIn(ctx, body),
   'dashboard/verify-domain': async ({ c, node }, { hostname }) =>
-    controlPlaneFor(c.env, node.tenantId, node.principal).verifyHostname(hostname),
+    domainBinding.parse(await controlPlaneFor(c.env, node.tenantId, node.principal).verifyHostname(hostname)),
   'dashboard/remove-domain': async (ctx, { hostname }) => removeDomainIn(ctx, hostname),
   'dashboard/list-app-hostnames': async (ctx, { scopeId: app }) => listAppHostnamesIn(ctx, app),
   'dashboard/add-app-hostname': async (ctx, { scopeId: app, ...body }) => addAppHostnameIn(ctx, app, body),
