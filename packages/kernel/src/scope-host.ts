@@ -2753,6 +2753,17 @@ export interface HostAdmin {
    */
   scopeDatabaseSize(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /**
+   * The size of each scope store bound for this scope (#2207). Access-logged like
+   * `scopeDatabaseSize`. An undeclared scope has none, so the list is empty. A
+   * dispatch vertical is asked through `/internal/scope-store-sizes`; this is the
+   * co-located reading.
+   */
+  scopeStoreSizes(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; bytes: number }[]>;
+  /**
    * #286's backout: PITR-rewind a scope to a pre-migration bookmark — schema AND
    * data, discarding every write since. Audited (destructive by design). The scope
    * DO enforces the freshness window (24h unless `force`). `localApply: false`

@@ -588,6 +588,21 @@ describe('VerticalClient — database size (#1524)', () => {
     await expect(answering(404, '404 Not Found').databaseSize(s)).rejects.toThrow();
   });
 
+  it('asks the scope-store-sizes route and reads the list', async () => {
+    const seen: string[] = [];
+    const sizes = await answering(200, JSON.stringify({ stores: [{ binding: 'GRAPH', bytes: 12 }] }), seen).scopeStoreSizes(t, s);
+    expect(sizes).toEqual([{ binding: 'GRAPH', bytes: 12 }]);
+    expect(new URL(seen[0]!).pathname).toBe('/internal/scope-store-sizes');
+    expect(new URL(seen[0]!).searchParams.get('scopeId')).toBe(s);
+    expect(new URL(seen[0]!).searchParams.get('tenantId')).toBe(t);
+  });
+
+  it('a 200 without a store size list is a wire disagreement, not an empty scope', async () => {
+    for (const body of [{}, { stores: { binding: 'GRAPH', bytes: 1 } }, { stores: [{ binding: 'graph', bytes: 1 }] }, { stores: [{ binding: 'GRAPH', bytes: -1 }] }]) {
+      await expect(answering(200, JSON.stringify(body)).scopeStoreSizes(t, s)).rejects.toThrow(/without a size list/);
+    }
+  });
+
   it('a refusal carries the raw body, so a route miss can be told from the enveloped 404 (#1524)', async () => {
     const refused = async (status: number, body: string) =>
       (await answering(status, body).databaseSize(s).then(() => null, (e: unknown) => e)) as ControlPlaneError;

@@ -513,9 +513,40 @@ export class ScopeStoreCounterDO extends DurableObject {
       this.ctx.storage.sql.exec('INSERT INTO counter (n) VALUES (?)', next);
       return Response.json({ result: next });
     }
-    if (operation === 'read' || operation === 'substrat.size') {
-      const result = operation === 'read' ? current : this.ctx.storage.sql.databaseSize;
-      return Response.json({ result });
+    if (operation === 'read') return Response.json({ result: current });
+    if (operation === 'substrat.size') {
+      return Response.json({ result: { bytes: this.ctx.storage.sql.databaseSize } });
+    }
+    if (operation === 'substrat.wipe') {
+      this.ctx.storage.sql.exec('DELETE FROM counter');
+      return Response.json({ result: {} });
+    }
+    if (operation === 'substrat.erase') return Response.json({ result: { erased: 0 } });
+    if (operation === 'substrat.export') {
+      return Response.json({
+        result: {
+          tables: [
+            {
+              name: 'counter',
+              ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)',
+              columns: ['n'],
+              rows: [[current]],
+            },
+          ],
+        },
+      });
+    }
+    if (operation === 'substrat.import') {
+      const tables = typeof input === 'object' && input !== null ? Reflect.get(input, 'tables') : undefined;
+      const count = Array.isArray(tables) ? tables.length : 0;
+      const first = Array.isArray(tables) ? tables[0] : undefined;
+      const rows = typeof first === 'object' && first !== null ? Reflect.get(first, 'rows') : undefined;
+      const row = Array.isArray(rows) ? rows[0] : undefined;
+      const cell = Array.isArray(row) ? row[0] : undefined;
+      const next = typeof cell === 'number' ? cell : 0;
+      this.ctx.storage.sql.exec('DELETE FROM counter');
+      this.ctx.storage.sql.exec('INSERT INTO counter (n) VALUES (?)', next);
+      return Response.json({ result: { tables: count } });
     }
     if (operation === 'plain') {
       return new Response('not-json', { status: 200, headers: { 'content-type': 'text/plain' } });

@@ -495,8 +495,8 @@ import {
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callScopeStore, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
-import { scopeStoreBindingName, scopeStoreObjectName, StoreError } from '@substrat-run/contracts';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
+import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, storeSizeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -2475,8 +2475,12 @@ const undeniedMessage = (scopeId: ScopeId, moduleId: string): string =>
  * platform's per-tenant binding, read off this script's own env, named by the one shared
  * encoding (`blobStoreBindingName`) for the tenant the caller passed in.
  */
+function ambientRecord(): Record<string, unknown> {
+  return ambientEnv as unknown as Record<string, unknown>;
+}
+
 function ambientBinding(name: string): unknown {
-  return (ambientEnv as unknown as Record<string, unknown>)[name] ?? null;
+  return ambientRecord()[name] ?? null;
 }
 
 function ambientAttachmentBucket(tenantId: string): unknown {
@@ -2495,6 +2499,22 @@ function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
     typeof Reflect.get(value, 'idFromName') === 'function' &&
     typeof Reflect.get(value, 'get') === 'function'
   );
+}
+
+const SCOPE_STORE_BINDING_PREFIX = `${PLATFORM_BINDING_PREFIX}STORE_`;
+
+/** Bindings this script declares by having a `SUBSTRAT_STORE_*` namespace. */
+function ambientScopeStoreBindings(): string[] {
+  const names: string[] = [];
+  const env = ambientRecord();
+  for (const key of Object.keys(env)) {
+    if (!key.startsWith(SCOPE_STORE_BINDING_PREFIX)) continue;
+    const binding = key.slice(SCOPE_STORE_BINDING_PREFIX.length);
+    if (!/^[A-Z][A-Z0-9_]*$/.test(binding)) continue;
+    if (!isScopeStoreNamespace(Reflect.get(env, key))) continue;
+    names.push(binding);
+  }
+  return names;
 }
 
 /**
@@ -3748,6 +3768,17 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Each scope store's size in this deployment (#2207). The control plane already
+   * audited the ask; this end does not write the access log again.
+   */
+  async scopeStoreSizesLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; bytes: number }[]> {
+    return this.readScopeStoreSizes(tenantId, scopeId);
+  }
+
+  /**
    * The oldest not-yet-drained events of this host's own scope (#1334) — the far end of
    * the control plane's `EventDrainDelegation`. Bounded the same way the audited verb is,
    * so a caller cannot ask this side for more than the other would.
@@ -4715,6 +4746,69 @@ export class CloudflareScopeHost implements ScopeHost {
       );
     }
     return vertical;
+  }
+
+  /** Configured runners, or the ambient namespaces when none were handed in. */
+  private scopeStoreBindingNames(): string[] {
+    if (this.scopeStoreRunners.size > 0) return [...this.scopeStoreRunners.keys()];
+    return ambientScopeStoreBindings();
+  }
+
+  /**
+   * One reserved call. A configured runner is preferred; otherwise the ambient
+   * namespace. `callReservedStoreOperation` refuses a name that is not reserved.
+   */
+  private async invokeReservedStore(
+    address: { tenantId: TenantId; vertical: string; scopeId: ScopeId; binding: string },
+    operation: ReservedStoreOperation,
+    input?: unknown,
+  ): Promise<unknown> {
+    const runner = this.scopeStoreRunners.get(address.binding);
+    if (runner) {
+      await this.ensureScopeStoresStarted();
+      return callReservedStoreOperation((request) => runner.invoke(address, request), operation, input);
+    }
+    if (this.scopeStoreRunners.size > 0) {
+      throw substratError('not_found', `no scope store is bound for '${address.binding}'`);
+    }
+    const bound = ambientBinding(scopeStoreBindingName(address.binding));
+    if (!isScopeStoreNamespace(bound)) {
+      throw substratError('not_found', `no scope store is bound for '${address.binding}'`);
+    }
+    const objectName = scopeStoreObjectName(address.tenantId, address.vertical, address.scopeId, address.binding);
+    const object = bound.get(bound.idFromName(objectName));
+    return callReservedStoreOperation(async (request) => {
+      const response = await object.fetch('https://scope-store/', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      return response.json();
+    }, operation, input);
+  }
+
+  /**
+   * Each declared binding's `substrat.size`. No bindings means an empty list,
+   * and that answer does not read the directory: a host with no store, including
+   * one with no control plane, has nothing to size. A reaped scope is refused
+   * before any object is addressed, once a binding exists.
+   */
+  private async readScopeStoreSizes(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; bytes: number }[]> {
+    const bindings = this.scopeStoreBindingNames();
+    if (bindings.length === 0) return [];
+    if (!this.cpLess) await this.scopeRecordForRead(tenantId, scopeId);
+    const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
+    const sizes: { binding: string; bytes: number }[] = [];
+    for (const binding of bindings) {
+      const { bytes } = storeSizeResult.parse(
+        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.size'),
+      );
+      sizes.push({ binding, bytes });
+    }
+    return sizes;
   }
 
   /**
@@ -7717,6 +7811,11 @@ export class CloudflareScopeHost implements ScopeHost {
         const bytes = await this.scopeStub(scopeId).databaseSize();
         await this.recordAccess(actor, 'scopeDatabaseSize', { tenantId, scopeId }, null, 1);
         return bytes;
+      },
+      scopeStoreSizes: async (actor, tenantId, scopeId) => {
+        const sizes = await this.readScopeStoreSizes(tenantId, scopeId);
+        await this.recordAccess(actor, 'scopeStoreSizes', { tenantId, scopeId }, null, sizes.length);
+        return sizes;
       },
       rewindScope: async (actor, tenantId, scopeId, bookmark, opts) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);

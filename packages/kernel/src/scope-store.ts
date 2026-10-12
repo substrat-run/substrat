@@ -1,9 +1,18 @@
 import {
+  RESERVED_STORE_OPERATIONS,
   StoreError,
+  storeEraseInput,
+  storeEraseResult,
+  storeExportResult,
+  storeImportInput,
+  storeImportResult,
   storeRequest,
   storeResponse,
+  storeSizeResult,
+  storeWipeResult,
   substratError,
   type CheckSubject,
+  type ReservedStoreOperation,
   type ScopeId,
   type StoreOperationCatalog,
   type StoreRequest,
@@ -90,4 +99,57 @@ export async function callScopeStore(
   }
   if ('error' in parsed.data) throw new StoreError(parsed.data.error);
   return parsed.data.result;
+}
+
+const RESERVED_RESULT = {
+  'substrat.export': storeExportResult,
+  'substrat.import': storeImportResult,
+  'substrat.size': storeSizeResult,
+  'substrat.wipe': storeWipeResult,
+  'substrat.erase': storeEraseResult,
+} as const;
+
+const reservedNames: readonly string[] = RESERVED_STORE_OPERATIONS;
+
+function reservedInput(operation: ReservedStoreOperation, input: unknown): unknown {
+  if (operation === 'substrat.import') {
+    const parsed = storeImportInput.safeParse(input);
+    if (!parsed.success) throw substratError('validation_failed', 'substrat.import takes { tables }');
+    return parsed.data;
+  }
+  if (operation === 'substrat.erase') {
+    const parsed = storeEraseInput.safeParse(input);
+    if (!parsed.success) throw substratError('validation_failed', 'substrat.erase takes { subjectId }');
+    return parsed.data;
+  }
+  if (input !== undefined) {
+    throw substratError('validation_failed', `store operation '${operation}' takes no input`);
+  }
+  return undefined;
+}
+
+/**
+ * The platform's caller (#2207). A name that is not reserved is refused before
+ * `send`, the mirror of {@link callScopeStore}. The result is parsed against the
+ * operation's schema, so a store that answers the wrong shape fails here.
+ */
+export async function callReservedStoreOperation(
+  send: (request: StoreRequest) => Promise<unknown>,
+  operation: ReservedStoreOperation,
+  input?: unknown,
+): Promise<unknown> {
+  if (!reservedNames.includes(operation)) {
+    throw substratError('forbidden', `store operation '${operation}' is not reserved for the platform`);
+  }
+  const request = storeRequest.parse({ operation, input: reservedInput(operation, input) });
+  const parsed = storeResponse.safeParse(await send(request));
+  if (!parsed.success) {
+    throw new StoreError({ code: 'bad_envelope', status: 502, body: parsed.error.issues });
+  }
+  if ('error' in parsed.data) throw new StoreError(parsed.data.error);
+  const result = RESERVED_RESULT[operation].safeParse(parsed.data.result);
+  if (!result.success) {
+    throw new StoreError({ code: 'bad_envelope', status: 502, body: result.error.issues });
+  }
+  return result.data;
 }

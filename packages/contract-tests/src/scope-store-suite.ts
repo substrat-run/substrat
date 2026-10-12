@@ -39,6 +39,39 @@ function counterRunner(): ScopeStoreRunner {
         objects.set(key(address), next);
         return { result: next };
       }
+      if (request.operation === 'substrat.size') return { result: { bytes: current } };
+      if (request.operation === 'substrat.wipe') {
+        objects.set(key(address), 0);
+        return { result: {} };
+      }
+      if (request.operation === 'substrat.erase') return { result: { erased: 0 } };
+      if (request.operation === 'substrat.export') {
+        return {
+          result: {
+            tables: [
+              {
+                name: 'counter',
+                ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)',
+                columns: ['n'],
+                rows: [[current]],
+              },
+            ],
+          },
+        };
+      }
+      if (request.operation === 'substrat.import') {
+        const tables =
+          typeof request.input === 'object' && request.input !== null
+            ? Reflect.get(request.input, 'tables')
+            : undefined;
+        const count = Array.isArray(tables) ? tables.length : 0;
+        const first = Array.isArray(tables) ? tables[0] : undefined;
+        const rows = typeof first === 'object' && first !== null ? Reflect.get(first, 'rows') : undefined;
+        const row = Array.isArray(rows) ? rows[0] : undefined;
+        const cell = Array.isArray(row) ? row[0] : undefined;
+        objects.set(key(address), typeof cell === 'number' ? cell : 0);
+        return { result: { tables: count } };
+      }
       return { error: { code: 'unknown_operation', status: 400 } };
     },
   };
@@ -161,6 +194,24 @@ export function scopeStoreContractSuite(
       expect(await store.invoke('increment', { by: 5 })).toBe(5);
       const docs = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
       expect(await docs.invoke('read')).toBe(1);
+    });
+
+    it('an administrator reads the size of each declared store', async () => {
+      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      const current = await store.invoke('read');
+      expect(await host.admin.scopeStoreSizes(staff, tenant, scopeA)).toEqual([
+        { binding: 'GRAPH', bytes: current },
+      ]);
+      const reads = await host.admin.accessLog(staff, { tenantId: tenant, method: 'scopeStoreSizes' });
+      expect(reads.some((entry) => entry.scopeId === scopeA)).toBe(true);
+    });
+
+    it('an unknown scope is refused before a store is asked', async () => {
+      const refusal = await host.admin.scopeStoreSizes(staff, tenant, scopeId.parse(ulid())).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(refusal)).toBe('not_found');
     });
 
     it('a reserved operation is refused through the stub', async () => {

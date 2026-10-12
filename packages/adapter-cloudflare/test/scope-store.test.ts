@@ -76,8 +76,15 @@ describe('scope store door (cloudflare host, #2209)', () => {
     });
     const body: unknown = await response.json();
     const result = typeof body === 'object' && body !== null ? Reflect.get(body, 'result') : undefined;
-    expect(typeof result).toBe('number');
-    expect(Number(result)).toBeGreaterThan(0);
+    const bytes = typeof result === 'object' && result !== null ? Reflect.get(result, 'bytes') : undefined;
+    expect(typeof bytes).toBe('number');
+    expect(Number(bytes)).toBeGreaterThan(0);
+  });
+
+  it('a host with no control plane and no store answers an empty size list', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+    const sizes = await host.scopeStoreSizesLocal(tenantId.parse(ulid()), scopeId.parse(ulid()));
+    expect(sizes).toEqual([]);
   });
 
   it('a host with no control plane and no binding refuses before asking the directory', async () => {

@@ -204,6 +204,7 @@ export const INDEX_VALUE_EXPORTS = [
   'bindExportBreakRefusal',
   'bindExportBreaksOf',
   'blankSqlComments',
+  'callReservedStoreOperation',
   'callScopeStore',
   'capabilitiesForLoad',
   'capabilityAttachmentWriteRefused',

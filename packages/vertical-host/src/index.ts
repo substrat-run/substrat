@@ -333,6 +333,16 @@ export interface VerticalScopeHost {
    * without it, and the route answers 501 rather than 0, which a sum would add.
    */
   databaseSizeLocal?(scopeId: ScopeId): Promise<number>;
+  /**
+   * Each scope store's size in this deployment (#2207). OPTIONAL for the same reason
+   * as `databaseSizeLocal`: a host built before it satisfies this interface without
+   * it, and the route answers 501 rather than an empty list, which would look like
+   * a scope that has no stores.
+   */
+  scopeStoreSizesLocal?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; bytes: number }[]>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
@@ -1387,6 +1397,18 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot read a database size (#1524). Redeploy it' }, 501);
     }
     return c.json({ bytes: await host.databaseSizeLocal(scope) });
+  });
+
+  // #2207: each scope store's size. Metadata only. A host that predates the method
+  // answers 501, because an empty list would be read as "this scope has no stores".
+  app.get('/internal/scope-store-sizes', async (c) => {
+    const scope = scopeIdOf.parse(c.req.query('scopeId'));
+    const tenant = tenantIdOf.parse(c.req.query('tenantId'));
+    const host = deps.hostFor(c.env);
+    if (!host.scopeStoreSizesLocal) {
+      return c.json({ error: 'this deployment cannot read scope store sizes (#2207). Redeploy it' }, 501);
+    }
+    return c.json({ stores: await host.scopeStoreSizesLocal(tenant, scope) });
   });
 
   // #286: the PITR bookmarks one scope recorded before its migration passes — the rewind
