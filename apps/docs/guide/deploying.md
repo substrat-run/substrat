@@ -581,7 +581,9 @@ It is a warning by default; **`--strict`** makes it an error, which is the form 
 host you declared that no literal names comes back as a `note:` only, since declarations are
 reviewed rather than trimmed for you. The scan is best effort: a host assembled at runtime or read
 from configuration is not found, a module loaded with `require()` is not followed, and a file it cannot
-read is named in a `note:`, so a clean run does not prove every call is declared.
+read is named in a `note:`. A URL literal that something is appended to (`'https://api.partner-co.com' + path`)
+is printed as a `note:` too, since its host may continue, and is not judged; a clean run does not prove
+every call is declared.
 
 If you never connect the GitHub App — you own your CI, you are not on GitHub-hosted runners, or
 you want the release-train shape instead of merge-deploys-prod — generate the same file locally:

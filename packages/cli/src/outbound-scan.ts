@@ -68,29 +68,58 @@ function parseSource(source: string, file: string) {
   });
 }
 
+/** A URL literal something continues, which may extend its host: judged by {@link readSource} as a note. */
+export interface DynamicUrl {
+  url: string;
+  line: number;
+}
+
+type Node = Record<string, unknown>;
+
+/** The first operand a `+` chain reads: `a` in `a + b + c`, however it is nested. */
+function leftmost(node: Node): Node {
+  while (node.type === 'BinaryExpression' && node.operator === '+') node = node.left as Node;
+  return node;
+}
+
+/** The last operand: `c` in `a + b + c`. */
+function rightmost(node: Node): Node {
+  while (node.type === 'BinaryExpression' && node.operator === '+') node = node.right as Node;
+  return node;
+}
+
+/** The text a continuation starts with, or undefined when it starts with an expression. */
+function startOf(node: Node): string | undefined {
+  if (node.type === 'StringLiteral') return node.value as string;
+  if (node.type === 'TemplateLiteral') return ((node.quasis as Node[])[0]!.value as { cooked?: string | null }).cooked || undefined;
+  return undefined;
+}
+
 /** What one source file contributes: the host literals it names and the relative modules it loads. */
-export function readSource(source: string, file = 'file.ts'): { hosts: { host: string; line: number }[]; imports: string[] } {
+export function readSource(
+  source: string,
+  file = 'file.ts',
+): { hosts: { host: string; line: number }[]; dynamic: DynamicUrl[]; imports: string[] } {
   const ast = parseSource(source, file);
   const hosts: { host: string; line: number }[] = [];
+  const dynamic: DynamicUrl[] = [];
   const imports: string[] = [];
-  /** Literals a `+` continues: `'https://api.acme' + '.com'` ends mid-host, and the host is not `api.acme`. */
-  const continued = new Set<unknown>();
+  /** A literal a `+` continues → the operand that follows it. */
+  const continuation = new Map<unknown, Node>();
   for (const node of nodesOf(ast.program)) {
     let text: string | undefined;
-    let open = false;
+    let next: Node | undefined;
     if (node.type === 'BinaryExpression' && node.operator === '+') {
-      let left = node.left as Record<string, unknown>;
-      while (left.type === 'BinaryExpression' && left.operator === '+') left = left.right as Record<string, unknown>;
-      continued.add(left);
+      continuation.set(rightmost(node.left as Node), leftmost(node.right as Node));
     }
     if (node.type === 'StringLiteral') {
       text = node.value as string;
-      open = continued.has(node);
+      next = continuation.get(node);
     } else if (node.type === 'TemplateElement') {
       text = (node.value as { cooked?: string | null }).cooked ?? undefined;
-      open = node.tail === false;
-    }
-    else if (node.type === 'ImportDeclaration' || node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') {
+      // A quasi that is not the last is followed by a `${}`: an expression.
+      if (node.tail === false) next = { type: 'TemplateExpression' };
+    } else if (node.type === 'ImportDeclaration' || node.type === 'ExportNamedDeclaration' || node.type === 'ExportAllDeclaration') {
       const spec = (node.source as { value?: string } | null)?.value;
       if (spec?.startsWith('.')) imports.push(spec);
     } else if (node.type === 'CallExpression' && (node.callee as { type: string }).type === 'Import') {
@@ -101,19 +130,40 @@ export function readSource(source: string, file = 'file.ts'): { hosts: { host: s
     if (!text) continue;
     const line = (node.loc as { start: { line: number } }).start.line;
     for (const match of text.matchAll(URL_LITERAL)) {
-      // Running to the end of a literal that something continues, with no delimiter, is a host cut short.
-      if (open && match.index + match[0].length === text.length && !/[/?#:]$/.test(match[0])) continue;
+      // Only a match that runs to the end of a continued literal can have its host cut short,
+      // and only if nothing in it has ended the host (`/ ? # :`) already.
+      const runsOn = next && match.index + match[0].length === text.length && !/^https?:\/\/[^/?#:]*[/?#:]/i.test(match[0]);
+      if (runsOn) {
+        const start = startOf(next!);
+        if (start !== undefined && !/^[A-Za-z0-9.-]/.test(start)) {
+          // The next literal begins with something that is not a host character: the host ended here.
+        } else if (start !== undefined) {
+          continue; // `'https://api.acme' + '.com'`: the host continues, and is not `api.acme`
+        } else {
+          // `'https://api.acme.com' + path`: the host may go on, and a guess either way is wrong.
+          let named: string | undefined;
+          try {
+            named = new URL(match[0]).hostname.toLowerCase();
+          } catch {
+            /* not a URL: nothing to say */
+          }
+          if (named && !IGNORED.test(named)) dynamic.push({ url: match[0], line });
+          continue;
+        }
+      }
       const host = hostOf(match[0]);
       if (host) hosts.push({ host, line });
     }
   }
-  return { hosts, imports };
+  return { hosts, dynamic, imports };
 }
 
 export interface OutboundScan {
   sightings: OutboundSighting[];
   /** Files that could not be read or parsed: their hosts were NOT checked. */
   unread: string[];
+  /** URL literals built from more than they show: their host may continue, so they are not judged. */
+  dynamic: (DynamicUrl & { file: string })[];
 }
 
 /**
@@ -126,6 +176,7 @@ export function scanOutboundHosts(dir: string, entry: string): OutboundScan {
   const seen = new Set<string>();
   const sightings: OutboundSighting[] = [];
   const unread: string[] = [];
+  const dynamic: OutboundScan['dynamic'] = [];
   const visit = (file: string): void => {
     if (seen.has(file)) return;
     seen.add(file);
@@ -137,13 +188,14 @@ export function scanOutboundHosts(dir: string, entry: string): OutboundScan {
       return;
     }
     for (const hit of read.hosts) sightings.push({ ...hit, file: relative(dir, file) });
+    for (const d of read.dynamic) dynamic.push({ ...d, file: relative(dir, file) });
     for (const spec of read.imports) {
       const target = resolveRelative(file, spec);
       if (target && SOURCE_EXTENSIONS.some((ext) => target.endsWith(ext))) visit(target);
     }
   };
   visit(resolve(dir, entry));
-  return { sightings, unread };
+  return { sightings, unread, dynamic };
 }
 
 export interface OutboundReport {
@@ -174,8 +226,12 @@ export function checkOutboundDeclared(
 ): void {
   const log = opts.log ?? console.log;
   if (!entry) return;
-  const { sightings, unread } = scanOutboundHosts(dir, entry);
+  const { sightings, unread, dynamic } = scanOutboundHosts(dir, entry);
   for (const file of unread) log(`note: could not read ${file}, its hosts were not checked.`);
+  for (const d of dynamic) {
+    log(`note: ${d.url}… is built dynamically, its host may continue; check it is declared (${d.file}:${d.line})`);
+  }
+  if (dynamic.length > 0) log(`note: ${dynamic.length} dynamically built URL(s) were not judged against substrat.outbound.`);
   const hosts = (declared ?? []).filter((h): h is string => typeof h === 'string');
   const { undeclared, stale } = judgeOutbound(sightings, hosts);
   if (undeclared.length > 0) {

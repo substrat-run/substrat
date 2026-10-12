@@ -46,16 +46,27 @@ describe('readSource — which hosts a file names', () => {
     expect(hostsOf("fetch('https://' + host + '/x'); fetch(`https://${host}/x`); fetch(env.API_URL);")).toEqual([]);
   });
 
-  it('skips a host cut short by a continuation, and keeps its positive twin', () => {
-    expect(hostsOf("fetch('https://api.acme' + '.com');")).toEqual([]);
-    expect(hostsOf("fetch('https://api.' + sub + '.acme.com');")).toEqual([]);
-    expect(hostsOf('fetch(`https://cdn.acme${sfx}`);')).toEqual([]);
-    // the host is whole when a delimiter follows it, or nothing continues the literal
-    expect(hostsOf("fetch('https://api.acme.com' + path);")).toEqual([]);
+  it('a literal continued by host characters is a host cut short: not reported as the short host', () => {
+    expect(readSource("fetch('https://api.acme' + '.com');")).toMatchObject({ hosts: [], dynamic: [] });
+  });
+
+  it('a literal continued by a delimiter, or by nothing, names its whole host (positive twins)', () => {
+    expect(hostsOf("fetch('https://api.acme.com' + '/x');")).toEqual(['api.acme.com']);
+    expect(hostsOf("fetch('https://api.acme.com' + '?q=1');")).toEqual(['api.acme.com']);
     expect(hostsOf("fetch('https://api.acme.com/' + path);")).toEqual(['api.acme.com']);
     expect(hostsOf('fetch(`https://cdn.acme.com/${id}`);')).toEqual(['cdn.acme.com']);
+    expect(hostsOf('fetch(`https://api.acme.com?q=${q}`);')).toEqual(['api.acme.com']);
     expect(hostsOf('fetch(`https://cdn.acme.com:${port}/x`);')).toEqual(['cdn.acme.com']);
     expect(hostsOf("fetch('https://api.acme.com');")).toEqual(['api.acme.com']);
+  });
+
+  it('a host an expression may continue is a dynamic note: never dropped, never judged on a guess', () => {
+    for (const code of ["fetch('https://api.acme.com' + path);", 'fetch(`https://api.acme.com${path}`);']) {
+      const r = readSource(code);
+      expect(r.hosts, code).toEqual([]);
+      expect(r.dynamic, code).toEqual([{ url: 'https://api.acme.com', line: 1 }]);
+    }
+    expect(readSource("fetch('https://api.' + sub + '.acme.com');").dynamic).toHaveLength(1);
   });
 
   it('judges a fully-qualified host (trailing dot) as the host without it', () => {
@@ -162,6 +173,16 @@ describe('checkOutboundDeclared — the report', () => {
 
   it('is an error under strict — the same text, thrown', () => {
     expect(() => checkOutboundDeclared(dir(), 'src/worker.ts', [], { strict: true })).toThrow(/error: .*wb\.acme\.com/s);
+  });
+
+  it('prints a dynamic URL as a note and a count, and does not fail strict on it', () => {
+    const d = tree({ 'src/worker.ts': "export default { f: (p: string) => fetch('https://api.acme.com' + p) };\n" });
+    const out: string[] = [];
+    checkOutboundDeclared(d, 'src/worker.ts', [], { strict: true, log: (m) => out.push(m) });
+    expect(out).toEqual([
+      'note: https://api.acme.com… is built dynamically, its host may continue; check it is declared (src/worker.ts:1)',
+      'note: 1 dynamically built URL(s) were not judged against substrat.outbound.',
+    ]);
   });
 
   it('is silent when every host is declared, and a stale entry alone never throws', () => {
