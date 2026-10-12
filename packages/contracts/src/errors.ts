@@ -409,14 +409,20 @@ export class StoreError extends SubstratError {
   readonly storeBody: unknown;
 
   constructor(error: { code: string; status: number; body?: unknown }) {
+    // The problem document caps `storeCode` at 64. A longer code used to throw
+    // inside `toProblem` instead of answering the store's failure. A 5xx body is
+    // the store's own traceback; it stays in the store and does not ride the
+    // problem a client reads.
+    const storeCode = error.code.slice(0, 64);
+    const storeBody = error.status >= 500 ? undefined : error.body;
     const code = CODE_FOR_STORE_STATUS[error.status] ?? 'unavailable';
-    super(code, `scope store answered ${error.status} (${error.code})`, {
-      storeCode: error.code,
-      ...(error.body !== undefined ? { storeBody: error.body } : {}),
+    super(code, `scope store answered ${error.status} (${storeCode})`, {
+      storeCode,
+      ...(storeBody !== undefined ? { storeBody } : {}),
     });
-    this.storeCode = error.code;
+    this.storeCode = storeCode;
     this.storeStatus = error.status;
-    this.storeBody = error.body;
+    this.storeBody = storeBody;
   }
 }
 

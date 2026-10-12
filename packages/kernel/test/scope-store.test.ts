@@ -36,6 +36,21 @@ describe('callScopeStore (#2209)', () => {
     expect((refusal as Error).message).toMatch(/nothing else/);
   });
 
+  it('shortens a long store code and drops the body of a 5xx', async () => {
+    const refusal = await callScopeStore(
+      async () => ({ error: { code: 'x'.repeat(80), status: 500, body: { stack: 'secret-trace' } } }),
+      'read',
+    ).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(refusal).toBeInstanceOf(StoreError);
+    const error = refusal as StoreError;
+    expect(error.storeCode).toHaveLength(64);
+    expect(error.storeBody).toBeUndefined();
+    expect(JSON.stringify(error)).not.toContain('secret-trace');
+  });
+
   it('raises StoreError from the store envelope, keeping the store code', async () => {
     const refusal = await callScopeStore(async () => ({ error: { code: 'conflict', status: 409, body: { row: 1 } } }), 'write').then(
       () => undefined,

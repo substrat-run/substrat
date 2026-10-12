@@ -496,7 +496,7 @@ import {
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callScopeStore, type StoreStub } from '@substrat-run/kernel';
-import { scopeStoreBindingName, scopeStoreObjectName } from '@substrat-run/contracts';
+import { scopeStoreBindingName, scopeStoreObjectName, StoreError } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -2156,6 +2156,12 @@ export interface CloudflareScopeHostOptions {
    */
   controlPlane?: DurableObjectNamespace;
   /**
+   * The vertical this worker serves. A deployed vertical has no control plane,
+   * so the slug cannot be read from a scope row; it is a fact about the worker.
+   * When a control plane is present, a scope running any other vertical is refused.
+   */
+  scopeStores?: { readonly vertical?: string };
+  /**
    * Accepted for parity with the pure adapter's constructor. In milestone 1 the
    * ScopeDO owns permission evaluation (a checker function cannot cross the RPC
    * boundary), so this is informational only — the DO builds the tuple checker.
@@ -2582,6 +2588,8 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /** No control plane bound — `this.cp` is the throwing null object (Phase 3, CP-less). */
   private readonly cpLess: boolean;
+  /** The vertical a CP-less host serves, and a filter when the directory is present. */
+  private readonly scopeStoreVertical: string | undefined;
   /** Project + evaluate permissions scope-locally (scope-local-permissions.md). */
   private readonly scopeLocalPermissions: boolean;
 
@@ -2695,6 +2703,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
     this.cpLess = !options.controlPlane;
+    this.scopeStoreVertical = options.scopeStores?.vertical;
     this.cp = options.controlPlane
       ? (options.controlPlane.get(options.controlPlane.idFromName('control-plane')) as unknown as ControlPlaneStub)
       : nullControlPlane();
@@ -4611,16 +4620,14 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     binding: string,
   ): Promise<StoreStub> {
-    await this.assertLive(tenantId, scopeId);
-    const scope = await this.cp.getScopeRecord(tenantId, scopeId);
-    const vertical = scope?.vertical;
-    if (!vertical) {
-      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
-    }
+    // A missing binding is answered before any directory read. A CP-less host's
+    // directory throws a plain Error, and a vertical with no store must not meet it.
     const bound = ambientBinding(scopeStoreBindingName(binding));
     if (!isScopeStoreNamespace(bound)) {
       throw substratError('not_found', `no scope store is bound for '${binding}'`);
     }
+    const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
     const objectName = scopeStoreObjectName(tenantId, vertical, scopeId, binding);
     const object = bound.get(bound.idFromName(objectName));
     return {
@@ -4634,9 +4641,42 @@ export class CloudflareScopeHost implements ScopeHost {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(request),
           });
-          return response.json();
+          try {
+            return await response.json();
+          } catch {
+            throw new StoreError({ code: 'bad_envelope', status: 502 });
+          }
         }, operation, input, ...extra),
     };
+  }
+
+  /**
+   * Which vertical names the store object. With a control plane, the scope row.
+   * Without one, {@link CloudflareScopeHostOptions.scopeStores} — the worker
+   * already knows which vertical it is, and the directory is not there to ask.
+   */
+  private async scopeStoreVerticalOf(tenantId: TenantId, scopeId: ScopeId): Promise<string> {
+    if (this.cpLess) {
+      if (!this.scopeStoreVertical) {
+        throw substratError(
+          'unavailable',
+          'a scope store on a host with no control plane needs scopeStores.vertical',
+        );
+      }
+      return this.scopeStoreVertical;
+    }
+    const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+    const vertical = scope?.vertical;
+    if (!vertical) {
+      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
+    }
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
+      );
+    }
+    return vertical;
   }
 
   /**

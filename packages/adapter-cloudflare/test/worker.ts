@@ -517,6 +517,12 @@ export class ScopeStoreCounterDO extends DurableObject {
       const result = operation === 'read' ? current : this.ctx.storage.sql.databaseSize;
       return Response.json({ result });
     }
+    if (operation === 'plain') {
+      return new Response('not-json', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+    if (operation === 'fail') {
+      return Response.json({ error: { code: 'x'.repeat(80), status: 500, body: { stack: 'secret-trace' } } });
+    }
     return Response.json({ error: { code: 'unknown_operation', status: 400, body: { operation } } });
   }
 }
