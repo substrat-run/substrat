@@ -601,6 +601,33 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await refused.json()).error).toMatch(/scope store sizes/);
   });
 
+  it('erases scope stores behind the gate, and 501s on a host that cannot', async () => {
+    const host = fakeHost({
+      scopeStoreEraseLocal: async () => [{ binding: 'GRAPH', erased: 1 }],
+    });
+    const body = JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, subjectId: 'subject-1' });
+    const ok = await appWith(host).request('/internal/scope-store-erase', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body,
+    }, ENV);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ storeErasures: [{ binding: 'GRAPH', erased: 1 }] });
+    expect((await appWith(host).request('/internal/scope-store-erase', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    }, ENV)).status).toBe(403);
+    const older = fakeHost();
+    const refused = await appWith(older).request('/internal/scope-store-erase', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body,
+    }, ENV);
+    expect(refused.status).toBe(501);
+    expect((await refused.json()).error).toMatch(/erase a scope store/);
+  });
+
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,
   // which lives in THIS deployment's DO. The query string is the filter — parsed here, not
   // trusted onward — so a console can ask for one provider's traffic.

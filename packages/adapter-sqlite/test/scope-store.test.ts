@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, UNSAFE_allowAllChecker, type ScopeStoreRunner } from '@substrat-run/kernel';
+import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ScopeStoreRunner } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 describe('scope store door (pure adapter, #2209)', () => {
@@ -97,5 +97,53 @@ describe('scope store door (pure adapter, #2209)', () => {
     expect(errorCodeOf(refusal)).toBe('not_found');
     expect((refusal as Error).message).not.toMatch(/runner/);
     await host.close();
+  });
+
+  it('a store that errors leaves the subject key, and a retry erases', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
+    let fail = true;
+    const runner: ScopeStoreRunner = {
+      kind: 'counter',
+      async start() {},
+      async stop() {},
+      async invoke(_address, request) {
+        if (request.operation === 'substrat.erase') {
+          if (fail) return { error: { code: 'unavailable', status: 503 } };
+          return { result: { erased: 1 } };
+        }
+        if (request.operation === 'substrat.size') return { result: { bytes: 0 } };
+        return { result: 0 };
+      },
+    };
+    const host = new SqliteScopeHost({
+      dir,
+      checker: UNSAFE_allowAllChecker,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      scopeStores: { runners: [{ binding: 'GRAPH', runner }] },
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const subject = ulid();
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
+      await host.admin.activateScope(staff, t, s);
+      const [sealed] = await host.admin.sealSubjectPayloads(staff, t, s, [{ subjectId: subject, plaintext: 'pii' }]);
+      expect(sealed).not.toBeNull();
+      const refusal = await host.admin.shredSubject(staff, t, s, subject).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(refusal)).toBe('unavailable');
+      expect(await host.admin.openSubjectPayloads(staff, t, s, [{ subjectId: subject, sealed: sealed! }])).toEqual(['pii']);
+      fail = false;
+      const receipt = await host.admin.shredSubject(staff, t, s, subject);
+      expect(receipt.storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
+      expect(receipt.keyDestroyed).toBe(true);
+      expect(await host.admin.openSubjectPayloads(staff, t, s, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
+    } finally {
+      await host.close();
+    }
   });
 });

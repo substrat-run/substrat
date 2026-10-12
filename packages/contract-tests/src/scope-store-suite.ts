@@ -9,6 +9,7 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
  */
 function counterRunner(): ScopeStoreRunner {
   const objects = new Map<string, number>();
+  const erased = new Map<string, Set<string>>();
   const key = (address: ScopeStoreAddress) =>
     `${address.tenantId}/${address.vertical}/${address.scopeId}/${address.binding}`;
   return {
@@ -44,7 +45,23 @@ function counterRunner(): ScopeStoreRunner {
         objects.set(key(address), 0);
         return { result: {} };
       }
-      if (request.operation === 'substrat.erase') return { result: { erased: 0 } };
+      if (request.operation === 'substrat.erase') {
+        const subjectId =
+          typeof request.input === 'object' && request.input !== null
+            ? Reflect.get(request.input, 'subjectId')
+            : undefined;
+        if (typeof subjectId !== 'string' || subjectId.length === 0) {
+          return { error: { code: 'validation_failed', status: 400 } };
+        }
+        const subjects = erased.get(key(address)) ?? new Set<string>();
+        const already = subjects.has(subjectId);
+        subjects.add(subjectId);
+        erased.set(key(address), subjects);
+        return { result: { erased: already ? 0 : 1 } };
+      }
+      if (request.operation === 'erased') {
+        return { result: [...(erased.get(key(address)) ?? [])] };
+      }
       if (request.operation === 'substrat.export') {
         return {
           result: {
@@ -212,6 +229,16 @@ export function scopeStoreContractSuite(
         (err: unknown) => err,
       );
       expect(errorCodeOf(refusal)).toBe('not_found');
+    });
+
+    it('an erasure reaches the store, and a second one counts zero', async () => {
+      const subject = ulid();
+      const first = await host.admin.shredSubject(staff, tenant, scopeA, subject);
+      expect(first.storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
+      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      expect(await store.invoke('erased')).toEqual([subject]);
+      const again = await host.admin.shredSubject(staff, tenant, scopeA, subject);
+      expect(again.storeErasures).toEqual([{ binding: 'GRAPH', erased: 0 }]);
     });
 
     it('a reserved operation is refused through the stub', async () => {

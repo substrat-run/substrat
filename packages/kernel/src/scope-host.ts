@@ -3612,6 +3612,10 @@ export interface HostAdmin {
    * vertical's own table, copies already handed to a customer, and the PITR window (see
    * kernel-design.md's answer to open question 17). A mechanism whose limits are
    * undocumented gets oversold by someone who was not in the room.
+   *
+   * A scope store is reached, by `substrat.erase`, after the scope-side redaction and
+   * before the key is destroyed. A store that answers with an error throws, and the key
+   * stays, so a retry converges. The receipt's `storeErasures` names each binding.
    */
   shredSubject(
     actor: PlatformActorId,
@@ -3628,6 +3632,13 @@ export interface HostAdmin {
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     subjectId: string, redactions: readonly SubjectRedactionCounts[],
     expected: { versionId: string | null; servingRef: string | null; epoch: number; copyCount: number },
+    /**
+     * What the serving script's stores erased (#2068). The coordinator calls
+     * `substrat.erase` once — store objects are per vertical, not per script copy —
+     * and passes the result. Omitted means this host erases its own stores, which
+     * is the pure adapter's co-located shred.
+     */
+    storeErasures?: readonly { binding: string; erased: number }[],
   ): Promise<SubjectShredReceipt>;
 
   // -- impersonation (K-42, #868) --------------------------------------------

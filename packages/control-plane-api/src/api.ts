@@ -5180,10 +5180,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       redactions.push(await script.redactSubject(scopeId, subjectId));
     }
     if (bySlug) redactions.push(await bySlug.redactSubject(scopeId, subjectId));
+    // Store objects are per vertical, not per script copy, so one serving script is
+    // asked. A failure here is before finalize, and the key stays.
+    const serving = currentRef ? await options.resolveVerticalRef(currentRef) : bySlug;
+    const storeErasures =
+      serving && typeof serving.scopeStoreErase === 'function'
+        ? await serving.scopeStoreErase(tenantId, scopeId, subjectId)
+        : [];
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
       versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
       copyCount: copies.length,
-    }).catch(relayHostRefusal));
+    }, storeErasures).catch(relayHostRefusal));
   });
 
   // -- directory backups (#40) -----------------------------------------------

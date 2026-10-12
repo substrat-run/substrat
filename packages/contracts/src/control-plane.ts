@@ -275,6 +275,13 @@ export type CopyMarkAudit = z.infer<typeof copyMarkAudit>;
 export const scopeLineage = z.object({ kind: z.string(), forkedFrom: scopeId.nullable() }).strict();
 export type ScopeLineage = z.infer<typeof scopeLineage>;
 
+/** One scope store's answer to `substrat.erase` (#2068). */
+export const storeErasure = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  erased: z.number().int().nonnegative(),
+});
+export type StoreErasure = z.infer<typeof storeErasure>;
+
 /**
  * What a `shredSubject` did (#37) — the receipt a DSAR response is written from.
  *
@@ -328,6 +335,13 @@ export const subjectShredReceipt = z.object({
   keyDestroyed: z.boolean(),
   /** True once the subject is tombstoned: no future seal may mint a key under this id. */
   tombstoned: z.boolean(),
+  /**
+   * Scope stores this call erased (#2068). One line per binding, a zero included
+   * when the store was asked and held nothing. A re-run counts zero because erase
+   * is idempotent. Defaulted so a receipt from before scope stores parses as the
+   * empty list it honestly reached.
+   */
+  storeErasures: z.array(storeErasure).default([]),
 });
 export type SubjectShredReceipt = z.infer<typeof subjectShredReceipt>;
 
