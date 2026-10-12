@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, type ScopeHost, type ScopeStoreAddress, type ScopeStoreRunner } from '@substrat-run/kernel';
+import { ulid, type ScopeHost, type ScopeStoreAddress, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
@@ -312,6 +312,33 @@ export function scopeStoreContractSuite(
       const live = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
       const names = await live.invoke('wiped');
       expect(names).toContain(`${tenant}/docs/${scopeB}/GRAPH`);
+    });
+
+    it('a store call is reported without its input, and a thrown observer does not fail it', async () => {
+      const reports: StoreCallReport[] = [];
+      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH', {
+        onStoreCall: (report) => reports.push(report),
+      });
+      const secret = 'store-call-secret-value';
+      await store.invoke('increment', { by: 1, note: secret });
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toMatchObject({ binding: 'GRAPH', operation: 'increment', outcome: 'ok' });
+      expect(reports[0]?.durationMs).toBeGreaterThanOrEqual(0);
+      expect(Object.keys(reports[0] ?? {}).sort()).toEqual(['binding', 'durationMs', 'operation', 'outcome']);
+      expect(JSON.stringify(reports)).not.toContain(secret);
+      const refusal = await store.invoke('missing', { note: secret }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(refusal).toBeDefined();
+      expect(reports[1]).toMatchObject({ binding: 'GRAPH', operation: 'missing', outcome: 'error' });
+      expect(JSON.stringify(reports)).not.toContain(secret);
+      const loud = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH', {
+        onStoreCall() {
+          throw new Error('observer');
+        },
+      });
+      expect(await loud.invoke('read')).toEqual(expect.any(Number));
     });
 
     it('a reserved operation is refused through the stub', async () => {

@@ -496,7 +496,7 @@ import {
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, storeEraseResult, storeExportResult, storeImportResult, storeSizeResult, storeWipeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
@@ -4692,6 +4692,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     binding: string,
+    options?: ScopeStoreStubOptions,
   ): Promise<StoreStub> {
     // A missing binding is answered before any directory read. A CP-less host's
     // directory throws a plain Error, and a vertical with no store must not meet it.
@@ -4709,11 +4710,17 @@ export class CloudflareScopeHost implements ScopeHost {
         scopeId,
         subjectKind: 'principal',
         invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
-          callScopeStore(
-            (request) => runner.invoke({ tenantId, vertical, scopeId, binding }, request),
+          observeStoreCall(
+            binding,
             operation,
-            input,
-            ...extra,
+            () =>
+              callScopeStore(
+                (request) => runner.invoke({ tenantId, vertical, scopeId, binding }, request),
+                operation,
+                input,
+                ...extra,
+              ),
+            options?.onStoreCall,
           ),
       };
     }
@@ -4725,18 +4732,24 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId,
       subjectKind: 'principal',
       invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
-        callScopeStore(async (request) => {
-          const response = await object.fetch('https://scope-store/', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(request),
-          });
-          try {
-            return await response.json();
-          } catch {
-            throw new StoreError({ code: 'bad_envelope', status: 502 });
-          }
-        }, operation, input, ...extra),
+        observeStoreCall(
+          binding,
+          operation,
+          () =>
+            callScopeStore(async (request) => {
+              const response = await object.fetch('https://scope-store/', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(request),
+              });
+              try {
+                return await response.json();
+              } catch {
+                throw new StoreError({ code: 'bad_envelope', status: 502 });
+              }
+            }, operation, input, ...extra),
+          options?.onStoreCall,
+        ),
     };
   }
 

@@ -142,6 +142,12 @@ export interface InvocationLogLine {
    * that line names.
    */
   fieldCoverageId?: string;
+  /**
+   * #2245: store calls the request made. Omitted when there were none. Each entry
+   * names the binding, the operation, the outcome and the duration. The input
+   * is not a field.
+   */
+  storeCalls?: readonly StoreCallLine[];
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -227,6 +233,13 @@ export interface InvocationLineFields {
   outputFields?: OutputFieldsReport;
   /** #1923: written only beside `outputFields`. */
   fieldCoverageId?: string;
+  /**
+   * #2245: store calls made through a stub that was handed an observer. Omitted
+   * when there were none, so a line that never touched a store stays what it was.
+   * Each entry is the binding, the operation, the outcome and the duration.
+   * The input is not a field.
+   */
+  storeCalls?: readonly StoreCallLine[];
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -258,8 +271,17 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     entities: emitted && f.withEntities !== false ? distinct(emitted.events.map((e) => e.entity)) : [],
     versionId: f.versionId ?? null,
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
+    ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),
     ...(f.async ?? {}),
   };
+}
+
+/** One store call on an invocation line (#2245). Names and a duration; never the input. */
+export interface StoreCallLine {
+  binding: string;
+  operation: string;
+  outcome: 'ok' | 'error';
+  durationMs: number;
 }
 
 /** Distinct values, first occurrence wins — the order a reader expects to see them in. */

@@ -367,6 +367,7 @@ export const INDEX_VALUE_EXPORTS = [
   'noSealingKeyMessage',
   'noopConnectorCallRecorder',
   'observeFinding',
+  'observeStoreCall',
   'openSealed',
   'operationKeyOf',
   'operationSeriesQuery',

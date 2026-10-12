@@ -63,7 +63,7 @@ import {
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
 } from '@substrat-run/contracts/invocation-record';
-import type { EmittedReport } from '@substrat-run/kernel';
+import type { EmittedReport, ScopeStoreStubOptions, StoreCallReport } from '@substrat-run/kernel';
 import { invocationLine, type OutputFieldsReport } from '@substrat-run/kernel/invocation-line';
 import { ulid } from '@substrat-run/kernel/ulid';
 import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
@@ -108,6 +108,37 @@ export interface InvocationRecord {
    * otherwise — never an empty report, so "not walked" cannot read as "returned nothing".
    */
   outputFields?: OutputFieldsReport;
+  /**
+   * #2245: store calls made during this request. Filled by
+   * {@link scopeStoreInvocationObserver}, which a vertical passes to
+   * `getScopeStore`. The door does not see this record on its own: the record
+   * lives on the request, and the store call happens on the host.
+   */
+  storeCalls?: StoreCallReport[];
+}
+
+/**
+ * How many store calls one line names (#2245). A request that makes more still
+ * runs them; the line keeps the first ones and drops the rest.
+ */
+export const STORE_CALL_LOG_CAP = 16;
+
+/**
+ * The observer a vertical passes as `getScopeStore`'s last argument so this
+ * request's line names each store call (#2245).
+ *
+ * It carries no authority. It appends `{ binding, operation, outcome, durationMs }`
+ * and nothing else — the report type has no input field. Past {@link STORE_CALL_LOG_CAP}
+ * further calls are not recorded.
+ */
+export function scopeStoreInvocationObserver(record: InvocationRecord): ScopeStoreStubOptions {
+  return {
+    onStoreCall(report) {
+      const calls = record.storeCalls ?? (record.storeCalls = []);
+      if (calls.length >= STORE_CALL_LOG_CAP) return;
+      calls.push(report);
+    },
+  };
 }
 
 /**
@@ -346,6 +377,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     versionId: versionIdOf(done.env),
     ...(record.outputFields ? { outputFields: record.outputFields } : {}),
     ...(stamp.fieldCoverageId ? { fieldCoverageId: stamp.fieldCoverageId } : {}),
+    ...(record.storeCalls && record.storeCalls.length > 0 ? { storeCalls: record.storeCalls } : {}),
   });
   console.log(JSON.stringify(line));
 }

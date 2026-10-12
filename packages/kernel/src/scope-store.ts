@@ -85,6 +85,54 @@ export interface StoreStub<C extends StoreOperationCatalog = StoreOperationCatal
  * here, before `send`, so the store never sees a `substrat.*` call from a
  * vertical. The platform's own caller does not come through this function.
  */
+/** What one store call leaves on an invocation line (#2245). Never the input. */
+export interface StoreCallReport {
+  readonly binding: string;
+  readonly operation: string;
+  readonly outcome: 'ok' | 'error';
+  readonly durationMs: number;
+}
+
+/**
+ * Observers on a store stub (#2245). They carry no authority, the same way
+ * {@link ScopeStubOptions} does not. `onStoreCall` hears each `invoke` the
+ * vertical makes through this stub. A throw from the observer is swallowed:
+ * the call's result is the store's, not the log's.
+ */
+export interface ScopeStoreStubOptions {
+  readonly onStoreCall?: (report: StoreCallReport) => void;
+}
+
+/**
+ * Time one store call and report it. The report names the binding, the
+ * operation, the outcome and the duration. It is built here, from those four
+ * facts, so a caller cannot put the input on it.
+ */
+export async function observeStoreCall<T>(
+  binding: string,
+  operation: string,
+  run: () => Promise<T>,
+  onStoreCall?: (report: StoreCallReport) => void,
+): Promise<T> {
+  const started = Date.now();
+  try {
+    const result = await run();
+    noteStoreCall({ binding, operation, outcome: 'ok', durationMs: Date.now() - started }, onStoreCall);
+    return result;
+  } catch (err) {
+    noteStoreCall({ binding, operation, outcome: 'error', durationMs: Date.now() - started }, onStoreCall);
+    throw err;
+  }
+}
+
+function noteStoreCall(report: StoreCallReport, onStoreCall?: (report: StoreCallReport) => void): void {
+  try {
+    onStoreCall?.(report);
+  } catch {
+    // Advisory. A broken observer must not replace the store's answer.
+  }
+}
+
 export async function callScopeStore(
   send: (request: StoreRequest) => Promise<unknown>,
   operation: string,

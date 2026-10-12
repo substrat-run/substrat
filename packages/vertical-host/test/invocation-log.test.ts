@@ -7,6 +7,8 @@ import {
   type InvocationLogLine,
   type InvocationRecord,
   invocationStampOf,
+  scopeStoreInvocationObserver,
+  STORE_CALL_LOG_CAP,
   withInvocationLog,
 } from '../src/invocation-log.js';
 import { invocationLevelOf } from '@substrat-run/contracts/invocation-record';
@@ -329,6 +331,34 @@ describe('invocationLog', () => {
         }, 403);
         await app.request('/api/things', { method: 'POST', headers: routed }, ENV);
         expect(cap.lines[0]).toMatchObject({ level: 'warn', status: 403, problemCode: 'permission_denied' });
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('names store calls, stops at the cap, and never writes an input (#2245)', async () => {
+      const cap = capture();
+      try {
+        const secret = 'store-call-secret-value';
+        const app = recordApp((r) => {
+          const observer = scopeStoreInvocationObserver(r);
+          for (let i = 0; i < STORE_CALL_LOG_CAP + 3; i++) {
+            observer.onStoreCall?.({
+              binding: 'GRAPH',
+              operation: 'increment',
+              outcome: i === 0 ? 'error' : 'ok',
+              durationMs: i,
+            });
+          }
+          // The input stays in the handler. The observer's report has no field for it.
+          void secret;
+        });
+        await app.request('/api/things', { method: 'POST', headers: routed }, ENV);
+        const calls = cap.lines[0]?.storeCalls;
+        expect(calls).toHaveLength(STORE_CALL_LOG_CAP);
+        expect(calls?.[0]).toEqual({ binding: 'GRAPH', operation: 'increment', outcome: 'error', durationMs: 0 });
+        expect(JSON.stringify(cap.lines[0])).not.toContain(secret);
+        expect(JSON.stringify(calls)).not.toContain('input');
       } finally {
         cap.restore();
       }
