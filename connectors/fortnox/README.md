@@ -52,7 +52,7 @@ import { fortnoxConsentUrl } from '@substrat-run/connector-fortnox';
 
 const url = fortnoxConsentUrl({
   clientId, redirectUri, state,
-  scopes: ['bookkeeping', 'companyinformation'],
+  scopes: ['bookkeeping', 'companyinformation', 'supplierinvoice'],
 });
 ```
 

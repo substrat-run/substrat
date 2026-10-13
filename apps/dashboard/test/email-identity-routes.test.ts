@@ -121,12 +121,12 @@ const membersOf = async (node: { tenant: string; dashScope: string; owner: strin
 describe('POST /api/invites/accept — the invite is addressed to an email', () => {
   const INVITEE = 'rae@team.test';
 
-  async function inviteToken(): Promise<string> {
+  async function inviteToken(tenant: string): Promise<string> {
     const asOwner = { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' };
-    const sent = await app.request('/api/members/invite', { method: 'POST', headers: asOwner, body: JSON.stringify({ email: INVITEE, roleKey: 'member' }) }, env);
+    const sent = await app.request(`/api/teams/${tenant}/members/invites`, { method: 'POST', headers: asOwner, body: JSON.stringify({ email: INVITEE, roleKey: 'member' }) }, env);
     expect(sent.status).toBe(201);
     const { invitationId } = (await sent.json()) as { invitationId: string };
-    const link = await app.request('/api/members/invite-link', { method: 'POST', headers: asOwner, body: JSON.stringify({ invitationId }) }, env);
+    const link = await app.request(`/api/teams/${tenant}/members/invites/${invitationId}/link`, { method: 'POST', headers: asOwner, body: '{}' }, env);
     return ((await link.json()) as { acceptUrl: string }).acceptUrl.split('/invite/')[1]!;
   }
 
@@ -134,14 +134,14 @@ describe('POST /api/invites/accept — the invite is addressed to an email', () 
     app.request('/api/invites/accept', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ token }) }, env);
 
   it('a verified session at the invited address joins the team', async () => {
-    await team();
-    const res = await accept(session('sub-rae', INVITEE, true), await inviteToken());
+    const { tenant } = await team();
+    const res = await accept(session('sub-rae', INVITEE, true), await inviteToken(tenant));
     expect(res.status, await res.clone().text()).toBe(200);
   });
 
   it.each(REFUSED)('a session at the invited address whose claim is %s is refused, and told why', async (_l, verified) => {
     const node = await team();
-    const res = await accept(session('sub-rae', INVITEE, verified), await inviteToken());
+    const res = await accept(session('sub-rae', INVITEE, verified), await inviteToken(node.tenant));
     expect(res.status).toBe(403);
     expect(await res.text()).toMatch(verified === false ? /not verified/ : /sign in again/);
     // Nothing was joined: the invite is still outstanding, nobody new is active.
@@ -173,7 +173,7 @@ describe('the legacy owner-row heal — the resolving session becomes the owner 
   async function resolveAs(emailVerified: boolean | undefined) {
     const node = await team(legacyTenant(), false);
     shared.sessions.set('sub-owner', { id: 'sub-owner', email: 'owner@team.test', name: 'Owner', ...(emailVerified === undefined ? {} : { emailVerified }) });
-    await app.request('/api/members', { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    await app.request(`/api/teams/${node.tenant}/members`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
     return membersOf(node);
   }
 

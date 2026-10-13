@@ -1,9 +1,10 @@
-import type {
-  MintedPreviewClient,
-  PreviewClientCheck,
-  PreviewClientMint,
-  PreviewClientRetire,
-  RetiredPreviewClients,
+import {
+  inList,
+  type MintedPreviewClient,
+  type PreviewClientCheck,
+  type PreviewClientMint,
+  type PreviewClientRetire,
+  type RetiredPreviewClients,
 } from '@substrat-run/contracts';
 import type { SqlExec } from './introspect.js';
 import { platformOwnerOf } from './resources.js';
@@ -68,15 +69,15 @@ function platformBinds(sql: SqlExec, tenantId: string, parentScopeId: string): b
  * every row back; a row whose column is not valid JSON is read as having none.
  */
 function clientRedirectsTo(sql: SqlExec, uris: readonly string[]): boolean {
-  const placeholders = uris.map(() => '?').join(', ');
+  const callbacks = inList(uris);
   const rows = sql
     .exec(
       `SELECT 1 AS hit
          FROM oauth_client c,
               json_each(CASE WHEN json_valid(c.redirect_uris) THEN c.redirect_uris ELSE '[]' END) u
-        WHERE COALESCE(c.disabled, 0) = 0 AND u.value IN (${placeholders})
+        WHERE COALESCE(c.disabled, 0) = 0 AND u.value IN ${callbacks.sql}
         LIMIT 1`,
-      ...uris,
+      ...callbacks.params,
     )
     .toArray();
   return rows.length > 0;

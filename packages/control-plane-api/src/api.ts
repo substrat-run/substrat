@@ -111,6 +111,10 @@ import {
   capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
+  STORE_KINDS,
+  mayHoldScopeStores,
+  type StoreErasure,
+  type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
@@ -164,7 +168,7 @@ import { connectionGrantsForScope, type VerticalClient } from './vertical-client
 import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
-import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
+import { scopeDeployment, versionReachedAt, type ScopeDeployment, type ScopeDeploymentVia } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
@@ -351,6 +355,11 @@ export interface ControlPlaneApiOptions {
    * resolvers, which is only correct before any scope has adopted the serving script.
    */
   resolveVerticalRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+  /**
+   * The registered scope-store kinds (#2207) this control plane injects at a serving upload
+   * and judges subject erasure against (#2242). `STORE_KINDS` unless a test registers one.
+   */
+  storeKinds?: readonly StoreKindRegistration[];
   /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
    *  (`CopyRestoreFence`). `SCOPE_COPY_LEASE_MS` unless a test needs a lease it can outlive. */
   copyLeaseMs?: number;
@@ -3145,6 +3154,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return (await c.var.admin.getVersion(c.get('actor'), scope.verticalVersionId, scope.vertical))?.deploymentRef ?? null;
   };
 
+  /**
+   * Whether the deployment a subject erasure asks may hold a scope store (#2242): the
+   * contracts gate (`mayHoldScopeStores`) on the manifest of the version that deployment
+   * runs. That is the serving pointer's version on the serving script (unknown when the
+   * pointer names another script), the bound version on its own script or the
+   * bound-version rung, and unknown on the slug rung, which runs whatever it runs. An
+   * unknown version, or a manifest read that fails, is passed as unknown, never as none.
+   */
+  const servingMayHoldScopeStores = async (
+    c: ReqCtx,
+    scope: Scope,
+    currentRef: string | null,
+    via: ScopeDeploymentVia | undefined,
+  ): Promise<boolean> => {
+    const kinds = options.storeKinds ?? STORE_KINDS;
+    if (!mayHoldScopeStores(undefined, kinds) || !scope.vertical) return false;
+    let versionId: string | null = null;
+    if (currentRef && currentRef === scope.servingRef) {
+      const pointer = await c.var.admin.verticalServing(c.get('actor'), scope.vertical).catch(() => null);
+      versionId = pointer?.ref === currentRef ? pointer.versionId : null;
+    } else if (currentRef || via === 'bound-version') {
+      versionId = scope.verticalVersionId;
+    }
+    const manifestJson = versionId
+      ? await c.var.admin.versionManifest(c.get('actor'), scope.vertical, versionId).catch(() => undefined)
+      : undefined;
+    return mayHoldScopeStores(manifestJson, kinds);
+  };
+
   /** How many exports a carry tries before its source holds still long enough to bind (#1722 r12). */
   const CARRY_EXPORT_ATTEMPTS = 3;
 
@@ -5190,7 +5228,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // A scope nothing routes may still keep its store where its vertical resolves by slug (where
     // it was provisioned), so erasure reaches that deployment too, as reap does (`reapScopeStorage`).
-    const bySlug = currentRef ? undefined : await verticalForScope(c, scope);
+    const reached = currentRef ? undefined : await deploymentForScope(c, scope);
+    const bySlug = reached?.client;
     if (!currentRef && !bySlug && copies.every((copy) => copy.state === 'done')) {
       return c.json(await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId));
     }
@@ -5204,25 +5243,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     if (bySlug) redactions.push(await bySlug.redactSubject(scopeId, subjectId));
     const serving = currentRef ? await options.resolveVerticalRef(currentRef) : bySlug;
-    // A version that declares no scope store is not asked. An older deployment
-    // answers 501 for the route, and that must not stop an erasure with no store.
-    // An unreadable manifest is asked: failing closed beats skipping a store that exists.
-    let declaresStores = false;
-    if (scope.vertical && scope.verticalVersionId) {
-      const json = await c.var.admin.versionManifest(c.get('actor'), scope.vertical, scope.verticalVersionId);
-      if (json) {
-        try {
-          const parsed = storedDeployManifest.safeParse(JSON.parse(json));
-          declaresStores = !parsed.success || parsed.data.scopeStores.length > 0;
-        } catch {
-          declaresStores = true;
-        }
+    // Scope stores before the key (#2068), failing closed (#2242): a deployment that may hold
+    // a store is asked, and one that may and cannot be asked stops the erasure here, before
+    // `finalizeSubjectShred` destroys the key. An error from the ask stops it the same way.
+    let storeErasures: StoreErasure[] = [];
+    if (await servingMayHoldScopeStores(c, scope, currentRef, reached?.via)) {
+      if (typeof serving?.scopeStoreErase !== 'function') {
+        throw new ControlPlaneError(
+          503,
+          `scope ${scopeId} may hold a scope store, and no deployment can be asked to erase it; the subject key is kept`,
+        );
       }
+      storeErasures = await serving.scopeStoreErase(tenantId, scopeId, subjectId);
     }
-    const storeErasures =
-      declaresStores && serving && typeof serving.scopeStoreErase === 'function'
-        ? await serving.scopeStoreErase(tenantId, scopeId, subjectId)
-        : [];
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
       versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
       copyCount: copies.length,
@@ -7355,7 +7388,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses,
-        bindings: [...manifest.bindings, ...storeBindings, ...scopeStoreScriptBindings(manifest.scopeStores)],
+        bindings: [...manifest.bindings, ...storeBindings, ...scopeStoreScriptBindings(manifest.scopeStores, options.storeKinds ?? STORE_KINDS)],
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
         // stable script updated in place, so this refresh is what keeps the binding

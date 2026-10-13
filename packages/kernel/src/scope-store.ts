@@ -13,6 +13,7 @@ import {
   substratError,
   type CheckSubject,
   type ReservedStoreOperation,
+  type ReservedStoreResults,
   type ScopeId,
   type StoreOperationCatalog,
   type StoreRequest,
@@ -112,7 +113,10 @@ const RESERVED_RESULT = {
   'substrat.size': storeSizeResult,
   'substrat.wipe': storeWipeResult,
   'substrat.erase': storeEraseResult,
-} as const;
+} as const satisfies { [O in ReservedStoreOperation]: { parse(value: unknown): ReservedStoreResults[O] } };
+
+/** What a reserved operation answers, parsed (#2239). */
+export type ReservedStoreResult<O extends ReservedStoreOperation> = ReservedStoreResults[O];
 
 const reservedNames: readonly string[] = RESERVED_STORE_OPERATIONS;
 
@@ -136,13 +140,14 @@ function reservedInput(operation: ReservedStoreOperation, input: unknown): unkno
 /**
  * The platform's caller (#2207). A name that is not reserved is refused before
  * `send`, the mirror of {@link callScopeStore}. The result is parsed against the
- * operation's schema, so a store that answers the wrong shape fails here.
+ * operation's schema, so a store that answers the wrong shape fails here, and the
+ * caller gets that parsed type back rather than parsing again.
  */
-export async function callReservedStoreOperation(
+export async function callReservedStoreOperation<O extends ReservedStoreOperation>(
   send: (request: StoreRequest) => Promise<unknown>,
-  operation: ReservedStoreOperation,
+  operation: O,
   input?: unknown,
-): Promise<unknown> {
+): Promise<ReservedStoreResult<O>> {
   if (!reservedNames.includes(operation)) {
     throw substratError('forbidden', `store operation '${operation}' is not reserved for the platform`);
   }
@@ -156,5 +161,5 @@ export async function callReservedStoreOperation(
   if (!result.success) {
     throw new StoreError({ code: 'bad_envelope', status: 502, body: result.error.issues });
   }
-  return result.data;
+  return result.data as ReservedStoreResult<O>;
 }

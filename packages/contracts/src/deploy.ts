@@ -359,6 +359,42 @@ export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 export const STORE_KINDS: readonly StoreKindRegistration[] = [];
 
 /**
+ * Whether a version's stored manifest (`HostAdmin.versionManifest`) declares a scope
+ * store (#2242). `null` is a version pushed before manifests were kept, which is before
+ * scope stores, so it declares none. `undefined` is returned when the JSON cannot be
+ * read as a stored manifest: the caller cannot tell, and must not read that as "none".
+ */
+export function scopeStoresDeclaredIn(manifestJson: string | null): boolean | undefined {
+  if (manifestJson === null) return false;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(manifestJson);
+  } catch {
+    return undefined;
+  }
+  const parsed = storedDeployManifest.safeParse(raw);
+  return parsed.success ? parsed.data.scopeStores.length > 0 : undefined;
+}
+
+/**
+ * Whether the deployment running a version may hold a scope store — the gate subject
+ * erasure fails closed on (#2242). A push declaring an unregistered kind is refused, so
+ * with no kind in `kinds` nothing can hold one: false, and erasure proceeds as it did
+ * before stores existed. Otherwise true when the manifest declares a store, or when it
+ * is unknown (`undefined`: no version can be named, or it could not be read) or cannot
+ * be parsed. False for a manifest that declares none, and for `null`, a version pushed
+ * before manifests (and so stores) existed.
+ */
+export function mayHoldScopeStores(
+  manifestJson: string | null | undefined,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+): boolean {
+  if (kinds.length === 0) return false;
+  if (manifestJson === undefined) return true;
+  return scopeStoresDeclaredIn(manifestJson) ?? true;
+}
+
+/**
  * A platform-run object, one per scope (#2207). The builder names the binding and the
  * kind. The kind has no default. The platform injects `SUBSTRAT_STORE_<BINDING>` at
  * push; the vertical never writes that binding.
@@ -427,7 +463,21 @@ export const storeImportInput = z.object({ tables: z.array(scopeDumpTable) });
 export const storeImportResult = z.object({ tables: z.number().int().nonnegative() });
 export type StoreImportResult = z.infer<typeof storeImportResult>;
 
-export const storeWipeResult = z.object({}).strict();
+export const storeWipeResult = z.object({});
+export type StoreWipeResult = z.infer<typeof storeWipeResult>;
+
+/**
+ * What each reserved operation answers, parsed (#2239). A plain map of the result
+ * types, so a package that names one (the kernel's `callReservedStoreOperation`)
+ * publishes no zod type of its own.
+ */
+export interface ReservedStoreResults {
+  'substrat.export': StoreExportResult;
+  'substrat.import': StoreImportResult;
+  'substrat.size': StoreSizeResult;
+  'substrat.wipe': StoreWipeResult;
+  'substrat.erase': StoreEraseResult;
+}
 
 /** One binding's storage, as `scopeStoreSizes` reports it. */
 export const scopeStoreSize = z.object({

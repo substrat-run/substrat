@@ -151,7 +151,7 @@ export function assertWithinSqlLimits(sql: string): void {
   let nVar = 0;
   const named = new Map<string, number>();
   const tooManyVariables = (at: number): Error =>
-    new Error(`too many SQL variables at offset ${byteOffset(sql, at)}: SQLITE_ERROR`);
+    new Error(`too many SQL variables at offset ${byteOffset(sql, at)}: SQLITE_ERROR (${TOO_MANY_VARIABLES_HINT})`);
   const bindOne = (at: number, number_: number): void => {
     if (number_ > DO_SQL_LIMITS.boundParameters) throw tooManyVariables(at);
   };
@@ -276,6 +276,17 @@ export function assertWithinSqlLimits(sql: string): void {
   }
   endAllLists();
 }
+
+/**
+ * What the node adapter adds to the DO's own words when a statement binds over the limit
+ * (#2248): almost always a placeholder list that grew with the data, and the way round it.
+ * Named, not imported: this module imports only types, which is what lets
+ * `tools/vitest/sql-limits.cjs` require it into every node process without loading contracts.
+ */
+const TOO_MANY_VARIABLES_HINT =
+  `limit ${DO_SQL_LIMITS.boundParameters}; bind a list of any length as ONE JSON array: ` +
+  `\`id IN \${list.sql}\` with \`list = inList(values)\` from @substrat-run/contracts, ` +
+  `which is \`IN (SELECT value FROM json_each(?))\``;
 
 /**
  * The refusal of a result set wider than `DO_SQL_LIMITS.columns`: the DO's own words, then what

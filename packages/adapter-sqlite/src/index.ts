@@ -192,11 +192,6 @@ import {
   type ScopeDumpInput,
   type ScopeDumpTable,
   type ScopeId,
-  storeEraseResult,
-  storeExportResult,
-  storeImportResult,
-  storeSizeResult,
-  storeWipeResult,
   type ReservedStoreOperation,
   subjectShredReceipt,
   type SubjectShredReceipt,
@@ -739,6 +734,7 @@ import {
   type ConsumerDelivery,
   type StoreStub,
   callReservedStoreOperation,
+  type ReservedStoreResult,
   callScopeStore,
   scopeStoreRunnersOf,
   type ScopeStoreHostOptions,
@@ -4246,11 +4242,11 @@ export class SqliteScopeHost implements ScopeHost {
    * One reserved call on a declared binding. The vertical's stub never reaches
    * this; `callReservedStoreOperation` refuses a name that is not reserved.
    */
-  private async invokeReservedStore(
+  private async invokeReservedStore<O extends ReservedStoreOperation>(
     address: { tenantId: TenantId; vertical: string; scopeId: ScopeId; binding: string },
-    operation: ReservedStoreOperation,
+    operation: O,
     input?: unknown,
-  ): Promise<unknown> {
+  ): Promise<ReservedStoreResult<O>> {
     const runner = this.scopeStoreRunners.get(address.binding);
     if (!runner) throw substratError('not_found', `no scope store is bound for '${address.binding}'`);
     await this.ensureScopeStoresStarted();
@@ -4271,9 +4267,7 @@ export class SqliteScopeHost implements ScopeHost {
     const vertical = this.scopeStoreVerticalOf(scopeId);
     const sizes: { binding: string; bytes: number }[] = [];
     for (const binding of bindings) {
-      const { bytes } = storeSizeResult.parse(
-        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.size'),
-      );
+      const { bytes } = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.size');
       sizes.push({ binding, bytes });
     }
     return sizes;
@@ -4281,7 +4275,10 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * `substrat.erase` on each declared binding. A store error throws, so the caller
-   * can leave the subject key untouched. No runners means nothing to erase.
+   * can leave the subject key untouched. Fail closed (#2242): an empty answer means
+   * this host KNOWS it holds nothing for the scope. It always can tell — the
+   * directory names the scope's vertical, and the runners are this host's own — so
+   * unlike a Cloudflare host with no control plane it has no "cannot tell" case.
    */
   private async eraseScopeStores(
     tenantId: TenantId,
@@ -4294,18 +4291,17 @@ export class SqliteScopeHost implements ScopeHost {
       | { vertical: string | null }
       | undefined;
     const vertical = row?.vertical;
-    // Shred calls this for every scope. One this host cannot name a store for is
-    // nothing to erase, and the key is still destroyed.
+    // Shred calls this for every scope. No vertical names no store object, and a
+    // vertical this host is not pinned to is one its runners never served: both hold
+    // nothing here, and the key is still destroyed.
     if (!vertical) return [];
     if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return [];
     const erasures: { binding: string; erased: number }[] = [];
     for (const binding of bindings) {
-      const { erased } = storeEraseResult.parse(
-        await this.invokeReservedStore(
-          { tenantId, vertical, scopeId, binding },
-          'substrat.erase',
-          { subjectId },
-        ),
+      const { erased } = await this.invokeReservedStore(
+        { tenantId, vertical, scopeId, binding },
+        'substrat.erase',
+        { subjectId },
       );
       erasures.push({ binding, erased });
     }
@@ -4333,9 +4329,7 @@ export class SqliteScopeHost implements ScopeHost {
     for (const binding of bindings) {
       const runner = this.scopeStoreRunners.get(binding);
       if (!runner) throw substratError('not_found', `no scope store is bound for '${binding}'`);
-      const exported = storeExportResult.parse(
-        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export'),
-      );
+      const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
       stores.push({ binding, kind: runner.kind, tables: exported.tables });
     }
     return stores;
@@ -4351,12 +4345,10 @@ export class SqliteScopeHost implements ScopeHost {
     const vertical = this.scopeStoreVerticalIfPresent(scopeId);
     if (!vertical) return;
     for (const store of listed) {
-      storeImportResult.parse(
-        await this.invokeReservedStore(
-          { tenantId, vertical, scopeId, binding: store.binding },
-          'substrat.import',
-          { tables: store.tables },
-        ),
+      await this.invokeReservedStore(
+        { tenantId, vertical, scopeId, binding: store.binding },
+        'substrat.import',
+        { tables: store.tables },
       );
     }
   }
@@ -4368,9 +4360,7 @@ export class SqliteScopeHost implements ScopeHost {
     const vertical = this.scopeStoreVerticalIfPresent(scopeId);
     if (!vertical) return;
     for (const binding of bindings) {
-      storeWipeResult.parse(
-        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.wipe'),
-      );
+      await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.wipe');
     }
   }
 

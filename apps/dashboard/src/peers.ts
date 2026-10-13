@@ -1,5 +1,5 @@
 import type { PeerGrantsStatusEntry, Scope, ScopeId } from '@substrat-run/contracts';
-import { isPeerInstanceOf, resolvePeerInstanceFrom, type PeerTenant, type VerticalInstanceCandidate } from '@substrat-run/kernel';
+import { isPeerInstanceOf, resolvePeerInstanceFrom, samePeerVertical, type PeerTenant, type VerticalInstanceCandidate } from '@substrat-run/kernel';
 
 /**
  * The install disclosure (#1706) — what a tenant is told about one app's reach into its
@@ -84,6 +84,8 @@ export function peerChoicesOf(
 export function declaredCallState(input: {
   vertical: string;
   caller: string;
+  /** The tenant's directory slug: a pinned caller `<tenantSlug>/<slug>` is the bare name its grants are stored under (#2252). */
+  tenantSlug?: string | null;
   target: { scopeId: string } | { ambiguous: true; count: number } | { boundUnavailable: true } | null;
   entries: PeerGrantsStatusEntry[] | null;
   readError?: string | null;
@@ -95,7 +97,9 @@ export function declaredCallState(input: {
   const { scopeId } = target;
   if (input.readError) return { state: 'unreadable', vertical, scopeId, message: input.readError };
   if (input.entries === null) return { state: 'unreadable', vertical, scopeId, message: 'not read' };
-  const entry = input.entries.find((e) => e.vertical === caller);
+  const entry = input.entries.find(
+    (e) => e.vertical === caller || samePeerVertical(caller, e.vertical, input.tenantSlug ?? null),
+  );
   // Installed, but the target's scope holds nothing for this caller. Not an error either:
   // the target's manifest may not declare this peer, or its scope may predate the version
   // that does. Distinct from `switched-off`, which somebody did on purpose.

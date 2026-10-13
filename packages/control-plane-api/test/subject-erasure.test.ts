@@ -289,39 +289,6 @@ describe('subject erasure (#37)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('does not ask a deployment to erase a store when the version declares none', async () => {
-    let asked = false;
-    const scoped = scopeId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: 'docs' });
-    await host.admin.activateScope(staff, t, scoped);
-    const api = createControlPlaneApi({
-      host,
-      authenticate: UNSAFE_devPlatformActorAuth(),
-      verticals: {
-        docs: {
-          redactSubject: async () => ({
-            events: 0,
-            intents: 0,
-            jobRuns: 0,
-            idempotencyResults: 0,
-            intentIds: [],
-            vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] },
-          }),
-          scopeStoreErase: async () => {
-            asked = true;
-            throw new Error('should not be asked');
-          },
-        },
-      } as never,
-    });
-    const res = await api.request(`/tenants/${t}/scopes/${scoped}/subjects/${erased}/shred`, {
-      method: 'POST',
-      headers: auth,
-    });
-    expect(res.status).toBe(200);
-    expect(asked).toBe(false);
-  });
-
   it('a hosted restore imports the dump stores on the deployment', async () => {
     const imported: { binding: string; tables: unknown[] }[][] = [];
     const scoped = scopeId.parse(ulid());

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { errorCodeOf, StoreError } from '@substrat-run/contracts';
 import { callReservedStoreOperation, callScopeStore } from '../src/scope-store.js';
 
@@ -140,5 +140,13 @@ describe('callReservedStoreOperation (#2207)', () => {
     expect(imported).toEqual({ tables: 1 });
     const wiped = await callReservedStoreOperation(async () => ({ result: {} }), 'substrat.wipe');
     expect(wiped).toEqual({});
+  });
+});
+
+describe('callReservedStoreOperation returns the parsed result type (#2239)', () => {
+  it('a size read is typed as its schema, not unknown', async () => {
+    const size = callReservedStoreOperation(async () => ({ result: { bytes: 4 } }), 'substrat.size');
+    expectTypeOf(size).resolves.toEqualTypeOf<{ bytes: number }>();
+    expect(await size).toEqual({ bytes: 4 });
   });
 });

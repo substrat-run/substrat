@@ -1740,39 +1740,10 @@ export const api = {
   /** Switch the active team; the server pins it in a cookie, so the caller reloads after. */
   switchTeam: (teamId: string) =>
     call<void>('/teams/switch', { method: 'POST', body: JSON.stringify({ teamId }) }),
-  /** Leave the current team (detaches your login); reload after — you'll land in another
-   *  team or onboarding if it was your last. */
-  leaveTeam: () => call<void>('/teams/leave', { method: 'POST' }),
   /** Delete the current organization (owner-only; confirmed by retyping its name). */
   deleteTeam: (confirm: string) =>
     call<void>('/teams/delete', { method: 'POST', body: JSON.stringify({ confirm }) }),
   catalog: () => call<CatalogEntry[]>('/catalog'),
-  /** The current team's roster (active members + outstanding invites), one page newest-first. */
-  listMembers: (opts?: PageOpts) => call<ListPage<Member>>(`/members${pageQs(opts)}`),
-  /** Invite someone at a role; emails them and returns the shareable accept link + whether the email was accepted for delivery. */
-  inviteMember: (email: string, roleKey: InviteRole) =>
-    call<{ invitationId: string; acceptUrl: string; emailDelivered: boolean }>('/members/invite', {
-      method: 'POST',
-      body: JSON.stringify({ email, roleKey }),
-    }),
-  /** Re-send a pending invite's email; returns the (possibly refreshed) link + whether it was accepted for delivery. */
-  resendInvite: (invitationId: string) =>
-    call<{ invitationId: string; acceptUrl: string; emailDelivered: boolean }>('/members/resend-invite', {
-      method: 'POST',
-      body: JSON.stringify({ invitationId }),
-    }),
-  /** A pending invite's accept link and deadline, to copy and share. A pure read: sends no email, and a lapsed invite is refused (409) rather than renewed. */
-  inviteLink: (invitationId: string) =>
-    call<{ invitationId: string; acceptUrl: string; expiresAt: string }>('/members/invite-link', {
-      method: 'POST',
-      body: JSON.stringify({ invitationId }),
-    }),
-  /** Withdraw a pending invite. */
-  revokeInvite: (invitationId: string) =>
-    call<void>('/members/revoke-invite', { method: 'POST', body: JSON.stringify({ invitationId }) }),
-  /** Remove an active member (revokes their role). The owner cannot be removed. */
-  removeMember: (memberId: string) =>
-    call<void>('/members/remove', { method: 'POST', body: JSON.stringify({ memberId }) }),
   /** Preview an invite (unauthenticated): the team + invited email, for prefill + the accept screen. */
   previewInvite: (token: string) =>
     call<{ teamName: string; email: string; roleKey: InviteRole }>(
