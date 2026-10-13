@@ -723,29 +723,30 @@ export function verticalResolutionContractSuite(
       it('the bare declared name resolves, routes and binds to this tenant\'s pinned install', async () => {
         const pinned = await install(`${pSlug}/${bare('crm')}`);
         const resolved = { outcome: 'resolved', instance: { tenantId: p, scopeId: pinned, vertical: bare('crm') } };
-        await expect(host.admin.resolveVerticalInstance(p, bare('crm'))).resolves.toEqual(resolved);
         // The read a queued peer-invoke makes at drain time.
         await expect(host.admin.resolvePeerInstance(p, caller, bare('crm'))).resolves.toEqual(resolved);
+        // The cross-vertical edges' read (the import cursor's producer) keeps matching exactly.
+        expect((await host.admin.resolveVerticalInstance(p, bare('crm'))).outcome).toBe('not-installed');
+        await expect(host.admin.resolveVerticalInstance(p, `${pSlug}/${bare('crm')}`)).resolves.toMatchObject({ outcome: 'resolved' });
         await expect(host.admin.setPeerBinding(staff, p, caller, bare('crm'), pinned)).resolves.toMatchObject({ changed: true });
         await expect(host.admin.resolvePeerInstance(p, caller, bare('crm'))).resolves.toEqual(resolved);
       });
 
       it('another tenant\'s prefix is another vertical: not resolved, not bindable', async () => {
         const foreign = await install(`${oSlug}/${bare('ledger')}`);
-        expect((await host.admin.resolveVerticalInstance(p, bare('ledger'))).outcome).toBe('not-installed');
         expect((await host.admin.resolvePeerInstance(p, caller, bare('ledger'))).outcome).toBe('not-installed');
         await expect(host.admin.setPeerBinding(staff, p, caller, bare('ledger'), foreign)).rejects.toThrow();
       });
 
       it('never the reverse: a declared pinned name does not reach a bare install', async () => {
         await install(bare('desk'));
-        expect((await host.admin.resolveVerticalInstance(p, `${pSlug}/${bare('desk')}`)).outcome).toBe('not-installed');
+        expect((await host.admin.resolvePeerInstance(p, caller, `${pSlug}/${bare('desk')}`)).outcome).toBe('not-installed');
       });
 
       it('an exact install wins over the pinned one, rather than making the tenant ambiguous', async () => {
         const exact = await install(bare('board'));
         const pinned = await install(`${pSlug}/${bare('board')}`);
-        await expect(host.admin.resolveVerticalInstance(p, bare('board'))).resolves.toEqual({
+        await expect(host.admin.resolvePeerInstance(p, caller, bare('board'))).resolves.toEqual({
           outcome: 'resolved', instance: { tenantId: p, scopeId: exact, vertical: bare('board') },
         });
         // A binding still chooses the pinned one.

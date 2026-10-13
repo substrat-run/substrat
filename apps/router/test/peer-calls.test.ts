@@ -32,6 +32,8 @@ interface DirectoryShape {
   tenantSlug?: string;
   /** The target's registered vertical; defaults to the name asked for. */
   targetVertical?: string;
+  /** The target instance; defaults to `TARGET_SCOPE`. */
+  targetScope?: string;
 }
 
 /** A control-plane namespace answering one `peerCallTarget`, recording what it was asked. */
@@ -59,7 +61,7 @@ function directory(shape: DirectoryShape = {}) {
           target:
             outcome === 'resolved'
               ? {
-                  scope_id: TARGET_SCOPE,
+                  scope_id: shape.targetScope ?? TARGET_SCOPE,
                   tenant_id: tenantId,
                   vertical: shape.targetVertical ?? vertical,
                   deployment_ref: shape.deploymentRef === undefined ? 'crm-01jz' : shape.deploymentRef,
@@ -188,6 +190,19 @@ describe('the router’s peer entrypoint (#1706)', () => {
       scope: CALLER_SCOPE,
       tenantSlug: 't-abc',
     });
+  });
+
+  it('a pinned caller whose bare slug resolves to its own scope is refused as a self-call (#2252)', async () => {
+    const d = dispatch();
+    // The directory answers the caller's own scope as the target.
+    const self = directory({ tenantSlug: 't-abc', targetVertical: 't-abc/crm', targetScope: CALLER_SCOPE });
+    const outcome = await entrypoint({ CONTROL_PLANE: self, DISPATCH: d as never }).invoke(
+      caller({ vertical: 't-abc/crm', calls: ['crm'] }),
+      request({ vertical: 'crm' }),
+    );
+    expect(outcome).toMatchObject({ ok: false, status: 403 });
+    expect((outcome as { message: string }).message).toMatch(/cannot peer-call itself/);
+    expect(d.seen()).toHaveLength(0);
   });
 
   it('a calling vertical cannot name a tenant slug, or a caller, in its own request', async () => {

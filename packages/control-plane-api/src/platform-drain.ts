@@ -627,6 +627,10 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
           'pick one; bind the instance first',
       };
     }
+    // A pinned caller resolves its own bare slug to itself (#2252): the same refusal as above.
+    if (resolution.instance.scopeId === ctx.scopeId) {
+      return { status: 'failed', error: `'${ctx.vertical}' cannot peer-call itself` };
+    }
     // 3. The target's own deployment.
     const target = await admin.getScopeRecord(deps.actor, ctx.tenantId, resolution.instance.scopeId);
     const client = target ? await deps.resolveVerticalForScope(target) : undefined;

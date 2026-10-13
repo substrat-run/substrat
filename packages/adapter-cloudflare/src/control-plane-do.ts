@@ -2743,28 +2743,30 @@ export class ControlPlaneDO extends DurableObject {
    * the pure host and any future caller cannot disagree about what resolves. Like
    * `readRoute`, this reads scope status: a suspended or archived instance is not a
    * callable one, and nothing downstream of this answer re-checks it on the hosted path (#1713).
+   *
+   * Names match EXACTLY (`slug: null`): this is the cross-vertical edges' read (the import
+   * cursor's producer), which keeps exact matching. A peer call's tenant-pinned spelling is
+   * `resolvePeerInstance`'s and `peerCallTarget`'s (#2252).
    */
   resolveVerticalInstance(tenantId: string, vertical: string): VerticalResolution {
-    const { tenant, candidates } = this.peerCandidates(tenantId, vertical);
-    return resolveVerticalInstanceFrom(candidates, tenant, vertical);
+    const tenant: PeerTenant = { id: tenantId as TenantId, slug: null };
+    return resolveVerticalInstanceFrom(this.peerCandidates(tenant, vertical), tenant, vertical);
   }
 
   /**
-   * Every scope of the tenant registered under a spelling of the peer name `vertical`
-   * (`peerVerticalSpellings`, #2252), for the kernel's resolvers to choose among. The slug is
-   * the directory's own for that tenant, never parsed out of the name being matched.
+   * Every scope of the tenant registered under a spelling of the peer name `vertical` in
+   * `tenant` (`peerVerticalSpellings`, #2252), for the kernel's resolvers to choose among.
    */
-  private peerCandidates(tenantId: string, vertical: string): { tenant: PeerTenant; candidates: VerticalInstanceCandidate[] } {
-    const tenant = this.peerTenant(tenantId);
+  private peerCandidates(tenant: PeerTenant, vertical: string): VerticalInstanceCandidate[] {
     const rows = this.sql.exec(
       `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
        WHERE tenant_id = ? AND vertical IN (SELECT value FROM json_each(?))`,
-      tenantId, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug)),
+      tenant.id, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug)),
     ).toArray() as unknown as {
       scope_id: string; tenant_id: string; vertical: string | null; status: string;
       kind: string | null; forked_from: string | null;
     }[];
-    const candidates = rows.map((r) => ({
+    return rows.map((r) => ({
       id: r.scope_id as ScopeId,
       tenantId: r.tenant_id as TenantId,
       vertical: r.vertical,
@@ -2772,9 +2774,9 @@ export class ControlPlaneDO extends DurableObject {
       kind: r.kind ?? '',
       forkedFrom: (r.forked_from as ScopeId | null) ?? null,
     }));
-    return { tenant, candidates };
   }
 
+  /** The tenant a peer call is read in: the directory's own slug for it (#2252). */
   private peerTenant(tenantId: string): PeerTenant {
     return { id: tenantId as TenantId, slug: this.readTenant(tenantId)?.slug ?? null };
   }
@@ -2782,8 +2784,8 @@ export class ControlPlaneDO extends DurableObject {
   /** Binding is read at call execution, so a queued invoke follows the current explicit choice. */
   resolvePeerInstance(tenantId: string, callerScopeId: string, vertical: string): PeerInstanceResolution {
     const binding = this.peerBinding(tenantId, callerScopeId, vertical);
-    const { tenant, candidates } = this.peerCandidates(tenantId, vertical);
-    return resolvePeerInstanceFrom(candidates, tenant, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
+    const tenant = this.peerTenant(tenantId);
+    return resolvePeerInstanceFrom(this.peerCandidates(tenant, vertical), tenant, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
   }
 
   peerBinding(tenantId: string, callerScopeId: string, vertical: string) {

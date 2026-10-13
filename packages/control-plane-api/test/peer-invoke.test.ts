@@ -131,6 +131,19 @@ describe('peerInvokeHandler (#1706)', () => {
     });
   });
 
+  it('a pinned caller naming its own bare slug is a self-call, refused like the exact one (#2252)', async () => {
+    calls.length = 0;
+    const self = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: self, vertical: 'acme/desk' });
+    await host.admin.activateScope(staff, t, self);
+    const outcome = await handler()(
+      { tenantId: t, scopeId: self, vertical: 'acme/desk' },
+      intent({ payload: { vertical: 'desk', operation: 'x/y' } }),
+    );
+    expect(outcome).toEqual({ status: 'failed', error: "'acme/desk' cannot peer-call itself" });
+    expect(calls).toHaveLength(0);
+  });
+
   it('THE property: a payload cannot name its own caller or another tenant', async () => {
     calls.length = 0;
     const outcome = await handler()(

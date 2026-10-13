@@ -280,6 +280,10 @@ export function createPeerCallResolver(
         message: `vertical '${target}' is not installed in this tenant`,
       };
     }
+    // A pinned caller's bare slug resolves to itself (#2252); a peer call names ANOTHER vertical.
+    if (row.target.scope_id === caller.scopeId) {
+      return { outcome: 'refused', code: 'forbidden', message: `'${caller.vertical}' cannot peer-call itself` };
+    }
     if (!row.target.deployment_ref) {
       return {
         outcome: 'refused',

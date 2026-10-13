@@ -4649,21 +4649,20 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
-   * Every scope of the tenant registered under a spelling of the peer name `vertical`
-   * (`peerVerticalSpellings`), for the kernel's resolvers to choose among (#2252).
+   * Every scope of the tenant registered under a spelling of the peer name `vertical` in
+   * `tenant` (`peerVerticalSpellings`), for the kernel's resolvers to choose among (#2252).
    */
-  private peerCandidates(tenantId: TenantId, vertical: string): { tenant: PeerTenant; candidates: VerticalInstanceCandidate[] } {
-    const tenant = this.peerTenant(tenantId);
+  private peerCandidates(tenant: PeerTenant, vertical: string): VerticalInstanceCandidate[] {
     const rows = this.directory
       .prepare(
         `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
           WHERE tenant_id = ? AND vertical IN (SELECT value FROM json_each(?))`,
       )
-      .all(tenantId, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug))) as {
+      .all(tenant.id, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug))) as {
       scope_id: string; tenant_id: string; vertical: string | null; status: string;
       kind: string | null; forked_from: string | null;
     }[];
-    const candidates = rows.map((r) => ({
+    return rows.map((r) => ({
       id: r.scope_id as ScopeId,
       tenantId: r.tenant_id as TenantId,
       vertical: r.vertical,
@@ -4671,7 +4670,6 @@ export class SqliteScopeHost implements ScopeHost {
       kind: r.kind ?? '',
       forkedFrom: (r.forked_from as ScopeId | null) ?? null,
     }));
-    return { tenant, candidates };
   }
 
   /** The directory's current hold, read again when background work is about to run. */
@@ -8515,16 +8513,18 @@ export class SqliteScopeHost implements ScopeHost {
         return rows.map(mapHostname);
       },
       // #1706: the directory's answer to "vertical Y in tenant T", by the kernel's one rule.
+      // Names match EXACTLY: this is the cross-vertical edges' read (the import cursor's
+      // producer). A peer call's tenant-pinned spelling is `resolvePeerInstance`'s (#2252).
       resolveVerticalInstance: async (tenantId: TenantId, vertical: string): Promise<VerticalResolution> => {
-        const { tenant, candidates } = this.peerCandidates(tenantId, vertical);
-        return resolveVerticalInstanceFrom(candidates, tenant, vertical);
+        const tenant: PeerTenant = { id: tenantId, slug: null };
+        return resolveVerticalInstanceFrom(this.peerCandidates(tenant, vertical), tenant, vertical);
       },
       resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const binding = this.directory.prepare(
           'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
         ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string; invalidated: number } | undefined;
-        const { tenant, candidates } = this.peerCandidates(tenantId, vertical);
-        return resolvePeerInstanceFrom(candidates, tenant, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
+        const tenant = this.peerTenant(tenantId);
+        return resolvePeerInstanceFrom(this.peerCandidates(tenant, vertical), tenant, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
       },
       peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const row = this.directory.prepare(
