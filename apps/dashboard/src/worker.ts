@@ -1120,15 +1120,6 @@ app.get('/api/identity-mirror', async (c) => {
   });
 });
 
-  const page = pageParams(c);
-  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const members = (await scope.invoke('dashboard/list-members', {
-    limit: page.limit,
-    cursor: page.cursor,
-  })) as Array<{ id: string }>;
-  return c.json(pageOf(members, page.limit, (m) => m.id));
-});
-
 /**
  * A freshly-signed accept link for one invitation (14 days, or the invitation's own
  * deadline if that comes first). The token names the invitation,
