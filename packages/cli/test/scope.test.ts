@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertDumpIdentifiers } from '@substrat-run/contracts';
@@ -64,6 +64,9 @@ describe('scope restore backup provenance (#1880)', () => {
       )) as unknown as typeof fetch;
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const outDir = join(dir, 'with-stores');
+    // An earlier pull of the same scope left a `.sqlite`; it must not stay beside the new dump.
+    mkdirSync(outDir, { recursive: true });
+    writeFileSync(join(outDir, `${sourceTenant}__${sourceScope}.sqlite`), 'stale');
     await pullScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: sourceTenant, scopeId: sourceScope, full: true, outDir });
     const base = join(outDir, `${sourceTenant}__${sourceScope}`);
     expect(existsSync(`${base}.sqlite`)).toBe(false);

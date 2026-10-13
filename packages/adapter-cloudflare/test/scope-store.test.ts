@@ -192,23 +192,28 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect(log).toEqual([`substrat.export docs/${s}`, `substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
   });
 
-  // The export reads data out, so it is gated as the door is. The import is not (a fork's stores
-  // land before it is activated, and a suspended scope may be restored), nor is the wipe a reap runs.
-  it('a host with no control plane refuses an export on a scope its lifecycle holds, and still imports and wipes', async () => {
-    const log: string[] = [];
-    const host = new CloudflareScopeHost({
-      scope: env.SCOPE,
-      scopeStores: { vertical: 'docs', runners: [{ binding: 'GRAPH', runner: recordingRunner(log) }] },
-    });
-    const t = tenantId.parse(ulid());
-    const s = scopeId.parse(ulid());
-    const at = '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'];
-    await host.setLifecycleLocal(s, { scope: 'suspended', tenant: 'active', at, revision: { epoch: 0, scope: 1, tenant: 1 } });
-    await expect(host.scopeStoreExportLocal(t, s)).rejects.toThrow(/scope not active \(status: suspended\)/);
-    await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
-    await host.deleteScopeLocal(s, t);
-    expect(log).toEqual([`substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
-  });
+  // Not gated on the scope's lifecycle, as the CP-full host and the table export are not: a reap
+  // backs up and wipes an archived scope, and a snapshot or a full pull may copy a suspended one.
+  it.each(['suspended', 'archived'] as const)(
+    'a host with no control plane exports, imports and wipes the store of a %s scope',
+    async (status) => {
+      const log: string[] = [];
+      const host = new CloudflareScopeHost({
+        scope: env.SCOPE,
+        scopeStores: { vertical: 'docs', runners: [{ binding: 'GRAPH', runner: recordingRunner(log) }] },
+      });
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      const at = '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'];
+      await host.setLifecycleLocal(s, { scope: status, tenant: 'active', at, revision: { epoch: 0, scope: 1, tenant: 1 } });
+      // The door is refused on it, so the scope's lifecycle is the one delivered.
+      await expect(host.getScopeStore(principal, t, s, 'GRAPH')).rejects.toThrow(`scope not active (status: ${status})`);
+      expect(await host.scopeStoreExportLocal(t, s)).toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+      await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+      await host.deleteScopeLocal(s, t);
+      expect(log).toEqual([`substrat.export docs/${s}`, `substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
+    },
+  );
 
   // CodeRabbit on #2244: the pin was checked only when the stores were imported, after the
   // scope's tables had been replaced (a restore) or the scope created (an import).

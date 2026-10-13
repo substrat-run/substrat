@@ -4923,7 +4923,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // plane cannot make that read, and a deployment with no store must not fail an export.
     const bindings = this.scopeStoreBindingNames();
     if (bindings.length === 0) return [];
-    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId, { live: true });
+    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId);
     if (!vertical) return [];
     const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
     for (const binding of bindings) {
@@ -4944,9 +4944,7 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<void> {
     const listed = stores ?? [];
     if (listed.length === 0) return;
-    // Not gated on the scope being active: a fork's stores land before it is activated, and a
-    // suspended scope may be restored. Its callers are the control plane's gated restore paths.
-    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId, { live: false });
+    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId);
     if (!vertical) {
       throw substratError('conflict', `dump carries scope stores, and scope ${scopeId} has no vertical to hold them`);
     }
@@ -4963,8 +4961,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private async wipeScopeStores(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const bindings = this.scopeStoreBindingNames();
     if (bindings.length === 0) return;
-    // Never gated on the scope being active: a reap or a delete wipes a scope that no longer is.
-    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId, { live: false });
+    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId);
     if (!vertical) return;
     for (const binding of bindings) {
       await this.invokeReservedStore(
@@ -4978,19 +4975,15 @@ export class CloudflareScopeHost implements ScopeHost {
    * The vertical a store export, import or wipe names. With a control plane, the scope row
    * (`scopeRecordForRead`: unknown and reaped scopes refused, `null` for a scope with no
    * vertical, a vertical this host is not pinned to refused). Without one, there is no
-   * directory to read: `scopeStoreVerticalOf` (the host's configured vertical) and, when
-   * `live`, the door's own gate, as `readScopeStoreSizes` does.
+   * directory to read: the host's configured vertical (`scopeStoreVerticalOf`).
+   *
+   * Never gated on the scope being active, on either host. These calls are the platform's own
+   * lifecycle work on scopes that often are not: a reap backs up and wipes an archived scope, a
+   * snapshot or a full pull may copy a suspended one, and a fork's stores land before it is
+   * activated. The scope's tables are exported and imported on the same terms.
    */
-  private async lifecycleStoreVertical(
-    tenantId: TenantId,
-    scopeId: ScopeId,
-    opts: { live: boolean },
-  ): Promise<string | null> {
-    if (this.cpLess) {
-      const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
-      if (opts.live) await this.assertLive(tenantId, scopeId);
-      return vertical;
-    }
+  private async lifecycleStoreVertical(tenantId: TenantId, scopeId: ScopeId): Promise<string | null> {
+    if (this.cpLess) return this.scopeStoreVerticalOf(tenantId, scopeId);
     const scope = await this.scopeRecordForRead(tenantId, scopeId);
     if (!scope.vertical) return null;
     if (this.scopeStoreVertical !== undefined && scope.vertical !== this.scopeStoreVertical) {

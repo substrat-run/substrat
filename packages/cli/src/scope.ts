@@ -120,12 +120,14 @@ export async function pullScope(opts: {
 
   // A `.sqlite` file holds the scope's tables only, and `readDump` reads no stores back
   // from one, so a pull that carries scope stores is written as the JSON dump: restoring
-  // it then restores the stores too, instead of leaving them as they were.
+  // it then restores the stores too, instead of leaving them as they were. An earlier
+  // pull's `.sqlite` is removed, so the stale copy is not the file left to restore.
   const stores = dump.stores?.length ?? 0;
   const wroteSqlite = stores === 0 && (await writeSqlite(`${base}.sqlite`, dump));
   const file = wroteSqlite ? `${base}.sqlite` : `${base}.dump.json`;
   if (!wroteSqlite) {
     writeFileSync(file, JSON.stringify(dump, null, 2));
+    if (stores > 0) rmSync(`${base}.sqlite`, { force: true });
   }
 
   console.log(`✓ pulled ${dump.tables.length} tables (${rows} rows), captured ${dump.capturedAt}`);
