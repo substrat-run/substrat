@@ -38,7 +38,6 @@ describe('scope-store copies tolerate a deployment without the routes (#2243)', 
   const graph: StoreKindRegistration = {
     kind: 'graph',
     release: '0.0.0-test',
-    script: 'store-graph',
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],

@@ -11,7 +11,6 @@ import {
   type StoreKindRegistration,
   runtimeNeeds,
   scopeStoreBindingName,
-  STORE_KINDS,
   storeKindId,
   storeKindRegistration,
   storeOperationName,
@@ -203,7 +202,6 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
     const registration = (operations: string[]) => ({
       kind: 'graph',
       release: '1.0.0',
-      script: 'graph-store',
       className: 'GraphStore',
       operations,
       platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -219,7 +217,6 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   const graph: StoreKindRegistration = {
     kind: 'graph',
     release: '0.0.0-test',
-    script: 'store-graph',
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
