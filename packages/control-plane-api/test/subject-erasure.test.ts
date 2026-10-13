@@ -12,6 +12,7 @@ import {
   scopeId,
   tenantId,
   type ScopeBackup,
+  type ScopeId,
   type ScopeDump,
   type SubjectShredReceipt,
 } from '@substrat-run/contracts';
@@ -272,6 +273,71 @@ describe('subject erasure (#37)', () => {
     expect(shreddedRow[payload]).toBeNull();
   });
 
+  it('restores from a source this host does not know, and says the store replay is incomplete (#2207)', async () => {
+    // The erasure replay lists the source's tombstones. A source that is not a scope of this
+    // tenant here (another host's backup, an upload, a deleted snapshot) has none to read: the
+    // restore still lands, and the answer says so rather than refusing it.
+    const erasedHere: string[] = [];
+    const storeDir = mkdtempSync(join(tmpdir(), 'cp-replay-'));
+    const storeHost = new SqliteScopeHost({
+      dir: storeDir,
+      scopeStores: {
+        runners: [{
+          binding: 'GRAPH',
+          runner: {
+            kind: 'counter',
+            async start() {},
+            async stop() {},
+            async invoke(_address, request) {
+              if (request.operation === 'substrat.erase') {
+                erasedHere.push(String(Reflect.get(request.input ?? {}, 'subjectId')));
+                return { result: { erased: 1 } };
+              }
+              if (request.operation === 'substrat.export') return { result: { tables: [] } };
+              if (request.operation === 'substrat.import') return { result: { tables: 0 } };
+              return { result: {} };
+            },
+          },
+        }],
+      },
+    });
+    try {
+      const target = scopeId.parse(ulid());
+      await storeHost.admin.createTenant(staff, { id: t, slug: 'replay-co', name: 'Replay Co' });
+      await storeHost.provisionScope(staff, { tenantId: t, scopeId: target, vertical: 'docs' });
+      await storeHost.admin.activateScope(staff, t, target);
+      const own = ulid();
+      await storeHost.admin.shredSubject(staff, t, target, own);
+      const dump = { ...(await storeHost.admin.exportScope(staff, t, target)), scopeId: scopeId.parse(ulid()) };
+      const api = createControlPlaneApi({ host: storeHost, authenticate: UNSAFE_devPlatformActorAuth() });
+      const res = await api.request(`/tenants/${t}/scopes/${target}/restore`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify(dump),
+      });
+      const body = await res.json();
+      expect(body, JSON.stringify(body)).toMatchObject({ restored: target, storeErasuresReplayed: 1, incomplete: true, sourceUnknown: true });
+      expect(erasedHere).toContain(own);
+    } finally {
+      await storeHost.close();
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a restore on a host with no stores answers as it always did', async () => {
+    const dest = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: dest });
+    await host.admin.activateScope(staff, t, dest);
+    const dump = { ...(await host.admin.exportScope(staff, t, dest)), scopeId: scopeId.parse(ulid()) };
+    const res = await app().request(`/tenants/${t}/scopes/${dest}/restore`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify(dump),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ restored: dest, tables: dump.tables.length });
+  });
+
   it('refuses a subject id that is not a ULID, before it reaches the UPDATE', async () => {
     const res = await app().request(`/tenants/${t}/scopes/${s}/subjects/%25/shred`, {
       method: 'POST',
@@ -322,40 +388,108 @@ describe('subject erasure (#37)', () => {
     expect(asked).toBe(false);
   });
 
-  it('a hosted restore imports the dump stores through the platform, not the vertical', async () => {
-    const imported: { binding: string; tables: unknown[] }[][] = [];
+  /** A version of `docs` that declares one graph store, and a scope of `docs` bound to it. */
+  let docsRegistered = false;
+  const graphScope = async (): Promise<ScopeId> => {
+    if (!docsRegistered) {
+      await host.admin.registerVertical(staff, { slug: 'docs', name: 'docs', source: 'cli' });
+      docsRegistered = true;
+    }
+    const versionId = ulid();
+    await host.admin.publishVersion(staff, {
+      id: versionId, verticalSlug: 'docs', version: `1.0.${versionId.slice(-4).toLowerCase()}`, manifestDigest: `m-${versionId}`,
+      permissionDigest: 'p', migrationDigest: 'g', deploymentRef: `docs-${versionId.toLowerCase()}`,
+      manifestJson: JSON.stringify({
+        version: '1.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+        scopeStores: [{ binding: 'GRAPH', kind: 'graph' }],
+      }),
+    });
+    await host.admin.admitVersion(staff, versionId);
     const scoped = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: 'docs' });
     await host.admin.activateScope(staff, t, scoped);
-    const dump = await host.admin.exportScope(staff, t, scoped);
-    const table = { name: 'nodes', ddl: 'CREATE TABLE nodes(id TEXT)', columns: ['id'], rows: [['a']] };
-    const api = createControlPlaneApi({
+    await host.admin.bindScopeVersion(staff, t, scoped, versionId);
+    return scoped;
+  };
+  const graphTable = { name: 'nodes', ddl: 'CREATE TABLE nodes(id TEXT)', columns: ['id'], rows: [['a']] };
+
+  /** The control plane against a hosted `docs`, its stores reached through the platform. */
+  const hosted = (calls: { imported: unknown[][]; erased: string[]; failErase?: boolean }, tables: number) =>
+    createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       verticals: {
         docs: {
-          restoreScope: async () => ({ tables: dump.tables.length }),
+          restoreScope: async () => ({ tables }),
+          snapshotScope: async () => ({}),
         },
       } as never,
       platformScopeStores: {
-        exportStores: async () => [],
-        eraseSubject: async () => [],
+        exportStores: async () => [{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }],
+        eraseSubject: async ({ subjectId }) => {
+          if (calls.failErase) throw new Error('store unavailable');
+          calls.erased.push(subjectId);
+          return [{ binding: 'GRAPH', erased: 1 }];
+        },
         wipeStores: async () => undefined,
         sizeStores: async () => [],
-        importStores: async (_input) => {
-          imported.push(_input.stores);
+        importStores: async (input) => {
+          calls.imported.push(input.stores);
         },
       },
     });
-    const res = await api.request(`/tenants/${t}/scopes/${scoped}/restore`, {
+
+  it('a hosted restore imports the dump stores through the platform, not the vertical', async () => {
+    const scoped = await graphScope();
+    const dump = await host.admin.exportScope(staff, t, scoped);
+    const calls = { imported: [] as unknown[][], erased: [] as string[] };
+    const res = await hosted(calls, dump.tables.length).request(`/tenants/${t}/scopes/${scoped}/restore`, {
       method: 'POST',
       headers: auth,
-      body: JSON.stringify({
-        ...dump,
-        stores: [{ binding: 'GRAPH', kind: 'counter', tables: [table] }],
-      }),
+      body: JSON.stringify({ ...dump, stores: [{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }] }),
     });
     expect(res.status).toBe(200);
-    expect(imported).toEqual([[{ binding: 'GRAPH', kind: 'counter', tables: [table] }]]);
+    expect(calls.imported).toEqual([[{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }]]);
+  });
+
+  it("refuses, before any write, a dump store the destination's version does not declare (#2207)", async () => {
+    const scoped = await graphScope();
+    const dump = await host.admin.exportScope(staff, t, scoped);
+    const audited = async () => (await host.admin.auditLog(staff, { tenantId: t, action: 'restoreScope' })).length;
+    const before = await audited();
+    for (const [store, says] of [
+      [{ binding: 'OTHER', kind: 'graph', tables: [graphTable] }, /'OTHER', which this scope's version does not declare/],
+      [{ binding: 'GRAPH', kind: 'counter', tables: [graphTable] }, /is a 'counter', and this scope's version declares a 'graph'/],
+    ] as const) {
+      const calls = { imported: [] as unknown[][], erased: [] as string[] };
+      const res = await hosted(calls, dump.tables.length).request(`/tenants/${t}/scopes/${scoped}/restore`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ ...dump, stores: [store] }),
+      });
+      expect(res.status).toBe(422);
+      expect((await res.json() as { error: string }).error).toMatch(says);
+      expect(calls.imported).toEqual([]);
+    }
+    expect(await audited()).toBe(before);
+  });
+
+  it("a hosted snapshot reports its fork's erasure replay, as a restore does (#2207)", async () => {
+    const scoped = await graphScope();
+    const gone = ulid();
+    await host.admin.shredSubject(staff, t, scoped, gone);
+    const done = { imported: [] as unknown[][], erased: [] as string[] };
+    const ok = await hosted(done, 0).request(`/tenants/${t}/scopes/${scoped}/snapshots`, { method: 'POST', headers: auth, body: '{}' });
+    expect(ok.status).toBe(201);
+    expect(await ok.json()).toMatchObject({ forkedFrom: scoped, storeErasuresReplayed: 1 });
+    expect(done.erased).toContain(gone);
+
+    const failing = { imported: [] as unknown[][], erased: [] as string[], failErase: true };
+    const short = await hosted(failing, 0).request(`/tenants/${t}/scopes/${scoped}/snapshots`, { method: 'POST', headers: auth, body: '{}' });
+    expect(short.status).toBe(201);
+    const body = await short.json();
+    expect(body).toMatchObject({ forkedFrom: scoped, storeErasuresReplayed: 0, incomplete: true });
+    expect(body).not.toHaveProperty('sourceUnknown');
   });
 });

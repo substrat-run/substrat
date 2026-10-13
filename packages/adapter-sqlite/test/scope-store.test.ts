@@ -260,7 +260,7 @@ describe('scope store door (pure adapter, #2209)', () => {
 
       fail = true;
       const incomplete = await host.restoreScope(staff, t, s, dump);
-      expect(incomplete.storeErasureIncomplete).toBe(true);
+      expect(incomplete).toEqual({ storeErasuresReplayed: 0, storeErasureIncomplete: true });
       expect(await storeAfter.invoke('held', {})).toEqual([subject]);
 
       fail = false;

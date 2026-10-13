@@ -500,7 +500,7 @@ import {
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreStub } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, storeEraseResult, storeExportResult, storeImportResult, storeSizeResult, storeWipeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
@@ -4524,7 +4524,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
-  ): Promise<{ storeErasuresReplayed: number; storeErasureIncomplete: boolean }> {
+  ): Promise<StoreErasureReplay | void> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
@@ -4556,13 +4556,13 @@ export class CloudflareScopeHost implements ScopeHost {
         sourceScopeId: dump.scopeId,
         tables: dump.tables.length,
         capturedAt: dump.capturedAt,
-        storeErasuresReplayed: replay.replayed,
+        ...replay,
       },
     );
     if (carry) {
       await this.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: switchedOff });
     }
-    return { storeErasuresReplayed: replay.replayed, storeErasureIncomplete: replay.incomplete };
+    return replay;
   }
 
   /**
@@ -5015,29 +5015,27 @@ export class CloudflareScopeHost implements ScopeHost {
     }
   }
 
-  /** `substrat.erase` for every tombstoned subject. The source scope's marks are used. */
+  /**
+   * `substrat.erase` again for every tombstoned subject (#2207), on the target's and the
+   * source's marks (`replayStoreErasures`). A target this host names no store for (no
+   * binding, or no vertical a store is kept for) has nothing to replay into: nothing is read.
+   */
   private async replayShreddedStoreErasures(
     actor: PlatformActorId,
     tenantId: TenantId,
-    destScopeId: ScopeId,
-    markScopeId: ScopeId,
-  ): Promise<{ replayed: number; incomplete: boolean }> {
-    let cursor: string | undefined;
-    let replayed = 0;
-    let incomplete = false;
-    for (;;) {
-      const page = await this.admin.listShreddedSubjects(actor, tenantId, markScopeId, cursor);
-      for (const subjectId of page.subjects) {
-        try {
-          const rows = await this.eraseScopeStores(tenantId, destScopeId, subjectId);
-          replayed += rows.length;
-        } catch {
-          incomplete = true;
-        }
-      }
-      if (!page.nextCursor) return { replayed, incomplete };
-      cursor = page.nextCursor;
-    }
+    target: ScopeId,
+    source: ScopeId,
+  ): Promise<StoreErasureReplay | undefined> {
+    if (this.scopeStoreBindingNames().length === 0) return undefined;
+    if (!(await this.erasureStoreVertical(tenantId, target))) return undefined;
+    return replayStoreErasures({
+      admin: this.admin,
+      actor,
+      tenantId,
+      target,
+      source,
+      erase: async (subjectId) => (await this.eraseScopeStores(tenantId, target, subjectId)).length,
+    });
   }
 
   /** `substrat.wipe` on each declared binding, before the scope's own storage goes. */

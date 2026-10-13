@@ -138,7 +138,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
-import { SCOPE_COPY_LEASE_MS, copyRestoreFence } from '@substrat-run/kernel';
+import { SCOPE_COPY_LEASE_MS, copyRestoreFence, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
 import {
@@ -1477,37 +1477,67 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
   };
 
-  /** Erase every tombstoned subject from the destination's stores. Marks come from `markScopeId`. */
+  /**
+   * Erase every tombstoned subject from the destination's stores (#2207): the destination's
+   * marks and the source's (`replayStoreErasures`). Nothing when the platform calls no stores
+   * for it.
+   */
   const replayPlatformStoreErasures = async (
     c: ReqCtx,
     destination: Scope,
-    markScopeId: ScopeId,
-  ): Promise<{ storeErasuresReplayed: number; storeErasureIncomplete: boolean }> => {
+    source: ScopeId,
+  ): Promise<StoreErasureReplay | undefined> => {
     const caller = options.platformScopeStores;
-    if (!caller || !destination.vertical) return { storeErasuresReplayed: 0, storeErasureIncomplete: false };
+    const vertical = destination.vertical;
+    if (!caller || !vertical) return undefined;
     const stores = await manifestStores(c, destination);
-    if (stores.length === 0) return { storeErasuresReplayed: 0, storeErasureIncomplete: false };
-    let storeErasuresReplayed = 0;
-    let storeErasureIncomplete = false;
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await c.var.admin.listShreddedSubjects(c.get('actor'), destination.tenantId, markScopeId, cursor);
-      for (const subjectId of page.subjects) {
-        try {
-          const rows = await caller.eraseSubject({
-            tenantId: destination.tenantId,
-            scopeId: destination.id,
-            vertical: destination.vertical,
-            subjectId,
-            stores,
-          });
-          storeErasuresReplayed += rows.length;
-        } catch {
-          storeErasureIncomplete = true;
-        }
+    if (stores.length === 0) return undefined;
+    return replayStoreErasures({
+      admin: c.var.admin,
+      actor: c.get('actor'),
+      tenantId: destination.tenantId,
+      target: destination.id,
+      source,
+      erase: async (subjectId) =>
+        (await caller.eraseSubject({ tenantId: destination.tenantId, scopeId: destination.id, vertical, subjectId, stores })).length,
+    });
+  };
+
+  /**
+   * The store replay on a route's answer (#2207). Present only with something to report, as
+   * `StoreErasureReplay` is. `sourceUnknown`: the source is not a scope of this tenant here,
+   * so its marks were not read, and a retry does not change that.
+   */
+  const storeReplayFields = (replays: readonly StoreErasureReplay[]) =>
+    replays.length === 0
+      ? {}
+      : {
+          storeErasuresReplayed: replays.reduce((n, r) => n + r.storeErasuresReplayed, 0),
+          ...(replays.some((r) => r.storeErasureIncomplete) ? { incomplete: true } : {}),
+          ...(replays.some((r) => r.storeErasureSourceUnknown) ? { sourceUnknown: true } : {}),
+        };
+
+  /**
+   * A dump's stores, checked against what the destination's version declares (#2207), before
+   * any write: a binding it does not declare, or one of another kind, would be imported into an
+   * object nothing reads, or into one of the wrong shape.
+   */
+  const refuseUndeclaredDumpStores = async (
+    c: ReqCtx,
+    scope: Scope,
+    stores: readonly { binding: string; kind: string }[],
+  ): Promise<void> => {
+    if (stores.length === 0) return;
+    if (!scope.vertical) throw new ControlPlaneError(422, 'restore refused: the dump names stores and the scope names no vertical');
+    const declared = new Map((await manifestStores(c, scope)).map((d) => [d.binding, d.kind]));
+    for (const store of stores) {
+      const kind = declared.get(store.binding);
+      if (kind === undefined) {
+        throw new ControlPlaneError(422, `restore refused: the dump names store '${store.binding}', which this scope's version does not declare`);
       }
-      if (!page.nextCursor) return { storeErasuresReplayed, storeErasureIncomplete };
-      cursor = page.nextCursor;
+      if (kind !== store.kind) {
+        throw new ControlPlaneError(422, `restore refused: the dump's store '${store.binding}' is a '${store.kind}', and this scope's version declares a '${kind}'`);
+      }
     }
   };
 
@@ -4906,11 +4936,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tenantId: TenantId,
     scope: Scope,
     opts: { kind?: string; expiresAt?: string },
-  ): Promise<ScopeId> => {
+  ): Promise<{ snapId: ScopeId; replay?: StoreErasureReplay }> => {
     const actor = c.get('actor');
     const deployment = await deploymentForScope(c, scope);
     const vertical = deployment?.client;
-    if (!vertical) return c.var.host.snapshotScope(actor, tenantId, scope.id, opts);
+    if (!vertical) return { snapId: await c.var.host.snapshotScope(actor, tenantId, scope.id, opts) };
     const snapId = scopeIdSchema.parse(ulid());
     // #1722: the script the copy lands in (the source's own), named in the ledger before the
     // copy, so a bind that fails, or a request that dies, leaves a fork reap and erasure reach.
@@ -4948,6 +4978,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       expiresAt: opts.expiresAt,
     });
     const moveId = ref ? ulid() : null;
+    let replay: StoreErasureReplay | undefined;
     try {
       if (moveId && ref) {
         // No load stamp: the vertical's in-script copy leaves none, so a crash-recovery sweep keeps
@@ -4970,7 +5001,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           });
           if (stores.length > 0) {
             await storesCaller.importStores({ tenantId, scopeId: snapId, vertical: scope.vertical, stores });
-            await replayPlatformStoreErasures(c, { ...scope, id: snapId }, scope.id);
+            replay = await replayPlatformStoreErasures(c, { ...scope, id: snapId }, scope.id);
           }
         }
       }
@@ -4995,7 +5026,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       throw e;
     }
-    return snapId;
+    return { snapId, replay };
   };
 
   // The forks OF one scope — what a Snapshots UI lists. A directory read (kind,
@@ -5018,8 +5049,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     try {
-      const snapId = await orchestratedSnapshot(c, tenantId, scope, body);
-      return c.json(await c.var.admin.getScopeRecord(c.get('actor'), tenantId, snapId), 201);
+      const { snapId, replay } = await orchestratedSnapshot(c, tenantId, scope, body);
+      const record = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, snapId);
+      // #2207: the fork's erasure replay, under the restore's rule: present only with something to report.
+      return c.json({ ...record, ...storeReplayFields(replay ? [replay] : []) }, 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, failedWith(c, e));
@@ -6051,6 +6084,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (dump.tables.length === 0) {
       return c.json({ error: 'restore refused: the backup has no tables — not a scope dump' }, 422);
     }
+    // #2207: the dump's stores against the destination's declaration, before anything is written.
+    if (options.platformScopeStores) {
+      try {
+        await refuseUndeclaredDumpStores(c, scope, dump.stores);
+      } catch (e) {
+        if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
+        throw e;
+      }
+    }
     try {
       // Belt and braces for #37: a caller who fetched the object bytes by some other route
       // may POST a still-sealed dump, and a scope restored full of ciphertext is a silent
@@ -6071,10 +6113,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // throw (the deployment's half, the re-assert), and the data that landed may predate a reconcile.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       const hostReplay = await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
-      if (storesCaller && vertical && dump.stores.length > 0) {
-        if (!scope.vertical) {
-          throw new ControlPlaneError(422, 'restore refused: the dump names stores and the scope names no vertical');
-        }
+      if (storesCaller && vertical && scope.vertical && dump.stores.length > 0) {
         await storesCaller.importStores({
           tenantId,
           scopeId,
@@ -6084,9 +6123,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       const platformReplay = storesCaller && scope.vertical
         ? await replayPlatformStoreErasures(c, scope, sourceHint ?? origin.scopeId)
-        : { storeErasuresReplayed: 0, storeErasureIncomplete: false };
-      const storeErasuresReplayed = hostReplay.storeErasuresReplayed + platformReplay.storeErasuresReplayed;
-      const storeErasureIncomplete = hostReplay.storeErasureIncomplete || platformReplay.storeErasureIncomplete;
+        : undefined;
+      const replays = [hostReplay, platformReplay].filter((r): r is StoreErasureReplay => !!r);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
       const restored = vertical
@@ -6108,8 +6146,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({
         restored: scopeId,
         tables: tables.length,
-        storeErasuresReplayed,
-        ...(storeErasureIncomplete ? { incomplete: true } : {}),
+        ...storeReplayFields(replays),
       });
     } catch (e) {
       // #2185: and once more on the way out of a failure, for a sweep reconcile that wrote the

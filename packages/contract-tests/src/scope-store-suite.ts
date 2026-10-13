@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { errorCodeOf, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStoreAddress, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
@@ -353,6 +353,126 @@ export function scopeStoreContractSuite(
       );
       expect(errorCodeOf(refusal)).toBe('forbidden');
       expect(await store.invoke('read')).toBe(before);
+    });
+
+    /*
+     * #2207: a restore re-erases every tombstoned subject. Each case restores into a scope of
+     * its own, so the count is exact: one `substrat.erase` per subject on the one binding.
+     */
+    describe('a restore replays erasures', () => {
+      const fresh = async (t = tenant) => {
+        const scope = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t, scopeId: scope, vertical: 'docs' });
+        await host.admin.activateScope(staff, t, scope);
+        return scope;
+      };
+      const erasedIn = async (scope: ScopeId, t = tenant) =>
+        (await host.getScopeStore(principal, t, scope, 'GRAPH')).invoke('erased');
+
+      it('a scope with no store, on a host with stores, restores as it always did', async () => {
+        const plain = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: plain });
+        await host.admin.activateScope(staff, tenant, plain);
+        await host.admin.shredSubject(staff, tenant, plain, ulid());
+        const dump = { ...(await host.admin.exportScope(staff, tenant, plain)), scopeId: scopeId.parse(ulid()) };
+        expect(await host.restoreScope(staff, tenant, plain, dump)).toBeUndefined();
+      });
+
+      it('with a store, no tombstone and a known source, answers nothing: none had to be replayed', async () => {
+        const scope = await fresh();
+        const dump = await host.admin.exportScope(staff, tenant, scope);
+        expect(await host.restoreScope(staff, tenant, scope, dump)).toBeUndefined();
+      });
+
+      it('re-erases a subject tombstoned in the restored scope', async () => {
+        const scope = await fresh();
+        const dump = await host.admin.exportScope(staff, tenant, scope);
+        const subject = ulid();
+        await host.admin.shredSubject(staff, tenant, scope, subject);
+        expect(await host.restoreScope(staff, tenant, scope, dump)).toEqual({
+          storeErasuresReplayed: 1,
+          storeErasureIncomplete: false,
+        });
+      });
+
+      it("onto another scope, re-erases the source's marks and the target's own", async () => {
+        const source = await fresh();
+        const target = await fresh();
+        const fromSource = ulid();
+        const fromTarget = ulid();
+        await host.admin.shredSubject(staff, tenant, source, fromSource);
+        await host.admin.shredSubject(staff, tenant, target, fromTarget);
+        const dump = await host.admin.exportScope(staff, tenant, source);
+        expect(await host.restoreScope(staff, tenant, target, dump)).toEqual({
+          storeErasuresReplayed: 2,
+          storeErasureIncomplete: false,
+        });
+        expect(await erasedIn(target)).toEqual(expect.arrayContaining([fromSource, fromTarget]));
+      });
+
+      it('from a source this host does not know, restores and says the replay is incomplete', async () => {
+        const target = await fresh();
+        const store = await host.getScopeStore(principal, tenant, target, 'GRAPH');
+        await store.invoke('increment', { by: 7 });
+        const own = ulid();
+        await host.admin.shredSubject(staff, tenant, target, own);
+        const dump = { ...(await host.admin.exportScope(staff, tenant, target)), scopeId: scopeId.parse(ulid()) };
+        await store.invoke('increment', { by: 1 });
+        expect(await host.restoreScope(staff, tenant, target, dump)).toEqual({
+          storeErasuresReplayed: 1,
+          storeErasureIncomplete: true,
+          storeErasureSourceUnknown: true,
+        });
+        // The data landed, and the target's own mark was still replayed.
+        expect(await store.invoke('read')).toBe(7);
+        expect(await erasedIn(target)).toContain(own);
+      });
+
+      it("never reads another tenant's marks: that source is unknown here", async () => {
+        const other = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: other, slug: `t-${other.toLowerCase()}`, name: 'Other' });
+        const elsewhere = await fresh(other);
+        const theirs = ulid();
+        await host.admin.shredSubject(staff, other, elsewhere, theirs);
+        const target = await fresh();
+        const dump = { ...(await host.admin.exportScope(staff, tenant, target)), scopeId: elsewhere };
+        expect(await host.restoreScope(staff, tenant, target, dump)).toEqual({
+          storeErasuresReplayed: 0,
+          storeErasureIncomplete: true,
+          storeErasureSourceUnknown: true,
+        });
+        expect(await erasedIn(target)).not.toContain(theirs);
+      });
+
+      it('from a reaped source, still replays its marks: a reap keeps the directory row', async () => {
+        const source = await fresh();
+        const subject = ulid();
+        await host.admin.shredSubject(staff, tenant, source, subject);
+        const dump = await host.admin.exportScope(staff, tenant, source);
+        await host.admin.archiveScope(staff, tenant, source);
+        await host.admin.reapScope(staff, tenant, source);
+        const target = await fresh();
+        expect(await host.restoreScope(staff, tenant, target, dump)).toEqual({
+          storeErasuresReplayed: 1,
+          storeErasureIncomplete: false,
+        });
+        expect(await erasedIn(target)).toContain(subject);
+      });
+
+      it('from a deleted snapshot, restores and says the replay is incomplete: the row is gone', async () => {
+        const fork = await host.snapshotScope(staff, tenant, await fresh());
+        const subject = ulid();
+        await host.admin.shredSubject(staff, tenant, fork, subject);
+        const dump = await host.admin.exportScope(staff, tenant, fork);
+        await host.deleteSnapshot(staff, tenant, fork);
+        const target = await fresh();
+        expect(await host.restoreScope(staff, tenant, target, dump)).toEqual({
+          storeErasuresReplayed: 0,
+          storeErasureIncomplete: true,
+          storeErasureSourceUnknown: true,
+        });
+        expect(await erasedIn(target)).not.toContain(subject);
+      });
     });
   });
 }

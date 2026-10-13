@@ -205,8 +205,36 @@ A store dump is opaque to the platform, so a copy can bring an erased subject's 
 back. After a restore, and after a snapshot copy, the platform runs `substrat.erase`
 again for every subject whose key row has `shredded_at` set, on every declared binding,
 whatever the timestamp. Erase is idempotent. The receipt counts `storeErasuresReplayed`.
-A failed call leaves the restore incomplete, and the same call again converges. Key rows
-live in the directory. A copy that did not bring them uses the source scope's marks.
+A failed call leaves the restore incomplete, and the same call again converges.
+
+Key rows live in the directory, keyed by scope, and a dump does not carry them. So the
+replay reads two scopes' marks: the target's, always, because the data now lives there,
+and the source's (the upload's stated source, else the dump's `scopeId`) when that source
+is a scope of the same tenant on this host. Each subject is erased once. One function
+does this for both adapters and the control plane: `replayStoreErasures` in the kernel.
+
+A restore is never refused because its source is unknown. A backup from another host,
+an upload, another tenant's scope or a deleted snapshot restores, and the result says
+`storeErasureIncomplete` with `storeErasureSourceUnknown` (the restore route answers
+`incomplete` and `sourceUnknown`). Running it again does not change that answer, unlike
+a failed store call. Both adapters behave the same:
+
+- a reaped source keeps its directory row and its key rows, so its marks are read;
+- a deleted snapshot loses its directory row, so its marks are not read.
+
+A scope this host keeps no store for (no binding, or a vertical no store is kept for)
+replays nothing and reads no marks. A restore returns the replay's result only when there
+is something to report: `storeErasuresReplayed > 0` or `storeErasureIncomplete`. Absent
+means no erasure had to be replayed and none is missing, which is also what a restore
+returned before stores existed.
+
+A hosted snapshot answers its fork's replay the same way (`storeErasuresReplayed`,
+`incomplete`). A restore refuses, before anything is written, a dump store the
+destination's version does not declare, or one of another kind.
+
+The gap that remains: a subject erased in a source this host does not know is not
+re-erased from the restored stores. Closing it needs a tenant-level erasure ledger that
+outlives the scope and travels between hosts. That is not designed here.
 
 What remains unsealed is the backup file at rest, until someone restores it. That is
 the limit. Tenant deletion wipes each declared store before the scope's own storage

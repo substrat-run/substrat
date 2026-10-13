@@ -743,9 +743,11 @@ import {
   callReservedStoreOperation,
   callScopeStore,
   observeStoreCall,
+  replayStoreErasures,
   scopeStoreRunnersOf,
   type ScopeStoreHostOptions,
   type ScopeStoreRunner,
+  type StoreErasureReplay,
 } from '@substrat-run/kernel';
 import {
   attributedView,
@@ -4023,7 +4025,7 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
-  ): Promise<{ storeErasuresReplayed: number; storeErasureIncomplete: boolean }> {
+  ): Promise<StoreErasureReplay | void> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
@@ -4055,10 +4057,10 @@ export class SqliteScopeHost implements ScopeHost {
         sourceScopeId: dump.scopeId,
         tables: dump.tables.length,
         capturedAt: dump.capturedAt,
-        storeErasuresReplayed: replay.replayed,
+        ...replay,
       },
     );
-    return { storeErasuresReplayed: replay.replayed, storeErasureIncomplete: replay.incomplete };
+    return replay;
   }
 
   async snapshotScope(
@@ -4302,6 +4304,18 @@ export class SqliteScopeHost implements ScopeHost {
     return sizes;
   }
 
+  /** The vertical whose stores this scope has on this host, or nothing when it has none. */
+  private storeVerticalOf(scopeId: ScopeId): string | undefined {
+    if (this.scopeStoreRunners.size === 0) return undefined;
+    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { vertical: string | null }
+      | undefined;
+    const vertical = row?.vertical ?? undefined;
+    if (!vertical) return undefined;
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return undefined;
+    return vertical;
+  }
+
   /**
    * `substrat.erase` on each declared binding. A store error throws, so the caller
    * can leave the subject key untouched. No runners means nothing to erase.
@@ -4312,15 +4326,10 @@ export class SqliteScopeHost implements ScopeHost {
     subjectId: string,
   ): Promise<{ binding: string; erased: number }[]> {
     const bindings = [...this.scopeStoreRunners.keys()];
-    if (bindings.length === 0) return [];
-    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
-      | { vertical: string | null }
-      | undefined;
-    const vertical = row?.vertical;
     // Shred calls this for every scope. One this host cannot name a store for is
     // nothing to erase, and the key is still destroyed.
+    const vertical = this.storeVerticalOf(scopeId);
     if (!vertical) return [];
-    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return [];
     const erasures: { binding: string; erased: number }[] = [];
     for (const binding of bindings) {
       const { erased } = storeEraseResult.parse(
@@ -4385,32 +4394,25 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
-   * `substrat.erase` again for every tombstoned subject (#2207). Erase is
-   * idempotent. A failed call is reported and a later restore retries it.
-   * Key rows live in the directory, so a copy uses the source scope's marks.
+   * `substrat.erase` again for every tombstoned subject (#2207), on the target's and the
+   * source's marks (`replayStoreErasures`). A target this host names no store for (no
+   * runner, or no vertical a store is kept for) has nothing to replay into: nothing is read.
    */
   private async replayShreddedStoreErasures(
     actor: PlatformActorId,
     tenantId: TenantId,
-    destScopeId: ScopeId,
-    markScopeId: ScopeId,
-  ): Promise<{ replayed: number; incomplete: boolean }> {
-    let cursor: string | undefined;
-    let replayed = 0;
-    let incomplete = false;
-    for (;;) {
-      const page = await this.admin.listShreddedSubjects(actor, tenantId, markScopeId, cursor);
-      for (const subjectId of page.subjects) {
-        try {
-          const rows = await this.eraseScopeStores(tenantId, destScopeId, subjectId);
-          replayed += rows.length;
-        } catch {
-          incomplete = true;
-        }
-      }
-      if (!page.nextCursor) return { replayed, incomplete };
-      cursor = page.nextCursor;
-    }
+    target: ScopeId,
+    source: ScopeId,
+  ): Promise<StoreErasureReplay | undefined> {
+    if (!this.storeVerticalOf(target)) return undefined;
+    return replayStoreErasures({
+      admin: this.admin,
+      actor,
+      tenantId,
+      target,
+      source,
+      erase: async (subjectId) => (await this.eraseScopeStores(tenantId, target, subjectId)).length,
+    });
   }
 
   /** `substrat.wipe` on each declared binding, before the scope's own storage goes. */

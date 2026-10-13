@@ -84,12 +84,14 @@ export {
   callReservedStoreOperation,
   callScopeStore,
   observeStoreCall,
+  replayStoreErasures,
   scopeStoreRunnersOf,
   type ScopeStoreAddress,
   type ScopeStoreHostOptions,
   type ScopeStoreRunner,
   type ScopeStoreStubOptions,
   type StoreCallReport,
+  type StoreErasureReplay,
   type StoreStub,
 } from './scope-store.js';
 export type { GrantedEntitiesPage, GrantedEntityIdsMayRepeatPage } from './grant-scoped-read.js';

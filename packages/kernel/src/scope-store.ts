@@ -1,4 +1,5 @@
 import {
+  errorCodeOf,
   RESERVED_STORE_OPERATIONS,
   StoreError,
   storeEraseInput,
@@ -13,6 +14,7 @@ import {
   substratError,
   isStoreOperationName,
   type CheckSubject,
+  type PlatformActorId,
   type ReservedStoreOperation,
   type ScopeId,
   type StoreOperationCatalog,
@@ -21,6 +23,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { currentStoreCallObserver } from './invocation-line.js';
+import type { HostAdmin } from './scope-host.js';
 
 /** Who a scope-store object belongs to. The host builds it. The runner keys on it. */
 export interface ScopeStoreAddress {
@@ -214,4 +217,75 @@ export async function callReservedStoreOperation(
     throw new StoreError({ code: 'bad_envelope', status: 502, body: result.error.issues });
   }
   return result.data;
+}
+
+/**
+ * What a restore's erasure replay did (#2207). Present only when there is something to report:
+ * `storeErasuresReplayed > 0` or `storeErasureIncomplete`. Absent means no erasure had to be
+ * replayed and none is missing (no store for the target scope on this host, or no tombstone
+ * that applies).
+ *
+ * `storeErasureIncomplete` means some tombstone that applies to the restored data was not
+ * re-erased here. Either a store call failed, which the same restore again converges, or
+ * `storeErasureSourceUnknown`: the dump's source scope is not a scope of this tenant on this
+ * host (another host's backup, another tenant's, a deleted snapshot), so its marks cannot
+ * be read and running the restore again does not change that.
+ */
+export interface StoreErasureReplay {
+  storeErasuresReplayed: number;
+  storeErasureIncomplete: boolean;
+  storeErasureSourceUnknown?: true;
+}
+
+/**
+ * `substrat.erase` again for every subject tombstoned in the target or in the dump's source
+ * (#2207). The target's marks always apply: the data now lives there. The source's apply
+ * when this host knows the source; a reaped scope keeps its directory row and its marks, so
+ * it is known. An unknown source never refuses the restore: it is reported. Each subject is
+ * erased once, and `erase` returns how many bindings it called.
+ */
+export async function replayStoreErasures(input: {
+  admin: Pick<HostAdmin, 'listShreddedSubjects'>;
+  actor: PlatformActorId;
+  tenantId: TenantId;
+  target: ScopeId;
+  source: ScopeId;
+  erase: (subjectId: string) => Promise<number>;
+}): Promise<StoreErasureReplay | undefined> {
+  const { admin, actor, tenantId } = input;
+  const subjects = new Set<string>();
+  const collect = async (scope: ScopeId): Promise<void> => {
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await admin.listShreddedSubjects(actor, tenantId, scope, cursor);
+      for (const subject of page.subjects) subjects.add(subject);
+      if (!page.nextCursor) return;
+      cursor = page.nextCursor;
+    }
+  };
+  await collect(input.target);
+  let sourceUnknown = false;
+  if (input.source !== input.target) {
+    try {
+      await collect(input.source);
+    } catch (e) {
+      if (errorCodeOf(e) !== 'not_found') throw e;
+      sourceUnknown = true;
+    }
+  }
+  let replayed = 0;
+  let failed = false;
+  for (const subject of subjects) {
+    try {
+      replayed += await input.erase(subject);
+    } catch {
+      failed = true;
+    }
+  }
+  if (replayed === 0 && !failed && !sourceUnknown) return undefined;
+  return {
+    storeErasuresReplayed: replayed,
+    storeErasureIncomplete: failed || sourceUnknown,
+    ...(sourceUnknown ? { storeErasureSourceUnknown: true as const } : {}),
+  };
 }

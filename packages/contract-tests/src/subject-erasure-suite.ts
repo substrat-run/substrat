@@ -142,7 +142,10 @@ export function subjectErasureContractSuite(
       const other = subject();
       await seed(who);
       await seed(other);
-      expect(await host.admin.listShreddedSubjects(staff, t1, s1)).toEqual({ subjects: [], nextCursor: null });
+      // s1 is shared with the tests above, which shred subjects of their own: assert on these two.
+      const before = await host.admin.listShreddedSubjects(staff, t1, s1);
+      expect(before.subjects).not.toContain(who);
+      expect(before.subjects).not.toContain(other);
       await host.admin.shredSubject(staff, t1, s1, who);
       const listed = await host.admin.listShreddedSubjects(staff, t1, s1);
       expect(listed.subjects).toContain(who);

@@ -451,6 +451,7 @@ export const INDEX_VALUE_EXPORTS = [
   'registryImportCandidates',
   'repairDerivedObjects',
   'replayFor',
+  'replayStoreErasures',
   'repointScopeGrants',
   'requestEmail',
   'requiredEntitlementFor',
