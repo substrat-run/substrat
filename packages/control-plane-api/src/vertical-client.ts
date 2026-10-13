@@ -428,6 +428,16 @@ export interface ReconcileInstanceInput {
   tenantStores?: TenantStoreHandle[];
   /** The recorded-off modules, switched off in the reconcile's own unit (#1742) — as at provision. */
   switchedOff?: ModuleId[];
+  /**
+   * #2263: accept the OWNERLESS reconcile from a vertical that keeps no owner of record — the
+   * tuples its running version declares (schedule grants, peer keys, these connection grants)
+   * seated and the recorded-off positions re-applied, and nothing else: no projection of the
+   * entitlements, links or keys above, no entity-grant shapes, no owner. Answered `owner: null`
+   * with no retirement or bound-shape report. Omit it when the projection is the point (an
+   * entitlements delivery): such a vertical then refuses (501/409) as it always did. A vertical
+   * built before the field ignores it and refuses too.
+   */
+  ownerless?: 'seat';
   /** Of `switchedOff`, the modules held only by a tenant-level grant (#1823) — as at provision. */
   tenantHeld?: ModuleId[];
   /** #2029: the recorded-off peers, and those held only by a tenant grant — as at provision. */
@@ -471,8 +481,10 @@ export function connectionGrantsForScope(
 export interface ReconciledInstance {
   tenantId: TenantId;
   scopeId: ScopeId;
-  /** The owner the vertical re-granted, echoed back so the caller can report who was restored. */
-  owner: PrincipalId;
+  /** The owner the vertical re-granted, echoed back so the caller can report who was restored.
+   *  `null` (#2263) when the vertical keeps no owner of record and the caller sent `ownerless`:
+   *  the ownerless reconcile ran, no owner was re-seated, and no lockout was repaired. */
+  owner: PrincipalId | null;
   /** What the deployment switched off inside the reconcile's unit (#1742), when asked to. */
   switchedOff?: SwitchedOffInUnit[];
   /**

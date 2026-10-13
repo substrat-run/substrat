@@ -1191,6 +1191,97 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     expect(res.status).toBe(409);
   });
 
+  /**
+   * #2263: with no owner of record, a caller that accepts it gets the ownerless reconcile — the
+   * version's declared tuples seated, the recorded-off carry re-applied, and nothing else. The
+   * twins: without `ownerless` the refusal is what it always was (an entitlements delivery must
+   * never read a seat as its projection), and a host built before `seatScopeLocal` refuses too.
+   */
+  describe('the ownerless reconcile (#2263)', () => {
+    const reconcile = (host: VerticalScopeHost, deps: Parameters<typeof appWith>[1], extra: Record<string, unknown> = {}) =>
+      appWith(host, deps).request(
+        '/internal/reconcile',
+        {
+          method: 'POST',
+          headers: authed({ 'content-type': 'application/json' }),
+          body: JSON.stringify({
+            tenantId: TENANT,
+            scopeId: SCOPE,
+            entitlements: [],
+            identityLinks: [],
+            connectionKeys: [],
+            connectionGrants: [{ connectionId: 'conn-1', permission: 'x:read' }],
+            switchedOffPeers: ['acme/board-room'],
+            // A shape that retires a key: the ownerless path must never reach a retirement.
+            entityGrants: [{ entityType: 'room', permissions: ['x:read'], retired: ['x:old'], bootstrap: true, holder: 'grantee' }],
+            ...extra,
+          }),
+        },
+        ENV,
+      );
+    const seatingHost = () => {
+      const seen: unknown[] = [];
+      const host = fakeHost({
+        seatScopeLocal: async (input) => {
+          seen.push(input);
+          return { switchedOff: [] };
+        },
+      });
+      return { host, seen };
+    };
+
+    for (const [name, deps] of [
+      ['no resolveOwner', {}],
+      ['resolveOwner finds none', { resolveOwner: async () => null }],
+    ] as const) {
+      it(`${name}: seats only, answers owner null, and runs neither the provision nor onProvision`, async () => {
+        const { host, seen } = seatingHost();
+        const hooked: unknown[] = [];
+        const res = await reconcile(host, { ...deps, onProvision: async (_e, b) => void hooked.push(b) }, { ownerless: 'seat' });
+        expect(res.status).toBe(200);
+        const answer = (await res.json()) as Record<string, unknown>;
+        expect(answer).toMatchObject({ tenantId: TENANT, scopeId: SCOPE, owner: null });
+        // No retirement or bound-shape report: the platform's receipt reads it as not finished.
+        expect(answer).not.toHaveProperty('retirementsLeftOpen');
+        expect(answer).not.toHaveProperty('boundShapeTypes');
+        // The seat carries the grants and the carry, and none of the projection.
+        expect(seen).toEqual([
+          {
+            tenantId: TENANT,
+            scopeId: SCOPE,
+            connectionGrants: [{ connectionId: 'conn-1', permission: 'x:read' }],
+            switchedOffPeers: ['acme/board-room'],
+          },
+        ]);
+        expect(host.calls).not.toContain('provisionScopeLocal');
+        expect(hooked).toEqual([]);
+      });
+    }
+
+    it('twin: without ownerless the refusal is unchanged — 501 with no resolveOwner, 409 when it finds none', async () => {
+      const { host, seen } = seatingHost();
+      expect((await reconcile(host, {})).status).toBe(501);
+      expect((await reconcile(host, { resolveOwner: async () => null })).status).toBe(409);
+      expect(seen).toEqual([]);
+    });
+
+    it('twin: a host built before seatScopeLocal refuses an ownerless reconcile as before', async () => {
+      const host = fakeHost();
+      expect((await reconcile(host, {}, { ownerless: 'seat' })).status).toBe(501);
+      expect((await reconcile(host, { resolveOwner: async () => null }, { ownerless: 'seat' })).status).toBe(409);
+      expect(host.calls).toEqual([]);
+    });
+
+    it('twin: with an owner of record, ownerless changes nothing — the full reconcile runs', async () => {
+      const { host, seen } = seatingHost();
+      const res = await reconcile(host, { resolveOwner: async () => OWNER as never }, { ownerless: 'seat' });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { owner: unknown }).owner).toBe(OWNER);
+      expect(host.calls).toContain('provisionScopeLocal');
+      expect(seen).toEqual([]);
+    });
+  });
+
   it('reconcile re-provisions with the resolved owner', async () => {
     const host = fakeHost();
     const res = await appWith(host, { resolveOwner: async () => OWNER as never }).request(

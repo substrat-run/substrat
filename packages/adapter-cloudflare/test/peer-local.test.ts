@@ -105,6 +105,165 @@ describe('the peer door on a CP-less deployment (#1706)', () => {
     await host.peerSwitchLocal(s, PEER_CALLER, 'on');
     await expect(host.verticalInvokeLocal(caller, t, s, 'peer/list')).resolves.toBeDefined();
   });
+
+  /**
+   * #2263: a scope provisioned by a version that declared NO peers, then served by one that does.
+   * The deployment that provisions without `peerMod` registered is the version before the
+   * declaration; `hostFor()` is the version after it, over the same scope storage.
+   */
+  it('a peer declared after the scope was provisioned holds nothing until a reconcile seats it', async () => {
+    const late = scopeId.parse(ulid());
+    const provision = (host: CloudflareScopeHost) =>
+      host.provisionScopeLocal({
+        tenantId: t,
+        scopeId: late,
+        owner,
+        roles: [{ key: 'office-admin', permissions: [READ, WRITE], source: 'vertical' }],
+        ownerRoleKey: 'office-admin',
+      });
+    await provision(new CloudflareScopeHost({ scope: env.SCOPE }));
+    const host = hostFor();
+    expect(await host.peerCovers(t, late, PEER_CALLER, [READ, WRITE])).toEqual([
+      { permission: READ, held: false },
+      { permission: WRITE, held: false },
+    ]);
+    expect(await host.peerGrantsStatusLocal(late)).toEqual([]);
+    // Admitted at the door (declared), and denied by the operation's own check: it holds nothing.
+    expect(errorCodeOf(await refusal(host.verticalInvokeLocal(caller, t, late, 'peer/list')))).toBe('permission_denied');
+
+    await provision(host);
+    expect(await host.peerCovers(t, late, PEER_CALLER, [READ, WRITE])).toEqual([
+      { permission: READ, held: true },
+      { permission: WRITE, held: true },
+    ]);
+    await expect(host.verticalInvokeLocal(caller, t, late, 'peer/list')).resolves.toEqual([]);
+  });
+});
+
+/**
+ * #2263: the ownerless reconcile (`seatScopeLocal`), on real DO SQLite. It is what the platform's
+ * first sweep after a release runs on every install of a vertical that keeps no owner of record,
+ * so each thing it must NOT do is a test that fails the day it starts doing it: the scope's
+ * projection (roles, entitlements, identity links, sealing keys, tenant tuples, the enforcement
+ * flags) is left byte for byte, and no tuple already there is revoked or changed. Only the
+ * version's declared seats are added.
+ */
+describe('#2263 — the ownerless reconcile seats the declarations and nothing else', () => {
+  beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+
+  const READ = permissionKey.parse('peer:read');
+  const WRITE = permissionKey.parse('peer:write');
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const caller = { vertical: PEER_CALLER, scope: scopeId.parse(ulid()) };
+  // `legacy` is a role this version no longer defines: the ownerless path must not drop it.
+  const roles = [
+    { key: 'office-admin', permissions: [READ, WRITE], source: 'vertical' as const },
+    { key: 'legacy', permissions: [READ], source: 'vertical' as const },
+  ];
+  const hostFor = (peers = true) => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+    if (peers) host.registerModule(peerMod);
+    return host;
+  };
+  const provision = async (peers: boolean) => {
+    const s = scopeId.parse(ulid());
+    await hostFor(peers).provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles,
+      ownerRoleKey: 'office-admin',
+      entitlements: [{ entitlementKey: 'peer', expiresAt: null, quota: null, plan: 'pro', grantedAt: null, grantedBy: null }],
+      identityLinks: [{ provider: 'test-idp', externalId: 'sub-owner', principal: owner }],
+      connectionKeys: [{ connectionId: 'conn-k', provider: 'acme', keyId: 'k1', publicKey: 'pk' }],
+    });
+    return s;
+  };
+  type Row = Record<string, unknown>;
+  const snapshot = (s: string) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
+      const all = (sql: string): Row[] => state.storage.sql.exec(sql).toArray() as Row[];
+      return {
+        roles: all('SELECT * FROM _substrat_roles ORDER BY role_key'),
+        entitlements: all('SELECT * FROM _substrat_entitlements ORDER BY entitlement_key'),
+        links: all('SELECT * FROM _substrat_identity_links ORDER BY external_id'),
+        keys: all('SELECT * FROM _substrat_connection_keys ORDER BY key_id'),
+        tenantTuples: all('SELECT * FROM _substrat_tenant_tuples ORDER BY subject, relation'),
+        flags: all(
+          "SELECT key, value FROM _substrat_meta WHERE key IN ('permission_source', 'entitlements_enforced', 'provisioned_for') ORDER BY key",
+        ),
+        tuples: all('SELECT subject, relation, object, expires_at, revoked_at FROM _substrat_tuples ORDER BY subject, relation, object'),
+      };
+    });
+  const key = (r: Row) => `${String(r.subject)} ${String(r.relation)} ${String(r.object)}`;
+
+  it('adds exactly the declared seats, and leaves the projection and every existing tuple as they were', async () => {
+    const s = await provision(false); // the version before the peer declaration
+    const before = await snapshot(s);
+    expect(before.roles.map((r) => r.role_key)).toEqual(['legacy', 'office-admin']); // the setup is what it claims
+    expect(before.tuples.find((r) => r.subject === `principal:${owner}`)).toMatchObject({ revoked_at: null });
+
+    const conn = { connectionId: 'conn-1', permission: READ };
+    expect(await hostFor().seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: [conn] })).toEqual({});
+    const after = await snapshot(s);
+
+    const { tuples: beforeTuples, ...beforeProjection } = before;
+    const { tuples: afterTuples, ...afterProjection } = after;
+    expect(afterProjection).toEqual(beforeProjection);
+    // Every tuple that was there is still there, unchanged — the owner's role grant included.
+    for (const row of beforeTuples) expect(afterTuples.find((r) => key(r) === key(row))).toEqual(row);
+    const added = afterTuples.filter((r) => !beforeTuples.some((b) => key(b) === key(r)));
+    expect(added.map(key).sort()).toEqual(
+      [
+        `vertical:${PEER_BARE} granted:${READ} scope:${s}`,
+        `vertical:${PEER_CALLER} granted:${READ} scope:${s}`,
+        `vertical:${PEER_CALLER} granted:${WRITE} scope:${s}`,
+        `vertical:${PEER_LISTENER} granted:${READ} scope:${s}`,
+        `connection:conn-1 granted:${READ} scope:${s}`,
+      ].sort(),
+    );
+    expect(added.every((r) => r.revoked_at === null)).toBe(true);
+    await expect(hostFor().verticalInvokeLocal(caller, t, s, 'peer/list')).resolves.toEqual([]);
+
+    // Idempotent: the second run changes nothing at all.
+    await hostFor().seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: [conn] });
+    expect(await snapshot(s)).toEqual(after);
+  });
+
+  it('a peer switched off stays off, and a recorded-off carry is re-applied in the same unit', async () => {
+    const s = await provision(true);
+    await hostFor().peerSwitchLocal(s, PEER_LISTENER, 'off');
+    const seated = await hostFor().seatScopeLocal({ tenantId: t, scopeId: s, switchedOffPeers: [PEER_CALLER] });
+    expect(seated).toEqual({
+      switchedOff: [{ vertical: PEER_CALLER, held: true, changed: true, permissions: [READ, WRITE] }],
+    });
+    expect(await hostFor().peerCovers(t, s, PEER_LISTENER, [READ])).toEqual([{ permission: READ, held: false }]);
+    expect(await hostFor().peerCovers(t, s, PEER_CALLER, [READ, WRITE])).toEqual([
+      { permission: READ, held: false },
+      { permission: WRITE, held: false },
+    ]);
+    expect(errorCodeOf(await hostFor().verticalInvokeLocal(caller, t, s, 'peer/list').then(() => undefined, (e: unknown) => e))).toBe(
+      'forbidden',
+    );
+    // Twin: the peer neither switched nor carried is seated and admitted.
+    expect(await hostFor().peerCovers(t, s, PEER_BARE, [READ])).toEqual([{ permission: READ, held: true }]);
+  });
+
+  it('refuses a scope not provisioned for the tenant — never provisions one, never writes another tenant’s', async () => {
+    const s = await provision(true);
+    const other = tenantId.parse(ulid());
+    for (const [tenant, scope] of [
+      [other, s],
+      [t, scopeId.parse(ulid())],
+    ] as const) {
+      const err = await hostFor().seatScopeLocal({ tenantId: tenant, scopeId: scope }).then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(err)).toBe('not_found');
+    }
+    const fresh = scopeId.parse(ulid());
+    await hostFor().seatScopeLocal({ tenantId: t, scopeId: fresh }).catch(() => undefined);
+    expect((await snapshot(fresh)).tuples).toEqual([]);
+  });
 });
 
 /**

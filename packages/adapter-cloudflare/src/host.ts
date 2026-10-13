@@ -10662,37 +10662,7 @@ export class CloudflareScopeHost implements ScopeHost {
           expires_at: null,
           lockout_reseat: true,
         },
-        // #461: each registered module's SCHEDULE grants (#383) ride the same unit —
-        // the CP-less mirror of `provisionScope`'s seatTuple loop. Without them the
-        // grant-is-the-switch check makes every schedule a silent no-op (`fired: 0`,
-        // no error — the #49 unfalsifiable zero).
-        ...[...this.moduleSchedules].flatMap(([modId, schedules]) => {
-          const perms = new Set<string>();
-          for (const s of schedules) for (const p of s.permissions) perms.add(p);
-          return [...perms].map((perm) => ({
-            subject: `system:${modId}`,
-            relation: `granted:${perm}`,
-            object: `scope:${input.scopeId}`,
-            expires_at: null,
-          }));
-        }),
-        // #1706: each declared PEER's grants ride the same unit — the CP-less mirror of
-        // `provisionScope`'s peer seat, through the one function that decides it.
-        ...peerSeats(collectPeers(this.peerSources), input.scopeId).map((seat) => ({
-          subject: seat.subject,
-          relation: seat.relation,
-          object: seat.object,
-          expires_at: null,
-        })),
-        // #592: the tenant's connection grants ride the same unit — the provision-time
-        // mirror of `connectorGrantLocal`, so the connector return path works on every
-        // install, not only the one that existed when `grantToConnection` ran.
-        ...(input.connectionGrants ?? []).map((g) => ({
-          subject: `connection:${g.connectionId}`,
-          relation: `granted:${g.permission}`,
-          object: `scope:${input.scopeId}`,
-          expires_at: g.expiresAt ?? null,
-        })),
+        ...this.declaredSeatsLocal(input.scopeId, input.connectionGrants),
       ],
       // #406: identity links, delivered by the platform with provisioning exactly as
       // entitlements are (#310). Preserve-on-undefined, so an absent field never wipes
@@ -10730,6 +10700,67 @@ export class CloudflareScopeHost implements ScopeHost {
       ...(shapes ? { retirementsLeftOpen: shapes.retirementsLeftOpen ?? 0 } : {}),
       ...(shapes?.boundEver ? { boundShapeTypes: shapes.boundEver } : {}),
     };
+  }
+
+  /**
+   * The tuples this deployment's code declares for one scope, seated by every provision and
+   * reconcile: each module's SCHEDULE grants (#383, #461 — without them the grant-is-the-switch
+   * check makes every schedule a silent no-op), each declared PEER's keys (#1706, through the one
+   * function that decides them), and the tenant's connection grants the platform delivered (#592,
+   * the provision-time mirror of `connectorGrantLocal`).
+   */
+  private declaredSeatsLocal(
+    scopeId: ScopeId,
+    connectionGrants: readonly ProjectedConnectionGrant[] | undefined,
+  ): { subject: string; relation: string; object: string; expires_at: string | null }[] {
+    return [
+      ...[...this.moduleSchedules].flatMap(([modId, schedules]) => {
+        const perms = new Set<string>();
+        for (const s of schedules) for (const p of s.permissions) perms.add(p);
+        return [...perms].map((perm) => ({ subject: `system:${modId}`, relation: `granted:${perm}`, object: `scope:${scopeId}`, expires_at: null }));
+      }),
+      ...peerSeats(collectPeers(this.peerSources), scopeId).map((seat) => ({ ...seat, expires_at: null })),
+      ...(connectionGrants ?? []).map((g) => ({
+        subject: `connection:${g.connectionId}`,
+        relation: `granted:${g.permission}`,
+        object: `scope:${scopeId}`,
+        expires_at: g.expiresAt ?? null,
+      })),
+    ];
+  }
+
+  /**
+   * The ownerless reconcile (#2263): what a reconcile does for a vertical that keeps no owner of
+   * record, so a scope provisioned before a version's declarations still receives them. It SEATS
+   * `declaredSeatsLocal` and re-applies the directory's recorded-off positions in the same unit
+   * (#1742), and does nothing else: no owner seat, no projection (roles, entitlements, identity
+   * links, sealing keys and tenant tuples are left exactly as they are), and no entity-grant
+   * shape top-up or retirement. Every seat is `seatScopeTuple`'s, so a revoked grant stays revoked
+   * and a switched-off subject gets nothing. It can therefore only add what the running code
+   * declares, and never takes anything away but a recorded OFF.
+   *
+   * Only a scope already provisioned for `tenantId` is seated (`servesTenant`, K-3): this never
+   * provisions a scope, and never writes into another tenant's.
+   */
+  async seatScopeLocal(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    connectionGrants?: ProjectedConnectionGrant[];
+    switchedOff?: readonly ModuleId[];
+    tenantHeld?: readonly ModuleId[];
+    switchedOffPeers?: readonly string[];
+    tenantHeldPeers?: readonly string[];
+    switchFences?: Readonly<Record<string, string>>;
+  }): Promise<{ switchedOff?: SwitchedOff[] }> {
+    const stub = this.scopeStub(input.scopeId);
+    if (!(await stub.servesTenant(input.tenantId))) throw unknownScopeForTenant(input.tenantId, input.scopeId);
+    const carry = recordedOffFromWire(input);
+    await this.migrateAndRecord(input.scopeId);
+    const switchedOff = await stub.seatTuples(
+      this.declaredSeatsLocal(input.scopeId, input.connectionGrants),
+      carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
+    );
+    return carry ? { switchedOff } : {};
   }
 
   /**
