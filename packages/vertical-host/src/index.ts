@@ -373,7 +373,7 @@ export interface VerticalScopeHost {
   scopeStoreImportLocal?(
     tenantId: TenantId,
     scopeId: ScopeId,
-    stores: { binding: string; tables: ScopeDumpTable[] }[],
+    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
   ): Promise<void>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
@@ -1495,7 +1495,7 @@ export function mountPlatformSurface<Env extends object>(
       .object({
         tenantId: tenantIdOf,
         scopeId: scopeIdOf,
-        stores: z.array(z.object({ binding: z.string(), tables: z.array(z.unknown()) })),
+        stores: z.array(z.object({ binding: z.string(), kind: z.string().min(1).optional(), tables: z.array(z.unknown()) })),
       })
       .strict()
       .parse(await c.req.json());
@@ -1503,8 +1503,10 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.scopeStoreImportLocal) {
       return c.json({ error: 'this deployment cannot import scope stores (#2211). Redeploy it' }, 501);
     }
+    // The kind rides along so the host can refuse a dump of another kind before it writes (L8).
     const stores = body.stores.map((store) => ({
       binding: store.binding,
+      ...(store.kind ? { kind: store.kind } : {}),
       tables: z.array(scopeDumpTable).parse(store.tables),
     }));
     await host.scopeStoreImportLocal(body.tenantId, body.scopeId, stores);

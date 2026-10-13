@@ -3819,9 +3819,9 @@ export class CloudflareScopeHost implements ScopeHost {
   async scopeStoreImportLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
-    stores: { binding: string; tables: ScopeDumpTable[] }[],
+    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
   ): Promise<void> {
-    this.refuseUnboundScopeStores(stores);
+    this.refuseUnusableScopeStores(stores);
     await this.importScopeStores(tenantId, scopeId, stores);
   }
 
@@ -4501,7 +4501,7 @@ export class CloudflareScopeHost implements ScopeHost {
     input: ProvisionScopeInput,
     dump: ScopeDumpInput,
   ): Promise<void> {
-    this.refuseUnboundScopeStores(dump.stores);
+    this.refuseUnusableScopeStores(dump.stores, input.vertical ?? null);
     // Create the destination scope (directory row + DO + lazy migrate); the DO then
     // replaces its provisioned schema with the dump wholesale (drop-then-replay), so
     // the end state is the dump, at the source's frontier. Provenance is stamped from
@@ -4537,7 +4537,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-    this.refuseUnboundScopeStores(dump.stores);
+    this.refuseUnusableScopeStores(dump.stores, existing.vertical);
     // #1742: a dump from before a switch was pulled brings the module's grants back live, so
     // the directory's recorded-off modules go back off in the replay's own event. Only where
     // this is the scope's real store, as for the provision's seat above; a hosted scope is
@@ -4889,12 +4889,35 @@ export class CloudflareScopeHost implements ScopeHost {
     return kind;
   }
 
-  /** A dump that names a binding this host does not have is refused before any write. */
-  private refuseUnboundScopeStores(stores: readonly { binding: string }[] | undefined): void {
+  /**
+   * A dump's stores this host cannot load are refused before any write (#2211, L8): a
+   * binding that is not bound, a kind other than the bound one, or any store at all for
+   * a destination with no vertical (no store object can be named for it, so loading would
+   * drop them). `vertical` undefined is a caller that cannot read the destination here;
+   * `importScopeStores` then refuses a scope with no vertical itself, still before a store
+   * write. A store with no `kind` is one an older control plane sent; only its binding is
+   * checked.
+   */
+  private refuseUnusableScopeStores(
+    stores: readonly { binding: string; kind?: string }[] | undefined,
+    vertical?: string | null,
+  ): void {
+    const listed = stores ?? [];
+    if (listed.length === 0) return;
+    if (vertical === null) {
+      throw substratError('conflict', 'dump carries scope stores, and the destination scope has no vertical to hold them');
+    }
     const bound = new Set(this.scopeStoreBindingNames());
-    for (const store of stores ?? []) {
+    for (const store of listed) {
       if (!bound.has(store.binding)) {
         throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
+      }
+      const kind = this.scopeStoreRunners.get(store.binding)?.kind ?? this.scopeStoreKinds[store.binding];
+      if (store.kind !== undefined && store.kind !== kind) {
+        throw substratError(
+          'conflict',
+          `dump's scope store '${store.binding}' is kind '${store.kind}', and this host binds kind '${kind ?? 'undeclared'}'`,
+        );
       }
     }
   }
@@ -4903,9 +4926,12 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
-    const scope = await this.scopeRecordForRead(tenantId, scopeId);
+    // No binding is no store, answered before the directory read: a host with no control
+    // plane cannot make that read, and a deployment with no store must not fail an export.
     const bindings = this.scopeStoreBindingNames();
-    if (bindings.length === 0 || !scope.vertical) return [];
+    if (bindings.length === 0) return [];
+    const scope = await this.scopeRecordForRead(tenantId, scopeId);
+    if (!scope.vertical) return [];
     const vertical = scope.vertical;
     if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
       throw substratError(
@@ -4933,7 +4959,9 @@ export class CloudflareScopeHost implements ScopeHost {
     const listed = stores ?? [];
     if (listed.length === 0) return;
     const scope = await this.scopeRecordForRead(tenantId, scopeId);
-    if (!scope.vertical) return;
+    if (!scope.vertical) {
+      throw substratError('conflict', `dump carries scope stores, and scope ${scopeId} has no vertical to hold them`);
+    }
     if (this.scopeStoreVertical !== undefined && scope.vertical !== this.scopeStoreVertical) {
       throw substratError(
         'forbidden',

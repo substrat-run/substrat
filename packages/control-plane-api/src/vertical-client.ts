@@ -1262,7 +1262,7 @@ export class VerticalClient {
   ): Promise<void> {
     await this.postInternal(
       '/internal/scope-store-import',
-      { tenantId, scopeId, stores: stores.map(({ binding, tables }) => ({ binding, tables })) },
+      { tenantId, scopeId, stores: stores.map(({ binding, kind, tables }) => ({ binding, ...(kind ? { kind } : {}), tables })) },
       'scope-store-import',
     );
   }

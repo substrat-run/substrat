@@ -114,6 +114,7 @@ import {
   STORE_KINDS,
   mayHoldScopeStores,
   type StoreErasure,
+  type ScopeStoreDump,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import type {
@@ -3183,6 +3184,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return mayHoldScopeStores(manifestJson, kinds);
   };
 
+  /**
+   * A deployment's scope stores, for a copy the platform takes of a scope (#2211): the
+   * snapshot, the backup and the full pull. `undefined` means "not asked, nothing to add",
+   * and the caller keeps what it already has. That covers:
+   * - no registered store kind: no deployment can hold a store, so none is asked, and the
+   *   copy is exactly what it was before stores existed;
+   * - no deployment, or one whose client has no export;
+   * - a deployment that does not serve the route: a 404 from one built before it, a 501
+   *   from one whose host lacks the method (the `routeAnswer` skew rule).
+   * Any other failure refuses the copy rather than omitting a store it may hold.
+   */
+  const deploymentScopeStores = async (
+    vertical: VerticalClient | undefined,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ScopeStoreDump[] | undefined> => {
+    if (!mayHoldScopeStores(undefined, options.storeKinds ?? STORE_KINDS)) return undefined;
+    if (!vertical || typeof vertical.scopeStoreExport !== 'function') return undefined;
+    try {
+      return await vertical.scopeStoreExport(tenantId, scopeId);
+    } catch (e) {
+      if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 501)) return undefined;
+      throw e;
+    }
+  };
+
   /** How many exports a carry tries before its source holds still long enough to bind (#1722 r12). */
   const CARRY_EXPORT_ATTEMPTS = 3;
 
@@ -4927,14 +4954,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // The scope file was copied inside the script. The store objects are per scope, so the
       // fork gets its own copy through the reserved export and import. A deployment that
       // predates the routes has no stores to copy.
-      if (typeof copier.scopeStoreExport === 'function' && typeof copier.scopeStoreImport === 'function') {
-        let stores: Awaited<ReturnType<typeof copier.scopeStoreExport>> = [];
-        try {
-          stores = await copier.scopeStoreExport(tenantId, scope.id);
-        } catch (e) {
-          if (!(e instanceof ControlPlaneError) || e.status !== 501) throw e;
+      const stores = (await deploymentScopeStores(copier, tenantId, scope.id)) ?? [];
+      if (stores.length > 0) {
+        if (typeof copier.scopeStoreImport !== 'function') {
+          throw new ControlPlaneError(501, 'this deployment cannot import scope stores (#2211). Redeploy it');
         }
-        if (stores.length > 0) await copier.scopeStoreImport(tenantId, snapId, stores);
+        await copier.scopeStoreImport(tenantId, snapId, stores);
       }
       await c.var.admin.activateScope(actor, tenantId, snapId);
       // Bound to the SOURCE's current version: source and fork share a deployment, so
@@ -5117,14 +5142,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
     // Store tables are opaque and stay unsealed. A deployment that predates the route
     // has no stores to copy; any other failure refuses the backup rather than omitting them.
-    let stores = dump.stores;
-    if (vertical && typeof vertical.scopeStoreExport === 'function') {
-      try {
-        stores = await vertical.scopeStoreExport(tenantId, scope.id);
-      } catch (e) {
-        if (!(e instanceof ControlPlaneError) || e.status !== 501) throw e;
-      }
-    }
+    const stores = (await deploymentScopeStores(vertical, tenantId, scope.id)) ?? dump.stores;
     // Seal classified payloads per subject on the way in (#37). This copy is full-fidelity
     // and the platform keeps it, which is precisely why an erasure could never reach it: a
     // redaction fixes the live scope and does nothing to the object already in R2. Sealed
@@ -5794,14 +5812,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (full) {
         // Store tables are opaque. A vertical holds them, so a full pull asks it.
         // A deployment that predates the route has none to add.
-        let stores = dump.stores;
-        if (vertical && typeof vertical.scopeStoreExport === 'function') {
-          try {
-            stores = await vertical.scopeStoreExport(tenantId, scopeId);
-          } catch (e) {
-            if (!(e instanceof ControlPlaneError) || e.status !== 501) throw e;
-          }
-        }
+        const stores = (await deploymentScopeStores(vertical, tenantId, scopeId)) ?? dump.stores;
         return c.json({ ...dump, tables, stores, masked: false });
       }
       // One pseudonymizer for the whole response (#1034): the same customer has to read

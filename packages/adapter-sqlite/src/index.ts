@@ -3846,7 +3846,7 @@ export class SqliteScopeHost implements ScopeHost {
     input: ProvisionScopeInput,
     dump: ScopeDumpInput,
   ): Promise<void> {
-    this.refuseUnboundScopeStores(dump.stores);
+    this.refuseUnusableScopeStores(dump.stores, input.vertical ?? null);
     // Create the destination scope (directory row + storage). Its migration step
     // creates some tables; the dump then replaces them wholesale, so the end state
     // is the dump, not whatever the local module set would have built. Provenance is
@@ -4020,7 +4020,7 @@ export class SqliteScopeHost implements ScopeHost {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-    this.refuseUnboundScopeStores(dump.stores);
+    this.refuseUnusableScopeStores(dump.stores, existing.vertical);
     // #1742: a dump from before a switch was pulled brings the module's grants back live, so
     // the directory's recorded-off modules go back off in the load's own turn, as a
     // provision's seat does — no schedule pass can run in between.
@@ -4308,11 +4308,31 @@ export class SqliteScopeHost implements ScopeHost {
     return erasures;
   }
 
-  /** A dump that names a binding this host does not have is refused before any write. */
-  private refuseUnboundScopeStores(stores: readonly { binding: string }[] | undefined): void {
-    for (const store of stores ?? []) {
-      if (!this.scopeStoreRunners.has(store.binding)) {
+  /**
+   * A dump's stores this host cannot load are refused before any write (#2211, L8): a
+   * binding that is not bound, a kind other than the bound runner's, or any store at all
+   * for a destination with no vertical (no store object can be named for it, so loading
+   * would drop them).
+   */
+  private refuseUnusableScopeStores(
+    stores: readonly { binding: string; kind?: string }[] | undefined,
+    vertical: string | null,
+  ): void {
+    const listed = stores ?? [];
+    if (listed.length === 0) return;
+    if (vertical === null) {
+      throw substratError('conflict', 'dump carries scope stores, and the destination scope has no vertical to hold them');
+    }
+    for (const store of listed) {
+      const runner = this.scopeStoreRunners.get(store.binding);
+      if (!runner) {
         throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
+      }
+      if (store.kind !== undefined && store.kind !== runner.kind) {
+        throw substratError(
+          'conflict',
+          `dump's scope store '${store.binding}' is kind '${store.kind}', and this host binds kind '${runner.kind}'`,
+        );
       }
     }
   }
@@ -4343,7 +4363,9 @@ export class SqliteScopeHost implements ScopeHost {
     const listed = stores ?? [];
     if (listed.length === 0) return;
     const vertical = this.scopeStoreVerticalIfPresent(scopeId);
-    if (!vertical) return;
+    if (!vertical) {
+      throw substratError('conflict', `dump carries scope stores, and scope ${scopeId} has no vertical to hold them`);
+    }
     for (const store of listed) {
       await this.invokeReservedStore(
         { tenantId, vertical, scopeId, binding: store.binding },
