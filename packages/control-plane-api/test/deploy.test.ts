@@ -205,9 +205,9 @@ describe('scope store bindings injected at upload (#2209)', () => {
 
 describe('scope store upload plan (#2210)', () => {
   const kind = (release: string) => ({
-    kind: 'ontomate' as const,
+    kind: 'graph' as const,
     release,
-    script: `ontomate-store-${release}`,
+    script: `graph-store-${release}`,
     className: 'Store',
     operations: ['read'],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -219,18 +219,18 @@ describe('scope store upload plan (#2210)', () => {
 
   it('uploads one script per kind and vertical, and a new release keeps the name', () => {
     const stores = [
-      { binding: 'GRAPH' as const, kind: 'ontomate' as const },
-      { binding: 'BLOBS' as const, kind: 'ontomate' as const },
+      { binding: 'GRAPH' as const, kind: 'graph' as const },
+      { binding: 'BLOBS' as const, kind: 'graph' as const },
     ];
     const first = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('1.0.0')] });
     const next = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('2.0.0')] });
     expect(first.scripts).toHaveLength(1);
     expect(first.scripts[0]).toMatchObject({
-      kind: 'ontomate',
+      kind: 'graph',
       release: '1.0.0',
       vertical: 'acme/crm',
       className: 'Store',
-      scriptName: scopeStoreScriptName('acme/crm', 'ontomate'),
+      scriptName: scopeStoreScriptName('acme/crm', 'graph'),
     });
     expect(first.scripts[0]?.scriptName).toBe(next.scripts[0]?.scriptName);
     expect(first.scripts[0]?.scriptName).not.toContain('1.0.0');
@@ -257,7 +257,7 @@ describe('scope store upload plan (#2210)', () => {
 
   it('refuses a kind that is not registered', () => {
     expect(() =>
-      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', kind: 'ontomate' }] }),
+      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', kind: 'graph' }] }),
     ).toThrow(/not registered/);
   });
 });
