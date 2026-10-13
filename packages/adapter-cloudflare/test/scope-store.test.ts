@@ -66,7 +66,8 @@ describe('scope store door (cloudflare host, #2209)', () => {
   });
 
   it('the store itself answers a reserved operation, which is how the stub refusal is visible', async () => {
-    const { t, a } = await world();
+    const { host, t, a } = await world();
+    await (await host.getScopeStore(principal, t, a, 'GRAPH')).invoke('increment', { by: 2 });
     const name = scopeStoreObjectName(t, 'docs', a, 'GRAPH');
     const object = env.SUBSTRAT_STORE_GRAPH.get(env.SUBSTRAT_STORE_GRAPH.idFromName(name));
     const response = await object.fetch('https://scope-store/', {
@@ -77,17 +78,18 @@ describe('scope store door (cloudflare host, #2209)', () => {
     const body: unknown = await response.json();
     const result = typeof body === 'object' && body !== null ? Reflect.get(body, 'result') : undefined;
     const bytes = typeof result === 'object' && result !== null ? Reflect.get(result, 'bytes') : undefined;
-    expect(typeof bytes).toBe('number');
-    expect(Number(bytes)).toBeGreaterThan(0);
+    expect(bytes).toBe(2);
   });
 
   // This worker always binds SUBSTRAT_STORE_GRAPH, so a host here is never storeless: the
   // no-store empty list is held on adapter-sqlite, where a host can be built without one.
-  it('a host with no control plane sizes the ambient store under the vertical it was given', async () => {
+  it('a host with no control plane sizes the object its door reached, under the vertical it was given', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
-    const sizes = await host.scopeStoreSizesLocal(tenantId.parse(ulid()), scopeId.parse(ulid()));
-    expect(sizes.map((s) => s.binding)).toEqual(['GRAPH']);
-    expect(sizes[0]!.bytes).toBeGreaterThan(0);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('increment', { by: 3 });
+    // The test store answers its counter as its size, so 3 names this tenant, vertical and scope.
+    expect(await host.scopeStoreSizesLocal(t, s)).toEqual([{ binding: 'GRAPH', bytes: 3 }]);
   });
 
   it('a reserved call whose answer is not JSON is a bad envelope, as at the door', async () => {

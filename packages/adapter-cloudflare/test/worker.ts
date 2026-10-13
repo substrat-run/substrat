@@ -523,9 +523,9 @@ export class ScopeStoreCounterDO extends DurableObject {
     if (typeof operation === 'string' && operation.startsWith('substrat.') && this.ctx.storage.sql.exec('SELECT x FROM broken').toArray().length > 0) {
       return new Response('not-json', { status: 200, headers: { 'content-type': 'text/plain' } });
     }
-    if (operation === 'substrat.size') {
-      return Response.json({ result: { bytes: this.ctx.storage.sql.databaseSize } });
-    }
+    // The counter, not the database size: any object answers a size, so only a value that
+    // names this object's state shows which object a size read reached.
+    if (operation === 'substrat.size') return Response.json({ result: { bytes: current } });
     if (operation === 'substrat.wipe') {
       this.ctx.storage.sql.exec('DELETE FROM counter');
       return Response.json({ result: {} });
