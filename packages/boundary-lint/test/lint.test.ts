@@ -1607,6 +1607,8 @@ describe('R12 — a hand-built IN list of placeholders', () => {
         "const join = (t) => `SELECT * FROM a JOIN (${t.map(() => '?').join(',')}) b`;",
         'const opt = (o) => `SELECT * FROM t WHERE k IN (${o?.list ?? STATES})`;',
         "const cat = 'SELECT * FROM t WHERE state IN (' + STATES + ')';",
+        // The quote after `IN (` is inside another string, so nothing is concatenated there.
+        `const doc = 'write IN (" + ids.map(() => "?") + ") and it breaks';`,
       ]),
     ).toEqual([]);
   });

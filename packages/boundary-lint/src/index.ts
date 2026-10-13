@@ -1297,8 +1297,8 @@ function buildsPlaceholders(masked: string, stripped: string, from: number, to: 
  *
  * Fires where `IN (` (or `NOT IN (`) is followed by code: a template's `${` with nothing but
  * placeholders before it (`IN (${…})`, `IN (?, ${…})`, `IN (?${',?'.repeat(n - 1)})`), or a string ending in
- * `IN (` that a `+` continues. The masked copy proves each is real: the `IN (` is a literal's text,
- * blank there, and the `${` or the quote stands. It fires when that code holds a placeholder literal
+ * `IN (` that a `+` continues. The masked copy proves each is real: the `${` or the closing quote
+ * stands there, where one inside another string is blank. It fires when that code holds a placeholder literal
  * (`'?'`, `"?"`, `'?, '`, `',?'`, the numbered `` `?${i + 1}` ``) or uses a name — a `const`, or a
  * `function` in the same file — that does, up to `NAME_HOPS` names deep.
  *
@@ -1322,7 +1322,6 @@ function checkPlaceholderList(rel: string, source: string, out: Violation[]): vo
 
   IN_LIST_OPEN.lastIndex = 0;
   for (let m: RegExpExecArray | null; (m = IN_LIST_OPEN.exec(stripped)); ) {
-    if (masked[m.index] !== ' ') continue; // `IN (` must be a literal's text, not code
     let from: number;
     let to: number;
     if (m[1] === undefined) {
