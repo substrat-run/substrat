@@ -54,7 +54,9 @@ export type StoreNeed = z.infer<typeof storeNeed>;
  *
  * - `storeNeed` (own DO)          — the vertical's own durable class, one DO **per scope**.
  * - a static shared `d1` binding  — ONE database shared across every tenant (a build-time id).
- * - `tenantStoreNeed` (this)      — one relational DB **per tenant**, PLATFORM-minted.
+ * - `tenantStoreNeed` (this)      — one platform-minted store **per tenant**. `relational`
+ *   today on the wire; a blob is the same level, declared with `kind: 'blob'`
+ *   (see `declaredTenantStore`).
  *
  * The load-bearing difference from a static `d1` binding: the builder supplies **no
  * database id**. The platform mints it per tenant in the tenant lifecycle and injects it,
@@ -66,10 +68,27 @@ export type StoreNeed = z.infer<typeof storeNeed>;
 export const tenantStoreNeed = z.object({
   /** How the worker reaches this tenant's store: `host.tenantStore(tenantId, <binding>)`. */
   binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-  /** The store shape. Only `relational` today; a literal so widening it is an explicit, additive change. */
+  /**
+   * The store shape on the wire. `relational` only: a blob travels in `blobStores`,
+   * so a control plane from before the union still parses the manifest it is sent.
+   */
   kind: z.literal('relational').default('relational'),
 });
 export type TenantStoreNeed = z.infer<typeof tenantStoreNeed>;
+
+/**
+ * A per-tenant store as a builder declares it (`runtimeNeeds.tenantStores`).
+ *
+ * `kind` defaults to `relational`, so a declaration that predates the union keeps
+ * its meaning. `blob` is the same store as an entry in `blobStores` — that list
+ * stays accepted, and {@link partitionDeclaredStores} reads both spellings into
+ * one set. The deploy manifest does not: blobs still leave in `blobStores`.
+ */
+export const declaredTenantStore = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  kind: z.enum(['relational', 'blob']).default('relational'),
+});
+export type DeclaredTenantStore = z.infer<typeof declaredTenantStore>;
 
 /**
  * A platform-minted per-tenant store, as handed to the vertical at provision (K-31) and
@@ -134,7 +153,11 @@ const BINDING_NAME = /^[A-Z][A-Z0-9_]*$/;
 export const blobStoreNeed = z.object({
   /** How the worker reaches this tenant's store: `env[blobStoreBindingName(binding, tenantId)]`. */
   binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-  /** The store shape. Only `blob` today; a literal so widening it is an explicit, additive change. */
+  /**
+   * The store shape. Only `blob`. A new declaration should say
+   * `tenantStores: [{ binding, kind: 'blob' }]` instead; this list stays so a
+   * declaration already written keeps working.
+   */
   kind: z.literal('blob').default('blob'),
 });
 export type BlobStoreNeed = z.infer<typeof blobStoreNeed>;
@@ -184,22 +207,38 @@ export function declaresAttachmentTargets(
  * {@link ATTACHMENT_BLOB_BINDING} when any module declares an attachment target — derived
  * from the same module manifests the permission surface is, so the need cannot drift from
  * the declaration that creates it. A hand-declared blob store of that name IS the attachment
- * store (the kind is a single literal), so it is kept once. A per-tenant RELATIONAL store
+ * store (the kind is a single literal), so it is kept once. The same declaration written
+ * as `tenantStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }]` is that store too: a raw
+ * `RuntimeNeeds` still carries the blob there, and this function reads the kind rather
+ * than treating every entry of that name as relational. A per-tenant RELATIONAL store
  * of that name is refused: it would be bound under the very `ATTACHMENTS__<tenant>` name the
  * host reads attachment bytes through. (A static binding of the name is the push's to refuse,
  * since only it reads the wrangler config those come from.)
  */
 export function withAttachmentBlobStore(
-  needs: { readonly blobStores?: readonly BlobStoreNeed[]; readonly tenantStores?: readonly { binding: string }[] } | undefined,
+  needs:
+    | {
+        readonly blobStores?: readonly BlobStoreNeed[];
+        readonly tenantStores?: readonly { binding: string; kind?: 'relational' | 'blob' }[];
+      }
+    | undefined,
   /** {@link declaresAttachmentTargets} over the vertical's modules. */
   attaches: boolean,
 ): BlobStoreNeed[] {
   const stores = [...(needs?.blobStores ?? [])];
-  if (needs?.tenantStores?.some((s) => s.binding === ATTACHMENT_BLOB_BINDING)) {
-    throw new Error(
-      `runtimeNeeds.tenantStores declares '${ATTACHMENT_BLOB_BINDING}', the binding the platform keeps for ` +
-        `attachment bytes (#1995) — rename that store; attachments need no declaration of their own`,
-    );
+  for (const store of needs?.tenantStores ?? []) {
+    if (store.kind !== 'blob') {
+      if (store.binding === ATTACHMENT_BLOB_BINDING) {
+        throw new Error(
+          `runtimeNeeds.tenantStores declares '${ATTACHMENT_BLOB_BINDING}', the binding the platform keeps for ` +
+            `attachment bytes (#1995) — rename that store; attachments need no declaration of their own`,
+        );
+      }
+      continue;
+    }
+    if (!stores.some((kept) => kept.binding === store.binding)) {
+      stores.push({ binding: store.binding, kind: 'blob' });
+    }
   }
   if (attaches && !stores.some((s) => s.binding === ATTACHMENT_BLOB_BINDING)) {
     stores.push({ binding: ATTACHMENT_BLOB_BINDING, kind: 'blob' });
@@ -288,18 +327,77 @@ export const runtimeNeeds = z.object({
   /** Command to run before bundling (SPA build, asset generation). Runs in the vertical root. */
   build: z.string().min(1).optional(),
   stores: z.array(storeNeed).default([]),
-  /** Per-tenant relational stores the platform provisions and hands over (#301). NOT bound
-   *  statically — the CLI does not emit a wrangler binding for these, precisely because there
-   *  is one database per tenant, minted in the tenant lifecycle rather than at deploy. */
-  tenantStores: z.array(tenantStoreNeed).default([]),
-  /** Per-tenant blob stores for attachment bytes (#473). Same non-binding rule as
-   *  `tenantStores`: one bucket per tenant, minted in the tenant lifecycle. */
+  /** Per-tenant stores the platform provisions (#301, #473). `kind` defaults to
+   *  `relational`. `blob` is the same declaration as an entry in `blobStores`.
+   *  NOT bound statically — there is one database or bucket per tenant, minted in
+   *  the tenant lifecycle rather than at deploy. */
+  tenantStores: z.array(declaredTenantStore).default([]),
+  /** @deprecated Declare `tenantStores` with `kind: 'blob'` instead. Still accepted,
+   *  and read into the same set ({@link partitionDeclaredStores}). */
   blobStores: z.array(blobStoreNeed).default([]),
   /** Static files served from the edge (#340). Absent ⇒ the vertical serves no static
    *  files (or still inlines them into the bundle), and nothing about its push changes. */
   assets: assetsNeed.optional(),
 });
 export type RuntimeNeeds = z.infer<typeof runtimeNeeds>;
+
+/**
+ * The two builder spellings of a per-tenant store, as one set (#2221).
+ *
+ * A `blob` entry in `tenantStores` and an entry in `blobStores` are the same
+ * declaration. A binding named twice — in one list, or across them — is refused:
+ * both would be bound as `<BINDING>__<tenant>` on the serving script, and nothing
+ * else compares the two lists (except the reserved `ATTACHMENTS` name).
+ */
+export function partitionDeclaredStores(
+  needs: { readonly tenantStores?: readonly DeclaredTenantStore[]; readonly blobStores?: readonly BlobStoreNeed[] } | undefined,
+): { tenantStores: TenantStoreNeed[]; blobStores: BlobStoreNeed[] } {
+  const tenantStores: TenantStoreNeed[] = [];
+  const blobStores: BlobStoreNeed[] = [];
+  const seen = new Map<string, string>();
+  const claim = (binding: string, where: string) => {
+    const prior = seen.get(binding);
+    if (prior !== undefined) {
+      throw new Error(
+        `runtimeNeeds declares the per-tenant binding '${binding}' twice (${prior}, and ${where}). ` +
+          `One name is one store: both would be bound as ${binding}__<tenant> on the serving script.`,
+      );
+    }
+    seen.set(binding, where);
+  };
+  for (const store of needs?.tenantStores ?? []) {
+    if (store.kind === 'blob') {
+      claim(store.binding, `tenantStores kind 'blob'`);
+      blobStores.push({ binding: store.binding, kind: 'blob' });
+    } else {
+      claim(store.binding, 'tenantStores');
+      tenantStores.push({ binding: store.binding, kind: 'relational' });
+    }
+  }
+  for (const store of needs?.blobStores ?? []) {
+    claim(store.binding, 'blobStores');
+    blobStores.push({ binding: store.binding, kind: 'blob' });
+  }
+  return { tenantStores, blobStores };
+}
+
+/**
+ * What a push puts on the deploy manifest for per-tenant stores. Relational entries
+ * stay in `tenantStores`. Blobs, whichever spelling declared them, stay in `blobStores`,
+ * plus the attachment store when the modules declare a target. An older control plane
+ * therefore reads the same manifest it reads today.
+ */
+export function manifestStoresOf(
+  needs: { readonly tenantStores?: readonly DeclaredTenantStore[]; readonly blobStores?: readonly BlobStoreNeed[] } | undefined,
+  /** {@link declaresAttachmentTargets} over the vertical's modules. */
+  attaches: boolean,
+): { tenantStores: TenantStoreNeed[]; blobStores: BlobStoreNeed[] } {
+  const declared = partitionDeclaredStores(needs);
+  return {
+    tenantStores: declared.tenantStores,
+    blobStores: withAttachmentBlobStore(declared, attaches),
+  };
+}
 
 /**
  * One declared outbound destination (#303, D-46): a lowercase hostname the vertical's

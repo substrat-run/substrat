@@ -37,7 +37,7 @@ import {
   type RuntimeNeeds,
   type VersionOrigin,
   type DeployManifest,
-  withAttachmentBlobStore,
+  manifestStoresOf,
 } from '@substrat-run/contracts';
 import {
   lint,
@@ -1572,8 +1572,8 @@ export async function push(
   } = await deriveDeclaredSurface(opts.dir);
   // #1995: attachment bytes need a per-tenant bucket, and no vertical should have to remember
   // to ask for one — a module declaring an attachment target IS the request.
-  const blobStores = withAttachmentBlobStore(needs, declaresAttachments);
-  assertAttachmentBindingFree(bindings, blobStores);
+  const stores = manifestStoresOf(needs, declaresAttachments);
+  assertAttachmentBindingFree(bindings, stores.blobStores);
 
   // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build
   // rather than before it, because this is where the push has always read the permission
@@ -1637,12 +1637,14 @@ export async function push(
     // Per-tenant relational stores (#301) travel as a NEED, not a binding: there is no
     // static database id to declare (the platform mints one per tenant), so they never
     // appear in `bindings`/wrangler — only here, for admission + the tenant lifecycle.
-    ...(needs?.tenantStores?.length ? { tenantStores: needs.tenantStores } : {}),
+    // A blob declared as `tenantStores` kind `blob` leaves in `blobStores` (#2221),
+    // so a control plane from before that union still parses this manifest.
+    ...(stores.tenantStores.length ? { tenantStores: stores.tenantStores } : {}),
     // Per-tenant blob stores (#473) travel the same way — a NEED, never a static
     // r2_bucket binding: the platform mints one bucket per tenant, so there is no id to
     // declare. Carried here for admission + the tenant lifecycle. The attachment store is
     // added from the modules' `attachmentTargets` (#1995), not hand-declared.
-    ...(blobStores.length ? { blobStores } : {}),
+    ...(stores.blobStores.length ? { blobStores: stores.blobStores } : {}),
     // Static files (#340): the routing config plus the full content-addressed manifest.
     // Sent even when the directory came out EMPTY — an empty `files` list is a vertical
     // that declared assets and built none, which the control plane should see as such
