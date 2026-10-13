@@ -81,10 +81,22 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect(Number(bytes)).toBeGreaterThan(0);
   });
 
-  it('a host with no control plane and no store answers an empty size list', async () => {
-    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  // This worker always binds SUBSTRAT_STORE_GRAPH, so a host here is never storeless: the
+  // no-store empty list is held on adapter-sqlite, where a host can be built without one.
+  it('a host with no control plane sizes the ambient store under the vertical it was given', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
     const sizes = await host.scopeStoreSizesLocal(tenantId.parse(ulid()), scopeId.parse(ulid()));
-    expect(sizes).toEqual([]);
+    expect(sizes.map((s) => s.binding)).toEqual(['GRAPH']);
+    expect(sizes[0]!.bytes).toBeGreaterThan(0);
+  });
+
+  it('a host with no control plane and no vertical refuses a size read as unavailable', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+    const refusal = await host.scopeStoreSizesLocal(tenantId.parse(ulid()), scopeId.parse(ulid())).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(errorCodeOf(refusal)).toBe('unavailable');
   });
 
   it('a host with no control plane and no binding refuses before asking the directory', async () => {
