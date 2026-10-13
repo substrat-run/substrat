@@ -134,19 +134,19 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
   };
 
   it('a hostname that is not the app\'s is a 404, not the route\'s 409', async () => {
-    expect(await send('DELETE', `/apps/${appScope}/hostnames/nobody.example.com`)).toEqual({
+    expect(await send('DELETE', `/teams/${tenant}/apps/${appScope}/hostnames/nobody.example.com`)).toEqual({
       status: 404,
       detail: "'nobody.example.com' is not bound to this app",
     });
   });
 
   it('the twin: a refusal that is not a missing binding keeps the route\'s 409', async () => {
-    const res = await send('POST', `/apps/${appScope}/hostnames`, { surface: 'app', domain: 'not a domain' });
+    const res = await send('POST', `/teams/${tenant}/apps/${appScope}/hostnames`, { surface: 'app', domain: 'not a domain' });
     expect(res).toEqual({ status: 409, detail: "'not a domain' is not a valid domain name" });
   });
 
   it('binding a hostname without the permission keeps its 403 through the route\'s 409', async () => {
-    const res = await send('POST', `/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' }, MANAGER_SUB);
+    const res = await send('POST', `/teams/${tenant}/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' }, MANAGER_SUB);
     expect(res.status).toBe(403);
     expect(res.detail).toMatch(/^permission denied: dashboard:provision-app/);
   });
@@ -154,7 +154,7 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
   it('the plane\'s own permission_denied, relayed, keeps its 403 too — by its code', async () => {
     const refusal = toProblem(substratError('permission_denied', 'permission denied: hostnames:bind'));
     bindRefusal = Response.json(refusal, { status: 403 });
-    expect(await send('POST', `/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' })).toEqual({
+    expect(await send('POST', `/teams/${tenant}/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' })).toEqual({
       status: 403,
       detail: 'permission denied: hostnames:bind',
     });
@@ -162,7 +162,7 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
 
   it('the twin: the plane\'s 403 that is not a permission denial is the route\'s 409, as it always was', async () => {
     bindRefusal = Response.json(toProblem(substratError('forbidden', 'only previews may be deleted')), { status: 403 });
-    expect((await send('POST', `/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' })).status).toBe(409);
+    expect((await send('POST', `/teams/${tenant}/apps/${appScope}/hostnames`, { surface: 'app', domain: 'shop.example.com' })).status).toBe(409);
   });
 
   it('a slug that is not the team\'s own deployment is a 404', async () => {

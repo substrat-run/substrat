@@ -204,6 +204,21 @@ app.get('/api/client-options', async (c) => {
 });
 
 /**
+ * The identifier-first screen's second step (`resolveSignInRoute`): given the address typed,
+ * which way in does this client offer it? Public like `/api/client-options`, and for the same
+ * reason — it answers from the client's policy and the address's DOMAIN, never from whether
+ * an account exists, so it cannot be used to find out who has registered.
+ */
+app.post('/api/sign-in-route', async (c) => {
+  const url = new URL(c.req.url);
+  url.pathname = '/__sign-in-route';
+  const res = await issuerFor(c.env, c.req.raw).fetch(
+    new Request(url, { method: 'POST', headers: c.req.raw.headers, body: await c.req.text() }),
+  );
+  return c.json(await res.json());
+});
+
+/**
  * OIDC discovery and the RFC 8414 authorization-server metadata, at the ROOT — where a
  * standard relying party looks, deriving `{issuer}/.well-known/openid-configuration` from the
  * issuer it was configured with.

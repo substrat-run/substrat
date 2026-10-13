@@ -18,8 +18,9 @@ import {
   formatViolations,
 } from '../packages/boundary-lint/dist/index.js';
 import { syncTemplate } from './template-sync.mjs';
+import { repoRoot } from './repo-path.mjs';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = repoRoot(import.meta.url);
 
 let failed = false;
 

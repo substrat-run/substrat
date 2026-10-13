@@ -78,6 +78,7 @@
     "test:ci-scope": "node --test tools/ci-scope.test.mjs",
     "test:test-affected": "node --test tools/test-affected.test.mjs",
     "test:declared-deps": "node --test tools/declared-deps.test.mjs",
+    "test:repo-path": "node --test tools/repo-path.test.mjs",
     "test:override-advisories": "node --test tools/override-advisories.test.mjs",
     "lint:publish-manifests": "node tools/publish-manifests.mjs",
     "test:publish-manifests": "node --test tools/publish-manifests.test.mjs"
@@ -89,10 +90,10 @@
     "concurrently": "^9.0.0",
     "esbuild": "^0.28.2",
     "npm-package-arg": "^13.0.2",
-    "oxlint": "1.85.0",
+    "oxlint": "1.87.0",
     "oxlint-tsgolint": "7.0.2003",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "wrangler": "^4.146.0"
+    "wrangler": "^4.149.0"
   }
 }

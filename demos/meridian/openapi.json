@@ -1738,6 +1738,10 @@
               "internal"
             ]
           },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
           "permission": {
             "type": "string",
             "minLength": 1

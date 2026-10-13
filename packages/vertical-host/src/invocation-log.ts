@@ -62,6 +62,7 @@ import {
   FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
+  REQUEST_ID_HEADER,
 } from '@substrat-run/contracts/invocation-record';
 import type { EmittedReport, ScopeStoreStubOptions, StoreCallReport } from '@substrat-run/kernel';
 import { invocationLine, type OutputFieldsReport } from '@substrat-run/kernel/invocation-line';
@@ -159,6 +160,12 @@ export function scopeStoreInvocationObserver(record: InvocationRecord): ScopeSto
 export interface InvocationLogContext<Env = unknown> {
   req: { method: string; raw: { url: string; headers: HeaderReader } };
   res?: { status: number };
+  /**
+   * #2192: sets a header on the response — Hono's `c.header`, which after the handler has
+   * answered rewrites `c.res` to carry it, an immutable response included. Optional like
+   * `set`: a context without it answers without the request id header.
+   */
+  header?: (name: string, value: string) => void;
   /**
    * The framework's per-request store (#1237). Hono's `Context` has one; the type is
    * structural and narrow on purpose, so it is declared optional — a caller that does
@@ -271,6 +278,49 @@ function stamps(): WeakMap<object, InvocationStamp> {
  */
 export function invocationStampOf(request: object): InvocationStamp | undefined {
   return stamps().get(request);
+}
+
+/**
+ * #2192: the id the platform minted for the request a Hono context serves — the value of
+ * `x-substrat-request-id`, the invocation log line's `invocationId`, and the id the
+ * dashboard's request view opens. For a vertical to put in its own errors and logs.
+ *
+ * Read from the context when `invocationLog` is mounted, and from the platform's stamp
+ * when only the platform's entry (#1893) stamped the request. `undefined` on a request
+ * nothing stamped: a local call with no middleware, or a test driving the app directly.
+ */
+export function requestIdOf(c: { req: { raw: object }; get?: unknown }): string | undefined {
+  const get = c.get as ((key: string) => unknown) | undefined;
+  const fromContext = typeof get === 'function' ? get.call(c, 'substratInvocationId') : undefined;
+  return typeof fromContext === 'string' ? fromContext : invocationStampOf(c.req.raw)?.invocationId;
+}
+
+/**
+ * #2192: the response, carrying the request's id on {@link REQUEST_ID_HEADER}.
+ *
+ * Set by whichever layer stamped the request, on the response it hands back — so every
+ * answer the worker gives carries it, an `onError` envelope and a vertical's own route alike.
+ * A response whose headers are immutable (one passed straight through from a `fetch`) is
+ * copied to carry it, except an upgrade: a `101` holds a socket a copy would drop. Never a
+ * throw: the id is a convenience, and a response that cannot carry it is answered without.
+ */
+function withRequestId<R>(response: R, id: string): R {
+  const headers = (response as { headers?: { set?: (name: string, value: string) => void } } | null)?.headers;
+  try {
+    headers?.set?.(REQUEST_ID_HEADER, id);
+    return response;
+  } catch {
+    /* immutable headers: copied below */
+  }
+  try {
+    const r = response as unknown as Response;
+    if (r.status === 101) return response;
+    const copy = new Response(r.body, r);
+    copy.headers.set(REQUEST_ID_HEADER, id);
+    return copy as unknown as R;
+  } catch {
+    return response;
+  }
 }
 
 /**
@@ -433,6 +483,13 @@ export function invocationLog<Env = unknown>(
     let threw = false;
     try {
       await next();
+      // #2192: after the handler, so whatever answered — a route's own `Response`, the
+      // `onError` envelope — carries it. Set before, Hono would keep it only on a response it
+      // built itself. Hono's `c.header` on an answered context COPIES the response (every one,
+      // not only an immutable one); the body stream is not read. That is this path only: the
+      // platform's entry copies just when the headers refuse a `set`. Not on an upgrade, whose
+      // socket a copy would drop.
+      if (c.res?.status !== 101) c.header?.(REQUEST_ID_HEADER, stamp.invocationId);
     } catch (e) {
       threw = true;
       // Always re-thrown: the envelope `mountPlatformSurface` installs is what answers
@@ -499,7 +556,7 @@ export function withInvocationLog<Env = unknown>(
       let status: number | null = null;
       let threw = false;
       try {
-        const response = await inner.call(worker, request, env, ctx);
+        const response = withRequestId(await inner.call(worker, request, env, ctx), stamp.invocationId);
         status = response.status;
         handRecordToRouter(response, stamp.record, request, env, options);
         return response;

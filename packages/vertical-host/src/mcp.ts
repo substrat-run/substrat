@@ -61,7 +61,7 @@ import {
 } from '@substrat-run/contracts';
 import { externalInput, externalResult } from './wire.js';
 import type { ScopeStub } from '@substrat-run/kernel';
-import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
+import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
 
@@ -741,7 +741,7 @@ export function mountMcp(
       const invocation: McpInvocation = {
         // #1893: or the platform's stamp, when the worker mounts no middleware.
         record: (get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined) ?? invocationStampOf(c.req.raw)?.record,
-        invocationId: (get?.('substratInvocationId') as string | undefined) ?? invocationStampOf(c.req.raw)?.invocationId,
+        invocationId: requestIdOf(c),
         // #1923: armed by the router for this request, decided when it was stamped.
         fieldCoverage: fieldCoverageArmed(c.req.raw),
       };

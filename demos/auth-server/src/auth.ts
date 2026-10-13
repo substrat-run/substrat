@@ -561,7 +561,7 @@ function betterAuthFor(deps: AuthDeps) {
         const session = await getSessionFromCtx(ctx);
         if (!session) return;
         const method = (session.session as Record<string, unknown>).signInProvider;
-        if (method !== 'invitation' && policyAdmits(policy, typeof method === 'string' ? method : null)) return;
+        if (method !== 'invitation' && policyAdmits(policy, typeof method === 'string' ? method : null, session.user.email)) return;
         return { context: { query: { ...query, max_age: '0' } } };
       }),
       /**

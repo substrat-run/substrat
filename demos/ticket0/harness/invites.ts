@@ -43,6 +43,7 @@ import {
  */
 import {
   acceptMemberInvite,
+  legacyInviteListReporter,
   mintMemberInvite,
   uncovered,
   withdrawMemberInvite,
@@ -95,6 +96,8 @@ export interface InviteStore {
    * is the store, while it still has the row.
    */
   claimByCapability(sub: string, capabilityId: string, principal: string): Promise<ClaimedInvite | null>;
+  /** Pending legacy hash-only invites (#2175), when the store can count them — a number, nothing identifying. */
+  legacyCount?(): Promise<number>;
   /** LEGACY: bind by the hash of a token minted before #1686. Null when no open invite matches. */
   claim(sub: string, tokenHash: string): Promise<ClaimedInvite | null>;
 }
@@ -106,6 +109,8 @@ export interface InviteStore {
  */
 export interface InviteDesk {
   readonly store: InviteStore;
+  /** The desk's scope id, for the #2175 measurement line. Public in that context; absent on a dev desk. */
+  readonly scopeId?: string;
   /** Grant a freshly minted principal a scope-wide role, bounded by what `caller` holds. */
   readonly grantRole: (caller: PrincipalId, principal: PrincipalId, roleKey: string) => Promise<Coverage>;
   /** Take a role back — the undo of a grant whose invite could not be recorded. */
@@ -246,10 +251,12 @@ export function mountInvites(
   opts: InviteSurfaceOptions,
 ): void {
   const now = opts.now ?? (() => new Date().toISOString());
+  const reportLegacyOnList = legacyInviteListReporter();
 
   app.get('/api/invites', async (c) => {
     await opts.requireAdmin(c);
     const desk = await opts.deskOf(c);
+    await reportLegacyOnList(desk.scopeId ?? '', desk.store.legacyCount && (() => desk.store.legacyCount!()));
     return c.json({ roles: [...opts.humanRoles], invites: await desk.store.list() });
   });
 
@@ -335,13 +342,14 @@ export function mountInvites(
       {
         directory: {
           claimInvite: async (_scope, sub, hash) => keep(await desk.store.claim(sub, hash)),
+          legacyInviteCount: desk.store.legacyCount && (() => desk.store.legacyCount!()),
           inviteMatches: (_scope, hash) => desk.store.matches(hash),
           claimInviteByCapability: async (_scope, sub, capabilityId, principal) =>
             keep(await desk.store.claimByCapability(sub, capabilityId, principal)),
         },
         exchange: (secret) => desk.exchange(secret),
       },
-      '',
+      desk.scopeId ?? '',
       subject.sub,
       token,
     );
