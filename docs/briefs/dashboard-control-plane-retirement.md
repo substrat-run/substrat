@@ -144,7 +144,8 @@ user resolves to.
 4. **Hold the local writers, then run the delta.** Between step 2 and the flip the
    dashboard has kept writing locally — `POST /api/teams` creates a tenant, scope, roles,
    entitlements, owner tuple and identity link through `hostFor`, `/api/invites/accept`
-   adds a tuple, `/api/members/remove` and `/api/teams/leave` take one away — so a
+   adds a tuple, `DELETE /api/teams/:teamId/members/:memberId` and
+   `POST /api/teams/:teamId/leave` take one away — so a
    backfill that finished an hour ago is already behind, and the shared directory would
    be missing exactly the newest teams when the reads move. So the membership writers
    (team create, delete and leave; invite accept; member remove) are held — a `503` on

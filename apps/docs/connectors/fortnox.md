@@ -166,7 +166,7 @@ exactly like a spent code.
 `fortnoxConsentUrl` builds the URL the admin is sent to:
 
 ```ts
-fortnoxConsentUrl({ clientId, redirectUri, state, scopes: ['bookkeeping', 'companyinformation'] });
+fortnoxConsentUrl({ clientId, redirectUri, state, scopes: ['bookkeeping', 'companyinformation', 'supplierinvoice'] });
 // always sets account_type=service and access_type=offline
 ```
 
@@ -332,7 +332,8 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
 3. **A deployment that schedules the sweep.** The connector provides the driver and cannot hold a
    timer. Without `startPlatformSweeper` or `definePlatformSweeperDO` wired, a binding is inert.
 
-4. **Supplier invoices and their PDFs.** The `supplierinvoice`, `archive` and `connectfile` scopes
-   exist and would let this read supplier invoices and fetch their files. Nothing here does — and
-   because scopes cannot be widened after consent, a deployment that expects to want them should
-   ask for them in the *first* consent round.
+4. **Supplier invoices and their PDFs.** The platform's Connect flow requests `supplierinvoice` at
+   consent, but this connector has no supplier invoice read or approve code yet: nothing here uses
+   the scope. The `archive` and `connectfile` scopes are not requested, and because scopes cannot be
+   widened after consent, a deployment that expects to want them should ask for them in the *first*
+   consent round.

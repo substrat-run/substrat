@@ -113,7 +113,7 @@ beforeEach(async () => {
     SESSION_SECRET: 'test-session-secret',
     EMAIL: { send: vi.fn(async () => ({ delivered: ['x'], queued: [], permanent_bounces: [] })) },
     SWEEPER: { idFromName: (name: string) => name, get: () => ({ noteScope }) },
-    // `/api/members/remove` severs the shared plane's mirrored link best-effort; a plane that
+    // Removing a member severs the shared plane's mirrored link best-effort; a plane that
     // answers nothing useful is enough for that, and nothing here reads it.
     CONTROL_PLANE_SVC: { fetch: async () => new Response('unavailable', { status: 503 }) },
     CP_SERVICE_TOKEN: 'test-service-token',
@@ -133,6 +133,9 @@ interface Team {
   org: OrgId;
 }
 
+/** The team the test seeded last — the one `invite` names in its path. */
+let current: Team | undefined;
+
 /** A seeded team whose owner is signed in as `sub-owner`. */
 async function team(): Promise<Team> {
   const tenant = tenantId.parse(ulid());
@@ -144,14 +147,15 @@ async function team(): Promise<Team> {
   await (await host.getScope(owner, tenant, dashScope)).invoke('dashboard/init-team', { orgId: org, ownerEmail: 'owner@team.test' });
   await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-owner', principal: owner, tenantId: tenant, scopeId: dashScope });
   shared.sessions.set('sub-owner', { id: 'sub-owner', email: 'owner@team.test', name: 'Owner', emailVerified: true });
-  return { tenant, dashScope, owner, org };
+  current = { tenant, dashScope, owner, org };
+  return current;
 }
 
 const json = (sub: string) => ({ cookie: `sb_session=${sub}`, 'content-type': 'application/json' });
 
 /** `from` invites `email` at `roleKey`; returns the token in the accept link. */
 async function invite(from: string, email: string, roleKey: string): Promise<{ token: string; invitationId: string }> {
-  const sent = await app.request('/api/members/invite', { method: 'POST', headers: json(from), body: JSON.stringify({ email, roleKey }) }, env);
+  const sent = await app.request(`/api/teams/${current!.tenant}/members/invites`, { method: 'POST', headers: json(from), body: JSON.stringify({ email, roleKey }) }, env);
   expect(sent.status, await sent.clone().text()).toBe(201);
   const { invitationId, acceptUrl } = (await sent.json()) as { invitationId: string; acceptUrl: string };
   return { token: acceptUrl.split('/invite/')[1]!, invitationId };
@@ -176,7 +180,13 @@ const roster = async (t: Team) =>
 /** The owner removes the roster row for `email` through the worker. */
 async function remove(t: Team, email: string): Promise<Response> {
   const row = (await roster(t)).find((m) => m.email === email)!;
-  return app.request('/api/members/remove', { method: 'POST', headers: json('sub-owner'), body: JSON.stringify({ memberId: row.id }) }, env);
+  return app.request(`/api/teams/${t.tenant}/members/${row.id}`, { method: 'DELETE', headers: json('sub-owner') }, env);
+}
+
+/** A removal that took effect inline: the declared route's 200, not pending. */
+async function expectRemovedNow(res: Response): Promise<void> {
+  expect(res.status, await res.clone().text()).toBe(200);
+  expect(await res.json()).toEqual({ removed: true, pending: false });
 }
 
 /** Whether `p` can read the team — what any dashboard role confers. */
@@ -251,7 +261,7 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     const first = await invite('sub-owner', 'ada@team.test', 'admin');
     expect((await accept('sub-ada', 'ada@team.test', first.token)).status).toBe(200);
     const second = await invite('sub-ada', 'ben@team.test', 'member');
-    expect((await remove(t, 'ada@team.test')).status).toBe(204);
+    await expectRemovedNow(await remove(t, 'ada@team.test'));
 
     const res = await accept('sub-ben', 'ben@team.test', second.token);
     expect(res.status).toBe(409);
@@ -264,7 +274,7 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     expect((await accept('sub-rae', 'rae@team.test', token)).status).toBe(200);
     const rae = (await principalOf(t, 'sub-rae'))!.principal;
     expect(await canRead(t, rae)).toBe(true);
-    expect((await remove(t, 'rae@team.test')).status).toBe(204);
+    await expectRemovedNow(await remove(t, 'rae@team.test'));
     expect(await canRead(t, rae)).toBe(false);
   });
 
@@ -307,7 +317,7 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     failNextAdds = 1;
     expect((await accept('sub-rae', 'rae@team.test', token)).status).toBe(202);
     const rae = (await principalOf(t, 'sub-rae'))!.principal;
-    expect((await remove(t, 'rae@team.test')).status).toBe(204);
+    await expectRemovedNow(await remove(t, 'rae@team.test'));
 
     await new Promise((r) => setTimeout(r, 1_300)); // past the first backoff step (1s ± 20% jitter)
     await host.drainDue(t.tenant, t.dashScope);
@@ -359,7 +369,7 @@ describe('POST /api/invites/accept — the membership executor answers the accep
     const { token } = await invite('sub-owner', 'rae@team.test', 'member');
     expect((await accept('sub-rae', 'rae@team.test', token)).status).toBe(200);
     shared.mounted.length = 0;
-    expect((await remove(t, 'rae@team.test')).status).toBe(204);
+    await expectRemovedNow(await remove(t, 'rae@team.test'));
     expect(shared.mounted).toEqual(['membership', 'membership-remove']);
   });
 });

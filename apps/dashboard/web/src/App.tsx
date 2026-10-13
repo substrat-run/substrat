@@ -355,7 +355,7 @@ export function App() {
         const emptyPage = { entries: [] as Member[], nextCursor: null };
         const [a, mem, c, d] = await Promise.all([
           teamApi(m.currentTeamId).listApps({}),
-          api.listMembers().catch(() => emptyPage),
+          teamApi(m.currentTeamId).listMembers({}).catch(() => emptyPage),
           api.catalog(),
           api.listDeployments().catch(() => []),
         ]);
@@ -690,11 +690,11 @@ export function App() {
   );
 
   const reloadMembers = useCallback(async () => {
-    if (DEV_MOCK) return;
-    const page = await api.listMembers().catch(() => ({ entries: [] as Member[], nextCursor: null }));
+    if (DEV_MOCK || !currentTeamId) return;
+    const page = await teamApi(currentTeamId).listMembers({}).catch(() => ({ entries: [] as Member[], nextCursor: null }));
     setMembers(page.entries);
     setMembersCursor(page.nextCursor);
-  }, []);
+  }, [currentTeamId]);
 
   // Keep the dashboard live without a manual browser reload: refetch when the tab
   // regains focus, plus a 30s poll while it stays visible (the provisioning poll
@@ -708,18 +708,18 @@ export function App() {
 
   const membersMoreRef = useRef(false);
   const loadMoreMembers = useCallback(async () => {
-    if (DEV_MOCK || membersMoreRef.current || !membersCursor) return;
+    if (DEV_MOCK || membersMoreRef.current || !membersCursor || !currentTeamId) return;
     membersMoreRef.current = true;
     setMembersLoadingMore(true);
     try {
-      const page = await api.listMembers({ cursor: membersCursor });
+      const page = await teamApi(currentTeamId).listMembers({ cursor: membersCursor });
       setMembers((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.id === e.id))]);
       setMembersCursor(page.nextCursor);
     } finally {
       membersMoreRef.current = false;
       setMembersLoadingMore(false);
     }
-  }, [membersCursor]);
+  }, [membersCursor, currentTeamId]);
 
   // Invite a member → returns a shareable accept link (Team shows it to copy). The
   // roster refreshes so the pending invite appears. Dev-preview fakes both.
@@ -733,11 +733,11 @@ export function App() {
         ]);
         return { acceptUrl: `${window.location.origin}/invite/demo-${id}` };
       }
-      const res = await api.inviteMember(email, roleKey);
+      const res = await teamClient().inviteMember({ email, roleKey });
       await reloadMembers();
       return res;
     },
-    [reloadMembers],
+    [reloadMembers, teamClient],
   );
 
   // A pending invite's accept link and deadline for the roster's "Copy link": a pure read,
@@ -746,16 +746,16 @@ export function App() {
     if (DEV_MOCK) {
       return { acceptUrl: `${window.location.origin}/invite/demo-${invitationId}`, expiresAt: new Date(Date.now() + 14 * 864e5).toISOString() };
     }
-    const { acceptUrl, expiresAt } = await api.inviteLink(invitationId);
+    const { acceptUrl, expiresAt } = await teamClient().inviteLink({ invitationId });
     return { acceptUrl, expiresAt };
-  }, []);
+  }, [teamClient]);
 
   const revokeInvite = useCallback(
     async (invitationId: string) => {
       try {
         if (DEV_MOCK) setMembers((ms) => ms.filter((m) => m.invitation_id !== invitationId));
         else {
-          await api.revokeInvite(invitationId);
+          await teamClient().revokeInvite({ invitationId });
           await reloadMembers();
         }
         setToast({ status: 'success', title: 'Invite revoked' });
@@ -763,7 +763,7 @@ export function App() {
         setToast({ status: 'danger', title: 'Could not revoke invite', detail: e instanceof Error ? e.message : String(e) });
       }
     },
-    [reloadMembers],
+    [reloadMembers, teamClient],
   );
 
   // Resend a pending invite's email. The link may be refreshed (a lapsed invitation is
@@ -772,7 +772,7 @@ export function App() {
     async (invitationId: string) => {
       try {
         if (!DEV_MOCK) {
-          const res = await api.resendInvite(invitationId);
+          const res = await teamClient().resendInvite({ invitationId });
           await reloadMembers();
           setToast(
             res.emailDelivered
@@ -786,7 +786,7 @@ export function App() {
         setToast({ status: 'danger', title: 'Could not resend invite', detail: e instanceof Error ? e.message : String(e) });
       }
     },
-    [reloadMembers],
+    [reloadMembers, teamClient],
   );
 
   const removeMember = useCallback(
@@ -794,7 +794,7 @@ export function App() {
       try {
         if (DEV_MOCK) setMembers((ms) => ms.filter((m) => m.id !== memberId));
         else {
-          await api.removeMember(memberId);
+          await teamClient().removeMember({ memberId });
           await reloadMembers();
         }
         setToast({ status: 'success', title: 'Member removed', detail: 'Their access is revoked.' });
@@ -802,7 +802,7 @@ export function App() {
         setToast({ status: 'danger', title: 'Could not remove member', detail: e instanceof Error ? e.message : String(e) });
       }
     },
-    [reloadMembers],
+    [reloadMembers, teamClient],
   );
 
   const openApp = useMemo(() => (route.app ? apps.find((a) => a.app_scope_id === route.app) : undefined), [apps, route.app]);
