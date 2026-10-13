@@ -428,6 +428,8 @@ function clientSafeStoreBody(status: number, body: unknown): unknown {
  * The body is what a client may read, so it rides only when it is a refusal (a 4xx)
  * and its JSON is at most {@link STORE_BODY_MAX_BYTES}. A 5xx body is the store's own
  * traceback, and any other status, or a body too large or not JSON, stays in the store.
+ * That holds in this isolate too: `storeBody` below is the same filtered value, so the
+ * vertical's own code never sees a withheld body, and nothing logs it on the way.
  */
 export class StoreError extends SubstratError {
   readonly storeCode: string;
