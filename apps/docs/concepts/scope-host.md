@@ -385,8 +385,11 @@ from `@substrat-run/kernel`. How they are counted:
   `json_each` is SQLite's own JSON1 table-valued function and runs the same on **both**
   adapters — better-sqlite3 on the node host and the Durable Object's SQLite when hosted — so
   there is no adapter-specific reason to avoid it. An empty list matches nothing (a hand-built
-  `IN ()` is a syntax error), and the column's affinity applies to each value as it would to a
-  bound one. `boundary-lint` rule **R12** refuses the hand-built placeholder list in module code
+  `IN ()` is a syntax error). Pass the values in the **column's own type**: a `json_each` value
+  carries no affinity, so a numeric column converts a numeric string (`inList(['123'])` matches
+  `123`), but a TEXT column never matches a number — `inList([1])` matches neither `'1'` nor the
+  `'1.0'` a bound `1` would. Pass a TEXT column's values as strings (`ids.map(String)`), or cast
+  the comparison (`CAST(col AS INTEGER) IN ${list.sql}`). `boundary-lint` rule **R12** refuses the hand-built placeholder list in module code
   and points here; a list whose length is fixed and short opts out in a
   `boundary-lint-allow R12` … `boundary-lint-end R12` block. On the node adapter the refusal
   names `inList` after the Durable Object's own words.

@@ -240,6 +240,34 @@ export function sqlLimitsContractSuite(
           }),
         ).resolves.toEqual([{ n: 2 }]);
       });
+
+      // What the docs promise about types, held here because it is the subtle half (#2260 review):
+      // a json_each value carries no affinity, so only a NUMERIC side converts. `CAST(x AS T)` has
+      // the affinity a column declared T would, so it stands in for one without a table.
+      it('converts a numeric string for a numeric column; a number never matches a TEXT one', async () => {
+        const asText = inList(['123']);
+        await expect(
+          stub.invoke('testmod/sql-query', {
+            sql: `WITH t(v) AS (VALUES ('123')) SELECT v FROM t WHERE CAST(v AS INTEGER) IN ${asText.sql}`,
+            params: asText.params,
+          }),
+        ).resolves.toEqual([{ v: '123' }]);
+        const asNumber = inList([1]);
+        await expect(
+          stub.invoke('testmod/sql-query', {
+            sql: `WITH t(v) AS (VALUES ('1'), ('1.0')) SELECT v FROM t WHERE CAST(v AS TEXT) IN ${asNumber.sql}`,
+            params: asNumber.params,
+          }),
+        ).resolves.toEqual([]);
+        // The fix the docs give: pass a TEXT column's values as strings.
+        const strings = inList(['1']);
+        await expect(
+          stub.invoke('testmod/sql-query', {
+            sql: `WITH t(v) AS (VALUES ('1'), ('1.0')) SELECT v FROM t WHERE CAST(v AS TEXT) IN ${strings.sql}`,
+            params: strings.params,
+          }),
+        ).resolves.toEqual([{ v: '1' }]);
+      });
     });
   });
 }

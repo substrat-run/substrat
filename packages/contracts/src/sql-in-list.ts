@@ -14,8 +14,12 @@
  *
  * `IN` stays in the caller's SQL, so the statement still reads as what it is. An empty list
  * matches nothing, which is what `IN` of nothing means (a hand-built `IN ()` is a syntax
- * error). The column's affinity applies to each value as it would to a bound one, so a
- * number compares to an INTEGER column and a string to a TEXT one.
+ * error).
+ *
+ * **Pass values in the column's own type.** A `json_each` value carries no affinity, so only a
+ * numeric column converts: `inList(['123'])` matches an INTEGER `123`, but `inList([1])` matches
+ * NO row of a TEXT column — not `'1'`, and not the `'1.0'` a bound `1` would match. A TEXT id is
+ * passed as a string (`ids.map(String)`), or the comparison is cast (`CAST(col AS INTEGER)`).
  *
  * Only strings and finite numbers: JSON has no `bigint` or blob, and it writes `NaN` and
  * `Infinity` as `null`, which would drop the value from the list without a word — so a

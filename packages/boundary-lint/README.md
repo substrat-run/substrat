@@ -172,11 +172,21 @@ const list = inList(ids);
 ctx.sql.exec(`UPDATE acme_items SET used = 1 WHERE id IN ${list.sql}`, list.params);
 ```
 
-R12 fires on an interpolation right after `IN (` (or `NOT IN (`) inside a template whose
-expression holds a placeholder literal (`'?'`, `"?"`, `'?, '`), or is a local name built from
-one. It does not fire on `VALUES (${…})`, whose width is the table's, nor on an interpolation
-with no placeholder in it. A placeholder built by a function defined elsewhere is out of its
-reach. A list whose length is fixed and short opts out in a `boundary-lint-allow R12` …
+R12 fires where `IN (` (or `NOT IN (`) is followed by code: a template's `${…}` with only
+placeholders before it (`IN (${…})`, `IN (?, ${…})`, `IN (?${',?'.repeat(n - 1)})`), or a string
+ending in `IN (` continued with `+`. It fires when that code holds a placeholder literal (`'?'`,
+`"?"`, `'?, '`, `',?'`, the numbered `` `?${i + 1}` ``), or uses a name — a `const` or a
+`function` in the same file — that does, up to three names deep. It does not fire on
+`VALUES (${…})`, whose width is the table's, on a subquery `IN (SELECT … ${…})`, on a ternary or
+`?.`/`??`, nor on code with no placeholder literal in reach.
+
+**What it cannot see**, so a clean run is not read as proof: a placeholder helper imported from
+another file; a chain of names more than three deep; a list built by mutation (`sql += '?, '`
+in a loop, `parts.push('?')`); and `IN (` joined to the code by anything but `${` or `+`
+(`.concat`, an array `join` of SQL pieces). On the node adapter, `ctx.sql`'s run-time limit is
+the check behind all of these.
+
+A list whose length is fixed and short opts out in a `boundary-lint-allow R12` …
 `boundary-lint-end R12` block.
 
 ## The escape hatch
