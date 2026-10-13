@@ -51,6 +51,55 @@ export function scopeStoreRunnersOf(
   return runners;
 }
 
+/** Starts and stops one host's runners (#2213). */
+export interface ScopeStoreLifecycle {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+/**
+ * The lifecycle both adapters run their runners through. `start` starts each distinct
+ * runner once, and concurrent callers share the pass. A runner that started stays
+ * started when a later one throws, so the retry starts only the rest. `stop` asks every
+ * runner, started or not, since a runner tolerates a stop without a start. One that
+ * throws does not leave the others running: the first error is rethrown once all have
+ * been asked.
+ */
+export function scopeStoreLifecycleOf(runners: ReadonlyMap<string, ScopeStoreRunner>): ScopeStoreLifecycle {
+  const started = new Set<ScopeStoreRunner>();
+  let pending: Promise<void> | null = null;
+  return {
+    start() {
+      if (pending) return pending;
+      const pass = (async () => {
+        for (const runner of new Set(runners.values())) {
+          if (started.has(runner)) continue;
+          await runner.start();
+          started.add(runner);
+        }
+      })();
+      pending = pass;
+      pass.catch(() => {
+        if (pending === pass) pending = null;
+      });
+      return pass;
+    },
+    async stop() {
+      const failures: unknown[] = [];
+      for (const runner of new Set(runners.values())) {
+        try {
+          await runner.stop();
+        } catch (err) {
+          failures.push(err);
+        }
+      }
+      started.clear();
+      pending = null;
+      if (failures.length > 0) throw failures[0];
+    },
+  };
+}
+
 /**
  * The capability a `getScopeStore` door returns (#2207).
  *

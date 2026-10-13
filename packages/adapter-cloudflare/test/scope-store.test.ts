@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, scopeStoreObjectName, tenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, type ScopeStoreRunner } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -95,6 +95,46 @@ describe('scope store door (cloudflare host, #2209)', () => {
     const a = scopeId.parse(ulid());
     const store = await host.getScopeStore(principal, t, a, 'GRAPH');
     expect(await store.invoke('increment', { by: 1 })).toBe(1);
+  });
+
+  // #2213: a failed start is retried without starting the runners that already did, and
+  // close stops every runner even when one stop throws.
+  it('a retried start does not start a runner twice, and close stops every runner', async () => {
+    const log: string[] = [];
+    let failStart = 1;
+    const runner = (name: string, opts: { failStart?: boolean; failStop?: boolean } = {}): ScopeStoreRunner => ({
+      kind: 'counter',
+      async start() {
+        log.push(`start ${name}`);
+        if (opts.failStart && failStart-- > 0) throw new Error(`${name} start broke`);
+      },
+      async stop() {
+        log.push(`stop ${name}`);
+        if (opts.failStop) throw new Error(`${name} stop broke`);
+      },
+      async invoke() {
+        return { result: 7 };
+      },
+    });
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      scopeStores: {
+        vertical: 'docs',
+        runners: [
+          { binding: 'GRAPH', runner: runner('A', { failStop: true }) },
+          { binding: 'OTHER', runner: runner('B', { failStart: true }) },
+        ],
+      },
+    });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const open = () => host.getScopeStore(principal, t, s, 'GRAPH');
+    await expect(open()).rejects.toThrow(/B start broke/);
+    expect(await (await open()).invoke('read')).toBe(7);
+    await open();
+    expect(log).toEqual(['start A', 'start B', 'start B']);
+    await expect(host.close()).rejects.toThrow(/A stop broke/);
+    expect(log.slice(3)).toEqual(['stop A', 'stop B']);
   });
 
   it('a host with no control plane and no vertical answers unavailable, not a raw error', async () => {
