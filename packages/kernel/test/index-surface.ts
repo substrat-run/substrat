@@ -467,6 +467,7 @@ export const INDEX_VALUE_EXPORTS = [
   'runPlatformSweep',
   'runPurgePass',
   'runningVersionOf',
+  'samePeerVertical',
   'scheduleStateHasKind',
   'scopeMoveOf',
   'scopeOwesSwitch',
