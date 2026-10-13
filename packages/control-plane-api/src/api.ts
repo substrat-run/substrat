@@ -111,6 +111,7 @@ import {
   capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
+  type StoreErasure,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import type {
@@ -5313,13 +5314,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // version that declares none is not asked. One that cannot be resolved while a kind is
     // registered refuses (503): the key must not be destroyed while a store may hold the subject.
     const reach = await platformStoresOf(c, scope);
-    const eraseStores = () =>
-      reach ? reach.caller.eraseSubject({ tenantId, scopeId, vertical: reach.vertical, subjectId, stores: reach.stores }) : Promise.resolve([]);
+    // Not asked is `undefined`, not `[]` (#2242): with no platform path the host's own stores
+    // (the pure adapter's co-located runners) are erased in its shred or its finalize.
+    const eraseStores = async (): Promise<StoreErasure[] | undefined> =>
+      reach ? reach.caller.eraseSubject({ tenantId, scopeId, vertical: reach.vertical, subjectId, stores: reach.stores }) : undefined;
     /** The host's own shred, with the platform's store erasure first: a store that errors keeps the key. */
     const shredHere = async () => {
       const storeErasures = await eraseStores();
       const receipt = await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId);
-      return { ...receipt, storeErasures: [...receipt.storeErasures, ...storeErasures] };
+      return { ...receipt, storeErasures: [...receipt.storeErasures, ...(storeErasures ?? [])] };
     };
     if (!options.resolveVerticalRef) {
       if (currentRef || copies.some((copy) => copy.state !== 'done')) {
