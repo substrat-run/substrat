@@ -1,8 +1,11 @@
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
 
-const signedStoreWorker = fileURLToPath(new URL('./test/signed-store-worker.js', import.meta.url));
+// A string, not `new URL(…)`: this config is typechecked with the workers types, whose URL
+// is not the one node:url's fileURLToPath takes.
+const signedStoreWorker = join(dirname(fileURLToPath(import.meta.url)), 'test', 'signed-store-worker.js');
 
 export default defineConfig({
   // `process.env` inside workerd is not the runner's, so an opt-in from the environment is decided
