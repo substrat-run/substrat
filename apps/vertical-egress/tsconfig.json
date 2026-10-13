@@ -7,5 +7,8 @@
     "rootDir": ".",
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  // #2254's fixture workers import the router's and the kernel's source across this rootDir,
+  // which tsc refuses here; vitest bundles them. Out until they import through packages.
+  "exclude": ["test/store-hop-entry.ts", "test/store-log-worker.ts"]
 }
