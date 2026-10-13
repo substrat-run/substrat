@@ -500,7 +500,7 @@ import {
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, storeSizeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
+import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, storeSizeResult, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -2494,6 +2494,25 @@ function ambientAttachmentBucket(tenantId: string): unknown {
 interface ScopeStoreNamespace {
   idFromName(name: string): DurableObjectId;
   get(id: DurableObjectId): { fetch(input: RequestInfo, init?: RequestInit): Promise<Response> };
+}
+
+/**
+ * One store call over an object's fetch, for the vertical's door and the platform's reserved
+ * calls alike. A body that is not JSON is the store's failure, answered as a bad envelope.
+ */
+function storeObjectSend(object: ReturnType<ScopeStoreNamespace['get']>): (request: StoreRequest) => Promise<unknown> {
+  return async (request) => {
+    const response = await object.fetch('https://scope-store/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    try {
+      return await response.json();
+    } catch {
+      throw new StoreError({ code: 'bad_envelope', status: 502 });
+    }
+  };
 }
 
 function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
@@ -4690,18 +4709,7 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId,
       subjectKind: 'principal',
       invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
-        callScopeStore(async (request) => {
-          const response = await object.fetch('https://scope-store/', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(request),
-          });
-          try {
-            return await response.json();
-          } catch {
-            throw new StoreError({ code: 'bad_envelope', status: 502 });
-          }
-        }, operation, input, ...extra),
+        callScopeStore(storeObjectSend(object), operation, input, ...extra),
     };
   }
 
@@ -4781,14 +4789,7 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     const objectName = scopeStoreObjectName(address.tenantId, address.vertical, address.scopeId, address.binding);
     const object = bound.get(bound.idFromName(objectName));
-    return callReservedStoreOperation(async (request) => {
-      const response = await object.fetch('https://scope-store/', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(request),
-      });
-      return response.json();
-    }, operation, input);
+    return callReservedStoreOperation(storeObjectSend(object), operation, input);
   }
 
   /**

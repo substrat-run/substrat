@@ -90,6 +90,19 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect(sizes[0]!.bytes).toBeGreaterThan(0);
   });
 
+  it('a reserved call whose answer is not JSON is a bad envelope, as at the door', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('break-envelope');
+    const refusal = await host.scopeStoreSizesLocal(t, s).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(errorCodeOf(refusal)).toBe('unavailable');
+    expect((refusal as { storeCode?: string }).storeCode).toBe('bad_envelope');
+  });
+
   it('a host with no control plane and no vertical refuses a size read as unavailable', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE });
     const refusal = await host.scopeStoreSizesLocal(tenantId.parse(ulid()), scopeId.parse(ulid())).then(
