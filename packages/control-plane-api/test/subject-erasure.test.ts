@@ -540,7 +540,7 @@ describe('subject erasure (#37)', () => {
           redactSubject: async () => redaction,
           deleteScope: async () => undefined,
           restoreScope: async (_s: unknown, tables: unknown[]) => ({ tables: tables.length }),
-          exportScope: async (s2: ScopeId) => (await host.admin.exportScope(staff, t, s2)).tables,
+          exportScope: async (s2: ScopeId) => (await host.admin.exportScope(staff, tenantOf.get(s2) ?? t, s2)).tables,
         }) as never,
       });
     const fresh = () => ({ exported: [], imported: [], erased: [], wiped: [] } as Calls);
@@ -561,10 +561,12 @@ describe('subject erasure (#37)', () => {
       await host.admin.setVerticalServing(staff, SERVED, { ref: SERVING_REF, versionId, doClasses: ['ScopeDO'], migrationTag: 'v1' });
     });
 
-    const install = async (): Promise<ScopeId> => {
+    const tenantOf = new Map<ScopeId, typeof t>();
+    const install = async (tenant = t): Promise<ScopeId> => {
       const scoped = scopeId.parse(ulid());
-      await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: SERVED });
-      await host.admin.activateScope(staff, t, scoped);
+      tenantOf.set(scoped, tenant);
+      await host.provisionScope(staff, { tenantId: tenant, scopeId: scoped, vertical: SERVED });
+      await host.admin.activateScope(staff, tenant, scoped);
       return scoped;
     };
 
@@ -581,6 +583,19 @@ describe('subject erasure (#37)', () => {
       expect(calls.exported).toEqual([scoped]);
       const taken = [...held.values()].find((d) => d.scopeId === scoped);
       expect(taken!.stores).toEqual([{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }]);
+    });
+
+    it('is carried WITH its store in a full tenant export (Art. 20)', async () => {
+      // A tenant of its own: the export reads every scope of the tenant.
+      const own = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: own, slug: `export-${own.toLowerCase()}`, name: 'Export' });
+      const scoped = await install(own);
+      const calls = fresh();
+      const res = await api(recording(calls)).request(`/tenants/${own}/export?full=true`, { headers: auth });
+      expect(res.status, await res.clone().text()).toBe(200);
+      const body = (await res.json()) as { data: { scopeId: string; stores: unknown[] }[] };
+      expect(calls.exported).toContain(scoped);
+      expect(body.data.find((d) => d.scopeId === scoped)?.stores).toEqual([{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }]);
     });
 
     it('asks the store on a shred, and the receipt names it', async () => {

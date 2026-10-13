@@ -1494,9 +1494,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * Erase every tombstoned subject from the destination's stores (#2207): the destination's
-   * marks and the source's (`replayStoreErasures`). Nothing when the platform calls no stores
-   * for it.
+   * `substrat.erase` on the destination's stores for each subject tombstoned in the destination
+   * or the source, each subject once (`replayStoreErasures`, #2207): one store call per subject
+   * per declared binding, all inside this request. A failed call marks the replay incomplete,
+   * and the next restore repeats every call from the first subject, so it converges only while
+   * the whole replay fits one request's subrequest and duration budget. Nothing when the platform
+   * calls no stores for the destination.
    */
   const replayPlatformStoreErasures = async (
     c: ReqCtx,
@@ -5981,8 +5984,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           ...dump,
           tables: mask ? await maskDump(tables, mask) : tables,
           // A scope store's tables are opaque, so the pseudonymizer cannot see inside them.
-          // A masked export omits them rather than shipping them unmasked.
-          stores: mask ? [] : dump.stores,
+          // A masked export omits them rather than shipping them unmasked. A full one reads them
+          // where they live, as a backup does (#2207): the host's own dump has none on the hosted
+          // plane, and a store that cannot be named refuses the export rather than leave it out.
+          stores: mask ? [] : ((await exportPlatformStores(c, scope)) ?? dump.stores),
         });
       }
 

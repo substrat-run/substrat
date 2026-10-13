@@ -208,8 +208,8 @@ version. A scope pinned to any other script (stamped at provision, or a fork kep
 copy's script) runs a version nothing names, so it is unknown. Provisioning sets the
 serving pin and no bound version, so reading the bound version alone answered "no store"
 for an ordinary install. The control plane resolves stores in one place (`scopeStoresOf`)
-for backup, full pull, snapshot, reap, restore, erasure and the sweep's wipe and storage
-gauge. The router gives an unknown scope no store, so its store calls are refused.
+for backup, full pull, the full tenant export, snapshot, reap, restore, erasure and the
+sweep's wipe and storage gauge. The router gives an unknown scope no store, so its store calls are refused.
 
 `mayHoldScopeStores` is the gate. With no kind registered, nothing can hold a store and
 every path proceeds as before. Once a kind is registered, an unknown version or an
