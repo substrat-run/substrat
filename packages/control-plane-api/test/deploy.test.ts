@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { errorCodeOf, RESERVED_STORE_OPERATIONS, scopeStoreObjectName, STORE_KINDS } from '@substrat-run/contracts';
-import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
+import { errorCodeOf, RESERVED_STORE_OPERATIONS, scopeStoreObjectName } from '@substrat-run/contracts';
+import type { DeclaredBinding, DeployManifest, StoreKindRegistration } from '@substrat-run/contracts';
 import {
   assertSandboxContract,
   deploymentRefFor,
-  scopeStoreScriptBindings,
   scopeStoreScriptName,
   scopeStoreUploadPlan,
   stableDeploymentRefFor,
   nextMigrationTag,
+  verticalUploadBindings,
 } from '../src/deploy.js';
 
 /**
@@ -38,6 +38,19 @@ describe('deploymentRefFor', () => {
  * archive ref (those always end in `-<26-char ULID>`).
  */
 describe('stableDeploymentRefFor', () => {
+  it('names existing slug shapes exactly as before the store name space was reserved (L20)', () => {
+    const expected: Record<string, string> = {
+      ticket0: 'ticket0',
+      callout: 'callout',
+      'acme/crm': 'acme-crm',
+      'acme-co/field-service': 'acme-co-field-service',
+      't-0wv2mwk4j5/crm': 't-0wv2mwk4j5-crm',
+      'substrat/docs-bot': 'substrat-docs-bot',
+      '9lives/app2': '9lives-app2',
+    };
+    for (const [slug, ref] of Object.entries(expected)) expect(stableDeploymentRefFor(slug), slug).toBe(ref);
+  });
+
   it('is the sanitized slug, with no version component', () => {
     expect(stableDeploymentRefFor('callout')).toBe('callout');
     expect(stableDeploymentRefFor('acme/callout')).toBe('acme-callout');
@@ -162,97 +175,61 @@ describe('assertSandboxContract', () => {
   });
 });
 
-describe('scope store bindings injected at upload (#2209)', () => {
-  it('injects nothing when the vertical declares none', () => {
-    expect(scopeStoreScriptBindings([])).toEqual([]);
-  });
-
-  it('refuses a kind that is not registered, which is every kind today', () => {
-    expect(() => scopeStoreScriptBindings([{ binding: 'GRAPH', kind: 'graph' }])).toThrow(/not registered/);
-  });
-
-  it('aims a registered kind at that kind’s script and class', () => {
-    expect(
-      scopeStoreScriptBindings([{ binding: 'GRAPH', kind: 'graph' }], [
-        {
-          kind: 'graph',
-          release: '1.0.0',
-          script: 'graph-store',
-          className: 'Store',
-          operations: ['read'],
-          platformOperations: [...RESERVED_STORE_OPERATIONS],
-        },
-      ]),
-    ).toEqual([
-      {
-        type: 'durable_object_namespace',
-        name: 'SUBSTRAT_STORE_GRAPH',
-        class_name: 'Store',
-        script_name: 'graph-store',
-      },
-    ]);
-  });
-
-  // The gate for removing or replacing the injection with the signed router hop (#2210): a
-  // registered kind must not ship while the serving upload still binds SUBSTRAT_STORE_<B>,
-  // which hands the vertical the store's namespace directly. The test above is the twin: with
-  // a kind registered, this function does inject, so a first entry in STORE_KINDS fails here.
-  it('no kind is registered while the serving upload still injects SUBSTRAT_STORE_<BINDING>', () => {
-    const injected = STORE_KINDS.flatMap((kind) => scopeStoreScriptBindings([{ binding: 'GRAPH', kind: kind.kind }]));
-    expect(injected.map((binding) => binding.name)).toEqual([]);
-  });
-});
-
 describe('scope store upload plan (#2210)', () => {
-  const kind = (release: string) => ({
-    kind: 'graph' as const,
+  const kind = (release: string): StoreKindRegistration => ({
+    kind: 'graph',
     release,
-    script: `graph-store-${release}`,
     className: 'Store',
     operations: ['read'],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
   });
+  const stores = [
+    { binding: 'GRAPH' as const, kind: 'graph' as const },
+    { binding: 'BLOBS' as const, kind: 'graph' as const },
+  ];
 
-  it('the production registry stays empty until a release is pinned', () => {
-    expect(STORE_KINDS).toEqual([]);
+  // L1 (RFC scope-stores §10.7): with a kind registered, neither upload a vertical's push or
+  // serve sends carries a SUBSTRAT_STORE_* binding. This is the function both uploads in api.ts
+  // build their binding list with, so a store binding injected into it fails here.
+  it('a vertical upload carries no store binding, with a kind registered', () => {
+    const own: DeclaredBinding[] = [{ type: 'kv_namespace', name: 'CACHE', id: 'kv-1' }];
+    const ledger = [{ type: 'd1', name: 'SUBSTRAT_TENANT_DB_01ABC', id: 'd1-1' }];
+    for (const platformBindings of [ledger, []]) {
+      const bindings = verticalUploadBindings({
+        vertical: 'acme/crm',
+        manifest: { bindings: own, scopeStores: stores },
+        platformBindings,
+        kinds: [kind('1.0.0')],
+      });
+      expect(bindings.map((b) => b.name).filter((name) => name.startsWith('SUBSTRAT_STORE_'))).toEqual([]);
+      // The twin: the vertical's own bindings and the platform's ledger bindings are still there.
+      expect(bindings).toEqual([...own, ...platformBindings]);
+    }
+    expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('1.0.0')] }).bindings).toEqual([]);
   });
 
-  it('uploads one script per kind and vertical, and a new release keeps the name', () => {
-    const stores = [
-      { binding: 'GRAPH' as const, kind: 'graph' as const },
-      { binding: 'BLOBS' as const, kind: 'graph' as const },
-    ];
+  it('an upload refuses a declared kind that is not registered, which is every kind today', () => {
+    expect(() =>
+      verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [] }),
+    ).toThrow(/not registered/);
+    expect(verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: [] }, platformBindings: [] })).toEqual([]);
+  });
+
+  it('plans one script per kind and vertical, and a new release keeps the name', () => {
     const first = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('1.0.0')] });
     const next = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('2.0.0')] });
-    expect(first.scripts).toHaveLength(1);
-    expect(first.scripts[0]).toMatchObject({
-      kind: 'graph',
-      release: '1.0.0',
-      vertical: 'acme/crm',
-      className: 'Store',
-      scriptName: scopeStoreScriptName('acme/crm', 'graph'),
-    });
-    expect(first.scripts[0]?.scriptName).toBe(next.scripts[0]?.scriptName);
-    expect(first.scripts[0]?.scriptName).not.toContain('1.0.0');
-    expect(first.scripts[0]?.scriptName).not.toContain('2.0.0');
-    expect(first.bindings).toEqual([
+    expect(first.scripts).toEqual([
       {
-        type: 'durable_object_namespace',
-        name: 'SUBSTRAT_STORE_GRAPH',
-        class_name: 'Store',
-        script_name: first.scripts[0]?.scriptName,
-      },
-      {
-        type: 'durable_object_namespace',
-        name: 'SUBSTRAT_STORE_BLOBS',
-        class_name: 'Store',
-        script_name: first.scripts[0]?.scriptName,
+        kind: 'graph',
+        release: '1.0.0',
+        vertical: 'acme/crm',
+        className: 'Store',
+        scriptName: scopeStoreScriptName('acme/crm', 'graph'),
       },
     ]);
-    expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe(
-      '01TENANT/acme/crm/01SCOPE/GRAPH',
-    );
-    expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).not.toContain('1.0.0');
+    expect(next.scripts[0]?.scriptName).toBe(first.scripts[0]?.scriptName);
+    expect(first.scripts[0]?.scriptName).not.toMatch(/[12]\.0\.0/);
+    expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe('01TENANT/acme/crm/01SCOPE/GRAPH');
   });
 
   it('refuses a kind that is not registered', () => {

@@ -177,7 +177,7 @@ import { createPseudonymizer } from './pseudonymize.js';
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
-  scopeStoreUploadPlan,
+  verticalUploadBindings,
   deployManifest,
   storedDeployManifest,
   pushedPermissionRegistry,
@@ -7355,11 +7355,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses,
-        bindings: [
-          ...manifest.bindings,
-          ...storeBindings,
-          ...scopeStoreUploadPlan({ vertical: slug, stores: manifest.scopeStores }).bindings,
-        ],
+        // #2210: a declared scope store adds no binding to either upload (L1); deploy.test.ts holds
+        // `verticalUploadBindings` to that with a kind registered.
+        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: storeBindings }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
         // stable script updated in place, so this refresh is what keeps the binding
@@ -7932,7 +7930,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses: manifest.doClasses,
-        bindings: manifest.bindings,
+        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: [] }),
         // #1242: the freshly minted version id — this archive script IS that version,
         // and a preview routed at it stamps the signals `version` dimension honestly.
         versionId: id,

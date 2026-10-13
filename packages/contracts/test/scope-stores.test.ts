@@ -7,6 +7,8 @@ import {
   deployManifest,
   runtimeNeeds,
   scopeStoreBindingName,
+  STORE_KINDS,
+  storeKindId,
   storeKindRegistration,
   tenantStoreBindingName,
 } from '../src/index.js';
@@ -130,7 +132,6 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
       storeKindRegistration.parse({
         kind: 'graph',
         release: '1.0.0',
-        script: 'store',
         className: 'Store',
         operations: ['read'],
         platformOperations: reserved,
@@ -138,12 +139,31 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     ).toThrow(/substrat.erase/);
   });
 
+  it('holds a kind id to [a-z0-9]+ (L20), at the registration and in every registered kind', () => {
+    const registration = (kind: string) => ({
+      kind,
+      release: '1.0.0',
+      className: 'Store',
+      operations: ['read'],
+      platformOperations: [...RESERVED_STORE_OPERATIONS],
+    });
+    for (const kind of ['graph-x', 'graph_x', 'Graph', 'gr aph', '']) {
+      expect(storeKindId.safeParse(kind).success, kind).toBe(false);
+      const parsed = storeKindRegistration.safeParse(registration(kind));
+      expect(parsed.success, kind).toBe(false);
+      expect(JSON.stringify(parsed.error?.issues), kind).toContain('[a-z0-9]+');
+    }
+    // The twin: ids in the grammar parse, and the registered kind is one.
+    for (const kind of ['graph', 'g2', '0']) expect(storeKindId.safeParse(kind).success, kind).toBe(true);
+    expect(storeKindRegistration.safeParse(registration('graph')).success).toBe(true);
+    for (const kind of STORE_KINDS) expect(storeKindRegistration.safeParse(kind).success, kind.kind).toBe(true);
+  });
+
   it('refuses a catalog operation on the reserved prefix', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
         release: '1.0.0',
-        script: 'store',
         className: 'Store',
         operations: ['substrat.wipe'],
         platformOperations: [...RESERVED_STORE_OPERATIONS],

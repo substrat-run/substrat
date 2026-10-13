@@ -7,6 +7,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
+import { STORE_KIND_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
@@ -337,15 +338,19 @@ const storeCatalogOperation = z
     message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
   });
 
+/** A store kind id: `[a-z0-9]+` (RFC scope-stores §10.7, L20). Part of every store script name. */
+export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store kind id is [a-z0-9]+' });
+
 /**
- * A store kind, pinned the way a connector is: an exact release, the script and class
+ * A store kind, pinned the way a connector is: an exact release, the class
  * the platform runs, the catalog a vertical may call, and every reserved operation.
  * The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
  */
 export const storeKindRegistration = z.object({
-  kind: z.literal('graph'),
+  // Held to the kind-id grammar first (L20), so a second kind cannot be added outside it.
+  kind: storeKindId.pipe(z.literal('graph')),
   release: z.string().min(1),
-  script: z.string().min(1),
+  // No script name: the platform names the upload `scopeStoreScriptName(vertical, kind)`.
   className: z.string().min(1),
   operations: z.array(storeCatalogOperation),
   platformOperations: z.array(z.enum(RESERVED_STORE_OPERATIONS)).refine(
