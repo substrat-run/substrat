@@ -53,6 +53,26 @@ describe('scope restore backup provenance (#1880)', () => {
     expect(log).not.toHaveBeenCalledWith(expect.stringContaining('backup origin is unknown'));
   });
 
+  it('a full pull that carries scope stores restores them: it is written as the JSON dump, not .sqlite', async () => {
+    const stores = [
+      { binding: 'GRAPH', kind: 'graph', tables: [{ name: 'nodes', ddl: 'CREATE TABLE nodes (id TEXT PRIMARY KEY)', columns: ['id'], rows: [['g1']] }] },
+    ];
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ tenantId: sourceTenant, scopeId: sourceScope, capturedAt, masked: false, tables, stores }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outDir = join(dir, 'with-stores');
+    await pullScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: sourceTenant, scopeId: sourceScope, full: true, outDir });
+    const base = join(outDir, `${sourceTenant}__${sourceScope}`);
+    expect(existsSync(`${base}.sqlite`)).toBe(false);
+
+    const posts = capturePost();
+    await restoreScope(opts(`${base}.dump.json`));
+    expect(posts[0]!.body).toMatchObject({ tenantId: sourceTenant, scopeId: sourceScope, tables, stores });
+  });
+
   it('reads source IDs from a standard SQLite backup filename', async () => {
     const file = join(dir, `${sourceTenant}__${sourceScope}.sqlite`);
     await writeSqlite(file);

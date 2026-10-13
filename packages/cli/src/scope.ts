@@ -118,7 +118,11 @@ export async function pullScope(opts: {
   const base = join(opts.outDir, `${dump.tenantId}__${dump.scopeId}`);
   const rows = dump.tables.reduce((n, t) => n + t.rows.length, 0);
 
-  const wroteSqlite = await writeSqlite(`${base}.sqlite`, dump);
+  // A `.sqlite` file holds the scope's tables only, and `readDump` reads no stores back
+  // from one, so a pull that carries scope stores is written as the JSON dump: restoring
+  // it then restores the stores too, instead of leaving them as they were.
+  const stores = dump.stores?.length ?? 0;
+  const wroteSqlite = stores === 0 && (await writeSqlite(`${base}.sqlite`, dump));
   const file = wroteSqlite ? `${base}.sqlite` : `${base}.dump.json`;
   if (!wroteSqlite) {
     writeFileSync(file, JSON.stringify(dump, null, 2));
@@ -126,7 +130,9 @@ export async function pullScope(opts: {
 
   console.log(`✓ pulled ${dump.tables.length} tables (${rows} rows), captured ${dump.capturedAt}`);
   console.log(`  → ${file}`);
-  if (!wroteSqlite) {
+  if (stores > 0) {
+    console.log(`  (JSON — the pull carries ${stores} scope store${stores === 1 ? '' : 's'}, which a .sqlite file cannot hold)`);
+  } else if (!wroteSqlite) {
     console.log('  (JSON fallback — node 22.13+ writes a ready-to-run .sqlite instead)');
   }
   if (dump.masked) {

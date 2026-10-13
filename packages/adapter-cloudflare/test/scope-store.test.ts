@@ -163,6 +163,93 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect(await store.invoke('increment', { by: 1 })).toBe(1);
   });
 
+  /** A runner that records each reserved call and answers it with an empty store. */
+  const recordingRunner = (log: string[]): ScopeStoreRunner => ({
+    kind: 'counter',
+    async start() {},
+    async stop() {},
+    async invoke(address, request) {
+      log.push(`${request.operation} ${address.vertical}/${address.scopeId}`);
+      if (request.operation === 'substrat.export') return { result: { tables: [] } };
+      if (request.operation === 'substrat.import') return { result: { tables: 0 } };
+      return { result: {} };
+    },
+  });
+
+  // CodeRabbit on #2244: export, import and wipe read the directory, which a host with no
+  // control plane does not have, so each refused before a store was asked.
+  it('a host with no control plane exports, imports and wipes a store under the vertical it was given', async () => {
+    const log: string[] = [];
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      scopeStores: { vertical: 'docs', runners: [{ binding: 'GRAPH', runner: recordingRunner(log) }] },
+    });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    expect(await host.scopeStoreExportLocal(t, s)).toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+    await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+    await host.deleteScopeLocal(s, t);
+    expect(log).toEqual([`substrat.export docs/${s}`, `substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
+  });
+
+  // The export reads data out, so it is gated as the door is. The import is not (a fork's stores
+  // land before it is activated, and a suspended scope may be restored), nor is the wipe a reap runs.
+  it('a host with no control plane refuses an export on a scope its lifecycle holds, and still imports and wipes', async () => {
+    const log: string[] = [];
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      scopeStores: { vertical: 'docs', runners: [{ binding: 'GRAPH', runner: recordingRunner(log) }] },
+    });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const at = '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'];
+    await host.setLifecycleLocal(s, { scope: 'suspended', tenant: 'active', at, revision: { epoch: 0, scope: 1, tenant: 1 } });
+    await expect(host.scopeStoreExportLocal(t, s)).rejects.toThrow(/scope not active \(status: suspended\)/);
+    await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+    await host.deleteScopeLocal(s, t);
+    expect(log).toEqual([`substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
+  });
+
+  // CodeRabbit on #2244: the pin was checked only when the stores were imported, after the
+  // scope's tables had been replaced (a restore) or the scope created (an import).
+  it('a host pinned to one vertical refuses a store dump for a scope of another before any write', async () => {
+    const log: string[] = [];
+    const runners = [{ binding: 'GRAPH', runner: recordingRunner(log) }];
+    // An unpinned host on the same directory and storage reads what the pinned one left.
+    const reader = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeStores: { runners } });
+    const pinned = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      scopeStores: { vertical: 'docs', runners },
+    });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await reader.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+    await reader.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'other' });
+    await reader.admin.activateScope(staff, t, s);
+    const dump = await reader.admin.exportScope(staff, t, s);
+    expect(dump.stores).toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+    log.length = 0;
+    const probe = { name: 'restore_probe', ddl: 'CREATE TABLE restore_probe (id TEXT)', columns: ['id'], rows: [['x']] };
+
+    const restored = await pinned.restoreScope(staff, t, s, { ...dump, tables: [...dump.tables, probe] }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(errorCodeOf(restored)).toBe('forbidden');
+    const after = await reader.admin.exportScope(staff, t, s);
+    expect(after.tables.map((table) => table.name)).not.toContain(probe.name);
+
+    const dest = scopeId.parse(ulid());
+    const imported = await pinned.importScope(staff, { tenantId: t, scopeId: dest, vertical: 'other' }, dump).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(errorCodeOf(imported)).toBe('forbidden');
+    expect(await reader.admin.getScopeRecord(staff, t, dest)).toBeUndefined();
+    expect(log.filter((line) => line.startsWith('substrat.import'))).toEqual([]);
+  });
+
   // #2213: a failed start is retried without starting the runners that already did, and
   // close stops every runner even when one stop throws.
   // #2266: a close while the first start is in flight waits for it; no runner starts after it.

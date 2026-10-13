@@ -81,6 +81,70 @@ describe('scope store door (pure adapter, #2209)', () => {
     }
   });
 
+  // CodeRabbit on #2244: the pin was checked only when the stores were imported, after the
+  // scope's tables had been replaced (a restore) or the scope created (an import).
+  it('a host pinned to one vertical refuses a store dump for a scope of another before any write', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
+    const log: string[] = [];
+    const runner: ScopeStoreRunner = {
+      kind: 'counter',
+      async start() {},
+      async stop() {},
+      async invoke(_address, request) {
+        log.push(request.operation);
+        if (request.operation === 'substrat.export') return { result: { tables: [] } };
+        return { result: { tables: 0 } };
+      },
+    };
+    const open = (vertical?: string) =>
+      new SqliteScopeHost({
+        dir: dir!,
+        checker: UNSAFE_allowAllChecker,
+        scopeStores: { ...(vertical ? { vertical } : {}), runners: [{ binding: 'GRAPH', runner }] },
+      });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const dest = scopeId.parse(ulid());
+    const probe = { name: 'restore_probe', ddl: 'CREATE TABLE restore_probe (id TEXT)', columns: ['id'], rows: [['x']] };
+
+    // The dump is taken by an unpinned host on the same directory, which also reads back after.
+    let reader = open();
+    await reader.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+    await reader.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'other' });
+    await reader.admin.activateScope(staff, t, s);
+    const dump = await reader.admin.exportScope(staff, t, s);
+    expect(dump.stores).toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+    await reader.close();
+    log.length = 0;
+
+    const pinned = open('docs');
+    try {
+      const restored = await pinned.restoreScope(staff, t, s, { ...dump, tables: [...dump.tables, probe] }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(restored)).toBe('forbidden');
+      const imported = await pinned.importScope(staff, { tenantId: t, scopeId: dest, vertical: 'other' }, dump).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(imported)).toBe('forbidden');
+    } finally {
+      await pinned.close();
+    }
+    expect(log).toEqual([]);
+
+    reader = open();
+    try {
+      const after = await reader.admin.exportScope(staff, t, s);
+      expect(after.tables.map((table) => table.name)).not.toContain(probe.name);
+      expect(await reader.admin.getScopeRecord(staff, t, dest)).toBeUndefined();
+    } finally {
+      await reader.close();
+    }
+  });
+
   it('refuses a scope whose vertical this host does not serve', async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     const runner: ScopeStoreRunner = {
