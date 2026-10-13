@@ -634,7 +634,9 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
       return { status: 'failed', error: `no deployment serves '${payload.vertical}' in this tenant` };
     }
     const result = await client.verticalInvoke({
-      caller: { vertical: ctx.vertical, scope: ctx.scopeId },
+      // `tenantSlug`: the directory's, for the tenant this intent was drained in (#2252), so a
+      // pinned caller meets a bare `peers` entry at the door (`peerCallerAt`).
+      caller: { vertical: ctx.vertical, scope: ctx.scopeId, tenantSlug: tenant.slug },
       tenantId: ctx.tenantId,
       scopeId: resolution.instance.scopeId,
       operation: payload.operation,

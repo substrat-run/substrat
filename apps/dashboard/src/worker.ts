@@ -26,7 +26,7 @@ import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
-import { globalFetch, ulid, isPrimaryScope, samePeerVertical, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
+import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 import { dashboardRoutes, type appEvent, type installAppInput, type installStep } from './routes.js';
@@ -38,7 +38,7 @@ import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
-import { declaredCallState, targetScopeOf } from './peers.js';
+import { declaredCallState, peerChoicesOf, targetScopeOf } from './peers.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTeamSeries, deriveTrafficSeries } from './releases.js';
 import { deriveAppOverlays, overlayWindow } from './overlays.js';
@@ -2193,17 +2193,20 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
   const declared = runningId ? await cp.versionCalls(slug, runningId) : null;
   const bindings = await cp.peerBindings(scope);
   const targets = [...new Set([...(declared ?? []), ...bindings.map((b) => b.vertical)])];
+  // Every scope of the tenant, read once: a peer name reaches the tenant's pinned
+  // `<tenantSlug>/<slug>` install too, which the directory's exact `vertical=` filter does not.
+  // The slug is the directory's own, for the tenant this session is in (#2252).
+  const [tenantRow, scopes] = targets.length > 0 ? await Promise.all([cp.getTenant(), cp.listScopes()]) : [null, []];
+  const tenant = { id: node.tenantId, slug: tenantRow?.slug ?? null };
   const outgoing = await Promise.all(
     targets.map(async (vertical) => {
-      const scopes = await cp.listScopes(vertical);
       const binding = bindings.find((b) => b.vertical === vertical);
-      const choices = (scopes ?? []).filter((s) => s.tenantId === node.tenantId && samePeerVertical(s.vertical, vertical) && s.status === 'active' && isPrimaryScope(s))
-        .map((s) => ({ scopeId: s.id, name: s.name }));
+      const choices = peerChoicesOf(scopes, tenant, vertical);
       const choice = { vertical, boundScopeId: binding?.targetScopeId ?? null, invalidated: binding?.invalidated ?? false, candidates: choices };
       if (declared !== null && !declared.includes(vertical)) {
         return { call: { state: 'not-declared' as const, vertical }, choice };
       }
-      const target = targetScopeOf(scopes ?? [], node.tenantId, vertical, binding?.targetScopeId ?? null, binding?.invalidated ?? false);
+      const target = targetScopeOf(scopes, tenant, vertical, binding?.targetScopeId ?? null, binding?.invalidated ?? false);
       if (target === null || 'ambiguous' in target) {
         return { call: declaredCallState({ vertical, caller: slug, target, entries: [] }), choice };
       }

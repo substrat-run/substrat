@@ -28,6 +28,10 @@ interface DirectoryShape {
   deploymentRef?: string | null;
   targetCalls?: string[] | null;
   targetHosts?: string[] | null;
+  /** The directory's slug for the caller's tenant (#2252); absent = a control plane predating it. */
+  tenantSlug?: string;
+  /** The target's registered vertical; defaults to the name asked for. */
+  targetVertical?: string;
 }
 
 /** A control-plane namespace answering one `peerCallTarget`, recording what it was asked. */
@@ -45,7 +49,11 @@ function directory(shape: DirectoryShape = {}) {
       ) => {
         asked.push({ tenantId, callerScopeId, callerVertical, vertical });
         return {
-          caller: { state: shape.callerState ?? 'ok', status: shape.callerStatus ?? 'active' },
+          caller: {
+            state: shape.callerState ?? 'ok',
+            status: shape.callerStatus ?? 'active',
+            ...(shape.tenantSlug === undefined ? {} : { tenantSlug: shape.tenantSlug }),
+          },
           outcome,
           count: shape.count ?? 0,
           target:
@@ -53,7 +61,7 @@ function directory(shape: DirectoryShape = {}) {
               ? {
                   scope_id: TARGET_SCOPE,
                   tenant_id: tenantId,
-                  vertical,
+                  vertical: shape.targetVertical ?? vertical,
                   deployment_ref: shape.deploymentRef === undefined ? 'crm-01jz' : shape.deploymentRef,
                   outbound_json: JSON.stringify(shape.targetHosts ?? []),
                   calls_json: shape.targetCalls === undefined ? null : JSON.stringify(shape.targetCalls),
@@ -159,6 +167,40 @@ describe('the router’s peer entrypoint (#1706)', () => {
       scopeId: TARGET_SCOPE,
       operation: 'customer/list',
     });
+  });
+
+  it('a pinned target is dispatched under its registered name, and the door is handed the directory\'s slug (#2252)', async () => {
+    const d = dispatch();
+    const outcome = await entrypoint({
+      CONTROL_PLANE: directory({ tenantSlug: 't-abc', targetVertical: 't-abc/crm' }),
+      DISPATCH: d as never,
+    }).invoke(
+      // A slug in the dispatch parameters is not the platform's word for it: the caller schema
+      // drops it, and the directory's is what the door is handed.
+      caller({ vertical: 't-abc/board-room', calls: ['crm'], tenantSlug: 'acme' }),
+      request({ vertical: 'crm' }),
+    );
+    expect(outcome).toMatchObject({ ok: true });
+    const [call] = d.seen();
+    expect((call!.args as { OUTBOUND_POLICY: { slug: string } }).OUTBOUND_POLICY.slug).toBe('t-abc/crm');
+    expect((await call!.request!.json()).caller).toEqual({
+      vertical: 't-abc/board-room',
+      scope: CALLER_SCOPE,
+      tenantSlug: 't-abc',
+    });
+  });
+
+  it('a calling vertical cannot name a tenant slug, or a caller, in its own request', async () => {
+    const d = dispatch();
+    for (const extra of [{ tenantSlug: 'acme' }, { caller: { vertical: 'crm', scope: CALLER_SCOPE, tenantSlug: 'acme' } }]) {
+      await expect(
+        entrypoint({ CONTROL_PLANE: directory({ tenantSlug: 't-abc' }), DISPATCH: d as never }).invoke(
+          caller(),
+          request(extra),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(d.seen()).toHaveLength(0);
   });
 
   it('the TARGET is dispatched one hop deeper, which is what bounds A→B→A', async () => {

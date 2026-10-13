@@ -374,9 +374,12 @@ export const INDEX_VALUE_EXPORTS = [
   'operationsFor',
   'orgChangeBound',
   'parseValidationRecords',
+  // #2252: the peer rule the adapters' doors, the platform's resolvers and the dashboard share.
+  'peerCallerAt',
   'peerGrantsStatus',
   'peerSeats',
   'peerSubjectRef',
+  'peerVerticalSpellings',
   'planExportBatch',
   'planMigrations',
   'platformIntentFailureMessage',

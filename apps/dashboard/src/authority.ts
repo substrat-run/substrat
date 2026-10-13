@@ -2092,10 +2092,12 @@ export class TenantNarrowedControlPlane {
    * The tenant's scopes for one vertical — the Data tab's scope switcher (M4 of
    * multi-scope-manyfold.md). Tenant-pinned: the CP filters by (tenant, vertical) so this only
    * ever returns THIS tenant's scopes. A multi-scope vertical (e.g. Manyfold: one site per
-   * scope) returns several; a single-scope app, just the one.
+   * scope) returns several; a single-scope app, just the one. With no `vertical`, every scope
+   * of this tenant — what the peer panel reads, since a peer name also reaches the tenant's
+   * pinned `<tenantSlug>/<slug>` registration, which this filter's exact match does not (#2252).
    */
-  listScopes(vertical: string): Promise<Scope[]> {
-    const q = new URLSearchParams({ tenantId: this.tenantId, vertical });
+  listScopes(vertical?: string): Promise<Scope[]> {
+    const q = new URLSearchParams({ tenantId: this.tenantId, ...(vertical === undefined ? {} : { vertical }) });
     return this.listAll<Scope>(`/scopes?${q}`);
   }
 

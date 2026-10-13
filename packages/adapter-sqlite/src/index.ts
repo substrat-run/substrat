@@ -430,10 +430,14 @@ import {
   type RoleBound,
   type ScopeRoleHolder,
   admitPeer,
+  peerCallerAt,
   collectPeers,
   peerSeats,
   resolveVerticalInstanceFrom,
   resolvePeerInstanceFrom,
+  peerVerticalSpellings,
+  samePeerVertical,
+  type PeerTenant,
   type PeerDeclarations,
   peerGrantsStatus,
   systemGrantsStatus,
@@ -4632,6 +4636,17 @@ export class SqliteScopeHost implements ScopeHost {
     return rt;
   }
 
+  /**
+   * The tenant a peer name is read in (#2252): the directory's own slug for that tenant, the one
+   * prefix a push pinned to it registers under. Never parsed out of the name being matched.
+   */
+  private peerTenant(tenantId: TenantId): PeerTenant {
+    const row = this.directory.prepare('SELECT slug FROM tenants WHERE tenant_id = ?').get(tenantId) as
+      | { slug: string }
+      | undefined;
+    return { id: tenantId, slug: row?.slug ?? null };
+  }
+
   /** The directory's current hold, read again when background work is about to run. */
   private scopeWorkRefusal(tenantId: TenantId, scopeId: ScopeId, allowProvisioning = false): string | null {
     const row = this.directory
@@ -4761,7 +4776,8 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
-    const parsed = verticalCaller.parse(caller);
+    // #2252: the caller as this vertical's `peers` names it, as on the hosted door.
+    const parsed = peerCallerAt(this.peerDeclarations(), verticalCaller.parse(caller));
     const rt = await this.openActiveScope(tenantId, scopeId);
     return this.buildStub(tenantId, scopeId, rt, { kind: 'vertical-peer', caller: parsed }, options);
   }
@@ -8473,12 +8489,13 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // #1706: the directory's answer to "vertical Y in tenant T", by the kernel's one rule.
       resolveVerticalInstance: async (tenantId: TenantId, vertical: string): Promise<VerticalResolution> => {
+        const tenant = this.peerTenant(tenantId);
         const rows = this.directory
           .prepare(
             `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
-              WHERE tenant_id = ? AND vertical = ?`,
+              WHERE tenant_id = ? AND vertical IN (SELECT value FROM json_each(?))`,
           )
-          .all(tenantId, vertical) as {
+          .all(tenantId, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug))) as {
           scope_id: string;
           tenant_id: string;
           vertical: string | null;
@@ -8495,18 +8512,19 @@ export class SqliteScopeHost implements ScopeHost {
             kind: r.kind ?? '',
             forkedFrom: (r.forked_from as ScopeId | null) ?? null,
           })),
-          tenantId,
+          tenant,
           vertical,
         );
       },
       resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
+        const tenant = this.peerTenant(tenantId);
         const binding = this.directory.prepare(
           'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
         ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string; invalidated: number } | undefined;
         const rows = this.directory.prepare(
           `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
-           WHERE tenant_id = ? AND vertical = ?`,
-        ).all(tenantId, vertical) as {
+           WHERE tenant_id = ? AND vertical IN (SELECT value FROM json_each(?))`,
+        ).all(tenantId, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug))) as {
           scope_id: string; tenant_id: string; vertical: string | null; status: string;
           kind: string | null; forked_from: string | null;
         }[];
@@ -8517,7 +8535,7 @@ export class SqliteScopeHost implements ScopeHost {
           status: r.status as ScopeStatus,
           kind: r.kind ?? '',
           forkedFrom: r.forked_from as ScopeId | null,
-        })), tenantId, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
+        })), tenant, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
       },
       peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const row = this.directory.prepare(
@@ -8548,7 +8566,7 @@ export class SqliteScopeHost implements ScopeHost {
               tenant_id: string; vertical: string | null; status: string;
               kind: string | null; forked_from: string | null;
             } | undefined;
-            if (!target || target.tenant_id !== tenantId || target.vertical !== vertical || target.status !== 'active' || !isPrimaryScopeRow(target)) {
+            if (!target || target.tenant_id !== tenantId || !samePeerVertical(target.vertical, vertical, this.peerTenant(tenantId).slug) || target.status !== 'active' || !isPrimaryScopeRow(target)) {
               throw substratError('not_found', 'target is not a live primary instance of this vertical in this tenant');
             }
           }

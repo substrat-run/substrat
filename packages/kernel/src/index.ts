@@ -610,8 +610,8 @@ export {
   resolveVerticalInstanceFrom,
   switchPeer,
 } from './peer.js';
-export { PEER_BINDINGS_DDL, resolvePeerInstanceFrom, samePeerVertical } from './peer.js';
-export type { PeerDeclaration, PeerDeclarations, PeerGrantsRow, PeerSeat, VerticalInstanceCandidate } from './peer.js';
+export { PEER_BINDINGS_DDL, peerCallerAt, peerVerticalSpellings, resolvePeerInstanceFrom, samePeerVertical } from './peer.js';
+export type { PeerDeclaration, PeerDeclarations, PeerGrantsRow, PeerSeat, PeerTenant, VerticalInstanceCandidate } from './peer.js';
 export {
   DENIAL_WINDOW_QUERY,
   denialListQuery,

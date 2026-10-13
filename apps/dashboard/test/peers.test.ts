@@ -5,6 +5,7 @@ import {
   declaredCallLine,
   declaredCallNeedsAttention,
   declaredCallState,
+  peerChoicesOf,
   targetScopeOf,
 } from '../src/peers.js';
 
@@ -18,13 +19,14 @@ import {
  * same rule the server and the console hold, for the same reason.
  */
 
-const TENANT = ulid() as TenantId;
+const TENANT_ID = ulid() as TenantId;
+const TENANT = { id: TENANT_ID, slug: 't-abc' };
 const CALLER = 'acme/board-room';
 
 const scope = (over: Partial<Scope> = {}): Scope =>
   ({
     id: ulid(),
-    tenantId: TENANT,
+    tenantId: TENANT_ID,
     vertical: 'acme/crm',
     status: 'active',
     kind: 'primary',
@@ -41,9 +43,14 @@ describe('targetScopeOf', () => {
     expect(targetScopeOf([s], TENANT, 'acme/crm')).toEqual({ scopeId: s.id });
   });
 
-  it('resolves a tenant-pinned install (`<tenant>/<slug>`) for the bare slug a manifest declares', () => {
+  it('resolves this tenant\'s pinned install (`<tenantSlug>/<slug>`) for the bare slug a manifest declares, never another tenant\'s prefix', () => {
     const s = scope({ vertical: 't-abc/crm' });
     expect(targetScopeOf([s], TENANT, 'crm')).toEqual({ scopeId: s.id });
+    expect(peerChoicesOf([s], TENANT, 'crm')).toEqual([{ scopeId: s.id, name: s.name }]);
+    expect(targetScopeOf([s], { id: TENANT_ID, slug: null }, 'crm')).toBeNull();
+    const foreign = scope({ vertical: 'acme/crm' });
+    expect(targetScopeOf([foreign], TENANT, 'crm')).toBeNull();
+    expect(peerChoicesOf([foreign], TENANT, 'crm')).toEqual([]);
   });
 
   it('is null when the tenant runs none of that vertical', () => {
