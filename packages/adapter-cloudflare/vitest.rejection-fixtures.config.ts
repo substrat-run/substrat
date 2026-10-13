@@ -7,10 +7,17 @@
  */
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
+import { signedStoreFixtureWorker } from './test/signed-store-fixture.js';
 
 export default defineConfig({
   define: { __PROBE_DO_LIMITS__: 'false', __PROBE_WRITE_REVISION__: 'false' },
-  plugins: [cloudflareTest({ wrangler: { configPath: './wrangler.jsonc' } })],
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: './wrangler.jsonc' },
+      // The test worker binds the #2210 store script; workerd will not start without it.
+      miniflare: { workers: [signedStoreFixtureWorker] },
+    }),
+  ],
   test: {
     include: ['rejection-fixtures/**/*.fixture.ts'],
     fileParallelism: false,
