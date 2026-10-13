@@ -7,6 +7,7 @@ import {
   availableActions,
   awaitingStaffVouch,
   canReprovision,
+  reprovisionedDetail,
   effectiveAdmission,
   type EffectiveStatus,
 } from '../src/lib/fleet';
@@ -172,5 +173,17 @@ describe('admission — admitted is not the same as vouched for', () => {
     expect(admissionLabel('auto-admitted')).toBe('Auto-admitted');
     expect(admissionLabel('admitted')).toBe('Admitted');
     expect(admissionLabel('pending')).toBe('Pending');
+  });
+});
+
+describe('reprovisionedDetail (#2263)', () => {
+  it('an ownerless answer never claims the owner, entitlements or links were re-delivered', () => {
+    const line = reprovisionedDetail('acme', { owner: null });
+    expect(line).toMatch(/declared grants seated; owner, entitlements and identity links NOT re-sourced/);
+    expect(line).not.toMatch(/re-delivered/);
+  });
+
+  it('twin: an answer with an owner says what the full reconcile re-delivered', () => {
+    expect(reprovisionedDetail('acme', { owner: 'p-1' })).toMatch(/entitlements, identity links and the vertical's own provision hook re-delivered/);
   });
 });

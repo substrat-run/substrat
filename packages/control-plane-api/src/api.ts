@@ -4065,6 +4065,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           connectionGrants,
           connectionKeys,
           ...(entityGrants ? { entityGrants } : {}),
+          // #2263: a vertical with no owner of record still seats what its version declares, and
+          // answers `owner: null`, which the CLI reports as a lockout NOT repaired.
+          ownerless: 'seat',
           ...carry,
           // Handed over exactly as at provision: a store minted HERE has never been migrated
           // by the vertical, so the reconcile must carry it into the same ready-gate — a bound

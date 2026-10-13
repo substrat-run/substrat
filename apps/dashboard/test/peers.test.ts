@@ -145,6 +145,8 @@ describe('declaredCallState', () => {
       const state = declaredCallState({ vertical: 'acme/crm', caller: CALLER, target, entries });
       expect(state.state).toBe('no-grant');
       expect(declaredCallNeedsAttention(state)).toBe(true);
+      // #2263: an install that predates the declaring version is the other cause, and has a lever.
+      expect(declaredCallLine(state)).toMatch(/predates the version that does[\s\S]*substrat scope provision/);
     }
   });
 
