@@ -4186,7 +4186,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (!runner) {
       throw substratError('not_found', `no scope store is bound for '${binding}'`);
     }
-    await this.ensureScopeStoresStarted();
+    await this.scopeStoreLifecycle.start();
     return {
       tenantId,
       scopeId,
@@ -4199,10 +4199,6 @@ export class SqliteScopeHost implements ScopeHost {
           ...extra,
         ),
     };
-  }
-
-  private ensureScopeStoresStarted(): Promise<void> {
-    return this.scopeStoreLifecycle.start();
   }
 
   /**

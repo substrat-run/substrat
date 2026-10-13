@@ -4638,7 +4638,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
     await this.assertLive(tenantId, scopeId);
     if (runner) {
-      await this.ensureScopeStoresStarted();
+      await this.scopeStoreLifecycle.start();
       return {
         tenantId,
         scopeId,
@@ -4673,10 +4673,6 @@ export class CloudflareScopeHost implements ScopeHost {
           }
         }, operation, input, ...extra),
     };
-  }
-
-  private ensureScopeStoresStarted(): Promise<void> {
-    return this.scopeStoreLifecycle.start();
   }
 
   /**
