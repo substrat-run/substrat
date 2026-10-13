@@ -5,6 +5,7 @@ import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
+import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
@@ -409,6 +410,48 @@ export const storeResponse = z.union([
 export type StoreResponse = z.infer<typeof storeResponse>;
 
 /**
+ * What each reserved operation takes and answers (#2207). The result schemas are
+ * objects so a later field is additive. `import` replaces the whole object and
+ * answers how many tables it wrote.
+ */
+export const storeSizeResult = z.object({ bytes: z.number().int().nonnegative() });
+export type StoreSizeResult = z.infer<typeof storeSizeResult>;
+
+export const storeEraseInput = z.object({ subjectId: z.string().min(1) });
+export const storeEraseResult = z.object({ erased: z.number().int().nonnegative() });
+export type StoreEraseResult = z.infer<typeof storeEraseResult>;
+
+export const storeExportResult = z.object({ tables: z.array(scopeDumpTable) });
+export type StoreExportResult = z.infer<typeof storeExportResult>;
+
+export const storeImportInput = z.object({ tables: z.array(scopeDumpTable) });
+export const storeImportResult = z.object({ tables: z.number().int().nonnegative() });
+export type StoreImportResult = z.infer<typeof storeImportResult>;
+
+export const storeWipeResult = z.object({});
+export type StoreWipeResult = z.infer<typeof storeWipeResult>;
+
+/**
+ * What each reserved operation answers, parsed (#2239). A plain map of the result
+ * types, so a package that names one (the kernel's `callReservedStoreOperation`)
+ * publishes no zod type of its own.
+ */
+export interface ReservedStoreResults {
+  'substrat.export': StoreExportResult;
+  'substrat.import': StoreImportResult;
+  'substrat.size': StoreSizeResult;
+  'substrat.wipe': StoreWipeResult;
+  'substrat.erase': StoreEraseResult;
+}
+
+/** One binding's storage, as `scopeStoreSizes` reports it. */
+export const scopeStoreSize = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  bytes: z.number().int().nonnegative(),
+});
+export type ScopeStoreSize = z.infer<typeof scopeStoreSize>;
+
+/**
  * What a vertical needs from the runtime, in substrate vocabulary (package.json
  * `substrat.runtimeNeeds`). A vertical authored with this section never writes deploy
  * config for a specific substrate — the CLI derives that at push time (D-38: builders
@@ -527,9 +570,9 @@ function isPerTenantRuntimeName(name: string, binding: string): boolean {
  */
 export function assertStoreBindingsDistinct(input: {
   readonly own?: readonly { binding: string }[];
-  readonly tenantStores?: readonly { binding: string }[];
-  readonly blobStores?: readonly { binding: string }[];
-  readonly scopeStores?: readonly { binding: string }[];
+  readonly tenantStores?: readonly { binding: string; kind?: string }[];
+  readonly blobStores?: readonly { binding: string; kind?: string }[];
+  readonly scopeStores?: readonly { binding: string; kind?: string }[];
   readonly bindingNames?: readonly string[];
 }): void {
   const seen = new Map<string, string>();

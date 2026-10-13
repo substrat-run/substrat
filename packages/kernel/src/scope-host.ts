@@ -274,7 +274,9 @@ export type SqlValue = string | number | bigint | Uint8Array | null;
  * - **5** terms in one compound `SELECT` (`UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`; a
  *   subquery or CTE body counts its own; multi-row `VALUES` is not a compound);
  * - **100** bound parameters in one statement (the highest number, `?N` included) — bind a
- *   list of unknown length as ONE JSON array and read it with `json_each`;
+ *   list of unknown length as ONE JSON array and read it with `json_each`, which is what
+ *   `inList(values)` from `@substrat-run/contracts` writes for you (#2248):
+ *   `` ctx.sql.query(`SELECT … WHERE id IN ${ids.sql}`, ids.params) ``;
  * - **100 000 bytes** of statement, UTF-8, the whole string;
  * - **50 bytes** of `LIKE`/`GLOB` pattern, UTF-8 — NOT enforced by an adapter: node's SQLite
  *   allows 50 000, and it can only be emulated by a test preload
@@ -2798,6 +2800,17 @@ export interface HostAdmin {
    * `/internal/database-size` instead, and this is the co-located fallback. Access-logged.
    */
   scopeDatabaseSize(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
+  /**
+   * The size of each scope store bound for this scope (#2207). Access-logged like
+   * `scopeDatabaseSize`. An undeclared scope has none, so the list is empty. A
+   * dispatch vertical is asked through `/internal/scope-store-sizes`; this is the
+   * co-located reading.
+   */
+  scopeStoreSizes(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; bytes: number }[]>;
   /**
    * #286's backout: PITR-rewind a scope to a pre-migration bookmark — schema AND
    * data, discarding every write since. Audited (destructive by design). The scope

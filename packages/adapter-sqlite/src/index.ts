@@ -191,6 +191,7 @@ import {
   type ScopeDump,
   type ScopeDumpTable,
   type ScopeId,
+  type ReservedStoreOperation,
   subjectShredReceipt,
   type SubjectShredReceipt,
   type ScopeQueryResult,
@@ -731,6 +732,8 @@ import {
   unknownRoleError,
   type ConsumerDelivery,
   type StoreStub,
+  callReservedStoreOperation,
+  type ReservedStoreResult,
   callScopeStore,
   scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
@@ -4169,19 +4172,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.scopeStoreRunners.size === 0) {
       throw substratError('unavailable', `no scope-store runner is configured for binding '${binding}'`);
     }
-    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
-      | { vertical: string | null }
-      | undefined;
-    const vertical = row?.vertical;
-    if (!vertical) {
-      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
-    }
-    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
-      throw substratError(
-        'forbidden',
-        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
-      );
-    }
+    const vertical = this.scopeStoreVerticalOf(scopeId);
     const runner = this.scopeStoreRunners.get(binding);
     if (!runner) {
       throw substratError('not_found', `no scope store is bound for '${binding}'`);
@@ -4199,6 +4190,59 @@ export class SqliteScopeHost implements ScopeHost {
           ...extra,
         ),
     };
+  }
+
+  /** The scope's vertical, refused when this host is limited to another one. */
+  private scopeStoreVerticalOf(scopeId: ScopeId): string {
+    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { vertical: string | null }
+      | undefined;
+    const vertical = row?.vertical;
+    if (!vertical) {
+      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
+    }
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
+      );
+    }
+    return vertical;
+  }
+
+  /**
+   * One reserved call on a declared binding. The vertical's stub never reaches
+   * this; `callReservedStoreOperation` refuses a name that is not reserved.
+   */
+  private async invokeReservedStore<O extends ReservedStoreOperation>(
+    address: { tenantId: TenantId; vertical: string; scopeId: ScopeId; binding: string },
+    operation: O,
+    input?: unknown,
+  ): Promise<ReservedStoreResult<O>> {
+    const runner = this.scopeStoreRunners.get(address.binding);
+    if (!runner) throw substratError('not_found', `no scope store is bound for '${address.binding}'`);
+    await this.scopeStoreLifecycle.start();
+    return callReservedStoreOperation((request) => runner.invoke(address, request), operation, input);
+  }
+
+  /**
+   * Each declared binding's `substrat.size`. No runners means an empty list,
+   * and the scope is not opened to discover that.
+   */
+  private async readScopeStoreSizes(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; bytes: number }[]> {
+    const bindings = [...this.scopeStoreRunners.keys()];
+    if (bindings.length === 0) return [];
+    this.scopeReadDbFor(tenantId, scopeId);
+    const vertical = this.scopeStoreVerticalOf(scopeId);
+    const sizes: { binding: string; bytes: number }[] = [];
+    for (const binding of bindings) {
+      const { bytes } = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.size');
+      sizes.push({ binding, bytes });
+    }
+    return sizes;
   }
 
   /**
@@ -9841,6 +9885,11 @@ export class SqliteScopeHost implements ScopeHost {
         const bytes = pages * pageSize;
         this.recordAccess(actor, 'scopeDatabaseSize', { tenantId, scopeId }, null, 1);
         return bytes;
+      },
+      scopeStoreSizes: async (actor, tenantId, scopeId) => {
+        const sizes = await this.readScopeStoreSizes(tenantId, scopeId);
+        this.recordAccess(actor, 'scopeStoreSizes', { tenantId, scopeId }, null, sizes.length);
+        return sizes;
       },
       rewindScope: async () => {
         throw new Error(

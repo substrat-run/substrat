@@ -207,6 +207,7 @@ export const INDEX_VALUE_EXPORTS = [
   'boundEverOf',
   'boundShapesColumn',
   'boundShapesOfColumn',
+  'callReservedStoreOperation',
   'callScopeStore',
   'capabilitiesForLoad',
   'capabilityAttachmentWriteRefused',

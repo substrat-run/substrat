@@ -582,6 +582,25 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await refused.json()).error).toMatch(/database size/);
   });
 
+  it('serves scope store sizes behind the gate, and 501s on a host that cannot read them', async () => {
+    const url = `/internal/scope-store-sizes?scopeId=${SCOPE}&tenantId=${TENANT}`;
+    const host = fakeHost({
+      scopeStoreSizesLocal: async (tenant, scope) =>
+        tenant === TENANT && scope === SCOPE ? [{ binding: 'GRAPH', bytes: 12 }] : [],
+    });
+    const ok = await appWith(host).request(url, { headers: authed() }, ENV);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ stores: [{ binding: 'GRAPH', bytes: 12 }] });
+
+    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
+    expect((await appWith(host).request(`/internal/scope-store-sizes?scopeId=nope&tenantId=${TENANT}`, { headers: authed() }, ENV)).status).toBe(400);
+
+    const older = fakeHost();
+    const refused = await appWith(older).request(url, { headers: authed() }, ENV);
+    expect(refused.status).toBe(501);
+    expect((await refused.json()).error).toMatch(/scope store sizes/);
+  });
+
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,
   // which lives in THIS deployment's DO. The query string is the filter — parsed here, not
   // trusted onward — so a console can ask for one provider's traffic.

@@ -81,9 +81,11 @@ export type {
 } from './scope-host.js';
 export { GRANT_CHILDREN_INDEX_DDL } from './grant-scoped-read.js';
 export {
+  callReservedStoreOperation,
   callScopeStore,
   scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
+  type ReservedStoreResult,
   type ScopeStoreAddress,
   type ScopeStoreHostOptions,
   type ScopeStoreLifecycle,

@@ -108,6 +108,7 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
+  scopeStoreSize,
   type VerticalCaller,
   substratError,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
@@ -1728,6 +1729,22 @@ export class VerticalClient {
       throw new ControlPlaneError(502, `vertical answered database-size without a size for scope ${scopeId}`);
     }
     return answer.bytes;
+  }
+
+  /**
+   * Each scope store's size in bytes (#2207). Metadata only. A 200 whose `stores`
+   * is not the declared list is a wire disagreement and throws, because a missing
+   * list read as empty would look like a scope that has no stores.
+   */
+  async scopeStoreSizes(tenantId: TenantId, scopeId: ScopeId): Promise<{ binding: string; bytes: number }[]> {
+    const answer = await this.getInternal<{ stores?: unknown }>(
+      `/internal/scope-store-sizes?scopeId=${encodeURIComponent(scopeId)}&tenantId=${encodeURIComponent(tenantId)}`,
+    );
+    const parsed = scopeStoreSize.array().safeParse(answer.stores);
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `vertical answered scope-store-sizes without a size list for scope ${scopeId}`);
+    }
+    return parsed.data;
   }
 
   /**
