@@ -220,37 +220,94 @@ export function peerGrantsStatus(db: SwitchSql, now: string): PeerGrantsRow[] {
   });
 }
 
+/**
+ * The tenant a peer name is read in: its id, and its directory slug (`tenants.slug`), which is
+ * the one prefix a push pinned to that tenant registers under. Both come from the directory
+ * row of the tenant the platform authenticated the caller in, never from the name being
+ * matched. `slug: null` reads names exactly.
+ */
+export interface PeerTenant {
+  readonly id: TenantId;
+  readonly slug: string | null;
+}
+
+/**
+ * The registered names a declared peer name reaches in one tenant (#2252) — the one rule, as
+ * the list a directory query binds (`vertical IN (…)`).
+ *
+ * A push pinned to a tenant registers `<tenantSlug>/<slug>`, while `substrat.calls` and
+ * `peers` name the bare `<slug>`. So a bare declared name reaches its exact spelling and THIS
+ * tenant's pinned one, and nothing else: never another tenant's `<other>/<slug>` (a listed
+ * vertical somebody else owns), and never the reverse — a declared `acme/crm` does not reach a
+ * bare `crm`. An empty name reaches nothing.
+ */
+export function peerVerticalSpellings(declared: string, tenantSlug: string | null): string[] {
+  if (declared === '') return [];
+  return tenantSlug && !declared.includes('/') ? [declared, `${tenantSlug}/${declared}`] : [declared];
+}
+
+/** `registered` is one of `peerVerticalSpellings(declared, tenantSlug)`. */
+export function samePeerVertical(registered: string | null | undefined, declared: string, tenantSlug: string | null): boolean {
+  return registered != null && peerVerticalSpellings(declared, tenantSlug).includes(registered);
+}
+
+/**
+ * The caller as THIS vertical's `peers` names it (#2252), run at the door before anything else
+ * reads the caller: a declaration naming the caller's registered spelling wins; otherwise a
+ * pinned `<tenantSlug>/<slug>` caller is the bare `<slug>` declared, when that is declared.
+ * `tenantSlug` is the platform's (`verticalCaller`), so another tenant's `<other>/<slug>` stays
+ * itself and is refused as undeclared. The result carries no slug: `admitPeer`, the door's pin
+ * and the recorded subject all read the declared name.
+ */
+export function peerCallerAt(peers: PeerDeclarations, caller: VerticalCaller): VerticalCaller {
+  const slug = caller.tenantSlug ?? null;
+  const vertical = peers.has(caller.vertical)
+    ? caller.vertical
+    : ([...peers.keys()].find((declared) => samePeerVertical(caller.vertical, declared, slug)) ?? caller.vertical);
+  return { vertical, scope: caller.scope };
+}
+
 /** A directory row, as much of it as the resolution reads. */
 export type VerticalInstanceCandidate = Pick<Scope, 'id' | 'tenantId' | 'vertical' | 'status' | 'kind' | 'forkedFrom'>;
 
 /**
+ * A live instance of the peer name `vertical` in `tenant`: of THAT tenant, registered under a
+ * spelling of THAT vertical, primary (`isPrimaryScope`: not a fork, not a preview — a preview
+ * must never receive another app's production calls), and `active` (a suspended or archived
+ * instance answers nothing). What a call, a binding and the dashboard's picker all count.
+ */
+export function isPeerInstanceOf(scope: VerticalInstanceCandidate, tenant: PeerTenant, vertical: string): boolean {
+  return scope.tenantId === tenant.id && samePeerVertical(scope.vertical, vertical, tenant.slug) &&
+    scope.status === 'active' && isPrimaryScope(scope);
+}
+
+/**
  * "The instance of vertical Y in tenant T" (#1706) — the one rule every directory applies.
  *
- * A candidate is a scope of THAT tenant, bound to THAT vertical, primary (`isPrimaryScope`: not a
- * fork, not a preview — a preview must never receive another app's production calls), and
- * `active` (a suspended or archived instance answers nothing). Exactly one → `resolved`; none →
- * `not-installed`; more than one → `ambiguous`, refused rather than guessed.
+ * A candidate is a live instance of that vertical in that tenant (`isPeerInstanceOf`). An exact
+ * spelling wins over the
+ * tenant-pinned one, so a tenant running both `crm` and `<tenant>/crm` still resolves.
+ * Exactly one → `resolved`; none → `not-installed`; more than one → `ambiguous`, refused
+ * rather than guessed.
  *
  * The tenant is a parameter, and it is the ONLY tenant searched: nothing in a caller's request
  * names a tenant, so a cross-tenant answer is not reachable from here.
  */
 export function resolveVerticalInstanceFrom(
   scopes: Iterable<VerticalInstanceCandidate>,
-  tenantId: TenantId,
+  tenant: PeerTenant,
   vertical: string,
 ): VerticalResolution {
-  const matches: VerticalInstanceCandidate[] = [];
-  for (const scope of scopes) {
-    if (scope.tenantId !== tenantId || scope.vertical !== vertical) continue;
-    if (scope.status !== 'active' || !isPrimaryScope(scope)) continue;
-    matches.push(scope);
-  }
-  const [only] = matches;
-  if (only && matches.length === 1) {
+  const tenantId = tenant.id;
+  const matches = [...scopes].filter((scope) => isPeerInstanceOf(scope, tenant, vertical));
+  const exact = matches.filter((scope) => scope.vertical === vertical);
+  const chosen = exact.length > 0 ? exact : matches;
+  const [only] = chosen;
+  if (only && chosen.length === 1) {
     return { outcome: 'resolved', instance: { tenantId: only.tenantId, scopeId: only.id, vertical } };
   }
-  if (matches.length === 0) return { outcome: 'not-installed', tenantId, vertical };
-  return { outcome: 'ambiguous', tenantId, vertical, count: matches.length };
+  if (chosen.length === 0) return { outcome: 'not-installed', tenantId, vertical };
+  return { outcome: 'ambiguous', tenantId, vertical, count: chosen.length };
 }
 
 /**
@@ -260,18 +317,16 @@ export function resolveVerticalInstanceFrom(
  */
 export function resolvePeerInstanceFrom(
   scopes: Iterable<VerticalInstanceCandidate>,
-  tenantId: TenantId,
+  tenant: PeerTenant,
   vertical: string,
   boundScopeId: ScopeId | null,
   invalidated = false,
 ): PeerInstanceResolution {
+  const tenantId = tenant.id;
   const candidates = [...scopes];
-  if (boundScopeId === null) return resolveVerticalInstanceFrom(candidates, tenantId, vertical);
+  if (boundScopeId === null) return resolveVerticalInstanceFrom(candidates, tenant, vertical);
   if (invalidated) return { outcome: 'bound-unavailable', tenantId, vertical, targetScopeId: boundScopeId };
-  const target = candidates.find((scope) =>
-    scope.id === boundScopeId && scope.tenantId === tenantId && scope.vertical === vertical &&
-    scope.status === 'active' && isPrimaryScope(scope),
-  );
+  const target = candidates.find((scope) => scope.id === boundScopeId && isPeerInstanceOf(scope, tenant, vertical));
   return target
     ? { outcome: 'resolved', instance: { tenantId, scopeId: target.id, vertical } }
     : { outcome: 'bound-unavailable', tenantId, vertical, targetScopeId: boundScopeId };

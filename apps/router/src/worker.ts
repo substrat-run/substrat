@@ -686,7 +686,12 @@ export async function handlePeerCall(
         [PLATFORM_SECRET_HEADER]: secret,
       },
       body: JSON.stringify({
-        caller: { vertical: caller.vertical, scope: caller.scopeId },
+        // `tenantSlug` from the directory read, never from the caller's dispatch parameters.
+        caller: {
+          vertical: caller.vertical,
+          scope: caller.scopeId,
+          ...(decision.callerTenantSlug ? { tenantSlug: decision.callerTenantSlug } : {}),
+        },
         tenantId: decision.tenantId,
         scopeId: decision.scopeId,
         operation: request.operation,

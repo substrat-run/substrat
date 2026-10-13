@@ -1,0 +1,12 @@
+{
+  "name": "scope-store-binding-spike",
+  "private": true,
+  "type": "module",
+  "description": "Evidence for a platform-run Durable Object reached across scripts. Not a workspace member.",
+  "dependencies": {
+    "miniflare": "4.20260730.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["workerd", "esbuild"]
+  }
+}
