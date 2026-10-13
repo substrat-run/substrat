@@ -1389,7 +1389,10 @@ function concatenatedListEnd(masked: string, stripped: string, from: number, to:
  * `IN (` that a `+` continues. The masked copy proves each is real: the `${` or the closing quote
  * stands there, where one inside another string is blank. It fires when that code holds a placeholder literal
  * (`'?'`, `"?"`, `'?, '`, `',?'`, the numbered `` `?${i + 1}` ``) or uses a name — a `const`, or a
- * `function` in the same file — that does, up to `NAME_HOPS` names deep.
+ * `function` in the same file — that does, up to `NAME_HOPS` names deep. A name resolves as the
+ * code would: to the nearest declaration before the use whose block holds it, never to one a
+ * parameter list in between shadows. A statement ends at its `;`, or at a line break that does not
+ * continue the expression; a concatenated list ends at the literal that closes it (`')'`).
  *
  * Not fired: `VALUES (${…})`, whose width is the table's and fixed; `IN ${list.sql}`; a written-out
  * `IN (?, ?)`; a subquery `IN (SELECT … ${…})`; code with no placeholder literal in reach (a constant
@@ -1398,7 +1401,10 @@ function concatenatedListEnd(masked: string, stripped: string, from: number, to:
  * **Known blind spots**, stated so a clean run is not read as proof: a placeholder built by a
  * helper IMPORTED from another file; a chain of names deeper than `NAME_HOPS`; a list assembled by
  * mutation (`sql += '?, '` in a loop, `parts.push('?')`) rather than one expression; `IN (` and the
- * code joined by anything but `${` or `+` (`.concat`, an array `join` of SQL pieces). `guardSqlLimits`
+ * code joined by anything but `${` or `+` (`.concat`, an array `join` of SQL pieces). Scope is read
+ * from the text, not a parser, so two shapes can still mislead it: a loop or `catch` variable is
+ * not seen as shadowing, and a parameter list holding parentheses (`(a = f(x)) =>`) is not seen at
+ * all — either can make an outer placeholder constant look like the one used. `guardSqlLimits`
  * is the run-time check behind all of them on the node adapter. A list whose length is fixed and
  * short sits in a `boundary-lint-allow R12` … `boundary-lint-end R12` block, where a reviewer reads why.
  */

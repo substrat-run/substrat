@@ -176,15 +176,21 @@ R12 fires where `IN (` (or `NOT IN (`) is followed by code: a template's `${…}
 placeholders before it (`IN (${…})`, `IN (?, ${…})`, `IN (?${',?'.repeat(n - 1)})`), or a string
 ending in `IN (` continued with `+`. It fires when that code holds a placeholder literal (`'?'`,
 `"?"`, `'?, '`, `',?'`, the numbered `` `?${i + 1}` ``), or uses a name — a `const` or a
-`function` in the same file — that does, up to three names deep. It does not fire on
+`function` in the same file — that does, up to three names deep. A name resolves to the
+nearest declaration before the use whose block holds it, unless a parameter list in between
+shadows it; a statement ends at its `;` or at a line break that does not continue it; a
+concatenated list ends at the literal that closes it (`')'`). It does not fire on
 `VALUES (${…})`, whose width is the table's, on a subquery `IN (SELECT … ${…})`, on a ternary or
 `?.`/`??`, nor on code with no placeholder literal in reach.
 
 **What it cannot see**, so a clean run is not read as proof: a placeholder helper imported from
 another file; a chain of names more than three deep; a list built by mutation (`sql += '?, '`
 in a loop, `parts.push('?')`); and `IN (` joined to the code by anything but `${` or `+`
-(`.concat`, an array `join` of SQL pieces). On the node adapter, `ctx.sql`'s run-time limit is
-the check behind all of these.
+(`.concat`, an array `join` of SQL pieces). Scope is read from the text rather than parsed, so a
+loop or `catch` variable is not seen as shadowing an outer constant of the same name, and neither
+is a parameter list that holds parentheses (`(a = f(x)) =>`); either can make R12 fire on a list
+that only looks built from placeholders — the allow block is the answer there. On the node
+adapter, `ctx.sql`'s run-time limit is the check behind all of these.
 
 A list whose length is fixed and short opts out in a `boundary-lint-allow R12` …
 `boundary-lint-end R12` block.
