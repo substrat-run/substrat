@@ -81,7 +81,7 @@ const js = await bundle(
     `});`,
   ].join('\n'),
   'substrat-platform-entry.ts',
-  [PLACEHOLDER],
+  [PLACEHOLDER, 'node:async_hooks'],
 );
 underCeiling('entry', js, SOURCE);
 if (!js.includes(PLACEHOLDER)) {

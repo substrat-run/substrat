@@ -148,6 +148,8 @@ export interface InvocationLogLine {
    * is not a field.
    */
   storeCalls?: readonly StoreCallLine[];
+  /** Store calls past the line's cap (#2245). Omitted when none were dropped. */
+  storeCallsDropped?: number;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -240,6 +242,8 @@ export interface InvocationLineFields {
    * The input is not a field.
    */
   storeCalls?: readonly StoreCallLine[];
+  /** Store calls past the line's cap (#2245). */
+  storeCallsDropped?: number;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -272,6 +276,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     versionId: f.versionId ?? null,
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),
+    ...(f.storeCallsDropped ? { storeCallsDropped: f.storeCallsDropped } : {}),
     ...(f.async ?? {}),
   };
 }
@@ -287,4 +292,30 @@ export interface StoreCallLine {
 /** Distinct values, first occurrence wins — the order a reader expects to see them in. */
 function distinct(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+/**
+ * The current request's store-call observer (#2245).
+ *
+ * Held on `globalThis` so the platform entry and the vertical's bundle, which
+ * each carry their own copy of this module, still share it. A call with no
+ * request resolves to nothing and is not logged.
+ */
+const STORE_CALL_OBSERVER = Symbol.for('substrat.store-call-observer');
+
+export function setStoreCallObserverResolver(
+  resolve: (() => ((report: StoreCallLine) => void) | undefined) | undefined,
+): void {
+  Reflect.set(globalThis, STORE_CALL_OBSERVER, resolve);
+}
+
+export function currentStoreCallObserver(): ((report: StoreCallLine) => void) | undefined {
+  const resolve = Reflect.get(globalThis, STORE_CALL_OBSERVER) as
+    | (() => ((report: StoreCallLine) => void) | undefined)
+    | undefined;
+  try {
+    return resolve?.();
+  } catch {
+    return undefined;
+  }
 }

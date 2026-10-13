@@ -45,6 +45,15 @@ export function verticalScriptStem(slug: string): string {
 }
 
 /**
+ * The script a scope-store kind is uploaded as, for one vertical (#2210).
+ * Stable across releases: a new release of the kind replaces this script in
+ * place, and the objects stay where `scopeStoreObjectName` addresses them.
+ */
+export function scopeStoreScriptName(vertical: string, kind: string): string {
+  return `substrat-store-${kind}-${verticalScriptStem(vertical)}`;
+}
+
+/**
  * The platform script name a vertical with this slug would deploy under, or `null`. Checks the
  * stable script and its jurisdictional variants. A per-version script ends in a 26-character
  * ULID, which no platform name does.

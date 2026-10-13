@@ -322,7 +322,7 @@ describe('subject erasure (#37)', () => {
     expect(asked).toBe(false);
   });
 
-  it('a hosted restore imports the dump stores on the deployment', async () => {
+  it('a hosted restore imports the dump stores through the platform, not the vertical', async () => {
     const imported: { binding: string; tables: unknown[] }[][] = [];
     const scoped = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: 'docs' });
@@ -335,11 +335,17 @@ describe('subject erasure (#37)', () => {
       verticals: {
         docs: {
           restoreScope: async () => ({ tables: dump.tables.length }),
-          scopeStoreImport: async (_tenant: string, _scope: string, stores: { binding: string; tables: unknown[] }[]) => {
-            imported.push(stores);
-          },
         },
       } as never,
+      platformScopeStores: {
+        exportStores: async () => [],
+        eraseSubject: async () => [],
+        wipeStores: async () => undefined,
+        sizeStores: async () => [],
+        importStores: async (_input) => {
+          imported.push(_input.stores);
+        },
+      },
     });
     const res = await api.request(`/tenants/${t}/scopes/${scoped}/restore`, {
       method: 'POST',

@@ -2755,9 +2755,8 @@ export interface HostAdmin {
   scopeDatabaseSize(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /**
    * The size of each scope store bound for this scope (#2207). Access-logged like
-   * `scopeDatabaseSize`. An undeclared scope has none, so the list is empty. A
-   * dispatch vertical is asked through `/internal/scope-store-sizes`; this is the
-   * co-located reading.
+   * `scopeDatabaseSize`. An undeclared scope has none, so the list is empty. This is
+   * the co-located reading. A hosted control plane asks the store script directly.
    */
   scopeStoreSizes(
     actor: PlatformActorId,
@@ -3624,6 +3623,16 @@ export interface HostAdmin {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<SubjectShredReceipt>;
+  /**
+   * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.
+   * A page is at most 100. `cursor` is the last id the caller already has.
+   */
+  listShreddedSubjects(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    cursor?: string,
+  ): Promise<{ subjects: string[]; nextCursor: string | null }>;
   /** Monotone directory fence against a carry from before subject erasure. */
   scopeErasureEpoch(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /** Finish an orchestrated erasure only after every script holding a copy has redacted it.
@@ -5279,7 +5288,7 @@ export interface ScopeHost {
     scopeId: ScopeId,
     dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
-  ): Promise<void>;
+  ): Promise<{ storeErasuresReplayed: number; storeErasureIncomplete: boolean }>;
 
   /**
    * Snapshot a scope — fork its current data into a new scope and return that scope's

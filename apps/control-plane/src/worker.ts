@@ -127,6 +127,8 @@ import {
   type ConnectionInspector,
   type PlatformRuntime,
   type DoNamespaceReader,
+  platformScopeStoresFor,
+  declaredStoresOf,
 } from '@substrat-run/control-plane-api';
 import {
   ControlPlaneError,
@@ -502,6 +504,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * to provision an instance of it (orchestration.md §5.4), the mirror of the router.
    */
   DISPATCH?: DispatchNamespace;
+  /**
+   * Signs scope-store object names (#2207). The same secret the store script
+   * holds. A vertical is not given it. Unset ⇒ a reserved store call is refused.
+   */
+  STORE_HMAC_KEY?: string;
   /**
    * Seals connection credentials at rest (#101/#574) — base64(url) of 32 bytes
    * (`openssl rand -base64 32`), same convention as the dashboard's box. The
@@ -1364,19 +1371,18 @@ export function storageReaderFor(
 }
 
 /**
- * The same phase's scope-store reader (#2212). One call lists every binding. A deployment
- * that predates the route is unsupported, the same standing condition as a missing
- * database-size route, and the phase records it without mailing it every pass.
+ * The storage-gauge phase's scope-store reader (#2212). One call lists every
+ * declared binding, read from the store script. A 501 or a route-miss 404 is the
+ * standing "this plane cannot read stores" condition. Any other failure reaches
+ * the digest. A scope with no vertical has no store on this plane.
  */
 export function storeStorageReaderFor(
-  resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'scopeStoreSizes'> | undefined>,
+  read: (scope: Scope) => Promise<{ binding: string; bytes: number }[]>,
 ): (scope: Scope) => Promise<{ binding: string; bytes: number }[] | null> {
   return async (scope) => {
     if (!scope.vertical) return null;
-    const client = await resolve(scope);
-    if (!client) throw new Error(`no deployment resolves for vertical '${scope.vertical}'`);
     try {
-      return await client.scopeStoreSizes(scope.tenantId, scope.id);
+      return await read(scope);
     } catch (err) {
       if (err instanceof ControlPlaneError && (err.status === 501 || isRouteMiss(err))) {
         throw new StorageReadUnsupported(
@@ -1386,6 +1392,29 @@ export function storeStorageReaderFor(
       throw err;
     }
   };
+}
+
+/** `substrat.wipe` on each store a scope's version declares, before its own bytes go. */
+async function wipeDeclaredScopeStores(
+  env: Env,
+  manifest: (vertical: string, versionId: string) => Promise<string | null>,
+  scope: { tenantId: string; id: string; vertical: string | null; verticalVersionId: string | null },
+): Promise<void> {
+  if (!scope.vertical || !scope.verticalVersionId) return;
+  const stores = declaredStoresOf(await manifest(scope.vertical, scope.verticalVersionId));
+  if (stores.length === 0) return;
+  if (!env.DISPATCH || !env.STORE_HMAC_KEY) {
+    throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
+  }
+  await platformScopeStoresFor({
+    hmacKey: env.STORE_HMAC_KEY,
+    fetch: (scriptName, request) => env.DISPATCH!.get(scriptName).fetch(request),
+  }).wipeStores({
+    tenantId: scope.tenantId,
+    scopeId: scope.id,
+    vertical: scope.vertical,
+    stores,
+  });
 }
 
 /**
@@ -1849,6 +1878,13 @@ export default {
           { admin: host.admin, actor: SWEEP_ACTOR, issuerClient: resolveVerticalForScopeFor(env) },
           rec,
         );
+        if (rec) {
+          await wipeDeclaredScopeStores(
+            env,
+            (vertical, versionId) => host.admin.versionManifest(SWEEP_ACTOR, vertical, versionId),
+            rec,
+          );
+        }
         if (resolveRef) {
           // #1722: a script that predates the delete verb strands its bytes; the reap records it
           // as an ops failure and goes on, so an expired fork is never pinned forever.
@@ -1871,6 +1907,13 @@ export default {
       reapArchivedAfterDays: parseRetentionDays(env.SCOPE_RETENTION_DAYS),
       reapScopeFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
+        if (rec) {
+          await wipeDeclaredScopeStores(
+            env,
+            (vertical, versionId) => host.admin.versionManifest(SWEEP_ACTOR, vertical, versionId),
+            rec,
+          );
+        }
         if (resolveRef) {
           // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
           const { storageStranded } = await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
@@ -1901,7 +1944,25 @@ export default {
       // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
       storageGauge: {
         read: storageReaderFor(resolveVerticalForScopeFor(env)),
-        readStores: storeStorageReaderFor(resolveVerticalForScopeFor(env)),
+        readStores: storeStorageReaderFor(async (scope) => {
+          if (!scope.vertical || !scope.verticalVersionId) return [];
+          const stores = declaredStoresOf(
+            await host.admin.versionManifest(SWEEP_ACTOR, scope.vertical, scope.verticalVersionId),
+          );
+          if (stores.length === 0) return [];
+          if (!env.DISPATCH || !env.STORE_HMAC_KEY) {
+            throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
+          }
+          return platformScopeStoresFor({
+            hmacKey: env.STORE_HMAC_KEY,
+            fetch: (scriptName, request) => env.DISPATCH!.get(scriptName).fetch(request),
+          }).sizeStores({
+            tenantId: scope.tenantId,
+            scopeId: scope.id,
+            vertical: scope.vertical,
+            stores,
+          });
+        }),
       },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
@@ -2615,6 +2676,14 @@ export default {
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),
+        ...(env.DISPATCH && env.STORE_HMAC_KEY
+          ? {
+              platformScopeStores: platformScopeStoresFor({
+                hmacKey: env.STORE_HMAC_KEY,
+                fetch: (scriptName, request) => env.DISPATCH!.get(scriptName).fetch(request),
+              }),
+            }
+          : {}),
         deployVertical: deployVerticalFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
         fetchVerticalAsset: fetchVerticalAssetFor(env),

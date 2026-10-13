@@ -856,7 +856,7 @@ export {
   ASYNC_LINES_PER_PASS,
 } from './async-invocation-log.js';
 export type { AsyncUnit, AsyncLinePass, InvocationLineSink } from './async-invocation-log.js';
-export { invocationLine } from './invocation-line.js';
+export { invocationLine, setStoreCallObserverResolver } from './invocation-line.js';
 export type {
   AsyncInvocationKind,
   AsyncOutcome,

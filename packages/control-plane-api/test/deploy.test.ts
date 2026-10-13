@@ -226,20 +226,7 @@ describe('scope store upload plan (#2210)', () => {
     expect(first.scripts[0]?.scriptName).toBe(next.scripts[0]?.scriptName);
     expect(first.scripts[0]?.scriptName).not.toContain('1.0.0');
     expect(first.scripts[0]?.scriptName).not.toContain('2.0.0');
-    expect(first.bindings).toEqual([
-      {
-        type: 'durable_object_namespace',
-        name: 'SUBSTRAT_STORE_GRAPH',
-        class_name: 'Store',
-        script_name: first.scripts[0]?.scriptName,
-      },
-      {
-        type: 'durable_object_namespace',
-        name: 'SUBSTRAT_STORE_BLOBS',
-        class_name: 'Store',
-        script_name: first.scripts[0]?.scriptName,
-      },
-    ]);
+    expect(first.bindings).toEqual([]);
     expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe(
       '01TENANT/acme/crm/01SCOPE/GRAPH',
     );

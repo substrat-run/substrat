@@ -483,6 +483,7 @@ export const INDEX_VALUE_EXPORTS = [
   'searchStateWhere',
   'seatScopeTuple',
   'setFindingStatus',
+  'setStoreCallObserverResolver',
   'settleConnectionUse',
   'settleCopiedWork',
   'settleLifecycleAfterLoad',

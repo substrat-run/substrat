@@ -27,6 +27,8 @@ describe('a signed scope store across two scripts (#2210)', () => {
     expect(await call('')).toBe(401);
     expect(await call(await signScopeStoreName(SECRET, 'some-other-name'))).toBe(401);
     expect(await call(await signScopeStoreName(SECRET, name))).toBe(200);
+    const other = scopeStoreObjectName('01OTHER', 'acme/crm', '01SCOPE', 'GRAPH');
+    expect(await call(await signScopeStoreName(SECRET, other), other)).toBe(401);
     const again = await env.SIGNED_STORE.fetch(`https://scope-store/?name=${encodeURIComponent(name)}`, {
       headers: { 'x-substrat-store-mac': await signScopeStoreName(SECRET, name) },
     });

@@ -38,6 +38,8 @@ export interface RouteRowLike {
   /** The dispatched code's declared outgoing peer calls (#1706) as JSON text, on the
    *  same terms as `outbound_json`: null for a version pushed before the declaration. */
   calls_json?: string | null;
+  /** `scopeStores` from the same manifest. Absent on a resolver that predates it. */
+  scope_stores_json?: string | null;
   /** Whether the scope is the real install (#2005), decided by the control-plane DO. Absent
    *  from one that predates the field, which resolves `primary: true` — the skew window
    *  `routeTarget` documents. */
@@ -53,6 +55,22 @@ interface HostnameReader {
 }
 
 export type RouteResolver = (hostname: string) => Promise<RouteTarget | undefined>;
+
+function scopeStoresOf(json: string | null | undefined): { binding: string; kind: string }[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      if (typeof entry !== 'object' || entry === null) return [];
+      const binding = Reflect.get(entry, 'binding');
+      const kind = Reflect.get(entry, 'kind');
+      return typeof binding === 'string' && typeof kind === 'string' ? [{ binding, kind }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
 
 /** A hostname row → what the router dispatches on. Shared with `CloudflareScopeHost`
  * so the two cannot drift on what "resolvable" means. */
@@ -94,6 +112,7 @@ export function toRouteTarget(row: RouteRowLike | undefined): RouteTarget | unde
     region: row.region,
     outboundHosts,
     calls,
+    scopeStores: scopeStoresOf(row.scope_stores_json),
     // #2005: absent only from a control-plane DO that predates the field, which the schema
     // defaults to `true` — see RouteRowLike.
     primary: row.primary,

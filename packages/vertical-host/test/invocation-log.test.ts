@@ -12,6 +12,7 @@ import {
   withInvocationLog,
 } from '../src/invocation-log.js';
 import { invocationLevelOf } from '@substrat-run/contracts/invocation-record';
+import { observeStoreCall } from '@substrat-run/kernel';
 
 /**
  * The middleware's whole output is a `console.log` line, so the suite captures the
@@ -357,8 +358,29 @@ describe('invocationLog', () => {
         const calls = cap.lines[0]?.storeCalls;
         expect(calls).toHaveLength(STORE_CALL_LOG_CAP);
         expect(calls?.[0]).toEqual({ binding: 'GRAPH', operation: 'increment', outcome: 'error', durationMs: 0 });
+        expect(cap.lines[0]?.storeCallsDropped).toBe(3);
         expect(JSON.stringify(cap.lines[0])).not.toContain(secret);
         expect(JSON.stringify(calls)).not.toContain('input');
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('records a store call that was made without an observer (#2245)', async () => {
+      const cap = capture();
+      try {
+        // No request is current. The call is not logged and does not throw.
+        await observeStoreCall('GRAPH', 'bare', async () => 1);
+        const app = new Hono<{ Bindings: RecordEnv }>();
+        app.use('*', invocationLog<RecordEnv>({ routerSecret: (env) => env.ROUTER_SECRET }));
+        app.post('/api/things', async (c) => {
+          await observeStoreCall('GRAPH', 'read', async () => 1);
+          return c.json({});
+        });
+        await app.request('/api/things', { method: 'POST', headers: routed }, ENV);
+        expect(cap.lines[0]?.storeCalls).toEqual([
+          { binding: 'GRAPH', operation: 'read', outcome: 'ok', durationMs: expect.any(Number) },
+        ]);
       } finally {
         cap.restore();
       }

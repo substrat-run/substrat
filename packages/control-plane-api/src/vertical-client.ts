@@ -108,9 +108,6 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
-  scopeStoreDump,
-  scopeStoreSize,
-  storeErasure,
   substratError,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
@@ -1207,34 +1204,6 @@ export class VerticalClient {
   }
 
   /**
-   * The scope stores captured with an export (#2211). A deployment that predates the
-   * route answers 501, which a backup reads as "no stores", not as an empty scope.
-   */
-  async scopeStoreExport(tenantId: TenantId, scopeId: ScopeId): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
-    const answer = await this.getInternal<{ stores?: unknown }>(
-      `/internal/scope-store-export?scopeId=${encodeURIComponent(scopeId)}&tenantId=${encodeURIComponent(tenantId)}`,
-    );
-    const parsed = scopeStoreDump.array().safeParse(answer.stores);
-    if (!parsed.success) {
-      throw new ControlPlaneError(502, `vertical answered scope-store-export without a store list for scope ${scopeId}`);
-    }
-    return parsed.data;
-  }
-
-  /** Replace each named scope store (#2211). A binding this deployment does not have is a 404. */
-  async scopeStoreImport(
-    tenantId: TenantId,
-    scopeId: ScopeId,
-    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
-  ): Promise<void> {
-    await this.postInternal(
-      '/internal/scope-store-import',
-      { tenantId, scopeId, stores: stores.map(({ binding, tables }) => ({ binding, tables })) },
-      'scope-store-import',
-    );
-  }
-
-  /**
    * The scope's full dump — the ONE verb here that deliberately moves scope bytes
    * across the boundary, for the governed `scope pull` (§8). The control-plane route
    * in front of it is the gate: staff-only, audited, masked by default, jurisdiction-
@@ -1726,48 +1695,6 @@ export class VerticalClient {
       throw new ControlPlaneError(502, `vertical answered database-size without a size for scope ${scopeId}`);
     }
     return answer.bytes;
-  }
-
-  /**
-   * Each scope store's size in bytes (#2207). Metadata only. A 200 whose `stores`
-   * is not the declared list is a wire disagreement and throws, because a missing
-   * list read as empty would look like a scope that has no stores.
-   */
-  async scopeStoreSizes(tenantId: TenantId, scopeId: ScopeId): Promise<{ binding: string; bytes: number }[]> {
-    const answer = await this.getInternal<{ stores?: unknown }>(
-      `/internal/scope-store-sizes?scopeId=${encodeURIComponent(scopeId)}&tenantId=${encodeURIComponent(tenantId)}`,
-    );
-    const parsed = scopeStoreSize.array().safeParse(answer.stores);
-    if (!parsed.success) {
-      throw new ControlPlaneError(502, `vertical answered scope-store-sizes without a size list for scope ${scopeId}`);
-    }
-    return parsed.data;
-  }
-
-  /**
-   * Erase one subject from each scope store in this deployment (#2068). The control
-   * plane calls the serving script once. A 200 whose list is not the declared shape
-   * is a wire disagreement, because a missing list read as empty would destroy the
-   * subject key while leaving the store.
-   */
-  async scopeStoreErase(
-    tenantId: TenantId,
-    scopeId: ScopeId,
-    subjectId: string,
-  ): Promise<{ binding: string; erased: number }[]> {
-    const answer = await this.postInternal<{ storeErasures?: unknown }>(
-      '/internal/scope-store-erase',
-      { tenantId, scopeId, subjectId },
-      'scope-store-erase',
-    );
-    const parsed = storeErasure.array().safeParse(answer.storeErasures);
-    if (!parsed.success) {
-      throw new ControlPlaneError(
-        502,
-        `vertical answered scope-store-erase without an erasure list for scope ${scopeId}`,
-      );
-    }
-    return parsed.data;
   }
 
   /**

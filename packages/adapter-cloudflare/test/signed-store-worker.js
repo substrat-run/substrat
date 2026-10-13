@@ -11,7 +11,7 @@
  * The call is this script's fetch. The object name itself is still
  * `scopeStoreObjectName`, which the test asserts has no version.
  */
-const seen = new Map();
+let remembered = null;
 
 export default {
   async fetch(request, env) {
@@ -19,9 +19,9 @@ export default {
     const mac = request.headers.get('x-substrat-store-mac') ?? '';
     const ok = await verifyScopeStoreName(env.SUBSTRAT_STORE_HMAC_KEY, name, mac);
     if (!ok) return new Response('unauthorized', { status: 401 });
-    const prior = seen.get(name);
-    if (prior === undefined) seen.set(name, name);
-    return Response.json({ result: { name: prior ?? name } });
+    if (remembered === null) remembered = name;
+    else if (remembered !== name) return new Response('unauthorized', { status: 401 });
+    return Response.json({ result: { name: remembered } });
   },
 };
 

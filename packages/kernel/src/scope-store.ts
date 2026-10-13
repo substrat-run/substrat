@@ -11,6 +11,7 @@ import {
   storeSizeResult,
   storeWipeResult,
   substratError,
+  isStoreOperationName,
   type CheckSubject,
   type ReservedStoreOperation,
   type ScopeId,
@@ -19,6 +20,7 @@ import {
   type StoreResponse,
   type TenantId,
 } from '@substrat-run/contracts';
+import { currentStoreCallObserver } from './invocation-line.js';
 
 /** Who a scope-store object belongs to. The host builds it. The runner keys on it. */
 export interface ScopeStoreAddress {
@@ -44,12 +46,14 @@ export interface ScopeStoreRunner {
 export interface ScopeStoreHostOptions {
   /** When set, a scope running any other vertical is refused. */
   readonly vertical?: string;
-  readonly runners: readonly { readonly binding: string; readonly runner: ScopeStoreRunner }[];
-  /**
-   * Kind of an ambient binding, which has no runner to ask. A dump must not
-   * invent one: an export of a binding named in neither place is refused.
-   */
+  readonly runners?: readonly { readonly binding: string; readonly runner: ScopeStoreRunner }[];
   readonly kinds?: Readonly<Record<string, string>>;
+  /**
+   * `platform` fetches `store.substrat.internal`. The router signs and addresses
+   * the object. `binding` is the direct namespace, for local development and
+   * tests, and is not an isolation boundary.
+   */
+  readonly transport?: 'platform' | 'binding';
 }
 
 export function scopeStoreRunnersOf(
@@ -104,9 +108,8 @@ export interface ScopeStoreStubOptions {
 }
 
 /**
- * Time one store call and report it. The report names the binding, the
- * operation, the outcome and the duration. It is built here, from those four
- * facts, so a caller cannot put the input on it.
+ * Time one store call and report it. An observer passed in wins. Otherwise the
+ * invocation log's resolver hears the call, when a request is current.
  */
 export async function observeStoreCall<T>(
   binding: string,
@@ -115,12 +118,15 @@ export async function observeStoreCall<T>(
   onStoreCall?: (report: StoreCallReport) => void,
 ): Promise<T> {
   const started = Date.now();
+  const hear = (onStoreCall ?? currentStoreCallObserver()) as
+    | ((report: StoreCallReport) => void)
+    | undefined;
   try {
     const result = await run();
-    noteStoreCall({ binding, operation, outcome: 'ok', durationMs: Date.now() - started }, onStoreCall);
+    noteStoreCall({ binding, operation, outcome: 'ok', durationMs: Date.now() - started }, hear);
     return result;
   } catch (err) {
-    noteStoreCall({ binding, operation, outcome: 'error', durationMs: Date.now() - started }, onStoreCall);
+    noteStoreCall({ binding, operation, outcome: 'error', durationMs: Date.now() - started }, hear);
     throw err;
   }
 }
@@ -141,6 +147,9 @@ export async function callScopeStore(
 ): Promise<unknown> {
   if (extra.length > 0) {
     throw substratError('forbidden', 'a scope store invoke takes an operation and an input, and nothing else');
+  }
+  if (!isStoreOperationName(operation)) {
+    throw substratError('validation_failed', 'a store operation is a fixed label of at most 64 characters');
   }
   if (operation.startsWith('substrat.')) {
     throw substratError('forbidden', `store operation '${operation}' is reserved for the platform`);

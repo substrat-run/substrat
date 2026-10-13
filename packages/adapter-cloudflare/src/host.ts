@@ -497,7 +497,7 @@ import {
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, storeEraseResult, storeExportResult, storeImportResult, storeSizeResult, storeWipeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
+import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, storeEraseResult, storeExportResult, storeImportResult, storeSizeResult, storeWipeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -1064,6 +1064,12 @@ interface ControlPlaneStub {
     scopeId: string,
     subjectId: string,
   ): Promise<{ keyId: string | null; wrappedDek: string | null; shreddedAt: string | null } | undefined>;
+  /** Tombstoned subjects, in subject-id order. `cursor` is the last id already returned. */
+  listShreddedSubjects(
+    scopeId: string,
+    tenantId: string,
+    cursor: string | null,
+  ): Promise<string[]>;
   insertSubjectKey(input: {
     scopeId: string;
     subjectId: string;
@@ -2610,6 +2616,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
   private readonly scopeStoreVertical?: string;
   private readonly scopeStoreKinds: Readonly<Record<string, string>>;
+  private readonly scopeStoreTransport: 'platform' | 'binding';
   private scopeStoreStart: Promise<void> | null = null;
   private readonly cp: ControlPlaneStub;
   private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
@@ -2730,6 +2737,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeNs = options.scope;
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreKinds = options.scopeStores?.kinds ?? {};
+    this.scopeStoreTransport = options.scopeStores?.transport ?? 'binding';
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.cpLess = !options.controlPlane;
     this.cp = options.controlPlane
@@ -4512,7 +4520,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
-  ): Promise<void> {
+  ): Promise<{ storeErasuresReplayed: number; storeErasureIncomplete: boolean }> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
@@ -4529,16 +4537,28 @@ export class CloudflareScopeHost implements ScopeHost {
       sourceScopeId: opts?.sourceScopeId ?? (dump.scopeId as ScopeId),
     });
     await this.importScopeStores(tenantId, scopeId, dump.stores);
+    const replay = await this.replayShreddedStoreErasures(
+      actor,
+      tenantId,
+      scopeId,
+      (opts?.sourceScopeId ?? dump.scopeId) as ScopeId,
+    );
     await this.recordAdmin(
       actor,
       'restoreScope',
       { tenantId, scopeId },
       null,
-      { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
+      {
+        sourceScopeId: dump.scopeId,
+        tables: dump.tables.length,
+        capturedAt: dump.capturedAt,
+        storeErasuresReplayed: replay.replayed,
+      },
     );
     if (carry) {
       await this.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: switchedOff });
     }
+    return { storeErasuresReplayed: replay.replayed, storeErasureIncomplete: replay.incomplete };
   }
 
   /**
@@ -4694,6 +4714,32 @@ export class CloudflareScopeHost implements ScopeHost {
     binding: string,
     options?: ScopeStoreStubOptions,
   ): Promise<StoreStub> {
+    if (this.scopeStoreTransport === 'platform') {
+      return {
+        tenantId,
+        scopeId,
+        subjectKind: 'principal',
+        invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
+          observeStoreCall(
+            binding,
+            operation,
+            () =>
+              callScopeStore(async (request) => {
+                const response = await this.fetchImpl(STORE_CALL_URL, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ scopeId, binding, operation: request.operation, input: request.input }),
+                });
+                try {
+                  return await response.json();
+                } catch {
+                  throw new StoreError({ code: 'bad_envelope', status: 502 });
+                }
+              }, operation, input, ...extra),
+            options?.onStoreCall,
+          ),
+      };
+    }
     // A missing binding is answered before any directory read. A CP-less host's
     // directory throws a plain Error, and a vertical with no store must not meet it.
     const runner = this.scopeStoreRunners.get(binding);
@@ -4962,6 +5008,31 @@ export class CloudflareScopeHost implements ScopeHost {
           { tables: store.tables },
         ),
       );
+    }
+  }
+
+  /** `substrat.erase` for every tombstoned subject. The source scope's marks are used. */
+  private async replayShreddedStoreErasures(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    destScopeId: ScopeId,
+    markScopeId: ScopeId,
+  ): Promise<{ replayed: number; incomplete: boolean }> {
+    let cursor: string | undefined;
+    let replayed = 0;
+    let incomplete = false;
+    for (;;) {
+      const page = await this.admin.listShreddedSubjects(actor, tenantId, markScopeId, cursor);
+      for (const subjectId of page.subjects) {
+        try {
+          const rows = await this.eraseScopeStores(tenantId, destScopeId, subjectId);
+          replayed += rows.length;
+        } catch {
+          incomplete = true;
+        }
+      }
+      if (!page.nextCursor) return { replayed, incomplete };
+      cursor = page.nextCursor;
     }
   }
 
@@ -8725,6 +8796,14 @@ export class CloudflareScopeHost implements ScopeHost {
           opened.filter((o) => o !== null).length,
         );
         return opened;
+      },
+      listShreddedSubjects: async (actor, tenantId, scopeId, cursor) => {
+        await this.assertScope(tenantId, scopeId);
+        const rows = await this.cp.listShreddedSubjects(scopeId, tenantId, cursor ?? null);
+        const subjects = rows.slice(0, 100);
+        const nextCursor = rows.length > 100 ? (subjects[99] ?? null) : null;
+        await this.recordAccess(actor, 'listShreddedSubjects', { tenantId, scopeId }, null, subjects.length);
+        return { subjects, nextCursor };
       },
       shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);

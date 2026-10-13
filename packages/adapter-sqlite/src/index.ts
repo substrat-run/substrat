@@ -4009,7 +4009,7 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
-  ): Promise<void> {
+  ): Promise<{ storeErasuresReplayed: number; storeErasureIncomplete: boolean }> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
@@ -4025,14 +4025,26 @@ export class SqliteScopeHost implements ScopeHost {
       this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (action, after) => rows.push([action, after])),
     );
     await this.importScopeStores(tenantId, scopeId, dump.stores);
+    const replay = await this.replayShreddedStoreErasures(
+      actor,
+      tenantId,
+      scopeId,
+      (opts?.sourceScopeId ?? dump.scopeId) as ScopeId,
+    );
     for (const [action, after] of rows) this.recordAdmin(actor, action, { tenantId, scopeId }, null, after);
     this.recordAdmin(
       actor,
       'restoreScope',
       { tenantId, scopeId },
       null,
-      { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
+      {
+        sourceScopeId: dump.scopeId,
+        tables: dump.tables.length,
+        capturedAt: dump.capturedAt,
+        storeErasuresReplayed: replay.replayed,
+      },
     );
+    return { storeErasuresReplayed: replay.replayed, storeErasureIncomplete: replay.incomplete };
   }
 
   async snapshotScope(
@@ -4063,6 +4075,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (source.verticalVersionId) {
       await this.admin.bindScopeVersion(actor, tenantId, snapshotId, source.verticalVersionId);
     }
+    await this.replayShreddedStoreErasures(actor, tenantId, snapshotId, scopeId);
     return snapshotId;
   }
 
@@ -4354,6 +4367,35 @@ export class SqliteScopeHost implements ScopeHost {
           { tables: store.tables },
         ),
       );
+    }
+  }
+
+  /**
+   * `substrat.erase` again for every tombstoned subject (#2207). Erase is
+   * idempotent. A failed call is reported and a later restore retries it.
+   * Key rows live in the directory, so a copy uses the source scope's marks.
+   */
+  private async replayShreddedStoreErasures(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    destScopeId: ScopeId,
+    markScopeId: ScopeId,
+  ): Promise<{ replayed: number; incomplete: boolean }> {
+    let cursor: string | undefined;
+    let replayed = 0;
+    let incomplete = false;
+    for (;;) {
+      const page = await this.admin.listShreddedSubjects(actor, tenantId, markScopeId, cursor);
+      for (const subjectId of page.subjects) {
+        try {
+          const rows = await this.eraseScopeStores(tenantId, destScopeId, subjectId);
+          replayed += rows.length;
+        } catch {
+          incomplete = true;
+        }
+      }
+      if (!page.nextCursor) return { replayed, incomplete };
+      cursor = page.nextCursor;
     }
   }
 
@@ -10704,6 +10746,20 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // `stamp` is the erasure epoch an orchestrated erasure's claim compared (#1722). A direct shred
       // claims nothing and records the epoch it ran under: the backfill orders erasures by them.
+      listShreddedSubjects: async (actor, tenantId, scopeId, cursor) => {
+        this.assertScope(tenantId, scopeId);
+        const rows = this.directory
+          .prepare(
+            `SELECT subject_id FROM _substrat_subject_keys
+              WHERE scope_id = ? AND tenant_id = ? AND shredded_at IS NOT NULL AND subject_id > ?
+              ORDER BY subject_id LIMIT 101`,
+          )
+          .all(scopeId, tenantId, cursor ?? '') as { subject_id: string }[];
+        const subjects = rows.slice(0, 100).map((row) => row.subject_id);
+        const nextCursor = rows.length > 100 ? (subjects[99] ?? null) : null;
+        this.recordAccess(actor, 'listShreddedSubjects', { tenantId, scopeId }, null, subjects.length);
+        return { subjects, nextCursor };
+      },
       shredSubject: async (
         actor,
         tenantId,

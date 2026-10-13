@@ -66,6 +66,8 @@ import {
 import type { EmittedReport, ScopeStoreStubOptions, StoreCallReport } from '@substrat-run/kernel';
 import { invocationLine, type OutputFieldsReport } from '@substrat-run/kernel/invocation-line';
 import { ulid } from '@substrat-run/kernel/ulid';
+import { setStoreCallObserverResolver } from '@substrat-run/kernel/invocation-line';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
 
@@ -115,6 +117,8 @@ export interface InvocationRecord {
    * lives on the request, and the store call happens on the host.
    */
   storeCalls?: StoreCallReport[];
+  /** Store calls past {@link STORE_CALL_LOG_CAP}. The line names the count. */
+  storeCallsDropped?: number;
 }
 
 /**
@@ -122,6 +126,14 @@ export interface InvocationRecord {
  * runs them; the line keeps the first ones and drops the rest.
  */
 export const STORE_CALL_LOG_CAP = 16;
+
+const invocationRecords = new AsyncLocalStorage<InvocationRecord>();
+
+setStoreCallObserverResolver(() => {
+  const record = invocationRecords.getStore();
+  if (!record) return undefined;
+  return scopeStoreInvocationObserver(record).onStoreCall;
+});
 
 /**
  * The observer a vertical passes as `getScopeStore`'s last argument so this
@@ -135,7 +147,10 @@ export function scopeStoreInvocationObserver(record: InvocationRecord): ScopeSto
   return {
     onStoreCall(report) {
       const calls = record.storeCalls ?? (record.storeCalls = []);
-      if (calls.length >= STORE_CALL_LOG_CAP) return;
+      if (calls.length >= STORE_CALL_LOG_CAP) {
+        record.storeCallsDropped = (record.storeCallsDropped ?? 0) + 1;
+        return;
+      }
       calls.push(report);
     },
   };
@@ -378,6 +393,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     ...(record.outputFields ? { outputFields: record.outputFields } : {}),
     ...(stamp.fieldCoverageId ? { fieldCoverageId: stamp.fieldCoverageId } : {}),
     ...(record.storeCalls && record.storeCalls.length > 0 ? { storeCalls: record.storeCalls } : {}),
+    ...(record.storeCallsDropped ? { storeCallsDropped: record.storeCallsDropped } : {}),
   });
   console.log(JSON.stringify(line));
 }
@@ -419,7 +435,7 @@ export function invocationLog<Env = unknown>(
     if (existing) {
       c.set?.('substratInvocationId', existing.invocationId);
       c.set?.(INVOCATION_RECORD_KEY, existing.record);
-      await next();
+      await invocationRecords.run(existing.record, () => next());
       return;
     }
     // Host code, so a real clock is correct here — `ctx.now()` is the module-code rule,
@@ -432,7 +448,7 @@ export function invocationLog<Env = unknown>(
     c.set?.(INVOCATION_RECORD_KEY, stamp.record);
     let threw = false;
     try {
-      await next();
+      await invocationRecords.run(stamp.record, () => next());
     } catch (e) {
       threw = true;
       // Always re-thrown: the envelope `mountPlatformSurface` installs is what answers
@@ -493,13 +509,18 @@ export function withInvocationLog<Env = unknown>(
   if (typeof inner !== 'function') return worker;
   const wrapped: ModuleWorker<Env> = {
     async fetch(request: IncomingRequest, env: Env, ctx: unknown): Promise<{ status: number }> {
-      if (invocationStampOf(request)) return inner.call(worker, request, env, ctx);
+      if (invocationStampOf(request)) {
+        const existing = invocationStampOf(request);
+        return existing
+          ? invocationRecords.run(existing.record, () => inner.call(worker, request, env, ctx))
+          : inner.call(worker, request, env, ctx);
+      }
       const started = Date.now();
       const stamp = beginStamp(request, env, options);
       let status: number | null = null;
       let threw = false;
       try {
-        const response = await inner.call(worker, request, env, ctx);
+        const response = await invocationRecords.run(stamp.record, () => inner.call(worker, request, env, ctx));
         status = response.status;
         handRecordToRouter(response, stamp.record, request, env, options);
         return response;

@@ -3,6 +3,7 @@ import {
   assertDeclaredScopeStores,
   PLATFORM_BINDING_PREFIX,
   scopeStoreBindingName,
+  scopeStoreScriptName,
   STORE_KINDS,
   substratError,
   verticalScriptStem,
@@ -223,11 +224,9 @@ const NAMED_REFUSALS: Record<string, string> = {
  * carries no version — stay where they are. A vertical's own deploy version is
  * not part of it either: pushing the vertical again does not move the store.
  */
-export function scopeStoreScriptName(vertical: string, kind: string): string {
-  return `substrat-store-${kind}-${verticalScriptStem(vertical)}`;
-}
+export { scopeStoreScriptName };
 
-/** One store script to upload, and the bindings that point at it. */
+/** One store script to upload. The serving script is not given the namespace or the key. */
 export interface ScopeStoreUploadPlan {
   readonly scripts: readonly {
     readonly kind: string;
@@ -236,7 +235,8 @@ export interface ScopeStoreUploadPlan {
     readonly scriptName: string;
     readonly className: string;
   }[];
-  readonly bindings: readonly DeclaredBinding[];
+  /** Empty. A vertical reaches a store through the platform, not a binding of its own. */
+  readonly bindings: readonly [];
 }
 
 /**
@@ -273,19 +273,7 @@ export function scopeStoreUploadPlan(input: {
       className: kind.className,
     });
   }
-  const bindings = input.stores.map((store) => {
-    const script = scripts.find((candidate) => candidate.kind === store.kind);
-    if (!script) {
-      throw substratError('forbidden', `deploy refused: scope store '${store.binding}' has no script to bind`);
-    }
-    return {
-      type: 'durable_object_namespace' as const,
-      name: scopeStoreBindingName(store.binding),
-      class_name: script.className,
-      script_name: script.scriptName,
-    };
-  });
-  return { scripts, bindings };
+  return { scripts, bindings: [] };
 }
 
 export function scopeStoreScriptBindings(
