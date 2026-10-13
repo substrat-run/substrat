@@ -2100,6 +2100,16 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * Every ACTIVE scope of this tenant, whatever its vertical — what the peer panel reads (#2252):
+   * a peer name also reaches the tenant's pinned `<tenantSlug>/<slug>` registration, which
+   * `listScopes`' exact `vertical` filter does not, and only an active scope is ever a target.
+   */
+  listActiveScopes(): Promise<Scope[]> {
+    const q = new URLSearchParams({ tenantId: this.tenantId, status: 'active' });
+    return this.listAll<Scope>(`/scopes?${q}`);
+  }
+
+  /**
    * Which of the tenant's OTHER apps may call into this scope, and where each stands
    * (#1706). Tenant-pinned like every call here, so a scope of another tenant fails closed
    * below the seam (K-3).

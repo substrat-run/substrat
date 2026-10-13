@@ -15,7 +15,7 @@ import {
   tenantId,
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { PEER_CALLER, PEER_LISTENER, peerMod, scheduleMod } from '@substrat-run/contract-tests';
+import { PEER_BARE, PEER_CALLER, PEER_LISTENER, peerMod, scheduleMod } from '@substrat-run/contract-tests';
 import { switchCarryFor } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -451,6 +451,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
     expect(await host.admin.peerGrantsStatus(staff, { tenantId: t, scopeId: s })).toEqual([
       { vertical: PEER_CALLER, calls: 'on', switchedOff: null },
       { vertical: PEER_LISTENER, calls: 'on', switchedOff: null },
+      { vertical: PEER_BARE, calls: 'on', switchedOff: null },
     ]);
     expect(reads).toEqual([]);
   });

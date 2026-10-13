@@ -10,7 +10,11 @@
  *   node tools/decisions.mjs --check   # CI: exit 1 if any generated block is stale
  */
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
-import { join, relative, dirname, resolve } from 'node:path';
+import { join, relative as platformRelative, dirname, resolve } from 'node:path';
+
+// The tables are markdown. `path.relative` on Windows would rewrite every link
+// with backslashes, and CI (Linux) would then call the file stale.
+const relative = (from, to) => platformRelative(from, to).replaceAll('\\', '/');
 
 const DIR = 'docs/decisions';
 const README = 'docs/README.md';
