@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStoreAddress, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
+import { STORE_CALL_SINK_KEY, tallyStoreCall, type StoreCallTally } from '@substrat-run/kernel/invocation-line';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
@@ -342,6 +343,71 @@ export function scopeStoreContractSuite(
         },
       });
       expect(await loud.invoke('read')).toEqual(expect.any(Number));
+    });
+
+    it('with no observer, a call lands on the request now running; a passed one wins (#2245)', async () => {
+      // The platform entry installs this slot (vertical-host's `runRecordingStoreCalls`);
+      // here a fixed tally stands in for the request's record.
+      const key = Symbol.for(STORE_CALL_SINK_KEY);
+      const g = globalThis as unknown as Record<symbol, unknown>;
+      const before = g[key];
+      const current: StoreCallTally = {};
+      g[key] = { current: () => (call: StoreCallReport) => tallyStoreCall(current, call) };
+      try {
+        const secret = 'store-call-secret-value';
+        const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+        await store.invoke('increment', { by: 1, note: secret });
+        await store.invoke('missing', { note: secret }).catch(() => undefined);
+        expect(current.storeCalls).toEqual([
+          { binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: expect.any(Number) },
+          { binding: 'GRAPH', operation: 'missing', outcome: 'error', durationMs: expect.any(Number) },
+        ]);
+        expect(JSON.stringify(current)).not.toContain(secret);
+        const heard: StoreCallReport[] = [];
+        const own = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH', { onStoreCall: (r) => heard.push(r) });
+        await own.invoke('read');
+        expect(heard.map((r) => r.operation)).toEqual(['read']);
+        expect(current.storeCalls).toHaveLength(2);
+      } finally {
+        g[key] = before;
+      }
+    });
+
+    it('a call outside any request is not logged and does not throw (#2245)', async () => {
+      const key = Symbol.for(STORE_CALL_SINK_KEY);
+      const g = globalThis as unknown as Record<symbol, unknown>;
+      const before = g[key];
+      try {
+        g[key] = undefined;
+        const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+        expect(await store.invoke('read')).toEqual(expect.any(Number));
+        g[key] = { current: () => undefined };
+        expect(await store.invoke('read')).toEqual(expect.any(Number));
+        g[key] = {
+          current() {
+            throw new Error('slot');
+          },
+        };
+        expect(await store.invoke('read')).toEqual(expect.any(Number));
+      } finally {
+        g[key] = before;
+      }
+    });
+
+    it('an operation name that is not a fixed label is refused before the call, and not reported (#2245)', async () => {
+      const reports: StoreCallReport[] = [];
+      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH', { onStoreCall: (r) => reports.push(r) });
+      const count = await store.invoke('read');
+      reports.length = 0;
+      for (const name of ['incr:ement', 'incr ement', 'incr@ement', 'i'.repeat(65)]) {
+        const refusal = await store.invoke(name).then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+        expect(errorCodeOf(refusal), name).toBe('validation_failed');
+      }
+      expect(reports).toEqual([]);
+      expect(await store.invoke('read')).toBe(count);
     });
 
     it('a reserved operation is refused through the stub', async () => {

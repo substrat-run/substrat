@@ -70,6 +70,10 @@ function underCeiling(name: string, js: string, source: string): void {
 
 const js = await bundle(
   [
+    // #2245: the request runs in an AsyncLocalStorage, so a store call reaches its line with no
+    // observer from the vertical. The uploader adds `nodejs_als` where the script has neither it
+    // nor `nodejs_compat`, and swaps this import for `ALS_FALLBACK` where it can have neither.
+    `import { AsyncLocalStorage } from 'node:async_hooks';`,
     `import { withInvocationLog } from './${SOURCE}';`,
     `import * as vertical from '${PLACEHOLDER}';`,
     `export * from '${PLACEHOLDER}';`,
@@ -78,16 +82,25 @@ const js = await bundle(
     `export default withInvocationLog(vertical.default, {`,
     `  routerSecret: (env) => env.ROUTER_SECRET,`,
     `  allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',`,
+    `  asyncLocalStorage: AsyncLocalStorage,`,
     `});`,
   ].join('\n'),
   'substrat-platform-entry.ts',
-  [PLACEHOLDER],
+  [PLACEHOLDER, 'node:async_hooks'],
 );
 underCeiling('entry', js, SOURCE);
 if (!js.includes(PLACEHOLDER)) {
   console.error(`platform-entry: the bundle no longer names ${PLACEHOLDER}, so the uploader cannot fill it in.`);
   process.exit(2);
 }
+/** The entry's one `node:*` import, exactly as esbuild wrote it, and the line that replaces it. */
+const alsImports = [...js.matchAll(/import\s*\{\s*AsyncLocalStorage(?:\s+as\s+([\w$]+))?\s*\}\s*from\s*["']node:async_hooks["'];?/g)];
+if (alsImports.length !== 1) {
+  console.error(`platform-entry: expected one node:async_hooks import in the entry, found ${alsImports.length}; the uploader swaps it out for a script that cannot have one.`);
+  process.exit(2);
+}
+const ALS_IMPORT = alsImports[0]![0];
+const ALS_FALLBACK = `const ${alsImports[0]![1] ?? 'AsyncLocalStorage'} = undefined;`;
 
 /**
  * The scope sweeper the platform supplies (#1902) to a vertical that declares schedules and
@@ -140,6 +153,14 @@ export const PLATFORM_ENTRY_PLACEHOLDER = '${PLACEHOLDER}';
 
 /** The entry itself — ${js.length} bytes of ESM. */
 export const PLATFORM_ENTRY_SOURCE: string = ${JSON.stringify(js)};
+
+/**
+ * #2245: the entry's \`node:async_hooks\` import, as it appears in \`PLATFORM_ENTRY_SOURCE\`, and
+ * the line the uploader puts in its place for a script that can have no \`AsyncLocalStorage\`
+ * (one that opts out with \`no_nodejs_als\`). That script's line then names no store calls.
+ */
+export const PLATFORM_ENTRY_ALS_IMPORT = ${JSON.stringify(ALS_IMPORT)};
+export const PLATFORM_ENTRY_ALS_FALLBACK = ${JSON.stringify(ALS_FALLBACK)};
 
 /**
  * The scope sweeper the platform supplies (#1902) — uploaded beside the entry, which

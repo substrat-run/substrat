@@ -330,10 +330,22 @@ export interface StoreOperationCatalog {
   readonly operations: readonly string[];
 }
 
-const storeCatalogOperation = z
+/** The longest store operation name (#2207 §6). */
+export const STORE_OPERATION_NAME_MAX = 64;
+
+/**
+ * A store operation name is a fixed label (#2207 §6): no `@`, no whitespace, no `:`,
+ * at most {@link STORE_OPERATION_NAME_MAX} characters. The name goes on an invocation
+ * line tenant members can read, so a name built from input (`lookup:<email>`) is
+ * refused rather than logged. The reserved `substrat.*` names are labels too.
+ */
+export const storeOperationName = z
   .string()
   .min(1)
-  .refine((name) => !name.startsWith('substrat.'), {
+  .max(STORE_OPERATION_NAME_MAX)
+  .regex(/^[^@:\s]+$/, { message: 'a store operation name is a fixed label: no @, no whitespace, no :' });
+
+const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWith('substrat.'), {
     message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
   });
 
@@ -389,7 +401,7 @@ export function scopeStoreObjectName(tenantId: string, vertical: string, scopeId
 
 /** `{ operation, input }` over the store's fetch. */
 export const storeRequest = z.object({
-  operation: z.string().min(1),
+  operation: storeOperationName,
   input: z.unknown().optional(),
 });
 export type StoreRequest = z.infer<typeof storeRequest>;

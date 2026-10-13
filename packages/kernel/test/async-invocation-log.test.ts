@@ -100,7 +100,14 @@ describe('asyncInvocationLine', () => {
       storeCalls: [{ binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: 4 }],
     });
     expect(line.storeCalls).toEqual([{ binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: 4 }]);
-    expect(JSON.stringify(line.storeCalls)).not.toContain('input');
+    expect(line).not.toHaveProperty('storeCallsDropped');
+    expect(
+      invocationLine({
+        tenantId: 'T1', scopeId: 'S1', invocationId: 'CALL1', threw: false, durationMs: 0, level: 'info',
+        storeCalls: [{ binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: 4 }],
+        storeCallsDropped: 3,
+      }).storeCallsDropped,
+    ).toBe(3);
   });
 
   it('carries a schedule its due time and lateness, and no consumer fields', () => {

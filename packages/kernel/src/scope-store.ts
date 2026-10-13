@@ -1,11 +1,13 @@
 import {
   RESERVED_STORE_OPERATIONS,
+  STORE_OPERATION_NAME_MAX,
   StoreError,
   storeEraseInput,
   storeEraseResult,
   storeExportResult,
   storeImportInput,
   storeImportResult,
+  storeOperationName,
   storeRequest,
   storeResponse,
   storeSizeResult,
@@ -19,6 +21,7 @@ import {
   type StoreResponse,
   type TenantId,
 } from '@substrat-run/contracts';
+import { currentStoreCallSink, type StoreCallLine } from './invocation-line.js';
 
 /** Who a scope-store object belongs to. The host builds it. The runner keys on it. */
 export interface ScopeStoreAddress {
@@ -80,33 +83,39 @@ export interface StoreStub<C extends StoreOperationCatalog = StoreOperationCatal
   invoke(operation: C['operations'][number], input?: unknown): Promise<unknown>;
 }
 
-/**
- * Send one envelope and read the answer (#2207). Reserved names are refused
- * here, before `send`, so the store never sees a `substrat.*` call from a
- * vertical. The platform's own caller does not come through this function.
- */
 /** What one store call leaves on an invocation line (#2245). Never the input. */
-export interface StoreCallReport {
-  readonly binding: string;
-  readonly operation: string;
-  readonly outcome: 'ok' | 'error';
-  readonly durationMs: number;
-}
+export type StoreCallReport = StoreCallLine;
 
 /**
  * Observers on a store stub (#2245). They carry no authority, the same way
- * {@link ScopeStubOptions} does not. `onStoreCall` hears each `invoke` the
- * vertical makes through this stub. A throw from the observer is swallowed:
- * the call's result is the store's, not the log's.
+ * {@link ScopeStubOptions} does not. With none passed, the call is recorded on the
+ * request now running (RFC §6); `onStoreCall`, when passed, is heard instead.
+ * A throw from either is swallowed: the call's result is the store's, not the log's.
  */
 export interface ScopeStoreStubOptions {
   readonly onStoreCall?: (report: StoreCallReport) => void;
 }
 
 /**
+ * Refuse an operation name that is not a fixed label (RFC §6): no `@`, no
+ * whitespace, no `:`, at most 64 characters. Checked before the call and before
+ * any report, so a name built from input never reaches a line.
+ */
+function assertStoreOperationName(operation: unknown): asserts operation is string {
+  if (!storeOperationName.safeParse(operation).success) {
+    throw substratError(
+      'validation_failed',
+      `a store operation name is a fixed label: no @, no whitespace, no :, at most ${STORE_OPERATION_NAME_MAX} characters`,
+    );
+  }
+}
+
+/**
  * Time one store call and report it. The report names the binding, the
  * operation, the outcome and the duration. It is built here, from those four
- * facts, so a caller cannot put the input on it.
+ * facts, so a caller cannot put the input on it. A passed observer wins; with
+ * none, the call goes to the request now running, and outside one it is not
+ * logged.
  */
 export async function observeStoreCall<T>(
   binding: string,
@@ -114,25 +123,33 @@ export async function observeStoreCall<T>(
   run: () => Promise<T>,
   onStoreCall?: (report: StoreCallReport) => void,
 ): Promise<T> {
+  assertStoreOperationName(operation);
+  // Resolved before the call: the record is the one of the request that made it.
+  const sink = onStoreCall ?? currentStoreCallSink();
   const started = Date.now();
   try {
     const result = await run();
-    noteStoreCall({ binding, operation, outcome: 'ok', durationMs: Date.now() - started }, onStoreCall);
+    noteStoreCall({ binding, operation, outcome: 'ok', durationMs: Date.now() - started }, sink);
     return result;
   } catch (err) {
-    noteStoreCall({ binding, operation, outcome: 'error', durationMs: Date.now() - started }, onStoreCall);
+    noteStoreCall({ binding, operation, outcome: 'error', durationMs: Date.now() - started }, sink);
     throw err;
   }
 }
 
-function noteStoreCall(report: StoreCallReport, onStoreCall?: (report: StoreCallReport) => void): void {
+function noteStoreCall(report: StoreCallReport, sink?: (report: StoreCallReport) => void): void {
   try {
-    onStoreCall?.(report);
+    sink?.(report);
   } catch {
     // Advisory. A broken observer must not replace the store's answer.
   }
 }
 
+/**
+ * Send one envelope and read the answer (#2207). Reserved names are refused
+ * here, before `send`, so the store never sees a `substrat.*` call from a
+ * vertical. The platform's own caller does not come through this function.
+ */
 export async function callScopeStore(
   send: (request: StoreRequest) => Promise<unknown>,
   operation: string,
@@ -142,6 +159,7 @@ export async function callScopeStore(
   if (extra.length > 0) {
     throw substratError('forbidden', 'a scope store invoke takes an operation and an input, and nothing else');
   }
+  assertStoreOperationName(operation);
   if (operation.startsWith('substrat.')) {
     throw substratError('forbidden', `store operation '${operation}' is reserved for the platform`);
   }

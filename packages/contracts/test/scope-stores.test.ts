@@ -8,6 +8,9 @@ import {
   runtimeNeeds,
   scopeStoreBindingName,
   storeKindRegistration,
+  storeOperationName,
+  storeRequest,
+  STORE_OPERATION_NAME_MAX,
   tenantStoreBindingName,
 } from '../src/index.js';
 
@@ -149,5 +152,34 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
         platformOperations: [...RESERVED_STORE_OPERATIONS],
       }),
     ).toThrow(/substrat/);
+  });
+});
+
+describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
+  it('refuses @, whitespace, : and a name past the cap', () => {
+    for (const name of ['a:b', 'a b', 'a\tb', 'a@b', 'lookup:someone@example.com', 'x'.repeat(STORE_OPERATION_NAME_MAX + 1), '']) {
+      expect(storeOperationName.safeParse(name).success, name).toBe(false);
+      expect(storeRequest.safeParse({ operation: name }).success, name).toBe(false);
+    }
+  });
+
+  it('accepts a label at the cap, and the reserved names', () => {
+    for (const name of ['x'.repeat(STORE_OPERATION_NAME_MAX), 'increment', 'graph.query-v2', ...RESERVED_STORE_OPERATIONS]) {
+      expect(storeOperationName.safeParse(name).success, name).toBe(true);
+      expect(storeRequest.safeParse({ operation: name }).success, name).toBe(true);
+    }
+  });
+
+  it('holds a kind registration\'s catalog to the same rule', () => {
+    const registration = (operations: string[]) => ({
+      kind: 'graph',
+      release: '1.0.0',
+      script: 'graph-store',
+      className: 'GraphStore',
+      operations,
+      platformOperations: [...RESERVED_STORE_OPERATIONS],
+    });
+    expect(storeKindRegistration.safeParse(registration(['increment'])).success).toBe(true);
+    expect(storeKindRegistration.safeParse(registration(['look:up'])).success).toBe(false);
   });
 });

@@ -5194,10 +5194,10 @@ export interface ScopeHost {
    * the object name itself. `binding` is the declaration. The vertical does not
    * choose the tenant, the scope, or the vertical slug that go into the name.
    *
-   * `options` carries no authority (#2245). `onStoreCall` hears each invoke:
-   * binding, operation, outcome, duration. The input is not part of that report.
-   * The invocation record lives on the request, which this door cannot see, so
-   * the vertical passes the observer when it wants the line to name the call.
+   * `options` carries no authority (#2245). Each invoke is recorded on the
+   * request now running — binding, operation, outcome, duration, never the input —
+   * with nothing passed by the vertical (RFC §6). `onStoreCall`, when passed, is
+   * heard instead. A call made where no request is current is not logged.
    */
   getScopeStore(
     principal: PrincipalId,

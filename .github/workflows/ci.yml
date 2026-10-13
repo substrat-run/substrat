@@ -285,6 +285,10 @@ jobs:
       # `withInvocationLog`, bundled into a string constant — so a change to it that
       # is not re-emitted deploys every vertical behind the OLD stamp, silently.
       - run: pnpm lint:platform-entry --check
+      # #2245: a worker deployed with no node flag statically imports no node builtin. A shared
+      # package growing a `node:async_hooks` import would otherwise pass every suite and fail to
+      # start the dashboard (and the scaffold) on workerd.
+      - run: pnpm lint:worker-node-imports
       # The issuer-schema checkpoint (#987). `demos/auth-server`'s Drizzle schema and
       # raw DDL are emitted from Better Auth's own table declarations, and both carry
       # "do not edit by hand" — but the only `--check` was inside a vitest case, while
