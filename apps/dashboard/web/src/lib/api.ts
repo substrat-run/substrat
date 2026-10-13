@@ -1,4 +1,4 @@
-import { problemDetail } from '@substrat-run/contracts';
+import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { createClient, type DashboardClient } from './api.generated';
 import { tenantLogsQuery } from './logs-query';
 import type { PromoteReviewWire } from './promote-review';
@@ -9,7 +9,7 @@ import type { EdgeHealthReport, ImportCursorMove, ImportCursorMoved, CauseChain,
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
  *
  * The worker serves everything under `/api`: `/api/me` (who am I — and, on first
- * call, bootstraps my tenant), `/api/catalog`, `/api/apps`. Auth is an OIDC
+ * call, bootstraps my tenant), `/api/catalog`, and the team-scoped surface under `/api/teams/:teamId` (`teamApi`). Auth is an OIDC
  * redirect to the platform's AuthHero instance — there is no password here, so
  * sign-in/out are full-page navigations, not fetches. `credentials: 'include'`
  * carries the same-origin session cookie the worker sets.
@@ -1455,7 +1455,7 @@ export interface DeclaredSurface {
   label: string;
 }
 
-/** `GET /api/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
+/** `GET /api/teams/:teamId/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
 export interface AppHostnamesView {
   bindings: AppHostnameRow[];
   surfaces: DeclaredSurface[];
@@ -1490,10 +1490,10 @@ export interface DnsRecord {
   type: 'hostname' | 'txt';
   name: string;
   value: string;
-  status: string | null;
+  status?: string | null;
 }
 
-/** One custom domain row for the account-level Domains view (`GET /api/domains`). */
+/** One custom domain row for the account-level Domains view (`GET /api/teams/:teamId/domains`). */
 export interface DomainRow {
   hostname: string;
   appScopeId: string;
@@ -1509,7 +1509,7 @@ export interface DomainRow {
   validationRecords: DnsRecord[];
 }
 
-/** The raw binding a bind/verify returns (`POST /api/domains`, `/verify`). */
+/** The raw binding a bind/verify returns (`POST /api/teams/:teamId/domains`, `/verify`). */
 export interface HostnameBinding {
   hostname: string;
   status: 'pending' | 'verifying' | 'active' | 'failed';
@@ -1529,6 +1529,12 @@ export class ApiError extends Error {
     readonly probe?: ConnectionProbeView,
     /** #1756: the apps an Update or a Bind would break, when that is why it was refused. */
     readonly exportBreaks?: ExportBreakRow[],
+    /**
+     * #2192: the id of the request that failed, when the answering worker named one — the
+     * `x-substrat-request-id` header, else the problem body's `requestId`. What a person
+     * quotes to find the request. Absent where the answer carried none.
+     */
+    readonly requestId?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -1574,12 +1580,16 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     // `problemDetail` is the one reading of a failed body (#971) — the problem body's
     // sentence, then the deprecated duplicate every SPA read before it. The `probe`
     // beside it is the dashboard's own extension (#605) and stays read here.
-    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView } | null;
+    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView; requestId?: unknown } | null;
+    // Only something shaped like an id is surfaced as one: it is shown, and people copy it.
+    const plausible = (v: unknown): string | undefined => (typeof v === 'string' && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/i.test(v) ? v : undefined);
+    const fromBody = plausible(body?.requestId);
     throw new ApiError(
       res.status,
       problemDetail(body) ?? `${res.status} ${res.statusText}`,
       body?.probe,
       exportBreaksIn<ExportBreakRow>(body),
+      plausible(res.headers.get(REQUEST_ID_HEADER)) ?? fromBody,
     );
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
@@ -1774,22 +1784,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
-  /** My apps, one page newest-first; follow `nextCursor` for older ones. */
-  listApps: (opts?: PageOpts) => call<ListPage<AppRow>>(`/apps${pageQs(opts)}`),
-  createApp: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) =>
-    call<AppRow>('/apps', { method: 'POST', body: JSON.stringify(input) }),
-  // -- custom domains (§4.7) -------------------------------------------------
-  listDomains: (opts?: PageOpts) => call<ListPage<DomainRow>>(`/domains${pageQs(opts)}`),
-  addDomain: (input: { hostname: string; appScopeId: string; surface?: string }) =>
-    call<HostnameBinding>('/domains', { method: 'POST', body: JSON.stringify(input) }),
-  verifyDomain: (hostname: string) =>
-    call<HostnameBinding>(`/domains/${encodeURIComponent(hostname)}/verify`, { method: 'POST' }),
-  removeDomain: (hostname: string) =>
-    call<void>(`/domains/${encodeURIComponent(hostname)}`, { method: 'DELETE' }),
-  deleteApp: (id: string) => call<void>(`/apps/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  retryApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/retry`, { method: 'POST' }),
-  /** Resume an app stuck at 'provisioning' — re-runs the idempotent install tail in place (#424). */
-  resumeApp: (scopeId: string) => call<AppRow>(`/apps/${encodeURIComponent(scopeId)}/resume`, { method: 'POST' }),
   /** One page of the app's audit trail, newest first; `nextCursor` walks older activity. */
   appEvents: (scopeId: string, opts?: PageOpts) =>
     call<ListPage<AppEvent>>(`/apps/${encodeURIComponent(scopeId)}/events${pageQs(opts)}`),
@@ -2009,20 +2003,6 @@ export const api = {
     ),
   /** The account-level integrations overview: all providers, connections, and connectable apps. */
   integrations: () => call<AccountIntegrationsView>('/integrations'),
-  /** The app's hostname bindings + the vertical's declared surfaces (Domains tab). */
-  appHostnames: (scopeId: string) => call<AppHostnamesView>(`/apps/${encodeURIComponent(scopeId)}/hostnames`),
-  /** Bind a hostname to a surface: platform-minted (`domain` omitted, lands active) or a custom domain (lands pending). */
-  addAppHostname: (scopeId: string, input: { surface: string; domain?: string }) =>
-    call<AppHostnameRow>(`/apps/${encodeURIComponent(scopeId)}/hostnames`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  /** Unbind one hostname (the default hostname is refused). */
-  removeAppHostname: (scopeId: string, hostname: string) =>
-    call<{ deleted: string }>(
-      `/apps/${encodeURIComponent(scopeId)}/hostnames/${encodeURIComponent(hostname)}`,
-      { method: 'DELETE' },
-    ),
   /** The app's Identity choice (secret redacted) + its OIDC callback URL. */
   appAuth: (scopeId: string) => call<AppAuthView>(`/apps/${encodeURIComponent(scopeId)}/auth`),
   /** Update the Identity choice; a blank clientSecret keeps the stored one. */

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ULID, ulidTime } from './palette';
 
 /**
  * The request slide-over's address (#1752 §7a, #1916) — one opener for every page.
@@ -98,4 +99,33 @@ export function closeRecordInUrl(): void {
 
 export function useRecordInUrl(): RecordInUrl | null {
   return recordInUrl(useSearch());
+}
+
+/** The longest window the plane reads logs over; a request older than this is not findable. */
+export const REQUEST_WINDOW_MS = 72 * 3_600_000;
+
+/**
+ * A request id as someone pastes it (#2192): the bare ULID from an `x-substrat-request-id`
+ * header or an error's `requestId`, in any case, with whitespace or quotes around it, after
+ * `req=` or `x-substrat-request-id:`, or inside a pasted dashboard URL. Null when the text
+ * names no single id, so two ids pasted together open neither.
+ */
+export function parseRequestId(text: string): string | null {
+  const t = text.trim();
+  const labelled = [...t.matchAll(/(?:^|[?&#\s,{])["']?(?:req|requestId|x-substrat-request-id)["']?\s*[=:]\s*["'`]?([^&\s#"'`]+)/gi)];
+  // A second labelled id is as ambiguous as a second bare one.
+  if (labelled.length > 1) return null;
+  const candidate = (labelled[0] ? labelled[0][1]! : t.replace(/^["'`]+|["'`,.;]+$/g, '')).toUpperCase();
+  return ULID.test(candidate) && ulidTime(candidate) !== null ? candidate : null;
+}
+
+/**
+ * Where to look for a request id: the instant its ULID was minted, or `outside` when that is
+ * older than the log window. `outside` is "not found within the window", never a claim that
+ * the request does not exist — an id's clock may be skewed, and the plane keeps no more.
+ */
+export function requestLookup(id: string, now: number = Date.now()): { atMs: number; outside: boolean } | null {
+  const atMs = ulidTime(id);
+  if (atMs === null) return null;
+  return { atMs, outside: now - atMs > REQUEST_WINDOW_MS };
 }

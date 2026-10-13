@@ -1,5 +1,92 @@
 # @substrat-run/contract-tests
 
+## 0.145.0
+
+### Minor Changes
+
+- e786ff0: A version can no longer strand people a link bound (#2178).
+
+  People a binding invite bound to their record keep the shape until they are released, and every way of releasing them needs the shape: an unbind needs it to bind, a retirement needs it to be a bootstrap shape, an erasure finds them through the holder the scope recorded. A version that removes a binding shape, moves its holder to another table or column, turns it into a sharing shape, or drops a key from it without retiring that key is now refused wherever it would come to run where the shape binds: a promote (judged against the channel's version and against each owned scope a private promote re-points), a bind, and a route onto a serving script. A rollback to a version from before the shape is refused the same way. No acknowledgement passes it. Retiring is the way through: keep the shape with every key in `retired` and none in `permissions`, then drop or move it in a later version. A retirement reaches an install only when that install reconciles the retiring version, so each primary install a move reaches is also judged from the version it last reconciled, and the drop stays refused until every one has. An install with no receipt (a kill switch, a rewind or a restore cleared it, or it is new) counts as not reconciled until the sweep's next pass, and the refusal names the installs it waits for. Dropping only `bind` is still allowed. The promote, the serve and the bind also judge from the version served in place and from what each install runs.
+
+  - contracts: `bindingShapeBreaks`, `bindingShapeRefusal` and `BINDING_SHAPE_REFUSAL`; `assertNoBindingShapeBreak` judges two stored manifests and fails closed on grant shapes it cannot read. The registry diff reports a holder change (`grantChanges[].holder`, read by `holderLabel`), and `grantShapeHolderNotes` says it, so every review of a promote shows it.
+  - kernel: `scopeMoveOf`, the before/after running versions of a bind or a route change, shared with the export-break gate; `PROVISIONED_VERSIONS_SQL`, the distinct versions the installs a promote or a serve moves last reconciled.
+  - adapters: `promoteVersion`, `setVerticalServing`, `bindScopeVersion` and `setScopeServingRef` refuse such a move `precondition_failed`, ahead of the acknowledgements. `bindingImpact` refuses it too, so a caller that asks before moving data stops first.
+
+- f49cc49: A binding shape whose `bind` a version dropped stays guarded: a later version may not remove it, move its holder, or drop one of its keys unretired while any install has people bound through it (#2184).
+
+  Dropping `bind` stops new links and leaves the people already bound holding the shape. The binding-shape gate judged only the registry's `bind`, so once a version dropped it, a later version could remove the shape and strand them. Each install's reconcile now reports the binding shapes links have ever bound in it (the scope's sticky `shape-bound` records), the directory records them beside the receipt, and the gate counts a bootstrap shape with a table holder as binding wherever an install bound it.
+
+  - contracts: `bindingShapeBreaks(from, to, boundEver?)` and `assertNoBindingShapeBreak(…, { boundEver })`; `mayHoldBound(shape)`. `Scope.boundShapes` (`{ versionId, types }`, counting only while `versionId` is the receipt's).
+  - kernel: `topUpEntityGrantShapes`'s last pass answers `boundEver`. `ReconcileOutcome.boundShapes`, written by `markScopeProvisioned` in the same write as the receipt. `PROVISIONED_VERSIONS_SQL` groups by the reported set and by the version each install runs (rows stay per version and set, not per install), and **takes five parameters now: bind them with `provisionedVersionsParams(vertical, serving, ownerTenant)`**. `installReconciled(scope, runningVersionId)` takes the version the scope runs. A receipt behind what its installs run is judged as unreported for what they run (`strandJudgmentsOf`, the one rule both adapters' doors apply). `boundEverOf`, `boundShapesColumn`, `boundShapesOfColumn`. An install that has not reported is behind, in the same share of the sweep's window as one behind on its retirements, and **a `reconcileScopeFn` must now resolve `{ retirementsFinished, boundShapes }`** for an install to stop being reconciled each pass.
+  - adapters: a directory migration adds `scopes.bound_shapes` (nullable, no backfill: every existing install reconciles once more, and until it does it is judged as having bound every table-held bootstrap shape of its version). The hosted `provisionScopeLocal` (adapter-cloudflare) answers `boundShapeTypes` whenever it reconciled shapes; a kill switch clears the column with the receipt.
+  - vertical-host: `/internal/reconcile` answers `boundShapeTypes`. As with the retirement count, a vertical needs **both** packages at this release to report it; a version with no bootstrap shape held by a table needs neither.
+  - control-plane-api: `reconcileOutcomeOf` reads the answer, keeping the types of the sent shapes held by a table.
+
+- 6aaf822: The findings read pages (#2198).
+
+  `listFindings` takes a `cursor` beside `limit` and walks `lastSeen` descending with `id` ascending as the tiebreak, so a team with more than 100 findings reaches the older ones. A read that sends neither is unchanged: the same 100 rows in the same order. `GET /findings` answers `{ entries, nextCursor }` (an added field), accepts `cursor`, and refuses a `limit` outside 1–500 or a cursor it did not mint with a 400 instead of reading it as "from the start".
+
+  - contracts: `FINDINGS_LIMIT_DEFAULT`, `FINDINGS_LIMIT_MAX`, `findingCursorOf` and `parseFindingCursor`; `FindingFilter` gains `cursor`.
+  - kernel: `listFindings` refuses a `limit` over `FINDINGS_LIMIT_MAX` (it accepted any positive number before; the HTTP route already stopped at 500).
+  - contract-tests: the findings suite walks a tenant by cursor on both adapters.
+  - kernel: `observeFinding` stores `first_seen` / `last_seen` in the canonical instant form (`toISOString`), the spelling a cursor is minted in, and refuses an `at` that is not an instant. Every in-repo writer already stamped that form.
+
+- bb4f18d: A grant of a key that a declared entity-grant shape protects, made on a parent entity, no longer reaches a record of the shape's type (#2177). On such a record the key is held only by the shape's own grant there, or at the node, by a role or a scope-level grant. The protected keys are those of a `'grantee'` shape and of a binding shape. Direct grants of them on such a record were already refused. A direct grant of one on a parent entity of another type was accepted, and the permission walk carried it down onto every record of the shape's type beneath that parent.
+
+  - **The walk stops at the record.** When a check of a protected key walks up the parent edges, it still looks for a grant on a record of the protecting type, but it does not climb past it. A grant on the parent is still written and still applies to the parent itself, and to anything beneath the parent that the walk reaches without passing through such a record. Keys the shape does not protect walk as before. Role and node-level grants are not affected.
+  - **Existing grants are covered too.** The stop is applied when the check runs, so a grant on a parent made before this release, or before the scope recorded the shape, stops reaching the shape's records from the next check on. A vertical that relied on such a grant to reach a protected record has to give the shape on the record instead.
+  - **Capabilities and live roots walk the same way.** An `act` capability rooted above such a record no longer reaches it for a protected key. A live subscription whose root is checked by a protected key is nudged about a row beneath the root that the key reaches only through such a record only when the subscriber's own check of the key on that row allows it. A holder by a node-level grant or by the record's shape still is; a holder by a grant above the record no longer is. `reachesWithin` and `ancestorsWithin` take an optional key and stop where its check stops. Without a key they walk every edge, as a vouched root does.
+  - **Recorded as K-48**, the one exception to rule 3 of the permission algebra.
+  - `ScopeTupleReader` gains a required `shapeProtectedTypes(relation)`, which both adapters answer with the kernel's `shapeProtectedTypesQuery`. The explicit-grant refusal reads the same query. A check reads it at most once, and only when the walk is about to climb from an entity that has parent edges. A node-level check, a hit on the entity itself, and a miss on an entity with no parents read nothing extra.
+
+- 48e9503: A binding-shape drop now waits for the retirement to have finished in every install, not only for each install to have reconciled the retiring version (#2185).
+
+  A reconcile that gave a retirement up (`retirementsLeftOpen`) used to write its receipt all the same, and its answer about retirements never reached the control plane, so the install read as done and the retirement was never run again. The reconcile now reports how many retirements it left open, and the directory records, beside the receipt, the version whose retirements finished in that scope. The gate judges an install whose retirements did not finish as still holding the keys its version retires, and the sweep counts it behind, so the next pass runs the retirement again.
+
+  - contracts: `retiredKeysOf(shape)`, the keys a retirement takes back, reused by the kernel's reconcile and the gate. `Scope.retirementsFinishedVersionId`.
+  - kernel: `HostAdmin.markScopeProvisioned` takes an optional `ReconcileOutcome` (`{ retirementsFinished }`) and writes both columns in one write. `PROVISIONED_VERSIONS_SQL` groups by (version, finished); `installReconciled` makes one install's group. An install whose retirements did not finish is behind. The sweep's window is shared between installs whose receipt is behind, which take most of it, and installs behind on their retirements alone, which are owed a quarter (at least one slot); a slot one class does not need goes to the other, so neither class starves the other. **A `reconcileScopeFn` that resolves `void` now means "not finished, ask again"**: it writes the receipt with no finished version, so every install it reconciles stays behind and is reconciled on every pass. A host running its own sweep should resolve `{ retirementsFinished }`.
+  - adapters: a directory migration adds `scopes.retirements_finished_version_id` (nullable, no backfill: every existing install reconciles once more). The hosted `provisionScopeLocal` (adapter-cloudflare) counts `retirementsLeftOpen` whenever it reconciled shapes; a kill switch clears both columns.
+  - vertical-host: `/internal/reconcile` answers the count adapter-cloudflare's host returns. A vertical needs **both** packages at this release to report it: an older `@substrat-run/adapter-cloudflare` counts nothing and an older `@substrat-run/vertical-host` answers nothing, and either way the platform counts the retirements of a version that retires a key as not finished. Push a version built on current releases of both before dropping a shape you retired.
+  - control-plane-api: `reconcileOutcomeOf`, and the reconcile and provision routes record the outcome. A governed restore, and a kept copy restored forward, now clear the receipt (and the finished version with it), as a rewind already did: the data loaded may predate a reconcile, a finished retirement included, so the sweep reconciles the install again.
+
+- 5554b23: **Behaviour change to a documented rule (#901): a kernel state move no longer moves an entity's version** (#2191). `ctx.archive`, `ctx.unarchive`, `ctx.trash` and `ctx.restore` change no field anyone read. They set only the kernel's own `_substrat_*_at` columns. So the version, which an operation's `If-Match` is compared against, now skips their four events. Before this, a client that read a row, moved it and then sent a guarded write got `412 precondition_failed` ("changed since you read it") although nothing had changed, and the move operations hand back no `ETag` it could have used instead. Now the tag it holds still matches. A real edit in between still refuses it.
+
+  - Contracts exports `ENTITY_STATE_MOVE_TYPES`, the four move types, and the kernel's `entityVersionQuery` leaves them out. The query is now `ORDER BY id DESC LIMIT 1` over the existing `(entity_type, entity_id, id)` index, so it still walks the index and does not aggregate. Both adapters run the same SQL.
+  - **Archive is not write-refused.** A trashed row is refused to every operation whose declared check names it except one that declares `trashed: 'admits'` or `'purges'` (a restore, a delete for good, the purge), and a guarded one of those still compares its `If-Match`. An archived row is refused to none: an edit sent with a tag read before someone archived the row is admitted, lands on the archived row, and the row stays archived.
+  - Only these four. The other kernel-authored events about an entity (a link or relink, a grant top-up or retirement, a holder bound or unbound, an attachment added or removed) still move the version. Whether any of them is content is a separate decision.
+  - A row whose only events are moves, such as one seeded without an event, has no version, as it had none before it was moved.
+  - **At deploy:** the rule changes for a vertical when it is next pushed on a release carrying this. A client holding a tag it read from a row whose newest event was a move, or an idempotent replay recorded from such a call, gets one `412` on its next guarded write, re-reads and carries on. That is the safe direction: no write is admitted that the old rule would have refused for a content change.
+
+  The concurrency docs (`concepts/api-design`, `concepts/scope-host`) state the rule.
+
+- fac4f0a: `EntityDef.stamps` takes the updated pair, `updatedAt` and `updatedBy`, held true by the host on every row a call emits about (#2166).
+
+  - A derived create writes all four stamps. A derived update writes the updated pair with every write it makes; one that sends nothing still writes nothing.
+  - The host holds the pair on every row an operation, a consumer or an imported-event handler emits about. The row must carry that call's `ctx.now()` and principal, or the call fails `internal` and rolls back. **An authored handler on an entity that declares the pair, and forgets to stamp a row it emits about, now fails**: set `updated_at` and `updated_by` wherever you write the row. The host reads the emits, not the writes. An emit about a stamped row counts as a write to it, so a handler that only announces the row stamps it too. A write that emits only about another entity, such as the parent, is not checked. A deleted row is not checked. Neither are kernel writes (archive, trash, restore, links, attachments, grants), which leave the pair as it was, nor an emit rolled back inside `ctx.atomic`.
+  - An entity that declares no updated stamp is never read, and a scope with no such entity pays nothing.
+  - `defineEntities` also refuses a stamp kind named twice, and an updated stamp on a composite primary key, which no event can name.
+  - The manifest gains `updatedStamps`, derived by `manifestEntities()`. It is optional and additive, and absent when no entity declares the pair, so existing manifests are unchanged.
+
+### Patch Changes
+
+- 2c75a0d: An entity can make its trash horizon a floor as well as a deadline: `trash: { permission, purgeAfterDays, purgeEarly: false }` (#2214). The kernel then refuses the entity's `trashed: 'purges'` operation, for every caller, on an entity that is not in the trash or was trashed less than `purgeAfterDays` ago. As with the other trash refusals, it checks the operation's declared key first, so a caller without the key gets `permission_denied` and a caller with it gets `not_found`. There is no opt-out. The platform's purge sweep works as before. The floor holds the purge operation, not the trash: an operation declared `trashed: 'admits'` that deletes the row can still remove a trashed entity at any time. A missing entity gets the same refusal as an active or a recently trashed one.
+
+  `purgeEarly` is optional and defaults to `true`, which keeps today's behaviour: the purge operation is also the permanent delete a person uses to empty the trash at any time. `purgeEarly: false` without `purgeAfterDays` is refused when the model is emitted and when a module is registered. The emitted `model.json` carries `"purgeEarly": false` only when it is declared. A reader that does not know the key ignores it.
+
+  `purgeCutoffOf` is no longer exported from the kernel's index. It was added after 0.144.0 for ticket0's purge handler and has not been in any release. That handler now relies on the kernel's refusal instead of comparing dates itself.
+
+- Updated dependencies [e786ff0]
+- Updated dependencies [f49cc49]
+- Updated dependencies [6aaf822]
+- Updated dependencies [bb4f18d]
+- Updated dependencies [2c75a0d]
+- Updated dependencies [48e9503]
+- Updated dependencies [5554b23]
+- Updated dependencies [3782c4c]
+- Updated dependencies [fac4f0a]
+  - @substrat-run/contracts@0.145.0
+  - @substrat-run/kernel@0.145.0
+
 ## 0.144.0
 
 ### Minor Changes
@@ -5809,7 +5896,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

@@ -1,4 +1,4 @@
-import type { EffectsTree, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
+import type { CauseChain, EffectsTree, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
 
 /** A log line, as far as this file reads one — the client's `LogLine` is assignable. */
 export interface LogLine {
@@ -260,4 +260,57 @@ export function msLabel(ms: number): string {
   const abs = Math.abs(ms);
   const s = abs >= 1000 ? `${(abs / 1000).toFixed(abs >= 10_000 ? 0 : 1)} s` : `${Math.round(abs)} ms`;
   return ms < 0 ? `−${s}` : s;
+}
+
+/**
+ * Another request that shares a cause with this one (#2192), found only from what the spine
+ * records: an event's `causedBy` and `invocationId`, and a delivery's attempt `invocationId`.
+ *
+ * - `caused-by`: walking an emitted event's cause chain back, the first event that was
+ *   emitted under a different call. That call is what set this one off.
+ * - `set-off`: a delivery of what this request emitted that ran under a different call (a
+ *   retry or a drain), or an event emitted downstream under a different call.
+ *
+ * Consumers delivered inside the call share its id, so they are not listed here: they are
+ * the request's own. Nothing records a request that started another through a path with no
+ * event (a schedule's own run, a peer or MCP call), so those cannot appear.
+ */
+export interface RelatedRequest {
+  relation: 'caused-by' | 'set-off';
+  invocationId: string;
+  /** When to look for its lines: the event's or the delivery attempt's instant. */
+  at: string;
+  /** What links it: the event type, and the consumer for a delivery. */
+  via: string;
+}
+
+/** What the related-requests read could cover, and whether it covered it all. */
+export interface RelatedResult {
+  requests: RelatedRequest[];
+  /** Why the list may be missing some, or null when every read was made and none failed. */
+  incomplete: string | null;
+}
+
+export function relatedRequests(own: string, trees: EffectsTree[], causes: CauseChain[]): RelatedRequest[] {
+  const out = new Map<string, RelatedRequest>();
+  const add = (r: RelatedRequest) => {
+    // The first sighting wins, so a cause is not relabelled by a later delivery.
+    if (r.invocationId !== own && !out.has(r.invocationId)) out.set(r.invocationId, r);
+  };
+  for (const c of causes) {
+    const cause = c.chain.slice(1).find((e) => e.invocationId !== null && e.invocationId !== own);
+    if (cause) add({ relation: 'caused-by', invocationId: cause.invocationId!, at: cause.occurredAt, via: cause.type });
+  }
+  const walk = (node: EffectsTree['root']) => {
+    if (!node) return;
+    for (const d of node.deliveries) {
+      if (d.invocationId) add({ relation: 'set-off', invocationId: d.invocationId, at: d.at, via: `${node.event.type} → ${d.consumer}` });
+    }
+    for (const child of node.effects) {
+      if (child.event.invocationId) add({ relation: 'set-off', invocationId: child.event.invocationId, at: child.event.occurredAt, via: child.event.type });
+      walk(child);
+    }
+  };
+  for (const t of trees) walk(t.root);
+  return [...out.values()];
 }

@@ -6,11 +6,13 @@ import {
   bankidQr,
   bankidStart,
   requestPasswordReset,
+  resolveSignInRoute,
   signIn as signInWithPassword,
   signInSocial,
   type BankIdStart,
   type ClientSignIn,
   type ClientTheme,
+  type SignInRoute,
 } from '../api';
 import { returnTarget } from '../console/routes';
 import { Centered, Card, Field } from '../primitives';
@@ -58,7 +60,7 @@ export function SignIn({
    *    is the whole cost of not doing that.
    */
   const only = providers.length === 1 && !passwordEnabled ? providers[0] : undefined;
-  const straightThrough = forOidc && signIn.restricted && only !== undefined && !socialError;
+  const straightThrough = forOidc && signIn.restricted && !signIn.identifierFirst && only !== undefined && !socialError;
   const [redirecting, setRedirecting] = useState(straightThrough);
   /** Fired once per mount, whatever React does with the effect. Without this, StrictMode's
    *  double-invoke starts two sign-ins, each minting its own OAuth state — the last
@@ -105,6 +107,14 @@ export function SignIn({
   // A policy naming a provider this issuer no longer offers, with no password to fall back
   // on. Saying so is the honest answer; a sign-in form the authorize hook would refuse to
   // honour is not (see `effectiveSignIn`).
+  if (signIn.identifierFirst) {
+    return (
+      <IdentifierFirst
+        signIn={signIn} oauthQuery={oauthQuery} theme={theme} signupEnabled={signupEnabled} socialError={socialError}
+        onSignUp={onSignUp} onDone={onDone} onBankId={() => setBankidOpen(true)} onSms={() => setPhoneOpen(true)}
+      />
+    );
+  }
   if (!providers.length && !passwordEnabled) {
     return (
       <Centered>
@@ -209,6 +219,163 @@ export function SignIn({
             Create an account
           </button>
         )}
+      </Card>
+    </Centered>
+  );
+}
+
+/**
+ * Identifier-first sign-in (`identifierFirst` in the client's policy).
+ *
+ * Step 1 asks WHO — an email address, or BankID — and shows only the methods open to
+ * everyone. The directories an organisation signs in through are not listed: a person at
+ * `acme.se` is never shown the buttons of every other customer's SSO, and a stranger is not
+ * shown theirs. Step 2 follows from the address (`resolveSignInRoute`): a routed address goes
+ * straight to its directory, any other gets the password form — and the SMS step after it
+ * when the client requires one. The answer is not enforcement; `/oauth2/authorize` is.
+ */
+function IdentifierFirst({
+  signIn, oauthQuery, theme, signupEnabled, socialError, onSignUp, onDone, onBankId, onSms,
+}: {
+  signIn: ClientSignIn;
+  oauthQuery: string | null;
+  theme: ClientTheme;
+  signupEnabled: boolean;
+  socialError: string | null;
+  onSignUp: () => void;
+  onDone: () => void;
+  onBankId: () => void;
+  onSms: () => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [route, setRoute] = useState<SignInRoute | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(socialError);
+  const [notice, setNotice] = useState<string | null>(null);
+  const clientId = new URLSearchParams(window.location.search).get('client_id');
+  const title = theme.title ?? 'Substrat Auth';
+
+  const goToProvider = async (provider: { id: string }, hint?: string) => {
+    setErr(null);
+    if (provider.id === 'bankid') return onBankId();
+    try {
+      await signInSocial(provider.id, oauthQuery, returnTarget(window.location.pathname), hint);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  const identify = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      const next = await resolveSignInRoute(clientId, email.trim());
+      setRoute(next);
+      // A routed address has nothing left to ask: leave for its directory at once. The
+      // person can still come back (step 2 stays on screen behind the redirect) if the
+      // upstream refuses them, and the refusal lands on this screen with its reason.
+      if (next.kind === 'provider') await goToProvider(next.provider, email.trim());
+      else setBusy(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  if (route?.kind === 'provider' && busy) {
+    return <Centered><Card title={title} logo={theme.logoUrl}><p className="muted">Continuing to {route.provider.label}…</p></Card></Centered>;
+  }
+
+  // Step 2 — the address is not routed.
+  if (route) {
+    return (
+      <Centered>
+        <Card title={title} logo={theme.logoUrl}>
+          <p className="muted identifier">
+            {email.trim()} <button className="btn link" onClick={() => { setRoute(null); setPassword(''); setErr(null); }}>Change</button>
+          </p>
+          {route.kind === 'none' && (
+            <p className="error">
+              This application does not accept sign-in for that address. Check it for typos, or use
+              the account your organisation gave you.
+            </p>
+          )}
+          {route.kind === 'provider' && (
+            <>
+              {err && <p className="error">{err}</p>}
+              <button className="btn primary" onClick={() => void goToProvider(route.provider, email.trim())}>
+                Continue with {route.provider.label}
+              </button>
+            </>
+          )}
+          {route.kind === 'password' && (
+            <>
+              <Field label="Password" value={password} onChange={setPassword} type="password" />
+              {err && <p className="error">{err}</p>}
+              {notice && <p className="notice">{notice}</p>}
+              <button
+                className="btn primary"
+                disabled={busy}
+                onClick={async () => {
+                  setErr(null);
+                  try {
+                    const needsSms = route.secondFactor === 'sms';
+                    const { resumed } = await signInWithPassword(email.trim(), password, needsSms ? null : oauthQuery);
+                    if (needsSms) { setPassword(''); onSms(); return; }
+                    if (!resumed) onDone();
+                  } catch (e) {
+                    setErr(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                {route.secondFactor === 'sms' ? 'Continue' : 'Sign in'}
+              </button>
+              {route.secondFactor === 'sms' && <p className="muted small">We will text you a code in the next step.</p>}
+              <button
+                className="btn link"
+                onClick={async () => {
+                  setErr(null);
+                  setNotice(null);
+                  try {
+                    await requestPasswordReset(email.trim());
+                    setNotice('If that email has an account, a reset link is on its way.');
+                  } catch (e) {
+                    setErr(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                Forgot password?
+              </button>
+              {signupEnabled && <button className="btn link" onClick={onSignUp}>Create an account</button>}
+            </>
+          )}
+        </Card>
+      </Centered>
+    );
+  }
+
+  // Step 1 — who are you?
+  return (
+    <Centered>
+      <Card title={title} logo={theme.logoUrl}>
+        <p className="muted">Sign in to continue to the application that sent you here.</p>
+        {signIn.providers.length > 0 && (
+          <div className="providers">
+            {signIn.providers.map((provider) => (
+              <button key={provider.id} className="btn" onClick={() => void goToProvider(provider)}>
+                Continue with {provider.label}
+              </button>
+            ))}
+            <div className="or"><span>or</span></div>
+          </div>
+        )}
+        <Field label="Email" value={email} onChange={setEmail} type="email" />
+        {err && <p className="error">{err}</p>}
+        <button className="btn primary" disabled={busy || !email.includes('@')} onClick={() => void identify()}>
+          Continue
+        </button>
       </Card>
     </Centered>
   );

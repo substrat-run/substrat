@@ -2420,7 +2420,7 @@ export function defineScopeDO(
       shapes: readonly EntityGrantShape[],
       limit: number,
       after?: ShapeCursor | null,
-    ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; done: boolean }> {
+    ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; done: boolean; boundEver?: string[] }> {
       const pass = (from: ShapeCursor | null) =>
         this.queue.enqueue(() =>
           this.revision.transactionSync(() =>
@@ -2441,14 +2441,16 @@ export function defineScopeDO(
         return { ...one, done: one.next === null };
       }
       let [toppedUp, retired, retirementsLeftOpen, from] = [0, 0, 0, null as ShapeCursor | null];
+      let boundEver: string[] | undefined;
       do {
         const one = await pass(from);
         toppedUp += one.toppedUp;
         retired += one.retired;
         retirementsLeftOpen += one.retirementsLeftOpen;
         from = one.next;
+        boundEver = one.boundEver;
       } while (from);
-      return { toppedUp, retired, retirementsLeftOpen, next: null, done: true };
+      return { toppedUp, retired, retirementsLeftOpen, next: null, done: true, ...(boundEver ? { boundEver } : {}) };
     }
 
     /**
@@ -7730,6 +7732,9 @@ export function defineScopeDO(
           full.payload === undefined ? null : JSON.stringify(full.payload),
         );
       };
+      // #2192: the call's invocation id, one reader for `ctx.log` and `ctx.requestId` — through
+      // the DO, not `this` inside the literal below, which is the context.
+      const requestIdNow = (): string | null => this.invocationId ?? delivery?.invocationId ?? null;
       const ctxRef: OperationContext = {
         tenantId,
         scopeId,
@@ -7763,12 +7768,16 @@ export function defineScopeDO(
           tenantId,
           scopeId,
           operation: operation ?? null,
-          invocationId: () => this.invocationId ?? delivery?.invocationId ?? null,
+          invocationId: requestIdNow,
           principalKind: systemActor ? 'system' : subject.kind,
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
           // log's text is not JSON.
           redact: (text) => redactSecretText(text, minted),
         }),
+        // #2192: the same id the log lines carry.
+        get requestId() {
+          return requestIdNow();
+        },
         emit: (event: DomainEventInput) => writeEvent(event, 'module'),
         requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
           assertImpersonationWrites(impersonation, 'ctx.requestPlatform');

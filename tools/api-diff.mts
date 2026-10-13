@@ -30,8 +30,9 @@
 import { existsSync, readdirSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { repoRoot } from './repo-path.mjs';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = repoRoot(import.meta.url);
 const argv = process.argv.slice(2);
 const check = argv.includes('--check');
 

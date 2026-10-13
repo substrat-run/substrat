@@ -36,7 +36,7 @@
  * Rate limiting on the same surface is #937 and deliberately not here.
  */
 import type { Context, Hono } from 'hono';
-import { substratError } from '@substrat-run/contracts';
+import { REQUEST_ID_EXPOSED_HEADERS, substratError } from '@substrat-run/contracts';
 
 /**
  * The service account this surface runs as, resolved for one request, together with
@@ -188,6 +188,8 @@ export function mountPublicSurface(
     c.set(ACTOR, actor);
     c.header('access-control-allow-origin', origin);
     c.header('vary', 'origin');
+    // #2192: so the embedding page can read the request id it would quote.
+    c.header('access-control-expose-headers', REQUEST_ID_EXPOSED_HEADERS.join(', '));
     await next();
   };
 
