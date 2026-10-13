@@ -20,6 +20,8 @@ declare namespace Cloudflare {
     SWEEP_CONTROL_PLANE: DurableObjectNamespace;
     /** #1242: the version identity the deploy would inject — version-stamp.test.ts. */
     SUBSTRAT_VERSION_ID: string;
+    /** #2209: the scope-store door's counter, bound the way a push would name it. */
+    SUBSTRAT_STORE_GRAPH: DurableObjectNamespace;
     /** The CP-less scope-local sweep trigger (#461) — scope-sweeper.test.ts… */
     SCOPE_SWEEPER: DurableObjectNamespace;
     /** …and its own scope namespace (same ScopeDO class, no directory). */

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
-import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, scheduleSpec, type ModuleManifest } from './manifest.js';
+import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, scheduleSpec, PLATFORM_BINDING_PREFIX, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
@@ -311,6 +311,103 @@ export const assetsNeed = assetRouting.extend({
 export type AssetsNeed = z.infer<typeof assetsNeed>;
 
 /**
+ * The operations only the platform may send to a scope store (#2207). A vertical's
+ * stub refuses every one of them. A kind's registration has to answer all of them,
+ * `substrat.erase` included, before a hosted deploy may store tenant data.
+ */
+export const RESERVED_STORE_OPERATIONS = [
+  'substrat.export',
+  'substrat.import',
+  'substrat.size',
+  'substrat.wipe',
+  'substrat.erase',
+] as const;
+export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
+
+/** The operations a vertical may invoke on a scope store. No `substrat.*` name belongs here. */
+export interface StoreOperationCatalog {
+  readonly operations: readonly string[];
+}
+
+const storeCatalogOperation = z
+  .string()
+  .min(1)
+  .refine((name) => !name.startsWith('substrat.'), {
+    message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
+  });
+
+/**
+ * A store kind, pinned the way a connector is: an exact release, the script and class
+ * the platform runs, the catalog a vertical may call, and every reserved operation.
+ * The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
+ */
+export const storeKindRegistration = z.object({
+  kind: z.literal('graph'),
+  release: z.string().min(1),
+  script: z.string().min(1),
+  className: z.string().min(1),
+  operations: z.array(storeCatalogOperation),
+  platformOperations: z.array(z.enum(RESERVED_STORE_OPERATIONS)).refine(
+    (ops) => RESERVED_STORE_OPERATIONS.every((op) => ops.includes(op)),
+    { message: 'a store kind answers every reserved operation, including substrat.erase' },
+  ),
+});
+export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
+
+/** Registered store kinds. None, until a reviewed registration lands (#2210). */
+export const STORE_KINDS: readonly StoreKindRegistration[] = [];
+
+/**
+ * A platform-run object, one per scope (#2207). The builder names the binding and the
+ * kind. The kind has no default. The platform injects `SUBSTRAT_STORE_<BINDING>` at
+ * push; the vertical never writes that binding.
+ */
+export const scopeStoreNeed = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  kind: z.literal('graph'),
+});
+export type ScopeStoreNeed = z.infer<typeof scopeStoreNeed>;
+
+/** The env name the platform binds a scope store under. */
+export function scopeStoreBindingName(binding: string): string {
+  if (!BINDING_NAME.test(binding)) {
+    throw new Error(`not a scope-store binding name: '${binding}' (expected SCREAMING_SNAKE)`);
+  }
+  return `${PLATFORM_BINDING_PREFIX}STORE_${binding}`;
+}
+
+/**
+ * The object name the host builds (#2207). The vertical names a binding; the host
+ * names the object, from the tenant and scope it has just checked and the vertical
+ * the scope runs. Tenant, scope and binding contain no `/`. A vertical slug may,
+ * and it sits between the two ids, so the name still splits one way.
+ */
+export function scopeStoreObjectName(tenantId: string, vertical: string, scopeId: string, binding: string): string {
+  return `${tenantId}/${vertical}/${scopeId}/${binding}`;
+}
+
+/** `{ operation, input }` over the store's fetch. */
+export const storeRequest = z.object({
+  operation: z.string().min(1),
+  input: z.unknown().optional(),
+});
+export type StoreRequest = z.infer<typeof storeRequest>;
+
+/** What a store answers when it refuses. `code` is the kind's, `status` is HTTP. */
+export const storeErrorEnvelope = z.object({
+  code: z.string().min(1),
+  status: z.number().int(),
+  body: z.unknown().optional(),
+});
+
+/** `{ result }` or `{ error }`. Anything else is not this envelope. */
+export const storeResponse = z.union([
+  z.object({ result: z.unknown() }).strict(),
+  z.object({ error: storeErrorEnvelope }).strict(),
+]);
+export type StoreResponse = z.infer<typeof storeResponse>;
+
+/**
  * What a vertical needs from the runtime, in substrate vocabulary (package.json
  * `substrat.runtimeNeeds`). A vertical authored with this section never writes deploy
  * config for a specific substrate — the CLI derives that at push time (D-38: builders
@@ -327,6 +424,10 @@ export const runtimeNeeds = z.object({
   /** Command to run before bundling (SPA build, asset generation). Runs in the vertical root. */
   build: z.string().min(1).optional(),
   stores: z.array(storeNeed).default([]),
+  /** One platform-run object per scope (#2207). `kind` has no default: it is the
+   *  choice, and the only kind until a second one asks to widen the literal. A push
+   *  of a kind with no registration is refused ({@link assertDeclaredScopeStores}). */
+  scopeStores: z.array(scopeStoreNeed).default([]),
   /** Per-tenant stores the platform provisions (#301, #473). `kind` defaults to
    *  `relational`. `blob` is the same declaration as an entry in `blobStores`.
    *  NOT bound statically — there is one database or bucket per tenant, minted in
@@ -397,6 +498,115 @@ export function manifestStoresOf(
     tenantStores: declared.tenantStores,
     blobStores: withAttachmentBlobStore(declared, attaches),
   };
+}
+
+/**
+ * Whether `name` is the binding a per-tenant store is injected as
+ * ({@link tenantStoreBindingName}): `<BINDING>__<tenant>`. The declared spelling
+ * `DB` is a different name from `DB__<tenant>`, and a static binding of the
+ * declared spelling does not collide with the store.
+ */
+function isPerTenantRuntimeName(name: string, binding: string): boolean {
+  const prefix = `${binding}__`;
+  return name.startsWith(prefix) && tenantId.safeParse(name.slice(prefix.length)).success;
+}
+
+/**
+ * One binding name is one store (#2207, #2221). The names a vertical declares —
+ * an own store, a per-tenant store, a blob store, a scope store — are compared
+ * as written. `ATTACHMENTS` stays the attachment blob store and cannot be a
+ * scope store.
+ *
+ * A static wrangler binding is compared to the name that lands on the worker,
+ * not to the declaration. An own store's durable-object binding IS that store,
+ * so passing it again counts the name twice; push omits those names. A
+ * per-tenant store is injected as `BINDING__<tenant>`, and a scope store as
+ * `SUBSTRAT_STORE_<BINDING>`. A static binding spelled `DB` or `GRAPH` is not
+ * either of those.
+ */
+export function assertStoreBindingsDistinct(input: {
+  readonly own?: readonly { binding: string }[];
+  readonly tenantStores?: readonly { binding: string }[];
+  readonly blobStores?: readonly { binding: string }[];
+  readonly scopeStores?: readonly { binding: string }[];
+  readonly bindingNames?: readonly string[];
+}): void {
+  const seen = new Map<string, string>();
+  const claim = (binding: string, where: string) => {
+    const prior = seen.get(binding);
+    if (prior !== undefined) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: binding '${binding}' is declared as ${prior} and as ${where}. One name is one store.`,
+      );
+    }
+    seen.set(binding, where);
+  };
+  for (const store of input.own ?? []) claim(store.binding, 'an own store');
+  for (const store of input.tenantStores ?? []) claim(store.binding, 'a per-tenant store');
+  for (const store of input.blobStores ?? []) claim(store.binding, 'a per-tenant blob store');
+  for (const store of input.scopeStores ?? []) {
+    if (store.binding === ATTACHMENT_BLOB_BINDING) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: '${ATTACHMENT_BLOB_BINDING}' is the attachment blob store, not a scope store.`,
+      );
+    }
+    claim(store.binding, 'a scope store');
+  }
+  const perTenant = [...(input.tenantStores ?? []), ...(input.blobStores ?? [])];
+  for (const name of input.bindingNames ?? []) {
+    const own = (input.own ?? []).find((store) => store.binding === name);
+    if (own) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: binding '${name}' is declared as an own store and as a static binding. One name is one store.`,
+      );
+    }
+    const tenant = perTenant.find((store) => isPerTenantRuntimeName(name, store.binding));
+    if (tenant) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: binding '${name}' is the runtime name of per-tenant store '${tenant.binding}'. One name is one store.`,
+      );
+    }
+    const scope = (input.scopeStores ?? []).find((store) => name === scopeStoreBindingName(store.binding));
+    if (scope) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: binding '${name}' is the runtime name of scope store '${scope.binding}'. One name is one store.`,
+      );
+    }
+  }
+}
+
+/**
+ * A scope store whose kind has no registration is refused (#2207). The declaration
+ * parses — `graph` is the kind — and still cannot be stored as if the platform
+ * could run it. {@link STORE_KINDS} is what "registered" means.
+ */
+export function assertScopeStoresRegistered(stores: readonly ScopeStoreNeed[]): void {
+  for (const store of stores) {
+    if (!STORE_KINDS.some((kind) => kind.kind === store.kind)) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
+          `A store kind is platform code, pinned to a release the way a connector is.`,
+      );
+    }
+  }
+}
+
+/** Both refusals a push and the control plane apply to a scope-store declaration. */
+export function assertDeclaredScopeStores(input: {
+  readonly own?: readonly { binding: string }[];
+  readonly tenantStores?: readonly { binding: string }[];
+  readonly blobStores?: readonly { binding: string }[];
+  readonly scopeStores?: readonly ScopeStoreNeed[];
+  readonly bindingNames?: readonly string[];
+}): void {
+  assertStoreBindingsDistinct(input);
+  assertScopeStoresRegistered(input.scopeStores ?? []);
 }
 
 /**
@@ -1332,6 +1542,9 @@ export const deployManifest = z.object({
   /** Per-tenant blob stores (#473) — same carry-for-provisioning rule as `tenantStores`:
    *  never a static binding; the platform mints one bucket per tenant and injects it. */
   blobStores: z.array(blobStoreNeed).default([]),
+  /** Platform-run objects, one per scope (#2207). Never a static binding: the platform
+   *  injects `SUBSTRAT_STORE_<BINDING>` for a registered kind and refuses the rest. */
+  scopeStores: z.array(scopeStoreNeed).default([]),
   /** The vertical's static files (#340): routing config + the full path/hash/size/type
    *  manifest. Never a binding — native assets are a top-level upload path, so they do not
    *  ride the §4 allowlist. Optional ⇒ a vertical that ships none is unaffected. */

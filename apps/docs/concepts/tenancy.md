@@ -176,7 +176,14 @@ vertical's manifest can declare stores the platform mints for it, one per *tenan
   resolves the one for the tenant it is serving. The worker wires nothing. A relational
   store of that name is refused.
 
-Both follow the same ownership rule, and it is the load-bearing part: **the builder supplies
+A **scope store** is the level below those. `scopeStores` declares one platform-run object
+per scope: a binding and a kind, with no default kind. The only kind today is `graph`.
+The platform injects it as `SUBSTRAT_STORE_<BINDING>`. A binding used by another store,
+and the name `ATTACHMENTS`, are refused. A kind with no registration is refused too, and
+none is registered yet, so a push that declares a scope store does not succeed until that
+registration exists. Hosted deploy of the store itself is a later step.
+
+The per-tenant stores follow one ownership rule, and it is the load-bearing part: **the builder supplies
 no id.** The vertical declares a *need*; the platform mints the database or bucket, holds the
 cloud credential, and attaches a binding to the serving script, re-derived from the ledger on
 every upload. A vertical is *handed* a store — it never names one, so it can never name
