@@ -422,7 +422,9 @@ the scope's dump from the control plane and writes a **real SQLite file** —
 `.substrat/<tenant>__<scope>.sqlite`, the exact file shape
 [`adapter-sqlite`](/reference/adapter-sqlite) stores scopes in, so a local harness runs the
 identical vertical against it. On node < 22.13 (no `node:sqlite`) the dump lands as JSON with
-a notice instead.
+a notice instead. A full pull that carries [scope stores](/concepts/scope-stores) is written as
+`.substrat/<tenant>__<scope>.dump.json` too, because a SQLite file holds only the scope's
+tables: restoring that file restores the stores with them.
 
 The pull crosses the platform's trust boundary on purpose, so the server side is the gate:
 
