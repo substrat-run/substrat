@@ -90,7 +90,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
   });
 
   it('a host with no control plane names the vertical it was given', async () => {
-    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs' } });
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
     const t = tenantId.parse(ulid());
     const a = scopeId.parse(ulid());
     const store = await host.getScopeStore(principal, t, a, 'GRAPH');

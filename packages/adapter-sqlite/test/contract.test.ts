@@ -15,6 +15,7 @@ import {
   scopeCausedByContractSuite,
   membershipExecutorContractSuite,
   findingsContractSuite,
+  scopeStoreContractSuite,
   findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
   attachmentRefusalContractSuite,
@@ -117,6 +118,18 @@ connectLinkContractSuite(
 );
 
 // #1748: findings — the tenant inbox, its lifecycle, rules and retention, on the directory.
+scopeStoreContractSuite('adapter-sqlite', async (scopeStores) => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker, scopeStores });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
 findingsContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-findings-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
