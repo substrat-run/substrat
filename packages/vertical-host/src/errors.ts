@@ -31,6 +31,7 @@ import {
   type Problem,
 } from '@substrat-run/contracts';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { requestIdOf } from './invocation-log.js';
 
 /** A classified failure: the status it deserves and the message to relay. */
 export interface ErrorClassification {
@@ -294,5 +295,14 @@ export function problemResponse(c: Context, err: unknown): Response {
   if (attached instanceof Response) return attached;
   if (err instanceof HTTPException && err.res) return err.getResponse();
   const { status, body } = problemFor(err, c.req.path);
-  return c.body(JSON.stringify(body), status, { 'content-type': PROBLEM_CONTENT_TYPE });
+  return c.body(JSON.stringify(withRequestIdMember(body, c)), status, { 'content-type': PROBLEM_CONTENT_TYPE });
+}
+
+/**
+ * #2192: a problem body carrying the id of the request it answers, so a caller who saw only
+ * the body can quote the request the dashboard opens. Unchanged on a request nothing stamped.
+ */
+export function withRequestIdMember(body: Problem, c: Context): Problem {
+  const requestId = requestIdOf(c);
+  return requestId === undefined ? body : { ...body, requestId };
 }

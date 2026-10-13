@@ -13,6 +13,7 @@ import {
   effectiveSignIn,
   policyAdmits,
   readSignInPolicy,
+  resolveSignInRoute,
   sanitizeSignInPolicy,
   signInMethodOfPath,
 } from '../src/sign-in-policy.js';
@@ -585,5 +586,95 @@ describe('saving a policy', () => {
     expect(assertSignInPolicy({ providers: ['microsoft'] })).toEqual({ providers: ['microsoft'], password: true });
     expect(assertSignInPolicy({ password: false })).toEqual({ providers: null, password: false });
     expect(() => assertSignInPolicy({ providers: ['Microsoft'] })).toThrow();
+  });
+});
+
+describe('identifier-first: an email domain signs in ONE way', () => {
+  const POLICY = assertSignInPolicy({
+    providers: [],
+    password: true,
+    passwordSecondFactor: 'sms',
+    identifierFirst: true,
+    domainRoutes: [{ domains: ['acme.se', 'acme.com'], provider: 'microsoft' }],
+  });
+  const OFFERED = [{ id: 'microsoft', label: 'Microsoft' }];
+
+  it('stores the routes, and writes a domain the way DNS spells it', () => {
+    expect(POLICY.identifierFirst).toBe(true);
+    expect(POLICY.domainRoutes).toHaveLength(1);
+    expect(() => assertSignInPolicy({ domainRoutes: [{ domains: ['Acme.se'], provider: 'microsoft' }] })).toThrow();
+  });
+
+  it('refuses a policy it would silently not apply', () => {
+    const route = (domains: string[], provider = 'microsoft') => ({ domainRoutes: [{ domains, provider }] });
+    expect(() => assertSignInPolicy(route(['someone@acme.se']))).toThrow(/domain/);
+    expect(() => assertSignInPolicy(route(['*.acme.se']))).toThrow(/domain/);
+    expect(() => assertSignInPolicy(route([]))).toThrow();
+    // `password` is a stamp, not an upstream; a route to it would lock a domain INTO passwords.
+    expect(() => assertSignInPolicy(route(['acme.se'], 'password'))).toThrow();
+    expect(() => assertSignInPolicy({ domainRoutes: [
+      { domains: ['acme.se'], provider: 'microsoft' },
+      { domains: ['acme.se'], provider: 'google' },
+    ] })).toThrow(/routed twice/);
+    // Routes alone are a way in (an admin app: Microsoft for one domain, nobody else).
+    expect(() => assertSignInPolicy({ password: false, providers: [], ...route(['acme.se']) })).not.toThrow();
+  });
+
+  it('LOCKS a routed address to its provider, and keeps everyone else off it', () => {
+    // A password session for the routed address is refused — which is what stops a staff
+    // member registering a password under the work address to skip their directory.
+    expect(policyAdmits(POLICY, 'microsoft', 'Anna@ACME.se')).toBe(true);
+    expect(policyAdmits(POLICY, 'password-sms', 'anna@acme.se')).toBe(false);
+    expect(policyAdmits(POLICY, 'password', 'anna@acme.se')).toBe(false);
+    expect(policyAdmits(POLICY, 'bankid', 'anna@acme.com')).toBe(false);
+    // Anyone else: the open methods only. Microsoft is a route, not an open provider; and a
+    // bare password no longer passes once SMS is required.
+    expect(policyAdmits(POLICY, 'password-sms', 'bo@example.org')).toBe(true);
+    expect(policyAdmits(POLICY, 'password', 'bo@example.org')).toBe(false);
+    expect(policyAdmits(POLICY, 'microsoft', 'bo@example.org')).toBe(false);
+    // An address we cannot read cannot be shown to be outside every route.
+    expect(policyAdmits(POLICY, 'password-sms', null)).toBe(false);
+    // A subdomain is a different directory.
+    expect(policyAdmits(POLICY, 'password-sms', 'bo@mail.acme.se')).toBe(true);
+  });
+
+  it('an unreadable stored route fails closed, never to "no lock"', () => {
+    const broken = sanitizeSignInPolicy({ password: true, domainRoutes: 'acme.se' });
+    expect(broken?.password).toBe(false);
+    expect(broken?.providers).toEqual([]);
+  });
+
+  it('resolves the second step from the domain alone', () => {
+    expect(resolveSignInRoute(POLICY, OFFERED, 'anna@acme.se')).toEqual({
+      kind: 'provider', provider: { id: 'microsoft', label: 'Microsoft' },
+    });
+    expect(resolveSignInRoute(POLICY, OFFERED, 'bo@example.org')).toEqual({ kind: 'password', secondFactor: 'sms' });
+    // The provider was removed from the issuer: not a fall-through to the password form.
+    expect(resolveSignInRoute(POLICY, [], 'anna@acme.se')).toEqual({ kind: 'none' });
+    const adminOnly = assertSignInPolicy({
+      providers: [], password: false, identifierFirst: true,
+      domainRoutes: [{ domains: ['acme.se'], provider: 'microsoft' }],
+    });
+    expect(resolveSignInRoute(adminOnly, OFFERED, 'bo@example.org')).toEqual({ kind: 'none' });
+  });
+
+  it('does not publish the routes on the public per-client read', () => {
+    const shown = effectiveSignIn(POLICY, OFFERED);
+    expect(shown.identifierFirst).toBe(true);
+    expect(shown.providers).toEqual([]);
+    expect(JSON.stringify(shown)).not.toContain('acme');
+  });
+
+  it("is ENFORCED at authorize, by the signed-in session's own address", async () => {
+    const cookie = await signInAs(ADMIN); // admin@auth.test, signed in with a password
+    const routedHere = await register('Admin app', cookie, {
+      signIn: { providers: [], password: true, identifierFirst: true, domainRoutes: [{ domains: ['auth.test'], provider: 'microsoft' }] },
+    });
+    const routedElsewhere = await register('Public app', cookie, {
+      signIn: { providers: [], password: true, identifierFirst: true, domainRoutes: [{ domains: ['acme.se'], provider: 'microsoft' }] },
+    });
+    // Same session, same issuer: only the client's routes differ.
+    expect(landedOn(await authorize(routedHere, cookie))).toBe('/login');
+    expect(landedOn(await authorize(routedElsewhere, cookie))).toBe('/consent');
   });
 });

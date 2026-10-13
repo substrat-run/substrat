@@ -79,6 +79,20 @@ export function moduleLogContractSuite(
       });
     });
 
+    it('hands module code the same id as ctx.requestId — the operation and its consumer (#2192)', async () => {
+      const invocationId = ulid();
+      const result = await stub.invoke('logged/act', { ticketId: `t-${ulid()}` }, { invocationId });
+      expect(result).toEqual({ ok: true, requestId: invocationId });
+      const consumer = linesFor(invocationId).find((l) => l.template === 'saw {type}');
+      expect(consumer!.fields).toMatchObject({ requestId: invocationId });
+    });
+
+    it('answers ctx.requestId with null on a call that carried no id (#2192)', async () => {
+      const ticketId = `t-${ulid()}`;
+      const result = await stub.invoke('logged/act', { ticketId }, {});
+      expect(result).toEqual({ ok: true, requestId: null });
+    });
+
     it('writes the line of an operation that then rolled back', async () => {
       const invocationId = ulid();
       await expect(stub.invoke('logged/fail', { ticketId: 'x' }, { invocationId })).rejects.toThrow();

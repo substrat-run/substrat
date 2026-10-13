@@ -1590,6 +1590,10 @@ export async function push(
   // #1995: attachment bytes need a per-tenant bucket, and no vertical should have to remember
   // to ask for one — a module declaring an attachment target IS the request.
   const stores = manifestStoresOf(needs, declaresAttachments);
+  // The attachment check first: its store is one the vertical never wrote down, so its refusal
+  // names attachment targets as the reason, where the generic one-name-one-store check below
+  // would only say "a per-tenant blob store".
+  assertAttachmentBindingFree(bindings, stores.blobStores);
   assertDeclaredScopeStores({
     own: needs?.stores,
     tenantStores: stores.tenantStores,
@@ -1597,7 +1601,6 @@ export async function push(
     scopeStores: needs?.scopeStores,
     bindingNames: bindingsBesideOwnStores(needs?.stores, bindings),
   });
-  assertAttachmentBindingFree(bindings, stores.blobStores);
 
   // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build
   // rather than before it, because this is where the push has always read the permission

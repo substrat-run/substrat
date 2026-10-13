@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type PointerEvent } from 'react';
 import { api, ApiError, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockRequestFacets, mockRequestVolume, mockRequests } from '../lib/mock-requests';
@@ -20,6 +20,7 @@ import {
   type RequestFacetKey,
 } from '../lib/requests';
 import { lineTime } from '../components/LogList';
+import { parseRequestId, requestLookup } from '../lib/request-url';
 
 /**
  * The Logs › Requests mode (#1746): one row per request, with the level histogram above
@@ -115,6 +116,7 @@ export function RequestsMode({
   const levelSel = selected(q, 'level');
   return (
     <div>
+      <FindRequest onOpenCall={onOpenCall} />
       <Histogram
         volume={volume}
         span={span}
@@ -464,5 +466,43 @@ function RequestList({
         requests in this window · a row opens the request
       </div>
     </div>
+  );
+}
+
+/**
+ * Find one request by the id the caller was given (#2192): the `x-substrat-request-id` of a
+ * response, or the `requestId` in an error body. Accepts it as pasted — any case, with
+ * whitespace, after `req=`, or inside a dashboard link — and opens it in this app. The id
+ * carries its own instant, so no window has to be guessed.
+ */
+function FindRequest({ onOpenCall }: { onOpenCall: (invocationId: string, atMs: number) => void }) {
+  const [text, setText] = useState('');
+  const [problem, setProblem] = useState<string | null>(null);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (text.trim() === '') return setProblem(null);
+    const id = parseRequestId(text);
+    const found = id ? requestLookup(id) : null;
+    if (!id || !found) return setProblem('That is not a request id. A request id is 26 characters, as in the x-substrat-request-id header.');
+    setProblem(null);
+    onOpenCall(id, found.atMs);
+  };
+  return (
+    <form onSubmit={submit} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', flexWrap: 'wrap' }}>
+      <input
+        type="search"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setProblem(null);
+        }}
+        placeholder="Find a request by id"
+        aria-label="Find a request by id"
+        spellCheck={false}
+        style={{ width: 340, maxWidth: '100%', fontFamily: 'var(--font-mono)', fontSize: 13, padding: '6px 10px', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)', color: 'var(--text-primary)' }}
+      />
+      <button type="submit" style={{ fontSize: 13, padding: '6px 12px' }}>Open</button>
+      {problem && <span role="alert" style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{problem}</span>}
+    </form>
   );
 }

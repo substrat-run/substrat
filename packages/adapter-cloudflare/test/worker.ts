@@ -25,7 +25,7 @@ import {
   spineShadowMod,
 } from '@substrat-run/contract-tests';
 import { defineScopeDO, type ScopeDoEnv } from '../src/scope-do.js';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';

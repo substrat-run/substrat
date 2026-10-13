@@ -38,6 +38,7 @@ import {
   readDeclaredModel,
 } from './push.js';
 import { printVersions } from './versions.js';
+import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { fetchWhoami } from './whoami.js';
@@ -129,6 +130,10 @@ Usage:
                                                defineScopeSweeperDO are refused — they
                                                would never fire; --allow-unswept-schedules
                                                pushes them anyway
+                                               A host the code names as a literal that
+                                               package.json substrat.outbound does not
+                                               declare is warned about with the line to add
+                                               (best effort); --strict makes it an error
   substrat push     [dir] --check [--json]     run the push's LOCAL gate and stop: the layer
                                                rules, the entity model this tree would ship
                                                (or a note that it would ship none), then the
@@ -350,6 +355,12 @@ async function pickWorkspace(auth: { controlPlaneUrl: string; header: Record<str
   return tenant;
 }
 
+/** The undeclared-outbound-host report (#2193), the same on a check, a push and a preview. */
+function reportOutbound(dir: string, outbound: readonly unknown[] | undefined, log: (message: string) => void = console.log): void {
+  const main = deployConfigIfAny(dir)?.main;
+  checkOutboundDeclared(dir, typeof main === 'string' ? main : undefined, outbound, { strict: argv.includes('--strict'), log });
+}
+
 async function cmdPush(): Promise<void> {
   // Directory defaults to '.' — run `substrat push` from inside the vertical.
   const dir = argv[1] && !argv[1].startsWith('--') ? argv[1] : '.';
@@ -369,6 +380,9 @@ async function cmdPush(): Promise<void> {
   const linted = assertLayerRules(dir, argv.includes('--skip-lint'), jsonCheck ? console.error : console.log);
 
   const meta = readVerticalMeta(dir);
+  // Before the network and before `--check` returns, so all three see it; under `--strict`
+  // it throws like every other failure of the gate.
+  reportOutbound(dir, meta.outbound, jsonCheck ? console.error : console.log);
 
   // `--check` (#1205): everything the push does to the DECLARED SURFACE, and nothing else.
   // It resolves `substrat.permissions`, imports the entry, derives the registry and hashes
@@ -870,6 +884,7 @@ async function cmdPreview(): Promise<void> {
     // runtime, and the refusal should arrive before the registry round-trip below.
     const linted = assertLayerRules(dir, argv.includes('--skip-lint'));
     const meta = readVerticalMeta(dir);
+    reportOutbound(dir, meta.outbound);
     const slug = flag('slug') ?? meta.slug;
     if (!slug) {
       console.error('no --slug given and none in package.json');

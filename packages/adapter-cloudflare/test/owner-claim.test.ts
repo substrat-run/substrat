@@ -28,7 +28,7 @@ import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { OWNER_CLAIM_LABEL, OWNER_CLAIM_TTL_MS, mintOwnerClaimLink, sha256Hex } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { MEMBER_INVITE_LABEL, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 
 const ORIGIN = 'https://desk.example.test';
 

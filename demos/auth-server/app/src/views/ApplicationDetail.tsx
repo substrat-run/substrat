@@ -14,14 +14,10 @@ import {
   type RegisteredClient,
 } from '../api';
 import { Field } from '../primitives';
+import { SignInPolicyEditor } from './SignInPolicyEditor';
+import { draftFromStored, draftProblems, draftToStored, resolveAny, type PolicyDraft } from './sign-in-draft';
 import { navigate } from '../console/router';
 import { APPLICATIONS_PATH } from '../console/routes';
-
-/** The id `src/sign-in-policy.ts` stamps and matches a password sign-in under. */
-const PASSWORD_METHOD = 'password';
-/** This form's local stand-in for a stored policy with no `providers` key at all ("any
- *  provider"), held only until the offered list arrives and can replace it with the real ids. */
-const ANY_PROVIDER = '*';
 
 const EMPTY_DRAFT: ClientDraft = {
   client_name: '',
@@ -369,39 +365,24 @@ export function ClientEditor({
    * form can only offer providers that actually exist — a policy naming one that does not is
    * a client nobody can sign into, and it should not be possible to write it here.
    */
-  const storedPolicy = (client?.metadata?.signIn ?? null) as { providers?: unknown; password?: unknown; passwordSecondFactor?: unknown } | null;
-  const [requireSms, setRequireSms] = useState(storedPolicy?.passwordSecondFactor === 'sms');
+  const [draft, setDraft] = useState<PolicyDraft>(() => draftFromStored(client?.metadata?.signIn));
   /**
    * The issuer's live providers — `null` until the read below answers, and that distinction is
    * load-bearing rather than tidy. `save` writes the policy as `offered ∩ methods`, so an
    * empty list while the read is still in flight (or after it failed) serializes
    * `providers: []` — a valid policy the API accepts, and one that silently turns a
-   * Microsoft-and-password client into a password-only one. So the checkbox list has three
-   * states, not two, and saving a RESTRICTED policy waits for this to be one of them.
+   * Microsoft-and-password client into a password-only one. So the editor has three states,
+   * not two, and saving a RESTRICTED policy waits for this to be one of them.
    */
   const [offered, setOffered] = useState<PublicProvider[] | null>(null);
   const [offeredError, setOfferedError] = useState<string | null>(null);
-  const [restrict, setRestrict] = useState(storedPolicy !== null);
-  const [methods, setMethods] = useState<Set<string>>(() => {
-    const chosen = new Set<string>(Array.isArray(storedPolicy?.providers) ? (storedPolicy.providers as string[]) : []);
-    // Absent `providers` means "any provider", which this form shows as all of them ticked —
-    // resolved against the offered list once it arrives (below).
-    if (storedPolicy && !Array.isArray(storedPolicy.providers)) chosen.add(ANY_PROVIDER);
-    if (!storedPolicy || storedPolicy.password !== false) chosen.add(PASSWORD_METHOD);
-    return chosen;
-  });
   useEffect(() => {
     void (async () => {
       try {
         const state = await setupState();
         setOffered(state.providers);
-        setMethods((current) => {
-          if (!current.has(ANY_PROVIDER)) return current;
-          const resolved = new Set(current);
-          resolved.delete(ANY_PROVIDER);
-          for (const provider of state.providers) resolved.add(provider.id);
-          return resolved;
-        });
+        // Absent `providers` means "any provider", shown as all of them ticked.
+        setDraft((current) => resolveAny(current, state.providers));
       } catch (e) {
         // Said out loud rather than swallowed: without this list the form cannot show what
         // the stored policy contains, let alone write a new one.
@@ -409,13 +390,6 @@ export function ClientEditor({
       }
     })();
   }, []);
-  const toggleMethod = (id: string, on: boolean) =>
-    setMethods((current) => {
-      const next = new Set(current);
-      if (on) next.add(id);
-      else next.delete(id);
-      return next;
-    });
 
   const [meta, setMeta] = useState(() => {
     const { theme: _theme, signIn: _signIn, ...rest } = client?.metadata ?? {};
@@ -459,23 +433,21 @@ export function ClientEditor({
     // Unrestricted writes NO key at all rather than a permissive one: absent is the documented
     // default, and a stored `{providers: [...everything], password: true}` would silently stop
     // following the issuer as providers are added.
-    if (restrict) {
+    if (draft.restrict) {
       // Guarded, not defaulted: `offered` is what turns the ticked boxes into a provider list,
       // and an absent one would write "no providers" — a policy nobody chose.
       if (!offered) {
         return setErr(
           offeredError
-            ? `Sign-in methods: the issuer's providers could not be read (${offeredError}), so this policy cannot be saved without changing it.`
-            : 'Sign-in methods: still loading the issuer’s providers — try again in a moment.',
+            ? `Sign-in: the issuer's providers could not be read (${offeredError}), so this policy cannot be saved without changing it.`
+            : 'Sign-in: still loading the issuer’s providers — try again in a moment.',
         );
       }
-      metadata.signIn = {
-        providers: offered.filter((p) => methods.has(p.id)).map((p) => p.id),
-        password: methods.has(PASSWORD_METHOD),
-        ...(requireSms && !builtin && methods.has(PASSWORD_METHOD) ? { passwordSecondFactor: 'sms' } : {}),
-      };
+      const problems = draftProblems(draft, offered, builtin);
+      if (problems.length) return setErr(`Sign-in: ${problems[0]}`);
+      metadata.signIn = draftToStored(draft, offered, builtin);
     }
-    const draft: ClientDraft = {
+    const clientDraft: ClientDraft = {
       client_name: name.trim(),
       application_type: type,
       redirect_uris: uris.split('\n').map((u) => u.trim()).filter(Boolean),
@@ -497,13 +469,13 @@ export function ClientEditor({
         // The two keys the console's form owns. Naming the rest would not merely be noise:
         // its `redirect_uris` is empty and the PATCH schema refuses an empty list — rightly,
         // for every row that rule was written for.
-        await updateOAuthClient(client.client_id, { client_name: draft.client_name, metadata: draft.metadata });
+        await updateOAuthClient(client.client_id, { client_name: clientDraft.client_name, metadata: clientDraft.metadata });
         await onSaved(null);
       } else if (client) {
-        await updateOAuthClient(client.client_id, draft);
+        await updateOAuthClient(client.client_id, clientDraft);
         await onSaved(null);
       } else {
-        const created = await createOAuthClient(draft);
+        const created = await createOAuthClient(clientDraft);
         await onSaved({ clientId: created.client.client_id, clientSecret: created.clientSecret });
       }
       // On the detail screen the form is the screen, so nothing closes to signal the save
@@ -586,68 +558,7 @@ export function ClientEditor({
           )}
         </>
       )}
-      <h3>Sign-in methods</h3>
-      <p className="muted small">
-        {builtin
-          ? 'Which buttons this console’s own sign-in screen draws. It is drawn, not enforced: a console sign-in never passes through the authorize endpoint, so this narrows the screen and nothing else.'
-          : 'Which ways people may sign in when this application sends them here. This is enforced at the authorize endpoint, not merely on the screen: a session established another way is asked to sign in again rather than handed a code.'}
-      </p>
-      <label className="toggle">
-        <input type="checkbox" checked={!restrict} onChange={(e) => setRestrict(!e.target.checked)} />
-        <span>
-          <strong>Accept every method this issuer offers</strong>
-          <em className="hint">
-            The default. New providers become available to this application as they are added.
-          </em>
-        </span>
-      </label>
-      {restrict && (
-        <div className="methods">
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={methods.has(PASSWORD_METHOD)}
-              onChange={(e) => toggleMethod(PASSWORD_METHOD, e.target.checked)}
-            />
-            <span>Email and password</span>
-          </label>
-          {methods.has(PASSWORD_METHOD) && !builtin && <label className="toggle">
-            <input type="checkbox" checked={requireSms} onChange={(e) => setRequireSms(e.target.checked)} />
-            <span>Require SMS verification after password sign-in</span>
-          </label>}
-          {(offered ?? []).map((provider) => (
-            <label className="toggle" key={provider.id}>
-              <input
-                type="checkbox"
-                checked={methods.has(provider.id)}
-                onChange={(e) => toggleMethod(provider.id, e.target.checked)}
-              />
-              <span>{provider.label}</span>
-            </label>
-          ))}
-          {/* Three states, because "none configured" and "not read yet" are different answers
-              and only one of them means the boxes below are the whole truth. */}
-          {offeredError ? (
-            <p className="error">
-              The issuer’s sign-in providers could not be read ({offeredError}), so this
-              application’s policy cannot be edited. Reload the page to try again.
-            </p>
-          ) : !offered ? (
-            <em className="hint">Loading the providers this issuer offers…</em>
-          ) : !offered.length ? (
-            <em className="hint">
-              This issuer has no upstream provider configured yet — add one under Sign-in
-              providers, and it can be chosen here.
-            </em>
-          ) : null}
-          {!builtin && (
-            <em className="hint">
-              Exactly one method ticked and no password: people are sent straight to it, with no
-              sign-in screen in between.
-            </em>
-          )}
-        </div>
-      )}
+      <SignInPolicyEditor draft={draft} onChange={setDraft} offered={offered} offeredError={offeredError} builtin={builtin} />
       <h3>Appearance</h3>
       <p className="muted small">
         {builtin
@@ -672,7 +583,7 @@ export function ClientEditor({
       </label>
       {err && <p className="error">{err}</p>}
       <div className="row">
-        <button className="btn primary" disabled={busy || (restrict && !offered)} onClick={() => void save()}>
+        <button className="btn primary" disabled={busy || (draft.restrict && !offered)} onClick={() => void save()}>
           {busy ? 'Saving…' : client ? 'Save changes' : 'Register'}
         </button>
         {onCancel && <button className="btn" onClick={onCancel}>Cancel</button>}

@@ -679,7 +679,10 @@ describe("ticket0 on workerd — a reconcile repairs the desk's places at its id
     expect(await directory().resolvePrincipal(desk, 'sub-owner')).toBe(owner);
     const member = principalId.parse(ulid());
     await directory().createInvite(desk, member, 'agent', null, 'invite-hash');
+    // #2175: a hash-only invite is pending until claimed — counted in the DO's own SQLite.
+    expect(await directory().legacyInviteCount(desk)).toBe(1);
     expect(await directory().claimInvite(desk, 'sub-ann', 'invite-hash')).toBe(member);
+    expect(await directory().legacyInviteCount(desk)).toBe(0);
 
     issuer.expect('GET', `${ISSUER}/.well-known/substrat-places`, () =>
       Response.json({ report_endpoint: `${ISSUER}/api/places/report` }),
