@@ -1766,6 +1766,17 @@ export const storageGauge = z.object({
   failing: z.number().int().nonnegative(),
   /** When the most recent of those failures happened, or null when none is failing. */
   lastFailedAt: instant.nullable(),
+  /**
+   * Scope stores sampled beside the databases (#2212). Absent when this reading has no
+   * store sample — a host that has not recorded one, or a tenant whose stores were empty.
+   * `sampled` counts (scope, binding) pairs, not scopes.
+   */
+  stores: z
+    .object({
+      bytes: z.number().int().nonnegative(),
+      sampled: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 export type StorageGauge = z.infer<typeof storageGauge>;
 

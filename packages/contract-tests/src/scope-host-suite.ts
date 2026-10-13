@@ -9942,6 +9942,115 @@ export function scopeHostContractSuite(
         expect(fleet.storage!.sampled).toBe(fleet.perTenant.reduce((n, r) => n + (r.storage?.sampled ?? 0), 0));
       });
 
+      it('folds scope-store samples into the gauge, and drops them past retention (#2212)', async () => {
+        const ta = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: ta, slug: 'gauge-stores', name: 'Gauge Stores' });
+        const s = await newScope(ta);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: ta,
+          scopeId: s,
+          bytes: 100,
+          readAt: day(0, '08:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 40 }, { binding: 'BLOBS', bytes: 2 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 42,
+          sampled: 2,
+        });
+        // The day's reading is replaced, so a binding that is gone is not still billed.
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: ta,
+          scopeId: s,
+          bytes: 100,
+          readAt: day(0, '09:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 7 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 7,
+          sampled: 1,
+        });
+
+        // A later day that no longer names a binding stops billing it. Yesterday's row
+        // stays until retention; the latest day that measured stores is the one read.
+        const vanished = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: vanished, slug: 'gauge-stores-gone', name: 'Gauge Stores Gone' });
+        const gone = await newScope(vanished);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: vanished,
+          scopeId: gone,
+          bytes: 100,
+          readAt: day(-1, '08:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 40 }, { binding: 'BLOBS', bytes: 2 }],
+        }]);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: vanished,
+          scopeId: gone,
+          bytes: 100,
+          readAt: day(0, '08:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 7 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: vanished })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 7,
+          sampled: 1,
+        });
+
+        // A later day that measured no store at all (a version that dropped its only binding)
+        // stops billing every binding: an empty reading is recorded, not skipped.
+        const emptied = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: emptied, slug: 'gauge-stores-empty', name: 'Gauge Stores Empty' });
+        const empty = await newScope(emptied);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: emptied,
+          scopeId: empty,
+          bytes: 100,
+          readAt: day(-1, '08:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 40 }, { binding: 'BLOBS', bytes: 2 }],
+        }]);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: emptied, scopeId: empty, bytes: 100, readAt: day(0, '08:00:00'), stores: [] }]);
+        expect((await host.admin.readMeters(staff, { tenantId: emptied })).perTenant[0]!.storage).toMatchObject({ bytes: 100, sampled: 1 });
+        expect((await host.admin.readMeters(staff, { tenantId: emptied })).perTenant[0]!.storage?.stores).toBeUndefined();
+
+        // An older reading of a day, recorded after a newer one, leaves the newer one, as the
+        // database sample does.
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: ta,
+          scopeId: s,
+          bytes: 100,
+          readAt: day(0, '08:30:00'),
+          stores: [{ binding: 'GRAPH', bytes: 99 }, { binding: 'BLOBS', bytes: 1 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 7,
+          sampled: 1,
+        });
+
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        const aged = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: aged, slug: 'gauge-stores-old', name: 'Gauge Stores Old' });
+        const agedScope = await newScope(aged);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: aged,
+          scopeId: agedScope,
+          bytes: 1,
+          readAt: old.toISOString(),
+          stores: [{ binding: 'GRAPH', bytes: 9 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: aged })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 9,
+          sampled: 1,
+        });
+        // One call deletes at most the limit, shared by the database table and the store table.
+        expect(await host.admin.pruneScopeStorage!(staff, 1)).toBe(1);
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        expect((await host.admin.readMeters(staff, { tenantId: aged })).perTenant[0]!.storage?.stores).toBeUndefined();
+        // The recent tenant's sample is inside retention, so the prune leaves it.
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 7,
+          sampled: 1,
+        });
+      });
+
       it("forgets a reaped scope's samples, and never writes one for it again", async () => {
         const tr = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tr, slug: 'gauge-reap', name: 'Gauge Reap' });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { manualClock } from '../src/clock.js';
 import { runPlatformSweep, STORAGE_SAMPLE_BATCH, StorageReadUnsupported, type PlatformSweepOptions } from '../src/platform-sweep.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, type ScopeStorageAttempt, type ScopeStorageReadingInput } from '../src/storage-gauge.js';
 import type { FetchLike, ScopeHost } from '../src/scope-host.js';
@@ -209,6 +210,46 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     expect(report.storage).toMatchObject({ failed: 2, unsupported: 1 });
   });
 
+  it('a store read that fails still records the database sample and does not replace store rows', async () => {
+    const [old, broken] = [sid(), sid()];
+    const { host, recorded } = gaugeHost({ scopes: [old, broken] });
+    const r = reader();
+    const report = await sweep(host, {
+      drainPlatformRequestsFn: async () => drained,
+      storageGauge: {
+        read: r.read,
+        readStores: async (s) => {
+          if (s.id === old) throw new StorageReadUnsupported('cannot read scope store sizes (501); redeploy it');
+          throw new Error('store down');
+        },
+      },
+    });
+    // Unsupported is not failing and not 0 (RFC L13): the database sample, no error, no stores.
+    expect(recorded.find((x) => x.scopeId === old)).toEqual({ tenantId: T, scopeId: old, bytes: 4096, readAt: expect.any(String) });
+    expect(recorded.find((x) => x.scopeId === broken)).toMatchObject({ bytes: 4096, error: 'store down' });
+    expect(recorded.find((x) => x.scopeId === broken)).not.toHaveProperty('stores');
+    expect(report.errors).toEqual([{ kind: 'storage', id: broken, error: 'store down' }]);
+    // Each scope counts once: read + failed + skipped is the scopes tried.
+    expect(report.storage).toMatchObject({ read: 1, failed: 1, skipped: 0, unsupported: 1 });
+  });
+
+  it('a store read that hangs past its deadline fails that scope only, and the batch is recorded (#2212)', async () => {
+    const [hung, fine] = [sid(), sid()];
+    const { host, recorded } = gaugeHost({ scopes: [hung, fine] });
+    const report = await sweep(host, {
+      drainPlatformRequestsFn: async () => drained,
+      storageGauge: {
+        read: reader().read,
+        readStores: (s) => (s.id === hung ? new Promise(() => undefined) : Promise.resolve([{ binding: 'GRAPH', bytes: 3 }])),
+        storeReadTimeoutMs: 20,
+      },
+    });
+    expect(recorded.find((x) => x.scopeId === hung)).toMatchObject({ bytes: 4096, error: expect.stringMatching(/longer than 20 ms/) });
+    expect(recorded.find((x) => x.scopeId === hung)).not.toHaveProperty('stores');
+    expect(recorded.find((x) => x.scopeId === fine)).toMatchObject({ bytes: 4096, stores: [{ binding: 'GRAPH', bytes: 3 }] });
+    expect(report.storage).toMatchObject({ read: 1, failed: 1, recorded: 2 });
+  }, 5_000);
+
   it('does not retry a scope that failed recently: it waits a day, behind nothing', async () => {
     // A batch-full of scopes that failed an hour ago, and one never tried. Without the attempt
     // record the failures would stay due and take every slot on every pass.
@@ -280,6 +321,44 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     const r = reader();
     await sweep(host, { drainRetries: false, storageGauge: { read: r.read } });
     expect(r.asked).toEqual([archived]);
+  });
+
+  it('samples scope stores with the database, and a second pass the same day does not (#2212)', async () => {
+    const clock = manualClock('2026-06-01T12:00:00.000Z');
+    const scope = sid();
+    const tried: Record<string, string> = {};
+    const { host, recorded } = gaugeHost({ scopes: [scope], tried });
+    const record = host.admin.recordScopeStorage!;
+    host.admin.recordScopeStorage = async (actor, readings) => {
+      for (const reading of readings) tried[reading.scopeId] = reading.readAt;
+      return record(actor, readings);
+    };
+    const storesAsked: string[] = [];
+    const r = reader();
+    const gauge = {
+      read: r.read,
+      readStores: async (s: { id: string }) => {
+        storesAsked.push(s.id);
+        return [{ binding: 'GRAPH', bytes: 12 }];
+      },
+      now: () => clock.now(),
+    };
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(r.asked).toEqual([scope]);
+    expect(storesAsked).toEqual([scope]);
+    expect(recorded[0]?.stores).toEqual([{ binding: 'GRAPH', bytes: 12 }]);
+
+    recorded.length = 0;
+    r.asked.length = 0;
+    storesAsked.length = 0;
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(r.asked).toEqual([]);
+    expect(storesAsked).toEqual([]);
+
+    clock.advance(DAY);
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(r.asked).toEqual([scope]);
+    expect(storesAsked).toEqual([scope]);
   });
 
   it('is off when the option is unset, or the host keeps no gauge', async () => {

@@ -836,6 +836,7 @@ export {
   forgetScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
+  listScopeStoreStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
   type ScopeStorageAttempt,
