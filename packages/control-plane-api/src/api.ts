@@ -5227,7 +5227,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Scope stores before the key (#2068), failing closed (#2242): a deployment that may hold
     // a store is asked, and one that may and cannot be asked stops the erasure here, before
     // `finalizeSubjectShred` destroys the key. An error from the ask stops it the same way.
-    let storeErasures: StoreErasure[] = [];
+    // Not asked is `undefined`, not `[]`: a host whose stores sit with it (the pure adapter's
+    // co-located runners) then erases them itself in the finalize, as its direct shred does.
+    let storeErasures: StoreErasure[] | undefined;
     if (await servingMayHoldScopeStores(c, scope, currentRef, reached?.via)) {
       if (typeof serving?.scopeStoreErase !== 'function') {
         throw new ControlPlaneError(
