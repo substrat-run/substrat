@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { errorCodeOf, platformActorId, principalId, scopeId, scopeStoreObjectName, tenantId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, principalId, scopeId, scopeStoreObjectName, tenantId, type ScopeLifecycle } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -90,6 +90,21 @@ describe('scope store door (cloudflare host, #2209)', () => {
     await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('increment', { by: 3 });
     // The test store answers its counter as its size, so 3 names this tenant, vertical and scope.
     expect(await host.scopeStoreSizesLocal(t, s)).toEqual([{ binding: 'GRAPH', bytes: 3 }]);
+  });
+
+  it('a host with no control plane refuses a size read on a scope its lifecycle holds, as the door does', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('increment');
+    const at = '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'];
+    await host.setLifecycleLocal(s, { scope: 'suspended', tenant: 'active', at, revision: { epoch: 0, scope: 1, tenant: 1 } });
+    const refused = /scope not active \(status: suspended\)/;
+    await expect(host.getScopeStore(principal, t, s, 'GRAPH')).rejects.toThrow(refused);
+    await expect(host.scopeStoreSizesLocal(t, s)).rejects.toThrow(refused);
+    // The twin: delivered active again, the read answers.
+    await host.setLifecycleLocal(s, { scope: 'active', tenant: 'active', at, revision: { epoch: 0, scope: 2, tenant: 2 } });
+    expect(await host.scopeStoreSizesLocal(t, s)).toEqual([{ binding: 'GRAPH', bytes: 1 }]);
   });
 
   it('a reserved call whose answer is not JSON is a bad envelope, as at the door', async () => {

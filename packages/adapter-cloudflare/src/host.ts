@@ -4795,8 +4795,10 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Each declared binding's `substrat.size`. No bindings means an empty list,
    * and that answer does not read the directory: a host with no store, including
-   * one with no control plane, has nothing to size. A reaped scope is refused
-   * before any object is addressed, once a binding exists.
+   * one with no control plane, has nothing to size. Once a binding exists, the
+   * scope is gated before any object is addressed: by the directory with a control
+   * plane, and without one by the door's own gate (`assertLive`: the scope's
+   * admission of the tenant and its delivered lifecycle), as `getScopeStore` is.
    */
   private async readScopeStoreSizes(
     tenantId: TenantId,
@@ -4806,6 +4808,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (bindings.length === 0) return [];
     if (!this.cpLess) await this.scopeRecordForRead(tenantId, scopeId);
     const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
+    if (this.cpLess) await this.assertLive(tenantId, scopeId);
     const sizes: { binding: string; bytes: number }[] = [];
     for (const binding of bindings) {
       const { bytes } = storeSizeResult.parse(
