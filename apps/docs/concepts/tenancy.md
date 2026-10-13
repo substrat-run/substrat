@@ -177,7 +177,7 @@ vertical's manifest can declare stores the platform mints for it, one per *tenan
   store of that name is refused.
 
 A **scope store** is the level below those. `scopeStores` declares one platform-run object
-per scope: a binding and a kind, with no default kind. The only kind today is `ontomate`.
+per scope: a binding and a kind, with no default kind. The only kind today is `graph`.
 The platform injects it as `SUBSTRAT_STORE_<BINDING>`. A binding used by another store,
 and the name `ATTACHMENTS`, are refused. A kind with no registration is refused too, and
 none is registered yet, so a push that declares a scope store does not succeed until that
