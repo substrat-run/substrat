@@ -186,11 +186,15 @@ concatenated list ends at the literal that closes it (`')'`). It does not fire o
 **What it cannot see**, so a clean run is not read as proof: a placeholder helper imported from
 another file; a chain of names more than three deep; a list built by mutation (`sql += '?, '`
 in a loop, `parts.push('?')`); and `IN (` joined to the code by anything but `${` or `+`
-(`.concat`, an array `join` of SQL pieces). Scope is read from the text rather than parsed, so a
-loop or `catch` variable is not seen as shadowing an outer constant of the same name, and neither
-is a parameter list that holds parentheses (`(a = f(x)) =>`); either can make R12 fire on a list
-that only looks built from placeholders — the allow block is the answer there. On the node
-adapter, `ctx.sql`'s run-time limit is the check behind all of these.
+(`.concat`, an array `join` of SQL pieces). On the node adapter, `ctx.sql`'s run-time limit is
+the check behind all of these.
+
+Following a name is a heuristic read from the text, not a parse. Its remaining misreads — a `for`
+loop variable, a parameter list holding parentheses (`(a = f(x)) =>`), destructuring
+(`const { Q } =`, `const [Q] =`), `let Q;` with no initializer, a nested `function Q`, a return
+type such as `Promise<{ … }>` whose `{` reads as a body, a `let` reassigned later — can make R12
+fire only when a placeholder constant of the same name exists in an enclosing scope. The allow
+block covers them.
 
 A list whose length is fixed and short opts out in a `boundary-lint-allow R12` …
 `boundary-lint-end R12` block.

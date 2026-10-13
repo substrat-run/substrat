@@ -1404,10 +1404,13 @@ function concatenatedListEnd(masked: string, stripped: string, from: number, to:
  * **Known blind spots**, stated so a clean run is not read as proof: a placeholder built by a
  * helper IMPORTED from another file; a chain of names deeper than `NAME_HOPS`; a list assembled by
  * mutation (`sql += '?, '` in a loop, `parts.push('?')`) rather than one expression; `IN (` and the
- * code joined by anything but `${` or `+` (`.concat`, an array `join` of SQL pieces). Scope is read
- * from the text, not a parser, so two shapes can still mislead it: a loop or `catch` variable is
- * not seen as shadowing, and a parameter list holding parentheses (`(a = f(x)) =>`) is not seen at
- * all — either can make an outer placeholder constant look like the one used. `guardSqlLimits`
+ * code joined by anything but `${` or `+` (`.concat`, an array `join` of SQL pieces). Following a
+ * name is a heuristic read from the text, not a parse, and its remaining misreads — a `for` loop
+ * variable, a parameter list holding parentheses (`(a = f(x)) =>`), destructuring (`const { Q } =`,
+ * `const [Q] =`), `let Q;` with no initializer, a nested `function Q`, a return type such as
+ * `Promise<{ … }>` whose `{` reads as a body, a `let` reassigned later — can make it fire only when
+ * a placeholder constant of the same name exists in an enclosing scope; the allow block covers
+ * them. `guardSqlLimits`
  * is the run-time check behind all of them on the node adapter. A list whose length is fixed and
  * short sits in a `boundary-lint-allow R12` … `boundary-lint-end R12` block, where a reviewer reads why.
  */
