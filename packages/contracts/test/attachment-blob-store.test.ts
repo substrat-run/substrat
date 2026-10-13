@@ -76,6 +76,18 @@ describe('the attachment store is derived from attachmentTargets, never hand-mai
     ]);
   });
 
+  it('reads a blob declared on tenantStores, which is where a raw runtimeNeeds still has it', () => {
+    expect(
+      withAttachmentBlobStore(needs({ tenantStores: [{ binding: 'FILES', kind: 'blob' }] }), false),
+    ).toEqual([{ binding: 'FILES', kind: 'blob' }]);
+    expect(
+      withAttachmentBlobStore(
+        needs({ tenantStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] }),
+        true,
+      ),
+    ).toEqual([{ binding: 'ATTACHMENTS', kind: 'blob' }]);
+  });
+
   it('a blob store of any kind but `blob` is refused where it is declared', () => {
     expect(() => needs({ blobStores: [{ binding: 'ATTACHMENTS', kind: 'relational' }] })).toThrow();
   });

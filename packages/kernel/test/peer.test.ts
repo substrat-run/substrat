@@ -14,6 +14,9 @@ import {
   collectPeers,
   peerSeats,
   resolvePeerInstanceFrom,
+  samePeerVertical,
+  peerVerticalSpellings,
+  peerCallerAt,
   resolveVerticalInstanceFrom,
   seatScopeTuple,
   switchPeer,
@@ -187,6 +190,7 @@ describe('peerSeats + admitPeer (#1706)', () => {
 describe('resolveVerticalInstanceFrom (#1706)', () => {
   const T = tenantIdOf.parse(ulid());
   const U = tenantIdOf.parse(ulid());
+  const exact = { id: T, slug: null };
   const row = (over: Partial<VerticalInstanceCandidate> = {}): VerticalInstanceCandidate => ({
     id: scopeIdOf.parse(ulid()),
     tenantId: T,
@@ -199,7 +203,7 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
 
   it('exactly one primary, active instance of that vertical in that tenant resolves', () => {
     const only = row();
-    expect(resolveVerticalInstanceFrom([only], T, 'acme/crm')).toEqual({
+    expect(resolveVerticalInstanceFrom([only], exact, 'acme/crm')).toEqual({
       outcome: 'resolved',
       instance: { tenantId: T, scopeId: only.id, vertical: 'acme/crm' },
     });
@@ -215,16 +219,16 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
       row({ status: 'provisioning' }),
       row({ vertical: 'acme/other' }),
     ];
-    expect(resolveVerticalInstanceFrom(noise, T, 'acme/crm')).toEqual({
+    expect(resolveVerticalInstanceFrom(noise, exact, 'acme/crm')).toEqual({
       outcome: 'not-installed',
       tenantId: T,
       vertical: 'acme/crm',
     });
-    expect(resolveVerticalInstanceFrom([...noise, row()], T, 'acme/crm').outcome).toBe('resolved');
+    expect(resolveVerticalInstanceFrom([...noise, row()], exact, 'acme/crm').outcome).toBe('resolved');
   });
 
   it('two live instances are ambiguous', () => {
-    expect(resolveVerticalInstanceFrom([row(), row()], T, 'acme/crm')).toEqual({
+    expect(resolveVerticalInstanceFrom([row(), row()], exact, 'acme/crm')).toEqual({
       outcome: 'ambiguous',
       tenantId: T,
       vertical: 'acme/crm',
@@ -235,22 +239,117 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
   it('an explicit binding chooses exactly its live, same-tenant primary scope', () => {
     const chosen = row();
     const other = row();
-    expect(resolvePeerInstanceFrom([other, chosen], T, 'acme/crm', chosen.id)).toEqual({
+    expect(resolvePeerInstanceFrom([other, chosen], exact, 'acme/crm', chosen.id)).toEqual({
       outcome: 'resolved', instance: { tenantId: T, scopeId: chosen.id, vertical: 'acme/crm' },
     });
-    expect(resolvePeerInstanceFrom([other, chosen], T, 'acme/crm', null).outcome).toBe('ambiguous');
+    expect(resolvePeerInstanceFrom([other, chosen], exact, 'acme/crm', null).outcome).toBe('ambiguous');
   });
 
   it('a stale binding never falls back to a remaining live instance', () => {
     const chosen = row({ status: 'suspended' });
     const other = row();
     const expected = { outcome: 'bound-unavailable', tenantId: T, vertical: 'acme/crm', targetScopeId: chosen.id };
-    expect(resolvePeerInstanceFrom([chosen, other], T, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([other], T, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, tenantId: U, status: 'active' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', vertical: 'acme/other' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', kind: 'preview' }), other], T, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id).outcome).toBe('resolved');
-    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], T, 'acme/crm', chosen.id, true)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([chosen, other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, tenantId: U, status: 'active' }), other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', vertical: 'acme/other' }), other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', kind: 'preview' }), other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], exact, 'acme/crm', chosen.id).outcome).toBe('resolved');
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], exact, 'acme/crm', chosen.id, true)).toEqual(expected);
+  });
+});
+
+describe('a tenant-pinned registration is the same peer vertical, in its own tenant only (#2252)', () => {
+  const T2 = tenantIdOf.parse(ulid());
+  const own = { id: T2, slug: 't-abc' };
+  const scope = (vertical: string): VerticalInstanceCandidate => ({
+    id: scopeIdOf.parse(ulid()),
+    tenantId: T2,
+    vertical,
+    status: 'active',
+    kind: '',
+    forkedFrom: null,
+  });
+
+  it('a bare declared name reaches its exact spelling and this tenant\'s pinned one, nothing else', () => {
+    expect(peerVerticalSpellings('crm', 't-abc')).toEqual(['crm', 't-abc/crm']);
+    expect(samePeerVertical('t-abc/crm', 'crm', 't-abc')).toBe(true);
+    expect(samePeerVertical('crm', 'crm', 't-abc')).toBe(true);
+    // Another tenant's listed vertical is another vertical.
+    expect(samePeerVertical('acme/crm', 'crm', 't-abc')).toBe(false);
+    // Never the reverse: a declared prefixed name does not reach a bare registration.
+    expect(samePeerVertical('crm', 't-abc/crm', 't-abc')).toBe(false);
+    expect(samePeerVertical('crm', 'acme/crm', 't-abc')).toBe(false);
+    // A slug that merely ends the same way.
+    expect(samePeerVertical('t-abc/my-crm', 'crm', 't-abc')).toBe(false);
+    // Read with no tenant slug, names match exactly.
+    expect(samePeerVertical('t-abc/crm', 'crm', null)).toBe(false);
+    expect(samePeerVertical('t-abc/crm', 'crm', '')).toBe(false);
+    // Empty strings match nothing.
+    expect(peerVerticalSpellings('', 't-abc')).toEqual([]);
+    expect(samePeerVertical('', '', 't-abc')).toBe(false);
+    expect(samePeerVertical('t-abc/', '', 't-abc')).toBe(false);
+    expect(samePeerVertical(null, 'crm', 't-abc')).toBe(false);
+  });
+
+  it('resolves the declared bare name to the one pinned install', () => {
+    const only = scope('t-abc/crm');
+    expect(resolveVerticalInstanceFrom([only, scope('t-abc/other')], own, 'crm')).toEqual({
+      outcome: 'resolved',
+      instance: { tenantId: T2, scopeId: only.id, vertical: 'crm' },
+    });
+    expect(resolvePeerInstanceFrom([only], own, 'crm', only.id)).toMatchObject({ outcome: 'resolved' });
+  });
+
+  it('never resolves another tenant\'s prefix, or a declared prefixed name to a bare install', () => {
+    const foreign = scope('acme/crm');
+    expect(resolveVerticalInstanceFrom([foreign], own, 'crm').outcome).toBe('not-installed');
+    expect(resolvePeerInstanceFrom([foreign], own, 'crm', foreign.id).outcome).toBe('bound-unavailable');
+    expect(resolveVerticalInstanceFrom([scope('crm')], own, 'acme/crm').outcome).toBe('not-installed');
+  });
+
+  it('an exact install wins over the pinned one, so a tenant running both still resolves; a binding chooses either', () => {
+    const bare = scope('crm');
+    const pinned = scope('t-abc/crm');
+    expect(resolveVerticalInstanceFrom([pinned, bare], own, 'crm')).toEqual({
+      outcome: 'resolved',
+      instance: { tenantId: T2, scopeId: bare.id, vertical: 'crm' },
+    });
+    // A tenant running the exact one and another tenant's `acme/crm` resolves as before.
+    expect(resolveVerticalInstanceFrom([bare, scope('acme/crm')], own, 'crm')).toMatchObject({ outcome: 'resolved' });
+    expect(resolvePeerInstanceFrom([bare, pinned], own, 'crm', pinned.id)).toMatchObject({
+      outcome: 'resolved', instance: { scopeId: pinned.id },
+    });
+  });
+
+  it('two pinned installs stay ambiguous until one is bound', () => {
+    const a = scope('t-abc/crm');
+    const b = scope('t-abc/crm');
+    expect(resolveVerticalInstanceFrom([a, b], own, 'crm')).toMatchObject({ outcome: 'ambiguous', count: 2 });
+    expect(resolvePeerInstanceFrom([a, b], own, 'crm', b.id)).toMatchObject({ outcome: 'resolved', instance: { scopeId: b.id } });
+  });
+
+  it('the door: a declaration naming the caller\'s registered spelling wins, then this tenant\'s pin; a foreign prefix is refused', () => {
+    const { sql } = fresh();
+    const declare = (...names: string[]) =>
+      collectPeers([{ peers: names.map((vertical) => peerSpec.parse({ vertical, operations: ['doc/list'], permissions: ['doc:read'] })) }]);
+    const at = (peers: ReturnType<typeof declare>, vertical: string, tenantSlug?: string) =>
+      admitPeer(sql, peers, peerCallerAt(peers, { vertical, scope: callerScope, ...(tenantSlug ? { tenantSlug } : {}) }), 'doc/list');
+    // A pinned caller meets the bare slug its target declares, keyed by the declared name.
+    expect(at(declare('crm'), 't-abc/crm', 't-abc')).toEqual({ kind: 'vertical', id: 'crm', scope: callerScope });
+    // The slug is never recorded: the caller the door reads carries none.
+    expect(peerCallerAt(declare('crm'), { vertical: 't-abc/crm', scope: callerScope, tenantSlug: 't-abc' }))
+      .toEqual({ vertical: 'crm', scope: callerScope });
+    // A target declaring the full pinned spelling keeps working, with or without the slug.
+    expect(at(declare('t-abc/crm'), 't-abc/crm', 't-abc')).toMatchObject({ id: 't-abc/crm' });
+    expect(at(declare('t-abc/crm'), 't-abc/crm')).toMatchObject({ id: 't-abc/crm' });
+    // Both declared: the registered spelling wins.
+    expect(at(declare('crm', 't-abc/crm'), 't-abc/crm', 't-abc')).toMatchObject({ id: 't-abc/crm' });
+    // Another tenant's listed vertical is not the declared `crm`, and gets no seat.
+    expect(() => at(declare('crm'), 'acme/crm', 't-abc')).toThrow(/not a declared peer/);
+    // Without the platform's slug (an older router or drain), the door matches exactly, as before.
+    expect(() => at(declare('crm'), 't-abc/crm')).toThrow(/not a declared peer/);
+    // Never the reverse: a bare caller does not meet a declared pinned spelling.
+    expect(() => at(declare('t-abc/crm'), 'crm', 't-abc')).toThrow(/not a declared peer/);
   });
 });

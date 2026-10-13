@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { errorCodeOf } from '@substrat-run/contracts';
+import { errorCodeOf, RESERVED_STORE_OPERATIONS, STORE_KINDS } from '@substrat-run/contracts';
 import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 import {
   assertSandboxContract,
   deploymentRefFor,
+  scopeStoreScriptBindings,
   stableDeploymentRefFor,
   nextMigrationTag,
 } from '../src/deploy.js';
@@ -143,6 +144,60 @@ describe('assertSandboxContract', () => {
 
   it('names the offending binding and its type in the refusal', () => {
     expectRefusal([{ type: 'ai', name: 'LLM' }], /binding 'LLM' \(type 'ai'\)/);
+  });
+
+  it('refuses a scope store whose kind is not registered', () => {
+    let thrown: unknown;
+    try {
+      assertSandboxContract({ ...manifest([]), scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown, 'an unregistered scope store was admitted').toBeInstanceOf(Error);
+    expect(errorCodeOf(thrown)).toBe('forbidden');
+    expect((thrown as Error).message).toMatch(/not registered/);
+    expect((thrown as Error).message).toMatch(/^deploy refused: /);
+  });
+});
+
+describe('scope store bindings injected at upload (#2209)', () => {
+  it('injects nothing when the vertical declares none', () => {
+    expect(scopeStoreScriptBindings([])).toEqual([]);
+  });
+
+  it('refuses a kind that is not registered, which is every kind today', () => {
+    expect(() => scopeStoreScriptBindings([{ binding: 'GRAPH', kind: 'graph' }])).toThrow(/not registered/);
+  });
+
+  it('aims a registered kind at that kind’s script and class', () => {
+    expect(
+      scopeStoreScriptBindings([{ binding: 'GRAPH', kind: 'graph' }], [
+        {
+          kind: 'graph',
+          release: '1.0.0',
+          script: 'graph-store',
+          className: 'Store',
+          operations: ['read'],
+          platformOperations: [...RESERVED_STORE_OPERATIONS],
+        },
+      ]),
+    ).toEqual([
+      {
+        type: 'durable_object_namespace',
+        name: 'SUBSTRAT_STORE_GRAPH',
+        class_name: 'Store',
+        script_name: 'graph-store',
+      },
+    ]);
+  });
+
+  // The gate for removing or replacing the injection with the signed router hop (#2210): a
+  // registered kind must not ship while the serving upload still binds SUBSTRAT_STORE_<B>,
+  // which hands the vertical the store's namespace directly. The test above is the twin: with
+  // a kind registered, this function does inject, so a first entry in STORE_KINDS fails here.
+  it('no kind is registered while the serving upload still injects SUBSTRAT_STORE_<BINDING>', () => {
+    const injected = STORE_KINDS.flatMap((kind) => scopeStoreScriptBindings([{ binding: 'GRAPH', kind: kind.kind }]));
+    expect(injected.map((binding) => binding.name)).toEqual([]);
   });
 });
 

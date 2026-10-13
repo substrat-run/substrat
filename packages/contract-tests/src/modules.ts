@@ -2716,6 +2716,9 @@ export const capMod: ModuleRegistration = {
  */
 export const PEER_CALLER = 'acme/board-room';
 export const PEER_LISTENER = 'acme/listener';
+/** #2252: a peer declared by its BARE slug, which a caller pushed pinned to its tenant
+ *  (`<tenantSlug>/board-room`) meets at the door only with the platform's slug for that tenant. */
+export const PEER_BARE = 'board-room';
 
 export const peerModManifest = moduleManifest.parse({
   id: '@test/peer',
@@ -2737,6 +2740,7 @@ export const peerModManifest = moduleManifest.parse({
       permissions: ['peer:read', 'peer:write'],
     },
     { vertical: PEER_LISTENER, operations: [], permissions: ['peer:read'] },
+    { vertical: PEER_BARE, operations: ['peer/list'], permissions: ['peer:read'] },
   ],
 });
 

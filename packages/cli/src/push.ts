@@ -37,7 +37,8 @@ import {
   type RuntimeNeeds,
   type VersionOrigin,
   type DeployManifest,
-  withAttachmentBlobStore,
+  assertDeclaredScopeStores,
+  manifestStoresOf,
 } from '@substrat-run/contracts';
 import {
   lint,
@@ -1448,6 +1449,22 @@ export function declaredStoresOf(cfg: Record<string, unknown>): {
 }
 
 /**
+ * Static binding names that are not already an own store (#2224).
+ *
+ * An own store is declared twice in a push: once as `runtimeNeeds.stores` and
+ * once as the wrangler durable-object binding `declaredStoresOf` reads back.
+ * Those are the same store. Passing the name in both lists makes the distinct
+ * check refuse `SCOPE` on every vertical that has one.
+ */
+export function bindingsBesideOwnStores(
+  own: readonly { binding: string }[] | undefined,
+  bindings: readonly { name: string }[],
+): string[] {
+  const ownNames = new Set((own ?? []).map((store) => store.binding));
+  return bindings.map((binding) => binding.name).filter((name) => !ownNames.has(name));
+}
+
+/**
  * A vertical's own static binding may not take the attachment store's name (#1995). When the
  * push declares that store, the platform binds `ATTACHMENTS__<tenant>` once per installed
  * tenant on the same script, and the host reads attachment bytes through exactly that name —
@@ -1572,8 +1589,18 @@ export async function push(
   } = await deriveDeclaredSurface(opts.dir);
   // #1995: attachment bytes need a per-tenant bucket, and no vertical should have to remember
   // to ask for one — a module declaring an attachment target IS the request.
-  const blobStores = withAttachmentBlobStore(needs, declaresAttachments);
-  assertAttachmentBindingFree(bindings, blobStores);
+  const stores = manifestStoresOf(needs, declaresAttachments);
+  // The attachment check first: its store is one the vertical never wrote down, so its refusal
+  // names attachment targets as the reason, where the generic one-name-one-store check below
+  // would only say "a per-tenant blob store".
+  assertAttachmentBindingFree(bindings, stores.blobStores);
+  assertDeclaredScopeStores({
+    own: needs?.stores,
+    tenantStores: stores.tenantStores,
+    blobStores: stores.blobStores,
+    scopeStores: needs?.scopeStores,
+    bindingNames: bindingsBesideOwnStores(needs?.stores, bindings),
+  });
 
   // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build
   // rather than before it, because this is where the push has always read the permission
@@ -1637,12 +1664,15 @@ export async function push(
     // Per-tenant relational stores (#301) travel as a NEED, not a binding: there is no
     // static database id to declare (the platform mints one per tenant), so they never
     // appear in `bindings`/wrangler — only here, for admission + the tenant lifecycle.
-    ...(needs?.tenantStores?.length ? { tenantStores: needs.tenantStores } : {}),
+    // A blob declared as `tenantStores` kind `blob` leaves in `blobStores` (#2221),
+    // so a control plane from before that union still parses this manifest.
+    ...(stores.tenantStores.length ? { tenantStores: stores.tenantStores } : {}),
     // Per-tenant blob stores (#473) travel the same way — a NEED, never a static
     // r2_bucket binding: the platform mints one bucket per tenant, so there is no id to
     // declare. Carried here for admission + the tenant lifecycle. The attachment store is
     // added from the modules' `attachmentTargets` (#1995), not hand-declared.
-    ...(blobStores.length ? { blobStores } : {}),
+    ...(stores.blobStores.length ? { blobStores: stores.blobStores } : {}),
+    ...(needs?.scopeStores?.length ? { scopeStores: needs.scopeStores } : {}),
     // Static files (#340): the routing config plus the full content-addressed manifest.
     // Sent even when the directory came out EMPTY — an empty `files` list is a vertical
     // that declared assets and built none, which the control plane should see as such

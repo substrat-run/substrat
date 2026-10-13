@@ -430,10 +430,15 @@ import {
   type RoleBound,
   type ScopeRoleHolder,
   admitPeer,
+  peerCallerAt,
   collectPeers,
   peerSeats,
   resolveVerticalInstanceFrom,
   resolvePeerInstanceFrom,
+  peerVerticalSpellings,
+  samePeerVertical,
+  type PeerTenant,
+  type VerticalInstanceCandidate,
   type PeerDeclarations,
   peerGrantsStatus,
   systemGrantsStatus,
@@ -725,6 +730,11 @@ import {
   type ConnectorCallRecorder,
   unknownRoleError,
   type ConsumerDelivery,
+  type StoreStub,
+  callScopeStore,
+  scopeStoreRunnersOf,
+  type ScopeStoreHostOptions,
+  type ScopeStoreRunner,
 } from '@substrat-run/kernel';
 import {
   attributedView,
@@ -942,6 +952,12 @@ export interface SqliteScopeHostOptions {
    * the lock is what keeps another thread or process from doing so.
    */
   dir: string;
+  /**
+   * Scope stores this host answers (#2213). A binding with no runner is refused.
+   * Absent, every `getScopeStore` is refused after the directory check: this host
+   * has no runner at all. `vertical`, when set, is the only vertical it serves.
+   */
+  scopeStores?: ScopeStoreHostOptions;
   /** Defaults to the built-in tuple checker (deny-by-default on empty tuples). */
   checker?: PermissionChecker;
   /**
@@ -1885,6 +1901,9 @@ export class SqliteScopeHost implements ScopeHost {
   /** predicate name → the module-contributed implementation. Names are global. */
   private readonly predicates = new Map<string, { module: string; handler: GuardPredicate }>();
   /** operation names whose default binding some manifest withdrew (K-17). */
+  private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
+  private readonly scopeStoreVertical?: string;
+  private scopeStoreStart: Promise<void> | null = null;
   private readonly withdrawn = new Map<string, string>(); // operation → withdrawing module
   private readonly relations = new Map<string, Set<string>>();
   /** entityType → its derived FTS5 index (#827). One entity type, one index. */
@@ -1978,6 +1997,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
+    this.scopeStoreVertical = options.scopeStores?.vertical;
+    this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.logSink = options.logSink ?? consoleLogSink;
     this.invocationLineSink = options.invocationLineSink ?? consoleInvocationLineSink;
     // Every option is read above and here, BEFORE the directory is claimed: an option that throws
@@ -4133,6 +4154,68 @@ export class SqliteScopeHost implements ScopeHost {
     return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options);
   }
 
+  async getScopeStore(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    binding: string,
+  ): Promise<StoreStub> {
+    // The directory check is the same one `getScope` makes. With no runners
+    // configured, the binding is refused after that check.
+    await this.getScope(principal, tenantId, scopeId);
+    if (this.scopeStoreRunners.size === 0) {
+      throw substratError('unavailable', `no scope-store runner is configured for binding '${binding}'`);
+    }
+    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { vertical: string | null }
+      | undefined;
+    const vertical = row?.vertical;
+    if (!vertical) {
+      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
+    }
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
+      );
+    }
+    const runner = this.scopeStoreRunners.get(binding);
+    if (!runner) {
+      throw substratError('not_found', `no scope store is bound for '${binding}'`);
+    }
+    await this.ensureScopeStoresStarted();
+    return {
+      tenantId,
+      scopeId,
+      subjectKind: 'principal',
+      invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
+        callScopeStore(
+          (request) => runner.invoke({ tenantId, vertical, scopeId, binding }, request),
+          operation,
+          input,
+          ...extra,
+        ),
+    };
+  }
+
+  private ensureScopeStoresStarted(): Promise<void> {
+    if (this.scopeStoreStart) return this.scopeStoreStart;
+    const seen = new Set<ScopeStoreRunner>();
+    const slot: { current: Promise<void> | null } = { current: null };
+    slot.current = (async () => {
+      for (const runner of this.scopeStoreRunners.values()) {
+        if (seen.has(runner)) continue;
+        seen.add(runner);
+        await runner.start();
+      }
+    })().catch((err: unknown) => {
+      if (this.scopeStoreStart === slot.current) this.scopeStoreStart = null;
+      throw err;
+    });
+    this.scopeStoreStart = slot.current;
+    return slot.current;
+  }
+
   /**
    * A scope stub whose authority is a CONNECTION (#97).
    *
@@ -4632,6 +4715,41 @@ export class SqliteScopeHost implements ScopeHost {
     return rt;
   }
 
+  /**
+   * The tenant a peer name is read in (#2252): the directory's own slug for that tenant, the one
+   * prefix a push pinned to it registers under. Never parsed out of the name being matched.
+   */
+  private peerTenant(tenantId: TenantId): PeerTenant {
+    const row = this.directory.prepare('SELECT slug FROM tenants WHERE tenant_id = ?').get(tenantId) as
+      | { slug: string }
+      | undefined;
+    return { id: tenantId, slug: row?.slug ?? null };
+  }
+
+  /**
+   * Every scope of the tenant registered under a spelling of the peer name `vertical` in
+   * `tenant` (`peerVerticalSpellings`), for the kernel's resolvers to choose among (#2252).
+   */
+  private peerCandidates(tenant: PeerTenant, vertical: string): VerticalInstanceCandidate[] {
+    const rows = this.directory
+      .prepare(
+        `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
+          WHERE tenant_id = ? AND vertical IN (SELECT value FROM json_each(?))`,
+      )
+      .all(tenant.id, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug))) as {
+      scope_id: string; tenant_id: string; vertical: string | null; status: string;
+      kind: string | null; forked_from: string | null;
+    }[];
+    return rows.map((r) => ({
+      id: r.scope_id as ScopeId,
+      tenantId: r.tenant_id as TenantId,
+      vertical: r.vertical,
+      status: r.status as ScopeStatus,
+      kind: r.kind ?? '',
+      forkedFrom: (r.forked_from as ScopeId | null) ?? null,
+    }));
+  }
+
   /** The directory's current hold, read again when background work is about to run. */
   private scopeWorkRefusal(tenantId: TenantId, scopeId: ScopeId, allowProvisioning = false): string | null {
     const row = this.directory
@@ -4761,7 +4879,8 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
-    const parsed = verticalCaller.parse(caller);
+    // #2252: the caller as this vertical's `peers` names it, as on the hosted door.
+    const parsed = peerCallerAt(this.peerDeclarations(), verticalCaller.parse(caller));
     const rt = await this.openActiveScope(tenantId, scopeId);
     return this.buildStub(tenantId, scopeId, rt, { kind: 'vertical-peer', caller: parsed }, options);
   }
@@ -5798,9 +5917,13 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   async close(): Promise<void> {
-    for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
-    this.directory.close();
-    this.owner.release();
+    try {
+      for (const runner of new Set(this.scopeStoreRunners.values())) await runner.stop();
+    } finally {
+      for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
+      this.directory.close();
+      this.owner.release();
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -8472,52 +8595,18 @@ export class SqliteScopeHost implements ScopeHost {
         return rows.map(mapHostname);
       },
       // #1706: the directory's answer to "vertical Y in tenant T", by the kernel's one rule.
+      // Names match EXACTLY: this is the cross-vertical edges' read (the import cursor's
+      // producer). A peer call's tenant-pinned spelling is `resolvePeerInstance`'s (#2252).
       resolveVerticalInstance: async (tenantId: TenantId, vertical: string): Promise<VerticalResolution> => {
-        const rows = this.directory
-          .prepare(
-            `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
-              WHERE tenant_id = ? AND vertical = ?`,
-          )
-          .all(tenantId, vertical) as {
-          scope_id: string;
-          tenant_id: string;
-          vertical: string | null;
-          status: string;
-          kind: string | null;
-          forked_from: string | null;
-        }[];
-        return resolveVerticalInstanceFrom(
-          rows.map((r) => ({
-            id: r.scope_id as ScopeId,
-            tenantId: r.tenant_id as TenantId,
-            vertical: r.vertical,
-            status: r.status as ScopeStatus,
-            kind: r.kind ?? '',
-            forkedFrom: (r.forked_from as ScopeId | null) ?? null,
-          })),
-          tenantId,
-          vertical,
-        );
+        const tenant: PeerTenant = { id: tenantId, slug: null };
+        return resolveVerticalInstanceFrom(this.peerCandidates(tenant, vertical), tenant, vertical);
       },
       resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const binding = this.directory.prepare(
           'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
         ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string; invalidated: number } | undefined;
-        const rows = this.directory.prepare(
-          `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
-           WHERE tenant_id = ? AND vertical = ?`,
-        ).all(tenantId, vertical) as {
-          scope_id: string; tenant_id: string; vertical: string | null; status: string;
-          kind: string | null; forked_from: string | null;
-        }[];
-        return resolvePeerInstanceFrom(rows.map((r) => ({
-          id: r.scope_id as ScopeId,
-          tenantId: r.tenant_id as TenantId,
-          vertical: r.vertical,
-          status: r.status as ScopeStatus,
-          kind: r.kind ?? '',
-          forkedFrom: r.forked_from as ScopeId | null,
-        })), tenantId, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
+        const tenant = this.peerTenant(tenantId);
+        return resolvePeerInstanceFrom(this.peerCandidates(tenant, vertical), tenant, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
       },
       peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const row = this.directory.prepare(
@@ -8548,7 +8637,7 @@ export class SqliteScopeHost implements ScopeHost {
               tenant_id: string; vertical: string | null; status: string;
               kind: string | null; forked_from: string | null;
             } | undefined;
-            if (!target || target.tenant_id !== tenantId || target.vertical !== vertical || target.status !== 'active' || !isPrimaryScopeRow(target)) {
+            if (!target || target.tenant_id !== tenantId || !samePeerVertical(target.vertical, vertical, this.peerTenant(tenantId).slug) || target.status !== 'active' || !isPrimaryScopeRow(target)) {
               throw substratError('not_found', 'target is not a live primary instance of this vertical in this tenant');
             }
           }

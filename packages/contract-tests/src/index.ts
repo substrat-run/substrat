@@ -46,6 +46,7 @@ export { causedByMod } from './caused-by-module.js';
 // #1184: the membership executor — accept, redelivery, rollback, and the authority bound.
 export { membershipExecutorContractSuite } from './membership-executor-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
+export { scopeStoreContractSuite } from './scope-store-suite.js';
 export { findingsAtomicContractSuite, type DirectoryExec } from './findings-atomic-suite.js';
 export { INVITEFIX_A, membershipFixtureMod } from './membership-module.js';
 export { scheduleEntitlementContractSuite } from './schedule-entitlement-suite.js';
@@ -99,6 +100,7 @@ export {
   peerModManifest,
   PEER_CALLER,
   PEER_LISTENER,
+  PEER_BARE,
   scheduleMod,
   composedEngineMod,
   composerMod,

@@ -80,6 +80,14 @@ export type {
   TenantStoreRecord,
 } from './scope-host.js';
 export { GRANT_CHILDREN_INDEX_DDL } from './grant-scoped-read.js';
+export {
+  callScopeStore,
+  scopeStoreRunnersOf,
+  type ScopeStoreAddress,
+  type ScopeStoreHostOptions,
+  type ScopeStoreRunner,
+  type StoreStub,
+} from './scope-store.js';
 export type { GrantedEntitiesPage, GrantedEntityIdsMayRepeatPage } from './grant-scoped-read.js';
 export type {
   ConnectionUseOutcome,
@@ -610,8 +618,8 @@ export {
   resolveVerticalInstanceFrom,
   switchPeer,
 } from './peer.js';
-export { PEER_BINDINGS_DDL, resolvePeerInstanceFrom } from './peer.js';
-export type { PeerDeclaration, PeerDeclarations, PeerGrantsRow, PeerSeat, VerticalInstanceCandidate } from './peer.js';
+export { PEER_BINDINGS_DDL, isPeerInstanceOf, peerCallerAt, peerVerticalSpellings, resolvePeerInstanceFrom, samePeerVertical } from './peer.js';
+export type { PeerDeclaration, PeerDeclarations, PeerGrantsRow, PeerSeat, PeerTenant, VerticalInstanceCandidate } from './peer.js';
 export {
   DENIAL_WINDOW_QUERY,
   denialListQuery,

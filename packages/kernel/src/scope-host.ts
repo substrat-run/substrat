@@ -1,3 +1,4 @@
+import type { StoreStub } from './scope-store.js';
 import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
@@ -2902,7 +2903,9 @@ export interface HostAdmin {
    * One rule wherever it is asked (`resolveVerticalInstanceFrom`): a primary, active scope of
    * THAT tenant bound to THAT vertical; `not-installed` for none, `ambiguous` for several — never
    * a guess. The tenant is the caller's own, supplied by the platform; there is no parameter by
-   * which a caller could name another.
+   * which a caller could name another. Names match exactly: this is the cross-vertical edges'
+   * read. A peer call also reaches the tenant's pinned `<tenantSlug>/<slug>`, through
+   * `resolvePeerInstance` (#2252).
    *
    * Takes NO actor and is not logged, for `resolveHostname`'s reason: it is a machine read on the
    * per-call path, before any staff member is involved.
@@ -5159,6 +5162,21 @@ export interface ScopeHost {
     scopeId: ScopeId,
     options?: ScopeStubOptions,
   ): Promise<ScopeStub>;
+
+  /**
+   * Mint a stub for one scope store (#2207). A door of its own, beside `getScope`:
+   * `ScopeStubOptions` carries no authority, and a store is not a flag on that bag.
+   *
+   * The host checks the (tenant, scope) pair the way `getScope` does, then builds
+   * the object name itself. `binding` is the declaration. The vertical does not
+   * choose the tenant, the scope, or the vertical slug that go into the name.
+   */
+  getScopeStore(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    binding: string,
+  ): Promise<StoreStub>;
 
   /**
    * The entry scope-lifecycle transition (control-plane.md §4.2): idempotent,
