@@ -24,6 +24,40 @@ describe('scope store door (pure adapter, #2209)', () => {
     }
   });
 
+  it('refuses a size read of one tenant’s scope asked under another tenant', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
+    const runner: ScopeStoreRunner = {
+      kind: 'counter',
+      async start() {},
+      async stop() {},
+      async invoke() {
+        return { result: { bytes: 5 } };
+      },
+    };
+    const host = new SqliteScopeHost({
+      dir,
+      checker: UNSAFE_allowAllChecker,
+      scopeStores: { runners: [{ binding: 'GRAPH', runner }] },
+    });
+    const staff = platformActorId.parse(ulid());
+    const a = tenantId.parse(ulid());
+    const b = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    try {
+      for (const t of [a, b]) await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+      await host.provisionScope(staff, { tenantId: a, scopeId: s, vertical: 'docs' });
+      await host.admin.activateScope(staff, a, s);
+      expect(await host.admin.scopeStoreSizes(staff, a, s)).toEqual([{ binding: 'GRAPH', bytes: 5 }]);
+      const refusal = await host.admin.scopeStoreSizes(staff, b, s).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(refusal)).toBe('not_found');
+    } finally {
+      await host.close();
+    }
+  });
+
   it('checks the directory, then refuses because no runner is configured', async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
