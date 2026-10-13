@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { scopeId } from '../src/ids.js';
 import {
   isStoreCallHost,
-  isStoreOperationName,
   rememberStoreObjectName,
   storeAudienceAllows,
   storeCallRequest,
@@ -18,14 +17,16 @@ describe('scope store transport', () => {
     expect(isStoreCallHost('peer.substrat.internal')).toBe(false);
   });
 
-  it('accepts a fixed operation label and refuses an address or a scheme', () => {
-    expect(isStoreOperationName('read')).toBe(true);
-    expect(isStoreOperationName('substrat.erase')).toBe(true);
-    expect(isStoreOperationName('a'.repeat(64))).toBe(true);
-    expect(isStoreOperationName('a'.repeat(65))).toBe(false);
-    expect(isStoreOperationName('user@example.com')).toBe(false);
-    expect(isStoreOperationName('has space')).toBe(false);
-    expect(isStoreOperationName('https://store')).toBe(false);
+  it('a request takes a fixed operation label and refuses an address, a scheme or whitespace', () => {
+    const ok = (operation: string) => storeCallRequest.safeParse({ scopeId: SCOPE, binding: 'GRAPH', operation }).success;
+    expect(ok('read')).toBe(true);
+    expect(ok('substrat.erase')).toBe(true);
+    expect(ok('a'.repeat(64))).toBe(true);
+    expect(ok('a'.repeat(65))).toBe(false);
+    expect(ok('user@example.com')).toBe(false);
+    expect(ok('has space')).toBe(false);
+    expect(ok('has\ttab')).toBe(false);
+    expect(ok('https://store')).toBe(false);
   });
 
   it('a request names a scope, a binding and an operation, and nothing else', () => {

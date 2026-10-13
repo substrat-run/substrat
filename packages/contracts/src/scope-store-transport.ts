@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { scopeId } from './ids.js';
-import { RESERVED_STORE_OPERATIONS } from './deploy.js';
+import { RESERVED_STORE_OPERATIONS, storeOperationName } from './deploy.js';
 
 /**
  * The hosted transport for a scope-store call (#2207).
@@ -24,18 +24,6 @@ export const isStoreCallHost = (hostname: string): boolean =>
   hostname.toLowerCase() === STORE_CALL_HOST;
 
 /**
- * An operation name a log line and a router will accept.
- *
- * A fixed label: no `@` (an address), no space, no `:` (a scheme). At most 64
- * characters, which is what the invocation line can carry.
- */
-export const STORE_OPERATION_NAME = /^[^@ :]+$/;
-
-export function isStoreOperationName(operation: string): boolean {
-  return operation.length > 0 && operation.length <= 64 && STORE_OPERATION_NAME.test(operation);
-}
-
-/**
  * What the vertical puts in the body. The scope it may name is the one the
  * router dispatched it for; the router refuses any other. Strict, so a body
  * that tries to carry a signature or a script name is not a request.
@@ -44,7 +32,8 @@ export const storeCallRequest = z
   .object({
     scopeId,
     binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-    operation: z.string().refine(isStoreOperationName, 'a store operation is a fixed label of at most 64 characters'),
+    // The same fixed-label rule a log line and a kind's catalog hold (#2245).
+    operation: storeOperationName,
     input: z.unknown().optional(),
   })
   .strict();

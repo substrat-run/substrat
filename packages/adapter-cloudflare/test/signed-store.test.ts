@@ -3,38 +3,42 @@ import { describe, expect, it } from 'vitest';
 import { scopeStoreObjectName, signScopeStoreName } from '@substrat-run/contracts';
 
 /**
- * Two scripts (#2210). This one stands in for the vertical: it can call the
- * store, and it does not hold the key. The signature is produced here the way
- * the control plane would produce it, from a key that is not a binding on
- * `env`. The store script checks it.
+ * A fixture store across two scripts (#2210): this test worker calls `test/signed-store-worker.js`
+ * through a service binding. The fixture is not the platform's store entry module and checks
+ * only the name-only MAC (see its header). The signature is made here with contracts' signer,
+ * from a key that is not a binding on this worker; the fixture verifies with contracts' module.
  */
 const SECRET = 'scope-store-test-key';
 
-describe('a signed scope store across two scripts (#2210)', () => {
-  it('the vertical script is not given the key', () => {
-    expect('SUBSTRAT_STORE_HMAC_KEY' in env).toBe(false);
+const call = async (name: string, mac: string): Promise<Response> =>
+  env.SIGNED_STORE.fetch(`https://scope-store/?name=${encodeURIComponent(name)}`, {
+    headers: { 'x-substrat-store-mac': mac },
   });
 
-  it('answers a signature over its object name, and refuses any other', async () => {
-    const name = scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH');
-    expect(name).not.toContain('1.0.0');
-    const call = async (mac: string, claimed = name) => {
-      const response = await env.SIGNED_STORE.fetch(`https://scope-store/?name=${encodeURIComponent(claimed)}`, {
-        headers: { 'x-substrat-store-mac': mac },
-      });
-      return response.status;
-    };
-    expect(await call('')).toBe(401);
-    expect(await call(await signScopeStoreName(SECRET, 'some-other-name'))).toBe(401);
-    expect(await call(await signScopeStoreName(SECRET, name))).toBe(200);
-    const other = scopeStoreObjectName('01OTHER', 'acme/crm', '01SCOPE', 'GRAPH');
-    expect(await call(await signScopeStoreName(SECRET, other), other)).toBe(401);
-    const again = await env.SIGNED_STORE.fetch(`https://scope-store/?name=${encodeURIComponent(name)}`, {
-      headers: { 'x-substrat-store-mac': await signScopeStoreName(SECRET, name) },
-    });
-    const body: unknown = await again.json();
-    const result = typeof body === 'object' && body !== null ? Reflect.get(body, 'result') : undefined;
-    const stored = typeof result === 'object' && result !== null ? Reflect.get(result, 'name') : undefined;
-    expect(stored).toBe(name);
+describe('a fixture store behind a name MAC, on workerd (#2210)', () => {
+  const name = scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH');
+
+  it('refuses an empty, malformed, wrong-key or other-name MAC', async () => {
+    const valid = await signScopeStoreName(SECRET, name);
+    for (const mac of [
+      '',
+      'not a mac!',
+      valid.slice(0, -2),
+      await signScopeStoreName('another-key', name),
+      await signScopeStoreName(SECRET, `${name}-other`),
+    ]) {
+      expect((await call(name, mac)).status, mac).toBe(401);
+    }
+  });
+
+  it('admits a MAC over its own name, and answers the same name again', async () => {
+    const mac = await signScopeStoreName(SECRET, name);
+    for (let i = 0; i < 2; i++) {
+      const response = await call(name, mac);
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      const result = typeof body === 'object' && body !== null ? Reflect.get(body, 'result') : undefined;
+      expect(typeof result === 'object' && result !== null ? Reflect.get(result, 'name') : undefined).toBe(name);
+    }
   });
 });

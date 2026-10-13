@@ -275,7 +275,9 @@ export type SqlValue = string | number | bigint | Uint8Array | null;
  * - **5** terms in one compound `SELECT` (`UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`; a
  *   subquery or CTE body counts its own; multi-row `VALUES` is not a compound);
  * - **100** bound parameters in one statement (the highest number, `?N` included) — bind a
- *   list of unknown length as ONE JSON array and read it with `json_each`;
+ *   list of unknown length as ONE JSON array and read it with `json_each`, which is what
+ *   `inList(values)` from `@substrat-run/contracts` writes for you (#2248):
+ *   `` ctx.sql.query(`SELECT … WHERE id IN ${ids.sql}`, ids.params) ``;
  * - **100 000 bytes** of statement, UTF-8, the whole string;
  * - **50 bytes** of `LIKE`/`GLOB` pattern, UTF-8 — NOT enforced by an adapter: node's SQLite
  *   allows 50 000, and it can only be emulated by a test preload
@@ -5203,10 +5205,10 @@ export interface ScopeHost {
    * the object name itself. `binding` is the declaration. The vertical does not
    * choose the tenant, the scope, or the vertical slug that go into the name.
    *
-   * `options` carries no authority (#2245). `onStoreCall` hears each invoke:
-   * binding, operation, outcome, duration. The input is not part of that report.
-   * The invocation record lives on the request, which this door cannot see, so
-   * the vertical passes the observer when it wants the line to name the call.
+   * `options` carries no authority (#2245). Each invoke is recorded on the
+   * request now running — binding, operation, outcome, duration, never the input —
+   * with nothing passed by the vertical (RFC §6). `onStoreCall`, when passed, is
+   * heard instead. A call made where no request is current is not logged.
    */
   getScopeStore(
     principal: PrincipalId,

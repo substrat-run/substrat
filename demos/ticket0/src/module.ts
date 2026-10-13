@@ -26,6 +26,7 @@ import {
   permissionKey,
   permissionsUsedBy,
   principalId,
+  inList,
   substratError,
   TRASHED_AT_COLUMN,
   z,
@@ -6315,10 +6316,11 @@ const bound = operationsFor(ticket0Operations)({
 
     // The count, in the transaction that wrote the message: a send that fails anywhere
     // above counts nothing, and a preview or an insert never reaches this line.
+    const usedIds = inList(used);
     ctx.sql.exec(
       `UPDATE ticket0_saved_replies SET use_count = use_count + 1, last_used_at = ?
-        WHERE id IN (${used.map(() => '?').join(', ')})`,
-      [ctx.now(), ...used],
+        WHERE id IN ${usedIds.sql}`,
+      [ctx.now(), ...usedIds.params],
     );
 
     const announced = {

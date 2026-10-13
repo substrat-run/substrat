@@ -85,9 +85,12 @@ export {
   callScopeStore,
   observeStoreCall,
   replayStoreErasures,
+  scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
+  type ReservedStoreResult,
   type ScopeStoreAddress,
   type ScopeStoreHostOptions,
+  type ScopeStoreLifecycle,
   type ScopeStoreRunner,
   type ScopeStoreStubOptions,
   type StoreCallReport,
@@ -866,7 +869,7 @@ export {
   ASYNC_LINES_PER_PASS,
 } from './async-invocation-log.js';
 export type { AsyncUnit, AsyncLinePass, InvocationLineSink } from './async-invocation-log.js';
-export { invocationLine, setStoreCallObserverResolver } from './invocation-line.js';
+export { invocationLine } from './invocation-line.js';
 export type {
   AsyncInvocationKind,
   AsyncOutcome,

@@ -111,6 +111,11 @@ import {
   capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
+  STORE_KINDS,
+  mayHoldScopeStores,
+  type StoreErasure,
+  type ScopeStoreDump,
+  type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
@@ -167,7 +172,7 @@ import { scopeStoresOf } from './platform-scope-stores.js';
 import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
-import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
+import { scopeDeployment, versionReachedAt, type ScopeDeployment, type ScopeDeploymentVia } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
@@ -180,7 +185,7 @@ import { createPseudonymizer } from './pseudonymize.js';
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
-  scopeStoreUploadPlan,
+  verticalUploadBindings,
   deployManifest,
   storedDeployManifest,
   pushedPermissionRegistry,
@@ -4151,6 +4156,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           connectionGrants,
           connectionKeys,
           ...(entityGrants ? { entityGrants } : {}),
+          // #2263: a vertical with no owner of record still seats what its version declares, and
+          // answers `owner: null`, which the CLI reports as a lockout NOT repaired.
+          ownerless: 'seat',
           ...carry,
           // Handed over exactly as at provision: a store minted HERE has never been migrated
           // by the vertical, so the reconcile must carry it into the same ready-gate — a bound
@@ -5326,7 +5334,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // A scope nothing routes may still keep its store where its vertical resolves by slug (where
     // it was provisioned), so erasure reaches that deployment too, as reap does (`reapScopeStorage`).
-    const bySlug = currentRef ? undefined : await verticalForScope(c, scope);
+    const reached = currentRef ? undefined : await deploymentForScope(c, scope);
+    const bySlug = reached?.client;
     if (!currentRef && !bySlug && copies.every((copy) => copy.state === 'done')) {
       return c.json(await shredHere());
     }
@@ -7483,11 +7492,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses,
-        bindings: [
-          ...manifest.bindings,
-          ...storeBindings,
-          ...scopeStoreUploadPlan({ vertical: slug, stores: manifest.scopeStores }).bindings,
-        ],
+        // #2210: a declared scope store adds no binding to either upload (L1), held at both call
+        // sites with a kind registered by upload-scope-store-bindings.test.ts.
+        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: storeBindings }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
         // stable script updated in place, so this refresh is what keeps the binding
@@ -8060,7 +8067,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses: manifest.doClasses,
-        bindings: manifest.bindings,
+        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: [] }),
         // #1242: the freshly minted version id — this archive script IS that version,
         // and a preview routed at it stamps the signals `version` dimension honestly.
         versionId: id,
