@@ -36,25 +36,37 @@ first worker. Two results decide the shape:
   objects. It does not close the same hole between two tenants of one vertical: they would
   share that script, and a caller who chooses the name can address the other tenant.
 
-So the vertical never chooses the name. `getScopeStore` takes a binding. The host builds
-`<tenantId>/<vertical slug>/<scopeId>/<binding>` from the pair it has just checked against
-the directory, the same check `getScope` makes (K-3).
+So the vertical never chooses the name. `getScopeStore` takes a binding. The platform
+builds `<tenantId>/<vertical slug>/<scopeId>/<binding>` from the pair the router asserted
+when it dispatched the request, the same pair `getScope` checks against the directory (K-3).
 
-A signature is the second half, for a worker that can see the binding anyway. The store
-refuses a call whose `x-store-name` does not carry `HMAC-SHA256` under a key the platform
-holds and the vertical does not. The spike showed the refusal, and showed that a signature
-over one name does not open another. The object cannot read its own `idFromName`, so the
-signed string is the name the host computed. A holder of the key can sign any name, which
-is why the key stays in the host.
+The vertical's worker holds neither the store's Durable Object namespace nor the signing
+key. A call leaves the worker as `fetch` of `store.substrat.internal`. Egress forwards
+that host to the router's `ScopeStoreCalls` entrypoint and refuses a call that has no
+dispatch policy or no scope. The caller is `OUTBOUND_POLICY`, which the router set when
+the worker started and which the worker cannot write. The router checks that the scope is
+the one in that policy and that the binding is declared on the version being served, signs
+the object name, and addresses `substrat-store-<kind>-<vertical>` in the dispatch
+namespace. The key is bound on the router and on the store script. This is the same shape
+as a call between verticals.
 
-Isolates are a separate question, and the answer proposed here is one script per
-(kind, version, vertical). A kind the platform did not write cannot be assumed to keep
-per-object state off the module, and a tenant that exhausts the isolate should restart
-that vertical's objects only. The alternative, one script per (kind, version), is cheaper
-to deploy and is what the spike's shared script was. It is rejected for the first hosted
-kind. A vertical does not pin the version: the platform deploys the next one beside the
-old and moves objects on its own schedule, and the kind migrates its schema when an
-object wakes.
+A direct `durable_object_namespace` binding remains for local development and for tests.
+It is not an isolation boundary: code in that worker can address any name the binding
+reaches. Hosted isolation is the hop above, not that binding.
+
+The signature is HMAC-SHA256 over the object name. The spike's check compared the MAC to
+the header and never to the object being addressed, so one signature opened every object.
+The store script now remembers the first name it accepts and refuses a later call that
+names a different object, including one that carries a valid MAC for that other name.
+The object cannot read its own `idFromName`, which is why the remembered string is the
+signed name.
+
+One script per (kind, vertical), upgraded in place. A new release replaces the script.
+The objects keep their storage, and the kind migrates its schema when an object wakes.
+A script per (kind, version, vertical) would make the next version an empty object and
+would require moving every one, so that model is rejected. See D-63. Who uploads the
+script, and what a failed upload does to the vertical's push, is still [#2210](https://github.com/substrat-run/substrat/issues/2210).
+`substrat dev` runs the kind's runner in-process and does not upload a script.
 
 What the spike did not show is a Workers for Platforms upload. Local miniflare accepts
 `scriptName` between workers it was given. The upload API documents `script_name` and
@@ -90,11 +102,11 @@ asks to widen it, which is an additive change, the same intent as the comment on
 `[]`. A binding declared twice, or declared as another store's binding, is refused at
 push. `ATTACHMENTS` stays reserved.
 
-The platform injects the binding. The vertical never writes it, and
-`ADMISSIBLE_BINDING_TYPES` does not grow. The name is `SUBSTRAT_STORE_<BINDING>`,
-under the `SUBSTRAT_` prefix the platform already keeps (`PLATFORM_BINDING_PREFIX`).
-The host reads it the way it reads the attachment bucket, off the worker's own `env`.
-An undeclared binding has nothing to read, which is the refusal.
+The platform does not inject a store binding onto the vertical. `ADMISSIBLE_BINDING_TYPES`
+does not grow, and the vertical's upload carries no `SUBSTRAT_STORE_*` namespace and no
+HMAC key. An undeclared binding is refused by the router before it signs. The name
+`SUBSTRAT_STORE_<BINDING>` is the direct binding used in local development and tests,
+and that binding is not an isolation boundary (§1).
 
 A push that names a kind with no registration is refused. A declaration the platform
 cannot run is not stored as if it could. See D-63.
@@ -113,17 +125,21 @@ a closed code and add their own facts.
 
 Reserved names, only the platform may send:
 
-| operation | what it does |
-|---|---|
-| `substrat.export` | the kind's dump, as `scopeDumpTable` rows |
-| `substrat.import` | load that dump into this object |
-| `substrat.size` | the object's whole storage. The spike read `databaseSize` |
-| `substrat.wipe` | remove all of it |
-| `substrat.erase` | the kind's answer to subject erasure (#2068, D-45) |
+| operation | input | result | what it does |
+|---|---|---|---|
+| `substrat.export` | none | `{ tables }` | the kind's dump, each table a `scopeDumpTable` |
+| `substrat.import` | `{ tables }` | `{ tables }` | load that dump into this object |
+| `substrat.size` | none | `{ bytes }` | the object's whole storage. The spike read `databaseSize` |
+| `substrat.wipe` | none | `{}` | remove all of it |
+| `substrat.erase` | `{ subjectId }` | `{ erased }` | the kind's answer to subject erasure (#2068, D-45) |
 
-The vertical's stub refuses every `substrat.*` name before the fetch. The spike's
-caller did, and the counter did not move. The store itself answers them: the platform
-caller, with the flag unset, exported, wiped and imported.
+The store accepts a reserved name only when the MAC's audience is `platform`. That MAC
+is a second use of the same key, made by the control plane, which calls the store script
+through the dispatch namespace and does not go through the vertical. A caller holding a
+direct binding, or a request signed for audience `caller`, is refused by the store. The
+vertical's stub also refuses `substrat.*` before it fetches, so a vertical cannot ask.
+The refusal that matters is the store's. The spike's flag on the caller is not a control:
+the caller that holds the binding can leave the flag unset.
 
 `substrat.erase` is required of a kind before a hosted deploy stores tenant data. What
 it deletes is specified with #2068. This RFC only reserves the name and requires the
@@ -149,11 +165,16 @@ and takes no dependency on a real one.
 
 ## 6. The invocation log
 
-A store stub writes nothing by itself. The invocation log today is the HTTP request, and
-`buildStub` does not append to it. The host records the store call on the invocation
-already open for that request: the binding, the operation name, the outcome code, the
-duration. Not the input. The input is the kind's business and may be large. The principal
-is the one the invocation already has. The store does not evaluate it.
+An operation name is a fixed label: no `@`, no space and no `:`, at most 64 characters.
+The door and the router both refuse anything else.
+
+The host records the call on the request already open: the binding, the operation name,
+the outcome and the duration. Not the input. The vertical does not pass an observer.
+The platform entry runs the request in an `AsyncLocalStorage`, and the stub reads the
+current record from there. An observer the vertical does pass still wins. A call made
+where no request is current is not logged and does not throw. Past 16 calls the line
+keeps a `storeCallsDropped` count instead of another entry. The principal is the one
+the invocation already has. The store does not evaluate it.
 
 ## 7. The local runner
 
@@ -169,15 +190,46 @@ external process. A runner is handed to `SqliteScopeHost` and satisfies:
 The kind ships the runner. Ontomate's is a local process with one repository per address.
 The contract suite uses an in-process runner of the trivial kind, on both adapters.
 
-## 8. Not in this RFC
+## 8. Copies, and what a shred reaches
 
-Hosted deploy, version rollout and the Python worker in production are #2210. Snapshot,
-fork, preview, backup and reap are #2211. The storage meter is #2212. They consume the
-reserved operations above and do not change them.
+A store dump is opaque to the platform, so a copy can bring an erased subject's rows
+back. After a restore, and after a snapshot copy, the platform runs `substrat.erase`
+again for every subject whose key row has `shredded_at` set, on every declared binding,
+whatever the timestamp. Erase is idempotent. The receipt counts `storeErasuresReplayed`.
+A failed call leaves the restore incomplete, and the same call again converges. Key rows
+live in the directory. A copy that did not bring them uses the source scope's marks.
 
-A real dispatch-namespace upload, as §1 says. Jurisdiction: every scope is `global`
-today, and a store object follows its scope when per-jurisdiction ids exist. No placement
-hint. No keep-alive. No permission model inside the store.
+What remains unsealed is the backup file at rest, until someone restores it. That is
+the limit. Tenant deletion wipes each declared store before the scope's own storage
+goes. Tenant export reads `substrat.export` through the platform, not through the
+vertical.
+
+## 9. Not in this RFC
+
+A real dispatch-namespace upload is [#2210](https://github.com/substrat-run/substrat/issues/2210).
+Snapshot, fork, preview, backup and reap are [#2211](https://github.com/substrat-run/substrat/issues/2211).
+The storage meter is [#2212](https://github.com/substrat-run/substrat/issues/2212). They
+consume the reserved operations above and do not change them.
+
+A store call works during a request. A call from a Durable Object, including a schedule,
+does not pass egress and is refused. The platform's own jobs call the store script
+directly and are not affected. The first version reaches only the scope the request was
+routed to. One script per (kind, vertical) is the cost shape: not one script per live
+version. Who is billed for the store script's CPU is part of #2212, and this RFC does
+not invent a number.
+
+The door checks the tenant and scope pair and that the binding is declared. It does not
+check a permission. The operation that calls does. A store call is not inside that
+operation's transaction: if the operation commits and the call fails, the vertical sees
+the error. There is no idempotency key. A retry is safe when the operation is. A cold
+start is the kind's latency.
+
+`kind: z.literal('ontomate')` in the Apache-2.0 contracts package is intended. The kind
+name is part of the public vocabulary, and #2207 already uses it.
+
+Jurisdiction: every scope is `global` today, and a store object follows its scope when
+per-jurisdiction ids exist. No placement hint. No keep-alive. No permission model inside
+the store.
 
 ## Alternatives rejected
 

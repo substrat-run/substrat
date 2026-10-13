@@ -6,7 +6,6 @@ title: "A store kind is platform code, registered and pinned like a connector"
 status: proposed
 aliases: []
 amends: []
-twin: K-49
 tracking: ["#2207", "#2210"]
 ---
 
@@ -16,7 +15,7 @@ tracking: ["#2207", "#2210"]
 
 Until a kind is registered, a push that declares `scopeStores` is refused. A declaration the platform cannot run is not stored as if it could.
 
-**One script per (kind, version, vertical).** A kind the platform did not write cannot be assumed to keep module-level state out, and a tenant that exhausts an isolate should restart that vertical's objects only. One script shared by every vertical is rejected for the first hosted kind. A vertical does not pin the version. The platform deploys the next release beside the old one and moves objects on its own schedule. The kind migrates its own schema when an object wakes.
+**One script per (kind, vertical), upgraded in place.** A later release replaces that script. The objects keep their storage, and the kind migrates its schema when an object wakes. A script per version would be a new namespace and an empty object, so that model is rejected. A script shared by every vertical is also rejected for the first hosted kind: a kind the platform did not write cannot be assumed to keep module-level state out, and a tenant that exhausts an isolate should restart that vertical's objects only. Who uploads the script, and what a failed upload does to the push, is [#2210](https://github.com/substrat-run/substrat/issues/2210). `substrat dev` runs the runner and does not upload one.
 
 The local runner is the kind's. Substrat defines the interface — address, envelope, reserved operations, start and stop — and owns no external process in the adapter. Hosted deploy, snapshot and metering ([#2210](https://github.com/substrat-run/substrat/issues/2210), [#2211](https://github.com/substrat-run/substrat/issues/2211), [#2212](https://github.com/substrat-run/substrat/issues/2212)) consume this and do not change it.
 
