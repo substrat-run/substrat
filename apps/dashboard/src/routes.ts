@@ -21,6 +21,8 @@
 import {
   adminLogEntry,
   defineRoutes,
+  dnsRecord,
+  hostnameStatus,
   LIST_PAGE_MAX,
   FINDINGS_LIMIT_MAX,
   findingEntry,
@@ -94,6 +96,46 @@ export const installAppInput = z.object({
   config: z.record(z.string(), z.string()).optional(),
 });
 
+/** One custom domain, as the team's Domains view lists it. */
+export const domainRow = z.object({
+  hostname: z.string(),
+  appScopeId: z.string(),
+  /** The app (vertical install) this domain fronts. */
+  app: z.string(),
+  surface: z.string(),
+  status: hostnameStatus,
+  statusNote: z.string().nullable(),
+  /** Canonical for its (scope, surface) — the "primary" tag. */
+  primary: z.boolean(),
+  createdAt: z.string(),
+  /** DNS records to publish while it is not yet active. */
+  validationRecords: z.array(dnsRecord),
+});
+
+/** What binding or re-polling a custom domain answers: where issuance stands and what to publish. */
+export const domainBinding = z.object({
+  hostname: z.string(),
+  status: hostnameStatus,
+  statusNote: z.string().nullable().optional(),
+  validationRecords: z.array(dnsRecord).optional(),
+});
+
+/** One hostname bound to an app's scope (an app's Domains tab). */
+export const appHostnameRow = z.object({
+  hostname: z.string(),
+  surface: z.string(),
+  status: z.string(),
+  /** Why a row is `failed` (or mid-flight detail) — rendered under the status pill. */
+  statusNote: z.string().nullable(),
+  canonical: z.boolean(),
+  createdAt: z.string().nullable(),
+  /** DNS records to publish for a custom domain; empty for a platform mint. */
+  validationRecords: z.array(dnsRecord),
+});
+
+/** A surface the app's vertical declares it serves — the Domains tab's picker. */
+const declaredSurface = z.object({ name: z.string(), label: z.string() });
+
 export const dashboardRoutes = defineRoutes({
   // -- apps: the read side (#2170) --------------------------------------------
   'dashboard/list-apps': {
@@ -158,6 +200,70 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1) }),
     output: appRow,
     http: { method: 'POST', path: '/apps/{scopeId}/resume' },
+  },
+
+  // -- domains (#2170) --------------------------------------------------------
+  // The team's custom domains (§4.7). The control plane narrows each call to the team; the
+  // cookie routes these replace asked nothing more of the dashboard scope, and neither do these.
+  'dashboard/list-domains': {
+    summary: "One page of this team's custom domains (the platform default each app rides is not listed)",
+    input: z.object(pageInput),
+    output: pageOutput(domainRow),
+    http: { method: 'GET', path: '/domains' },
+  },
+  'dashboard/add-domain': {
+    summary: "Add a custom domain to one of this team's apps; lands verifying with the DNS records to publish",
+    input: z.object({
+      hostname: z.string().trim().min(1).max(253),
+      appScopeId: z.string().min(1),
+      surface: z.string().trim().min(1).default('app'),
+    }),
+    output: domainBinding,
+    http: { method: 'POST', path: '/domains' },
+    status: 201,
+  },
+  'dashboard/verify-domain': {
+    summary: "Re-poll a custom domain's issuance (\"check again\")",
+    input: z.object({ hostname: z.string().min(1) }),
+    output: domainBinding,
+    http: { method: 'POST', path: '/domains/{hostname}/verify' },
+  },
+  'dashboard/remove-domain': {
+    summary: "Remove a custom domain: releases the Cloudflare custom hostname and drops the binding",
+    input: z.object({ hostname: z.string().min(1) }),
+    output: z.object({ deleted: z.string() }),
+    http: { method: 'DELETE', path: '/domains/{hostname}' },
+  },
+
+  // -- apps: hostnames (#2170) ------------------------------------------------
+  // One scope can front more than one app (K-26): the hostname decides the surface. Binding and
+  // unbinding are gated in the dashboard scope by `dashboard:provision-app`, as the cookie routes were.
+  'dashboard/list-app-hostnames': {
+    summary: "An app's hostname bindings, the surfaces its vertical declares, and its untouchable default",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({
+      bindings: z.array(appHostnameRow),
+      surfaces: z.array(declaredSurface),
+      defaultHostname: z.string().nullable(),
+    }),
+    http: { method: 'GET', path: '/apps/{scopeId}/hostnames' },
+  },
+  'dashboard/add-app-hostname': {
+    summary: 'Bind a hostname to a surface of this app: platform-minted (lands active) or a custom domain (lands pending)',
+    input: z.object({
+      scopeId: z.string().min(1),
+      surface: z.string().min(1).max(32),
+      domain: z.string().min(1).max(253).optional(),
+    }),
+    output: appHostnameRow,
+    http: { method: 'POST', path: '/apps/{scopeId}/hostnames' },
+    status: 201,
+  },
+  'dashboard/remove-app-hostname': {
+    summary: "Unbind one hostname (409 for the app's default hostname)",
+    input: z.object({ scopeId: z.string().min(1), hostname: z.string().min(1) }),
+    output: z.object({ deleted: z.string() }),
+    http: { method: 'DELETE', path: '/apps/{scopeId}/hostnames/{hostname}' },
   },
 
   // -- findings (#1748) ------------------------------------------------------

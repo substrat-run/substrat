@@ -343,7 +343,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
   it('the declared surface lists exactly the four lifecycle writes beside the reads', () => {
     expect(
       Object.entries(dashboardRoutes)
-        .filter(([, r]) => r.http.method !== 'GET' && r.http.path.startsWith('/apps'))
+        .filter(([name, r]) => r.http.method !== 'GET' && r.http.path.startsWith('/apps') && !name.includes('hostname'))
         .map(([name, r]) => `${r.http.method} ${r.http.path} ${name}`)
         .sort(),
     ).toEqual([

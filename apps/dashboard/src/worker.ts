@@ -23,13 +23,13 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, hostnameStatus, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, isPrimaryScope, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, type appEvent, type installAppInput, type installStep } from './routes.js';
+import { dashboardRoutes, domainBinding, type appEvent, type domainRow, type installAppInput, type installStep } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
@@ -1456,15 +1456,7 @@ app.post('/api/invites/accept', async (c) => {
   return verdict.kind === 'done' ? c.json({ teamId: t }) : c.json({ teamId: t, pending: true }, 202);
 });
 
-/** My apps — one page, newest first (`{ entries, nextCursor }`, keyset on the row id). */
-app.get('/api/apps', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  return c.json(await listAppsPage(c, host, node, pageParams(c)));
-});
-
-/** The Apps list, healed and reconciled — ONE implementation behind the cookie route and the team-path one (#2170). */
+/** The Apps list, healed and reconciled — behind the team-path list route (#2170). */
 async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScopeHost, node: DashboardNode, page: ListPageQuery) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', { limit: page.limit, cursor: page.cursor })) as DashboardAppRow[];
@@ -1611,11 +1603,7 @@ async function installStepsOf(host: CloudflareScopeHost, node: DashboardNode, ap
  * `failed` — the DNS records the tenant must publish. Empty when the control plane is not
  * connected (dev), like the rest of the CONNECTED-mode surface.
  */
-app.get('/api/domains', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const page = pageParams(c);
+async function listDomainsIn({ c, host, node }: TeamContext, page: ListPageQuery) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   // Unpaged: names + default hostnames must cover EVERY app, whatever page of domains this is.
@@ -1627,7 +1615,7 @@ app.get('/api/domains', async (c) => {
   // Walk the CP's hostname pages (keyset on the hostname — the cursor passes straight
   // through) until this page of CUSTOM domains is full: the defaults filter can shrink
   // a CP page below the limit, so one CP page is not necessarily one page here.
-  const domains: Array<Record<string, unknown> & { hostname: string }> = [];
+  const domains: Array<z.infer<typeof domainRow>> = [];
   let cursor = page.cursor;
   for (;;) {
     const res = await cp
@@ -1640,7 +1628,7 @@ app.get('/api/domains', async (c) => {
         appScopeId: h.scopeId,
         app: appName.get(h.scopeId) ?? h.scopeId,
         surface: h.surface,
-        status: h.status,
+        status: hostnameStatus.parse(h.status),
         statusNote: h.statusNote ?? null,
         primary: h.canonical,
         createdAt: h.createdAt,
@@ -1651,14 +1639,8 @@ app.get('/api/domains', async (c) => {
     if (domains.length >= page.limit || res.nextCursor === null) break;
     cursor = res.nextCursor;
   }
-  return c.json(pageOf(domains, page.limit, (d) => d.hostname));
-});
-
-const bindDomainBody = z.object({
-  hostname: z.string().trim().min(1).max(253),
-  appScopeId: z.string().min(1),
-  surface: z.string().trim().min(1).default('app'),
-});
+  return pageOf(domains, page.limit, (d) => d.hostname);
+}
 
 /**
  * Add a custom domain to one of the tenant's apps (§4.7). The app must be the caller's
@@ -1667,48 +1649,36 @@ const bindDomainBody = z.object({
  * Bound as a non-canonical alias so the app's working default is never demoted out from
  * under it — the domain serves the moment it validates, alongside the default.
  */
-app.post('/api/domains', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function addDomainIn(
+  { c, host, node }: TeamContext,
+  body: { hostname: string; appScopeId: string; surface: string },
+) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const body = bindDomainBody.parse(await c.req.json());
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   if (!apps.some((a) => a.app_scope_id === body.appScopeId)) {
     throw new HTTPException(404, { message: 'app not found' });
   }
-  const row = await cp.bindHostname({
-    hostname: body.hostname.toLowerCase(),
-    scopeId: scopeId.parse(body.appScopeId),
-    surface: body.surface,
-    canonical: false,
-  });
-  return c.json(row, 201);
-});
-
-/** Re-poll a custom domain's issuance ("check again"). Tenant-narrowed by the CP. */
-app.post('/api/domains/:hostname/verify', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cp.verifyHostname(c.req.param('hostname')));
-});
+  return domainBinding.parse(
+    await cp.bindHostname({
+      hostname: body.hostname.toLowerCase(),
+      scopeId: scopeId.parse(body.appScopeId),
+      surface: body.surface,
+      canonical: false,
+    }),
+  );
+}
 
 /** Remove a custom domain — releases the CF custom hostname and drops the binding. */
-app.delete('/api/domains/:hostname', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function removeDomainIn({ c, node }: TeamContext, hostname: string): Promise<{ deleted: string }> {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const name = c.req.param('hostname').toLowerCase();
+  const name = hostname.toLowerCase();
   const own = await cp.listTenantHostnames().catch(() => []);
   const match = own.find((h) => h.hostname === name);
   if (!match) throw new HTTPException(404, { message: 'domain not found' });
   await cp.unbindHostname(scopeId.parse(match.scopeId), name);
-  return c.json({ deleted: name });
-});
+  return { deleted: name };
+}
 
 /**
  * One app's audit trail (Activity panel) — created / active / failed(+reason) / deleted,
@@ -4232,22 +4202,26 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
   ]);
 });
 
+/** One of the team's own apps by scope id, or the 404 every hostname route answers for one that is not. */
+async function ownAppRow({ host, node }: TeamContext, appScopeId: string): Promise<DashboardAppRow> {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === appScopeId);
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  return appRow;
+}
+
 /**
  * The app's hostname bindings (the Domains tab; K-26 multi-surface). One scope can
  * front more than one app — the hostname decides which surface the vertical serves
  * (`readRoutedNode(...).surface`), so giving a surface a URL is exactly a binding.
- * GET lists the bindings plus the vertical's DECLARED surfaces (registry ladder,
+ * Lists the bindings plus the vertical's DECLARED surfaces (registry ladder,
  * same as the env-spec: pushed verticals declare them in package.json `substrat.surfaces`)
  * so the UI offers a picker; free text stays valid — the declaration is UX, not contract.
  */
-app.get('/api/apps/:scopeId/hostnames', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+async function listAppHostnamesIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+  const appRow = await ownAppRow(ctx, appScopeId);
   const bindings = await listAppHostnames(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
@@ -4263,8 +4237,8 @@ app.get('/api/apps/:scopeId/hostnames', async (c) => {
     const remote = (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug);
     surfaces = remote?.surfaces ?? [];
   }
-  return c.json({ bindings, surfaces, defaultHostname: appRow.hostname });
-});
+  return { bindings, surfaces, defaultHostname: appRow.hostname };
+}
 
 /**
  * A refused permission, by its code (#113): the kernel's own check, or the plane's 403 relayed.
@@ -4279,19 +4253,15 @@ const isPermissionDenial = (e: unknown): boolean =>
  * A custom domain lands PENDING and walks the §4.2 lifecycle. Same authority as
  * managing the app; recorded on the activity trail (`hostname-bound`).
  */
-app.post('/api/apps/:scopeId/hostnames', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = z
-    .object({ surface: z.string().min(1).max(32), domain: z.string().min(1).max(253).optional() })
-    .parse(await c.req.json());
+async function addAppHostnameIn(
+  ctx: TeamContext,
+  appScopeId: string,
+  body: { surface: string; domain?: string },
+) {
+  const { c, host, node } = ctx;
+  const appRow = await ownAppRow(ctx, appScopeId);
   try {
-    const bound = await addAppHostname(host, {
+    return await addAppHostname(host, {
       node,
       appScopeId: scopeId.parse(appRow.app_scope_id),
       surface: body.surface,
@@ -4300,27 +4270,21 @@ app.post('/api/apps/:scopeId/hostnames', async (c) => {
       platformBases: parsePlatformBaseDomains(c.env.PLATFORM_BASE_DOMAINS),
       controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
     });
-    return c.json(bound, 201);
   } catch (e) {
     if (isPermissionDenial(e)) throw e;
     throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind hostname' });
   }
-});
+}
 
 /** Unbind one hostname. The app's default hostname is refused (409) — deleting the app retires it. */
-app.delete('/api/apps/:scopeId/hostnames/:hostname', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+async function removeAppHostnameIn(ctx: TeamContext, appScopeId: string, hostname: string): Promise<{ deleted: string }> {
+  const { c, host, node } = ctx;
+  const appRow = await ownAppRow(ctx, appScopeId);
   try {
     await removeAppHostname(host, {
       node,
       appScopeId: scopeId.parse(appRow.app_scope_id),
-      hostname: c.req.param('hostname'),
+      hostname,
       defaultHostname: appRow.hostname,
       controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
     });
@@ -4330,8 +4294,8 @@ app.delete('/api/apps/:scopeId/hostnames/:hostname', async (c) => {
     // `not_found` is the hostname not being bound to this app (both narrowings type it).
     throw new HTTPException(errorCodeOf(e) === 'not_found' ? 404 : 409, { message });
   }
-  return c.json({ deleted: c.req.param('hostname').toLowerCase() });
-});
+  return { deleted: hostname.toLowerCase() };
+}
 
 /**
  * The app's Identity choice (vertical-auth-detach.md §2.4) as authored at install or
@@ -5365,6 +5329,14 @@ const routeHandlers = {
   },
   'dashboard/retry-app': async (ctx, { scopeId: failed }) => retryAppIn(ctx, failed),
   'dashboard/resume-app': async (ctx, { scopeId: stuck }) => resumeAppIn(ctx, stuck),
+  'dashboard/list-domains': async (ctx, page) => listDomainsIn(ctx, listPageQuery.parse(page)),
+  'dashboard/add-domain': async (ctx, body) => addDomainIn(ctx, body),
+  'dashboard/verify-domain': async ({ c, node }, { hostname }) =>
+    domainBinding.parse(await controlPlaneFor(c.env, node.tenantId, node.principal).verifyHostname(hostname)),
+  'dashboard/remove-domain': async (ctx, { hostname }) => removeDomainIn(ctx, hostname),
+  'dashboard/list-app-hostnames': async (ctx, { scopeId: app }) => listAppHostnamesIn(ctx, app),
+  'dashboard/add-app-hostname': async (ctx, { scopeId: app, ...body }) => addAppHostnameIn(ctx, app, body),
+  'dashboard/remove-app-hostname': async (ctx, { scopeId: app, hostname }) => removeAppHostnameIn(ctx, app, hostname),
 } satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
 
 mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: teamContext })(routeHandlers);

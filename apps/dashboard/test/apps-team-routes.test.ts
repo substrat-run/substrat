@@ -140,16 +140,14 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
     expect(theirs.entries.map((a) => a.app_scope_id)).toEqual([secondApp]);
   });
 
-  it('the cookie route still answers for the cookie’s team, with the same body as the path', async () => {
+  it('the cookie list route is gone, and the declared one answers its output schema alone', async () => {
+    // The last caller of the cookie list (the Domains view's app picker) moved to the path.
+    expect((await get('/api/apps', tenant)).status).toBe(404);
     for (const t of [tenant, second]) {
-      const old = await json(await get('/api/apps', t));
       const declared = await json(await get(`/api/teams/${t}/apps`));
-      // The declared route answers exactly its output schema: an internal column the cookie
-      // route leaks (`deleted_at`) is stripped; every declared field is the same value.
-      expect(old.entries.some((a) => 'deleted_at' in a)).toBe(true);
+      expect(declared.entries.length).toBeGreaterThan(0);
+      // The stored column the cookie route used to leak (`deleted_at`) is not in the published shape.
       expect(declared.entries.some((a) => 'deleted_at' in a)).toBe(false);
-      expect(declared.entries).toEqual(old.entries.map(({ deleted_at: _gone, ...row }) => row));
-      expect(declared.nextCursor).toBe(old.nextCursor);
     }
   });
 

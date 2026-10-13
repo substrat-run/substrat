@@ -9,7 +9,7 @@ import type { EdgeHealthReport, ImportCursorMove, ImportCursorMoved, CauseChain,
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
  *
  * The worker serves everything under `/api`: `/api/me` (who am I — and, on first
- * call, bootstraps my tenant), `/api/catalog`, `/api/apps`. Auth is an OIDC
+ * call, bootstraps my tenant), `/api/catalog`, and the team-scoped surface under `/api/teams/:teamId` (`teamApi`). Auth is an OIDC
  * redirect to the platform's AuthHero instance — there is no password here, so
  * sign-in/out are full-page navigations, not fetches. `credentials: 'include'`
  * carries the same-origin session cookie the worker sets.
@@ -1455,7 +1455,7 @@ export interface DeclaredSurface {
   label: string;
 }
 
-/** `GET /api/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
+/** `GET /api/teams/:teamId/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
 export interface AppHostnamesView {
   bindings: AppHostnameRow[];
   surfaces: DeclaredSurface[];
@@ -1490,10 +1490,10 @@ export interface DnsRecord {
   type: 'hostname' | 'txt';
   name: string;
   value: string;
-  status: string | null;
+  status?: string | null;
 }
 
-/** One custom domain row for the account-level Domains view (`GET /api/domains`). */
+/** One custom domain row for the account-level Domains view (`GET /api/teams/:teamId/domains`). */
 export interface DomainRow {
   hostname: string;
   appScopeId: string;
@@ -1509,7 +1509,7 @@ export interface DomainRow {
   validationRecords: DnsRecord[];
 }
 
-/** The raw binding a bind/verify returns (`POST /api/domains`, `/verify`). */
+/** The raw binding a bind/verify returns (`POST /api/teams/:teamId/domains`, `/verify`). */
 export interface HostnameBinding {
   hostname: string;
   status: 'pending' | 'verifying' | 'active' | 'failed';
@@ -1774,16 +1774,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
-  /** My apps, one page newest-first; follow `nextCursor` for older ones. */
-  listApps: (opts?: PageOpts) => call<ListPage<AppRow>>(`/apps${pageQs(opts)}`),
-  // -- custom domains (§4.7) -------------------------------------------------
-  listDomains: (opts?: PageOpts) => call<ListPage<DomainRow>>(`/domains${pageQs(opts)}`),
-  addDomain: (input: { hostname: string; appScopeId: string; surface?: string }) =>
-    call<HostnameBinding>('/domains', { method: 'POST', body: JSON.stringify(input) }),
-  verifyDomain: (hostname: string) =>
-    call<HostnameBinding>(`/domains/${encodeURIComponent(hostname)}/verify`, { method: 'POST' }),
-  removeDomain: (hostname: string) =>
-    call<void>(`/domains/${encodeURIComponent(hostname)}`, { method: 'DELETE' }),
   /** One page of the app's audit trail, newest first; `nextCursor` walks older activity. */
   appEvents: (scopeId: string, opts?: PageOpts) =>
     call<ListPage<AppEvent>>(`/apps/${encodeURIComponent(scopeId)}/events${pageQs(opts)}`),
@@ -2003,20 +1993,6 @@ export const api = {
     ),
   /** The account-level integrations overview: all providers, connections, and connectable apps. */
   integrations: () => call<AccountIntegrationsView>('/integrations'),
-  /** The app's hostname bindings + the vertical's declared surfaces (Domains tab). */
-  appHostnames: (scopeId: string) => call<AppHostnamesView>(`/apps/${encodeURIComponent(scopeId)}/hostnames`),
-  /** Bind a hostname to a surface: platform-minted (`domain` omitted, lands active) or a custom domain (lands pending). */
-  addAppHostname: (scopeId: string, input: { surface: string; domain?: string }) =>
-    call<AppHostnameRow>(`/apps/${encodeURIComponent(scopeId)}/hostnames`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  /** Unbind one hostname (the default hostname is refused). */
-  removeAppHostname: (scopeId: string, hostname: string) =>
-    call<{ deleted: string }>(
-      `/apps/${encodeURIComponent(scopeId)}/hostnames/${encodeURIComponent(hostname)}`,
-      { method: 'DELETE' },
-    ),
   /** The app's Identity choice (secret redacted) + its OIDC callback URL. */
   appAuth: (scopeId: string) => call<AppAuthView>(`/apps/${encodeURIComponent(scopeId)}/auth`),
   /** Update the Identity choice; a blank clientSecret keeps the stored one. */

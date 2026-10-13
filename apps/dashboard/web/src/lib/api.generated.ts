@@ -140,6 +140,20 @@ export interface InstallStep {
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface DashboardClient {
   /**
+   * Bind a hostname to a surface of this app: platform-minted (lands active) or a custom domain (lands pending)
+   *
+   * `POST /apps/{scopeId}/hostnames` — `dashboard/add-app-hostname`
+   */
+  addAppHostname(input: { scopeId: string; surface: string; domain?: string }): Promise<{ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
+
+  /**
+   * Add a custom domain to one of this team's apps; lands verifying with the DNS records to publish
+   *
+   * `POST /domains` — `dashboard/add-domain`
+   */
+  addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: "pending" | "verifying" | "active" | "failed"; statusNote?: string | null; validationRecords?: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
+
+  /**
    * Suppress with a rule: a scope plus an expiry, audited by the plane
    *
    * `POST /findings/rules` — `dashboard/create-finding-rule`
@@ -175,11 +189,25 @@ export interface DashboardClient {
   listAppEvents(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ entries: AppEvent[]; nextCursor: string | null }>;
 
   /**
+   * An app's hostname bindings, the surfaces its vertical declares, and its untouchable default
+   *
+   * `GET /apps/{scopeId}/hostnames` — `dashboard/list-app-hostnames`
+   */
+  listAppHostnames(input: { scopeId: string }): Promise<{ bindings: ({ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] })[]; surfaces: { name: string; label: string }[]; defaultHostname: string | null }>;
+
+  /**
    * One page of this team's apps, newest first
    *
    * `GET /apps` — `dashboard/list-apps`
    */
   listApps(input: { limit?: number; cursor?: string }): Promise<{ entries: AppRow[]; nextCursor: string | null }>;
+
+  /**
+   * One page of this team's custom domains (the platform default each app rides is not listed)
+   *
+   * `GET /domains` — `dashboard/list-domains`
+   */
+  listDomains(input: { limit?: number; cursor?: string }): Promise<{ entries: ({ hostname: string; appScopeId: string; app: string; surface: string; status: "pending" | "verifying" | "active" | "failed"; statusNote: string | null; primary: boolean; createdAt: string; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] })[]; nextCursor: string | null }>;
 
   /**
    * This team's suppress rules; `active` keeps the unexpired ones
@@ -210,6 +238,20 @@ export interface DashboardClient {
   removeApp(input: { id: string }): Promise<{ removed: true }>;
 
   /**
+   * Unbind one hostname (409 for the app's default hostname)
+   *
+   * `DELETE /apps/{scopeId}/hostnames/{hostname}` — `dashboard/remove-app-hostname`
+   */
+  removeAppHostname(input: { scopeId: string; hostname: string }): Promise<{ deleted: string }>;
+
+  /**
+   * Remove a custom domain: releases the Cloudflare custom hostname and drops the binding
+   *
+   * `DELETE /domains/{hostname}` — `dashboard/remove-domain`
+   */
+  removeDomain(input: { hostname: string }): Promise<{ deleted: string }>;
+
+  /**
    * Finish the install of an app stuck provisioning, in place (409 unless it is)
    *
    * `POST /apps/{scopeId}/resume` — `dashboard/resume-app`
@@ -236,6 +278,13 @@ export interface DashboardClient {
    * `PUT /findings/{id}/status` — `dashboard/set-finding-status`
    */
   setFindingStatus(input: { id: string; status: "open" | "acked" | "resolved" }): Promise<FindingEntry>;
+
+  /**
+   * Re-poll a custom domain's issuance ("check again")
+   *
+   * `POST /domains/{hostname}/verify` — `dashboard/verify-domain`
+   */
+  verifyDomain(input: { hostname: string }): Promise<{ hostname: string; status: "pending" | "verifying" | "active" | "failed"; statusNote?: string | null; validationRecords?: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
 }
 
 /**
@@ -297,6 +346,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
     await parse(await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body));
 
   return {
+    addAppHostname: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "POST", omit(input, ["scopeId"]), undefined),
+    addDomain: (input: Args) =>
+      send("/domains", "POST", input, undefined),
     createFindingRule: (input: Args) =>
       send("/findings/rules", "POST", input, undefined),
     getAppInstallSteps: (input: Args) =>
@@ -307,8 +360,12 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/audit`, "GET", undefined, omit(input, ["scopeId"])),
     listAppEvents: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/events`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppHostnames: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "GET", undefined, omit(input, ["scopeId"])),
     listApps: (input: Args) =>
       send("/apps", "GET", undefined, input),
+    listDomains: (input: Args) =>
+      send("/domains", "GET", undefined, input),
     listFindingRules: (input: Args) =>
       send("/findings/rules", "GET", undefined, input),
     listFindings: (input: Args) =>
@@ -317,6 +374,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/audit", "GET", undefined, input),
     removeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.id))}`, "DELETE", undefined, omit(input, ["id"])),
+    removeAppHostname: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames/${encodeURIComponent(String(input.hostname))}`, "DELETE", undefined, omit(input, ["scopeId","hostname"])),
+    removeDomain: (input: Args) =>
+      send(`/domains/${encodeURIComponent(String(input.hostname))}`, "DELETE", undefined, omit(input, ["hostname"])),
     resumeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/resume`, "POST", omit(input, ["scopeId"]), undefined),
     retryApp: (input: Args) =>
@@ -325,5 +386,7 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
+    verifyDomain: (input: Args) =>
+      send(`/domains/${encodeURIComponent(String(input.hostname))}/verify`, "POST", omit(input, ["hostname"]), undefined),
   } as unknown as DashboardClient;
 }
