@@ -8,6 +8,7 @@ import { platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@
 import {
   createControlPlaneApi,
   DEV_ACTOR_HEADER,
+  reconcileOutcomeOf,
   UNSAFE_devPlatformActorAuth,
   versionReachedAt,
   type VerticalClient,
@@ -199,5 +200,304 @@ describe('scope reconcile receipt (#1653)', () => {
     expect(res.status).toBe(200);
     expect(reconciledBy.get(s)).toBe('by-slug');
     expect((await host.admin.getScopeRecord(staff, T, s))?.provisionedVersionId).toBe(v1);
+  });
+});
+
+/**
+ * #2185: the receipt now carries whether the reconcile FINISHED the version's retirements, and
+ * the gate judges an install from that. Before, the reconcile's answer about its retirements
+ * never reached the control plane at all, so a retirement left open was recorded as done and
+ * never run again. Through the real routes, against a real directory.
+ */
+describe('the retirements a receipt records as finished (#2185)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const T = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const SLUG = 'acme-retiring';
+  const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const HOLDER = { table: 'bind_records', idColumn: 'id', principalColumn: 'principal' };
+  const retires = { entityType: 'contact', permissions: [], retired: ['contact:read-own'], bootstrap: true, holder: HOLDER };
+  const keeps = { entityType: 'contact', permissions: ['contact:read-own'], bootstrap: true, holder: HOLDER };
+  let retiring: string;
+  let plain: string;
+  /** What the deployment answers about its retirements, and the shapes it was sent. */
+  let answer: { retirementsLeftOpen?: number; boundShapeTypes?: string[] } = {};
+  const sent = new Map<string, unknown>();
+
+  const client = {
+    reconcileInstance: async (input: { scopeId: string; entityGrants?: unknown }) => {
+      sent.set(input.scopeId, input.entityGrants);
+      return { tenantId: T, scopeId: input.scopeId, owner, ...answer };
+    },
+    provisionInstance: async (input: { scopeId: string }) => ({ tenantId: T, scopeId: input.scopeId, owner }),
+    restoreScope: async (_t: string, s: string) => {
+      if (restoreFails) {
+        // A sweep reconcile lands between the clear before the load and this failure (round 3).
+        await host.admin.markScopeProvisioned(staff, T, s as ScopeId, retiring, { retirementsFinished: true });
+        throw new Error('the deployment lost the restore after the host loaded it');
+      }
+      return { tables: 0 };
+    },
+  } as unknown as VerticalClient;
+  let restoreFails = false;
+  const app = () => createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { [SLUG]: client } });
+
+  const scopeOn = async (version: string): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: T, scopeId: s, vertical: SLUG });
+    await host.admin.activateScope(staff, T, s);
+    await host.admin.bindScopeVersion(staff, T, s, version);
+    return s;
+  };
+  const finished = async (s: ScopeId) => {
+    const r = await host.admin.getScopeRecord(staff, T, s);
+    return { provisioned: r?.provisionedVersionId, finished: r?.retirementsFinishedVersionId ?? null };
+  };
+  const reconcile = async (s: ScopeId, says: { retirementsLeftOpen?: number; boundShapeTypes?: string[] }) => {
+    answer = says;
+    const res = await app().request(`/tenants/${T}/scopes/${s}/provision`, { method: 'POST', headers: auth });
+    expect({ status: res.status, body: res.status === 200 ? null : await res.text() }).toEqual({ status: 200, body: null });
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-retired-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: T, slug: 'acme-r', name: 'Acme' });
+    await host.admin.registerVertical(staff, { slug: SLUG, name: 'Acme retiring', source: 'cli', ownerTenant: null });
+    const pub = async (version: string, entityGrants: object[]): Promise<string> => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: SLUG, version, manifestDigest: `m-${version}`, permissionDigest: `p-${version}`, migrationDigest: 'g',
+        deploymentRef: `${SLUG}-${version}`,
+        manifestJson: JSON.stringify({
+          version,
+          entry: 'worker.js',
+          compatibilityDate: '2025-01-01',
+          digests: { manifest: `m-${version}`, permission: `p-${version}`, migration: 'g' },
+          registry: { permissions: [], roles: [], entityGrants },
+        }),
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    retiring = await pub('2.0.0', [retires]);
+    plain = await pub('1.0.0', [keeps]);
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records the version finished when the deployment answers it left no retirement open', async () => {
+    const s = await scopeOn(retiring);
+    await reconcile(s, { retirementsLeftOpen: 0 });
+    // The reviewed shapes went out, the retirement among them.
+    expect(sent.get(s)).toEqual([retires]);
+    expect(await finished(s)).toEqual({ provisioned: retiring, finished: retiring });
+  });
+
+  it('(a) writes the receipt but not finished when it left a retirement open, so the sweep asks again', async () => {
+    const s = await scopeOn(retiring);
+    await reconcile(s, { retirementsLeftOpen: 1 });
+    expect(await finished(s)).toEqual({ provisioned: retiring, finished: null });
+    const behind: string[] = [];
+    await runPlatformSweep(host, {
+      actor: staff,
+      fetch: (() => Promise.reject(new Error('unused'))) as never,
+      sweepers: {},
+      drainRetries: false,
+      runSchedules: false,
+      reconcileMigrations: false,
+      gcSnapshots: false,
+      reconcileScopeFn: async (_t, id) => {
+        behind.push(id);
+        return 'unsupported';
+      },
+    });
+    expect(behind).toContain(s);
+    // The next reconcile finishes it.
+    await reconcile(s, { retirementsLeftOpen: 0 });
+    expect(await finished(s)).toEqual({ provisioned: retiring, finished: retiring });
+  });
+
+  it('counts an answer without the report (a vertical-host that predates it) as not finished, unless the version retires nothing', async () => {
+    const old = await scopeOn(retiring);
+    await reconcile(old, {});
+    expect(await finished(old)).toEqual({ provisioned: retiring, finished: null });
+    const nothingToRetire = await scopeOn(plain);
+    await reconcile(nothingToRetire, {});
+    expect(await finished(nothingToRetire)).toEqual({ provisioned: plain, finished: plain });
+  });
+
+  it('a provision of an already-bound scope runs no retirement: finished only when its version retires nothing', async () => {
+    for (const [version, expected] of [[retiring, null], [plain, plain]] as const) {
+      const s = await scopeOn(version);
+      const res = await app().request(`/verticals/${SLUG}/instances`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ tenantId: T, scopeId: s, owner, slug: 'acme-r', name: 'Acme' }),
+      });
+      expect(res.status).toBe(201);
+      expect(await finished(s)).toEqual({ provisioned: version, finished: expected });
+    }
+  });
+
+  /**
+   * Review of #2218, round 1: a governed restore replays a dump that may predate a finished
+   * retirement. Its tuples bring the retired key back and its spine has no record the retirement
+   * ran, so the directory must stop saying it finished, or a later drop strands the holder. The
+   * bare receipt of #2181 had the same gap; the restore now clears it, as the rewind does.
+   */
+  it('a restore of a pre-retirement dump clears the receipt and the finished version, so the drop waits for the sweep', async () => {
+    const binding = { ...keeps, holder: HOLDER, bind: { permission: 'contact:invite' } };
+    const pubShaped = async (version: string, entityGrants: object[]) => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: SLUG, version, manifestDigest: `m-${version}`, permissionDigest: `p-${version}`, migrationDigest: 'g',
+        deploymentRef: `${SLUG}-${version}`,
+        manifestJson: JSON.stringify({
+          version, entry: 'worker.js', compatibilityDate: '2025-01-01',
+          digests: { manifest: `m-${version}`, permission: `p-${version}`, migration: 'g' },
+          registry: { permissions: [], roles: [], entityGrants },
+        }),
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const binds = await pubShaped('3.0.0', [binding]);
+    const retiresAll = await pubShaped('3.1.0', [{ ...binding, permissions: [], retired: ['contact:read-own'] }]);
+    const dropped = await pubShaped('3.2.0', []);
+    const s = await scopeOn(binds);
+    // The backup, taken before the retirement.
+    const backup = await host.admin.exportScope(staff, T, s);
+    await host.admin.bindScopeVersion(staff, T, s, retiresAll);
+    await reconcile(s, { retirementsLeftOpen: 0 });
+    expect(await finished(s)).toEqual({ provisioned: retiresAll, finished: retiresAll });
+    // The tenant restores the backup.
+    const res = await app().request(`/tenants/${T}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(backup) });
+    expect(res.status).toBe(200);
+    expect(await finished(s)).toEqual({ provisioned: null, finished: null });
+    // So the drop is refused until the install reconciles again…
+    const refused = await host.admin.bindScopeVersion(staff, T, s, dropped).then(() => null, (e: unknown) => e as Error);
+    expect(refused?.message).toMatch(/drops the shape.*no reconcile receipt/);
+    // …and passes once it has, with its retirements finished.
+    await reconcile(s, { retirementsLeftOpen: 0 });
+    await host.admin.bindScopeVersion(staff, T, s, dropped);
+    expect((await host.admin.getScopeRecord(staff, T, s))?.verticalVersionId).toBe(dropped);
+  });
+
+  /**
+   * Review of #2218, round 2: steps after the load can still throw (the deployment's half of the
+   * restore, the switch re-assert), and the route then answers 422 over data that has landed. The
+   * receipt is cleared before the load, after it, and on a failure (round 3: a sweep reconcile can
+   * write it between the clear before the load and the throw), so such a failure cannot leave it set.
+   */
+  it('a restore that fails after the data landed still leaves the receipt cleared', async () => {
+    const s = await scopeOn(retiring);
+    await reconcile(s, { retirementsLeftOpen: 0 });
+    expect(await finished(s)).toEqual({ provisioned: retiring, finished: retiring });
+    const backup = await host.admin.exportScope(staff, T, s);
+    restoreFails = true;
+    try {
+      const res = await app().request(`/tenants/${T}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(backup) });
+      expect(res.status).toBe(422);
+    } finally {
+      restoreFails = false;
+    }
+    expect(await finished(s)).toEqual({ provisioned: null, finished: null });
+  });
+
+  it('reads only a count the deployment actually sent', () => {
+    expect(reconcileOutcomeOf([retires as never], { retirementsLeftOpen: 0 })).toEqual({ retirementsFinished: true });
+    expect(reconcileOutcomeOf([retires as never], { retirementsLeftOpen: 2 })).toEqual({ retirementsFinished: false });
+    expect(reconcileOutcomeOf([retires as never], null)).toEqual({ retirementsFinished: false });
+    // A sharing shape's `retired` is never run, so it is nothing to wait for.
+    expect(reconcileOutcomeOf([{ entityType: 'list', permissions: [], retired: ['list:read'] } as never], null)).toEqual({
+      retirementsFinished: true,
+      boundShapes: [],
+    });
+    expect(reconcileOutcomeOf(undefined, null)).toEqual({ retirementsFinished: true, boundShapes: [] });
+  });
+
+  /**
+   * #2184: the receipt also carries which binding shapes links have bound in the scope, so the gate
+   * can hold a shape whose `bind` a later version dropped. Recorded only for the version's
+   * table-held bootstrap shapes, and unknown where the deployment did not say.
+   */
+  describe('the binding shapes a receipt records as bound (#2184)', () => {
+    const bound = async (s: ScopeId) => (await host.admin.getScopeRecord(staff, T, s))?.boundShapes ?? null;
+
+    it('records the types the deployment answered, of the shapes its version holds by a table', async () => {
+      const s = await scopeOn(plain);
+      // `other` is a type this version does not hold by a table: not recorded.
+      await reconcile(s, { retirementsLeftOpen: 0, boundShapeTypes: ['contact', 'other'] });
+      expect(await bound(s)).toEqual({ versionId: plain, types: ['contact'] });
+      await reconcile(s, { retirementsLeftOpen: 0, boundShapeTypes: [] });
+      expect(await bound(s)).toEqual({ versionId: plain, types: [] });
+    });
+
+    it('a restore clears them with the receipt, a failed one included: the data loaded may predate a binding', async () => {
+      for (const fails of [false, true]) {
+        const s = await scopeOn(plain);
+        await reconcile(s, { retirementsLeftOpen: 0, boundShapeTypes: ['contact'] });
+        expect(await bound(s)).toEqual({ versionId: plain, types: ['contact'] });
+        const backup = await host.admin.exportScope(staff, T, s);
+        restoreFails = fails;
+        try {
+          const res = await app().request(`/tenants/${T}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(backup) });
+          expect(res.status).toBe(fails ? 422 : 200);
+        } finally {
+          restoreFails = false;
+        }
+        expect(await bound(s)).toBeNull();
+      }
+    });
+
+    it('records nothing (unknown) for an answer without the list, unless the version holds no shape by a table', async () => {
+      const s = await scopeOn(plain);
+      await reconcile(s, { retirementsLeftOpen: 0 });
+      expect(await bound(s)).toBeNull();
+      const sharing = { id: ulid() };
+      await host.admin.publishVersion(staff, {
+        id: sharing.id, verticalSlug: SLUG, version: '4.0.0', manifestDigest: 'm-4', permissionDigest: 'p-4', migrationDigest: 'g',
+        deploymentRef: `${SLUG}-4.0.0`,
+        manifestJson: JSON.stringify({
+          version: '4.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
+          digests: { manifest: 'm-4', permission: 'p-4', migration: 'g' },
+          registry: { permissions: [], roles: [], entityGrants: [{ entityType: 'list', permissions: ['list:read'] }] },
+        }),
+      });
+      await host.admin.admitVersion(staff, sharing.id);
+      const other = await scopeOn(sharing.id);
+      await reconcile(other, { retirementsLeftOpen: 0 });
+      expect(await bound(other)).toEqual({ versionId: sharing.id, types: [] });
+    });
+
+    it('a provision of an already-bound scope asks nothing: recorded only when its version holds no shape by a table', async () => {
+      const s = await scopeOn(plain);
+      const res = await app().request(`/verticals/${SLUG}/instances`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ tenantId: T, scopeId: s, owner, slug: 'acme-r', name: 'Acme' }),
+      });
+      expect(res.status).toBe(201);
+      expect(await bound(s)).toBeNull();
+    });
+
+    it('reads the answer through `reconcileOutcomeOf`: the reported types the sent shapes hold by a table, sorted', () => {
+      const ticket = { entityType: 'ticket', permissions: ['ticket:read'], bootstrap: true, holder: HOLDER };
+      expect(reconcileOutcomeOf([ticket, keeps] as never, { retirementsLeftOpen: 0, boundShapeTypes: ['ticket', 'contact', 'gone'] })).toEqual({
+        retirementsFinished: true,
+        boundShapes: ['contact', 'ticket'],
+      });
+      expect(reconcileOutcomeOf([keeps] as never, { retirementsLeftOpen: 0 })).toEqual({ retirementsFinished: true });
+      // A 'grantee' or 'self' shape is not held by a table: nothing to ask.
+      for (const holder of ['grantee', 'self']) {
+        expect(reconcileOutcomeOf([{ ...keeps, holder }] as never, null)).toEqual({ retirementsFinished: true, boundShapes: [] });
+      }
+    });
   });
 });

@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { errorCodeOf, platformActorId, tenantId } from '@substrat-run/contracts';
 import { ulid, type SqlValue } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import type { D1TenantStores } from '../src/d1.js';
 import { warmControlPlane } from './do-warmup.js';
 

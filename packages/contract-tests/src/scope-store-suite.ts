@@ -269,6 +269,8 @@ export function scopeStoreContractSuite(
 
     it('a restore that names an unbound store writes nothing', async () => {
       const store = await host.getScopeStore(principal, tenant, scopeB, 'GRAPH');
+      // scopeB carries the counter the tests above left behind.
+      const before = Number(await store.invoke('read'));
       await store.invoke('increment', { by: 3 });
       const dump = await host.admin.exportScope(staff, tenant, scopeB);
       await store.invoke('increment', { by: 1 });
@@ -280,7 +282,8 @@ export function scopeStoreContractSuite(
         (err: unknown) => err,
       );
       expect(errorCodeOf(refusal)).toBe('not_found');
-      expect(await store.invoke('read')).toBe(4);
+      // Neither the restore of the dump's GRAPH (before + 3) nor anything else was written.
+      expect(await store.invoke('read')).toBe(before + 4);
     });
 
     it('a dump that names an unbound store is refused before a scope is created', async () => {

@@ -551,6 +551,12 @@ It lived in the kernel until #1978; nothing in it needs a kernel guarantee.
   is never logged twice. `pnpm lint:invocation-log` refuses a missing, late or secretless mount
   (#1418). The line's shape, `InvocationLogLine`, is the kernel's
   ([`invocation-line.ts`](/reference/kernel#trusting-the-edges)), re-exported here.
+- **`requestIdOf(c)`** — the id the stamp minted for the request a Hono context serves
+  (#2192), or `undefined` on a request nothing stamped. The same value goes out on every
+  response the stamped request gets, as `x-substrat-request-id` (`REQUEST_ID_HEADER` in
+  contracts), and on every problem body the platform renders for it, as `requestId`: it is the
+  line's `invocationId`, the id the dashboard's request view opens. For a vertical to repeat in
+  an envelope or a log line of its own; `ctx.requestId` is the same value inside an operation.
 - **`assertPlatformCall`**, **`PlatformCallError`** — is the platform itself calling? Defined
   in [`@substrat-run/contracts/wire-auth`](/reference/contracts#subpaths-that-import-nothing),
   because the control plane checks it too, and re-exported here.

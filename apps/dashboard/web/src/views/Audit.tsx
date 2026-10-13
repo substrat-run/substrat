@@ -162,7 +162,7 @@ export function AuditLog({
     } catch (e) {
       if (gen !== generation.current) return;
       // The actions still show; the page says the refusals are missing rather than implying none.
-      setRefusalsFailed(e instanceof ApiError ? `${e.status}: ${e.message}` : String(e));
+      setRefusalsFailed(e instanceof ApiError ? `${e.status}: ${e.message}${e.requestId ? `, request id ${e.requestId}` : ''}` : String(e));
       setRefusals({ entries: [], more: false });
     }
   };
@@ -461,7 +461,7 @@ function RefusalRow({ refusal: r, scopeId }: { refusal: Refusal; scopeId: string
               navigate(obsPath({ app: scopeId, view: 'logs', req: r.invocationId!, reqAt: String(Date.parse(r.at)) }));
             }}
             style={{ ...tag, color: 'var(--text-link)', textDecoration: 'none' }}
-            title="Open the request that was refused"
+            title={`Open the request that was refused (${r.invocationId})`}
           >
             request {shortId(r.invocationId)}
           </a>
