@@ -7355,8 +7355,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses,
-        // #2210: a declared scope store adds no binding to either upload (L1); deploy.test.ts holds
-        // `verticalUploadBindings` to that with a kind registered.
+        // #2210: a declared scope store adds no binding to either upload (L1), held at both call
+        // sites with a kind registered by upload-scope-store-bindings.test.ts.
         bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: storeBindings }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
