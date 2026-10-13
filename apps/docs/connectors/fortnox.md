@@ -166,7 +166,7 @@ exactly like a spent code.
 `fortnoxConsentUrl` builds the URL the admin is sent to:
 
 ```ts
-fortnoxConsentUrl({ clientId, redirectUri, state, scopes: ['bookkeeping', 'companyinformation'] });
+fortnoxConsentUrl({ clientId, redirectUri, state, scopes: ['bookkeeping', 'companyinformation', 'supplierinvoice'] });
 // always sets account_type=service and access_type=offline
 ```
 

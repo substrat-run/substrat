@@ -83,7 +83,7 @@ export type FortnoxSecret = z.infer<typeof fortnoxSecret>;
 export function fortnoxConsentUrl(input: {
   clientId: string;
   redirectUri: string;
-  /** e.g. `['bookkeeping', 'companyinformation']` — `bookkeeping` is what SIE export needs. */
+  /** e.g. `['bookkeeping', 'companyinformation', 'supplierinvoice']` — `bookkeeping` is what SIE export needs, `supplierinvoice` reads and approves supplier invoices. */
   scopes: readonly string[];
   /** Opaque round-trip value; the caller correlates its own record by it. */
   state: string;
