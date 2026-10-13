@@ -771,10 +771,18 @@ export interface StorageGaugeSweepOptions {
    * Scope stores read in the same pass as the database, and only for a scope that pass
    * already decided was due (#2212). Absent means this deployment does not sample stores.
    * `null` declines, the way `read` does. A throw records the database sample and
-   * leaves that day's store rows as they are: the attempt carries the error, and a
-   * deployment that cannot read stores (`StorageReadUnsupported`) stays out of the digest.
+   * leaves that day's store rows as they are: the attempt carries the error. A deployment
+   * that cannot read stores (`StorageReadUnsupported`) is neither: its attempt carries no
+   * error, so the gauge does not count the scope as failing, and it stays out of the digest.
+   * A read past `storeReadTimeoutMs` is an ordinary failure.
    */
   readStores?: (scope: Scope) => Promise<{ binding: string; bytes: number }[] | null>;
+  /**
+   * How long one scope's store read may take, in ms (#2212). Past it the read counts as failed
+   * and the database sample is kept: one hung store must not hold the pass past its invocation
+   * limit and lose every sample the batch read. Default `STORE_READ_TIMEOUT_MS`.
+   */
+  storeReadTimeoutMs?: number;
   /** The instant the pass judges age against. Default the wall clock. */
   now?: () => string;
 }
@@ -795,10 +803,26 @@ export class StorageReadUnsupported extends Error {
 const isUnsupported = (err: unknown): boolean =>
   typeof err === 'object' && err !== null && (err as { unsupported?: unknown }).unsupported === true;
 
+/** `work`, or a rejection once `ms` have passed. The work is not cancelled; the pass stops waiting. */
+async function withinDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The storage-gauge phase's per-pass bound when `batch` is unset. */
 export const STORAGE_SAMPLE_BATCH = 100;
 /** How old a reading may get before the phase reads the scope again, by default. */
 export const STORAGE_SAMPLE_MAX_AGE_MS = 86_400_000;
+
+/** How long one scope's store read may take before it counts as failed, by default (#2212). */
+export const STORE_READ_TIMEOUT_MS = 15_000;
 
 /** What the storage-gauge phase did in one pass (#1524). */
 export interface StorageGaugeSweepReport {
@@ -810,13 +834,19 @@ export interface StorageGaugeSweepReport {
   due: number;
   /** Due scopes left for a later pass because the batch was full. */
   deferred: number;
-  /** Size reads that answered, that failed, and that the reader declined (`null`). */
+  /**
+   * Scopes tried, by how their attempt was recorded: without an error, with one, or declined
+   * (`null`). `read + failed + skipped` is the scopes tried. A store read that fails counts in
+   * `failed` even though the scope's database sample is recorded with it (#2212).
+   */
   read: number;
   failed: number;
   skipped: number;
   /**
-   * Of `failed`, the reads whose deployment cannot read a size (`StorageReadUnsupported`): a
-   * standing condition, recorded on the scope but kept out of `errors`.
+   * Reads the deployment cannot make (`StorageReadUnsupported`): a standing condition, kept out
+   * of `errors`. A database read that is unsupported is also in `failed`. A store read that is
+   * unsupported is not a failure and not a size of 0 (#2212): its scope counts in `read`, and its
+   * attempt carries no error, so the gauge does not show the scope as failing.
    */
   unsupported: number;
   /** Sample rows the directory wrote (a reading for a scope reaped meanwhile writes none). */
@@ -3122,13 +3152,22 @@ async function sweepStorageGauge(
           let stores: { binding: string; bytes: number }[] | null | undefined;
           if (gauge.readStores) {
             try {
-              stores = await gauge.readStores(s);
+              stores = await withinDeadline(
+                gauge.readStores(s),
+                gauge.storeReadTimeoutMs ?? STORE_READ_TIMEOUT_MS,
+                `scope store read of ${s.id}`,
+              );
             } catch (err) {
-              out.read += 1;
+              if (isUnsupported(err)) {
+                // Not a failure, and not a size: the database sample stands, the store rows stay.
+                out.read += 1;
+                out.unsupported += 1;
+                attempts.push({ ...attempt, bytes });
+                return;
+              }
               out.failed += 1;
               attempts.push({ ...attempt, bytes, error: message(err) });
-              if (isUnsupported(err)) out.unsupported += 1;
-              else report.errors.push({ kind: 'storage', id: s.id, error: message(err) });
+              report.errors.push({ kind: 'storage', id: s.id, error: message(err) });
               return;
             }
           }
