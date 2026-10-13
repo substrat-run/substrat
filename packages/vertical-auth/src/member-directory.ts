@@ -94,6 +94,21 @@ export function getInvite(sql: RegistrySql, scopeId: string, principal: string):
   return r ? inviteRowOf(r) : null;
 }
 
+/**
+ * How many LEGACY hash-only invites are still pending at a scope (#2175): unclaimed, and no
+ * `capability_id`. Pending is exactly `claimed = 0` — an invite has no expiry — and a withdrawal
+ * (or a member's removal, which withdraws first) DELETES the row, so neither is counted. One
+ * indexed COUNT (`invite_by_scope`) over the scope's own few rows; it reads no address, token or
+ * principal. What the legacy branch of `acceptMemberInvite` still has to serve.
+ */
+export function countLegacyInvites(sql: RegistrySql, scopeId: string): number {
+  const r = [...sql.exec(
+    'SELECT COUNT(*) AS n FROM invite WHERE scope_id = ? AND claimed = 0 AND capability_id IS NULL',
+    scopeId,
+  )][0];
+  return Number(r?.n ?? 0);
+}
+
 export function inviteExists(sql: RegistrySql, scopeId: string, tokenHash: string): boolean {
   return [...sql.exec('SELECT 1 FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0', scopeId, tokenHash)].length > 0;
 }

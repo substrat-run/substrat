@@ -11,6 +11,7 @@ import {
   MEMBER_DIRECTORY_DDL,
   claimInvite,
   claimInviteByCapability,
+  countLegacyInvites,
   createInvite,
   getInvite,
   inviteExists,
@@ -114,6 +115,44 @@ describe('a legacy invite — minted before #1686, by hash alone', () => {
   it('withdrawing it answers no capability, and it accepts no more', () => {
     expect(revokeInvite(sql, SCOPE, BOB)).toBeNull();
     expect(claimInvite(sql, SCOPE, 'sub-bob', 'hash-bob')).toBeNull();
+  });
+});
+
+describe('countLegacyInvites (#2175)', () => {
+  it('counts unclaimed hash-only invites at the scope — and only those', () => {
+    expect(countLegacyInvites(sql, SCOPE)).toBe(0);
+    createInvite(sql, SCOPE, BOB, 'editor', 'bob@acme.example', 'hash-bob');
+    createInvite(sql, SCOPE, '01PRINCIPALCAL', 'editor', null, 'hash-cal');
+    expect(countLegacyInvites(sql, SCOPE)).toBe(2);
+    // Not counted: a capability-era invite, and a legacy one at another scope.
+    createInvite(sql, SCOPE, ANN, 'editor', null, 'hash-ann', CAP);
+    createInvite(sql, OTHER_SCOPE, '01PRINCIPALDAN', 'editor', null, 'hash-dan');
+    expect(countLegacyInvites(sql, SCOPE)).toBe(2);
+    expect(countLegacyInvites(sql, OTHER_SCOPE)).toBe(1);
+  });
+
+  it('stops counting an invite once it is claimed', () => {
+    createInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob');
+    expect(claimInvite(sql, SCOPE, 'sub-bob', 'hash-bob')).toBe(BOB);
+    expect(countLegacyInvites(sql, SCOPE)).toBe(0);
+  });
+
+  it('stops counting an invite once it is withdrawn — a withdrawal, and so a member removal, deletes the row', () => {
+    createInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob');
+    createInvite(sql, SCOPE, '01PRINCIPALCAL', 'editor', null, 'hash-cal');
+    revokeInvite(sql, SCOPE, BOB);
+    expect(countLegacyInvites(sql, SCOPE)).toBe(1);
+    expect(listInvites(sql, SCOPE).filter((i) => i.capabilityId === null)).toHaveLength(1);
+  });
+
+  it('counts a pre-#1686 row the migration left without a capability', () => {
+    const db = new Database(':memory:');
+    const old = sqlOver(db);
+    for (const stmt of MEMBER_DIRECTORY_DDL.filter((s) => !INVITE_DDL.includes(s))) db.exec(stmt);
+    db.exec('CREATE TABLE invite (token_hash TEXT PRIMARY KEY, scope_id TEXT NOT NULL, principal TEXT NOT NULL, role_key TEXT NOT NULL, email TEXT, claimed INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0)');
+    db.exec("INSERT INTO invite (token_hash, scope_id, principal, role_key) VALUES ('h', '01SCOPEDESK', '01PRINCIPALBOB', 'editor')");
+    migrateInvites(old);
+    expect(countLegacyInvites(old, SCOPE)).toBe(1);
   });
 });
 

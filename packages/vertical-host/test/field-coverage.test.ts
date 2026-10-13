@@ -14,6 +14,7 @@ import {
   encodeInvocationRecord,
   FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
+  REQUEST_ID_HEADER,
 } from '@substrat-run/contracts';
 import { withInvocationLog, type InvocationRecord } from '../src/invocation-log.js';
 import { ARMED, DISPATCH, ENV, quietly, ROUTER_SECRET as SECRET_ROUTER, routed, stampInto } from './routed.js';
@@ -408,7 +409,10 @@ describe('what reaches the line and the router (#1331)', () => {
     expect(armed.body).toBe(unarmed.body);
     // #1923: the walk observes only. The caller gets the same status, headers and body.
     expect(armed.res.status).toBe(unarmed.res.status);
-    expect([...armed.res.headers]).toEqual([...unarmed.res.headers]);
+    // Every header but the request id, which is each request's own (#2192).
+    const besidesId = (h: Headers) => [...h].filter(([name]) => name !== REQUEST_ID_HEADER);
+    expect(besidesId(armed.res.headers)).toEqual(besidesId(unarmed.res.headers));
+    expect(armed.res.headers.get(REQUEST_ID_HEADER)).not.toBe(unarmed.res.headers.get(REQUEST_ID_HEADER));
   });
 
   it('a forged arming header is never walked, and files no line under any tenant (#1923)', async () => {

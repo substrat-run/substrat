@@ -166,7 +166,7 @@ import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backf
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
-import { reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
+import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
 import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
@@ -4039,8 +4039,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // button and the automatic phase have to write the same receipt, or pressing the
       // button means nothing to the thing that watches. Both name it with
       // `versionReachedAt`, from the deployment each actually reached.
+      // #2185: with whether it finished the version's retirements, from the deployment's answer.
       if (ranAs) {
-        await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, ranAs);
+        await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, ranAs, reconcileOutcomeOf(entityGrants, result));
       }
       // The reconcile succeeded; a store that did not mint rides back as a diagnosis
       // (`substrat scope provision` prints it, and `/health` keeps reporting the gap
@@ -5902,6 +5903,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const origin = { tenantId: tenantIdSchema.parse(dump.tenantId), scopeId: scopeIdSchema.parse(dump.scopeId) };
       const tables = await openDump(dump.tables, sealerFor(c, origin.tenantId, origin.scopeId));
       const landing = { ...dump, tables };
+      // #2185: cleared before the load as well as after it (below): a step after the load can still
+      // throw (the deployment's half, the re-assert), and the data that landed may predate a reconcile.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
       const vertical = await verticalForScope(c, scope);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
@@ -5916,8 +5920,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // directory's record puts it back off now, not at the next reconcile. Where the
       // deployment already did (#1742), this finds it done and audits what it reported.
       await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored?.switchedOff });
+      // #2185: the dump may predate what a reconcile did here, a finished retirement included: its
+      // tuples bring a retired key back and its spine has no record that the retirement ran. So the
+      // receipt is cleared, as the rewind clears it, and with it the version whose retirements
+      // finished: the install reads as not reconciled, and the sweep's next pass reconciles it.
+      // Again here, after the load, for a sweep reconcile that wrote the receipt while it ran.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       return c.json({ restored: scopeId, tables: tables.length });
     } catch (e) {
+      // #2185: and once more on the way out of a failure, for a sweep reconcile that wrote the
+      // receipt between the clear above and the throw. Clearing is always safe (at worst one more
+      // reconcile); a clear that fails here must not hide the restore's own error.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, failedWith(c, e));
       }
@@ -6311,13 +6325,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: `the store scope ${scopeId} routes to in '${liveScript}' is not a live store (wiped or kept); nothing was resolved` }, 409);
     }
     const dump = await retryTransient(() => holder.exportScope(scopeId));
-    const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
-      scopeId,
-      exact: true,
-      loadStamp: ulid(),
-      expect: liveMarker,
-    });
-    await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
+    // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
+    // re-assert) cannot leave the receipt set over older data.
+    await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
+    try {
+      const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
+        scopeId,
+        exact: true,
+        loadStamp: ulid(),
+        expect: liveMarker,
+      });
+      await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
+    } catch (e) {
+      // And on a failure, for a sweep reconcile that wrote the receipt after the clear above.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
+      throw e;
+    }
+    // #2185: the kept copy is an older store's data, which may predate a reconcile the live store
+    // ran (a finished retirement included), so the receipt is cleared as after a restore.
+    await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
     // Still routed there once the data landed? If not, the move that re-pointed the scope keeps
     // what this restore put in that store (its source wipe protects a copy changed since its
     // export), and the kept copy here stays kept too: nothing is lost, nothing is discarded.
@@ -6585,11 +6611,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         );
       }
       if (provisioned?.verticalVersionId) {
+        // #2185: a provision carries no shapes and reconciles none, so its retirements count as
+        // finished only when the version retires nothing; otherwise the sweep reconciles it. A
+        // registry that cannot be read is not finished, never a failed provision.
+        const outcome = provisioned.vertical
+          ? await reviewedEntityGrants(c.var.admin, c.get('actor'), provisioned.vertical, provisioned.verticalVersionId).then(
+              (shapes) => reconcileOutcomeOf(shapes, null),
+              () => ({ retirementsFinished: false }),
+            )
+          : reconcileOutcomeOf(undefined, null);
         await c.var.admin.markScopeProvisioned(
           c.get('actor'),
           input.tenantId,
           input.scopeId,
           provisioned.verticalVersionId,
+          outcome,
         );
       }
       return c.json(instance, 201);

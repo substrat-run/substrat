@@ -449,22 +449,47 @@ describe('a key a declared shape retires, over a CP-less host (#2082)', () => {
             shapes: unknown,
             limit: number,
             after: ShapeCursor | null,
-          ) => Promise<{ toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; done: boolean }>;
+          ) => Promise<{ toppedUp: number; retired: number; retirementsLeftOpen: number; next: ShapeCursor | null; done: boolean; boundEver?: string[] }>;
         }
       ).topUpEntityGrantShapes(tn, sc, sh, limit, after);
     const first = await pass(t, s, shapes, 4, null);
     expect(first).toEqual({ retired: 3, toppedUp: 1, retirementsLeftOpen: 0, next: { shape: 0, step: 'topUp', marker: expect.any(Object) }, done: false });
     expect([await events('entity.grants-retired'), await events('entity.grants-topped-up')]).toEqual([{ n: 3 }, { n: 1 }]);
     // The next pass resumes where the first stopped (#2083).
-    expect(await pass(t, s, shapes, 4, first.next)).toEqual({ retired: 0, toppedUp: 2, retirementsLeftOpen: 0, next: null, done: true });
+    // #2184: the last pass also answers the types the scope has ever bound: none here.
+    expect(await pass(t, s, shapes, 4, first.next)).toEqual({ retired: 0, toppedUp: 2, retirementsLeftOpen: 0, next: null, done: true, boundEver: [] });
     for (const [i, p] of people.entries()) {
       expect([await can(p, READ, i), await can(p, USE, i), await can(p, ADMIN, i)]).toEqual([true, false, true]);
     }
   });
 
   it('a provision carrying the shape again retires nobody a second time', async () => {
-    await provision([{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true, retired: [USE] }]);
+    // #2185: and answers that it left no retirement open, which the platform records beside its receipt.
+    // #2184: and which types the scope has ever bound: none here.
+    expect(await provision([{ entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true, retired: [USE] }])).toEqual({
+      retirementsLeftOpen: 0,
+      boundShapeTypes: [],
+    });
     expect(await events('entity.grants-retired')).toEqual({ n: 3 });
+    // A provision with no shapes ran none, so it says nothing about them.
+    expect(await provision()).toEqual({});
+  });
+
+  it('answers every type the scope has ever bound, still after a version drops `bind` or the shape (#2184)', async () => {
+    await runInDurableObject(stub(), (_i, state) => {
+      state.storage.sql.exec('CREATE TABLE IF NOT EXISTS bind_people (id TEXT PRIMARY KEY, principal TEXT)');
+    });
+    const employee = { entityType: 'employee', permissions: [READ, ADMIN], bootstrap: true as const, retired: [USE] };
+    const binding = {
+      entityType: 'contact',
+      permissions: [READ],
+      bootstrap: true as const,
+      holder: { table: 'bind_people', idColumn: 'id', principalColumn: 'principal' },
+      bind: { permission: ADMIN },
+    };
+    expect(await provision([employee, binding] as never)).toEqual({ retirementsLeftOpen: 0, boundShapeTypes: ['contact'] });
+    expect(await provision([employee, { ...binding, bind: undefined }] as never)).toEqual({ retirementsLeftOpen: 0, boundShapeTypes: ['contact'] });
+    expect(await provision([employee])).toEqual({ retirementsLeftOpen: 0, boundShapeTypes: ['contact'] });
   });
 });
 
@@ -515,6 +540,6 @@ describe('a host from before the shape cursor still finishes against this ScopeD
       calls.push(pass);
       done = pass.done;
     }
-    expect(calls).toEqual([{ toppedUp: 3, retired: 0, retirementsLeftOpen: 0, next: null, done: true }]);
+    expect(calls).toEqual([{ toppedUp: 3, retired: 0, retirementsLeftOpen: 0, next: null, done: true, boundEver: [] }]);
   });
 });

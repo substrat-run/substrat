@@ -10,7 +10,7 @@ import { listAppHostnames, addAppHostname, removeAppHostname, resolveDefaultHost
 
 /**
  * The Domains tab's backend, embedded mode (K-26 multi-surface): the check-then-
- * effect helpers the worker's `/api/apps/:scopeId/hostnames` routes call. One scope
+ * effect helpers the worker's `/api/teams/:teamId/apps/:scopeId/hostnames` routes call. One scope
  * can front several apps — the hostname decides which surface the vertical serves —
  * so giving a surface a URL is binding a second hostname on the SAME scope.
  * Authorization runs in the caller's own dashboard scope (`dashboard/bind-app-hostname`
