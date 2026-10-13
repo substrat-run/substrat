@@ -1,0 +1,8 @@
+node_modules/
+.venv/
+.wrangler/
+__pycache__/
+*.sqlite
+persist/
+python/python_modules/
+python/pylock.toml
