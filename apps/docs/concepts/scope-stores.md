@@ -49,11 +49,11 @@ On the platform path the call leaves the vertical as a fetch of `store.substrat.
 
 The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`.
 
-A direct binding exists for local development and for tests. It is not an isolation boundary. Hosted isolation is the hop above.
+A direct binding exists for local development and for tests. It is not an isolation boundary. The hop above is meant to be the hosted isolation boundary, and it is not finished: it is not the default yet, and the checks the store script runs on each call are not built (see [Known limits](#known-limits)).
 
 ## The invocation line
 
-Each store call is recorded on the invocation line of the request that made it. The vertical passes nothing for that: the platform entry in front of a pushed vertical tracks the current request. An entry has four fields: the binding, the operation, `ok` or `error`, and the duration. The input is not on the line, and neither is the store's error code or body.
+On a pushed vertical, each store call is recorded on the invocation line of the request that made it. The vertical passes nothing for that: the platform entry in front of a pushed vertical tracks the current request. A vertical run without that entry, locally for example, records nothing unless it passes `onStoreCall` (below). An entry has four fields: the binding, the operation, `ok` or `error`, and the duration. The input is not on the line, and neither is the store's error code or body.
 
 The line names the first 16 calls in `storeCalls` and counts the rest in `storeCallsDropped`. A line for a request that made no store call has neither key. A call made outside a request is not recorded and still runs. A call made after the response has gone, inside `waitUntil`, is not recorded either: the line was written when the response left.
 
@@ -61,7 +61,7 @@ The line names the first 16 calls in `storeCalls` and counts the rest in `storeC
 
 ## Erasure
 
-Subject erasure calls `substrat.erase` on every store the scope's version declares, before the subject's key is destroyed. The receipt lists each binding and how many rows that store said it erased. A store that answers with an error stops the erasure before the key is touched, and the next run finishes it.
+Subject erasure calls `substrat.erase` on every store the scope's version declares, before the subject's key is destroyed. The erasure's answer lists each binding and how many rows that store said it erased. When the control plane erases a scope its own host holds, the host's audited receipt does not list those store erasures yet; only the answer does. A store that answers with an error stops the erasure before the key is touched, and the next run finishes it.
 
 Erasure fails closed. When the platform cannot tell which stores a scope's version declares, or cannot reach them, the erasure is refused with 503 and the key stays until a retry reaches the store.
 
@@ -99,12 +99,21 @@ The storage gauge samples each scope's stores in the same pass as the scope data
 
 ## Known limits
 
-These are open before the first kind is registered, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8):
+These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first kind is registered. The second can follow.
 
+Before the first kind:
+
+- **The hosted path is not the default.** A Cloudflare host defaults to the direct binding, and nothing in production sets the platform path yet.
+- **The store's checks on each call.** What the platform sends a store script does not yet bind the operation, the audience or the time, and no store script checks it yet. The checks are planned in an entry module the platform supplies in front of the kind.
 - **Unroute before wipe.** No path stops routing a scope before it wipes the scope's stores, and an erasure is not fenced against a deploy that lands while it runs.
 - **Orphaned bindings.** Every lifecycle path reads only the current version's bindings. Objects under a binding a later version dropped, or declared as another kind, are out of reach of wipe, erase and the meter.
+
+Later:
+
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
-- **The hosted path is not the default.** A Cloudflare host defaults to the direct binding, and nothing in production sets the platform path yet.
+- **Audited receipt.** On the path where the control plane erases a scope its own host holds, the audited receipt lacks the platform's store erasures. The answer carries them.
+- **Versions without a kept manifest.** Replay and wipe skip a destination whose version predates kept manifests. Such a version holds no store, and a test that says so is still to come.
+- **Delete without a tenant id.** The Cloudflare host's scope delete skips the store wipe when it is not given a tenant id. Hosted, the control plane's own wipe covers it.
 - **Peer calls.** A vertical serving a [peer call](../guide/architecture.md#calling-another-vertical-the-peer-door) has its store calls refused.
 - **Only during a request.** A call from a Durable Object, including a scheduled job, does not pass egress and is refused. The platform's own jobs are not affected.
 
