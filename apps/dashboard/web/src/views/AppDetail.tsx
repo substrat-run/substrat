@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
+import { api, teamApi, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
 import { diffRegistries, grantShapeHolderNotes, hasRegistryChange } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
@@ -133,12 +133,15 @@ function VisitControl({ surfaces }: { surfaces: SurfaceUrl[] }) {
 }
 
 export function AppDetail({
+  teamId,
   app,
   tab,
   onTab,
   onDeleted,
   authServers = [],
 }: {
+  /** The team the tab is on — hostname calls name it in their URL (#2170). */
+  teamId: string;
   app: AppRow;
   tab: string;
   onTab: (t: string) => void;
@@ -163,14 +166,14 @@ export function AppDetail({
     }
     let live = true;
     setHostnames(null);
-    api
-      .appHostnames(app.app_scope_id)
+    teamApi(teamId)
+      .listAppHostnames({ scopeId: app.app_scope_id })
       .then((v) => live && setHostnames(v))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [teamId, app.app_scope_id]);
   const surfaceUrls = deriveSurfaceUrls(hostnames, app.hostname);
   // #1916: a request opened from a record's timeline (Data tab) is part of the address, as
   // on the Observability pages — linkable, kept on reload, closed by Back.
@@ -221,6 +224,7 @@ export function AppDetail({
       {main === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} surfaceUrls={surfaceUrls} />}
       {main === 'data' && (
         <Data
+          teamId={teamId}
           app={app}
           section={sub ?? 'tables'}
           onSection={(s) => onTab(s === 'tables' ? 'data' : `data/${s}`)}
@@ -229,6 +233,7 @@ export function AppDetail({
       {main === 'deployments' && <Deployments app={app} />}
       {main === 'settings' && (
         <Settings
+          teamId={teamId}
           app={app}
           section={sub ?? 'general'}
           onSection={(s) => onTab(s === 'general' ? 'settings' : `settings/${s}`)}
@@ -1611,7 +1616,7 @@ const MOCK_TEST_ENV_HOSTS: AppHostnamesView = {
   ],
 };
 
-function TestEnvironment({ app }: { app: AppRow }) {
+function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
   const [dep, setDep] = useState<Deployment | null>(null);
   const [envs, setEnvs] = useState<VerticalPreview[] | null>(null);
   const [hostView, setHostView] = useState<AppHostnamesView | null>(null);
@@ -1684,14 +1689,14 @@ function TestEnvironment({ app }: { app: AppRow }) {
       return;
     }
     let live = true;
-    api
-      .appHostnames(env.scopeId)
+    teamApi(teamId)
+      .listAppHostnames({ scopeId: env.scopeId })
       .then((v) => live && setHostView(v))
       .catch(() => live && setHostView(null));
     return () => {
       live = false;
     };
-  }, [env?.scopeId, nonce]);
+  }, [teamId, env?.scopeId, nonce]);
 
   // Not this team's vertical, or no shared plane → nothing to manage; leave the snapshot
   // Previews to render alone. Still loading the deployment is the same: render nothing yet.
@@ -1750,7 +1755,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
     setChecking(hostname);
     setNote(null);
     try {
-      await api.verifyDomain(hostname);
+      await teamApi(teamId).verifyDomain({ hostname });
       setNonce((n) => n + 1);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
@@ -1763,7 +1768,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
     if (!env) return;
     setBusy(true);
     try {
-      await api.removeAppHostname(env.scopeId, hostname);
+      await teamApi(teamId).removeAppHostname({ scopeId: env.scopeId, hostname });
       setNonce((n) => n + 1);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
@@ -1937,7 +1942,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
  * and it expires unless kept; the banner says so in words. ("Snapshot" stays the
  * backend word for the data artifact; the user-facing instance is a preview.)
  */
-function Previews({ app }: { app: AppRow }) {
+function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
   const [snaps, setSnaps] = useState<SnapshotRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -2065,7 +2070,7 @@ function Previews({ app }: { app: AppRow }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <TestEnvironment app={app} />
+      <TestEnvironment teamId={teamId} app={app} />
       {snapshotSection}
     </div>
   );
@@ -2814,7 +2819,7 @@ function EnvVars({ app }: { app: AppRow }) {
 /** Sentinel option: reveal a free-text field for a surface the vertical didn't declare. */
 const OTHER_SURFACE = '__other__';
 
-function AppDomains({ app }: { app: AppRow }) {
+function AppDomains({ teamId, app }: { teamId: string; app: AppRow }) {
   const [view, setView] = useState<AppHostnamesView | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -2835,14 +2840,14 @@ function AppDomains({ app }: { app: AppRow }) {
     let live = true;
     setView(null);
     setErr(null);
-    api
-      .appHostnames(app.app_scope_id)
+    teamApi(teamId)
+      .listAppHostnames({ scopeId: app.app_scope_id })
       .then((v) => live && setView(v))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, nonce]);
+  }, [teamId, app.app_scope_id, nonce]);
 
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load hostnames — {err}</div>;
   if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading hostnames…</div>;
@@ -2865,7 +2870,8 @@ function AppDomains({ app }: { app: AppRow }) {
     setAdding(true);
     setNote(null);
     try {
-      const bound = await api.addAppHostname(app.app_scope_id, {
+      const bound = await teamApi(teamId).addAppHostname({
+        scopeId: app.app_scope_id,
         surface: chosen,
         ...(domain.trim() ? { domain: domain.trim() } : {}),
       });
@@ -2889,7 +2895,7 @@ function AppDomains({ app }: { app: AppRow }) {
   const remove = async () => {
     if (!toRemove) return;
     try {
-      if (!DEV_MOCK) await api.removeAppHostname(app.app_scope_id, toRemove.hostname);
+      if (!DEV_MOCK) await teamApi(teamId).removeAppHostname({ scopeId: app.app_scope_id, hostname: toRemove.hostname });
       setNote(`${toRemove.hostname} unbound.`);
       setNonce((n) => n + 1);
     } catch (e) {
@@ -2905,7 +2911,7 @@ function AppDomains({ app }: { app: AppRow }) {
     if (DEV_MOCK) return;
     setChecking(hostname);
     try {
-      await api.verifyDomain(hostname);
+      await teamApi(teamId).verifyDomain({ hostname });
       setNonce((n) => n + 1);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
@@ -3070,7 +3076,7 @@ const DATA_SECTIONS = [
  * exactly there). Previews is here because a preview IS a copy of this scope's data
  * with a URL, which makes it a data fact, not a fifth noun.
  */
-export function Data({ app, section, onSection }: { app: AppRow; section: string; onSection: (s: string) => void }) {
+export function Data({ teamId, app, section, onSection }: { teamId: string; app: AppRow; section: string; onSection: (s: string) => void }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={DATA_SECTIONS} value={section} onChange={onSection} />
@@ -3082,7 +3088,7 @@ export function Data({ app, section, onSection }: { app: AppRow; section: string
           <Model app={app} />
         </div>
       )}
-      {section === 'previews' && <Previews app={app} />}
+      {section === 'previews' && <Previews teamId={teamId} app={app} />}
       {section === 'export' && <ExportImport app={app} />}
     </div>
   );
@@ -3103,13 +3109,13 @@ const SETTINGS_SECTIONS = [
  * Permissions. Each section keeps its own URL (settings/environment …) so deep links
  * survive.
  */
-function Settings({ app, section, onSection, onDeleted, authServers }: { app: AppRow; section: string; onSection: (s: string) => void; onDeleted: () => void; authServers: AppRow[] }) {
+function Settings({ teamId, app, section, onSection, onDeleted, authServers }: { teamId: string; app: AppRow; section: string; onSection: (s: string) => void; onDeleted: () => void; authServers: AppRow[] }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={SETTINGS_SECTIONS} value={section} onChange={onSection} />
       {section === 'general' && <GeneralSettings app={app} onDeleted={onDeleted} authServers={authServers} />}
       {section === 'environment' && <EnvVars app={app} />}
-      {section === 'domains' && <AppDomains app={app} />}
+      {section === 'domains' && <AppDomains teamId={teamId} app={app} />}
       {section === 'integrations' && <AppIntegrations app={app} />}
       {section === 'members' && <AppMembers app={app} />}
       {section === 'permissions' && <Permissions app={app} />}

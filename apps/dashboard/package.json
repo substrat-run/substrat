@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/dashboard",
-  "version": "0.43.4",
+  "version": "0.43.5",
   "private": true,
   "substrat": {
     "permissions": "src/provision.ts",
@@ -8,8 +8,12 @@
       "model": "src/routes.ts",
       "operations": "dashboardRoutes",
       "schemas": {
+        "AdminLogEntry": "adminLogEntry",
+        "AppEvent": "appEvent",
+        "AppRow": "appRow",
         "FindingEntry": "findingEntry",
-        "FindingRuleEntry": "findingRuleEntry"
+        "FindingRuleEntry": "findingRuleEntry",
+        "InstallStep": "installStep"
       },
       "out": "web/src/lib/api.generated.ts",
       "name": "Dashboard"

@@ -34,6 +34,7 @@ import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'n
 import { dirname, join, relative, resolve } from 'node:path';
 import { builtinModules } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { toPosix } from './repo-path.mjs';
 
 const ROOTS = ['packages', 'engines', 'connectors', 'demos', 'apps'];
 /**
@@ -385,11 +386,11 @@ export function shippedFilesOf(dir) {
   const files = {};
   for (const f of walk(join(dir, 'src'))) {
     if (/\.(ts|tsx|mts)$/.test(f) && !f.endsWith('.d.ts') && !f.includes('.generated.')) {
-      files[relative(dir, f)] = readFileSync(f, 'utf8');
+      files[toPosix(relative(dir, f))] = readFileSync(f, 'utf8');
     }
   }
   for (const f of walk(join(dir, 'dist'))) {
-    if (/\.(?:js|mjs|cjs|d\.ts|d\.mts|d\.cts)$/.test(f)) files[relative(dir, f)] = readFileSync(f, 'utf8');
+    if (/\.(?:js|mjs|cjs|d\.ts|d\.mts|d\.cts)$/.test(f)) files[toPosix(relative(dir, f))] = readFileSync(f, 'utf8');
   }
   return files;
 }
@@ -461,7 +462,7 @@ function main() {
         ...forbiddenEdgeProblems(
           pj,
           Object.fromEntries(
-            surfaces.flatMap(({ files }) => files.map((f) => [relative(dir, f), readFileSync(f, 'utf8')])),
+            surfaces.flatMap(({ files }) => files.map((f) => [toPosix(relative(dir, f)), readFileSync(f, 'utf8')])),
           ),
         ),
       );
@@ -471,7 +472,7 @@ function main() {
         for (const f of files) {
           for (const spec of specifiersIn(readFileSync(f, 'utf8'))) {
             if (!declared.has(spec)) {
-              if (!missing.has(spec)) missing.set(spec, relative(dir, f));
+              if (!missing.has(spec)) missing.set(spec, toPosix(relative(dir, f)));
             }
           }
         }

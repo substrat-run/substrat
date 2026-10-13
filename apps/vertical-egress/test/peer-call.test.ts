@@ -45,7 +45,10 @@ const envWith = (over: Partial<Env> = {}): Env => ({
 const call = (env: Env, body: unknown = { vertical: 'acme/crm', operation: 'customer/list' }) =>
   worker.fetch(new Request(PEER_CALL_URL, { method: 'POST', body: JSON.stringify(body) }), env);
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe('a peer call through egress (#1706)', () => {
   it('hands the call to the router with the DISPATCH’s caller, and never to the internet', async () => {
@@ -85,9 +88,15 @@ describe('a peer call through egress (#1706)', () => {
     vi.stubGlobal('fetch', internet);
     const peer = peerCalls();
 
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
     for (const missing of [undefined, policy({ slug: null }), policy({ scope: undefined })]) {
+      warn.mockClear();
       const res = await call(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: missing }));
       expect(res.status).toBe(403);
+      expect(res.headers.get('x-substrat-egress')).toBe('refused');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warn.mock.calls[0]![0] as string)).toMatchObject({ event: 'egress.refused', verdict: 'peer' });
       expect((await res.json<{ error: string }>()).error).toMatch(/carries no caller identity/);
     }
     expect(peer.calls).toHaveLength(0);
@@ -109,8 +118,12 @@ describe('a peer call through egress (#1706)', () => {
 
   it('the router’s refusal is passed through with its status and reason', async () => {
     const peer = peerCalls({ ok: false, status: 404, code: 'not_found', message: "vertical 'acme/crm' is not installed in this tenant" });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await call(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: policy() }));
     expect(res.status).toBe(404);
+    // Twin: a status the router chose is not the egress worker's refusal, so it is neither marked nor logged.
+    expect(res.headers.get('x-substrat-egress')).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
     expect((await res.json<{ error: string }>()).error).toMatch(/not installed in this tenant/);
   });
 
