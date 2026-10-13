@@ -1067,16 +1067,10 @@ function initializerOf(masked: string, name: string): number {
  * shorthand `operations,` are judged by what `OPERATIONS` / `operations` was initialised with.
  */
 function resolved(masked: string, expr: string): string {
-  const range = initializerRange(masked, expr);
-  return range ? masked.slice(...range) : expr;
-}
-
-/** Where the initializer of the local name `expr` is, when `expr` is one name that has one. */
-function initializerRange(masked: string, expr: string): [number, number] | null {
   const name = expr.trim();
-  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return expr;
   const at = initializerOf(masked, name);
-  return at < 0 ? null : [at, expressionEnd(masked, at)];
+  return at < 0 ? expr : masked.slice(at, expressionEnd(masked, at));
 }
 
 /**
@@ -1219,11 +1213,24 @@ function checkHandlerMapCast(rel: string, source: string, out: Violation[]): voi
 // R12 — a list is one parameter, not one per value (#2248)
 // ---------------------------------------------------------------------------
 
-/** `IN (${` / `NOT IN (${` — a list written into the statement from an interpolation. */
-const IN_INTERPOLATION = /\bIN\s*\(\s*\$\{/gi;
+/**
+ * Where a list is written into a statement from code: `IN (` (or `NOT IN (`) inside a template,
+ * then only placeholders, commas and space up to a `${` (so `IN (?, ${…})` and `IN (?${…})` count,
+ * and a subquery `IN (SELECT … ${…})` does not); or `IN (` closing a string a `+` continues.
+ */
+const IN_LIST_OPEN = /\bIN\s*\([\s?,\d]*\$\{|\bIN\s*\(\s*(['"`])\s*\+/gi;
 
-/** A string literal that is a placeholder: `'?'`, `"?"`, `` `?` ``, and the `'?, '` of a repeat. */
-const PLACEHOLDER_LITERAL = /(['"`])\s*\?\s*,?\s*\1/g;
+/**
+ * A literal that is a placeholder: `'?'`, `"?"`, `` `?` ``, the `'?, '` / `',?'` of a repeat, and the
+ * numbered `` `?${i + 1}` ``.
+ */
+const PLACEHOLDER_LITERAL = /(['"`])\s*,?\s*\?\s*,?\s*\1|`\s*,?\s*\?(?=\$\{)/g;
+
+/** A name in masked code that is not a property: `ids`, `marks`, `Q` — never the `map` of `.map`. */
+const NAME = /(?<![\w$.])[A-Za-z_$][\w$]*/g;
+
+/** How many names deep a list is followed — `p = q.join(',')`, `q = ids.map(() => Q)`, `Q = '?'`. */
+const NAME_HOPS = 3;
 
 /**
  * Does `stripped[from, to)` hold a placeholder literal? The `?` must be a string's body — blank in
@@ -1240,6 +1247,46 @@ function holdsPlaceholder(masked: string, stripped: string, from: number, to: nu
 }
 
 /**
+ * What a name in this file stands for: a `const`/`let`/`var` initializer up to the end of its
+ * statement, or a `function NAME(…) { … }` body. Null for a parameter, an import or a global.
+ */
+function definitionOf(masked: string, name: string): [number, number] | null {
+  const at = initializerOf(masked, name);
+  if (at >= 0) {
+    const end = expressionEnd(masked, at);
+    // `expressionEnd` stops at a bracket or a comma; a statement also ends at its `;`.
+    let depth = 0;
+    for (let i = at; i < end; i++) {
+      const c = masked[i]!;
+      if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' || c === ']' || c === '}') depth--;
+      else if (c === ';' && depth === 0) return [at, i];
+    }
+    return [at, end];
+  }
+  const literal = name.replace(/[$.*+?^()[\]{}|\\]/g, '\\$&');
+  const fn = new RegExp(`(?<![\\w$])function\\s*\\*?\\s*${literal}\\s*\\(`).exec(masked);
+  if (!fn) return null;
+  const params = matchDelim(masked, fn.index + fn[0].length - 1, '(', ')');
+  const open = params < 0 ? -1 : masked.indexOf('{', params);
+  const close = open < 0 ? -1 : matchDelim(masked, open, '{', '}');
+  return close < 0 ? null : [open, close];
+}
+
+/** Does this range build placeholders — itself, or through a name it uses, `NAME_HOPS` deep? */
+function buildsPlaceholders(masked: string, stripped: string, from: number, to: number, seen: Set<string>, hops: number): boolean {
+  if (holdsPlaceholder(masked, stripped, from, to)) return true;
+  if (hops === 0) return false;
+  for (const [name] of masked.slice(from, to).matchAll(NAME)) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const def = definitionOf(masked, name);
+    if (def && buildsPlaceholders(masked, stripped, ...def, seen, hops - 1)) return true;
+  }
+  return false;
+}
+
+/**
  * R12 — module code never builds `IN (?, ?, …)` one placeholder per value.
  *
  * A Durable Object refuses a statement binding over 100 parameters, so
@@ -1248,32 +1295,49 @@ function holdsPlaceholder(masked: string, stripped: string, from: number, to: nu
  * every local suite stayed green. The list is ONE JSON parameter instead: `IN ${list.sql}` with
  * `list = inList(values)` from `@substrat-run/contracts`, which reads it back with `json_each`.
  *
- * Fires on an interpolation right after `IN (` — inside a template, which the masked copy proves
- * by keeping the `${` standing where a plain string's would be blank — whose expression holds a
- * placeholder literal (`'?'`, `"?"`, `'?, '`), or is a local name whose initializer does (one hop,
- * as R11 resolves a name). Not fired: `VALUES (${…})`, whose width is the table's and fixed;
- * `IN ${list.sql}`; a literal `IN (?, ?)`, whose length is written down; an interpolation with no
- * placeholder in it (a constant list of SQL literals binds nothing). Out of reach, stated: a
- * placeholder built by a function defined elsewhere (`IN (${marks(n)})`) — the literal is not in
- * sight. A list whose length is fixed and short sits in a `boundary-lint-allow R12` …
- * `boundary-lint-end R12` block, where a reviewer reads why.
+ * Fires where `IN (` (or `NOT IN (`) is followed by code: a template's `${` with nothing but
+ * placeholders before it (`IN (${…})`, `IN (?, ${…})`, `IN (?${',?'.repeat(n - 1)})`), or a string ending in
+ * `IN (` that a `+` continues. The masked copy proves each is real: the `IN (` is a literal's text,
+ * blank there, and the `${` or the quote stands. It fires when that code holds a placeholder literal
+ * (`'?'`, `"?"`, `'?, '`, `',?'`, the numbered `` `?${i + 1}` ``) or uses a name — a `const`, or a
+ * `function` in the same file — that does, up to `NAME_HOPS` names deep.
+ *
+ * Not fired: `VALUES (${…})`, whose width is the table's and fixed; `IN ${list.sql}`; a written-out
+ * `IN (?, ?)`; a subquery `IN (SELECT … ${…})`; code with no placeholder literal in reach (a constant
+ * list of SQL literals binds nothing); a ternary or `?.` / `??`, whose `?` is code, not a string.
+ *
+ * **Known blind spots**, stated so a clean run is not read as proof: a placeholder built by a
+ * helper IMPORTED from another file; a chain of names deeper than `NAME_HOPS`; a list assembled by
+ * mutation (`sql += '?, '` in a loop, `parts.push('?')`) rather than one expression; `IN (` and the
+ * code joined by anything but `${` or `+` (`.concat`, an array `join` of SQL pieces). `guardSqlLimits`
+ * is the run-time check behind all of them on the node adapter. A list whose length is fixed and
+ * short sits in a `boundary-lint-allow R12` … `boundary-lint-end R12` block, where a reviewer reads why.
  */
 function checkPlaceholderList(rel: string, source: string, out: Violation[]): void {
-  IN_INTERPOLATION.lastIndex = 0;
-  if (!IN_INTERPOLATION.test(source)) return;
+  IN_LIST_OPEN.lastIndex = 0;
+  if (!IN_LIST_OPEN.test(source)) return;
   const masked = maskSource(source);
   const stripped = maskSource(source, { literals: false });
   let allowed: Set<number> | undefined;
 
-  IN_INTERPOLATION.lastIndex = 0;
-  for (let m: RegExpExecArray | null; (m = IN_INTERPOLATION.exec(stripped)); ) {
-    const open = m.index + m[0].length - 1; // the `{`
-    if (masked.slice(open - 1, open + 1) !== '${') continue; // not a template's interpolation
-    const close = matchDelim(masked, open, '{', '}');
-    if (close < 0) continue;
-    const named = initializerRange(masked, stripped.slice(open + 1, close));
-    const builds = holdsPlaceholder(masked, stripped, open + 1, close) || (named !== null && holdsPlaceholder(masked, stripped, ...named));
-    if (!builds) continue;
+  IN_LIST_OPEN.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = IN_LIST_OPEN.exec(stripped)); ) {
+    if (masked[m.index] !== ' ') continue; // `IN (` must be a literal's text, not code
+    let from: number;
+    let to: number;
+    if (m[1] === undefined) {
+      const open = m.index + m[0].length - 1; // the `{` of `${`
+      if (masked.slice(open - 1, open + 1) !== '${') continue; // not a template's interpolation
+      to = matchDelim(masked, open, '{', '}');
+      if (to < 0) continue;
+      from = open + 1;
+    } else {
+      const quote = m.index + m[0].lastIndexOf(m[1]);
+      if (masked[quote] !== m[1]) continue; // the literal must close here
+      from = m.index + m[0].length; // past the `+`
+      to = expressionEnd(masked, from);
+    }
+    if (!buildsPlaceholders(masked, stripped, from, to, new Set(), NAME_HOPS)) continue;
     const line = lineAt(source, m.index);
     allowed ??= allowedLines(source.split('\n'), stripped.split('\n'), 'R12');
     if (allowed.has(line)) continue;

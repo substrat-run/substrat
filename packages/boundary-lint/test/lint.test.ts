@@ -1554,6 +1554,63 @@ describe('R12 — a hand-built IN list of placeholders', () => {
     expect(vs.map((v) => v.line)).toEqual([3]);
   });
 
+  it('fires when placeholders precede the interpolation: `?${…}` and `?, ${…}` (#2260 review)', () => {
+    const vs = r12([
+      "const a = (ids) => `SELECT * FROM t WHERE id IN (?${',?'.repeat(ids.length - 1)})`;",
+      "const b = (ids) => `SELECT * FROM t WHERE id IN (?, ${ids.slice(1).map(() => '?').join(', ')})`;",
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([1, 2]);
+  });
+
+  it('fires on numbered placeholders, `?${i + 1}` per value', () => {
+    const vs = r12(["const q = (ids) => `SELECT * FROM t WHERE id IN (${ids.map((_, i) => `?${i + 1}`).join(',')})`;"]);
+    expect(vs.map((v) => v.line)).toEqual([1]);
+  });
+
+  it('follows a helper defined in the same file, arrow or function', () => {
+    const vs = r12([
+      "const marks = (n) => Array(n).fill('?').join(',');",
+      "function slots(n) { return Array.from({ length: n }, () => '?').join(', '); }",
+      'const a = (ids) => `SELECT * FROM t WHERE id IN (${marks(ids.length)})`;',
+      'const b = (ids) => `SELECT * FROM t WHERE id IN (${slots(ids.length)})`;',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([3, 4]);
+  });
+
+  it('follows names more than one hop, and a placeholder held in a constant', () => {
+    const vs = r12([
+      "const Q = '?';",
+      'export function f(ctx, ids) {',
+      '  const q = ids.map(() => Q);',
+      "  const p = q.join(',');",
+      '  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${p})`, ids);',
+      '}',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([5]);
+  });
+
+  it('fires on plain concatenation, single-quoted or template', () => {
+    const vs = r12([
+      "const a = (ids) => 'SELECT * FROM t WHERE id IN (' + ids.map(() => '?').join(',') + ')';",
+      "const b = (ids) => `SELECT * FROM t WHERE id IN (` + ids.map(() => '?').join(',') + ')';",
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([1, 2]);
+  });
+
+  it('twin: a subquery string with its own `?`s, a JOIN, `?.` / `??` and a concatenated constant are not lists', () => {
+    expect(
+      r12([
+        // ticket0's erasure hook: a subquery whose two `?` are fixed, interpolated after `IN (`.
+        "const contactIds = 'SELECT id FROM c WHERE id = ? OR principal = ?';",
+        'const conversations = `SELECT id FROM v WHERE contact_id IN (${contactIds})`;',
+        'const sub = (x) => `SELECT 1 FROM m WHERE id IN (SELECT id ${x})`;',
+        "const join = (t) => `SELECT * FROM a JOIN (${t.map(() => '?').join(',')}) b`;",
+        'const opt = (o) => `SELECT * FROM t WHERE k IN (${o?.list ?? STATES})`;',
+        "const cat = 'SELECT * FROM t WHERE state IN (' + STATES + ')';",
+      ]),
+    ).toEqual([]);
+  });
+
   it('twin: the helper passes — IN stays visible, and the list is one parameter', () => {
     expect(
       r12([
