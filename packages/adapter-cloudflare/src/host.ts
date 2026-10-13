@@ -499,7 +499,8 @@ import {
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callScopeStore, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
+import { scopeStoreBindingName, scopeStoreObjectName, StoreError } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -2165,6 +2166,13 @@ export interface CloudflareScopeHostOptions {
    */
   checker?: PermissionChecker;
   /**
+   * Scope stores answered in this isolate (#2213). When a binding has a runner
+   * here, `getScopeStore` uses it. Otherwise it reads `SUBSTRAT_STORE_<BINDING>`
+   * from the worker env. `vertical`, when set, is the only vertical this host serves.
+   * A deployed vertical has no control plane, so that field is where the slug comes from.
+   */
+  scopeStores?: ScopeStoreHostOptions;
+  /**
    * Seals per-tenant credentials at rest (#101). Lives on the COORDINATOR, not
    * in the ControlPlaneDO: the DO stores ciphertext and has never held a key.
    * Omitted, the host refuses to store a credential rather than storing one in
@@ -2471,8 +2479,26 @@ const undeniedMessage = (scopeId: ScopeId, moduleId: string): string =>
  * platform's per-tenant binding, read off this script's own env, named by the one shared
  * encoding (`blobStoreBindingName`) for the tenant the caller passed in.
  */
+function ambientBinding(name: string): unknown {
+  return (ambientEnv as unknown as Record<string, unknown>)[name] ?? null;
+}
+
 function ambientAttachmentBucket(tenantId: string): unknown {
-  return (ambientEnv as unknown as Record<string, unknown>)[blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId)] ?? null;
+  return ambientBinding(blobStoreBindingName(ATTACHMENT_BLOB_BINDING, tenantId));
+}
+
+interface ScopeStoreNamespace {
+  idFromName(name: string): DurableObjectId;
+  get(id: DurableObjectId): { fetch(input: RequestInfo, init?: RequestInit): Promise<Response> };
+}
+
+function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof Reflect.get(value, 'idFromName') === 'function' &&
+    typeof Reflect.get(value, 'get') === 'function'
+  );
 }
 
 /**
@@ -2562,6 +2588,9 @@ export class CloudflareScopeHost implements ScopeHost {
   readonly admin: HostAdmin;
 
   private readonly scopeNs: DurableObjectNamespace;
+  private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
+  private readonly scopeStoreVertical?: string;
+  private scopeStoreStart: Promise<void> | null = null;
   private readonly cp: ControlPlaneStub;
   private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
 
@@ -2679,6 +2708,8 @@ export class CloudflareScopeHost implements ScopeHost {
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
+    this.scopeStoreVertical = options.scopeStores?.vertical;
+    this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.cpLess = !options.controlPlane;
     this.cp = options.controlPlane
       ? (options.controlPlane.get(options.controlPlane.idFromName('control-plane')) as unknown as ControlPlaneStub)
@@ -4590,6 +4621,106 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options);
   }
 
+  async getScopeStore(
+    _principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    binding: string,
+  ): Promise<StoreStub> {
+    // A missing binding is answered before any directory read. A CP-less host's
+    // directory throws a plain Error, and a vertical with no store must not meet it.
+    const runner = this.scopeStoreRunners.get(binding);
+    const bound = runner ? undefined : ambientBinding(scopeStoreBindingName(binding));
+    if (!runner && (this.scopeStoreRunners.size > 0 || !isScopeStoreNamespace(bound))) {
+      throw substratError('not_found', `no scope store is bound for '${binding}'`);
+    }
+    const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
+    await this.assertLive(tenantId, scopeId);
+    if (runner) {
+      await this.ensureScopeStoresStarted();
+      return {
+        tenantId,
+        scopeId,
+        subjectKind: 'principal',
+        invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
+          callScopeStore(
+            (request) => runner.invoke({ tenantId, vertical, scopeId, binding }, request),
+            operation,
+            input,
+            ...extra,
+          ),
+      };
+    }
+    const namespace = bound as ScopeStoreNamespace;
+    const objectName = scopeStoreObjectName(tenantId, vertical, scopeId, binding);
+    const object = namespace.get(namespace.idFromName(objectName));
+    return {
+      tenantId,
+      scopeId,
+      subjectKind: 'principal',
+      invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
+        callScopeStore(async (request) => {
+          const response = await object.fetch('https://scope-store/', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(request),
+          });
+          try {
+            return await response.json();
+          } catch {
+            throw new StoreError({ code: 'bad_envelope', status: 502 });
+          }
+        }, operation, input, ...extra),
+    };
+  }
+
+  private ensureScopeStoresStarted(): Promise<void> {
+    if (this.scopeStoreStart) return this.scopeStoreStart;
+    const seen = new Set<ScopeStoreRunner>();
+    const slot: { current: Promise<void> | null } = { current: null };
+    slot.current = (async () => {
+      for (const runner of this.scopeStoreRunners.values()) {
+        if (seen.has(runner)) continue;
+        seen.add(runner);
+        await runner.start();
+      }
+    })().catch((err: unknown) => {
+      if (this.scopeStoreStart === slot.current) this.scopeStoreStart = null;
+      throw err;
+    });
+    this.scopeStoreStart = slot.current;
+    return slot.current;
+  }
+
+  /**
+   * Which vertical names the store object. With a control plane, the scope row.
+   * Without one, {@link CloudflareScopeHostOptions.scopeStores} — the worker
+   * already knows which vertical it is, and the directory is not there to ask.
+   */
+  private async scopeStoreVerticalOf(tenantId: TenantId, scopeId: ScopeId): Promise<string> {
+    if (this.cpLess) {
+      if (!this.scopeStoreVertical) {
+        throw substratError(
+          'unavailable',
+          'a scope store on a host with no control plane needs scopeStores.vertical',
+        );
+      }
+      return this.scopeStoreVertical;
+    }
+    const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+    const vertical = scope?.vertical;
+    if (!vertical) {
+      throw substratError('not_found', `scope ${scopeId} has no vertical, so it has no scope store`);
+    }
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
+      );
+    }
+    return vertical;
+  }
+
   /**
    * A scope stub whose authority is a CONNECTION (#97).
    *
@@ -5702,7 +5833,7 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   async close(): Promise<void> {
-    // Nothing to drain: every admin write awaits its RPC to completion inline.
+    for (const runner of new Set(this.scopeStoreRunners.values())) await runner.stop();
   }
 
   // -- admin surface --------------------------------------------------------
