@@ -359,6 +359,17 @@ export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 export const STORE_KINDS: readonly StoreKindRegistration[] = [];
 
 /**
+ * Whether any deployment can hold a scope store at all (#2242). A declaration of an
+ * unregistered kind is refused at push and at the control plane, so with no kind
+ * registered nothing holds one, and subject erasure need not ask. Once a kind is
+ * registered, erasure fails closed: a deployment that may hold a store and cannot
+ * be asked stops the erasure before the subject key is destroyed.
+ */
+export function scopeStoresPossible(kinds: readonly StoreKindRegistration[] = STORE_KINDS): boolean {
+  return kinds.length > 0;
+}
+
+/**
  * A platform-run object, one per scope (#2207). The builder names the binding and the
  * kind. The kind has no default. The platform injects `SUBSTRAT_STORE_<BINDING>` at
  * push; the vertical never writes that binding.
