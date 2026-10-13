@@ -281,7 +281,7 @@ vertical's environment, next to the raw namespace binding. Three things are wron
 - The routes it needs on the vertical (`/internal/scope-store-*`) are deleted again by the
   router hop.
 
-The direction rejected here is the one that ships twice.
+That path would be built, shipped, and then deleted again.
 
 ### 10.2 Who can address what
 
@@ -307,6 +307,7 @@ on that object, forever. The design replaces it with one envelope that both sign
 | `aud` | `caller` (the router, for a vertical's call) or `platform` (the control plane) |
 | `name` | `<tenantId>/<vertical>/<scopeId>/<binding>`, built by the signer from its own records |
 | `op` | The operation name |
+| `digest` | SHA-256 of the request body (`{ operation, input }`), so a signed envelope carries one input |
 | `iat` | Issue time, in seconds |
 | `nonce` | 128 random bits |
 
@@ -314,7 +315,7 @@ The MAC covers a canonical encoding of every field, and every field travels insi
 signed bytes. Nothing the store acts on rides beside the MAC. The store checks, in order,
 before any of the kind's code runs:
 
-1. The MAC verifies.
+1. The MAC verifies, and `digest` matches the body received.
 2. `aud` matches `op`: a `substrat.*` operation needs `platform`, and any other operation
    needs `caller`.
 3. `iat` is inside the freshness window.
@@ -448,7 +449,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L1 | A hosted serving upload carries no binding named `SUBSTRAT_STORE_*`, whatever `STORE_KINDS` holds |
 | L2 | A hosted `getScopeStore` call leaves the worker only as `fetch` of `store.substrat.internal`. With no direct binding and no runner configured, the host never falls back to an ambient binding |
 | L3 | The router refuses a `substrat.*` operation, a scope other than the routed one, and a binding the serving version does not declare, before it signs |
-| L4 | The store refuses an envelope whose MAC fails, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` differs from the first name it accepted. Each is checked before kind code runs |
+| L4 | The store refuses an envelope whose MAC fails, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` differs from the first name it accepted. Each is checked before kind code runs |
 | L5 | A signature for one object, operation or audience does not open another. A validly signed envelope for name Y is refused by an object that remembers X |
 | L6 | Every scope-deletion path calls `substrat.wipe` on each declared binding before it deletes the scope's storage |
 | L7 | A failed or undecidable wipe stops the delete, and the scope's own storage is left for the retry. The delete never proceeds around the store |
@@ -598,7 +599,7 @@ not show these, and the isolation argument in §1 rests on the first two:
 - **Hosted behaviour.** A dispatch-namespace upload, isolate sharing, jurisdiction,
   metering, snapshot and reap (§1, FINDINGS).
 
-- **The §10 envelope.** No code signs or verifies `aud`, `op`, `iat` or `nonce` inside the
+- **The §10 envelope.** No code signs or verifies `aud`, `op`, `digest`, `iat` or `nonce` inside the
   MAC. #2247 and #2254 sign the object name only.
 
 Follow-up: extend the spike with first-name pinning (including a validly signed other

@@ -15,7 +15,7 @@ tracking: ["#2207", "#2210", "#2211"]
 
 The owner has chosen this direction. This record carries it with K-49 for ratification.
 
-The interim injection of a `SUBSTRAT_STORE_<BINDING>` `durable_object_namespace` into the serving upload is removed before the first kind is registered (#2210). The guard becomes "a hosted serving upload carries no `SUBSTRAT_STORE_*` binding, whatever is registered". Both signers, the router for a vertical's call and the control plane for the reserved operations, sign one envelope. Its MAC covers the version, the audience (`caller` or `platform`), the object name, the operation, the issue time and a nonce. The store checks all of them, and the first name it accepted, before the kind's code runs.
+The interim injection of a `SUBSTRAT_STORE_<BINDING>` `durable_object_namespace` into the serving upload is removed before the first kind is registered (#2210). The guard becomes "a hosted serving upload carries no `SUBSTRAT_STORE_*` binding, whatever is registered". Both signers, the router for a vertical's call and the control plane for the reserved operations, sign one envelope. Its MAC covers the version, the audience (`caller` or `platform`), the object name, the operation, a digest of the body, the issue time and a nonce. The store checks all of them, and the first name it accepted, before the kind's code runs.
 
 The lifecycle fails closed:
 
