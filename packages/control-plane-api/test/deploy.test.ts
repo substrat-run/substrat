@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { errorCodeOf } from '@substrat-run/contracts';
+import { errorCodeOf, RESERVED_STORE_OPERATIONS } from '@substrat-run/contracts';
 import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 import {
   assertSandboxContract,
   deploymentRefFor,
+  scopeStoreScriptBindings,
   stableDeploymentRefFor,
   nextMigrationTag,
 } from '../src/deploy.js';
@@ -156,6 +157,38 @@ describe('assertSandboxContract', () => {
     expect(errorCodeOf(thrown)).toBe('forbidden');
     expect((thrown as Error).message).toMatch(/not registered/);
     expect((thrown as Error).message).toMatch(/^deploy refused: /);
+  });
+});
+
+describe('scope store bindings injected at upload (#2209)', () => {
+  it('injects nothing when the vertical declares none', () => {
+    expect(scopeStoreScriptBindings([])).toEqual([]);
+  });
+
+  it('refuses a kind that is not registered, which is every kind today', () => {
+    expect(() => scopeStoreScriptBindings([{ binding: 'GRAPH', kind: 'ontomate' }])).toThrow(/not registered/);
+  });
+
+  it('aims a registered kind at that kind’s script and class', () => {
+    expect(
+      scopeStoreScriptBindings([{ binding: 'GRAPH', kind: 'ontomate' }], [
+        {
+          kind: 'ontomate',
+          release: '1.0.0',
+          script: 'ontomate-store',
+          className: 'Store',
+          operations: ['read'],
+          platformOperations: [...RESERVED_STORE_OPERATIONS],
+        },
+      ]),
+    ).toEqual([
+      {
+        type: 'durable_object_namespace',
+        name: 'SUBSTRAT_STORE_GRAPH',
+        class_name: 'Store',
+        script_name: 'ontomate-store',
+      },
+    ]);
   });
 });
 

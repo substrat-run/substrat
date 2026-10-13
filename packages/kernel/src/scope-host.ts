@@ -1,3 +1,4 @@
+import type { StoreStub } from './scope-store.js';
 import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
@@ -5159,6 +5160,21 @@ export interface ScopeHost {
     scopeId: ScopeId,
     options?: ScopeStubOptions,
   ): Promise<ScopeStub>;
+
+  /**
+   * Mint a stub for one scope store (#2207). A door of its own, beside `getScope`:
+   * `ScopeStubOptions` carries no authority, and a store is not a flag on that bag.
+   *
+   * The host checks the (tenant, scope) pair the way `getScope` does, then builds
+   * the object name itself. `binding` is the declaration. The vertical does not
+   * choose the tenant, the scope, or the vertical slug that go into the name.
+   */
+  getScopeStore(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    binding: string,
+  ): Promise<StoreStub>;
 
   /**
    * The entry scope-lifecycle transition (control-plane.md §4.2): idempotent,

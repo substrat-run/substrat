@@ -487,6 +487,46 @@ export const KickRealDO = defineKickCoalescerDO<KickEnv>({
 /** #1686: vertical-auth's identity directory, as a vertical binds it — owner-claim.test.ts. */
 export { IdentityDO } from '@substrat-run/vertical-auth';
 
+/**
+ * A same-script scope store for the door tests (#2209). A counter, the envelope, and
+ * the reserved operations the platform caller would send. The vertical's stub refuses
+ * those before the fetch; this class still answers them, which is how the test tells
+ * the refusal from a store that does not implement them.
+ */
+export class ScopeStoreCounterDO extends DurableObject {
+  async fetch(request: Request): Promise<Response> {
+    const body: unknown = await request.json();
+    const operation = typeof body === 'object' && body !== null ? Reflect.get(body, 'operation') : undefined;
+    const input = typeof body === 'object' && body !== null ? Reflect.get(body, 'input') : undefined;
+    const by =
+      typeof input === 'object' && input !== null && typeof Reflect.get(input, 'by') === 'number'
+        ? Number(Reflect.get(input, 'by'))
+        : 1;
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS counter (n INTEGER NOT NULL)');
+    const rows = this.ctx.storage.sql.exec('SELECT n FROM counter').toArray();
+    const first = rows[0];
+    const current =
+      typeof first === 'object' && first !== null && 'n' in first ? Number(Reflect.get(first, 'n')) : 0;
+    if (operation === 'increment') {
+      const next = current + by;
+      this.ctx.storage.sql.exec('DELETE FROM counter');
+      this.ctx.storage.sql.exec('INSERT INTO counter (n) VALUES (?)', next);
+      return Response.json({ result: next });
+    }
+    if (operation === 'read' || operation === 'substrat.size') {
+      const result = operation === 'read' ? current : this.ctx.storage.sql.databaseSize;
+      return Response.json({ result });
+    }
+    if (operation === 'plain') {
+      return new Response('not-json', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+    if (operation === 'fail') {
+      return Response.json({ error: { code: 'x'.repeat(80), status: 500, body: { stack: 'secret-trace' } } });
+    }
+    return Response.json({ error: { code: 'unknown_operation', status: 400, body: { operation } } });
+  }
+}
+
 export default {
   fetch(): Response {
     return new Response('substrat adapter-cloudflare test worker', { status: 200 });

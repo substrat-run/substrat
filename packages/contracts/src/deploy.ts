@@ -377,6 +377,37 @@ export function scopeStoreBindingName(binding: string): string {
 }
 
 /**
+ * The object name the host builds (#2207). The vertical names a binding; the host
+ * names the object, from the tenant and scope it has just checked and the vertical
+ * the scope runs. Tenant, scope and binding contain no `/`. A vertical slug may,
+ * and it sits between the two ids, so the name still splits one way.
+ */
+export function scopeStoreObjectName(tenantId: string, vertical: string, scopeId: string, binding: string): string {
+  return `${tenantId}/${vertical}/${scopeId}/${binding}`;
+}
+
+/** `{ operation, input }` over the store's fetch. */
+export const storeRequest = z.object({
+  operation: z.string().min(1),
+  input: z.unknown().optional(),
+});
+export type StoreRequest = z.infer<typeof storeRequest>;
+
+/** What a store answers when it refuses. `code` is the kind's, `status` is HTTP. */
+export const storeErrorEnvelope = z.object({
+  code: z.string().min(1),
+  status: z.number().int(),
+  body: z.unknown().optional(),
+});
+
+/** `{ result }` or `{ error }`. Anything else is not this envelope. */
+export const storeResponse = z.union([
+  z.object({ result: z.unknown() }).strict(),
+  z.object({ error: storeErrorEnvelope }).strict(),
+]);
+export type StoreResponse = z.infer<typeof storeResponse>;
+
+/**
  * What a vertical needs from the runtime, in substrate vocabulary (package.json
  * `substrat.runtimeNeeds`). A vertical authored with this section never writes deploy
  * config for a specific substrate — the CLI derives that at push time (D-38: builders

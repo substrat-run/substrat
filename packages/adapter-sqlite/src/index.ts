@@ -725,6 +725,7 @@ import {
   type ConnectorCallRecorder,
   unknownRoleError,
   type ConsumerDelivery,
+  type StoreStub,
 } from '@substrat-run/kernel';
 import {
   attributedView,
@@ -4131,6 +4132,18 @@ export class SqliteScopeHost implements ScopeHost {
       throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
     return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options);
+  }
+
+  async getScopeStore(
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    binding: string,
+  ): Promise<StoreStub> {
+    // The directory check is the same one `getScope` makes. A runner for the
+    // binding is the pure adapter's other half, and this host has none yet.
+    await this.getScope(principal, tenantId, scopeId);
+    throw substratError('unavailable', `no scope-store runner is configured for binding '${binding}'`);
   }
 
   /**

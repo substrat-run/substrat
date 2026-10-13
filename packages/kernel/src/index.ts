@@ -80,6 +80,7 @@ export type {
   TenantStoreRecord,
 } from './scope-host.js';
 export { GRANT_CHILDREN_INDEX_DDL } from './grant-scoped-read.js';
+export { callScopeStore, type StoreStub } from './scope-store.js';
 export type { GrantedEntitiesPage, GrantedEntityIdsMayRepeatPage } from './grant-scoped-read.js';
 export type {
   ConnectionUseOutcome,
