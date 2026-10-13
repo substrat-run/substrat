@@ -195,7 +195,9 @@ export interface RebindVerticalResult {
 }
 
 export interface ProvisionScopeResult {
-  owner?: string;
+  /** The owner the vertical re-seated; `null` when it keeps no owner of record (#2263), so the
+   *  reconcile seated what its version declares and repaired no lockout. */
+  owner?: string | null;
   storeError?: string;
 }
 

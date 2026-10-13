@@ -124,7 +124,7 @@ export function declaredCallLine(entry: DeclaredCallState): string {
     case 'switched-off':
       return `Switched off — ${entry.vertical} refuses this app's calls until you let it back in.`;
     case 'no-grant':
-      return `${entry.vertical} grants this app nothing — its calls are refused at the door.`;
+      return `${entry.vertical} grants this app nothing — its calls are refused at the door. Either its version does not declare this app as a peer, or its install predates the version that does and is reconciled on the platform's regular pass after a promote (\`substrat scope provision\` does it now).`;
     case 'unreadable':
       return `Could not read where this stands at ${entry.vertical}: ${entry.message}`;
   }

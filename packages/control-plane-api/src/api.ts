@@ -4092,6 +4092,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           connectionGrants,
           connectionKeys,
           ...(entityGrants ? { entityGrants } : {}),
+          // #2263: a vertical with no owner of record still seats what its version declares, and
+          // answers `owner: null`, which the CLI reports as a lockout NOT repaired.
+          ownerless: 'seat',
           ...carry,
           // Handed over exactly as at provision: a store minted HERE has never been migrated
           // by the vertical, so the reconcile must carry it into the same ready-gate — a bound
@@ -5264,7 +5267,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Scope stores before the key (#2068), failing closed (#2242): a deployment that may hold
     // a store is asked, and one that may and cannot be asked stops the erasure here, before
     // `finalizeSubjectShred` destroys the key. An error from the ask stops it the same way.
-    let storeErasures: StoreErasure[] = [];
+    // Not asked is `undefined`, not `[]`: a host whose stores sit with it (the pure adapter's
+    // co-located runners) then erases them itself in the finalize, as its direct shred does.
+    let storeErasures: StoreErasure[] | undefined;
     if (await servingMayHoldScopeStores(c, scope, currentRef, reached?.via)) {
       if (typeof serving?.scopeStoreErase !== 'function') {
         throw new ControlPlaneError(

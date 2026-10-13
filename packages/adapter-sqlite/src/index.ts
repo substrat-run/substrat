@@ -736,8 +736,10 @@ import {
   callReservedStoreOperation,
   type ReservedStoreResult,
   callScopeStore,
+  scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
   type ScopeStoreHostOptions,
+  type ScopeStoreLifecycle,
   type ScopeStoreRunner,
 } from '@substrat-run/kernel';
 import {
@@ -1907,7 +1909,7 @@ export class SqliteScopeHost implements ScopeHost {
   /** operation names whose default binding some manifest withdrew (K-17). */
   private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
   private readonly scopeStoreVertical?: string;
-  private scopeStoreStart: Promise<void> | null = null;
+  private readonly scopeStoreLifecycle: ScopeStoreLifecycle;
   private readonly withdrawn = new Map<string, string>(); // operation → withdrawing module
   private readonly relations = new Map<string, Set<string>>();
   /** entityType → its derived FTS5 index (#827). One entity type, one index. */
@@ -2003,6 +2005,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.versionId = options.versionId ?? null;
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
+    this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
     this.logSink = options.logSink ?? consoleLogSink;
     this.invocationLineSink = options.invocationLineSink ?? consoleInvocationLineSink;
     // Every option is read above and here, BEFORE the directory is claimed: an option that throws
@@ -4180,7 +4183,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (!runner) {
       throw substratError('not_found', `no scope store is bound for '${binding}'`);
     }
-    await this.ensureScopeStoresStarted();
+    await this.scopeStoreLifecycle.start();
     return {
       tenantId,
       scopeId,
@@ -4193,24 +4196,6 @@ export class SqliteScopeHost implements ScopeHost {
           ...extra,
         ),
     };
-  }
-
-  private ensureScopeStoresStarted(): Promise<void> {
-    if (this.scopeStoreStart) return this.scopeStoreStart;
-    const seen = new Set<ScopeStoreRunner>();
-    const slot: { current: Promise<void> | null } = { current: null };
-    slot.current = (async () => {
-      for (const runner of this.scopeStoreRunners.values()) {
-        if (seen.has(runner)) continue;
-        seen.add(runner);
-        await runner.start();
-      }
-    })().catch((err: unknown) => {
-      if (this.scopeStoreStart === slot.current) this.scopeStoreStart = null;
-      throw err;
-    });
-    this.scopeStoreStart = slot.current;
-    return slot.current;
   }
 
   /** The scope's vertical when it has one. No vertical means this host has no store to touch. */
@@ -4249,7 +4234,7 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<ReservedStoreResult<O>> {
     const runner = this.scopeStoreRunners.get(address.binding);
     if (!runner) throw substratError('not_found', `no scope store is bound for '${address.binding}'`);
-    await this.ensureScopeStoresStarted();
+    await this.scopeStoreLifecycle.start();
     return callReservedStoreOperation((request) => runner.invoke(address, request), operation, input);
   }
 
@@ -6088,7 +6073,7 @@ export class SqliteScopeHost implements ScopeHost {
 
   async close(): Promise<void> {
     try {
-      for (const runner of new Set(this.scopeStoreRunners.values())) await runner.stop();
+      await this.scopeStoreLifecycle.stop();
     } finally {
       for (const rt of [...this.scopes.values()]) this.closeRuntime(rt);
       this.directory.close();

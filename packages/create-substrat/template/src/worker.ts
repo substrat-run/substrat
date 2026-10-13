@@ -295,9 +295,10 @@ mountApi(app, stub);
 //
 // This starter's hooks keep the deployment's sweep roster (#461) in step: a newly
 // provisioned scope joins it (so its schedules run), and a deleted one leaves it.
-// Reconcile needs a durable owner-of-record to heal from — this starter keeps none
-// (that lives with real auth, the auth seam), so `resolveOwner` is omitted and
-// /internal/reconcile answers 501 until you wire auth and supply one.
+// A full reconcile needs a durable owner-of-record to heal from — this starter keeps none
+// (that lives with real auth, the auth seam), so `resolveOwner` is omitted. The platform's
+// reconcile then only seats what each version declares (schedule, peer and connection
+// grants) and re-grants no owner, until you wire auth and supply one.
 mountPlatformSurface<Env>(app, {
   platformSecret: (env) => env.PLATFORM_SECRET,
   hostFor,

@@ -337,6 +337,20 @@ describe('scope tools', () => {
     await expect(provisionScope(base)).rejects.toThrow('provision refused: 500 Internal Server Error');
   });
 
+  it('provision with no owner of record (#2263) never says the owner was re-granted', async () => {
+    plane(json({ owner: null }));
+    await provisionScope(base);
+    const said = out.join('\n');
+    expect(said).toMatch(/owner was NOT re-sourced[\s\S]*locked-out owner is NOT repaired/);
+    expect(said).not.toMatch(/re-granted;|logins restored/);
+    // Twin: an owner in the answer is the lockout repair, and says so.
+    out.length = 0;
+    plane(json({ owner: 'u@x' }));
+    await provisionScope(base);
+    expect(out.join('\n')).toMatch(/owner u@x re-granted; logins restored/);
+    expect(out.join('\n')).not.toMatch(/NOT re-sourced/);
+  });
+
   it('adopt-serving sends the acknowledgement only when asked and names what a refusal would break', async () => {
     plane(json({ servingRef: 'v1', tables: 3 }));
     await adoptScopeServing(base);

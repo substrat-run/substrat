@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ScopeStoreRunner } from '@substrat-run/kernel';
 import {
   dataSubjectId,
   platformActorId,
@@ -126,6 +126,51 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       });
       expect((await shred(api, s, subject)).status).toBe(200);
       expect(await keyKept()).toBe(false);
+    });
+    // Not asked is not "nothing held": a host whose stores sit with it erases them in the
+    // finalize, as its direct shred does, so the orchestrated route must not hand it `[]`.
+    it('behind the orchestrated route, a host with co-located stores still erases them', async () => {
+      const ownDir = mkdtempSync(join(tmpdir(), 'cp-shred-colocated-'));
+      const asked: string[] = [];
+      const runner: ScopeStoreRunner = {
+        kind: 'counter',
+        async start() {},
+        async stop() {},
+        async invoke(_address, request) {
+          if (request.operation === 'substrat.erase') {
+            asked.push(String(Reflect.get(request.input as object, 'subjectId')));
+            return { result: { erased: 1 } };
+          }
+          return { result: { bytes: 0 } };
+        },
+      };
+      const own = new SqliteScopeHost({
+        dir: ownDir,
+        checker: UNSAFE_allowAllChecker,
+        secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(6)),
+        scopeStores: { runners: [{ binding: 'GRAPH', runner }] },
+      });
+      try {
+        const tenant = tenantId.parse(ulid());
+        const s = scopeId.parse(ulid());
+        const subject = dataSubjectId.parse(ulid());
+        await own.admin.createTenant(staff, { id: tenant, slug: `t-${tenant.toLowerCase()}`, name: 'T' });
+        await own.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical: 'docs' });
+        await own.admin.activateScope(staff, tenant, s);
+        const api = createControlPlaneApi({
+          host: own,
+          authenticate: UNSAFE_devPlatformActorAuth(),
+          verticals: { docs: redactOnly as unknown as VerticalClient },
+          resolveVerticalRef: async () => undefined,
+        });
+        const res = await api.request(`/tenants/${tenant}/scopes/${s}/subjects/${subject}/shred`, { method: 'POST', headers: auth });
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
+        expect(asked).toEqual([subject]);
+      } finally {
+        await own.close();
+        rmSync(ownDir, { recursive: true, force: true });
+      }
     });
   });
 
