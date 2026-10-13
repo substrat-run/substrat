@@ -288,5 +288,4 @@ describe('subject erasure (#37)', () => {
     });
     expect(res.status).toBe(404);
   });
-
 });
