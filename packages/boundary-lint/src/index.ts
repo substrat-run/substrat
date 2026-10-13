@@ -1246,46 +1246,133 @@ function holdsPlaceholder(masked: string, stripped: string, from: number, to: nu
   return false;
 }
 
-/** `expressionEnd`, which stops at a bracket or a comma, also stopped by a `;` at depth zero. */
+/** A line ending in one of these goes on to the next: `x =`, `a +`, `f(`, `=>`, `cond ?`. */
+const CONTINUES_AFTER = /[-+*/%=&|^!?:,.([{<>]\s*$/;
+/** A line starting with one of these continues the one before: `.join(',')`, `+ ')'`, `?? x`. */
+const CONTINUES_BEFORE = /^\s*[-+*/%=&|^?:,.)\]}]/;
+
+/**
+ * `expressionEnd`, which stops at a bracket or a comma, also stopped where the statement ends at
+ * depth zero: a `;`, or a line break in code written without semicolons — unless the line breaks
+ * mid-expression (it ends in an operator, or the next starts with one). A template literal's text
+ * is one token, line breaks and all.
+ */
 function statementEnd(masked: string, from: number): number {
   const end = expressionEnd(masked, from);
-  let depth = 0;
+  const open: string[] = []; // brackets and template texts this scan is inside
   for (let i = from; i < end; i++) {
     const c = masked[i]!;
-    if (c === '(' || c === '[' || c === '{') depth++;
-    else if (c === ')' || c === ']' || c === '}') depth--;
-    else if (c === ';' && depth === 0) return i;
+    if (open.at(-1) === '`') {
+      if (c === '`') open.pop();
+      else if (c === '$' && masked[i + 1] === '{') open.push('${'), i++;
+      continue;
+    }
+    if (c === '`') open.push('`');
+    else if (c === '(' || c === '[' || c === '{') open.push(c);
+    else if (c === ')' || c === ']' || c === '}') open.pop();
+    else if (open.length === 0 && c === ';') return i;
+    else if (open.length === 0 && c === '\n') {
+      const before = masked.slice(masked.lastIndexOf('\n', i - 1) + 1, i);
+      const next = masked.slice(i + 1).match(/^\s*([^\n]*)/)?.[1] ?? '';
+      if (before.trim() !== '' && !CONTINUES_AFTER.test(before) && !CONTINUES_BEFORE.test(next)) return i;
+    }
   }
   return end;
 }
 
+/** The `{…}` block that holds `at`, as `[open, close]`; the whole file when it is top level. */
+function enclosingBlock(masked: string, at: number): [number, number] {
+  for (let depth = 0, i = at - 1; i >= 0; i--) {
+    const c = masked[i];
+    if (c === '}') depth++;
+    else if (c === '{' && depth-- === 0) return [i, matchDelim(masked, i, '{', '}')];
+  }
+  return [-1, masked.length];
+}
+
 /**
- * What a name in this file stands for: a `const`/`let`/`var` initializer up to the end of its
- * statement, or a `function NAME(…) { … }` body. Null for a parameter, an import or a global.
+ * Parameter lists — `function f(a, b) {`, `(a, b) => …`, `a => …` — and the body each one scopes:
+ * a block, or an arrow's expression up to its statement's end.
  */
-function definitionOf(masked: string, name: string): [number, number] | null {
-  const at = initializerOf(masked, name);
-  if (at >= 0) return [at, statementEnd(masked, at)];
+const PARAMETER_LIST = /\(([^()]*)\)\s*(?::[^={;]*)?(=>|\{)|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=>/g;
+
+/** Is `name` a parameter of a function between `from` and `use` whose body holds `use`? */
+function shadowed(masked: string, name: string, from: number, use: number): boolean {
+  const word = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}(?![\\w$])`);
+  PARAMETER_LIST.lastIndex = from;
+  for (let m: RegExpExecArray | null; (m = PARAMETER_LIST.exec(masked)) && m.index < use; ) {
+    if (!word.test(m[1] ?? m[3] ?? '')) continue;
+    if (m[1] !== undefined && /\b(?:if|for|while|switch)\s*$/.test(masked.slice(Math.max(0, m.index - 8), m.index))) continue; // a condition, not parameters
+    let body = m.index + m[0].length;
+    if (m[2] === '{') body -= 1;
+    else while (/\s/.test(masked[body] ?? '')) body++;
+    const close = masked[body] === '{' ? matchDelim(masked, body, '{', '}') : statementEnd(masked, body);
+    if (body <= use && use < close) return true;
+  }
+  return false;
+}
+
+/**
+ * What a name used at `use` stands for: the nearest `const`/`let`/`var` before the use whose
+ * block holds it, its initializer up to the end of its statement — or, failing one, a
+ * `function NAME(…) { … }` body in scope (hoisted, so it may come after). Null for a parameter,
+ * an import, a global, or a name a parameter list in between shadows.
+ */
+function definitionOf(masked: string, name: string, use: number): [number, number] | null {
   const literal = name.replace(/[$.*+?^()[\]{}|\\]/g, '\\$&');
-  const fn = new RegExp(`(?<![\\w$])function\\s*\\*?\\s*${literal}\\s*\\(`).exec(masked);
-  if (!fn) return null;
-  const params = matchDelim(masked, fn.index + fn[0].length - 1, '(', ')');
-  const open = params < 0 ? -1 : masked.indexOf('{', params);
-  const close = open < 0 ? -1 : matchDelim(masked, open, '{', '}');
-  return close < 0 ? null : [open, close];
+  const inScope = (at: number): boolean => {
+    const [, close] = enclosingBlock(masked, at);
+    return use < close && !shadowed(masked, name, at, use);
+  };
+  const decl = new RegExp(`(?<![\\w$])(?:const|let|var)\\s+${literal}(?![\\w$])\\s*(?::[^=;]*)?=(?!=)`, 'g');
+  let found: [number, number] | null = null;
+  for (let m: RegExpExecArray | null; (m = decl.exec(masked)) && m.index < use; ) {
+    const at = m.index + m[0].length;
+    if (inScope(m.index)) found = [at, statementEnd(masked, at)];
+  }
+  if (found) return found;
+  const fn = new RegExp(`(?<![\\w$])function\\s*\\*?\\s*${literal}\\s*\\(`, 'g');
+  for (let m: RegExpExecArray | null; (m = fn.exec(masked)); ) {
+    if (!inScope(m.index)) continue;
+    const params = matchDelim(masked, m.index + m[0].length - 1, '(', ')');
+    const open = params < 0 ? -1 : masked.indexOf('{', params);
+    const close = open < 0 ? -1 : matchDelim(masked, open, '{', '}');
+    if (close >= 0) return [open, close];
+  }
+  return null;
 }
 
 /** Does this range build placeholders — itself, or through a name it uses, `NAME_HOPS` deep? */
-function buildsPlaceholders(masked: string, stripped: string, from: number, to: number, seen: Set<string>, hops: number): boolean {
+function buildsPlaceholders(masked: string, stripped: string, from: number, to: number, seen: Set<number>, hops: number): boolean {
   if (holdsPlaceholder(masked, stripped, from, to)) return true;
   if (hops === 0) return false;
-  for (const [name] of masked.slice(from, to).matchAll(NAME)) {
-    if (seen.has(name)) continue;
-    seen.add(name);
-    const def = definitionOf(masked, name);
-    if (def && buildsPlaceholders(masked, stripped, ...def, seen, hops - 1)) return true;
+  for (const m of masked.slice(from, to).matchAll(NAME)) {
+    const def = definitionOf(masked, m[0], from + m.index);
+    if (!def || seen.has(def[0])) continue;
+    seen.add(def[0]);
+    if (buildsPlaceholders(masked, stripped, ...def, seen, hops - 1)) return true;
   }
   return false;
+}
+
+/**
+ * Where a concatenated list ends: the string literal that closes it (`')'`, `") AND x = "`) at
+ * depth zero — not the end of the statement, whose later `'?'` binds one fixed value.
+ */
+function concatenatedListEnd(masked: string, stripped: string, from: number, to: number): number {
+  let depth = 0;
+  for (let i = from; i < to; i++) {
+    const c = masked[i]!;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === "'" || c === '"' || c === '`') {
+      const close = masked.indexOf(c, i + 1);
+      if (close < 0) return to;
+      if (depth === 0 && /^\s*\)/.test(stripped.slice(i + 1, close))) return i;
+      i = close;
+    }
+  }
+  return to;
 }
 
 /**
@@ -1336,7 +1423,7 @@ function checkPlaceholderList(rel: string, source: string, out: Violation[]): vo
       const quote = m.index + m[0].lastIndexOf(m[1]);
       if (masked[quote] !== m[1]) continue; // the literal must close here
       from = m.index + m[0].length; // past the `+`
-      to = statementEnd(masked, from);
+      to = concatenatedListEnd(masked, stripped, from, statementEnd(masked, from));
     }
     if (!buildsPlaceholders(masked, stripped, from, to, new Set(), NAME_HOPS)) continue;
     const line = lineAt(source, m.index);

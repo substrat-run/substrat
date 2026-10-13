@@ -1613,6 +1613,92 @@ describe('R12 — a hand-built IN list of placeholders', () => {
     ).toEqual([]);
   });
 
+  it('resolves a name to the declaration in scope, not the first one in the file (#2260 round 2)', () => {
+    expect(
+      r12([
+        'function a(ctx) {',
+        '  // boundary-lint-allow R12 — two fixed slots',
+        "  const p = ['?', '?'].join(',');",
+        '  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${p})`, [1, 2]);',
+        '  // boundary-lint-end R12',
+        '}',
+        'function b(ctx) {',
+        "  const p = STATES.map((s) => `'${s}'`).join(',');",
+        '  return ctx.sql.query(`SELECT * FROM t WHERE state IN (${p})`);',
+        '}',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('a declaration inside another block is out of scope at the use', () => {
+    expect(
+      r12([
+        "import { p } from './sql-pieces';",
+        'function a(ctx) {',
+        '  // boundary-lint-allow R12 — two fixed slots',
+        "  const p = ['?', '?'].join(',');",
+        '  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${p})`, [1, 2]);',
+        '  // boundary-lint-end R12',
+        '}',
+        'export const b = (ctx) => ctx.sql.query(`SELECT * FROM t WHERE state IN (${p})`);',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('a parameter shadows a same-named constant outside it', () => {
+    expect(
+      r12([
+        "const ids = ['?'];",
+        'export function f(ctx, ids) {',
+        "  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${ids.map((i) => `'${i}'`).join(',')})`);",
+        '}',
+        "export const g = (ctx, ids) => ctx.sql.query(`SELECT * FROM t WHERE id IN (${ids.map((i) => `'${i}'`).join(',')})`);",
+      ]),
+    ).toEqual([]);
+  });
+
+  it('ends a statement at a line break in code written without semicolons', () => {
+    expect(
+      r12([
+        'export function g(ctx, flag) {',
+        "  const p = STATES.join(',')",
+        "  const suffix = flag ? '?' : ''",
+        '  return ctx.sql.query(`SELECT * FROM t WHERE state IN (${p})` + suffix)',
+        '}',
+        "const sql = 'SELECT * FROM t WHERE state IN (' + STATES + ')'",
+        "const mark = '?'",
+      ]),
+    ).toEqual([]);
+  });
+
+  it('twin: a statement continued on the next line is still one statement', () => {
+    const vs = r12([
+      'export function h(ctx, ids) {',
+      '  const p = ids',
+      "    .map(() => '?')",
+      "    .join(',')",
+      '  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${p})`, ids)',
+      '}',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([5]);
+  });
+
+  it('twin: a condition naming the list is not a parameter list that shadows it', () => {
+    const vs = r12([
+      'export function k(ctx, ids) {',
+      "  const ph = ids.map(() => '?').join(',');",
+      '  if (ph) {',
+      '    return ctx.sql.query(`SELECT * FROM t WHERE id IN (${ph})`, ids);',
+      '  }',
+      '}',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([4]);
+  });
+
+  it('ends a concatenated list at the literal that closes it', () => {
+    expect(r12(["const q = 'SELECT * FROM t WHERE s IN (' + STATES + ') AND x = ' + '?';"])).toEqual([]);
+  });
+
   it('twin: the helper passes — IN stays visible, and the list is one parameter', () => {
     expect(
       r12([
