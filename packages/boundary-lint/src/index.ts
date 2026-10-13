@@ -1246,24 +1246,26 @@ function holdsPlaceholder(masked: string, stripped: string, from: number, to: nu
   return false;
 }
 
+/** `expressionEnd`, which stops at a bracket or a comma, also stopped by a `;` at depth zero. */
+function statementEnd(masked: string, from: number): number {
+  const end = expressionEnd(masked, from);
+  let depth = 0;
+  for (let i = from; i < end; i++) {
+    const c = masked[i]!;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ';' && depth === 0) return i;
+  }
+  return end;
+}
+
 /**
  * What a name in this file stands for: a `const`/`let`/`var` initializer up to the end of its
  * statement, or a `function NAME(…) { … }` body. Null for a parameter, an import or a global.
  */
 function definitionOf(masked: string, name: string): [number, number] | null {
   const at = initializerOf(masked, name);
-  if (at >= 0) {
-    const end = expressionEnd(masked, at);
-    // `expressionEnd` stops at a bracket or a comma; a statement also ends at its `;`.
-    let depth = 0;
-    for (let i = at; i < end; i++) {
-      const c = masked[i]!;
-      if (c === '(' || c === '[' || c === '{') depth++;
-      else if (c === ')' || c === ']' || c === '}') depth--;
-      else if (c === ';' && depth === 0) return [at, i];
-    }
-    return [at, end];
-  }
+  if (at >= 0) return [at, statementEnd(masked, at)];
   const literal = name.replace(/[$.*+?^()[\]{}|\\]/g, '\\$&');
   const fn = new RegExp(`(?<![\\w$])function\\s*\\*?\\s*${literal}\\s*\\(`).exec(masked);
   if (!fn) return null;
@@ -1334,7 +1336,7 @@ function checkPlaceholderList(rel: string, source: string, out: Violation[]): vo
       const quote = m.index + m[0].lastIndexOf(m[1]);
       if (masked[quote] !== m[1]) continue; // the literal must close here
       from = m.index + m[0].length; // past the `+`
-      to = expressionEnd(masked, from);
+      to = statementEnd(masked, from);
     }
     if (!buildsPlaceholders(masked, stripped, from, to, new Set(), NAME_HOPS)) continue;
     const line = lineAt(source, m.index);
