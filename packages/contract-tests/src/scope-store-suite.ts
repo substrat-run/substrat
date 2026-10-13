@@ -390,6 +390,10 @@ export function scopeStoreContractSuite(
       await host.admin.activateScope(staff, tenant, doomed);
       const store = await host.getScopeStore(principal, tenant, doomed, 'GRAPH');
       await store.invoke('increment', { by: 7 });
+      // A table in the scope's own storage, so its survival is visible as well as the store's.
+      const seeded = await host.admin.exportScope(staff, tenant, doomed);
+      await host.restoreScope(staff, tenant, doomed, { ...seeded, tables: [...seeded.tables, PROBE_TABLE] });
+      expect(await tableNames(doomed)).toContain(PROBE_TABLE.name);
       await host.admin.archiveScope(staff, tenant, doomed);
       await store.invoke('fail-wipe', true);
       try {
@@ -401,6 +405,7 @@ export function scopeStoreContractSuite(
         expect((await host.admin.getScopeRecord(staff, tenant, doomed))?.status).toBe('archived');
         const dump = await host.admin.exportScope(staff, tenant, doomed);
         expect(dump.stores.find((one) => one.binding === 'GRAPH')?.tables[0]?.rows).toEqual([[7]]);
+        expect(dump.tables.map((table) => table.name)).toContain(PROBE_TABLE.name);
       } finally {
         await store.invoke('fail-wipe', false);
       }
