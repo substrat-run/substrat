@@ -429,12 +429,13 @@ export interface ReconcileInstanceInput {
   /** The recorded-off modules, switched off in the reconcile's own unit (#1742) — as at provision. */
   switchedOff?: ModuleId[];
   /**
-   * #2263: accept the OWNERLESS reconcile from a vertical that keeps no owner of record — the
+   * #2263: accept the OWNERLESS reconcile from a vertical that keeps no owner of record (no
+   * `resolveOwner` at all; one that keeps a record and finds none still answers 409) — the
    * tuples its running version declares (schedule grants, peer keys, these connection grants)
    * seated and the recorded-off positions re-applied, and nothing else: no projection of the
    * entitlements, links or keys above, no entity-grant shapes, no owner. Answered `owner: null`
    * with no retirement or bound-shape report. Omit it when the projection is the point (an
-   * entitlements delivery): such a vertical then refuses (501/409) as it always did. A vertical
+   * entitlements delivery): such a vertical then refuses (501) as it always did. A vertical
    * built before the field ignores it and refuses too.
    */
   ownerless?: 'seat';

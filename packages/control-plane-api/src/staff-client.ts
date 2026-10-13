@@ -83,6 +83,15 @@ import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
  * Answers are typed, not parsed — the same trust the console's hand-rolled client had.
  */
 
+/** What a re-run provision answers (`POST …/provision`): the vertical's reconcile answer. `owner`
+ *  is `null` (#2263) for the ownerless reconcile of a vertical that keeps no owner of record. */
+export interface ReprovisionedScope {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  owner: string | null;
+  storeError?: string;
+}
+
 /** One service's invocation aggregates — the control plane's observability proxy
  *  (provider-neutral seam; Cloudflare analytics is the current backend). */
 export interface ServiceMetricsRow {
@@ -482,7 +491,7 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
    * for itself at provision — a new service principal, say — which no other path can
    * ever deliver, because provision runs at install and never again.
    */
-  reprovisionScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/provision`);
+  reprovisionScope = (t: TenantId, s: ScopeId): Promise<ReprovisionedScope> => this.post(`/tenants/${t}/scopes/${s}/provision`);
   archiveScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/archive`);
   unarchiveScope = (t: TenantId, s: ScopeId): Promise<Scope> => this.post(`/tenants/${t}/scopes/${s}/unarchive`);
   // archived → reaped (§4.4): irreversibly wipe the scope's DO storage, keeping the

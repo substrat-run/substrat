@@ -181,39 +181,58 @@ describe('#2263 — the ownerless reconcile seats the declarations and nothing e
     return s;
   };
   type Row = Record<string, unknown>;
+  /** Every `_substrat_*` table the scope holds, rows sorted, with `_substrat_tuples` apart. */
   const snapshot = (s: string) =>
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
       const all = (sql: string): Row[] => state.storage.sql.exec(sql).toArray() as Row[];
+      const tables = all("SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 10) = '_substrat_' ORDER BY name")
+        .map((r) => String(r.name))
+        .filter((name) => name !== '_substrat_tuples');
+      // `write_revision` is the DO's own count of committed write units, which any seat moves;
+      // it records that a write happened, not anything it wrote, so it is the one row left out.
+      const rows = (name: string) =>
+        all(name === '_substrat_meta' ? `SELECT * FROM "${name}" WHERE key != 'write_revision'` : `SELECT * FROM "${name}"`);
+      const spine = Object.fromEntries(tables.map((name) => [name, rows(name).map((r) => JSON.stringify(r)).sort()]));
       return {
-        roles: all('SELECT * FROM _substrat_roles ORDER BY role_key'),
-        entitlements: all('SELECT * FROM _substrat_entitlements ORDER BY entitlement_key'),
-        links: all('SELECT * FROM _substrat_identity_links ORDER BY external_id'),
-        keys: all('SELECT * FROM _substrat_connection_keys ORDER BY key_id'),
-        tenantTuples: all('SELECT * FROM _substrat_tenant_tuples ORDER BY subject, relation'),
-        flags: all(
-          "SELECT key, value FROM _substrat_meta WHERE key IN ('permission_source', 'entitlements_enforced', 'provisioned_for') ORDER BY key",
-        ),
+        spine,
         tuples: all('SELECT subject, relation, object, expires_at, revoked_at FROM _substrat_tuples ORDER BY subject, relation, object'),
       };
     });
+  /** An operator's revoke of one seat the version declares, written as the K-21 tombstone. */
+  const revokeSeat = (s: string, subject: string, relation: string) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at) VALUES (?, ?, ?, NULL, ?)`,
+        subject,
+        relation,
+        `scope:${s}`,
+        '2026-09-01T00:00:00.000Z',
+      );
+    });
   const key = (r: Row) => `${String(r.subject)} ${String(r.relation)} ${String(r.object)}`;
 
-  it('adds exactly the declared seats, and leaves the projection and every existing tuple as they were', async () => {
+  it('adds exactly the declared seats, and leaves every other spine table and every existing tuple as they were', async () => {
     const s = await provision(false); // the version before the peer declaration
+    // An operator revoked one seat the next version declares: it must stay revoked.
+    await revokeSeat(s, 'connection:conn-revoked', `granted:${READ}`);
     const before = await snapshot(s);
-    expect(before.roles.map((r) => r.role_key)).toEqual(['legacy', 'office-admin']); // the setup is what it claims
+    expect(before.spine._substrat_roles?.map((r) => JSON.parse(r).role_key).sort()).toEqual(['legacy', 'office-admin']); // the setup is what it claims
     expect(before.tuples.find((r) => r.subject === `principal:${owner}`)).toMatchObject({ revoked_at: null });
 
-    const conn = { connectionId: 'conn-1', permission: READ };
-    expect(await hostFor().seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: [conn] })).toEqual({});
+    const grants = [
+      { connectionId: 'conn-1', permission: READ },
+      { connectionId: 'conn-revoked', permission: READ },
+    ];
+    expect(await hostFor().seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: grants })).toEqual({});
     const after = await snapshot(s);
 
-    const { tuples: beforeTuples, ...beforeProjection } = before;
-    const { tuples: afterTuples, ...afterProjection } = after;
-    expect(afterProjection).toEqual(beforeProjection);
-    // Every tuple that was there is still there, unchanged — the owner's role grant included.
-    for (const row of beforeTuples) expect(afterTuples.find((r) => key(r) === key(row))).toEqual(row);
-    const added = afterTuples.filter((r) => !beforeTuples.some((b) => key(b) === key(r)));
+    // Every spine table but the tuples — roles (with the one this version dropped), entitlements,
+    // identity links, sealing keys, tenant tuples, meta, switch records, shape markers — unchanged.
+    expect(after.spine).toEqual(before.spine);
+    // Every tuple that was there is still there, unchanged: the owner's role grant, and the revoke.
+    for (const row of before.tuples) expect(after.tuples.find((r) => key(r) === key(row))).toEqual(row);
+    expect(after.tuples.find((r) => r.subject === 'connection:conn-revoked')).toMatchObject({ revoked_at: '2026-09-01T00:00:00.000Z' });
+    const added = after.tuples.filter((r) => !before.tuples.some((b) => key(b) === key(r)));
     expect(added.map(key).sort()).toEqual(
       [
         `vertical:${PEER_BARE} granted:${READ} scope:${s}`,
@@ -227,7 +246,7 @@ describe('#2263 — the ownerless reconcile seats the declarations and nothing e
     await expect(hostFor().verticalInvokeLocal(caller, t, s, 'peer/list')).resolves.toEqual([]);
 
     // Idempotent: the second run changes nothing at all.
-    await hostFor().seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: [conn] });
+    await hostFor().seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: grants });
     expect(await snapshot(s)).toEqual(after);
   });
 
@@ -260,9 +279,13 @@ describe('#2263 — the ownerless reconcile seats the declarations and nothing e
       const err = await hostFor().seatScopeLocal({ tenantId: tenant, scopeId: scope }).then(() => undefined, (e: unknown) => e);
       expect(errorCodeOf(err)).toBe('not_found');
     }
+    // The refused scope holds what a scope nobody ever addressed holds: its DO's own bootstrap.
     const fresh = scopeId.parse(ulid());
     await hostFor().seatScopeLocal({ tenantId: t, scopeId: fresh }).catch(() => undefined);
-    expect((await snapshot(fresh)).tuples).toEqual([]);
+    const control = await snapshot(scopeId.parse(ulid()));
+    const untouched = await snapshot(fresh);
+    expect(untouched.tuples).toEqual([]);
+    expect(untouched).toEqual(control);
   });
 });
 
