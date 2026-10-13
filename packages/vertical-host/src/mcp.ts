@@ -247,9 +247,11 @@ function fieldsParam(names: readonly string[]): Record<string, unknown> {
 function project(value: unknown, walk: OutputWalk | undefined, fields: readonly string[]): unknown {
   const pick = (entry: unknown): unknown => {
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return entry;
-    const out: Record<string, unknown> = {};
-    for (const f of fields) if (Object.hasOwn(entry, f)) out[f] = (entry as Record<string, unknown>)[f];
-    return out;
+    // `fromEntries` defines own properties, where `out[f] = …` on a column named `__proto__`
+    // would set the prototype and drop the column from the JSON.
+    return Object.fromEntries(
+      fields.filter((f) => Object.hasOwn(entry, f)).map((f) => [f, (entry as Record<string, unknown>)[f]]),
+    );
   };
   if (!walk?.list) return pick(value);
   if (Array.isArray(value)) return value.map(pick);
@@ -600,7 +602,9 @@ export function mountMcp(
             id,
             toolError(
               `Invalid "fields": expected a non-empty list of column names from [${tool.selectable.join(', ')}]` +
-                (bad.length > 0 && Array.isArray(askedFields) ? `; unknown: ${bad.map(String).join(', ')}` : ''),
+                // Only strings are echoed: `String(x)` on a client-built object can throw, and this
+                // runs outside the call's `try`, so it would turn a refusal into an HTTP failure.
+                (bad.length > 0 && Array.isArray(askedFields) ? `; unknown: ${bad.filter((f) => typeof f === 'string').join(', ')}` : ''),
             ),
           );
         }

@@ -1172,6 +1172,29 @@ describe('narrowing a read with `fields`', () => {
     expect(calls).toEqual([]);
   });
 
+  it('refuses a non-string entry in-band, without coercing it', async () => {
+    const { app, calls } = mount(row);
+    const { status, body } = await rpc(app, 'tools/call', {
+      name: 'note_get',
+      arguments: { noteId: 'n1', fields: [{ toString: null }] },
+    });
+    expect(status).toBe(200);
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0].text).toMatch(/id, title, body, done/);
+    expect(calls).toEqual([]);
+  });
+
+  it('keeps a column named `__proto__` as an own property', async () => {
+    const proto = z.object({ id: z.string(), ['__proto__']: z.string() });
+    const app = new Hono();
+    const entry = Object.defineProperty({ id: 'a' }, '__proto__', { value: 'p', enumerable: true });
+    mountOperations(app, { 'p/get': { summary: 'p', output: proto, http: { method: 'GET', path: '/p' } } } as const, async () => {
+      return { invoke: async () => entry } as any;
+    });
+    const { body } = await rpc(app, 'tools/call', { name: 'p_get', arguments: { fields: ['__proto__'] } });
+    expect(body.result.content[0].text).toContain('"__proto__":"p"');
+  });
+
   it('hands a vertical-declared `fields` input to the operation untouched', async () => {
     const { app, calls } = mount(row);
     await rpc(app, 'tools/call', { name: 'note_own-fields', arguments: { fields: 'abc' } });
