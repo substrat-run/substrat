@@ -3803,6 +3803,18 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Erase one subject from each scope store in this deployment (#2068). The control
+   * plane calls this once on the serving script, then destroys the key itself.
+   */
+  async scopeStoreEraseLocal(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    subjectId: string,
+  ): Promise<{ binding: string; erased: number }[]> {
+    return this.eraseScopeStores(tenantId, scopeId, subjectId);
+  }
+
+  /**
    * The oldest not-yet-drained events of this host's own scope (#1334) — the far end of
    * the control plane's `EventDrainDelegation`. Bounded the same way the audited verb is,
    * so a caller cannot ask this side for more than the other would.
@@ -4798,6 +4810,50 @@ export class CloudflareScopeHost implements ScopeHost {
       sizes.push({ binding, bytes });
     }
     return sizes;
+  }
+
+  /**
+   * `substrat.erase` on each declared binding (#2068). A store error throws so the
+   * caller can leave the subject key untouched. Fail closed: an empty answer means
+   * this host KNOWS it holds nothing for the scope, never that it could not tell.
+   */
+  private async eraseScopeStores(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    subjectId: string,
+  ): Promise<{ binding: string; erased: number }[]> {
+    const bindings = this.scopeStoreBindingNames();
+    if (bindings.length === 0) return [];
+    const vertical = await this.erasureStoreVertical(tenantId, scopeId);
+    if (!vertical) return [];
+    const erasures: { binding: string; erased: number }[] = [];
+    for (const binding of bindings) {
+      const { erased } = await this.invokeReservedStore(
+        { tenantId, vertical, scopeId, binding },
+        'substrat.erase',
+        { subjectId },
+      );
+      erasures.push({ binding, erased });
+    }
+    return erasures;
+  }
+
+  /**
+   * The vertical an erasure names a store for. With a control plane, the scope row
+   * decides: no vertical, or not the vertical this host is pinned to, means no
+   * store object of this host's is the scope's — an empty answer, which shred
+   * needs for a scope that never had a vertical. With no control plane and no
+   * `scopeStores.vertical`, the host cannot tell which objects are the scope's, so
+   * it refuses `unavailable` as the size read and the door do, and the subject key
+   * survives until the stores can be erased.
+   */
+  private async erasureStoreVertical(tenantId: TenantId, scopeId: ScopeId): Promise<string | undefined> {
+    if (this.cpLess) return this.scopeStoreVerticalOf(tenantId, scopeId);
+    const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+    const vertical = scope?.vertical ?? undefined;
+    if (!vertical) return undefined;
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return undefined;
+    return vertical;
   }
 
   /**
@@ -8616,6 +8672,8 @@ export class CloudflareScopeHost implements ScopeHost {
         // The directory's failure text (#1632) — a drain failure quoting one of those intents,
         // an issue's exemplar, a sweep record's error. Still before the key.
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
+        // Scope stores after the scope-side redaction and before the key (#2068).
+        const storeErasures = await this.eraseScopeStores(tenantId, scopeId, subjectId);
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
@@ -8624,6 +8682,7 @@ export class CloudflareScopeHost implements ScopeHost {
           intentsRedacted,
           jobRunsRedacted,
           ...vertical,
+          storeErasures,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -8643,7 +8702,7 @@ export class CloudflareScopeHost implements ScopeHost {
         return receipt;
       },
       scopeErasureEpoch: async (_actor, tenantId, scopeId) => this.cp.scopeErasureEpoch(tenantId, scopeId),
-      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected): Promise<SubjectShredReceipt> => {
+      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected, storeErasures = []): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
         if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef,
@@ -8661,6 +8720,7 @@ export class CloudflareScopeHost implements ScopeHost {
           verticalRows: redactions.flatMap((r) => r.vertical.verticalRows),
           hookRows: redactions.flatMap((r) => r.vertical.hookRows),
           unreachedEntities: redactions.flatMap((r) => r.vertical.unreachedEntities),
+          storeErasures,
           keyDestroyed: existed,
           tombstoned: true,
         });

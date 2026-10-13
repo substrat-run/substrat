@@ -109,6 +109,7 @@ import {
   type ImportResult,
   type ImportState,
   scopeStoreSize,
+  storeErasure,
   type VerticalCaller,
   substratError,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
@@ -1756,6 +1757,32 @@ export class VerticalClient {
     const parsed = scopeStoreSize.array().safeParse(answer.stores);
     if (!parsed.success) {
       throw new ControlPlaneError(502, `vertical answered scope-store-sizes without a size list for scope ${scopeId}`);
+    }
+    return parsed.data;
+  }
+
+  /**
+   * Erase one subject from each scope store in this deployment (#2068). The control
+   * plane calls the serving script once. A 200 whose list is not the declared shape
+   * is a wire disagreement, because a missing list read as empty would destroy the
+   * subject key while leaving the store.
+   */
+  async scopeStoreErase(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    subjectId: string,
+  ): Promise<{ binding: string; erased: number }[]> {
+    const answer = await this.postInternal<{ storeErasures?: unknown }>(
+      '/internal/scope-store-erase',
+      { tenantId, scopeId, subjectId },
+      'scope-store-erase',
+    );
+    const parsed = storeErasure.array().safeParse(answer.storeErasures);
+    if (!parsed.success) {
+      throw new ControlPlaneError(
+        502,
+        `vertical answered scope-store-erase without an erasure list for scope ${scopeId}`,
+      );
     }
     return parsed.data;
   }

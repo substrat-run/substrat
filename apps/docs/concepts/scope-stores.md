@@ -31,6 +31,8 @@ const count = await store.invoke('increment', { by: 1 });
 
 `invoke` takes an operation and its input. Idempotency and observer options belong to a scope operation, and a store call has neither. A name that starts with `substrat.` is refused before the call leaves the vertical. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe` and `substrat.erase` are the platform's operations.
 
+Subject erasure reaches each store through `substrat.erase`, before the subject key is destroyed. It fails closed: when the platform cannot tell whether a deployment holds a store, or cannot ask it, the erasure is refused and the key stays until a retry can reach the store. While no store kind is registered nothing can hold a store, so this changes nothing yet.
+
 The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An error with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`), because a client can read it. A 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code does not see it either: `storeBody` on the error it catches is the same filtered value.
 
 ## Later

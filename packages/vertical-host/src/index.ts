@@ -370,6 +370,16 @@ export interface VerticalScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; bytes: number }[]>;
+  /**
+   * Erase one subject from each scope store in this deployment (#2068). OPTIONAL for
+   * the same reason as the size read: a host built before it 501s, and the control
+   * plane treats that as "redeploy", not as "there were no stores".
+   */
+  scopeStoreEraseLocal?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    subjectId: string,
+  ): Promise<{ binding: string; erased: number }[]>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
@@ -1465,6 +1475,23 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot read scope store sizes (#2207). Redeploy it' }, 501);
     }
     return c.json({ stores: await host.scopeStoreSizesLocal(tenant, scope) });
+  });
+
+  // #2068: erase one subject from each scope store in this deployment. The control
+  // plane calls the serving script once, then destroys the key. A host that predates
+  // the method answers 501, because an empty list would look like nothing to erase.
+  app.post('/internal/scope-store-erase', async (c) => {
+    const body = z
+      .object({ tenantId: tenantIdOf, scopeId: scopeIdOf, subjectId: z.string().min(1) })
+      .strict()
+      .parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.scopeStoreEraseLocal) {
+      return c.json({ error: 'this deployment cannot erase a scope store (#2068). Redeploy it' }, 501);
+    }
+    return c.json({
+      storeErasures: await host.scopeStoreEraseLocal(body.tenantId, body.scopeId, body.subjectId),
+    });
   });
 
   // #286: the PITR bookmarks one scope recorded before its migration passes — the rewind

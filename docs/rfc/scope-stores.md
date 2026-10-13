@@ -217,6 +217,34 @@ A failed call leaves the restore incomplete, and the same call again converges. 
 live in the directory. The marks read are the target scope's and the source scope's. An
 unknown source never refuses the restore and is reported instead (§10.5, rules L9–L11).
 
+A shred calls `substrat.erase` on each declared binding after the scope-side redaction
+and before the subject key is destroyed (#2068). The key is what makes every other copy
+unreadable, so an empty answer from the stores is a claim that nothing is held, and the
+platform does not make that claim when it cannot tell (#2242). Erasure fails closed:
+
+- A deployment that may hold a store is asked. "May" means its version's manifest declares
+  a store, or the version cannot be named, or its manifest cannot be read. The version is
+  the serving pointer's on the serving script, the bound version on its own script, and
+  unknown for a deployment reached by slug alone.
+- If such a deployment cannot be asked, because none resolves or it predates the route,
+  the erasure is refused (503) and the key stays. So does a store that answers with an
+  error. A retry converges.
+- A Cloudflare host with no control plane and no `scopeStores.vertical` cannot name the
+  scope's store objects. With a store binding present it refuses `unavailable`, as the
+  size read and the door do, rather than answering an empty list.
+- An empty list means the host knows it holds nothing: no binding, a scope with no
+  vertical, or a scope on a vertical the host is not pinned to.
+
+The control plane's rule is gated on the store-kind registry. A push that declares an
+unregistered kind is refused, so while `STORE_KINDS` is empty no deployment can hold a
+store, and erasure proceeds as it did before stores existed. The fail-closed arm is
+dormant until the first kind is registered. From then on, a vertical that declares a
+store has its erasures refused until its deployment can be asked.
+
+`erased` counts what that attempt removed. A retry after a partial failure lists every
+binding it asked, with zero for one an earlier attempt already erased. The count is not
+carried across attempts.
+
 What remains unsealed is the backup file at rest, until someone restores it. That is
 the limit. Tenant deletion wipes each declared store before the scope's own storage
 goes. Tenant export reads `substrat.export` through the platform, not through the

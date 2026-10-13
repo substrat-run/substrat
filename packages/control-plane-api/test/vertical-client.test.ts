@@ -597,6 +597,24 @@ describe('VerticalClient — database size (#1524)', () => {
     expect(new URL(seen[0]!).searchParams.get('tenantId')).toBe(t);
   });
 
+  it('asks the scope-store-erase route and reads the list', async () => {
+    const seen: { url: string; body: string }[] = [];
+    const client = new VerticalClient({
+      fetch: (async (input: string, init?: RequestInit) => {
+        seen.push({ url: String(input), body: String(init?.body ?? '') });
+        return new Response(JSON.stringify({ storeErasures: [{ binding: 'GRAPH', erased: 1 }] }), { status: 200 });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    await expect(client.scopeStoreErase(t, s, 'subject-1')).resolves.toEqual([{ binding: 'GRAPH', erased: 1 }]);
+    expect(new URL(seen[0]!.url).pathname).toBe('/internal/scope-store-erase');
+    expect(JSON.parse(seen[0]!.body)).toEqual({ tenantId: t, scopeId: s, subjectId: 'subject-1' });
+  });
+
+  it('a 200 without an erasure list is a wire disagreement, not an empty store', async () => {
+    await expect(answering(200, JSON.stringify({})).scopeStoreErase(t, s, 'subject-1')).rejects.toThrow(/without an erasure list/);
+  });
+
   it('a 200 without a store size list is a wire disagreement, not an empty scope', async () => {
     for (const body of [{}, { stores: { binding: 'GRAPH', bytes: 1 } }, { stores: [{ binding: 'graph', bytes: 1 }] }, { stores: [{ binding: 'GRAPH', bytes: -1 }] }]) {
       await expect(answering(200, JSON.stringify(body)).scopeStoreSizes(t, s)).rejects.toThrow(/without a size list/);

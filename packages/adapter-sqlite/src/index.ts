@@ -4246,6 +4246,41 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
+   * `substrat.erase` on each declared binding. A store error throws, so the caller
+   * can leave the subject key untouched. Fail closed (#2242): an empty answer means
+   * this host KNOWS it holds nothing for the scope. It always can tell — the
+   * directory names the scope's vertical, and the runners are this host's own — so
+   * unlike a Cloudflare host with no control plane it has no "cannot tell" case.
+   */
+  private async eraseScopeStores(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    subjectId: string,
+  ): Promise<{ binding: string; erased: number }[]> {
+    const bindings = [...this.scopeStoreRunners.keys()];
+    if (bindings.length === 0) return [];
+    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { vertical: string | null }
+      | undefined;
+    const vertical = row?.vertical;
+    // Shred calls this for every scope. No vertical names no store object, and a
+    // vertical this host is not pinned to is one its runners never served: both hold
+    // nothing here, and the key is still destroyed.
+    if (!vertical) return [];
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return [];
+    const erasures: { binding: string; erased: number }[] = [];
+    for (const binding of bindings) {
+      const { erased } = await this.invokeReservedStore(
+        { tenantId, vertical, scopeId, binding },
+        'substrat.erase',
+        { subjectId },
+      );
+      erasures.push({ binding, erased });
+    }
+    return erasures;
+  }
+
+  /**
    * A scope stub whose authority is a CONNECTION (#97).
    *
    * Three gates, all inherited from what the connection already is rather than
@@ -10583,7 +10618,14 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // `stamp` is the erasure epoch an orchestrated erasure's claim compared (#1722). A direct shred
       // claims nothing and records the epoch it ran under: the backfill orders erasures by them.
-      shredSubject: async (actor, tenantId, scopeId, subjectId, stamp?: ErasureEpochStamp): Promise<SubjectShredReceipt> => {
+      shredSubject: async (
+        actor,
+        tenantId,
+        scopeId,
+        subjectId,
+        stamp?: ErasureEpochStamp,
+        storeErasures?: readonly { binding: string; erased: number }[],
+      ): Promise<SubjectShredReceipt> => {
         this.assertScope(tenantId, scopeId);
         const before: ErasureEpochStamp = stamp ?? {
           erasureEpoch: (this.directory.prepare(COPY_BACKFILL_SCOPE_SQL).get(tenantId, scopeId) as CopyBackfillScopeRow | undefined)
@@ -10661,6 +10703,11 @@ export class SqliteScopeHost implements ScopeHost {
         // intents, an issue's exemplar, a sweep record's error. Before the key, for the
         // ordering reason above.
         redactSubjectDirectoryText(redactionSqlOf(this.directory), { tenantId, scopeId, subjectId, intentIds });
+        // Scope stores after the scope-side redaction and before the key (#2068). A store
+        // that errors throws here, so the key below is untouched and a retry converges.
+        // An orchestrated caller passes the serving script's result and this host does
+        // not erase again.
+        const erasures = storeErasures ?? (await this.eraseScopeStores(tenantId, scopeId, subjectId));
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
@@ -10668,6 +10715,7 @@ export class SqliteScopeHost implements ScopeHost {
           intentsRedacted,
           jobRunsRedacted,
           ...vertical,
+          storeErasures: erasures,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -10693,7 +10741,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (!row) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         return row.erasure_epoch;
       },
-      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected) => {
+      finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected, storeErasures) => {
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
         const claimed = this.directory.prepare(
           `UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
@@ -10708,9 +10756,21 @@ export class SqliteScopeHost implements ScopeHost {
         if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
         // The pure adapter has one co-located scope store. Its existing atomic shred is
         // the final local redaction and key destruction, after remote copies confirmed.
-        const shred = this.admin.shredSubject as (...args: [...Parameters<HostAdmin['shredSubject']>, ErasureEpochStamp]) =>
-          Promise<SubjectShredReceipt>;
-        return shred(actor, tenantId, scopeId, subjectId, { erasureEpoch: expected.epoch, path: 'orchestrated' });
+        const shred = this.admin.shredSubject as (
+          ...args: [
+            ...Parameters<HostAdmin['shredSubject']>,
+            ErasureEpochStamp,
+            readonly { binding: string; erased: number }[] | undefined,
+          ]
+        ) => Promise<SubjectShredReceipt>;
+        return shred(
+          actor,
+          tenantId,
+          scopeId,
+          subjectId,
+          { erasureEpoch: expected.epoch, path: 'orchestrated' },
+          storeErasures,
+        );
       },
 
       // -- impersonation (K-42, #868) ----------------------------------------
