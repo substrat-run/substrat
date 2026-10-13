@@ -22,9 +22,20 @@ import { auditOperationId, instant, permissionKey, platformActorId, scopeId, ten
 
 /**
  * WHO is calling: the calling vertical's registry slug, and the instance (scope) that called.
- * The platform supplies it — never the request — and the target's door records it whole.
+ * The platform supplies it — never the request — and the target's door records `{ vertical,
+ * scope }`.
+ *
+ * `tenantSlug` (#2252) is the directory's slug for the tenant the platform authenticated the
+ * call in, with the same provenance as `vertical`: set by the router or the drain, never by
+ * anything a vertical sends. The door reads it only to match a pinned `<tenantSlug>/<slug>`
+ * caller against the bare slug its `peers` declares (`peerCallerAt`); it is never recorded.
+ * Optional, and stripped by a door that predates it, which then matches exactly as before.
  */
-export const verticalCaller = z.object({ vertical: verticalSlug, scope: scopeId });
+export const verticalCaller = z.object({
+  vertical: verticalSlug,
+  scope: scopeId,
+  tenantSlug: z.string().min(1).optional(),
+});
 export type VerticalCaller = z.infer<typeof verticalCaller>;
 
 /** The most operations one peer entry may allow, and the most keys it may hold. */

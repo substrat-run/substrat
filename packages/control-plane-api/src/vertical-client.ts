@@ -109,6 +109,7 @@ import {
   type ImportResult,
   type ImportState,
   scopeStoreSize,
+  type VerticalCaller,
   substratError,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
@@ -1855,7 +1856,7 @@ export class VerticalClient {
    * allowlisted) and every check inside runs as `{ vertical, scope }`.
    */
   async verticalInvoke(input: {
-    caller: { vertical: string; scope: ScopeId };
+    caller: VerticalCaller;
     tenantId: TenantId;
     scopeId: ScopeId;
     operation: string;
