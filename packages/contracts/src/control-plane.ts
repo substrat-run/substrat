@@ -337,9 +337,15 @@ export const subjectShredReceipt = z.object({
   tombstoned: z.boolean(),
   /**
    * Scope stores this call erased (#2068). One line per binding, a zero included
-   * when the store was asked and held nothing. A re-run counts zero because erase
-   * is idempotent. Defaulted so a receipt from before scope stores parses as the
-   * empty list it honestly reached.
+   * when the store was asked and held nothing. `erased` is what THIS attempt removed:
+   * a re-run counts zero because erase is idempotent, and a retry after a partial
+   * failure lists a binding the earlier attempt already erased with zero. A store that
+   * may be held and cannot be asked refuses the erasure and keeps the key (#2242), so an
+   * empty list means no store was asked. That is "none held" everywhere except two shred
+   * paths that run on the control plane's own host without asking a deployment (no ref
+   * resolver, or no deployment and no live copy); there it means only that this host held
+   * none. Defaulted so a receipt from before scope stores parses as the empty list it
+   * honestly reached.
    */
   storeErasures: z.array(storeErasure).default([]),
 });

@@ -5,6 +5,10 @@ import {
   assertScopeStoresRegistered,
   assertStoreBindingsDistinct,
   deployManifest,
+  mayHoldScopeStores,
+  scopeStoresDeclaredIn,
+  STORE_KINDS,
+  type StoreKindRegistration,
   runtimeNeeds,
   scopeStoreBindingName,
   storeKindRegistration,
@@ -12,6 +16,11 @@ import {
   storeRequest,
   STORE_OPERATION_NAME_MAX,
   tenantStoreBindingName,
+  storeEraseResult,
+  storeExportResult,
+  storeImportResult,
+  storeSizeResult,
+  storeWipeResult,
 } from '../src/index.js';
 
 /** A tenant id the per-tenant runtime name can be built from. */
@@ -181,5 +190,62 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
     });
     expect(storeKindRegistration.safeParse(registration(['increment'])).success).toBe(true);
     expect(storeKindRegistration.safeParse(registration(['look:up'])).success).toBe(false);
+  });
+});
+
+// #2242: subject erasure destroys the key once the stores answer, so "cannot tell" must
+// never read as "holds none". The gate is the registry: no registered kind, no store.
+describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
+  const graph: StoreKindRegistration = {
+    kind: 'graph',
+    release: '0.0.0-test',
+    script: 'store-graph',
+    className: 'GraphStore',
+    operations: [],
+    platformOperations: [...RESERVED_STORE_OPERATIONS],
+  };
+  const manifest = (scopeStores?: unknown[]) =>
+    JSON.stringify({
+      version: '1.0.0',
+      entry: 'index.js',
+      compatibilityDate: '2026-07-01',
+      registry: { permissions: [], roles: [], entityGrants: [] },
+      digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      ...(scopeStores ? { scopeStores } : {}),
+    });
+  const declaring = manifest([{ binding: 'GRAPH', kind: 'graph' }]);
+
+  it('reads a manifest: declares, declares none, predates manifests, unreadable', () => {
+    expect(scopeStoresDeclaredIn(declaring)).toBe(true);
+    expect(scopeStoresDeclaredIn(manifest())).toBe(false);
+    expect(scopeStoresDeclaredIn(null)).toBe(false);
+    expect(scopeStoresDeclaredIn('{not json')).toBeUndefined();
+    expect(scopeStoresDeclaredIn(JSON.stringify({ version: 1 }))).toBeUndefined();
+  });
+
+  it('with no kind registered nothing may hold a store, whatever the manifest says', () => {
+    expect(STORE_KINDS).toEqual([]);
+    for (const json of [declaring, manifest(), null, undefined, '{not json']) {
+      expect(mayHoldScopeStores(json)).toBe(false);
+    }
+  });
+
+  it('with a kind registered, unknown and unreadable count as may, and only a known "none" does not', () => {
+    expect(mayHoldScopeStores(declaring, [graph])).toBe(true);
+    expect(mayHoldScopeStores(undefined, [graph])).toBe(true);
+    expect(mayHoldScopeStores('{not json', [graph])).toBe(true);
+    expect(mayHoldScopeStores(JSON.stringify({ version: 1 }), [graph])).toBe(true);
+    expect(mayHoldScopeStores(manifest(), [graph])).toBe(false);
+    expect(mayHoldScopeStores(null, [graph])).toBe(false);
+  });
+});
+
+describe('reserved store results are additive (#2239)', () => {
+  it('a later field on any reserved result still parses', () => {
+    expect(storeWipeResult.safeParse({ ok: true }).success).toBe(true);
+    expect(storeSizeResult.safeParse({ bytes: 1, kind: 'graph' }).success).toBe(true);
+    expect(storeEraseResult.safeParse({ erased: 0, note: 'x' }).success).toBe(true);
+    expect(storeImportResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
+    expect(storeExportResult.safeParse({ tables: [], at: 'now' }).success).toBe(true);
   });
 });

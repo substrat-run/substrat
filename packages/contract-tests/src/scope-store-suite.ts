@@ -12,6 +12,8 @@ function counterRunner(): ScopeStoreRunner {
   const objects = new Map<string, number>();
   const erased = new Map<string, Set<string>>();
   const wiped = new Set<string>();
+  // `fail-wipe` makes every later `substrat.wipe` fail, until it is turned off again.
+  let failWipe = false;
   const key = (address: ScopeStoreAddress) =>
     `${address.tenantId}/${address.vertical}/${address.scopeId}/${address.binding}`;
   return {
@@ -43,7 +45,12 @@ function counterRunner(): ScopeStoreRunner {
         return { result: next };
       }
       if (request.operation === 'substrat.size') return { result: { bytes: current } };
+      if (request.operation === 'fail-wipe') {
+        failWipe = request.input === true;
+        return { result: failWipe };
+      }
       if (request.operation === 'substrat.wipe') {
+        if (failWipe) return { error: { code: 'unavailable', status: 503 } };
         objects.set(key(address), 0);
         wiped.add(key(address));
         return { result: {} };
@@ -132,6 +139,11 @@ export function scopeStoreContractSuite(
     afterAll(async () => {
       await fixture?.cleanup();
     });
+
+    /** A valid table no scope has: present after a restore only if the dump's tables loaded. */
+    const PROBE_TABLE = { name: 'restore_probe', ddl: 'CREATE TABLE restore_probe (id TEXT)', columns: ['id'], rows: [['x']] };
+    const tableNames = async (scope: typeof scopeA) =>
+      (await host.admin.exportScope(staff, tenant, scope)).tables.map((table) => table.name);
 
     it('the runner is handed the tenant, the vertical, the scope and the binding', async () => {
       const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
@@ -277,14 +289,75 @@ export function scopeStoreContractSuite(
       await store.invoke('increment', { by: 1 });
       const refusal = await host.restoreScope(staff, tenant, scopeB, {
         ...dump,
+        tables: [...dump.tables, PROBE_TABLE],
         stores: [...dump.stores, { binding: 'MISSING', kind: 'counter', tables: [] }],
       }).then(
         () => undefined,
         (err: unknown) => err,
       );
       expect(errorCodeOf(refusal)).toBe('not_found');
-      // Neither the restore of the dump's GRAPH (before + 3) nor anything else was written.
+      // Neither the restore of the dump's GRAPH (before + 3) nor its tables were written.
       expect(await store.invoke('read')).toBe(before + 4);
+      expect(await tableNames(scopeB)).not.toContain(PROBE_TABLE.name);
+    });
+
+    // L8: a store of another kind would be handed to this kind's import, and a destination
+    // with no vertical has no store object to load into. Both refuse before any write.
+    it('a restore whose store is of another kind writes nothing', async () => {
+      const store = await host.getScopeStore(principal, tenant, scopeB, 'GRAPH');
+      const before = Number(await store.invoke('read'));
+      const dump = await host.admin.exportScope(staff, tenant, scopeB);
+      await store.invoke('increment', { by: 2 });
+      const refusal = await host.restoreScope(staff, tenant, scopeB, {
+        ...dump,
+        tables: [...dump.tables, PROBE_TABLE],
+        stores: dump.stores.map((one) => ({ ...one, kind: 'other' })),
+      }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(refusal)).toBe('conflict');
+      expect(await store.invoke('read')).toBe(before + 2);
+      expect(await tableNames(scopeB)).not.toContain(PROBE_TABLE.name);
+    });
+
+    it('a dump carrying stores is refused, not dropped, by a scope with no vertical', async () => {
+      const bare = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: tenant, scopeId: bare });
+      await host.admin.activateScope(staff, tenant, bare);
+      const dump = await host.admin.exportScope(staff, tenant, scopeA);
+      expect(dump.stores.length).toBeGreaterThan(0);
+      const restored = await host.restoreScope(staff, tenant, bare, { ...dump, tables: [...dump.tables, PROBE_TABLE] }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(restored)).toBe('conflict');
+      expect(await tableNames(bare)).not.toContain(PROBE_TABLE.name);
+      const dest = scopeId.parse(ulid());
+      const imported = await host.importScope(staff, { tenantId: tenant, scopeId: dest }, dump).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(imported)).toBe('conflict');
+      expect(await host.admin.getScopeRecord(staff, tenant, dest)).toBeUndefined();
+    });
+
+    // The scope's tables load before its stores: a dump whose tables cannot load leaves the
+    // store as it was, rather than replaced under tables that never arrived.
+    it('a restore whose tables cannot load leaves the store as it was', async () => {
+      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      const dump = await host.admin.exportScope(staff, tenant, scopeA);
+      await store.invoke('increment', { by: 5 });
+      const now = Number(await store.invoke('read'));
+      const refusal = await host.restoreScope(staff, tenant, scopeA, {
+        ...dump,
+        tables: [...dump.tables, { name: 'unloadable', ddl: 'CREATE TABLE something_else (id TEXT)', columns: ['id'], rows: [] }],
+      }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(refusal).toBeDefined();
+      expect(await store.invoke('read')).toBe(now);
     });
 
     it('a dump that names an unbound store is refused before a scope is created', async () => {
@@ -302,12 +375,63 @@ export function scopeStoreContractSuite(
       expect(await host.admin.getScopeRecord(staff, tenant, dest)).toBeUndefined();
     });
 
+    it('deleting a fork whose wipe fails leaves the fork and its storage', async () => {
+      const fork = await host.snapshotScope(staff, tenant, scopeA);
+      const seeded = await host.admin.exportScope(staff, tenant, fork);
+      await host.restoreScope(staff, tenant, fork, { ...seeded, tables: [...seeded.tables, PROBE_TABLE] });
+      const store = await host.getScopeStore(principal, tenant, fork, 'GRAPH');
+      await store.invoke('fail-wipe', true);
+      try {
+        const refusal = await host.deleteSnapshot(staff, tenant, fork).then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+        expect(refusal).toBeDefined();
+        expect(await host.admin.getScopeRecord(staff, tenant, fork)).toBeDefined();
+        expect(await tableNames(fork)).toContain(PROBE_TABLE.name);
+      } finally {
+        await store.invoke('fail-wipe', false);
+      }
+      await host.deleteSnapshot(staff, tenant, fork);
+    });
+
     it('deleting a fork wipes its store', async () => {
       const fork = await host.snapshotScope(staff, tenant, scopeA);
       await host.deleteSnapshot(staff, tenant, fork);
       const live = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
       const names = await live.invoke('wiped');
       expect(names).toContain(`${tenant}/docs/${fork}/GRAPH`);
+    });
+
+    // L7: the wipe runs before the scope's storage goes, so a wipe that fails leaves the
+    // scope archived and its data where it was, and the reap converges on a retry.
+    it('a reap whose wipe fails leaves the scope archived and its data intact', async () => {
+      const doomed = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: tenant, scopeId: doomed, vertical: 'docs' });
+      await host.admin.activateScope(staff, tenant, doomed);
+      const store = await host.getScopeStore(principal, tenant, doomed, 'GRAPH');
+      await store.invoke('increment', { by: 7 });
+      // A table in the scope's own storage, so its survival is visible as well as the store's.
+      const seeded = await host.admin.exportScope(staff, tenant, doomed);
+      await host.restoreScope(staff, tenant, doomed, { ...seeded, tables: [...seeded.tables, PROBE_TABLE] });
+      expect(await tableNames(doomed)).toContain(PROBE_TABLE.name);
+      await host.admin.archiveScope(staff, tenant, doomed);
+      await store.invoke('fail-wipe', true);
+      try {
+        const refusal = await host.admin.reapScope(staff, tenant, doomed).then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+        expect(refusal).toBeDefined();
+        expect((await host.admin.getScopeRecord(staff, tenant, doomed))?.status).toBe('archived');
+        const dump = await host.admin.exportScope(staff, tenant, doomed);
+        expect(dump.stores.find((one) => one.binding === 'GRAPH')?.tables[0]?.rows).toEqual([[7]]);
+        expect(dump.tables.map((table) => table.name)).toContain(PROBE_TABLE.name);
+      } finally {
+        await store.invoke('fail-wipe', false);
+      }
+      await host.admin.reapScope(staff, tenant, doomed);
+      expect((await host.admin.getScopeRecord(staff, tenant, doomed))?.status).toBe('reaped');
     });
 
     it('reaping a scope wipes its store', async () => {

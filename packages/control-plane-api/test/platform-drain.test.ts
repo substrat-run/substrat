@@ -1166,6 +1166,9 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
     expect(held.find((e) => e.entitlementKey === 'vault')).toMatchObject({ plan: 'enterprise' });
     // Re-projected into the auth scope with the authoritative post-reconcile set.
     expect(reconciled?.scopeId).toBe(authScope);
+    // #2263: an entitlements delivery needs the projection, so it never accepts the ownerless
+    // reconcile: a vertical with no owner of record refuses it, and the drain retries, loudly.
+    expect(reconciled).not.toHaveProperty('ownerless');
     expect(reconciled?.entitlements?.map((e) => e.entitlementKey).sort()).toEqual(['managed-product', 'vault']);
   });
 

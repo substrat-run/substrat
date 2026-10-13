@@ -9,6 +9,7 @@ import {
   buildPermissionRegistry,
   definePermissions,
   assertDeclaredScopeStores,
+  storeNamesOfBindings,
   manifestStoresOf,
   runtimeNeeds,
   RUNTIME_BASELINE,
@@ -17,7 +18,7 @@ import {
   type PermissionRegistry,
 } from '@substrat-run/contracts';
 import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, flattenDeclaredSchedules,
-  flattenDeclaredFreshness, flattenDeclaredEvents, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath, declaredStoresOf, bindingsBesideOwnStores } from '../src/push.js';
+  flattenDeclaredFreshness, flattenDeclaredEvents, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath, declaredStoresOf } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -172,11 +173,7 @@ describe('readRuntimeNeeds', () => {
     expect(needs.scopeStores).toEqual([]);
     expect(bindings.map((b) => b.name)).toEqual(['SCOPE', 'AUTH']);
     expect(() =>
-      assertDeclaredScopeStores({
-        own: needs.stores,
-        scopeStores: needs.scopeStores,
-        bindingNames: bindingsBesideOwnStores(needs.stores, bindings),
-      }),
+      assertDeclaredScopeStores({ ...storeNamesOfBindings(bindings), scopeStores: needs.scopeStores }),
     ).not.toThrow();
   });
 

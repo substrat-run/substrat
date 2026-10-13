@@ -261,5 +261,24 @@ Protocol revisions are negotiated, newest first: `2025-06-18`, `2025-03-26`, `20
 A client asking for one we do not implement is answered with ours rather than an echo of
 theirs, and decides for itself whether to continue.
 
+## Keeping answers small
+
+A tool result is tokens the model pays for, so it is sent once, as compact JSON in the
+text block. There is no `structuredContent` copy and no indentation.
+
+A read (`GET`) whose `output` names its columns also takes an optional `fields` argument, a
+list of column names to keep:
+
+```json
+{ "name": "ticket0_list-tickets", "arguments": { "limit": 50, "fields": ["id", "subject", "status"] } }
+```
+
+It applies to each entry of a page (the cursor and paging fields are always returned) or to
+a single entry. The names are an enum in the tool's schema, so the model picks from real
+columns. An unknown name is refused in-band, before the operation runs, and lists the valid
+ones. It only removes what the operation would have returned anyway, so it changes no
+permission. REST and OpenAPI are unchanged. An operation that declares its own `fields`
+input keeps it, and gets no projection.
+
 Implemented: `initialize`, `ping`, `tools/list`, `tools/call`. Resources and prompts are
 not — `tools` is the whole capability today.

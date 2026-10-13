@@ -191,9 +191,26 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
   return recorded;
 }
 
-/** Replace one scope's store samples for the day. A binding that is gone leaves no row. */
+/**
+ * The row that says a day's stores were measured (#2212), whatever they held. Its binding is one
+ * no declaration can name (a binding is `[A-Z][A-Z0-9_]*`), and the read skips it. Without it a
+ * day that measured no store at all leaves no row, and the latest day with one, older, is billed.
+ */
+const MEASURED_DAY = '';
+
+/**
+ * Replace one scope's store samples for the day. A binding that is gone leaves no row, and an
+ * empty list leaves only the measured-day marker. A reading older than the day's recorded one
+ * changes nothing, as the database sample's upsert keeps the newer reading.
+ */
 function recordScopeStoreRows(sql: RedactionSql, reading: ScopeStorageReadingInput, readAt: string): void {
   const day = storageGaugeDay(readAt);
+  const newer = sql(
+    `SELECT 1 FROM _substrat_scope_store_storage
+      WHERE scope_id = ? AND tenant_id = ? AND day = ? AND read_at > ? LIMIT 1`,
+    [reading.scopeId, reading.tenantId, day, readAt],
+  );
+  if (newer.length > 0) return;
   sql(
     `DELETE FROM _substrat_scope_store_storage
       WHERE scope_id = ? AND tenant_id = ? AND day = ?
@@ -203,8 +220,10 @@ function recordScopeStoreRows(sql: RedactionSql, reading: ScopeStorageReadingInp
         )`,
     [reading.scopeId, reading.tenantId, day, reading.scopeId, reading.tenantId],
   );
-  for (const store of reading.stores ?? []) {
-    if (!Number.isInteger(store.bytes) || store.bytes < 0 || store.binding.length === 0) continue;
+  const rows = (reading.stores ?? []).filter(
+    (store) => Number.isInteger(store.bytes) && store.bytes >= 0 && store.binding.length > 0,
+  );
+  for (const store of [{ binding: MEASURED_DAY, bytes: 0 }, ...rows]) {
     sql(
       `INSERT INTO _substrat_scope_store_storage (scope_id, binding, day, tenant_id, bytes, read_at)
        SELECT scope_id, ?, ?, tenant_id, ?, ? FROM scopes
@@ -310,7 +329,10 @@ export function pruneScopeStorageRows(sql: RedactionSql, nowMs: number, limit: n
   return databases + stores;
 }
 
-/** Bindings on the latest day that measured stores for the scope. A binding absent that day has stopped. */
+/**
+ * Bindings on the latest day that measured stores for the scope. A binding absent that day has
+ * stopped, and a day that measured none leaves only its marker, which is not a binding.
+ */
 export function listScopeStoreStorageRows(
   sql: RedactionSql,
   tenantId?: TenantId,
@@ -323,7 +345,7 @@ export function listScopeStoreStorageRows(
           SELECT MAX(m.day) FROM _substrat_scope_store_storage m
            WHERE m.scope_id = g.scope_id AND m.tenant_id = g.tenant_id
         )
-      WHERE ${holdsStoreSql('s.')}${tenantId ? ' AND s.tenant_id = ?' : ''}
+      WHERE g.binding <> '' AND ${holdsStoreSql('s.')}${tenantId ? ' AND s.tenant_id = ?' : ''}
       ORDER BY g.scope_id, g.binding`,
     tenantId ? [tenantId] : [],
   ) as { tenant_id: string; bytes: number; read_at: string }[];

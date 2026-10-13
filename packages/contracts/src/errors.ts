@@ -402,12 +402,34 @@ const CODE_FOR_STORE_STATUS: Partial<Record<number, ErrorCode>> = {
   429: 'rate_limited',
 };
 
+/** The largest store body, as JSON, a client-facing problem carries (#2224). */
+export const STORE_BODY_MAX_BYTES = 1024;
+
+/** A 4xx body within {@link STORE_BODY_MAX_BYTES} of JSON, or nothing. */
+function clientSafeStoreBody(status: number, body: unknown): unknown {
+  if (body === undefined || status < 400 || status > 499) return undefined;
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(body);
+  } catch {
+    return undefined;
+  }
+  if (json === undefined || new TextEncoder().encode(json).length > STORE_BODY_MAX_BYTES) return undefined;
+  return body;
+}
+
 /**
  * A scope store refused or failed (#2207). The taxonomy code comes from the HTTP
  * status the store answered with. The store's own `code` and `body` ride in
  * `extensions`, and again on the fields below for a caller in this isolate.
  * A status with no row maps to `unavailable`, including 500: the failure is the
  * store's, and `internal` would drop the detail on the way to a client.
+ *
+ * The body is what a client may read, so it rides only when it is a refusal (a 4xx)
+ * and its JSON is at most {@link STORE_BODY_MAX_BYTES}. A 5xx body is the store's own
+ * traceback, and any other status, or a body too large or not JSON, stays in the store.
+ * That holds in this isolate too: `storeBody` below is the same filtered value, so the
+ * vertical's own code never sees a withheld body, and nothing logs it on the way.
  */
 export class StoreError extends SubstratError {
   readonly storeCode: string;
@@ -416,11 +438,9 @@ export class StoreError extends SubstratError {
 
   constructor(error: { code: string; status: number; body?: unknown }) {
     // The problem document caps `storeCode` at 64. A longer code used to throw
-    // inside `toProblem` instead of answering the store's failure. A 5xx body is
-    // the store's own traceback; it stays in the store and does not ride the
-    // problem a client reads.
+    // inside `toProblem` instead of answering the store's failure.
     const storeCode = error.code.slice(0, 64);
-    const storeBody = error.status >= 500 ? undefined : error.body;
+    const storeBody = clientSafeStoreBody(error.status, error.body);
     const code = CODE_FOR_STORE_STATUS[error.status] ?? 'unavailable';
     super(code, `scope store answered ${error.status} (${storeCode})`, {
       storeCode,

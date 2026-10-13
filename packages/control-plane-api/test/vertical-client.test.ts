@@ -625,7 +625,7 @@ describe('VerticalClient — database size (#1524)', () => {
     expect(new URL(seen[0]!.url).pathname).toBe('/internal/scope-store-export');
     await expect(client.scopeStoreImport(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [table] }])).resolves.toBeUndefined();
     expect(new URL(seen[1]!.url).pathname).toBe('/internal/scope-store-import');
-    expect(JSON.parse(seen[1]!.body)).toEqual({ tenantId: t, scopeId: s, stores: [{ binding: 'GRAPH', tables: [table] }] });
+    expect(JSON.parse(seen[1]!.body)).toEqual({ tenantId: t, scopeId: s, stores: [{ binding: 'GRAPH', kind: 'counter', tables: [table] }] });
   });
 
   it('a 200 without a store list is a wire disagreement, not an empty scope', async () => {

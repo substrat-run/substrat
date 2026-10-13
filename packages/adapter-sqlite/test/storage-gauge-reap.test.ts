@@ -52,27 +52,33 @@ describe('storage gauge rows at reap (#1524)', () => {
     }
     const now = new Date().toISOString();
     await host.admin.recordScopeStorage!(staff, [
-      { tenantId: t, scopeId: kept, bytes: 1, readAt: now },
-      { tenantId: t, scopeId: reaped, bytes: 2, readAt: now },
+      { tenantId: t, scopeId: kept, bytes: 1, readAt: now, stores: [{ binding: 'GRAPH', bytes: 4 }] },
+      { tenantId: t, scopeId: reaped, bytes: 2, readAt: now, stores: [{ binding: 'GRAPH', bytes: 5 }] },
     ]);
     const directory = (host as unknown as { directory: { prepare(q: string): { get(...a: unknown[]): unknown } } }).directory;
     const count = (table: string, scope: string) =>
       (directory.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE scope_id = ?`).get(scope) as { n: number }).n;
-    expect([count('_substrat_scope_storage', reaped), count('_substrat_scope_storage_attempts', reaped)]).toEqual([1, 1]);
+    // #2212: the store table holds the binding and the day's measured marker.
+    const rows = (scope: string) => [
+      count('_substrat_scope_storage', scope),
+      count('_substrat_scope_storage_attempts', scope),
+      count('_substrat_scope_store_storage', scope),
+    ];
+    expect(rows(reaped)).toEqual([1, 1, 2]);
 
     await host.admin.archiveScope(staff, t, reaped);
     await host.admin.reapScope(staff, t, reaped);
 
-    expect([count('_substrat_scope_storage', reaped), count('_substrat_scope_storage_attempts', reaped)]).toEqual([0, 0]);
-    expect([count('_substrat_scope_storage', kept), count('_substrat_scope_storage_attempts', kept)]).toEqual([1, 1]);
+    expect(rows(reaped)).toEqual([0, 0, 0]);
+    expect(rows(kept)).toEqual([1, 1, 2]);
 
     // Fork delete (`deleteSnapshot`) removes the directory row itself, so the rows it leaves
     // behind would be invisible to every joined read, and the attempt row has no retention.
     const fork = await host.snapshotScope(staff, t, kept);
-    await host.admin.recordScopeStorage!(staff, [{ tenantId: t, scopeId: fork, bytes: 3, readAt: now }]);
-    expect([count('_substrat_scope_storage', fork), count('_substrat_scope_storage_attempts', fork)]).toEqual([1, 1]);
+    await host.admin.recordScopeStorage!(staff, [{ tenantId: t, scopeId: fork, bytes: 3, readAt: now, stores: [] }]);
+    expect(rows(fork)).toEqual([1, 1, 1]);
     await host.deleteSnapshot(staff, t, fork);
-    expect([count('_substrat_scope_storage', fork), count('_substrat_scope_storage_attempts', fork)]).toEqual([0, 0]);
+    expect(rows(fork)).toEqual([0, 0, 0]);
     await host.close();
   });
 });
