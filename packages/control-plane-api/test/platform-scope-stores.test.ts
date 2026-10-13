@@ -20,11 +20,11 @@ describe('callPlatformScopeStore', () => {
     await expect(
       callPlatformScopeStore(
         dispatch,
-        { vertical: 'acme/crm', kind: 'ontomate', tenantId: 'T', scopeId: 'S', binding: 'GRAPH' },
+        { vertical: 'acme/crm', kind: 'graph', tenantId: 'T', scopeId: 'S', binding: 'GRAPH' },
         'substrat.size',
       ),
     ).resolves.toEqual({ bytes: 4 });
-    expect(seen?.script).toBe(scopeStoreScriptName('acme/crm', 'ontomate'));
+    expect(seen?.script).toBe(scopeStoreScriptName('acme/crm', 'graph'));
     expect(seen?.audience).toBe('platform');
     expect(seen?.body.objectName).toBe('T/acme/crm/S/GRAPH');
     expect(await verifyScopeStoreName('platform-key', 'T/acme/crm/S/GRAPH', seen?.mac ?? '')).toBe(true);

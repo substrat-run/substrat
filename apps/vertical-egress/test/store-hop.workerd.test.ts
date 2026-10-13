@@ -24,7 +24,7 @@ const TENANT = '01JTESTATTACHTENANT000000A';
 const SCOPE = '01J00000000000000000000S01';
 const OTHER = '01J00000000000000000000S02';
 const KEY = 'store-hop-key';
-const SCRIPT = scopeStoreScriptName('docs', 'ontomate');
+const SCRIPT = scopeStoreScriptName('docs', 'graph');
 
 const VERTICAL = `export default {
   async fetch(request) {
@@ -137,7 +137,7 @@ beforeAll(async () => {
             slug: 'docs',
             tenant: TENANT,
             scope: SCOPE,
-            stores: [{ binding: 'GRAPH', kind: 'ontomate' }],
+            stores: [{ binding: 'GRAPH', kind: 'graph' }],
           },
         },
         serviceBindings: {

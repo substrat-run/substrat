@@ -18,7 +18,7 @@ export class ScopeStoreCalls extends WorkerEntrypoint<{ STORE_HMAC_KEY: string; 
         DISPATCH: {
           get: (scriptName) => ({
             fetch: (req) => {
-              if (scriptName !== 'substrat-store-ontomate-docs') {
+              if (scriptName !== 'substrat-store-graph-docs') {
                 return Promise.resolve(new Response('wrong script', { status: 500 }));
               }
               return this.env.STORE.fetch(req);

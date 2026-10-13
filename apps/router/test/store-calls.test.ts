@@ -9,7 +9,7 @@ const KEY = 'router-store-key';
 
 describe('handleStoreCall', () => {
   it('refuses another scope, an undeclared binding, and a reserved operation', async () => {
-    const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', kind: 'ontomate' }] };
+    const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', kind: 'graph' }] };
     const other = await handleStoreCall({ STORE_HMAC_KEY: KEY, DISPATCH: { get: () => { throw new Error('not dispatched'); } } }, caller, {
       scopeId: OTHER,
       binding: 'GRAPH',
@@ -39,11 +39,11 @@ describe('handleStoreCall', () => {
           }),
         },
       },
-      { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', kind: 'ontomate' }] },
+      { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', kind: 'graph' }] },
       { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' },
     );
     expect(outcome).toMatchObject({ ok: true });
-    expect(seen.script).toBe('substrat-store-ontomate-docs');
+    expect(seen.script).toBe('substrat-store-graph-docs');
     expect(seen.name).toBe(scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH'));
     expect(seen.mac).toBe(await signScopeStoreName(KEY, seen.name!));
   });
