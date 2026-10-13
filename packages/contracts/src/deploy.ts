@@ -393,10 +393,11 @@ export const storeRequest = z.object({
 });
 export type StoreRequest = z.infer<typeof storeRequest>;
 
-/** What a store answers when it refuses. `code` is the kind's, `status` is HTTP. */
+/** What a store answers when it refuses. `code` is the kind's, `status` is an HTTP
+ *  error status: anything outside 400–599 is not a refusal, and not this envelope. */
 export const storeErrorEnvelope = z.object({
   code: z.string().min(1),
-  status: z.number().int(),
+  status: z.number().int().min(400).max(599),
   body: z.unknown().optional(),
 });
 
