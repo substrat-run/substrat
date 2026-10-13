@@ -158,6 +158,36 @@ describe('assertSandboxContract', () => {
     expect((thrown as Error).message).toMatch(/not registered/);
     expect((thrown as Error).message).toMatch(/^deploy refused: /);
   });
+
+  // #2224: the control plane holds an own DO binding to the same one-name-one-store rule push
+  // does, so a manifest that did not come through push is refused the same way.
+  it('refuses an own DO binding that takes a per-tenant or scope store’s name', () => {
+    const own = { type: 'durable_object_namespace', name: 'DB', class_name: 'ScopeDO' } as const;
+    const refused = (m: DeployManifest, message: RegExp) => {
+      let thrown: unknown;
+      try {
+        assertSandboxContract(m);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown, 'the contract admitted a name taken twice').toBeInstanceOf(Error);
+      expect(errorCodeOf(thrown)).toBe('forbidden');
+      expect((thrown as Error).message).toMatch(message);
+    };
+    refused(
+      { ...manifest([own]), tenantStores: [{ binding: 'DB', kind: 'relational' }] },
+      /binding 'DB' is declared as an own store and as a per-tenant store/,
+    );
+    refused(
+      { ...manifest([{ ...own, name: 'GRAPH' }]), scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] },
+      /binding 'GRAPH' is declared as an own store and as a scope store/,
+    );
+    // The twin: an own DO binding of another name is admitted beside the per-tenant store.
+    ok([{ ...own, name: 'SCOPE' }]);
+    expect(() =>
+      assertSandboxContract({ ...manifest([{ ...own, name: 'SCOPE' }]), tenantStores: [{ binding: 'DB', kind: 'relational' }] }),
+    ).not.toThrow();
+  });
 });
 
 describe('scope store bindings injected at upload (#2209)', () => {

@@ -519,7 +519,7 @@ function isPerTenantRuntimeName(name: string, binding: string): boolean {
  *
  * A static wrangler binding is compared to the name that lands on the worker,
  * not to the declaration. An own store's durable-object binding IS that store,
- * so passing it again counts the name twice; push omits those names. A
+ * so passing it again counts the name twice; {@link storeNamesOfBindings} omits it. A
  * per-tenant store is injected as `BINDING__<tenant>`, and a scope store as
  * `SUBSTRAT_STORE_<BINDING>`. A static binding spelled `DB` or `GRAPH` is not
  * either of those.
@@ -578,6 +578,23 @@ export function assertStoreBindingsDistinct(input: {
       );
     }
   }
+}
+
+/**
+ * The two name lists {@link assertStoreBindingsDistinct} reads off a deploy's static
+ * bindings (#2224). An own durable-object binding is an own store and is compared as
+ * written; every other static binding is compared by the name that lands on the worker.
+ * Push and the control plane both derive them here, from the `bindings` the manifest
+ * carries, so the two checks cannot drift apart.
+ */
+export function storeNamesOfBindings(
+  bindings: readonly { type: string; name: string; script_name?: string }[],
+): { own: { binding: string }[]; bindingNames: string[] } {
+  const isOwnStore = (b: (typeof bindings)[number]) => b.type === 'durable_object_namespace' && !b.script_name;
+  return {
+    own: bindings.filter(isOwnStore).map((b) => ({ binding: b.name })),
+    bindingNames: bindings.filter((b) => !isOwnStore(b)).map((b) => b.name),
+  };
 }
 
 /**
