@@ -9,7 +9,7 @@ import {
   tenantId,
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { CloudflareScopeHost, type ConnectorDelegation } from '../src/host.js';
+import { CloudflareScopeHost, type ConnectorDelegation } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**

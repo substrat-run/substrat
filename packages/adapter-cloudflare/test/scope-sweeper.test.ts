@@ -16,7 +16,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scheduleMod } from '@substrat-run/contract-tests';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { armRewind, holdsStub, landRewind } from './pitr-emulation.js';
 import { warmDurableObject, warmSwitchHolds } from './do-warmup.js';
 import {

@@ -13,7 +13,7 @@ import {
 } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { permMod } from '@substrat-run/contract-tests';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import type { R2BlobStores } from '../src/r2.js';
 import { warmControlPlane } from './do-warmup.js';
 import { WIPED_READ, WIPED_WRITE, wipedCopyMod } from './wiped-copy-module.js';

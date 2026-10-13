@@ -3,7 +3,7 @@ import { beforeAll, expect, it } from 'vitest';
 import { moduleId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { permMod } from '@substrat-run/contract-tests';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
