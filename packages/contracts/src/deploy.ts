@@ -427,7 +427,7 @@ export const storeImportInput = z.object({ tables: z.array(scopeDumpTable) });
 export const storeImportResult = z.object({ tables: z.number().int().nonnegative() });
 export type StoreImportResult = z.infer<typeof storeImportResult>;
 
-export const storeWipeResult = z.object({}).strict();
+export const storeWipeResult = z.object({});
 
 /** One binding's storage, as `scopeStoreSizes` reports it. */
 export const scopeStoreSize = z.object({
