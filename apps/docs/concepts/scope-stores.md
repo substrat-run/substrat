@@ -16,7 +16,7 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 scopeStores: [{ binding: 'GRAPH', kind: 'graph' }]
 ```
 
-A hosted vertical's upload carries no store binding. A call from the vertical leaves through the platform, which checks the binding against what the serving version declares and addresses the object for the scope the request was routed to. A binding already used by another store is refused, and so is the name `ATTACHMENTS`.
+A hosted vertical's upload carries no store binding. A call from the vertical leaves through the platform, which checks the binding against what the version the scope runs declares and addresses the object for the scope the request was routed to. A binding already used by another store is refused, and so is the name `ATTACHMENTS`.
 
 A kind is registered before a push that names it can succeed. No kind is registered yet, so a push that declares a scope store is refused. Hosted deploy of the store script waits on [#2210](https://github.com/substrat-run/substrat/issues/2210).
 
