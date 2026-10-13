@@ -66,10 +66,10 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   });
 
   /** A scope on vertical `docs` with one sealed payload, and a probe that reads whether its key survives. */
-  const sealedScope = async () => {
+  const sealedScope = async (vertical = 'docs') => {
     const s = scopeId.parse(ulid());
     const subject = dataSubjectId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical });
     await host.admin.activateScope(staff, t, s);
     const [sealed] = await host.admin.sealSubjectPayloads(staff, t, s, [{ subjectId: subject, plaintext: 'pii' }]);
     const keyKept = async () =>
@@ -194,12 +194,12 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     });
 
     describe('a bound version decides by its manifest', () => {
-      const publish = async (scopeStores?: unknown[]) => {
+      const publish = async (scopeStores?: unknown[], slug = 'docs') => {
         const id = ulid();
-        const ref = `docs-${id.toLowerCase()}`;
+        const ref = `${slug}-${id.toLowerCase()}`;
         await host.admin.publishVersion(staff, {
           id,
-          verticalSlug: 'docs',
+          verticalSlug: slug,
           version: `1.0.${id.slice(-4).toLowerCase()}`,
           manifestDigest: `m-${id}`,
           permissionDigest: 'p',
@@ -244,6 +244,53 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(res.status).toBe(200);
         expect(wasAsked()).toBe(false);
         expect(await keyKept()).toBe(false);
+      });
+
+      // The serving script runs the serving pointer's version, not the scope's bound one, so
+      // that manifest is the one read. A pointer naming another script is a version unknown.
+      const onServingScript = async (opts: { boundStores?: unknown[]; servedStores?: unknown[]; pointerRef?: string }) => {
+        // Its own vertical: a serving pointer is the vertical's, and would reroute later binds.
+        const slug = `served-${ulid().toLowerCase().slice(-10)}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        const scope = await sealedScope(slug);
+        const boundVersion = await publish(opts.boundStores, slug);
+        const servedVersion = await publish(opts.servedStores, slug);
+        await host.admin.bindScopeVersion(staff, t, scope.s, boundVersion.id);
+        const servingRef = `${slug}-serving`;
+        await host.admin.setVerticalServing(staff, slug, {
+          ref: opts.pointerRef ?? servingRef,
+          versionId: servedVersion.id,
+          doClasses: ['ScopeDO'],
+          migrationTag: 'v1',
+        });
+        await host.admin.setScopeServingRef(staff, t, scope.s, servingRef);
+        let asked = false;
+        const deployment = {
+          ...redactOnly,
+          scopeStoreErase: async () => {
+            asked = true;
+            return [{ binding: 'GRAPH', erased: 1 }];
+          },
+        } as unknown as VerticalClient;
+        const api = createControlPlaneApi({
+          host,
+          authenticate: UNSAFE_devPlatformActorAuth(),
+          storeKinds: [graph],
+          resolveVerticalRef: async (r) => (r === servingRef ? deployment : undefined),
+        });
+        expect((await shred(api, scope.s, scope.subject)).status).toBe(200);
+        expect(await scope.keyKept()).toBe(false);
+        return asked;
+      };
+      const stores = [{ binding: 'GRAPH', kind: 'graph' }];
+
+      it('on the serving script, the served version decides, not the bound one', async () => {
+        expect(await onServingScript({ servedStores: stores })).toBe(true);
+        expect(await onServingScript({ boundStores: stores })).toBe(false);
+      });
+
+      it('on the serving script, a pointer naming another script is a version unknown, and is asked', async () => {
+        expect(await onServingScript({ pointerRef: 'docs-elsewhere' })).toBe(true);
       });
 
       it('a version that declares a store is asked', async () => {
