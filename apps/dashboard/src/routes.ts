@@ -333,8 +333,10 @@ export const dashboardRoutes = defineRoutes({
     summary: 'Remove a member: their role is taken away and their login leaves the team (409 when the removal is refused)',
     input: z.object({ memberId: z.string().min(1) }),
     // `pending` is the cookie route's 202: the removal is committed and the retry backstop
-    // owns taking the role away. One declared status, so it moves into the body.
-    output: z.object({ removed: z.literal(true), pending: z.boolean() }),
+    // owns taking the role away. One declared status, so it moves into the body. `removed` is
+    // false when there was no removable member by that id (already gone, or the owner) — the
+    // cookie route's 204 for that no-op said nothing at all.
+    output: z.object({ removed: z.boolean(), pending: z.boolean() }),
     http: { method: 'DELETE', path: '/members/{memberId}' },
   },
   'dashboard/leave-team': {

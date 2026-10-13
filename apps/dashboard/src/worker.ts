@@ -5212,10 +5212,11 @@ async function inviteLinkIn(ctx: TeamContext, invitationId: string) {
 /**
  * Remove a member. The op revokes the roster row and asks the membership executor (#1184)
  * to take the role away; it runs inline, so the answer says what happened: `pending: false`
- * done, `pending: true` when the backstop owns it, 409 refused. The login is severed either
+ * done, `pending: true` when the backstop owns it, 409 refused, `removed: false` when there
+ * was no removable member by that id. The login is severed either
  * way, since the removal itself is committed.
  */
-async function removeMemberIn({ c, node }: TeamContext, memberId: string): Promise<{ removed: true; pending: boolean }> {
+async function removeMemberIn({ c, node }: TeamContext, memberId: string): Promise<{ removed: boolean; pending: boolean }> {
   // Its own host: only one with the membership executor registered runs it inline.
   const host = hostFor(c.env, { membership: true });
   const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
@@ -5224,7 +5225,7 @@ async function removeMemberIn({ c, node }: TeamContext, memberId: string): Promi
   const removed = (await scope.invoke('dashboard/remove-member', { memberId }, {
     onExecutorOutcomes: (o) => outcomes.push(...o),
   })) as { principal: string; roleKey: string } | null;
-  if (!removed) return { removed: true, pending: false };
+  if (!removed) return { removed: false, pending: false };
   const principal = principalId.parse(removed.principal);
   // Sever their login from the team, so it also disappears from their own switcher.
   await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);

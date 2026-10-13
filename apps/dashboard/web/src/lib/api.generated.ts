@@ -298,7 +298,7 @@ export interface DashboardClient {
    *
    * `DELETE /members/{memberId}` — `dashboard/remove-member`
    */
-  removeMember(input: { memberId: string }): Promise<{ removed: true; pending: boolean }>;
+  removeMember(input: { memberId: string }): Promise<{ removed: boolean; pending: boolean }>;
 
   /**
    * Re-send a pending invite's email (a lapsed invitation is renewed); 404 when there is no such pending invite
