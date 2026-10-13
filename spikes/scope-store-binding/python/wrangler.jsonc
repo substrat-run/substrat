@@ -1,0 +1,10 @@
+{
+  "name": "scope-store-python",
+  "main": "src/entry.py",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["python_workers"],
+  "durable_objects": {
+    "bindings": [{ "name": "STORE", "class_name": "CounterStore" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CounterStore"] }]
+}

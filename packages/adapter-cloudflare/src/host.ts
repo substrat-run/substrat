@@ -461,6 +461,7 @@ import {
   type InstallsReconciled,
   type ServingPointer,
   collectPeers,
+  peerCallerAt,
   peerSeats,
   connectorCallRecord,
   noopConnectorCallRecorder,
@@ -5354,7 +5355,9 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
-    const parsed = verticalCaller.parse(caller);
+    // #2252: the caller as this vertical's `peers` names it, before the door's pin or the DO
+    // reads it — so both key on the declared name, exactly as the seats and the switch do.
+    const parsed = peerCallerAt(collectPeers(this.peerSources), verticalCaller.parse(caller));
     await this.peerScopeGate(tenantId, scopeId, 'getVerticalScope');
     // #2029: gated against the rewind hold and pinned, as the system door is.
     const door = await this.openDoor('peer', parsed.vertical, scopeId);

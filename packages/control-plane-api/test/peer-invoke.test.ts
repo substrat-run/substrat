@@ -108,6 +108,42 @@ describe('peerInvokeHandler (#1706)', () => {
     });
   });
 
+  it('a queued call to a bare slug reaches the tenant\'s pinned install, and hands the door the directory\'s slug (#2252)', async () => {
+    calls.length = 0;
+    const pinned = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: pinned, vertical: 'acme/ledger' });
+    await host.admin.activateScope(staff, t, pinned);
+    // Another tenant's listed vertical, installed here, is another vertical.
+    const foreign = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: foreign, vertical: 'other/desk' });
+    await host.admin.activateScope(staff, t, foreign);
+
+    const outcome = await handler()(ctx, intent({ payload: { vertical: 'ledger', operation: 'entry/list' } }));
+    expect(outcome.status).toBe('done');
+    expect(calls[0]).toMatchObject({
+      caller: { vertical: 'acme/board-room', scope: caller, tenantSlug: 'acme' },
+      tenantId: t,
+      scopeId: pinned,
+    });
+    expect(await handler()(ctx, intent({ payload: { vertical: 'desk', operation: 'x/y' } }))).toEqual({
+      status: 'failed',
+      error: "vertical 'desk' is not installed in this tenant",
+    });
+  });
+
+  it('a pinned caller naming its own bare slug is a self-call, refused like the exact one (#2252)', async () => {
+    calls.length = 0;
+    const self = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: self, vertical: 'acme/desk' });
+    await host.admin.activateScope(staff, t, self);
+    const outcome = await handler()(
+      { tenantId: t, scopeId: self, vertical: 'acme/desk' },
+      intent({ payload: { vertical: 'desk', operation: 'x/y' } }),
+    );
+    expect(outcome).toEqual({ status: 'failed', error: "'acme/desk' cannot peer-call itself" });
+    expect(calls).toHaveLength(0);
+  });
+
   it('THE property: a payload cannot name its own caller or another tenant', async () => {
     calls.length = 0;
     const outcome = await handler()(
@@ -118,7 +154,8 @@ describe('peerInvokeHandler (#1706)', () => {
           operation: 'customer/list',
           // Everything an attacker would try. The payload schema has no field for a caller,
           // and the tenant is the drained scope's, so these are simply not read.
-          caller: { vertical: 'acme/somebody-else', scope: scopeId.parse(ulid()) },
+          caller: { vertical: 'acme/somebody-else', scope: scopeId.parse(ulid()), tenantSlug: 'other' },
+          tenantSlug: 'other',
           tenantId: other,
           scopeId: elsewhere,
         },
@@ -127,7 +164,8 @@ describe('peerInvokeHandler (#1706)', () => {
 
     expect(outcome.status).toBe('done');
     expect(calls[0]).toMatchObject({
-      caller: { vertical: 'acme/board-room', scope: caller },
+      // The slug is the directory's for the drained scope's tenant, never the payload's.
+      caller: { vertical: 'acme/board-room', scope: caller, tenantSlug: 'acme' },
       tenantId: t,
       scopeId: target,
     });
