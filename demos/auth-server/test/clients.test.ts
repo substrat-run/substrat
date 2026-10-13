@@ -652,3 +652,118 @@ describe('RP-initiated logout', () => {
     expect(((await renamed.json()) as WireClient).client_name).toBe('Renamed Anyway');
   });
 });
+
+/**
+ * MACHINE clients (#2267): `client_credentials`, no redirect flow. The proof that matters is
+ * the round trip — a secret minted here buys a token at the token endpoint — because the
+ * plugin refuses a client with no authorized scope only when the token is asked for.
+ */
+describe('machine clients', () => {
+  const registerMachine = async (cookie: string, extra: Record<string, unknown> = {}) => {
+    const res = await adminCall('/clients', cookie, {
+      method: 'POST',
+      body: JSON.stringify({ client_name: 'Nightly sync', application_type: 'machine', ...extra }),
+    });
+    return { res, body: (await res.json()) as WireClient & { client_secret?: string; application_type?: string } };
+  };
+
+  const tokenFor = (clientId: string, secret: string, extra: Record<string, string> = {}) =>
+    call('/api/auth/oauth2/token', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        authorization: `Basic ${btoa(`${clientId}:${secret}`)}`,
+      },
+      body: new URLSearchParams({ grant_type: 'client_credentials', ...extra }),
+    });
+
+  it('registers with no redirect URI, shows the secret once, and reads back as machine', async () => {
+    const admin = await signInAs(ADMIN);
+    const { res, body } = await registerMachine(admin);
+    expect(res.status).toBe(201);
+    expect(body.client_secret).toBeTruthy();
+
+    const listed = (await listClients(admin)).find((c) => c.client_id === body.client_id) as
+      | (WireClient & { application_type?: string; client_credentials_scopes?: string[] })
+      | undefined;
+    expect(listed?.application_type).toBe('machine');
+    expect(listed?.client_credentials_scopes).toEqual(['machine']);
+    expect(listed?.redirect_uris).toEqual([]);
+    expect(listed?.client_secret_set).toBe(true);
+    expect(JSON.stringify(listed)).not.toContain(body.client_secret as string);
+  });
+
+  it('buys a client_credentials token with the secret it was handed', async () => {
+    const { body } = await registerMachine(await signInAs(ADMIN));
+    const res = await tokenFor(body.client_id, body.client_secret as string);
+    expect(res.status).toBe(200);
+    const token = (await res.json()) as { access_token?: string; scope?: string; refresh_token?: string };
+    expect(token.access_token).toBeTruthy();
+    expect(token.scope).toBe('machine');
+    // A machine has no session to refresh.
+    expect(token.refresh_token).toBeUndefined();
+
+    expect((await tokenFor(body.client_id, 'wrong-secret')).status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('refuses a scope the issuer does not offer, and a user-delegated one', async () => {
+    const admin = await signInAs(ADMIN);
+    for (const scope of ['admin', 'openid']) {
+      const { res } = await registerMachine(admin, { client_credentials_scopes: [scope] });
+      expect(res.status).toBe(400);
+    }
+    expect((await registerMachine(admin, { client_credentials_scopes: [] })).res.status).toBe(400);
+  });
+
+  it('refuses redirect URIs, consent and logout on a machine client', async () => {
+    const admin = await signInAs(ADMIN);
+    expect((await registerMachine(admin, { redirect_uris: [RP_REDIRECT] })).res.status).toBe(400);
+    expect((await registerMachine(admin, { skip_consent: true })).res.status).toBe(400);
+    expect((await registerMachine(admin, { enable_end_session: true })).res.status).toBe(400);
+  });
+
+  it('keeps the type fixed in both directions', async () => {
+    const admin = await signInAs(ADMIN);
+    const { body: machine } = await registerMachine(admin);
+    const web = await register('Browser app', admin);
+    const patch = (id: string, change: Record<string, unknown>) =>
+      adminCall(`/clients/${id}`, admin, { method: 'PATCH', body: JSON.stringify(change) });
+
+    // A machine client must not grow a redirect flow it has no URIs for, or skip consent.
+    expect((await patch(machine.client_id, { application_type: 'web' })).status).toBe(400);
+    expect((await patch(machine.client_id, { redirect_uris: [RP_REDIRECT] })).status).toBe(400);
+    expect((await patch(machine.client_id, { skip_consent: true })).status).toBe(400);
+    // A sign-in client must not be handed the grant.
+    expect((await patch(web.client_id, { application_type: 'machine' })).status).toBe(400);
+    expect((await patch(web.client_id, { client_credentials_scopes: ['machine'] })).status).toBe(400);
+
+    // Still a machine client, and the token endpoint agrees.
+    const after = (await listClients(admin)).find((c) => c.client_id === machine.client_id) as WireClient & {
+      application_type?: string;
+    };
+    expect(after.application_type).toBe('machine');
+    expect((await tokenFor(machine.client_id, machine.client_secret as string)).status).toBe(200);
+  });
+
+  it('renames and disables a machine client, and a disabled one gets no token', async () => {
+    const admin = await signInAs(ADMIN);
+    const { body } = await registerMachine(admin);
+    const res = await adminCall(`/clients/${body.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ client_name: 'Renamed', application_type: 'machine', disabled: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as WireClient).client_name).toBe('Renamed');
+    expect((await tokenFor(body.client_id, body.client_secret as string)).status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('does not hand the machine scope to a client that registers itself', async () => {
+    const res = await call('/api/auth/oauth2/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: [RP_REDIRECT], client_name: 'Self Made', application_type: 'native' }),
+    });
+    expect(res.status).toBeLessThan(300);
+    expect(((await res.json()) as { scope?: string }).scope ?? '').not.toContain('machine');
+  });
+});

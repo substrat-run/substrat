@@ -853,9 +853,13 @@ async function admin<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-/** `web` keeps a secret on a server; `native` is a public client (PKCE, no usable secret). */
-export type ApplicationType = 'web' | 'native';
-export const APPLICATION_TYPES: ApplicationType[] = ['web', 'native'];
+/**
+ * `web` keeps a secret on a server; `native` is a public client (PKCE, no usable secret);
+ * `machine` signs nobody in — it trades its secret for a token (`client_credentials`, #2267).
+ * The plugin has no such type: the server derives it from the grants and stores `web`.
+ */
+export type ApplicationType = 'web' | 'native' | 'machine';
+export const APPLICATION_TYPES: ApplicationType[] = ['web', 'native', 'machine'];
 
 /**
  * A registered relying party, in the plugin's RFC 7591 wire shape. The secret is never here
@@ -870,6 +874,8 @@ export interface RegisteredClient {
   scope?: string;
   token_endpoint_auth_method?: string;
   application_type?: string;
+  /** What a `client_credentials` token may carry — empty unless this is a machine client. */
+  client_credentials_scopes?: string[];
   disabled?: boolean;
   skip_consent?: boolean;
   /** Whether this client may end a session (RP-initiated logout). Off unless set. */

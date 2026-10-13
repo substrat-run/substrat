@@ -1,7 +1,8 @@
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
 import type { drizzleAdapter } from 'better-auth/adapters/drizzle';
-import { oauthProvider, type ClientMetadataResourceFetch } from '@better-auth/oauth-provider';
+import { DEFAULT_OAUTH_SCOPES, oauthProvider, type ClientMetadataResourceFetch } from '@better-auth/oauth-provider';
+import { MACHINE_SCOPE } from './machine-scope.js';
 import { cimd } from '@better-auth/cimd';
 import { jwt } from 'better-auth/plugins/jwt';
 import { admin } from 'better-auth/plugins/admin';
@@ -339,6 +340,13 @@ function betterAuthFor(deps: AuthDeps) {
       // plugin used the clean `baseURL`, and this keeps that promise across the move.
       jwt({ jwt: { issuer: deps.baseURL } }),
       oauthProvider({
+        // The plugin's defaults, plus the one scope a machine client may hold (#2267). A
+        // `client_credentials` scope must be one of THESE, so without it no machine client
+        // could be given any. It is withheld from what a self-registered client receives, and
+        // a client row with no scopes of its own would inherit it for a user sign-in — which
+        // only ever yields a token carrying a scope no vertical reads.
+        scopes: [...DEFAULT_OAUTH_SCOPES, MACHINE_SCOPE],
+        clientRegistrationDefaultScopes: [...DEFAULT_OAUTH_SCOPES],
         loginPage: '/login',
         consentPage: '/consent',
         // `prompt=create` — a relying party asking for a sign-up screen rather than a

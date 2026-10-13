@@ -25,6 +25,7 @@ import {
   upsertProvider,
   type ProviderEndpoints,
 } from './providers.js';
+import { MACHINE_SCOPE, MACHINE_SCOPES } from './machine-scope.js';
 import { resolveIssuerEndpoints } from './provider-discovery.js';
 import { isHttpsOrLoopback, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
@@ -117,7 +118,7 @@ export interface AdminApiDeps {
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
   token_endpoint_auth_method, application_type, user_id, client_secret, created_at, scopes,
-  enable_end_session, post_logout_redirect_uris`;
+  enable_end_session, post_logout_redirect_uris, grant_types, client_credentials_scopes`;
 
 interface ClientRow {
   client_id: string;
@@ -135,6 +136,19 @@ interface ClientRow {
   scopes: string | null;
   enable_end_session: number | null;
   post_logout_redirect_uris: string | null;
+  grant_types: string | null;
+  client_credentials_scopes: string | null;
+}
+
+/**
+ * A MACHINE client (#2267): one that holds only the `client_credentials` grant, so it has no
+ * redirect flow at all. The plugin has no such application type — `application_type` is
+ * `web | native` and a machine client is stored as `web` — so the type is DERIVED from the
+ * grants, never stored a second time where it could disagree with them.
+ */
+function isMachineGrants(grantTypes: string | null): boolean {
+  const grants = jsonColumn<string[]>(grantTypes, []);
+  return grants.includes('client_credentials') && !grants.includes('authorization_code');
 }
 
 /** `string[]`/`json` columns are TEXT here — SQLite is not a JSON provider for the adapter. */
@@ -168,7 +182,9 @@ function toWireClient(row: ClientRow) {
     redirect_uris: jsonColumn<string[]>(row.redirect_uris, []),
     scope: jsonColumn<string[]>(row.scopes, []).join(' ') || undefined,
     token_endpoint_auth_method: row.token_endpoint_auth_method ?? undefined,
-    application_type: row.application_type ?? undefined,
+    application_type: isMachineGrants(row.grant_types) ? 'machine' : (row.application_type ?? undefined),
+    /** What a `client_credentials` token may carry. Empty for every client that is not a machine. */
+    client_credentials_scopes: jsonColumn<string[]>(row.client_credentials_scopes, []),
     disabled: Boolean(row.disabled),
     skip_consent: Boolean(row.skip_consent),
     user_id: row.user_id ?? undefined,
@@ -286,8 +302,9 @@ const clientPatch = z
     metadata: z.record(z.string(), z.unknown()),
     skip_consent: z.boolean(),
     disabled: z.boolean(),
-    application_type: z.enum(['web', 'native']),
+    application_type: z.enum(['web', 'native', 'machine']),
     redirect_uris: z.array(z.string().min(1)).min(1),
+    client_credentials_scopes: z.array(z.string().min(1)),
     enable_end_session: z.boolean(),
     /**
      * Unlike `redirect_uris`, an EMPTY list is meaningful and allowed: a client may end a
@@ -297,6 +314,85 @@ const clientPatch = z
     post_logout_redirect_uris: z.array(z.string().min(1)),
   })
   .partial();
+
+/**
+ * The scopes a machine client may be given (#2267). `oauthProvider` accepts a
+ * `client_credentials` scope only if it is one of the provider's own scopes and not a
+ * user-delegated one (`openid`, `profile`, `email`, `offline_access`), so the vocabulary is
+ * ours to define. There is one, because nothing downstream reads a finer one yet: a vertical
+ * judges a machine caller by its principal's role, not by a scope on the token.
+ */
+function assertMachineScopes(scopes: readonly string[]): string[] {
+  const unique = [...new Set(scopes.map((scope) => scope.trim()).filter(Boolean))];
+  const unknown = unique.filter((scope) => !MACHINE_SCOPES.includes(scope));
+  if (unknown.length) {
+    throw new HTTPException(400, {
+      message: `unknown machine scope ${unknown.map((s) => `'${s}'`).join(', ')} — this issuer offers: ${MACHINE_SCOPES.join(', ')}`,
+    });
+  }
+  if (!unique.length) {
+    throw new HTTPException(400, {
+      message: 'a machine client needs at least one scope: without one the token endpoint refuses it',
+    });
+  }
+  return unique;
+}
+
+/** The registration body for a machine client, in the plugin's own shape. */
+function machineRegistration(body: Record<string, unknown>): Record<string, unknown> {
+  for (const key of ['redirect_uris', 'post_logout_redirect_uris']) {
+    const value = body[key];
+    if (Array.isArray(value) ? value.length : value !== undefined) {
+      throw new HTTPException(400, { message: `a machine client has no redirect flow, so it takes no ${key}` });
+    }
+  }
+  if (body.skip_consent === true || body.enable_end_session === true) {
+    throw new HTTPException(400, { message: 'a machine client has no user to consent or sign out' });
+  }
+  const { client_name, logo_uri, metadata } = body;
+  return {
+    client_name,
+    ...(logo_uri ? { logo_uri } : {}),
+    ...(metadata ? { metadata } : {}),
+    // The plugin has no machine type. `web` is what it stores; the grant is what makes it one.
+    application_type: 'web',
+    grant_types: ['client_credentials'],
+    // Never `none`: a public client cannot use the grant, and holding a secret is the point.
+    token_endpoint_auth_method: 'client_secret_basic',
+    client_credentials_scopes: assertMachineScopes(
+      Array.isArray(body.client_credentials_scopes) ? (body.client_credentials_scopes as string[]) : [MACHINE_SCOPE],
+    ),
+  };
+}
+
+/**
+ * What an edit may not do to a machine client, and to anything else, about being one.
+ *
+ * The type is fixed at registration. A machine client edited into `web` or `native` would
+ * become a client with a redirect flow and no redirect URIs; the reverse would hand a
+ * `client_credentials` grant to a client that was registered to sign people in. Neither is a
+ * rename, so neither is an edit.
+ */
+function assertMachinePatch(patch: z.infer<typeof clientPatch>, machine: boolean): void {
+  if (patch.application_type === 'machine' && !machine) {
+    throw new HTTPException(400, { message: 'an existing client cannot become a machine client — register a new one' });
+  }
+  if (!machine) {
+    if (patch.client_credentials_scopes !== undefined) {
+      throw new HTTPException(400, { message: 'client_credentials_scopes belong to a machine client' });
+    }
+    return;
+  }
+  if (patch.application_type !== undefined && patch.application_type !== 'machine') {
+    throw new HTTPException(400, { message: 'a machine client cannot become a web or native client' });
+  }
+  if (patch.redirect_uris?.length || patch.post_logout_redirect_uris?.length) {
+    throw new HTTPException(400, { message: 'a machine client has no redirect flow, so it takes no redirect URIs' });
+  }
+  if (patch.skip_consent === true || patch.enable_end_session === true) {
+    throw new HTTPException(400, { message: 'a machine client has no user to consent or sign out' });
+  }
+}
 
 /**
  * One upstream provider, as the dashboard sends it.
@@ -625,7 +721,8 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) throw new HTTPException(400, { message: 'a JSON body is required' });
     assertClientMetadata(body.metadata);
-    return c.json((await pluginCall(() => deps.auth().adminCreateOAuthClient({ headers: c.req.raw.headers, body }))) as object, 201);
+    const registration = body.application_type === 'machine' ? machineRegistration(body) : body;
+    return c.json((await pluginCall(() => deps.auth().adminCreateOAuthClient({ headers: c.req.raw.headers, body: registration }))) as object, 201);
   });
 
   /**
@@ -641,14 +738,20 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     if (isConsoleClient(clientId)) assertConsoleClientPatch(patch);
     const exists = deps.sql
       .exec(
-        `SELECT client_id, application_type, redirect_uris, post_logout_redirect_uris
+        `SELECT client_id, application_type, redirect_uris, post_logout_redirect_uris, grant_types
            FROM oauth_client WHERE client_id = ?`,
         clientId,
       )
       .toArray()[0] as
-      | { application_type: string | null; redirect_uris: string | null; post_logout_redirect_uris: string | null }
+      | {
+          application_type: string | null;
+          redirect_uris: string | null;
+          post_logout_redirect_uris: string | null;
+          grant_types: string | null;
+        }
       | undefined;
     if (!exists) throw new HTTPException(404, { message: `unknown client '${clientId}'` });
+    assertMachinePatch(patch, isMachineGrants(exists.grant_types));
 
     const sets: string[] = [];
     const values: unknown[] = [];
@@ -677,7 +780,14 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     if (patch.skip_consent !== undefined) set('skip_consent', patch.skip_consent ? 1 : 0);
     if (patch.disabled !== undefined) set('disabled', patch.disabled ? 1 : 0);
-    if (patch.application_type !== undefined) set('application_type', patch.application_type);
+    // A machine client keeps the `web` the plugin stored it as: its type is derived from its
+    // grants, and `assertMachinePatch` has already refused any change to it.
+    if (patch.application_type !== undefined && patch.application_type !== 'machine') {
+      set('application_type', patch.application_type);
+    }
+    if (patch.client_credentials_scopes !== undefined) {
+      set('client_credentials_scopes', JSON.stringify(assertMachineScopes(patch.client_credentials_scopes)));
+    }
     if (patch.enable_end_session !== undefined) set('enable_end_session', patch.enable_end_session ? 1 : 0);
     /**
      * The URI rule is a fact about the PAIR — a list, and the application type that judges it
@@ -686,7 +796,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
      * client's `http:` callbacks under a rule they fail: a row no registration would have
      * accepted, that nothing afterwards is asked to look at again.
      */
-    const type = patch.application_type ?? exists.application_type ?? 'web';
+    const type = patch.application_type === 'machine' ? 'web' : (patch.application_type ?? exists.application_type ?? 'web');
     const assertList = (uris: string[]) => {
       for (const uri of uris) assertRedirectUri(uri, type);
     };

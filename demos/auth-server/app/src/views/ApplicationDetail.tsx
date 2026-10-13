@@ -167,12 +167,20 @@ function ApplicationHeader({ client }: { client: RegisteredClient }) {
           {!client.builtin && client.enable_end_session && <span className="tag">can sign out</span>}
           {!client.builtin && !client.user_id && <span className="tag">self-registered</span>}
         </dd>
+        {client.application_type === 'machine' && (
+          <>
+            <dt>Scopes</dt>
+            <dd>{(client.client_credentials_scopes ?? []).map((scope) => <code key={scope}>{scope}</code>)}</dd>
+          </>
+        )}
         <dt>Redirect URIs</dt>
         {/* No `uris` class: that one styles a table cell, and `.kv dd` already wraps a long
             URI the same way. */}
         <dd>
           {client.builtin ? (
             <span className="muted">the admin console — signs in here, never redirects</span>
+          ) : client.application_type === 'machine' ? (
+            <span className="muted">none — a machine client signs nobody in</span>
           ) : client.redirect_uris.length === 0 ? (
             <span className="muted">none</span>
           ) : (
@@ -416,6 +424,9 @@ export function ClientEditor({
     // there must not survive past the fields, which would otherwise win only when non-empty.
     delete metadata.theme;
     delete metadata.signIn;
+    // A machine client draws no screen and signs nobody in, so it has no theme or policy to
+    // reassemble — and the fields for them are not on the form.
+    if (type !== 'machine') {
     // Reassemble the theme: the untouched extra keys, then the fields (empty = remove).
     const fields: [string, string][] = [
       ['title', themeTitle],
@@ -447,14 +458,16 @@ export function ClientEditor({
       if (problems.length) return setErr(`Sign-in: ${problems[0]}`);
       metadata.signIn = draftToStored(draft, offered, builtin);
     }
+    }
     const clientDraft: ClientDraft = {
       client_name: name.trim(),
       application_type: type,
-      redirect_uris: uris.split('\n').map((u) => u.trim()).filter(Boolean),
+      // None of these means anything to a machine client, and the server refuses a non-empty one.
+      redirect_uris: type === 'machine' ? [] : uris.split('\n').map((u) => u.trim()).filter(Boolean),
       metadata,
-      skip_consent: skipConsent,
-      enable_end_session: endSession,
-      post_logout_redirect_uris: logoutUris.split('\n').map((u) => u.trim()).filter(Boolean),
+      skip_consent: type === 'machine' ? false : skipConsent,
+      enable_end_session: type === 'machine' ? false : endSession,
+      post_logout_redirect_uris: type === 'machine' ? [] : logoutUris.split('\n').map((u) => u.trim()).filter(Boolean),
       disabled: client?.disabled ?? false,
       // An EDIT always names `logo_uri`, empty included: the PATCH reads `''` as "clear it"
       // and an absent key as "leave it alone", so omitting a field the operator just emptied
@@ -470,6 +483,11 @@ export function ClientEditor({
         // its `redirect_uris` is empty and the PATCH schema refuses an empty list — rightly,
         // for every row that rule was written for.
         await updateOAuthClient(client.client_id, { client_name: clientDraft.client_name, metadata: clientDraft.metadata });
+        await onSaved(null);
+      } else if (client && type === 'machine') {
+        // The PATCH schema refuses an empty `redirect_uris`, rightly for every row but this one.
+        const { redirect_uris: _r, post_logout_redirect_uris: _p, skip_consent: _s, enable_end_session: _e, ...rest } = clientDraft;
+        await updateOAuthClient(client.client_id, rest);
         await onSaved(null);
       } else if (client) {
         await updateOAuthClient(client.client_id, clientDraft);
@@ -511,20 +529,34 @@ export function ClientEditor({
         <>
           <label className="field">
             <span>Application type</span>
-            <select value={type} onChange={(e) => setType(e.target.value as ApplicationType)}>
-              {APPLICATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            {/* Fixed at registration: a machine client edited into a redirect client has no
+                redirect URIs, and the reverse hands the grant to a client made to sign people in.
+                Choosing between web and native stays editable, as before. */}
+            <select value={type} disabled={Boolean(client) && (type === 'machine' || client?.application_type === 'machine')} onChange={(e) => setType(e.target.value as ApplicationType)}>
+              {APPLICATION_TYPES.filter((t) => !client || t !== 'machine' || type === 'machine').map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
             <em className="hint">
               A <code>web</code> client keeps its secret on a server. A <code>native</code> one is public — PKCE, and
-              loopback or private-scheme redirect URIs are allowed.
+              loopback or private-scheme redirect URIs are allowed. A <code>machine</code> client signs nobody in: it
+              trades its secret for a token (<code>client_credentials</code>), and the type cannot be changed afterwards.
             </em>
           </label>
+          {type === 'machine' ? (
+            <p className="muted small">
+              No redirect URIs, consent screen or sign-out: a machine client has no user. Its token carries the{' '}
+              <code>machine</code> scope. Authenticate at the token endpoint with the client ID and secret
+              (<code>client_secret_basic</code>), and name the application it calls as the <code>resource</code>.
+            </p>
+          ) : (
           <label className="field">
             <span>Redirect URIs</span>
             <textarea rows={3} value={uris} onChange={(e) => setUris(e.target.value)} />
             <em className="hint">One per line, matched exactly. A `web` client needs HTTPS unless it is on loopback.</em>
           </label>
-          <Field label="Logo URL" value={icon} onChange={setIcon} hint="Optional. Shown beside the name on the consent screen." />
+          )}
+          <Field label="Logo URL" value={icon} onChange={setIcon} hint={type === 'machine' ? 'Optional.' : 'Optional. Shown beside the name on the consent screen.'} />
+          {type !== 'machine' && (
+          <>
           <label className="toggle">
             <input type="checkbox" checked={skipConsent} onChange={(e) => setSkipConsent(e.target.checked)} />
             <span>
@@ -556,8 +588,12 @@ export function ClientEditor({
               </em>
             </label>
           )}
+          </>
+          )}
         </>
       )}
+      {type !== 'machine' && (
+      <>
       <SignInPolicyEditor draft={draft} onChange={setDraft} offered={offered} offeredError={offeredError} builtin={builtin} />
       <h3>Appearance</h3>
       <p className="muted small">
@@ -572,6 +608,8 @@ export function ClientEditor({
       <Field label="Primary text color" value={themePrimaryFg} onChange={setThemePrimaryFg} hint="Text on the primary color — keep the contrast readable." />
       <Field label="Background color" value={themeBackground} onChange={setThemeBackground} />
       <Field label="Card color" value={themePanel} onChange={setThemePanel} />
+      </>
+      )}
       <label className="field">
         <span>Metadata (JSON)</span>
         <textarea rows={4} value={meta} onChange={(e) => setMeta(e.target.value)} placeholder={'{\n  "plan": "internal"\n}'} />
