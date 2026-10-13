@@ -28,20 +28,20 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(deployManifest.parse(baseManifest).scopeStores).toEqual([]);
   });
 
-  it('accepts ontomate and carries it on the manifest', () => {
+  it('accepts graph and carries it on the manifest', () => {
     const needs = runtimeNeeds.parse({
       entry: 'src/worker.ts',
-      scopeStores: [{ binding: 'GRAPH', kind: 'ontomate' }],
+      scopeStores: [{ binding: 'GRAPH', kind: 'graph' }],
     });
-    expect(needs.scopeStores).toEqual([{ binding: 'GRAPH', kind: 'ontomate' }]);
+    expect(needs.scopeStores).toEqual([{ binding: 'GRAPH', kind: 'graph' }]);
     expect(
       deployManifest.parse({ ...baseManifest, scopeStores: needs.scopeStores }).scopeStores,
-    ).toEqual([{ binding: 'GRAPH', kind: 'ontomate' }]);
+    ).toEqual([{ binding: 'GRAPH', kind: 'graph' }]);
   });
 
-  it('refuses a kind other than ontomate', () => {
+  it('refuses a kind other than graph', () => {
     expect(() =>
-      runtimeNeeds.parse({ entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+      runtimeNeeds.parse({ entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'document' }] }),
     ).toThrow();
   });
 
@@ -118,8 +118,8 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     );
   });
 
-  it('refuses ontomate while no kind is registered', () => {
-    const stores = [{ binding: 'GRAPH', kind: 'ontomate' as const }];
+  it('refuses graph while no kind is registered', () => {
+    const stores = [{ binding: 'GRAPH', kind: 'graph' as const }];
     expect(() => assertScopeStoresRegistered(stores)).toThrow(/not registered/);
     expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(/not registered/);
   });
@@ -128,7 +128,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     const reserved = RESERVED_STORE_OPERATIONS.filter((op) => op !== 'substrat.erase');
     expect(() =>
       storeKindRegistration.parse({
-        kind: 'ontomate',
+        kind: 'graph',
         release: '1.0.0',
         script: 'store',
         className: 'Store',
@@ -141,7 +141,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   it('refuses a catalog operation on the reserved prefix', () => {
     expect(() =>
       storeKindRegistration.parse({
-        kind: 'ontomate',
+        kind: 'graph',
         release: '1.0.0',
         script: 'store',
         className: 'Store',
