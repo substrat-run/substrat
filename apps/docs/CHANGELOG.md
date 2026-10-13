@@ -1,5 +1,37 @@
 # @substrat-run/docs
 
+## 0.1.24
+
+### Patch Changes
+
+- 2c75a0d: An entity can make its trash horizon a floor as well as a deadline: `trash: { permission, purgeAfterDays, purgeEarly: false }` (#2214). The kernel then refuses the entity's `trashed: 'purges'` operation, for every caller, on an entity that is not in the trash or was trashed less than `purgeAfterDays` ago. As with the other trash refusals, it checks the operation's declared key first, so a caller without the key gets `permission_denied` and a caller with it gets `not_found`. There is no opt-out. The platform's purge sweep works as before. The floor holds the purge operation, not the trash: an operation declared `trashed: 'admits'` that deletes the row can still remove a trashed entity at any time. A missing entity gets the same refusal as an active or a recently trashed one.
+
+  `purgeEarly` is optional and defaults to `true`, which keeps today's behaviour: the purge operation is also the permanent delete a person uses to empty the trash at any time. `purgeEarly: false` without `purgeAfterDays` is refused when the model is emitted and when a module is registered. The emitted `model.json` carries `"purgeEarly": false` only when it is declared. A reader that does not know the key ignores it.
+
+  `purgeCutoffOf` is no longer exported from the kernel's index. It was added after 0.144.0 for ticket0's purge handler and has not been in any release. That handler now relies on the kernel's refusal instead of comparing dates itself.
+
+- 5554b23: **Behaviour change to a documented rule (#901): a kernel state move no longer moves an entity's version** (#2191). `ctx.archive`, `ctx.unarchive`, `ctx.trash` and `ctx.restore` change no field anyone read. They set only the kernel's own `_substrat_*_at` columns. So the version, which an operation's `If-Match` is compared against, now skips their four events. Before this, a client that read a row, moved it and then sent a guarded write got `412 precondition_failed` ("changed since you read it") although nothing had changed, and the move operations hand back no `ETag` it could have used instead. Now the tag it holds still matches. A real edit in between still refuses it.
+
+  - Contracts exports `ENTITY_STATE_MOVE_TYPES`, the four move types, and the kernel's `entityVersionQuery` leaves them out. The query is now `ORDER BY id DESC LIMIT 1` over the existing `(entity_type, entity_id, id)` index, so it still walks the index and does not aggregate. Both adapters run the same SQL.
+  - **Archive is not write-refused.** A trashed row is refused to every operation whose declared check names it except one that declares `trashed: 'admits'` or `'purges'` (a restore, a delete for good, the purge), and a guarded one of those still compares its `If-Match`. An archived row is refused to none: an edit sent with a tag read before someone archived the row is admitted, lands on the archived row, and the row stays archived.
+  - Only these four. The other kernel-authored events about an entity (a link or relink, a grant top-up or retirement, a holder bound or unbound, an attachment added or removed) still move the version. Whether any of them is content is a separate decision.
+  - A row whose only events are moves, such as one seeded without an event, has no version, as it had none before it was moved.
+  - **At deploy:** the rule changes for a vertical when it is next pushed on a release carrying this. A client holding a tag it read from a row whose newest event was a move, or an idempotent replay recorded from such a call, gets one `412` on its next guarded write, re-reads and carries on. That is the safe direction: no write is admitted that the old rule would have refused for a content change.
+
+  The concurrency docs (`concepts/api-design`, `concepts/scope-host`) state the rule.
+
+- 3782c4c: `trashRefusalGapsOf` also names an operation that addresses a trashable entity by an input id under a check that is not on that entity — a scope-wide key, or another entity's — when its `concurrency: { over, idFrom }` says which entity the id names (#2161). Each gap now carries `via: 'check' | 'concurrency'`. `lint:model` prints the new kind as a warning, as it does the resolved-check kind. The host refuses neither on a trashed entity, so the handler must ask `ctx.entityState`, or the check should move onto the row.
+
+  The ticket0 page says what the saved-reply trash does.
+
+- fac4f0a: `EntityDef.stamps` takes the updated pair, `updatedAt` and `updatedBy`, held true by the host on every row a call emits about (#2166).
+
+  - A derived create writes all four stamps. A derived update writes the updated pair with every write it makes; one that sends nothing still writes nothing.
+  - The host holds the pair on every row an operation, a consumer or an imported-event handler emits about. The row must carry that call's `ctx.now()` and principal, or the call fails `internal` and rolls back. **An authored handler on an entity that declares the pair, and forgets to stamp a row it emits about, now fails**: set `updated_at` and `updated_by` wherever you write the row. The host reads the emits, not the writes. An emit about a stamped row counts as a write to it, so a handler that only announces the row stamps it too. A write that emits only about another entity, such as the parent, is not checked. A deleted row is not checked. Neither are kernel writes (archive, trash, restore, links, attachments, grants), which leave the pair as it was, nor an emit rolled back inside `ctx.atomic`.
+  - An entity that declares no updated stamp is never read, and a scope with no such entity pays nothing.
+  - `defineEntities` also refuses a stamp kind named twice, and an updated stamp on a composite primary key, which no event can name.
+  - The manifest gains `updatedStamps`, derived by `manifestEntities()`. It is optional and additive, and absent when no entity declares the pair, so existing manifests are unchanged.
+
 ## 0.1.23
 
 ### Patch Changes

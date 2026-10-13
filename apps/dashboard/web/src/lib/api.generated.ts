@@ -46,6 +46,45 @@ function defaultErrorMessage(body: unknown): string | undefined {
 }
 
 
+/** `adminLogEntry` — a published schema, not a stored row. */
+export interface AdminLogEntry {
+  id: string;
+  actor: string;
+  action: "defineRole" | "assignRole" | "unassignRole" | "grant" | "grantEntityShape" | "reconcileEntityGrantShapes" | "grantToOrg" | "addMember" | "removeMember" | "createOrg" | "registerIdentityPool" | "registerVertical" | "publishVersion" | "admitVersion" | "rejectVersion" | "setVerticalListed" | "requestPublish" | "setVerticalInstallsBlocked" | "setVerticalTenantProvisioner" | "setVerticalEmailSender" | "deleteVertical" | "bindScopeVersion" | "markScopeProvisioned" | "promoteVersion" | "setVerticalServing" | "setScopeServingRef" | "setScopeExpiresAt" | "resolveKeptCopy" | "backfillScopeCopy" | "bindHostname" | "setHostnameStatus" | "setHostnameIssuance" | "unbindHostname" | "drainAccessLog" | "drainEvents" | "redrainEvents" | "pruneAccessLog" | "createTenant" | "setTenantStatus" | "setTenantName" | "reapTenant" | "provisionScope" | "provisionTenantStore" | "provisionBlobStore" | "importScope" | "restoreScope" | "rewindScope" | "deleteSnapshot" | "suspendScope" | "unsuspendScope" | "archiveScope" | "unarchiveScope" | "reapScope" | "activateScope" | "grantEntitlement" | "revokeEntitlement" | "linkIdentity" | "unlinkIdentity" | "createConnection" | "updateConnectionSecret" | "revokeConnection" | "mintConnectLink" | "revokeConnectLink" | "consumeConnectLink" | "restoreConnectLink" | "grantToConnection" | "grantToSystem" | "revokeFromSystem" | "restoreToSystem" | "reassertSystemSwitch" | "revokeFromPeer" | "restoreToPeer" | "reassertPeerSwitch" | "moveImportCursor" | "restoreDirectory" | "shredSubject" | "setIssueStatus" | "beginImpersonation" | "endImpersonation" | "mintCapability" | "revokeCapability" | "transferOwner" | "markScopeCopy" | "clearScopeCopyMark" | "setFindingStatus" | "createFindingRule" | "revokeFindingRule" | "resolveStaleFinding" | "manageScopeMember" | "setPeerBinding";
+  tenantId: string | null;
+  scopeId: string | null;
+  vertical: string | null;
+  before: unknown | null;
+  after: unknown | null;
+  causedBy: string | null;
+  onBehalfOf?: { principal: string; tenantId: string; impersonation?: { session: string; by: string } } | null;
+  at: string;
+  audited?: { operationId: string; outcome: "pending" | "applied" | "refused" | "failed" | "unknown" | "conflicting"; superseded: boolean };
+}
+
+/** `appEvent` — a published schema, not a stored row. */
+export interface AppEvent {
+  id: string;
+  app_scope_id: string;
+  kind: "created" | "active" | "failed" | "deleted" | "updated" | "snapshotted" | "snapshot-deleted" | "data-exported" | "data-restored" | "hostname-bound" | "hostname-unbound" | "resumed";
+  detail: string | null;
+  actor: string;
+  created_at: string;
+}
+
+/** `appRow` — a published schema, not a stored row. */
+export interface AppRow {
+  id: string;
+  app_scope_id: string;
+  vertical_slug: string;
+  name: string;
+  status: "provisioning" | "active" | "failed";
+  hostname: string | null;
+  provision_result?: string | null;
+  created_by: string;
+  created_at: string;
+}
+
 /** `findingEntry` — a published schema, not a stored row. */
 export interface FindingEntry {
   id: string;
@@ -87,14 +126,88 @@ export interface FindingRuleEntry {
   createdAt: string;
 }
 
+/** `installStep` — a published schema, not a stored row. */
+export interface InstallStep {
+  step: string;
+  seq: number;
+  status: "running" | "done" | "failed";
+  attempts: number;
+  last_error: string | null;
+  started_at: string;
+  settled_at: string | null;
+}
+
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface DashboardClient {
+  /**
+   * Bind a hostname to a surface of this app: platform-minted (lands active) or a custom domain (lands pending)
+   *
+   * `POST /apps/{scopeId}/hostnames` — `dashboard/add-app-hostname`
+   */
+  addAppHostname(input: { scopeId: string; surface: string; domain?: string }): Promise<{ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
+
+  /**
+   * Add a custom domain to one of this team's apps; lands verifying with the DNS records to publish
+   *
+   * `POST /domains` — `dashboard/add-domain`
+   */
+  addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: "pending" | "verifying" | "active" | "failed"; statusNote?: string | null; validationRecords?: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
+
   /**
    * Suppress with a rule: a scope plus an expiry, audited by the plane
    *
    * `POST /findings/rules` — `dashboard/create-finding-rule`
    */
   createFindingRule(input: { kind?: "invariant" | "drift" | "recurring"; operation?: string; code?: "unauthenticated" | "permission_denied" | "forbidden" | "not_found" | "conflict" | "validation_failed" | "precondition_failed" | "rate_limited" | "unavailable" | "internal"; subject?: string; expiresAt: string; reason: string }): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
+
+  /**
+   * An app's durable install record: directory, provision, activate, hostname, identity
+   *
+   * `GET /apps/{scopeId}/steps` — `dashboard/get-app-install-steps`
+   */
+  getAppInstallSteps(input: { scopeId: string }): Promise<InstallStep[]>;
+
+  /**
+   * Install a vertical into this team as a new app
+   *
+   * `POST /apps` — `dashboard/install-app`
+   */
+  installApp(input: { verticalSlug: string; name: string; auth?: { source: "auth-server"; scopeId: string } | { source: "external"; issuer: string; clientId: string; clientSecret?: string; audience?: string }; config?: Record<string, string> }): Promise<AppRow>;
+
+  /**
+   * One page of the control-plane admin log for one of this team's apps, newest first
+   *
+   * `GET /apps/{scopeId}/audit` — `dashboard/list-app-audit`
+   */
+  listAppAudit(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
+
+  /**
+   * One page of an app's lifecycle trail (Activity panel), newest first
+   *
+   * `GET /apps/{scopeId}/events` — `dashboard/list-app-events`
+   */
+  listAppEvents(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ entries: AppEvent[]; nextCursor: string | null }>;
+
+  /**
+   * An app's hostname bindings, the surfaces its vertical declares, and its untouchable default
+   *
+   * `GET /apps/{scopeId}/hostnames` — `dashboard/list-app-hostnames`
+   */
+  listAppHostnames(input: { scopeId: string }): Promise<{ bindings: ({ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] })[]; surfaces: { name: string; label: string }[]; defaultHostname: string | null }>;
+
+  /**
+   * One page of this team's apps, newest first
+   *
+   * `GET /apps` — `dashboard/list-apps`
+   */
+  listApps(input: { limit?: number; cursor?: string }): Promise<{ entries: AppRow[]; nextCursor: string | null }>;
+
+  /**
+   * One page of this team's custom domains (the platform default each app rides is not listed)
+   *
+   * `GET /domains` — `dashboard/list-domains`
+   */
+  listDomains(input: { limit?: number; cursor?: string }): Promise<{ entries: ({ hostname: string; appScopeId: string; app: string; surface: string; status: "pending" | "verifying" | "active" | "failed"; statusNote: string | null; primary: boolean; createdAt: string; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] })[]; nextCursor: string | null }>;
 
   /**
    * This team's suppress rules; `active` keeps the unexpired ones
@@ -111,6 +224,48 @@ export interface DashboardClient {
   listFindings(input: { status?: "open" | "acked" | "resolved" | "suppressed"; kind?: "invariant" | "drift" | "recurring"; limit?: number; cursor?: string }): Promise<{ available: boolean; entries: FindingEntry[]; nextCursor: string | null; cut: boolean }>;
 
   /**
+   * One page of this team's whole admin log, or one app's with `scopeId`, newest first
+   *
+   * `GET /audit` — `dashboard/list-team-audit`
+   */
+  listTeamAudit(input: { scopeId?: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
+
+  /**
+   * Delete one of this team's apps: deprovision its scope and take its hostname offline
+   *
+   * `DELETE /apps/{id}` — `dashboard/remove-app`
+   */
+  removeApp(input: { id: string }): Promise<{ removed: true }>;
+
+  /**
+   * Unbind one hostname (409 for the app's default hostname)
+   *
+   * `DELETE /apps/{scopeId}/hostnames/{hostname}` — `dashboard/remove-app-hostname`
+   */
+  removeAppHostname(input: { scopeId: string; hostname: string }): Promise<{ deleted: string }>;
+
+  /**
+   * Remove a custom domain: releases the Cloudflare custom hostname and drops the binding
+   *
+   * `DELETE /domains/{hostname}` — `dashboard/remove-domain`
+   */
+  removeDomain(input: { hostname: string }): Promise<{ deleted: string }>;
+
+  /**
+   * Finish the install of an app stuck provisioning, in place (409 unless it is)
+   *
+   * `POST /apps/{scopeId}/resume` — `dashboard/resume-app`
+   */
+  resumeApp(input: { scopeId: string }): Promise<AppRow>;
+
+  /**
+   * Re-provision a failed app under a fresh scope (409 unless it failed)
+   *
+   * `POST /apps/{scopeId}/retry` — `dashboard/retry-app`
+   */
+  retryApp(input: { scopeId: string }): Promise<AppRow>;
+
+  /**
    * End a suppress rule now
    *
    * `DELETE /findings/rules/{ruleId}` — `dashboard/revoke-finding-rule`
@@ -123,6 +278,13 @@ export interface DashboardClient {
    * `PUT /findings/{id}/status` — `dashboard/set-finding-status`
    */
   setFindingStatus(input: { id: string; status: "open" | "acked" | "resolved" }): Promise<FindingEntry>;
+
+  /**
+   * Re-poll a custom domain's issuance ("check again")
+   *
+   * `POST /domains/{hostname}/verify` — `dashboard/verify-domain`
+   */
+  verifyDomain(input: { hostname: string }): Promise<{ hostname: string; status: "pending" | "verifying" | "active" | "failed"; statusNote?: string | null; validationRecords?: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
 }
 
 /**
@@ -184,15 +346,47 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
     await parse(await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body));
 
   return {
+    addAppHostname: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "POST", omit(input, ["scopeId"]), undefined),
+    addDomain: (input: Args) =>
+      send("/domains", "POST", input, undefined),
     createFindingRule: (input: Args) =>
       send("/findings/rules", "POST", input, undefined),
+    getAppInstallSteps: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
+    installApp: (input: Args) =>
+      send("/apps", "POST", input, undefined),
+    listAppAudit: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/audit`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppEvents: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/events`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppHostnames: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "GET", undefined, omit(input, ["scopeId"])),
+    listApps: (input: Args) =>
+      send("/apps", "GET", undefined, input),
+    listDomains: (input: Args) =>
+      send("/domains", "GET", undefined, input),
     listFindingRules: (input: Args) =>
       send("/findings/rules", "GET", undefined, input),
     listFindings: (input: Args) =>
       send("/findings", "GET", undefined, input),
+    listTeamAudit: (input: Args) =>
+      send("/audit", "GET", undefined, input),
+    removeApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.id))}`, "DELETE", undefined, omit(input, ["id"])),
+    removeAppHostname: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames/${encodeURIComponent(String(input.hostname))}`, "DELETE", undefined, omit(input, ["scopeId","hostname"])),
+    removeDomain: (input: Args) =>
+      send(`/domains/${encodeURIComponent(String(input.hostname))}`, "DELETE", undefined, omit(input, ["hostname"])),
+    resumeApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/resume`, "POST", omit(input, ["scopeId"]), undefined),
+    retryApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/retry`, "POST", omit(input, ["scopeId"]), undefined),
     revokeFindingRule: (input: Args) =>
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
+    verifyDomain: (input: Args) =>
+      send(`/domains/${encodeURIComponent(String(input.hostname))}/verify`, "POST", omit(input, ["hostname"]), undefined),
   } as unknown as DashboardClient;
 }

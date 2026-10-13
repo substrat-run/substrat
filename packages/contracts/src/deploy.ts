@@ -718,9 +718,17 @@ export function assertNoBindingShapeBreak(
     judgedFrom?: string;
     /**
      * Judge as if the outgoing version's retirements had not run: for installs with no receipt,
-     * which may not have reconciled it, so may still hold every key it retires.
+     * which may not have reconciled it, and (#2185) installs whose reconcile of it did not finish
+     * its retirements. Either may still hold every key it retires (`retiredKeysOf`).
      */
     retiredStillHeld?: boolean;
+    /**
+     * #2184: the types the judged installs have bound through a link, as their reconcile reported
+     * them, or `'unknown'` when it did not: a shape counts as binding where any of them bound it,
+     * whatever the outgoing registry says about `bind` (`bindingShapeBreaks`). Omitted: the
+     * registry's `bind` alone, for a version judged as what a scope runs rather than from a receipt.
+     */
+    boundEver?: readonly string[] | 'unknown';
   } = {},
 ): void {
   const grants = (json: string | null | undefined, which: string) => {
@@ -734,10 +742,11 @@ export function assertNoBindingShapeBreak(
     }
     return read.rows;
   };
-  const outgoing = grants(outgoingManifest, 'the running').map((g) =>
-    opts.retiredStillHeld && g.retired?.length ? { ...g, permissions: [...g.permissions, ...g.retired], retired: undefined } : g,
-  );
-  const breaks = bindingShapeBreaks({ entityGrants: outgoing }, { entityGrants: grants(incomingManifest, 'the incoming') });
+  const outgoing = grants(outgoingManifest, 'the running').map((g) => {
+    const held = opts.retiredStillHeld ? retiredKeysOf(g) : [];
+    return held.length ? { ...g, permissions: [...g.permissions, ...held], retired: undefined } : g;
+  });
+  const breaks = bindingShapeBreaks({ entityGrants: outgoing }, { entityGrants: grants(incomingManifest, 'the incoming') }, opts.boundEver);
   if (breaks.length > 0) {
     throw substratError('precondition_failed', bindingShapeRefusal(breaks) + (opts.judgedFrom ? `. Judged from ${opts.judgedFrom}` : ''));
   }
@@ -960,20 +969,26 @@ export const entityGrantShape = z.object({
    * People already bound KEEP the shape until they are released — an unbind while the shape binds,
    * an erasure (which reaches every type that ever bound in the scope), or `retired` — whatever a
    * later version does to the declaration: dropping `bind` keeps the holder recorded but leaves no
-   * unbind. A version that removes the shape, moves its holder, drops `bootstrap` or drops a key
+   * unbind. Dropping `bind` is allowed (it stops new links), and the people it leaves bound are
+   * still guarded (#2184): each install's reconcile reports the types it has ever bound, and the
+   * gate below counts a bootstrap shape with a table holder as binding wherever an install bound
+   * it, or did not report (`boundShapes`), as well as wherever the registry says `bind`. A version
+   * that removes the shape, moves its holder, drops `bootstrap` or drops a key
    * from `permissions` without listing it in `retired` is refused
    * wherever it would come to run where the shape binds — a promote, a bind, a route onto a serving
    * script — unless it retires every key (`bindingShapeBreaks`, #2178); a rollback to a version from
    * before the shape is refused the same way. Retiring is the way through: keep the shape with the
    * keys in `retired` and none in `permissions`, then drop or move it in a later version. A
    * retirement reaches an install only at its reconcile, so each primary install the move reaches is
-   * also judged from the version it last reconciled (`provisionedVersionId`): the drop stays refused
-   * until every one has reconciled the retiring version. An install with no receipt (a switch or a
-   * rewind cleared it, or it is new) counts as not having run the retirements of what it runs, until
-   * the sweep's next reconcile writes one. That receipt proves less than the scope's own retirement
-   * record would: a reconcile that left a retirement open still writes it, and a copy (fork,
-   * snapshot, preview) never reconciles and is not judged from one. Omitted when unset, so a
-   * registry that binds nothing keeps its digest.
+   * also judged from the version it last reconciled (`provisionedVersionId`) and whether that
+   * reconcile FINISHED the version's retirements (`retirementsFinishedVersionId`, #2185): the drop
+   * stays refused until the retirement has finished in every one. An install whose reconcile left a
+   * retirement open, whose vertical was built on packages that predate that report (its count comes
+   * from `adapter-cloudflare` and is answered by `vertical-host`), or that has no receipt (a switch, a
+   * rewind or a restore cleared it, or it is new) counts as still holding the keys, until the sweep's next
+   * reconcile finishes them. A copy (fork, snapshot, preview) never reconciles, so a retirement never
+   * reaches it, and it is judged only on what it runs. Omitted when unset, so a registry that binds
+   * nothing keeps its digest.
    */
   bind: z.object({ permission: permissionKey }).optional(),
 });
@@ -1019,6 +1034,18 @@ export function retiredShapeProblems(shape: Pick<EntityGrantShape, 'entityType' 
   const twice = retired.filter((k, i) => retired.indexOf(k) !== i);
   if (twice.length > 0) problems.push(`${where}: retires ${[...new Set(twice)].join(', ')} more than once`);
   return problems;
+}
+
+/**
+ * #2185: the keys a shape's retirement takes back: its `retired` keys that it does not grant again,
+ * each once, sorted. Empty for a sharing shape, which is never reconciled. The one reading of
+ * "retired and not in `permissions`": the kernel's reconcile retires exactly these, the
+ * binding-shape gate counts exactly these as still held where a retirement has not finished, and
+ * a control plane counts a reconcile's retirements finished without asking when no shape has any.
+ */
+export function retiredKeysOf(shape: Pick<EntityGrantShape, 'permissions' | 'bootstrap' | 'retired'>): string[] {
+  if (!shape.bootstrap) return [];
+  return [...new Set(shape.retired ?? [])].filter((k) => !shape.permissions.includes(k)).sort();
 }
 
 /**

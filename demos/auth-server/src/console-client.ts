@@ -170,6 +170,7 @@ export function assertConsolePolicy(
   if (!policy) return;
   const effective = effectiveSignIn(policy, offeredProviders);
   if (effective.password || effective.providers.length > 0) return;
+  if (policy.identifierFirst && policy.domainRoutes?.some((r) => offeredProviders.some((p) => p.id === r.provider))) return;
   throw new HTTPException(400, {
     message:
       `the ${CONSOLE_CLIENT_NAME.toLowerCase()} must keep at least one sign-in method this issuer currently offers — ` +

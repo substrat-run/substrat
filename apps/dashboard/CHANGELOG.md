@@ -1,5 +1,30 @@
 # @substrat-run/dashboard
 
+## 0.43.5
+
+### Patch Changes
+
+- 854c345: The Findings inbox (part of #1748): Observability gains a fourth child, Findings. Open, Acked, Resolved and Suppressed tabs list the team's findings with severity, kind, a Regressed badge, occurrences and the likely cause when one is known. Acknowledge, resolve and reopen move a finding between tabs, and Suppress turns its scope (operation, error code, subject) into a rule with an expiry and a reason; the Suppressed tab lists the active rules and revokes them. People who may read findings but not change them see the list without the actions, and a refusal from the server is shown on the row instead of failing silently.
+- Updated dependencies [e786ff0]
+- Updated dependencies [f49cc49]
+- Updated dependencies [6aaf822]
+- Updated dependencies [bb4f18d]
+- Updated dependencies [2c75a0d]
+- Updated dependencies [55d60cf]
+- Updated dependencies [48e9503]
+- Updated dependencies [5554b23]
+- Updated dependencies [3782c4c]
+- Updated dependencies [fac4f0a]
+  - @substrat-run/contracts@0.145.0
+  - @substrat-run/kernel@0.145.0
+  - @substrat-run/adapter-cloudflare@0.145.0
+  - @substrat-run/control-plane-api@0.145.0
+  - @substrat-run/vertical-host@0.145.0
+  - @substrat-run/connector-fortnox@0.4.47
+  - @substrat-run/engine-invites@0.9.22
+  - @substrat-run/engine-protocol@0.13.30
+  - @substrat-run/control-plane-client@0.1.10
+
 ## 0.43.4
 
 ### Patch Changes

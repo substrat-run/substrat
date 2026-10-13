@@ -4,6 +4,7 @@ import { ApiError, api, type EffectsTree, type EmittedLifecycle, type HistoryEnt
 import { LogList } from '../components/LogList';
 import { callLogsWindow } from '../lib/history';
 import { shortId } from '../lib/format';
+import { REQUEST_WINDOW_MS, openRequestInUrl } from '../lib/request-url';
 import { navigate, obsPath } from '../lib/router';
 import { DEV_MOCK } from '../lib/mock';
 import { mockRequestDetail } from '../lib/mock-request-detail';
@@ -12,6 +13,9 @@ import {
   causedTransition,
   followUps as flattenFollowUps,
   isInvocationLine,
+  relatedRequests,
+  type RelatedRequest,
+  type RelatedResult,
   msLabel,
   parseEntity,
   recordFromLogs,
@@ -41,6 +45,8 @@ const caps: CSSProperties = { fontSize: 11, fontWeight: 600, letterSpacing: '0.0
 const EFFECTS_MAX = 10;
 /** Most entities whose history is read for a transition: each is one scope read. */
 const ENTITIES_MAX = 5;
+/** Most emitted events whose cause chain is walked back to find the request that set this one off. */
+const CAUSES_MAX = 3;
 
 type Part<T> = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; value: T };
 const loading = { state: 'loading' } as const;
@@ -56,16 +62,18 @@ interface Detail {
   /** Some events' consumers could not be read — said beside the ones that could, never instead of them. */
   followUpsError: string | null;
   transitions: Part<CausedTransition[]>;
+  /** Other requests that share a cause with this one (#2192). */
+  related: Part<RelatedResult>;
   /** The running model's lifecycles, read for the transitions and handed on to a record's history. */
   lifecycles: Record<string, EmittedLifecycle>;
 }
 
 function useRequestDetail(scopeId: string, invocationId: string, atMs: number): Detail {
-  const [d, setD] = useState<Detail>({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading, lifecycles: {} });
+  const [d, setD] = useState<Detail>({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading, related: loading, lifecycles: {} });
   useEffect(() => {
     let live = true;
     const set = (patch: Partial<Detail>) => live && setD((prev) => ({ ...prev, ...patch }));
-    setD({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading, lifecycles: {} });
+    setD({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading, related: loading, lifecycles: {} });
     if (DEV_MOCK) {
       const m = mockRequestDetail(invocationId);
       setD({
@@ -75,15 +83,17 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
         followUps: { state: 'ready', value: { flat: m.followUps } },
         followUpsError: null,
         transitions: { state: 'ready', value: m.transitions },
+        related: { state: 'ready', value: { requests: [], incomplete: null } },
         lifecycles: {},
       });
       return;
     }
-    const window = callLogsWindow(new Date(atMs).toISOString());
+    // The plane reads at most 72 hours back; asking for an older window is a 400, not an answer.
+    const window = Date.now() - atMs > REQUEST_WINDOW_MS ? null : callLogsWindow(new Date(atMs).toISOString());
     // The lines first: the request itself is one of them, and what it touched is on it.
     const logsRead = window
       ? api.appTenantLogs(scopeId, { invocationId, since: window.since, until: window.until, limit: 200 })
-      : Promise.reject(new Error('this request carries no usable time'));
+      : Promise.reject(new Error('no usable time within the 72-hour log window'));
     logsRead
       .then(async (logs) => {
         const record = recordFromLogs(logs);
@@ -119,8 +129,20 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
         const trees = settled.flatMap((s) => (s.status === 'fulfilled' ? [s.value] : []));
         const failed = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
         set({ followUps: { state: 'ready', value: { trees } }, followUpsError: failed ? errorText(failed.reason) : null });
+        // Who set this request off: walk back from the events that were themselves a reaction.
+        const allReacting = r.events.filter((e) => e.causedBy !== null);
+        const reacting = allReacting.slice(0, CAUSES_MAX);
+        const causeReads = await Promise.allSettled(reacting.map((e) => api.appEventCause(scopeId, e.id)));
+        const causes = causeReads.flatMap((c) => (c.status === 'fulfilled' ? [c.value] : []));
+        const rejected = settled.length - trees.length + causeReads.length - causes.length;
+        const reasons = [
+          rejected > 0 ? `${rejected} read${rejected === 1 ? '' : 's'} failed` : null,
+          r.events.length > EFFECTS_MAX ? `only the first ${EFFECTS_MAX} of ${r.events.length} events were followed` : null,
+          allReacting.length > CAUSES_MAX ? `only the first ${CAUSES_MAX} of ${allReacting.length} events that reacted to another were traced back` : null,
+        ].filter(Boolean);
+        set({ related: { state: 'ready', value: { requests: relatedRequests(invocationId, trees, causes), incomplete: reasons.length ? reasons.join('; ') : null } } });
       })
-      .catch((e) => set({ events: { state: 'error', message: errorText(e) }, followUps: { state: 'error', message: errorText(e) } }));
+      .catch((e) => set({ events: { state: 'error', message: errorText(e) }, followUps: { state: 'error', message: errorText(e) }, related: { state: 'error', message: errorText(e) } }));
     return () => {
       live = false;
     };
@@ -214,7 +236,7 @@ export function RequestSlideOver({
                     .join(' · ')
                 : d.logs.state === 'loading'
                   ? 'Reading the request…'
-                  : 'The request’s own line was not found — the version that served it may predate per-request records, or it is older than the logs are kept. What it emitted is below.'}
+                  : notFoundText(invocationId, atMs)}
             </div>
           </div>
 
@@ -248,6 +270,10 @@ export function RequestSlideOver({
                   : d.followUps
               }
             />
+          </Section>
+
+          <Section title="Related requests" hint={d.related.state === 'ready' && d.related.value.requests.length > 0 ? 'share a cause with this one' : undefined}>
+            <Related part={d.related} scopeId={scopeId} />
           </Section>
 
           <Section title="Log lines" hint={d.logs.state === 'ready' ? `${logs.filter((l) => !isInvocationLine(l)).length} lines` : undefined}>
@@ -498,6 +524,49 @@ function FollowUps({ events, followUps, error }: { events: Detail['events']; fol
       })}
       {followUps.state === 'error' && <div style={{ padding: '8px 12px' }}><Quiet tone="danger">What its consumers did could not be read ({followUps.message}).</Quiet></div>}
       {error && <div style={{ padding: '8px 12px' }}><Quiet tone="danger">Some events’ consumers could not be read ({error}); the rest are shown.</Quiet></div>}
+    </div>
+  );
+}
+
+/** Why the request's own line is missing, in the window's words — not a claim that no such request exists. */
+function notFoundText(invocationId: string, atMs: number): string {
+  if (Date.now() - atMs > REQUEST_WINDOW_MS) {
+    return `No request ${invocationId} was found within the 72-hour log window. An id this old is not searchable here.`;
+  }
+  return `No line for request ${invocationId} was found in this app within the log window. It may belong to another app, or to a version that predates per-request records. What it emitted is below.`;
+}
+
+const RELATION: Record<RelatedRequest['relation'], string> = { 'caused-by': 'Caused by', 'set-off': 'Set off' };
+
+function Related({ part, scopeId }: { part: Detail['related']; scopeId: string }) {
+  if (part.state === 'loading') return <Quiet>Looking for related requests…</Quiet>;
+  if (part.state === 'error') return <Quiet tone="danger">Related requests are unavailable ({part.message}).</Quiet>;
+  const { requests, incomplete } = part.value;
+  const partial = incomplete ? <Quiet>Some related requests could not be checked: {incomplete}.</Quiet> : null;
+  if (requests.length === 0) {
+    return incomplete ? (
+      <>
+        <Quiet>No related request was found in what could be checked.</Quiet>
+        {partial}
+      </>
+    ) : (
+      <Quiet>No other request is recorded as sharing a cause with this one. A schedule, peer or MCP call that started another request leaves no link to follow.</Quiet>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {partial}
+      {requests.map((r) => (
+        <div key={r.invocationId} style={{ display: 'flex', alignItems: 'baseline', gap: 10, fontSize: 13, flexWrap: 'wrap' }}>
+          <span style={caps}>{RELATION[r.relation]}</span>
+          <span style={mono} title={r.invocationId}>{shortId(r.invocationId)}</span>
+          <span style={{ color: 'var(--text-secondary)' }}>{r.via}</span>
+          <span style={{ flex: 1 }} />
+          <Button variant="ghost" size="sm" onClick={() => openRequestInUrl(r.invocationId, Date.parse(r.at), scopeId)}>
+            Open
+          </Button>
+        </div>
+      ))}
     </div>
   );
 }

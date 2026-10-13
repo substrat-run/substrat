@@ -61,7 +61,8 @@ export function mergePaletteModels(
 }
 
 /** Crockford base32 — the alphabet a ULID is written in. */
-const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+/** A ULID's 48-bit time makes its first character 0-7; anything above is not one. */
+export const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 /**

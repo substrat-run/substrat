@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { repoRoot } from './repo-path.mjs';
 import {
   FORBIDDEN_EDGES,
   PERMISSIVE_EXCEPTIONS,
@@ -68,7 +69,7 @@ test('names the kernel and both adapters, and the repo as it stands has no forbi
     '@substrat-run/adapter-sqlite',
     '@substrat-run/kernel',
   ]);
-  const root = new URL('..', import.meta.url).pathname;
+  const root = repoRoot(import.meta.url);
   const walk = (dir, out = []) => {
     if (!existsSync(dir)) return out;
     for (const e of readdirSync(dir)) {
@@ -448,7 +449,7 @@ test('the shipped OUTPUT is the authority: dist JS and .d.ts are judged, and an 
 });
 
 test('the guarded packages exist, are themselves permissive, and the repo as it stands holds the rule', () => {
-  const root = new URL('..', import.meta.url).pathname;
+  const root = repoRoot(import.meta.url);
   const cwd = process.cwd();
   process.chdir(root);
   try {

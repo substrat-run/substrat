@@ -350,6 +350,21 @@ export interface OperationContext {
    * the operation later rolls back, and a call never throws (`module-log.ts` says why).
    */
   readonly log: ModuleLog;
+  /**
+   * The id the platform minted for the request this call belongs to (#2192) — the value of
+   * the response's `x-substrat-request-id` header, the id on every `ctx.log` line and every
+   * event the call emits, and the request the dashboard opens for it. For module code to put
+   * in its own error messages, so a person who saw one can quote it.
+   *
+   * In a consumer, the id of its DELIVERY, the one its async invocation line carries: the
+   * originating request's id when the event is delivered inside that call, and an id minted
+   * for the delivery otherwise — a retry, a drain, or the tail of a call that carried none.
+   * So a consumer's id is never `null`, and on a retry it is one no response carried. In a
+   * schedule run, the id the host minted for that run. `null` only on an operation called
+   * with no `invocationId` (an in-process call: a test, a seed). Opaque — read it only to
+   * repeat it.
+   */
+  readonly requestId: string | null;
   /** Envelope is stamped kernel-side (id, occurredAt, tenant, scope, actor); input is validated. */
   emit(event: DomainEventInput): void;
   /**
@@ -1018,6 +1033,25 @@ export interface MigrationFrontier {
  * cases no state was touched, so a foreign host can never clear a failure it
  * knows nothing about.
  */
+/**
+ * #2185: what a provision or reconcile reports about the scope it ran in, recorded beside its
+ * receipt (`HostAdmin.markScopeProvisioned`). An object so a later report joins it in the same
+ * write rather than as another call.
+ */
+export interface ReconcileOutcome {
+  /**
+   * Every retirement the reconciled version declares finished in the scope: the deployment
+   * answered that it left none open, or the version retires nothing. Absent reads as not finished.
+   */
+  retirementsFinished?: boolean;
+  /**
+   * #2184: the types of the reconciled version's bootstrap shapes with a table holder that the
+   * scope has ever bound through a link (its sticky `shape-bound` records), sorted. Absent reads as
+   * unknown: every such shape of the version counts as bound.
+   */
+  boundShapes?: string[];
+}
+
 export type MigrateScopeOutcome =
   | { status: 'migrated'; schemaVersion: string }
   | { status: 'noop' }
@@ -2561,13 +2595,25 @@ export interface HostAdmin {
    *
    * `null` clears it back to "unknown", which the sweep reconciles on its next pass. That
    * is for something that undid what a provision did — a PITR rewind (#1674) takes the
-   * scope's grants and its schedule switch back to the bookmark.
+   * scope's grants and its schedule switch back to the bookmark, and (#2185) a restore of a backup
+   * or a kept copy loads data that may predate a reconcile, a finished retirement included.
+   *
+   * #2185: `outcome.retirementsFinished` is whether that reconcile finished every retirement
+   * the version declares (`retiredKeysOf`), and writes `retirementsFinishedVersionId` in the same
+   * write: `versionId` when true, null otherwise, absent included. So a caller that cannot say
+   * (a provision with no shapes, a reconcile answered by a host that predates the report) leaves the
+   * install judged as still holding the keys its version retires, and the sweep reconciles it again.
+   *
+   * #2184: `outcome.boundShapes` likewise writes `boundShapes` in the same write, paired with
+   * `versionId` — null when `versionId` is null or the outcome does not say, which the gate reads
+   * as unknown and the sweep reconciles again.
    */
   markScopeProvisioned(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     versionId: string | null,
+    outcome?: ReconcileOutcome,
   ): Promise<void>;
 
   // -- the stable serving script (#286) ---------------------------------------
