@@ -1,5 +1,26 @@
 # @substrat-run/cli
 
+## 0.42.0
+
+### Minor Changes
+
+- dc1f14c: `substrat push`, `preview` and `push --check` now warn when the code names a host that `substrat.outbound` does not declare (#2193).
+
+  The egress worker refuses an undeclared host with `403 outbound refused`, which reads like an upstream error, and nothing checked harness code against the declaration before. The CLI now reads the worker entry and the modules it imports for `https://host` literals and `new URL('https://…')`, compares each with `substrat.outbound` using the same matcher the egress worker enforces with, and prints the file, the line and the exact `"outbound": […]` line to add. `--strict` turns the warning into an error, for CI. A declared host no literal names is a `note:` and never a failure. The scan is best effort: a host built at runtime or read from configuration is not found, and the message says so.
+
+- 56b0af0: A per-tenant store declared in `tenantStores` may say `kind: 'blob'`. `blobStores` stays accepted as the older spelling of the same declaration, and a binding named in both is refused, because both would be bound as `<BINDING>__<tenant>` on the serving script. A push still sends blobs in the manifest's `blobStores` and relational stores in `tenantStores`, so a control plane from before this change parses the same document it parses today.
+
+### Patch Changes
+
+- Updated dependencies [381f120]
+- Updated dependencies [a55d75e]
+- Updated dependencies [56b0af0]
+- Updated dependencies [2d6078b]
+  - @substrat-run/contracts@0.146.0
+  - @substrat-run/boundary-lint@0.7.1
+  - @substrat-run/control-plane-client@0.1.11
+  - @substrat-run/model-view@0.2.50
+
 ## 0.41.5
 
 ### Patch Changes
