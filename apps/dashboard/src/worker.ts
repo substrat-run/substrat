@@ -5241,9 +5241,10 @@ async function removeMemberIn({ c, node }: TeamContext, memberId: string): Promi
 /**
  * Leave the team — the caller detaches themselves: mark their roster row revoked, then
  * sever their identity link so the team leaves their switcher and they can no longer
- * resolve into it. The selected-team cookie is cleared so the next load re-resolves
- * (another team, or onboarding if this was their last). Self-service; no role needed
- * beyond membership.
+ * resolve into it. If the selected-team cookie names this team it is cleared, so the next
+ * load re-resolves (another team, or onboarding if this was their last); a cookie naming
+ * another of their teams is left alone, because the path, not the cookie, says which team
+ * is being left. Self-service; no role needed beyond membership.
  */
 async function leaveTeamIn(ctx: TeamContext): Promise<{ left: true }> {
   const { c, host, node } = ctx;
@@ -5252,7 +5253,7 @@ async function leaveTeamIn(ctx: TeamContext): Promise<{ left: true }> {
   // Sever the shared plane's mirrored link too (best-effort — see mirrorBuilderIdentity).
   await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(node.principal).catch(() => {});
   forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
-  deleteCookie(c, TEAM_COOKIE, { path: '/' });
+  if (getCookie(c, TEAM_COOKIE) === node.tenantId) deleteCookie(c, TEAM_COOKIE, { path: '/' });
   return { left: true };
 }
 

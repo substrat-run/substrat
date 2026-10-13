@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { orgId, platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, type HostAdmin, type ScopeHost } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { registerDashboardMembership } from '../src/membership.js';
 import { dashboardRoutes } from '../src/routes.js';
@@ -71,6 +71,44 @@ let dir: string;
 let host: SqliteScopeHost;
 let env: Record<string, unknown>;
 let send: ReturnType<typeof vi.fn>;
+/**
+ * What the executor's next REMOVE does in the directory: apply it (the real host), fail
+ * transiently (the retry backstop owns it — the route's `pending: true`), or answer the
+ * refusal the directory gives when the remover's bound fails inside its unit (the 409).
+ */
+let removeMode: 'apply' | 'fail' | 'refuse' = 'apply';
+
+/**
+ * The host the membership executor is mounted on: the SQLite host, except that a remove
+ * (`applyMembership` with `op: 'remove'`) through the admin an executor is handed, or an
+ * attributed view of it, follows `removeMode`. Everything else is the host's own.
+ */
+function removeSeam(real: SqliteScopeHost): ScopeHost {
+  const seam = (admin: HostAdmin): HostAdmin =>
+    new Proxy(admin, {
+      get(t, key) {
+        if (key === 'applyMembership') {
+          return async (...args: Parameters<HostAdmin['applyMembership']>) => {
+            if (args[1].op !== 'remove' || removeMode === 'apply') return t.applyMembership(...args);
+            if (removeMode === 'fail') throw new Error('directory unavailable');
+            return { applied: false, missing: ['dashboard:manage-members'] };
+          };
+        }
+        if (key === 'attributed') return (...a: Parameters<NonNullable<HostAdmin['attributed']>>) => seam(t.attributed!(...a));
+        return Reflect.get(t, key) as unknown;
+      },
+    });
+  return new Proxy(real, {
+    get(t, key) {
+      if (key === 'registerExecutor') {
+        return (...[id, type, handler, retry]: Parameters<ScopeHost['registerExecutor']>) =>
+          t.registerExecutor(id, type, (admin, event, scope) => handler(seam(admin), event, scope), retry);
+      }
+      const v = Reflect.get(t, key) as unknown;
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+    },
+  }) as unknown as ScopeHost;
+}
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'substrat-members-team-'));
@@ -79,7 +117,8 @@ beforeEach(async () => {
   shared.sessions.clear();
   shared.scopesOpened.length = 0;
   for (const m of MODULES) host.registerModule(m);
-  registerDashboardMembership(host);
+  removeMode = 'apply';
+  registerDashboardMembership(removeSeam(host));
   send = vi.fn(async () => ({ delivered: ['x'], queued: [], permanent_bounces: [] }));
   env = {
     SCOPE: {},
@@ -343,6 +382,81 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
     });
   });
 
+  describe('removing a member: what the executor reports', () => {
+    it('a remove the directory could not effect yet is `pending: true` — committed, off the roster, login severed', async () => {
+      const t = await team('sub-owner');
+      await join_(t, 'sub-rae', 'member');
+      const row = (await rowOf(t, 'sub-rae@team.test'))!;
+      removeMode = 'fail';
+      const res = await req('DELETE', inTeam(t, `/members/${row.id}`));
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(await res.json()).toEqual({ removed: true, pending: true });
+      expect(await rowOf(t, 'sub-rae@team.test')).toBeUndefined();
+      expect(await host.admin.resolveIdentity(t.tenant, PROVIDER, 'sub-rae')).toBeUndefined();
+    });
+
+    it('a remove the directory refuses is a 409 with the reason — and the login is severed anyway, as on the cookie route', async () => {
+      const t = await team('sub-owner');
+      await join_(t, 'sub-rae', 'member');
+      const row = (await rowOf(t, 'sub-rae@team.test'))!;
+      removeMode = 'refuse';
+      const res = await req('DELETE', inTeam(t, `/members/${row.id}`));
+      expect(res.status).toBe(409);
+      expect(await res.text()).toMatch(/the removal was refused: .*no longer holds dashboard:manage-members/);
+      expect(await rowOf(t, 'sub-rae@team.test')).toBeUndefined();
+      expect(await host.admin.resolveIdentity(t.tenant, PROVIDER, 'sub-rae')).toBeUndefined();
+    });
+  });
+
+  describe('the §5.1 bound, through the routes', () => {
+    /**
+     * A caller who holds `dashboard:manage-members` but not every permission of the role at
+     * stake: a custom tenant role, since every shipped role that manages members also holds
+     * all of `member` and `viewer`. It holds `viewer`'s permissions and not `member`'s
+     * (`dashboard:provision-app`, `dashboard:manage-findings`).
+     */
+    async function recruiter(t: Team): Promise<void> {
+      await host.admin.defineRole(staff, t.tenant, {
+        key: 'recruiter',
+        permissions: ['dashboard:read', 'dashboard:read-findings', 'dashboard:manage-members', 'invites:send', 'invites:read', 'invites:revoke'] as never,
+        source: 'vertical',
+      });
+      const p = principalId.parse(ulid());
+      await host.admin.assignRole(staff, { principalId: p, roleKey: 'recruiter', node: { tenantId: t.tenant, scopeId: null } });
+      await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-recruiter', principal: p, tenantId: t.tenant, scopeId: t.dashScope });
+      signIn('sub-recruiter', 'sub-recruiter@team.test');
+    }
+
+    it('invite: refused at a role whose permissions the caller lacks, allowed at one it holds', async () => {
+      const t = await team('sub-owner');
+      await recruiter(t);
+      const refused = await req('POST', inTeam(t, '/members/invites'), { sub: 'sub-recruiter', body: { email: 'm@team.test', roleKey: 'member' } });
+      expect(refused.status).toBe(403);
+      expect(await rowOf(t, 'm@team.test')).toBeUndefined();
+      expect(send).not.toHaveBeenCalled();
+      const allowed = await req('POST', inTeam(t, '/members/invites'), { sub: 'sub-recruiter', body: { email: 'v@team.test', roleKey: 'viewer' } });
+      expect(allowed.status, await allowed.clone().text()).toBe(201);
+      expect(await rowOf(t, 'v@team.test')).toMatchObject({ status: 'invited', role_key: 'viewer' });
+    });
+
+    it('remove: refused for a member whose role the caller lacks, allowed for a viewer', async () => {
+      const t = await team('sub-owner');
+      await join_(t, 'sub-mem', 'member');
+      await join_(t, 'sub-view', 'viewer');
+      await recruiter(t);
+      const mem = (await rowOf(t, 'sub-mem@team.test'))!;
+      const refused = await req('DELETE', inTeam(t, `/members/${mem.id}`), { sub: 'sub-recruiter' });
+      expect(refused.status).toBe(403);
+      expect(await refused.text()).toMatch(/you cannot remove a 'member'/);
+      expect(await rowOf(t, 'sub-mem@team.test')).toMatchObject({ status: 'active' });
+      expect(await host.admin.resolveIdentity(t.tenant, PROVIDER, 'sub-mem')).toBeDefined();
+      const view = (await rowOf(t, 'sub-view@team.test'))!;
+      const allowed = await req('DELETE', inTeam(t, `/members/${view.id}`), { sub: 'sub-recruiter' });
+      expect(allowed.status, await allowed.clone().text()).toBe(200);
+      expect(await allowed.json()).toEqual({ removed: true, pending: false });
+    });
+  });
+
   describe('leaving', () => {
     it('a member leaves: 200, off the roster, unlinked, and sb_team cleared', async () => {
       const t = await team('sub-owner');
@@ -363,7 +477,10 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
       const email = 'sub-rae@team.test';
       const { token } = await invite(b, email, 'member', 'sub-other');
       expect((await req('POST', '/api/invites/accept', { sub: 'sub-rae', body: { token } })).status).toBe(200);
-      expect((await req('POST', inTeam(b, '/leave'), { sub: 'sub-rae', cookieTeam: a.tenant })).status).toBe(200);
+      const res = await req('POST', inTeam(b, '/leave'), { sub: 'sub-rae', cookieTeam: a.tenant });
+      expect(res.status).toBe(200);
+      // The cookie names A, the team still being used: it is not cleared.
+      expect(res.headers.get('set-cookie') ?? '').not.toMatch(/sb_team=/);
       expect(await host.admin.resolveIdentity(b.tenant, PROVIDER, 'sub-rae')).toBeUndefined();
       expect(await host.admin.resolveIdentity(a.tenant, PROVIDER, 'sub-rae')).toBeDefined();
       expect(await rowOf(a, email)).toMatchObject({ status: 'active' });
