@@ -499,7 +499,7 @@ import {
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, type ReservedStoreResult, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
@@ -2629,7 +2629,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly scopeNs: DurableObjectNamespace;
   private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
   private readonly scopeStoreVertical?: string;
-  private scopeStoreStart: Promise<void> | null = null;
+  private readonly scopeStoreLifecycle: ScopeStoreLifecycle;
   private readonly cp: ControlPlaneStub;
   private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
 
@@ -2749,6 +2749,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeNs = options.scope;
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
+    this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
     this.cpLess = !options.controlPlane;
     this.cp = options.controlPlane
       ? (options.controlPlane.get(options.controlPlane.idFromName('control-plane')) as unknown as ControlPlaneStub)
@@ -4687,7 +4688,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
     await this.assertLive(tenantId, scopeId);
     if (runner) {
-      await this.ensureScopeStoresStarted();
+      await this.scopeStoreLifecycle.start();
       return {
         tenantId,
         scopeId,
@@ -4711,24 +4712,6 @@ export class CloudflareScopeHost implements ScopeHost {
       invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
         callScopeStore(storeObjectSend(object), operation, input, ...extra),
     };
-  }
-
-  private ensureScopeStoresStarted(): Promise<void> {
-    if (this.scopeStoreStart) return this.scopeStoreStart;
-    const seen = new Set<ScopeStoreRunner>();
-    const slot: { current: Promise<void> | null } = { current: null };
-    slot.current = (async () => {
-      for (const runner of this.scopeStoreRunners.values()) {
-        if (seen.has(runner)) continue;
-        seen.add(runner);
-        await runner.start();
-      }
-    })().catch((err: unknown) => {
-      if (this.scopeStoreStart === slot.current) this.scopeStoreStart = null;
-      throw err;
-    });
-    this.scopeStoreStart = slot.current;
-    return slot.current;
   }
 
   /**
@@ -4777,7 +4760,7 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<ReservedStoreResult<O>> {
     const runner = this.scopeStoreRunners.get(address.binding);
     if (runner) {
-      await this.ensureScopeStoresStarted();
+      await this.scopeStoreLifecycle.start();
       return callReservedStoreOperation((request) => runner.invoke(address, request), operation, input);
     }
     if (this.scopeStoreRunners.size > 0) {
@@ -5929,7 +5912,7 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   async close(): Promise<void> {
-    for (const runner of new Set(this.scopeStoreRunners.values())) await runner.stop();
+    await this.scopeStoreLifecycle.stop();
   }
 
   // -- admin surface --------------------------------------------------------
