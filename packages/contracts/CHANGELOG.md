@@ -1,5 +1,27 @@
 # @substrat-run/contracts
 
+## 0.146.0
+
+### Minor Changes
+
+- 381f120: Peer calls now find an app installed under its tenant-pinned name. A push pinned to a tenant registers the vertical as `<tenantSlug>/<slug>`, while `substrat.calls` and `peers` usually name the bare `<slug>`. The resolver used to report such a target as "not installed in this tenant", the app's peer panel showed an empty target picker, and an explicit binding was refused.
+
+  A bare name now also matches the pinned spelling, but only in the calling app's own tenant, using the directory's slug for that tenant. It never matches another tenant's `<other>/<slug>` (a listed vertical someone else owns), and never the reverse: a declared `acme/crm` does not match a bare `crm`. An exact install wins over the pinned one, so a tenant running both still resolves. Two pinned installs stay ambiguous until one is bound. The rule is `peerVerticalSpellings` / `samePeerVertical` in the kernel. It applies to the router's call, a queued call in the drain (`resolvePeerInstance` on both adapters), explicit bindings and the dashboard's peer panel. A caller whose bare slug resolves to its own scope is refused as a self-call, on both legs. `resolveVerticalInstanceFrom` and `resolvePeerInstanceFrom` now take the tenant as `{ id, slug }`. Pass `slug: null` to match names exactly.
+
+  At the target's door, `verticalCaller` gains an optional `tenantSlug`. Only the platform sets it, from the directory. `peerCallerAt` maps a pinned caller onto the bare `peers` entry it matches. A declaration naming the caller's full registered spelling still wins. A door built before this ignores the field and matches exactly, as before. A peer-called target is now dispatched under its registered name, the same name its public dispatch uses.
+
+  Cross-vertical event edges keep exact matching, and so does `HostAdmin.resolveVerticalInstance`, their read.
+
+- a55d75e: Every response to a stamped request now names its request (#2192).
+
+  The id the platform mints for a request, the invocation id the dashboard's request view opens, goes out as an `x-substrat-request-id` header (`REQUEST_ID_HEADER`) on every response the request gets. That covers an operation's answer, a refusal, an error the envelope rendered, a vertical's own routes and a response passed straight through. The platform's entry sets it, so a hosted vertical carries it after the next control-plane deploy without a new push, and the `invocationLog` middleware sets it where no platform entry runs. A cross-origin browser reads it only where the response exposes it: `mountPublicSurface`, which answers CORS for the vertical, now exposes it, and a vertical that answers its own CORS lists `REQUEST_ID_EXPOSED_HEADERS`.
+
+  A problem body rendered for such a request carries the same value as `requestId`. That includes a refused permission's 403, which `mountOperations` answers through `mountPlatformSurface`'s envelope, and a vertical's own `problemResponse`. It is a new optional member of the `problem` schema, so every published OpenAPI document gains it.
+
+  Module code reads the same id as `ctx.requestId`. In an operation it is the request's id, and `null` on an in-process call that carried none. In a consumer it is the delivery's id, the one its invocation line carries: the originating request's when the event is delivered inside that call, and a freshly minted one on a retry, a drain, or the tail of a call that carried no id. In a schedule run it is the run's id. Harness code reads it as `requestIdOf(c)`. The id is opaque, and a request nothing stamped answers exactly as before.
+
+- 56b0af0: A per-tenant store declared in `tenantStores` may say `kind: 'blob'`. `blobStores` stays accepted as the older spelling of the same declaration, and a binding named in both is refused, because both would be bound as `<BINDING>__<tenant>` on the serving script. A push still sends blobs in the manifest's `blobStores` and relational stores in `tenantStores`, so a control plane from before this change parses the same document it parses today.
+
 ## 0.145.0
 
 ### Minor Changes
@@ -6638,7 +6660,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

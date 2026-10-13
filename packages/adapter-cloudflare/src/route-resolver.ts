@@ -154,7 +154,7 @@ interface PeerCallReader {
 
 /** `peerCallTarget`'s answer, as the router reads it. */
 export interface PeerCallTargetRowLike {
-  caller: { state: 'ok' | 'unknown' | 'not-primary' | 'inactive'; status: string | null };
+  caller: { state: 'ok' | 'unknown' | 'not-primary' | 'inactive'; status: string | null; tenantSlug?: string | null };
   outcome: 'resolved' | 'not-installed' | 'ambiguous' | 'bound-unavailable';
   count: number;
   target: {
@@ -175,10 +175,16 @@ export interface PeerCallTargetRowLike {
 export type PeerCallDecision =
   | {
       outcome: 'dispatch';
-      /** The target instance and the script it runs — what `DISPATCH.get` takes. */
+      /** The target instance and the script it runs — what `DISPATCH.get` takes. `vertical` is
+       *  the target's REGISTERED name (a pinned `<tenant>/<slug>` included), so the same scope
+       *  runs under one name whether it was reached publicly or by a peer. */
       tenantId: string;
       scopeId: string;
       vertical: string;
+      /** The caller's tenant's directory slug (#2252), handed to the target's door beside the
+       *  caller so a pinned caller meets a bare `peers` entry. `null` from a control plane
+       *  predating it: the door then matches exactly, as before. */
+      callerTenantSlug: string | null;
       deploymentRef: string;
       /** The TARGET's own dispatch parameters, one hop deeper than the caller's. */
       outboundHosts: string[] | null;
@@ -274,6 +280,10 @@ export function createPeerCallResolver(
         message: `vertical '${target}' is not installed in this tenant`,
       };
     }
+    // A pinned caller's bare slug resolves to itself (#2252); a peer call names ANOTHER vertical.
+    if (row.target.scope_id === caller.scopeId) {
+      return { outcome: 'refused', code: 'forbidden', message: `'${caller.vertical}' cannot peer-call itself` };
+    }
     if (!row.target.deployment_ref) {
       return {
         outcome: 'refused',
@@ -285,7 +295,8 @@ export function createPeerCallResolver(
       outcome: 'dispatch',
       tenantId: row.target.tenant_id,
       scopeId: row.target.scope_id,
-      vertical: target,
+      vertical: row.target.vertical ?? target,
+      callerTenantSlug: row.caller.tenantSlug ?? null,
       deploymentRef: row.target.deployment_ref,
       outboundHosts: jsonList(row.target.outbound_json),
       calls: jsonList(row.target.calls_json),

@@ -627,6 +627,10 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
           'pick one; bind the instance first',
       };
     }
+    // A pinned caller resolves its own bare slug to itself (#2252): the same refusal as above.
+    if (resolution.instance.scopeId === ctx.scopeId) {
+      return { status: 'failed', error: `'${ctx.vertical}' cannot peer-call itself` };
+    }
     // 3. The target's own deployment.
     const target = await admin.getScopeRecord(deps.actor, ctx.tenantId, resolution.instance.scopeId);
     const client = target ? await deps.resolveVerticalForScope(target) : undefined;
@@ -634,7 +638,9 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
       return { status: 'failed', error: `no deployment serves '${payload.vertical}' in this tenant` };
     }
     const result = await client.verticalInvoke({
-      caller: { vertical: ctx.vertical, scope: ctx.scopeId },
+      // `tenantSlug`: the directory's, for the tenant this intent was drained in (#2252), so a
+      // pinned caller meets a bare `peers` entry at the door (`peerCallerAt`).
+      caller: { vertical: ctx.vertical, scope: ctx.scopeId, tenantSlug: tenant.slug },
       tenantId: ctx.tenantId,
       scopeId: resolution.instance.scopeId,
       operation: payload.operation,
