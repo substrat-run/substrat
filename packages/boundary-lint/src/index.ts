@@ -1067,10 +1067,16 @@ function initializerOf(masked: string, name: string): number {
  * shorthand `operations,` are judged by what `OPERATIONS` / `operations` was initialised with.
  */
 function resolved(masked: string, expr: string): string {
+  const range = initializerRange(masked, expr);
+  return range ? masked.slice(...range) : expr;
+}
+
+/** Where the initializer of the local name `expr` is, when `expr` is one name that has one. */
+function initializerRange(masked: string, expr: string): [number, number] | null {
   const name = expr.trim();
-  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return expr;
+  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
   const at = initializerOf(masked, name);
-  return at < 0 ? expr : masked.slice(at, expressionEnd(masked, at));
+  return at < 0 ? null : [at, expressionEnd(masked, at)];
 }
 
 /**
@@ -1253,7 +1259,8 @@ function holdsPlaceholder(masked: string, stripped: string, from: number, to: nu
  * `boundary-lint-end R12` block, where a reviewer reads why.
  */
 function checkPlaceholderList(rel: string, source: string, out: Violation[]): void {
-  if (!/\bin\s*\(\s*\$\{/i.test(source)) return;
+  IN_INTERPOLATION.lastIndex = 0;
+  if (!IN_INTERPOLATION.test(source)) return;
   const masked = maskSource(source);
   const stripped = maskSource(source, { literals: false });
   let allowed: Set<number> | undefined;
@@ -1264,12 +1271,8 @@ function checkPlaceholderList(rel: string, source: string, out: Violation[]): vo
     if (masked.slice(open - 1, open + 1) !== '${') continue; // not a template's interpolation
     const close = matchDelim(masked, open, '{', '}');
     if (close < 0) continue;
-    const written = stripped.slice(open + 1, close).trim();
-    let builds = holdsPlaceholder(masked, stripped, open + 1, close);
-    if (!builds && /^[A-Za-z_$][\w$]*$/.test(written)) {
-      const at = initializerOf(masked, written);
-      builds = at >= 0 && holdsPlaceholder(masked, stripped, at, expressionEnd(masked, at));
-    }
+    const named = initializerRange(masked, stripped.slice(open + 1, close));
+    const builds = holdsPlaceholder(masked, stripped, open + 1, close) || (named !== null && holdsPlaceholder(masked, stripped, ...named));
     if (!builds) continue;
     const line = lineAt(source, m.index);
     allowed ??= allowedLines(source.split('\n'), stripped.split('\n'), 'R12');
@@ -1279,11 +1282,9 @@ function checkPlaceholderList(rel: string, source: string, out: Violation[]): vo
       line,
       rule: 'R12',
       message:
-        `parameter list — 'IN (\${…})' binds one parameter per value, and a Durable Object refuses ` +
-        `the 101st, so it passes every small fixture and fails the first hosted call whose list ` +
-        `outgrew it. Bind the list as ONE JSON array: 'IN \${list.sql}' with ` +
-        `'list = inList(values)' from @substrat-run/contracts. A list of fixed, short length goes ` +
-        `in a boundary-lint-allow R12 … boundary-lint-end R12 block`,
+        `parameter list — one '?' per value, and a Durable Object refuses the 101st. Bind the ` +
+        `list as one parameter: 'IN \${list.sql}' with 'list = inList(values)' from ` +
+        `@substrat-run/contracts (a fixed, short list: boundary-lint-allow R12 … boundary-lint-end R12)`,
     });
   }
 }

@@ -1560,7 +1560,7 @@ describe('R12 — a hand-built IN list of placeholders', () => {
         "import { inList } from '@substrat-run/contracts';",
         'export function bump(ctx, ids) {',
         '  const list = inList(ids);',
-        '  ctx.sql.exec(`UPDATE acme_items SET n = n + 1 WHERE id IN ${list.sql}`, [...list.params]);',
+        '  ctx.sql.exec(`UPDATE acme_items SET n = n + 1 WHERE id IN ${list.sql}`, list.params);',
         '}',
       ]),
     ).toEqual([]);

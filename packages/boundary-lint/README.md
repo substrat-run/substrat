@@ -169,7 +169,7 @@ ctx.sql.exec(`UPDATE acme_items SET used = 1 WHERE id IN (${ids.map(() => '?').j
 // One JSON array, read back with json_each — on both adapters, at any length.
 import { inList } from '@substrat-run/contracts';
 const list = inList(ids);
-ctx.sql.exec(`UPDATE acme_items SET used = 1 WHERE id IN ${list.sql}`, [...list.params]);
+ctx.sql.exec(`UPDATE acme_items SET used = 1 WHERE id IN ${list.sql}`, list.params);
 ```
 
 R12 fires on an interpolation right after `IN (` (or `NOT IN (`) inside a template whose

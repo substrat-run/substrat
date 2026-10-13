@@ -280,7 +280,8 @@ export function assertWithinSqlLimits(sql: string): void {
 /**
  * What the node adapter adds to the DO's own words when a statement binds over the limit
  * (#2248): almost always a placeholder list that grew with the data, and the way round it.
- * Named, not imported — the helper is `@substrat-run/contracts`' and needs nothing from here.
+ * Named, not imported: this module imports only types, which is what lets
+ * `tools/vitest/sql-limits.cjs` require it into every node process without loading contracts.
  */
 const TOO_MANY_VARIABLES_HINT =
   `limit ${DO_SQL_LIMITS.boundParameters}; bind a list of any length as ONE JSON array: ` +
