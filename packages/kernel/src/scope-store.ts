@@ -13,6 +13,7 @@ import {
   substratError,
   type CheckSubject,
   type ReservedStoreOperation,
+  type ReservedStoreResults,
   type ScopeId,
   type StoreOperationCatalog,
   type StoreRequest,
@@ -107,10 +108,10 @@ const RESERVED_RESULT = {
   'substrat.size': storeSizeResult,
   'substrat.wipe': storeWipeResult,
   'substrat.erase': storeEraseResult,
-} as const;
+} as const satisfies { [O in ReservedStoreOperation]: { parse(value: unknown): ReservedStoreResults[O] } };
 
 /** What a reserved operation answers, parsed (#2239). */
-export type ReservedStoreResult<O extends ReservedStoreOperation> = ReturnType<(typeof RESERVED_RESULT)[O]['parse']>;
+export type ReservedStoreResult<O extends ReservedStoreOperation> = ReservedStoreResults[O];
 
 const reservedNames: readonly string[] = RESERVED_STORE_OPERATIONS;
 
