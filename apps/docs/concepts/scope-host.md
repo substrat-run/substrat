@@ -371,14 +371,28 @@ from `@substrat-run/kernel`. How they are counted:
   list is **not** a compound: five thousand rows ran.
 - **Bound parameters** are the highest parameter number, not the number written: `:a + :a` is
   one, `?100` is a hundred. A dynamic `IN (${ids.map(() => '?')})` is a hundred members at
-  most, less whatever else the statement binds. Pass a list of unknown length as **one JSON
-  array** and read it with `json_each`, which has no such limit:
+  most, less whatever else the statement binds — and it passes every test whose fixture has a
+  handful of rows. Pass a list of unknown length as **one JSON array** instead: `inList` from
+  `@substrat-run/contracts` binds it and reads it back with `json_each`, which has no such limit:
 
   ```ts
-  ctx.sql.query('SELECT * FROM acme_items WHERE id IN (SELECT value FROM json_each(?))', [
-    JSON.stringify(ids),
-  ]);
+  import { inList } from '@substrat-run/contracts';
+
+  const list = inList(ids); // { sql: '(SELECT value FROM json_each(?))', params: ['["…","…"]'] }
+  ctx.sql.query(`SELECT * FROM acme_items WHERE owner = ? AND id IN ${list.sql}`, [owner, ...list.params]);
   ```
+
+  `json_each` is SQLite's own JSON1 table-valued function and runs the same on **both**
+  adapters — better-sqlite3 on the node host and the Durable Object's SQLite when hosted — so
+  there is no adapter-specific reason to avoid it. An empty list matches nothing (a hand-built
+  `IN ()` is a syntax error). Pass the values in the **column's own type**: a `json_each` value
+  carries no affinity, so a numeric column converts a numeric string (`inList(['123'])` matches
+  `123`), but a TEXT column never matches a number — `inList([1])` matches neither `'1'` nor the
+  `'1.0'` a bound `1` would. Pass a TEXT column's values as strings (`ids.map(String)`), or cast
+  the comparison (`CAST(col AS INTEGER) IN ${list.sql}`). `boundary-lint` rule **R12** refuses the hand-built placeholder list in module code
+  and points here; a list whose length is fixed and short opts out in a
+  `boundary-lint-allow R12` … `boundary-lint-end R12` block. On the node adapter the refusal
+  names `inList` after the Durable Object's own words.
 - **Statement length** is the whole string handed to `ctx.sql`, so a multi-statement string
   counts once.
 - **`LIKE`** is a pattern built from input: a search term becomes `%term%` plus an escape per

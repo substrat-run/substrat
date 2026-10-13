@@ -210,7 +210,7 @@ interface Env extends OidcEnv, EmailIdentityEnv {
   FORTNOX_OAUTH_BASE?: string;
   FORTNOX_API_BASE?: string;
   /**
-   * The consent scopes, space-separated (default `bookkeeping companyinformation`).
+   * The consent scopes, space-separated (default `bookkeeping companyinformation supplierinvoice`).
    * Decide the FULL set before the first real customer: Fortnox scopes cannot be
    * widened without a new consent round with every connected company.
    */
@@ -3583,7 +3583,7 @@ function fortnoxConfig(env: Env): FortnoxConnectConfig | null {
   return {
     clientId: env.FORTNOX_CLIENT_ID,
     clientSecret: env.FORTNOX_CLIENT_SECRET,
-    scopes: (env.FORTNOX_SCOPES ?? 'bookkeeping companyinformation').split(/[\s,]+/).filter(Boolean),
+    scopes: (env.FORTNOX_SCOPES ?? 'bookkeeping companyinformation supplierinvoice').split(/[\s,]+/).filter(Boolean),
     ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
     ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
   };

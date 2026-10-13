@@ -102,7 +102,7 @@ const redirectUri = arg('redirect-uri', 'http://localhost:8899/callback');
 // `bookkeeping` is what the SIE export needs; `companyinformation` is what discovers the
 // DatabaseNumber. Ask for more here than you need today if you might ever want it —
 // scopes cannot be widened without a NEW consent round with every customer.
-const scopes = arg('scopes', 'bookkeeping companyinformation').split(/[\s,]+/).filter(Boolean);
+const scopes = arg('scopes', 'bookkeeping companyinformation supplierinvoice').split(/[\s,]+/).filter(Boolean);
 
 const parsedRedirect = new URL(redirectUri);
 if (parsedRedirect.protocol !== 'http:' && parsedRedirect.protocol !== 'https:') {
