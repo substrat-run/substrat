@@ -133,6 +133,31 @@ export const appHostnameRow = z.object({
   validationRecords: z.array(dnsRecord),
 });
 
+/**
+ * One row of the team roster: an active member, an outstanding invite, or an accepted invite
+ * whose access is still being set up (`joining`) or never will be (`refused`, reason in
+ * `refusal`, #1184). Mirrors the module's `DashboardMemberRow`.
+ */
+export const memberRow = z.object({
+  id: z.string(),
+  /** The kernel principal once accepted; null while still `invited`. */
+  principal: z.string().nullable(),
+  email: z.string(),
+  role_key: z.string(),
+  status: z.enum(['active', 'invited', 'revoked', 'joining', 'refused']),
+  refusal: z.string().optional(),
+  invitation_id: z.string().nullable(),
+  invited_by: z.string(),
+  invited_at: z.string(),
+  joined_at: z.string().nullable(),
+});
+
+/** A role a member can be invited at — the owner is the un-invitable first member. */
+const inviteRole = z.enum(['admin', 'member', 'viewer']);
+
+/** What sending (or re-sending) an invite answers: the shareable link, and whether the email was accepted for delivery. */
+const sentInvite = z.object({ invitationId: z.string(), acceptUrl: z.string(), emailDelivered: z.boolean() });
+
 /** A surface the app's vertical declares it serves — the Domains tab's picker. */
 const declaredSurface = z.object({ name: z.string(), label: z.string() });
 
@@ -264,6 +289,58 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), hostname: z.string().min(1) }),
     output: z.object({ deleted: z.string() }),
     http: { method: 'DELETE', path: '/apps/{scopeId}/hostnames/{hostname}' },
+  },
+
+  // -- members & invites (#2170) ----------------------------------------------
+  // Each invokes the dashboard-scope operation the cookie route invoked, as the caller, so the
+  // checks are that operation's: the roster read is `dashboard:read`; inviting, re-sending,
+  // copying a link and withdrawing need `dashboard:manage-members` plus, where a role is
+  // granted, every permission that role carries (§5.1); removing needs manage-members and the
+  // removed member's role; the owner cannot be removed.
+  'dashboard/list-members': {
+    summary: "One page of this team's roster (active members and outstanding invites), newest first",
+    input: z.object(pageInput),
+    output: pageOutput(memberRow),
+    http: { method: 'GET', path: '/members' },
+  },
+  'dashboard/invite-member': {
+    summary: 'Invite someone at a role; emails them and answers the shareable accept link',
+    input: z.object({ email: z.string().trim().min(1), roleKey: inviteRole }),
+    output: sentInvite,
+    http: { method: 'POST', path: '/members/invites' },
+    status: 201,
+  },
+  'dashboard/resend-invite': {
+    summary: "Re-send a pending invite's email (a lapsed invitation is renewed); 404 when there is no such pending invite",
+    input: z.object({ invitationId: z.string().min(1) }),
+    output: sentInvite,
+    http: { method: 'POST', path: '/members/invites/{invitationId}/resend' },
+  },
+  'dashboard/invite-link': {
+    summary: "A pending invite's accept link and deadline, to copy; sends no email, and a lapsed invite is a 409",
+    input: z.object({ invitationId: z.string().min(1) }),
+    output: z.object({ invitationId: z.string(), acceptUrl: z.string(), expiresAt: z.string() }),
+    http: { method: 'POST', path: '/members/invites/{invitationId}/link' },
+  },
+  'dashboard/revoke-invite': {
+    summary: 'Withdraw a pending invite',
+    input: z.object({ invitationId: z.string().min(1) }),
+    // A declared route owes an output; the cookie route's empty 204 becomes this 200.
+    output: z.object({ revoked: z.literal(true) }),
+    http: { method: 'DELETE', path: '/members/invites/{invitationId}' },
+  },
+  'dashboard/remove-member': {
+    summary: 'Remove a member: their role is taken away and their login leaves the team (409 when the removal is refused)',
+    input: z.object({ memberId: z.string().min(1) }),
+    // `pending` is the cookie route's 202: the removal is committed and the retry backstop
+    // owns taking the role away. One declared status, so it moves into the body.
+    output: z.object({ removed: z.literal(true), pending: z.boolean() }),
+    http: { method: 'DELETE', path: '/members/{memberId}' },
+  },
+  'dashboard/leave-team': {
+    summary: 'Leave this team: your roster row is revoked and your login detached from it',
+    output: z.object({ left: z.literal(true) }),
+    http: { method: 'POST', path: '/leave' },
   },
 
   // -- findings (#1748) ------------------------------------------------------

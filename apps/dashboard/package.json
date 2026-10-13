@@ -13,7 +13,8 @@
         "AppRow": "appRow",
         "FindingEntry": "findingEntry",
         "FindingRuleEntry": "findingRuleEntry",
-        "InstallStep": "installStep"
+        "InstallStep": "installStep",
+        "Member": "memberRow"
       },
       "out": "web/src/lib/api.generated.ts",
       "name": "Dashboard"
