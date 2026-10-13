@@ -9,7 +9,7 @@ import {
   isUndecodablePlatformRequest,
 } from '@substrat-run/contracts';
 import { intentPayloadCarriesSubject, ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 
 /**
  * #574 phase 3, the vertical half: a CP-less host cannot run a connector (no

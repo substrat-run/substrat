@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, permissionKey, platformActorId, principalId, scopeId, tenantId, type ScopeId, type ScopeLifecycle, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, TENANT_UNRECORDED_PER_PASS, type LifecycleDelegation } from '../src/host.js';
+import { CloudflareScopeHost, LIFECYCLE_EPOCH_SKEW_MS, TENANT_UNRECORDED_PER_PASS, type LifecycleDelegation } from './test-host.js';
 import { createRouteResolver } from '../src/route-resolver.js';
 import router, { type Env } from '../../../apps/router/src/worker.js';
 import { warmControlPlane } from './do-warmup.js';

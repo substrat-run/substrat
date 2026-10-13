@@ -34,7 +34,7 @@ import {
   type LiveFrame,
   type VouchedWithin,
 } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { LIVE_CLOSE, LIVE_MODE_HEADER, LIVE_SOCKETS_PER_PRINCIPAL, O2O_HEADER, readSubscription } from '../src/live-reads.js';
 import { warmControlPlane } from './do-warmup.js';
 

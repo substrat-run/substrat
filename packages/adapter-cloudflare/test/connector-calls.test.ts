@@ -13,7 +13,7 @@ import * as adapter from '../src/index.js';
 import * as connectorCalls from '../src/connector-calls.js';
 import { analyticsEngineConnectorCallRecorder } from '../src/connector-calls.js';
 import * as liveReads from '../src/live-reads.js';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**

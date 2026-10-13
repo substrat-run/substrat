@@ -89,7 +89,7 @@ import {
   SWITCH_HOLD_SETTLE_MS,
   SWITCH_HOLD_SNAPSHOT_MS,
   SWITCH_HOLDS_NAME,
-} from '../src/host.js';
+} from './test-host.js';
 import type { DoReply } from '../src/do-reply.js';
 import { SYSTEM_DOOR_REGATES } from '../src/system-door.js';
 
