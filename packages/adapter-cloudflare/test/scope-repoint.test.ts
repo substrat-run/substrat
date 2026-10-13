@@ -11,7 +11,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   type VerticalClient,
 } from '@substrat-run/control-plane-api';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**

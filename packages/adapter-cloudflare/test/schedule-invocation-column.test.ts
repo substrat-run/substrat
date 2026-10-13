@@ -15,7 +15,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { moduleId, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { PRE_GUARD_REFUSALS_DDL, scheduleMod } from '@substrat-run/contract-tests';
 import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { splitSqlStatements } from '../src/scope-do.js';
 import { warmControlPlane } from './do-warmup.js';
 

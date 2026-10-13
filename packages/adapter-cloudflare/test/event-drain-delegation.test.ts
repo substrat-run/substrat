@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost, type EventDrainDelegation } from '../src/host.js';
+import { CloudflareScopeHost, type EventDrainDelegation } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**

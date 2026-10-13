@@ -2,7 +2,7 @@ import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { beforeAll, describe, expect, it } from 'vitest';
 import { connectionId, platformActorId, tenantId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox, type PlatformSweepReport } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { PLATFORM_SWEEPER_NAME, type PlatformSweepOutcome } from '../src/platform-sweeper-do.js';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 
