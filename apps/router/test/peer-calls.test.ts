@@ -183,7 +183,7 @@ describe('the router’s peer entrypoint (#1706)', () => {
     expect(outcome).toMatchObject({ ok: true });
     const [call] = d.seen();
     expect((call!.args as { OUTBOUND_POLICY: { slug: string } }).OUTBOUND_POLICY.slug).toBe('t-abc/crm');
-    expect((await call!.request!.json()).caller).toEqual({
+    expect(((await call!.request!.json()) as { caller: unknown }).caller).toEqual({
       vertical: 't-abc/board-room',
       scope: CALLER_SCOPE,
       tenantSlug: 't-abc',

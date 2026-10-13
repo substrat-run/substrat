@@ -310,6 +310,7 @@ export const INDEX_VALUE_EXPORTS = [
   'isExportBreakRefusal',
   'isLifecycleWrite',
   'isModuleErasureCounts',
+  'isPeerInstanceOf',
   'isPrimaryScope',
   'isPrimaryScopeRow',
   'isSearchIndexTable',

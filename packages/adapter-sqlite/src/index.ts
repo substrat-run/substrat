@@ -438,6 +438,7 @@ import {
   peerVerticalSpellings,
   samePeerVertical,
   type PeerTenant,
+  type VerticalInstanceCandidate,
   type PeerDeclarations,
   peerGrantsStatus,
   systemGrantsStatus,
@@ -4647,6 +4648,32 @@ export class SqliteScopeHost implements ScopeHost {
     return { id: tenantId, slug: row?.slug ?? null };
   }
 
+  /**
+   * Every scope of the tenant registered under a spelling of the peer name `vertical`
+   * (`peerVerticalSpellings`), for the kernel's resolvers to choose among (#2252).
+   */
+  private peerCandidates(tenantId: TenantId, vertical: string): { tenant: PeerTenant; candidates: VerticalInstanceCandidate[] } {
+    const tenant = this.peerTenant(tenantId);
+    const rows = this.directory
+      .prepare(
+        `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
+          WHERE tenant_id = ? AND vertical IN (SELECT value FROM json_each(?))`,
+      )
+      .all(tenantId, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug))) as {
+      scope_id: string; tenant_id: string; vertical: string | null; status: string;
+      kind: string | null; forked_from: string | null;
+    }[];
+    const candidates = rows.map((r) => ({
+      id: r.scope_id as ScopeId,
+      tenantId: r.tenant_id as TenantId,
+      vertical: r.vertical,
+      status: r.status as ScopeStatus,
+      kind: r.kind ?? '',
+      forkedFrom: (r.forked_from as ScopeId | null) ?? null,
+    }));
+    return { tenant, candidates };
+  }
+
   /** The directory's current hold, read again when background work is about to run. */
   private scopeWorkRefusal(tenantId: TenantId, scopeId: ScopeId, allowProvisioning = false): string | null {
     const row = this.directory
@@ -8489,53 +8516,15 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // #1706: the directory's answer to "vertical Y in tenant T", by the kernel's one rule.
       resolveVerticalInstance: async (tenantId: TenantId, vertical: string): Promise<VerticalResolution> => {
-        const tenant = this.peerTenant(tenantId);
-        const rows = this.directory
-          .prepare(
-            `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
-              WHERE tenant_id = ? AND vertical IN (SELECT value FROM json_each(?))`,
-          )
-          .all(tenantId, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug))) as {
-          scope_id: string;
-          tenant_id: string;
-          vertical: string | null;
-          status: string;
-          kind: string | null;
-          forked_from: string | null;
-        }[];
-        return resolveVerticalInstanceFrom(
-          rows.map((r) => ({
-            id: r.scope_id as ScopeId,
-            tenantId: r.tenant_id as TenantId,
-            vertical: r.vertical,
-            status: r.status as ScopeStatus,
-            kind: r.kind ?? '',
-            forkedFrom: (r.forked_from as ScopeId | null) ?? null,
-          })),
-          tenant,
-          vertical,
-        );
+        const { tenant, candidates } = this.peerCandidates(tenantId, vertical);
+        return resolveVerticalInstanceFrom(candidates, tenant, vertical);
       },
       resolvePeerInstance: async (tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
-        const tenant = this.peerTenant(tenantId);
         const binding = this.directory.prepare(
           'SELECT target_scope_id, invalidated FROM peer_bindings WHERE tenant_id = ? AND caller_scope_id = ? AND vertical = ?',
         ).get(tenantId, callerScopeId, vertical) as { target_scope_id: string; invalidated: number } | undefined;
-        const rows = this.directory.prepare(
-          `SELECT scope_id, tenant_id, vertical, status, kind, forked_from FROM scopes
-           WHERE tenant_id = ? AND vertical IN (SELECT value FROM json_each(?))`,
-        ).all(tenantId, JSON.stringify(peerVerticalSpellings(vertical, tenant.slug))) as {
-          scope_id: string; tenant_id: string; vertical: string | null; status: string;
-          kind: string | null; forked_from: string | null;
-        }[];
-        return resolvePeerInstanceFrom(rows.map((r) => ({
-          id: r.scope_id as ScopeId,
-          tenantId: r.tenant_id as TenantId,
-          vertical: r.vertical,
-          status: r.status as ScopeStatus,
-          kind: r.kind ?? '',
-          forkedFrom: r.forked_from as ScopeId | null,
-        })), tenant, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
+        const { tenant, candidates } = this.peerCandidates(tenantId, vertical);
+        return resolvePeerInstanceFrom(candidates, tenant, vertical, (binding?.target_scope_id as ScopeId | undefined) ?? null, binding?.invalidated === 1);
       },
       peerBinding: async (actor: PlatformActorId, tenantId: TenantId, callerScopeId: ScopeId, vertical: string) => {
         const row = this.directory.prepare(

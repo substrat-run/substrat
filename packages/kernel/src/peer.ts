@@ -260,9 +260,10 @@ export function samePeerVertical(registered: string | null | undefined, declared
  * and the recorded subject all read the declared name.
  */
 export function peerCallerAt(peers: PeerDeclarations, caller: VerticalCaller): VerticalCaller {
+  const slug = caller.tenantSlug ?? null;
   const vertical = peers.has(caller.vertical)
     ? caller.vertical
-    : ([...peers.keys()].find((declared) => samePeerVertical(caller.vertical, declared, caller.tenantSlug ?? null)) ?? caller.vertical);
+    : ([...peers.keys()].find((declared) => samePeerVertical(caller.vertical, declared, slug)) ?? caller.vertical);
   return { vertical, scope: caller.scope };
 }
 
@@ -270,12 +271,21 @@ export function peerCallerAt(peers: PeerDeclarations, caller: VerticalCaller): V
 export type VerticalInstanceCandidate = Pick<Scope, 'id' | 'tenantId' | 'vertical' | 'status' | 'kind' | 'forkedFrom'>;
 
 /**
+ * A live instance of the peer name `vertical` in `tenant`: of THAT tenant, registered under a
+ * spelling of THAT vertical, primary (`isPrimaryScope`: not a fork, not a preview — a preview
+ * must never receive another app's production calls), and `active` (a suspended or archived
+ * instance answers nothing). What a call, a binding and the dashboard's picker all count.
+ */
+export function isPeerInstanceOf(scope: VerticalInstanceCandidate, tenant: PeerTenant, vertical: string): boolean {
+  return scope.tenantId === tenant.id && samePeerVertical(scope.vertical, vertical, tenant.slug) &&
+    scope.status === 'active' && isPrimaryScope(scope);
+}
+
+/**
  * "The instance of vertical Y in tenant T" (#1706) — the one rule every directory applies.
  *
- * A candidate is a scope of THAT tenant, registered under a spelling of THAT vertical
- * (`peerVerticalSpellings`), primary (`isPrimaryScope`: not a
- * fork, not a preview — a preview must never receive another app's production calls), and
- * `active` (a suspended or archived instance answers nothing). An exact spelling wins over the
+ * A candidate is a live instance of that vertical in that tenant (`isPeerInstanceOf`). An exact
+ * spelling wins over the
  * tenant-pinned one, so a tenant running both `crm` and `<tenant>/crm` still resolves.
  * Exactly one → `resolved`; none → `not-installed`; more than one → `ambiguous`, refused
  * rather than guessed.
@@ -289,12 +299,7 @@ export function resolveVerticalInstanceFrom(
   vertical: string,
 ): VerticalResolution {
   const tenantId = tenant.id;
-  const matches: VerticalInstanceCandidate[] = [];
-  for (const scope of scopes) {
-    if (scope.tenantId !== tenantId || !samePeerVertical(scope.vertical, vertical, tenant.slug)) continue;
-    if (scope.status !== 'active' || !isPrimaryScope(scope)) continue;
-    matches.push(scope);
-  }
+  const matches = [...scopes].filter((scope) => isPeerInstanceOf(scope, tenant, vertical));
   const exact = matches.filter((scope) => scope.vertical === vertical);
   const chosen = exact.length > 0 ? exact : matches;
   const [only] = chosen;
@@ -321,10 +326,7 @@ export function resolvePeerInstanceFrom(
   const candidates = [...scopes];
   if (boundScopeId === null) return resolveVerticalInstanceFrom(candidates, tenant, vertical);
   if (invalidated) return { outcome: 'bound-unavailable', tenantId, vertical, targetScopeId: boundScopeId };
-  const target = candidates.find((scope) =>
-    scope.id === boundScopeId && scope.tenantId === tenantId && samePeerVertical(scope.vertical, vertical, tenant.slug) &&
-    scope.status === 'active' && isPrimaryScope(scope),
-  );
+  const target = candidates.find((scope) => scope.id === boundScopeId && isPeerInstanceOf(scope, tenant, vertical));
   return target
     ? { outcome: 'resolved', instance: { tenantId, scopeId: target.id, vertical } }
     : { outcome: 'bound-unavailable', tenantId, vertical, targetScopeId: boundScopeId };

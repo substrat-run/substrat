@@ -190,6 +190,7 @@ describe('peerSeats + admitPeer (#1706)', () => {
 describe('resolveVerticalInstanceFrom (#1706)', () => {
   const T = tenantIdOf.parse(ulid());
   const U = tenantIdOf.parse(ulid());
+  const exact = { id: T, slug: null };
   const row = (over: Partial<VerticalInstanceCandidate> = {}): VerticalInstanceCandidate => ({
     id: scopeIdOf.parse(ulid()),
     tenantId: T,
@@ -202,7 +203,7 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
 
   it('exactly one primary, active instance of that vertical in that tenant resolves', () => {
     const only = row();
-    expect(resolveVerticalInstanceFrom([only], { id: T, slug: null }, 'acme/crm')).toEqual({
+    expect(resolveVerticalInstanceFrom([only], exact, 'acme/crm')).toEqual({
       outcome: 'resolved',
       instance: { tenantId: T, scopeId: only.id, vertical: 'acme/crm' },
     });
@@ -218,16 +219,16 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
       row({ status: 'provisioning' }),
       row({ vertical: 'acme/other' }),
     ];
-    expect(resolveVerticalInstanceFrom(noise, { id: T, slug: null }, 'acme/crm')).toEqual({
+    expect(resolveVerticalInstanceFrom(noise, exact, 'acme/crm')).toEqual({
       outcome: 'not-installed',
       tenantId: T,
       vertical: 'acme/crm',
     });
-    expect(resolveVerticalInstanceFrom([...noise, row()], { id: T, slug: null }, 'acme/crm').outcome).toBe('resolved');
+    expect(resolveVerticalInstanceFrom([...noise, row()], exact, 'acme/crm').outcome).toBe('resolved');
   });
 
   it('two live instances are ambiguous', () => {
-    expect(resolveVerticalInstanceFrom([row(), row()], { id: T, slug: null }, 'acme/crm')).toEqual({
+    expect(resolveVerticalInstanceFrom([row(), row()], exact, 'acme/crm')).toEqual({
       outcome: 'ambiguous',
       tenantId: T,
       vertical: 'acme/crm',
@@ -238,23 +239,23 @@ describe('resolveVerticalInstanceFrom (#1706)', () => {
   it('an explicit binding chooses exactly its live, same-tenant primary scope', () => {
     const chosen = row();
     const other = row();
-    expect(resolvePeerInstanceFrom([other, chosen], { id: T, slug: null }, 'acme/crm', chosen.id)).toEqual({
+    expect(resolvePeerInstanceFrom([other, chosen], exact, 'acme/crm', chosen.id)).toEqual({
       outcome: 'resolved', instance: { tenantId: T, scopeId: chosen.id, vertical: 'acme/crm' },
     });
-    expect(resolvePeerInstanceFrom([other, chosen], { id: T, slug: null }, 'acme/crm', null).outcome).toBe('ambiguous');
+    expect(resolvePeerInstanceFrom([other, chosen], exact, 'acme/crm', null).outcome).toBe('ambiguous');
   });
 
   it('a stale binding never falls back to a remaining live instance', () => {
     const chosen = row({ status: 'suspended' });
     const other = row();
     const expected = { outcome: 'bound-unavailable', tenantId: T, vertical: 'acme/crm', targetScopeId: chosen.id };
-    expect(resolvePeerInstanceFrom([chosen, other], { id: T, slug: null }, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([other], { id: T, slug: null }, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, tenantId: U, status: 'active' }), other], { id: T, slug: null }, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', vertical: 'acme/other' }), other], { id: T, slug: null }, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', kind: 'preview' }), other], { id: T, slug: null }, 'acme/crm', chosen.id)).toEqual(expected);
-    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], { id: T, slug: null }, 'acme/crm', chosen.id).outcome).toBe('resolved');
-    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], { id: T, slug: null }, 'acme/crm', chosen.id, true)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([chosen, other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, tenantId: U, status: 'active' }), other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', vertical: 'acme/other' }), other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active', kind: 'preview' }), other], exact, 'acme/crm', chosen.id)).toEqual(expected);
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], exact, 'acme/crm', chosen.id).outcome).toBe('resolved');
+    expect(resolvePeerInstanceFrom([row({ ...chosen, status: 'active' }), other], exact, 'acme/crm', chosen.id, true)).toEqual(expected);
   });
 });
 

@@ -1,5 +1,5 @@
 import type { PeerGrantsStatusEntry, Scope, ScopeId } from '@substrat-run/contracts';
-import { isPrimaryScope, resolvePeerInstanceFrom, samePeerVertical, type PeerTenant, type VerticalInstanceCandidate } from '@substrat-run/kernel';
+import { isPeerInstanceOf, resolvePeerInstanceFrom, type PeerTenant, type VerticalInstanceCandidate } from '@substrat-run/kernel';
 
 /**
  * The install disclosure (#1706) — what a tenant is told about one app's reach into its
@@ -70,7 +70,7 @@ export function peerChoicesOf(
   vertical: string,
 ): { scopeId: string; name: string }[] {
   return scopes
-    .filter((s) => s.tenantId === tenant.id && samePeerVertical(s.vertical, vertical, tenant.slug) && s.status === 'active' && isPrimaryScope(s))
+    .filter((s) => isPeerInstanceOf(s as unknown as VerticalInstanceCandidate, tenant, vertical))
     .map((s) => ({ scopeId: s.id, name: s.name }));
 }
 

@@ -2193,10 +2193,10 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
   const declared = runningId ? await cp.versionCalls(slug, runningId) : null;
   const bindings = await cp.peerBindings(scope);
   const targets = [...new Set([...(declared ?? []), ...bindings.map((b) => b.vertical)])];
-  // Every scope of the tenant, read once: a peer name reaches the tenant's pinned
+  // The tenant's active scopes, read once: a peer name reaches the tenant's pinned
   // `<tenantSlug>/<slug>` install too, which the directory's exact `vertical=` filter does not.
   // The slug is the directory's own, for the tenant this session is in (#2252).
-  const [tenantRow, scopes] = targets.length > 0 ? await Promise.all([cp.getTenant(), cp.listScopes()]) : [null, []];
+  const [tenantRow, scopes] = targets.length > 0 ? await Promise.all([cp.getTenant(), cp.listActiveScopes()]) : [null, []];
   const tenant = { id: node.tenantId, slug: tenantRow?.slug ?? null };
   const outgoing = await Promise.all(
     targets.map(async (vertical) => {
