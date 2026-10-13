@@ -71,6 +71,46 @@ describe('scope store door (pure adapter, #2209)', () => {
 
   // #2213: a failed start is retried without starting the runners that already did, and
   // close stops every runner even when one stop throws.
+  // #2266: a close while the first start is in flight waits for it; no runner starts after it.
+  it('a close during the first start leaves no runner started after it', async () => {
+    const log: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const runner = (name: string, held?: Promise<void>): ScopeStoreRunner => ({
+      kind: 'counter',
+      async start() {
+        log.push(`start ${name}`);
+        await held;
+      },
+      async stop() {
+        log.push(`stop ${name}`);
+      },
+      async invoke() {
+        return { result: 0 };
+      },
+    });
+    dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
+    const host = new SqliteScopeHost({
+      dir,
+      checker: UNSAFE_allowAllChecker,
+      scopeStores: { runners: [{ binding: 'GRAPH', runner: runner('A', gate) }, { binding: 'OTHER', runner: runner('B') }] },
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
+    await host.admin.activateScope(staff, t, s);
+    const opening = host.getScopeStore(principalId.parse(ulid()), t, s, 'GRAPH');
+    // The first start is in flight once A has been asked.
+    while (log.length === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+    const closing = host.close();
+    release();
+    await expect(opening).rejects.toThrow(/stopping/);
+    await closing;
+    expect(log).toEqual(['start A', 'stop A', 'stop B']);
+  });
+
   it('a retried start does not start a runner twice, and close stops every runner', async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     const log: string[] = [];

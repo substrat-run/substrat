@@ -122,3 +122,56 @@ describe('scopeStoreLifecycleOf (#2213)', () => {
     expect(log).toEqual(['start A', 'start B', 'stop A', 'stop B']);
   });
 });
+
+describe('scopeStoreLifecycleOf, stopping (#2266)', () => {
+  const held = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    return { gate, release };
+  };
+
+  it('a stop during a start in flight waits for it, and no runner starts after the stops', async () => {
+    const log: string[] = [];
+    const a = held();
+    const runner = (name: string, gate?: Promise<void>): ScopeStoreRunner => ({
+      kind: 'counter',
+      async start() {
+        log.push(`start ${name}`);
+        await gate;
+      },
+      async stop() {
+        log.push(`stop ${name}`);
+      },
+      async invoke() {
+        return { result: 0 };
+      },
+    });
+    const life = scopeStoreLifecycleOf(new Map([['A', runner('A', a.gate)], ['B', runner('B')]]));
+    const starting = life.start();
+    const stopping = life.stop();
+    a.release();
+    await expect(starting).rejects.toThrow(/stopping/);
+    await stopping;
+    expect(log).toEqual(['start A', 'stop A', 'stop B']);
+  });
+
+  it('several failed stops are all reported', async () => {
+    const failing = (name: string): ScopeStoreRunner => ({
+      kind: 'counter',
+      async start() {},
+      async stop() {
+        throw new Error(`${name} stop broke`);
+      },
+      async invoke() {
+        return { result: 0 };
+      },
+    });
+    const life = scopeStoreLifecycleOf(new Map([['A', failing('A')], ['B', failing('B')]]));
+    const err = await life.stop().then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors.map((e: Error) => e.message)).toEqual(['A stop broke', 'B stop broke']);
+  });
+});
