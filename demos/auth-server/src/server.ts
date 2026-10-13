@@ -29,7 +29,7 @@ import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvide
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { clientBranding } from './branding.js';
 import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
-import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
+import { clientSignIn, clientSignInRoute, readSignInPolicy } from './sign-in-policy.js';
 import { signInLoggerFor } from './sign-in-log.js';
 import { placesOf } from './places.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
@@ -271,6 +271,16 @@ app.get('/api/client-options', (c) => {
   // Absent `client_id` is the console asking about itself — see `clientIdOrConsole`.
   const clientId = clientIdOrConsole(c.req.query('client_id'));
   return c.json({ ...clientBranding(sql, clientId), signIn: clientSignIn(sql, clientId, offeredProviders()) });
+});
+
+// The identifier-first screen's second step: which way does THIS address sign in to THIS
+// client (`resolveSignInRoute`)? A POST so the address stays out of URLs and access logs; the
+// answer depends on the domain alone, never on whether an account exists.
+app.post('/api/sign-in-route', async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { client_id?: unknown; identifier?: unknown } | null;
+  const identifier = typeof body?.identifier === 'string' ? body.identifier : '';
+  const clientId = clientIdOrConsole(typeof body?.client_id === 'string' ? body.client_id : null);
+  return c.json(clientSignInRoute(sql, clientId, offeredProviders(), identifier));
 });
 
 // The issuer's own admin API — the relying-party registry and settings. The SAME factory the

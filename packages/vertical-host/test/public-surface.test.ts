@@ -128,6 +128,8 @@ describe('mountPublicSurface', () => {
     const ok = await app.request('/widget', { method: 'POST', headers: { origin: SITE } });
     expect(ok.status).toBe(200);
     expect(ok.headers.get('access-control-allow-origin')).toBe(SITE);
+    // #2192: the embedding page may read the request id it would quote.
+    expect(ok.headers.get('access-control-expose-headers')).toBe('x-substrat-request-id');
     expect(invoked).toBe(1);
     expect(resolved).toBe(1); // once, not once per registered guard
 
@@ -180,6 +182,7 @@ describe('mountPublicSurface', () => {
     });
     expect(res.status).toBe(403);
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(res.headers.get('access-control-expose-headers')).toBeNull();
     // The point of refusing in middleware: CORS hides a response, it does not stop a
     // write. The operation must never have been invoked.
     expect(invoked).toEqual([]);

@@ -213,7 +213,7 @@ including the two OIDC ones where Better Auth stays dormant:
   `link` (`open`, `used`, `expired`, or `revoked` with its reason), so a dead link never
   reads as open. Withdrawing the invite revokes the link first, then removes
   the row. An invite
-  minted before this (a hash-only row) is still accepted by its hash through `claimInvite`. The four HTTP routes over these — `GET`/`POST /api/invites`,
+  minted before this (a hash-only row) is still accepted by its hash through `claimInvite`, and is measured (#2175): `legacyInviteCount(scopeId)` counts a scope's unclaimed hash-only invites, and the routes write a `legacy-invites-pending` warn line (a scope id and a count, nothing identifying) — from the list only while that count is above zero, at most hourly per isolate, and from every accept that claims an invite through the legacy branch. No such line for a settled period means the branch has nothing left to serve only once count support is confirmed (a directory without `legacyInviteCount`, or a count that could not be read, emits no measurement) and the list reads succeeded for every relevant scope. The four HTTP routes over these — `GET`/`POST /api/invites`,
   `POST /api/invites/:principal/revoke`, `POST /api/accept-invite` — are written once as
   `mountInviteRoutes(app, deps)` from `@substrat-run/vertical-auth/invite-routes` — a
   subpath, because it is the one module here that imports `hono` at runtime, and the root
@@ -257,10 +257,19 @@ including the two OIDC ones where Better Auth stays dormant:
   drops a key from it without retiring that key is refused wherever it would run where the shape binds (a promote, a bind, a route onto the
   serving script), a rollback to a version from before the shape included, until it retires
   every key (#2178): keep the shape with the keys in `retired` and none in `permissions`, then
-  drop or move it in a later version, once every install has reconciled the retiring version
-  (each primary install is judged from the version it last reconciled, and one with no receipt,
-  such as just after a kill switch, waits for its next reconcile; a copy never reconciles, so a
-  retirement never reaches it). Dropping only `bind` is allowed. A
+  drop or move it in a later version, once the retirement has finished in every install (#2185:
+  each primary install is judged from the version it last reconciled and whether that reconcile
+  finished the version's retirements. One that left a retirement open, one built on an
+  `adapter-cloudflare` or `vertical-host` that predates the report, and one with no receipt, such
+  as just after a kill switch or a restore, all wait; the
+  sweep reconciles them again on its next pass. A copy never reconciles, so a retirement never
+  reaches it, and its own bind is judged only on what it runs). Dropping only `bind` is allowed:
+  it stops new links, and the people already bound keep the shape. They stay guarded after it
+  (#2184): each install's reconcile reports the binding shapes links have ever bound in it, and a
+  later version that removes such a shape, moves its holder, or drops one of its keys unretired is
+  refused the same way while any install bound it, or has not reported yet (an install built on an
+  `adapter-cloudflare` or `vertical-host` that predates the report counts every table-held bootstrap
+  shape of its version as bound, until the vertical pushes on current releases of both). A
   vertical supplies `nodeFor`, `callerOf` (who is asking, 401 for nobody) and the host verb.
   There is no admin gate, because the kernel's bound is the key on the record. An erasure of
   the record, or of its person, unbinds too.

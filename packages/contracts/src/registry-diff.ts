@@ -19,6 +19,9 @@ export interface RegistryLike {
   }>;
 }
 
+/** One grant shape of a {@link RegistryLike}. */
+type EntityGrantShapeLike = RegistryLike['entityGrants'][number];
+
 /** How a bootstrap shape's holder is found from the data (`entityGrantShape.holder`), stated structurally. */
 export type EntityGrantHolder = 'self' | 'grantee' | { table: string; idColumn: string; principalColumn: string };
 
@@ -169,6 +172,11 @@ export function grantShapeHolderNotes(g: Pick<RegistryDiff['grantChanges'][numbe
  * no current key binds nothing to anyone, which is how a retirement makes the drop allowed: keep
  * the shape with `permissions: []` and the keys in `retired`, then drop it in a later version.
  * Dropping only `bind` is not one of these: the holder stays recorded and a retirement stays possible.
+ *
+ * #2184: a shape binds where its registry says `bind`, and ALSO where a scope has bound people
+ * through it (`boundEver`, the types an install's reconcile reported from its sticky `shape-bound`
+ * records) while it is still a bootstrap shape with a table holder ({@link mayHoldBound}): a version
+ * that drops only `bind` leaves the people bound, so a later one may not strand them either.
  */
 export interface BindingShapeBreak {
   entityType: string;
@@ -177,12 +185,31 @@ export interface BindingShapeBreak {
   unretired: string[];
 }
 
-/** Every binding shape `from` binds with that `to` would strand (see {@link BindingShapeBreak}). */
-export function bindingShapeBreaks(from: Pick<RegistryLike, 'entityGrants'>, to: Pick<RegistryLike, 'entityGrants'>): BindingShapeBreak[] {
+/**
+ * #2184: a shape that can hold people a link bound: a bootstrap shape whose holder is a table
+ * column. Only such a shape is ever bound (the kernel's reconcile records a binding for no other),
+ * and a type that once bound and is now declared another way holds nobody through a link.
+ */
+export function mayHoldBound(shape: Pick<EntityGrantShapeLike, 'bootstrap' | 'holder'>): boolean {
+  return !!shape.bootstrap && typeof shape.holder === 'object';
+}
+
+/**
+ * Every binding shape `from` binds with that `to` would strand (see {@link BindingShapeBreak}).
+ * `boundEver` (#2184): the types the judged scopes have bound, or `'unknown'` when they did not say,
+ * which counts every shape that {@link mayHoldBound} as bound. Omitted: the registry's `bind` alone.
+ */
+export function bindingShapeBreaks(
+  from: Pick<RegistryLike, 'entityGrants'>,
+  to: Pick<RegistryLike, 'entityGrants'>,
+  boundEver: readonly string[] | 'unknown' = [],
+): BindingShapeBreak[] {
   const toGrants = new Map(to.entityGrants.map((g) => [g.entityType, g]));
   const breaks: BindingShapeBreak[] = [];
+  const bound = (g: EntityGrantShapeLike) =>
+    !!g.bind || (mayHoldBound(g) && (boundEver === 'unknown' || boundEver.includes(g.entityType)));
   for (const before of from.entityGrants) {
-    if (!before.bind || before.permissions.length === 0) continue;
+    if (!bound(before) || before.permissions.length === 0) continue;
     const after = toGrants.get(before.entityType);
     const change = !after ? 'removed' : !after.bootstrap ? 'sharing' : holderLabel(after.holder) !== holderLabel(before.holder) ? 'holder' : 'kept';
     // A shape kept where it was strands only the keys it drops; any other change, every key.

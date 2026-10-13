@@ -2890,7 +2890,8 @@ export const loggedModManifest = moduleManifest.parse({
 /**
  * The module the `ctx.log` suite drives. `logged/act` logs, emits, and its consumer logs
  * again in the same invocation; `logged/fail` logs and then throws, so the suite can show
- * the line survives the rollback.
+ * the line survives the rollback. Both report `ctx.requestId`, the operation in its result and
+ * the consumer as a log field (#2192).
  */
 export const loggedMod: ModuleRegistration = {
   manifest: loggedModManifest,
@@ -2906,7 +2907,8 @@ export const loggedMod: ModuleRegistration = {
         piiClass: 'none',
         payload: {},
       });
-      return { ok: true };
+      // #2192: what module code reads as its request's id — the suite holds it to the stamp.
+      return { ok: true, requestId: ctx.requestId };
     }) as OperationHandler<never, unknown>,
     'logged/fail': ((ctx, input: { ticketId: string }) => {
       ctx.log.error('could not reach {ticketId}', { ticketId: input.ticketId });
@@ -2915,7 +2917,7 @@ export const loggedMod: ModuleRegistration = {
   }),
   consumers: {
     'logged.acted': ((ctx, event) => {
-      ctx.log.warn('saw {type}', { type: event.type });
+      ctx.log.warn('saw {type}', { type: event.type, requestId: ctx.requestId });
     }) as ConsumerHandler,
   },
 };
@@ -2988,7 +2990,8 @@ export const asyncLogMod: ModuleRegistration = {
   consumers: {
     'asynclog.acted': ((ctx, event) => {
       const { tag, fail } = event.payload as { tag: string; fail: boolean };
-      ctx.log.info('consumed {tag}', { tag });
+      // #2192: the consumer's `ctx.requestId`, held by the suite to the delivery's own id.
+      ctx.log.info('consumed {tag}', { tag, requestId: ctx.requestId });
       if (fail) throw substratError('precondition_failed', `refused ${tag}: ${ASYNC_LOG_SECRET_TEXT}`);
     }) as ConsumerHandler,
   },

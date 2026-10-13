@@ -81,7 +81,7 @@ catalog:
   vite: ^8.3.4
   '@vitejs/plugin-react': ^6.1.2
   '@cloudflare/workers-types': ^4.20250109.0
-  wrangler: ^4.146.0
+  wrangler: ^4.149.0
   '@types/node': ^22.20.5
 
   # The compiler. Here for the same reason as the rest, and it had already

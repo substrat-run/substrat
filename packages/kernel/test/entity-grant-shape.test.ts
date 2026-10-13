@@ -502,6 +502,42 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
     for (const [i, p] of people.entries()) expect(t.keysOf(p, `e${i}`)).toEqual(['emp:cancel', 'emp:read', 'emp:report']);
   });
 
+  /**
+   * #2184: the platform's binding-shape gate needs to know which types a scope has bound, even
+   * after a version drops `bind`: the reconcile answers its sticky `shape-bound` records.
+   */
+  it('answers on its last pass only every type the scope has ever bound, still after a version drops `bind` or the shape', () => {
+    const t = fresh();
+    t.db.exec('CREATE TABLE staff (id TEXT PRIMARY KEY, principal TEXT)');
+    const binding = {
+      entityType: 'employee',
+      permissions: GROWN,
+      bootstrap: true,
+      holder: { table: 'staff', idColumn: 'id', principalColumn: 'principal' },
+      bind: { permission: 'emp:invite' },
+    };
+    const plain = { entityType: 'note', permissions: ['note:read'], bootstrap: true };
+    for (let i = 0; i < 3; i++) t.shape(who(), `e${i}`);
+    /** Every pass of one reconcile at `limit` 1, and what its last one answered. */
+    const reconcile = (shapes: unknown[]) => {
+      let after: ShapeCursor | null = null;
+      let passes = 0;
+      for (;;) {
+        const r = topUpEntityGrantShapes(t.sql, { tenantId: T, scopeId: S, shapes: shapes as never, now: NOW, limit: 1, after, mintEventId: () => ulid(), version: null });
+        passes++;
+        if (r.next === null) return { boundEver: r.boundEver, passes };
+        expect(r).not.toHaveProperty('boundEver');
+        after = r.next;
+      }
+    };
+    expect(reconcile([plain]).boundEver).toEqual([]);
+    const first = reconcile([binding, plain]);
+    expect(first).toEqual({ boundEver: ['employee'], passes: expect.any(Number) });
+    expect(first.passes).toBeGreaterThan(1);
+    expect(reconcile([{ ...binding, bind: undefined }, plain]).boundEver).toEqual(['employee']);
+    expect(reconcile([]).boundEver).toEqual(['employee']);
+  });
+
   it('a key dropped from the shape and NOT declared retired is left where it is', () => {
     const t = fresh();
     const anna = who();

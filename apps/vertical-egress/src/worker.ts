@@ -283,12 +283,44 @@ function relayHost(env: Env): string | null {
   }
 }
 
-/** The one refusal shape a vertical's subrequest meets: what was refused, for whom, and why. */
-function outboundRefused(hostname: string, slug: string | null, detail: string): Response {
+/** The response header that says the PLATFORM refused a subrequest, not the destination. A
+ *  vertical's code sees a bare 403 either way; this is what tells them apart (#2192). */
+const EGRESS_HEADER = 'x-substrat-egress';
+
+/**
+ * The one refusal a vertical's subrequest meets: meters the verdict, logs it, and answers 403
+ * with what was refused, for whom and why. The `x-substrat-egress: refused` header marks it as
+ * the platform's, and the `console.warn` puts it in Workers Logs, where a bare 403 from a
+ * destination would never be (#2192). The policy carries no version, so the line names the
+ * vertical and tenant but not the version.
+ */
+function outboundRefused(
+  env: Env,
+  verdict: 'refused' | 'inert',
+  hostname: string,
+  slug: string | null,
+  detail: string,
+): Response {
+  meter(env, hostname, verdict);
+  logRefusal(env, verdict, hostname, slug);
   return new Response(JSON.stringify({ error: 'outbound refused', host: hostname, vertical: slug, detail }), {
     status: 403,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', [EGRESS_HEADER]: 'refused' },
   });
+}
+
+/** The structured `egress.refused` line; `verdict` tells the refusals apart (`peer` is a peer
+ *  call refused for carrying no caller identity — already metered as `peer`, so not again). */
+function logRefusal(env: Env, verdict: 'refused' | 'inert' | 'peer', hostname: string, slug: string | null): void {
+  console.warn(
+    JSON.stringify({
+      event: 'egress.refused',
+      verdict,
+      host: hostname,
+      vertical: slug,
+      tenant: env.OUTBOUND_POLICY?.tenant ?? null,
+    }),
+  );
 }
 
 /** What the router's peer entrypoint answers. */
@@ -322,9 +354,9 @@ function meter(env: Env, hostname: string, verdict: Verdict | 'redirect', to?: s
  * refused here rather than forwarded, because a peer call whose caller cannot be named is
  * exactly what this whole mechanism exists to prevent.
  */
-async function peerCall(request: Request, env: Env): Promise<Response> {
-  const problem = (status: number, error: string): Response =>
-    new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
+async function peerCall(request: Request, hostname: string, env: Env): Promise<Response> {
+  const problem = (status: number, error: string, headers: Record<string, string> = {}): Response =>
+    new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json', ...headers } });
   const policy = env.OUTBOUND_POLICY;
   if (!env.PEER_CALLS) {
     // Name the binding and the worker it belongs on. A refusal that says only "not
@@ -339,11 +371,15 @@ async function peerCall(request: Request, env: Env): Promise<Response> {
     );
   }
   if (!policy?.slug || !policy.tenant || !policy.scope) {
+    // The platform's own decision, so it is marked and logged like an outbound refusal. The
+    // router's outcomes below are not: the target's door and the router answer those.
+    logRefusal(env, 'peer', hostname, policy?.slug ?? null);
     return problem(
       403,
       'peer call refused: this call carries no caller identity. A peer call is made from a ' +
         "vertical's request handler, through the platform — not from inside a Durable Object, " +
         'and not from a script the router did not dispatch (#1706).',
+      { [EGRESS_HEADER]: 'refused' },
     );
   }
   const parsed = peerCallRequest.safeParse(await request.json().catch(() => null));
@@ -418,7 +454,7 @@ export default {
     // outbound workers do not intercept) fails to resolve instead of leaving the isolate.
     if (isPeerCallHost(hostname)) {
       meter(env, hostname, 'peer');
-      return peerCall(request, env);
+      return peerCall(request, hostname, env);
     }
     if (isStoreCallHost(hostname)) {
       meter(env, hostname, 'store');
@@ -430,8 +466,9 @@ export default {
       // refuses its writes — the destination's own auth is not the boundary here, inertness is.
       const policy = env.OUTBOUND_POLICY;
       if (policy?.primary === false && !SAFE_METHODS.has(request.method.toUpperCase()) && !isOwnHost(hostname, policy)) {
-        meter(env, hostname, 'inert');
         return outboundRefused(
+          env,
+          'inert',
           hostname,
           policy.slug,
           'this scope is a preview or a fork, and those cause no outbound effects: it may ' +
@@ -462,8 +499,9 @@ export default {
       // addresses are the exception on every path — a custom domain of the scope is outside the
       // platform's base domains, and is still the scope talking to itself; it then meets the
       // same declared-surface policy below that the install's request would.
-      meter(env, hostname, 'inert');
       return outboundRefused(
+        env,
+        'inert',
         hostname,
         policy.slug,
         'this scope is a preview or a fork, and those cause no outbound effects: a ' +
@@ -482,8 +520,9 @@ export default {
       meter(env, hostname, 'allowed');
       return passThrough((r) => fetch(r), request, hostname, env);
     }
-    meter(env, hostname, 'refused');
     return outboundRefused(
+      env,
+      'refused',
       hostname,
       policy.slug,
       `'${hostname}' is not in this vertical's declared outbound surface. ` +

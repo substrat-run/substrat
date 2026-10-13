@@ -80,7 +80,76 @@ export type InviteDirectory = Pick<
   IdentityStub,
   | 'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'
   | 'inviteLink'
->;
+> &
+  // Optional so a directory written before #2175 still mounts; the identity DO's stub has it.
+  Partial<Pick<IdentityStub, 'legacyInviteCount'>>;
+
+/**
+ * #2175: the line that measures the legacy hash-only invite branch, as `tenantUnrecordedLine` is
+ * the line that measures an unrecorded scope — one JSON line, `substrat` naming it, ids only.
+ * `pending` is the scope's unclaimed hash-only invites (null when the door cannot count them); `via` is the door that wrote it. The list
+ * writes it ONLY when `pending > 0`, so a settled period has no line at all; an accept through the
+ * legacy branch always writes it, since that is the branch still serving. No address, token or
+ * principal — a number and a scope id.
+ */
+export const legacyInvitesLine = (scopeId: string, pending: number | null, via: 'list' | 'accept') => ({
+  substrat: 'legacy-invites-pending' as const,
+  level: 'warn' as const,
+  scopeId,
+  pending,
+  via,
+  message: 'hash-only member invites are still pending; the legacy accept branch cannot be retired yet',
+});
+
+/** The list path reports a scope at most this often, per isolate — it is read often. */
+export const LEGACY_INVITES_LIST_REPORT_MS = 60 * 60 * 1000;
+
+/**
+ * The list path's report (#2175), for every door that lists pending invites: `count` is asked at
+ * most once per scope per `LEGACY_INVITES_LIST_REPORT_MS` of the reporter's life (in memory, per
+ * isolate — a restart reports again), and a line is written only when it is above zero, so a
+ * settled scope writes nothing and is not throttled. Make one per mount, not per request.
+ */
+/**
+ * Ask for a count without letting the measurement break what it measures: the identity stub is an
+ * RPC proxy, so a DO class from before #2175 (mid-deploy) or any throw rejects here. Swallowed —
+ * never rethrown — leaving one line that carries no data. Null when it could not be read.
+ */
+async function countOrNull(count: () => Promise<number>): Promise<number | null> {
+  try {
+    return await count();
+  } catch {
+    console.warn('legacy-invites-pending: the count could not be read');
+    return null;
+  }
+}
+
+export function legacyInviteListReporter(opts: { log?: (line: string) => void; now?: () => number } = {}) {
+  const log = opts.log ?? ((line: string) => console.warn(line));
+  const now = opts.now ?? Date.now;
+  const reported = new Map<string, number>();
+  const report = async (scopeId: string, count: (() => Promise<number>) | undefined): Promise<void> => {
+    // No id, no line: a measurement that cannot name its scope is noise.
+    if (!count || !scopeId) return;
+    const last = reported.get(scopeId);
+    if (last !== undefined && now() - last < LEGACY_INVITES_LIST_REPORT_MS) return;
+    // Evict what has aged out, so the map stays the size of the scopes reported this hour.
+    for (const [id, at] of reported) if (now() - at >= LEGACY_INVITES_LIST_REPORT_MS) reported.delete(id);
+    // Reserve the scope BEFORE awaiting the count: a second list that overlaps this one sees the
+    // reservation and returns, so one hour's window yields one count and at most one line. An
+    // unreadable count keeps the reservation too (it warned once): a mid-deploy list does not retry per read.
+    reported.set(scopeId, now());
+    const pending = await countOrNull(count);
+    // Absence is the signal: a settled scope writes nothing and is not throttled.
+    if (pending === 0) {
+      reported.delete(scopeId);
+      return;
+    }
+    if (pending !== null) log(JSON.stringify(legacyInvitesLine(scopeId, pending, 'list')));
+  };
+  /** Scopes currently remembered — what the eviction keeps bounded. */
+  return Object.assign(report, { tracked: () => reported.size });
+}
 
 /** The label every member invite's capability carries — what an operator's capability read shows. */
 export const MEMBER_INVITE_LABEL = 'member invite';
@@ -167,6 +236,10 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
    * hands over a configured `https://host/` does not send invitees to `https://host//`.
    */
   origin?: (req: Request) => string;
+  /** Where the #2175 measurement lines go. Defaults to `console.warn`. */
+  log?: (line: string) => void;
+  /** The clock the list path's hourly throttle reads. Defaults to `Date.now`. */
+  now?: () => number;
 }
 
 /** The 403 a refused bound answers, in one wording for every door that confers a role. */
@@ -278,8 +351,10 @@ export async function withLinkStates(
  */
 export async function acceptMemberInvite(
   deps: {
-    directory: Pick<InviteDirectory, 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'>;
+    directory: Pick<InviteDirectory, 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability' | 'legacyInviteCount'>;
     exchange: (secret: string) => Promise<CapabilityExchange | null>;
+    /** Where the #2175 measurement line goes. Defaults to `console.warn`. */
+    log?: (line: string) => void;
   },
   scopeId: string,
   sub: string,
@@ -287,7 +362,15 @@ export async function acceptMemberInvite(
 ): Promise<string | null> {
   if (!plausibleCapabilitySecret(token)) {
     // LEGACY — a hash-only invite (see `claimInvite`).
-    return deps.directory.claimInvite(scopeId, sub, await sha256Hex(token));
+    const principal = await deps.directory.claimInvite(scopeId, sub, await sha256Hex(token));
+    // #2175: a legacy claim that SUCCEEDED proves the branch still serves; the count is what is left.
+    // A failed claim or a garbage token writes nothing, so a line always means a real invite.
+    const count = deps.directory.legacyInviteCount;
+    if (principal && scopeId) {
+      const left = count ? await countOrNull(() => count.call(deps.directory, scopeId)) : null;
+      (deps.log ?? ((line) => console.warn(line)))(JSON.stringify(legacyInvitesLine(scopeId, left, 'accept')));
+    }
+    return principal;
   }
   return redeemBecomeLink(
     {
@@ -341,6 +424,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
   app: Hono<{ Bindings: E }>,
   deps: InviteRouteDeps<E, N>,
 ): void {
+  const log = deps.log ?? ((line: string) => console.warn(line));
+  const reportLegacyOnList = legacyInviteListReporter({ log, now: deps.now });
+
   const originOf = (req: Request): string => (deps.origin?.(req) ?? new URL(req.url).origin).replace(/\/$/, '');
 
   /** Who the gate admitted — refusing a mount wired short or a gate naming no caller. */
@@ -373,7 +459,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     await deps.requireAdmin(c);
-    const rows = await deps.directory(c.env, node).listInvites(node.scopeId);
+    const directory = deps.directory(c.env, node);
+    const rows = await directory.listInvites(node.scopeId);
+    await reportLegacyOnList(node.scopeId, directory.legacyInviteCount && (() => directory.legacyInviteCount!(node.scopeId)));
     const invites = await withLinkStates(rows, (ids) => deps.becomeLinkStates(c.env, node, ids));
     return c.json({ roles: [...deps.roles], invites });
   });
@@ -439,7 +527,7 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
     const { token } = await bodyOf(c, acceptInviteBody);
     const principal = await acceptMemberInvite(
-      { directory: deps.directory(c.env, node), exchange: (secret) => deps.exchangeCapability(c.env, node, secret) },
+      { directory: deps.directory(c.env, node), exchange: (secret) => deps.exchangeCapability(c.env, node, secret), log },
       node.scopeId,
       subject.sub,
       token,

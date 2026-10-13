@@ -22,12 +22,16 @@ const event = (id: string, type: string) =>
 describe('RequestSlideOver', () => {
   let container: HTMLDivElement, root: Root;
   beforeEach(() => {
+    // The panel reads at most 72 hours back, so "now" is just after the fixture's request.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(END + 60_000);
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement('div');
     document.body.append(container);
     root = createRoot(container);
   });
   afterEach(() => {
+    vi.useRealTimers();
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();

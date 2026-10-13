@@ -149,3 +149,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* BankID — the QR sits on white whatever the theme, or the app cannot scan it. */
 .bankid-qr { display: flex; justify-content: center; margin: 8px 0 12px; }
 .bankid-qr img { background: #fff; border-radius: 8px; padding: 8px; }
+
+/* the per-application sign-in editor (`views/SignInPolicyEditor.tsx`) */
+.signin-editor { display: flex; flex-direction: column; gap: 14px; margin: 10px 0 0 26px; }
+.signin-group { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.signin-group legend { padding: 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+.toggle.nested { margin-left: 26px; }
+.route-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+.signin-problems { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.flow-preview { background: var(--panel); border: 1px dashed var(--line); border-radius: var(--radius); padding: 10px 14px; font-size: 13px; }
+.flow-preview ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.flow-preview li span { color: var(--muted); }
+.flow-preview.dead { border-color: var(--danger); }
+.identifier { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.identifier .btn.link { width: auto; padding: 0; }

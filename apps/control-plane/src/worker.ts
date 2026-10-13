@@ -47,6 +47,7 @@ import {
   globalFetch,
   type CrossVerticalOptions,
   type PlatformSweepReport,
+  type ReconcileOutcome,
   type ScopeHost,
   type SecretBox,
   type SweepRunInput,
@@ -90,6 +91,7 @@ import {
   pruneScopeBackups,
   createCustomHostnameProvisioner,
   reconcilePayloadFor,
+  reconcileOutcomeOf,
   reconcileThenReassert,
   reconcilePendingHostnames,
   isCustomHostname,
@@ -1444,7 +1446,7 @@ async function reconcileOneScope(
   t: TenantId,
   s: ScopeId,
   expected: string,
-): Promise<void | 'unsupported'> {
+): Promise<'unsupported' | ReconcileOutcome> {
   const host = hostFor(env);
   const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
   /**
@@ -1494,7 +1496,7 @@ export async function reconcileReachedScope(
   node: { tenantId: TenantId; scopeId: ScopeId },
   client: Pick<VerticalClient, 'reconcileInstance'>,
   payload: Awaited<ReturnType<typeof reconcilePayloadFor>>,
-): Promise<void | 'unsupported'> {
+): Promise<'unsupported' | ReconcileOutcome> {
   const outcome = await reconcileThenReassert(admin, SWEEP_ACTOR, node, (carry) =>
     reconcileOrUnsupported(() =>
       client.reconcileInstance({
@@ -1509,7 +1511,8 @@ export async function reconcileReachedScope(
       }),
     ),
   );
-  return outcome === 'unsupported' ? 'unsupported' : undefined;
+  // #2185: with whether it finished the version's retirements, for the receipt the sweep writes.
+  return outcome === 'unsupported' ? 'unsupported' : reconcileOutcomeOf(payload.entityGrants, outcome);
 }
 
 /**
