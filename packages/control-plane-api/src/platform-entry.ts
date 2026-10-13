@@ -225,7 +225,9 @@ export const ASYNC_LOCAL_STORAGE_FLAG = 'nodejs_als';
  * - neither: `nodejs_als` is appended, after the declared ones. It has no compatibility-date
  *   gate, and it adds `node:async_hooks` alone — no other node module, no globals;
  * - the script opts out with `no_nodejs_als`: the flags go up as declared and the entry drops
- *   its import, so the upload never fails over it; that script's line names no store calls.
+ *   its import, so the upload never fails over it. With `nodejs_compat` beside the opt-out,
+ *   vertical-host still reaches `AsyncLocalStorage` through `process.getBuiltinModule` and the
+ *   line names the calls; with no `nodejs_compat` either, the line names no store calls.
  *
  * Existing flags are never removed or reordered.
  */

@@ -124,6 +124,12 @@ describe('the platform entry, uploaded and run on workerd (#2245)', () => {
     expect(run.body.storeCalls).toBeNull();
   });
 
+  it('an opt-out beside nodejs_compat still names its calls, through process.getBuiltinModule', async () => {
+    const run = await served(['nodejs_compat', 'no_nodejs_als']);
+    expect(run.flags).toEqual(['nodejs_compat', 'no_nodejs_als']);
+    expect(run.body.storeCalls).toEqual(NAMED);
+  });
+
   it('without the flag the entry could not start: the import is why nodejs_als is added', async () => {
     const mf = new Miniflare({
       modules: [{ type: 'ESModule', path: 'entry.js', contents: `import { AsyncLocalStorage } from "node:async_hooks"; export default { fetch: () => new Response(String(typeof AsyncLocalStorage)) };` }],

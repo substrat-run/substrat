@@ -157,7 +157,8 @@ export const PLATFORM_ENTRY_SOURCE: string = ${JSON.stringify(js)};
 /**
  * #2245: the entry's \`node:async_hooks\` import, as it appears in \`PLATFORM_ENTRY_SOURCE\`, and
  * the line the uploader puts in its place for a script that can have no \`AsyncLocalStorage\`
- * (one that opts out with \`no_nodejs_als\`). That script's line then names no store calls.
+ * (one that opts out with \`no_nodejs_als\`). With no \`nodejs_compat\` either, that script's line names
+ * no store calls; with it, vertical-host reaches the class through \`process.getBuiltinModule\`.
  */
 export const PLATFORM_ENTRY_ALS_IMPORT = ${JSON.stringify(ALS_IMPORT)};
 export const PLATFORM_ENTRY_ALS_FALLBACK = ${JSON.stringify(ALS_FALLBACK)};

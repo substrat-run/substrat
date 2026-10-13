@@ -79,6 +79,7 @@
     "test:ci-scope": "node --test tools/ci-scope.test.mjs",
     "test:test-affected": "node --test tools/test-affected.test.mjs",
     "test:declared-deps": "node --test tools/declared-deps.test.mjs",
+    "test:worker-node-imports": "node --test tools/worker-node-imports.test.mjs",
     "test:repo-path": "node --test tools/repo-path.test.mjs",
     "test:override-advisories": "node --test tools/override-advisories.test.mjs",
     "lint:publish-manifests": "node tools/publish-manifests.mjs",

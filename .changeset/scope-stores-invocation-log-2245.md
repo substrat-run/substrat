@@ -12,4 +12,4 @@ An invocation line names the scope-store calls a request made: the binding, the 
 
 A store operation name is now a fixed label: no `@`, no whitespace, no `:`, at most 64 characters (`storeOperationName`). The door refuses any other name before the call, so it never reaches a line. A kind's catalog is held to the same rule.
 
-The platform entry imports `node:async_hooks`. A wrapped script that has neither `nodejs_als` nor `nodejs_compat` is uploaded with `nodejs_als` appended to its flags. A script that opts out with `no_nodejs_als` keeps its flags, and its line names no store calls.
+The platform entry imports `node:async_hooks`. A wrapped script that has neither `nodejs_als` nor `nodejs_compat` is uploaded with `nodejs_als` appended to its flags. A script that opts out with `no_nodejs_als` keeps its flags; with no `nodejs_compat` either, its line names no store calls.
