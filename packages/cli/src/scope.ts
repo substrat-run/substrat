@@ -287,7 +287,19 @@ export async function provisionScope(opts: {
     () => planeFor(opts.controlPlaneUrl, opts.header).provisionScope(opts.tenantId, opts.scopeId),
     (e) => new Error(problemDetail(refusalBody(e)) ?? `provision refused: ${e.status} ${e.statusText}`),
   );
-  console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
+  if (body.owner === null) {
+    // #2263: the vertical keeps no owner of record, so the platform ran the ownerless reconcile.
+    // What the version declares is seated, but nobody was re-granted: this is NOT the #332 repair,
+    // and an operator here for a locked-out owner must not read it as one.
+    console.log(`✓ reconciled scope ${opts.scopeId} — what its version declares (schedule, peer and connection grants) is seated.`);
+    console.log(
+      '\n⚠ the owner was NOT re-sourced: this vertical keeps no owner of record, so no owner was\n' +
+        '  re-granted and a locked-out owner is NOT repaired by this command. Role definitions,\n' +
+        '  entitlements and identity links were left as they were.',
+    );
+  } else {
+    console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
+  }
   // #828: the reconcile is done, but a declared store did not mint. Printed rather than
   // thrown — the half that ran is real and worth keeping — and named in full, because the
   // platform's own message is what says whether this is a credential, a client that was

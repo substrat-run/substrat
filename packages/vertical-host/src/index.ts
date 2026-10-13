@@ -229,6 +229,23 @@ export interface VerticalScopeHost {
      *  table-held bootstrap shape of its version. */
     boundShapeTypes?: string[];
   }>;
+  /**
+   * #2263: the ownerless reconcile — seat what this deployment's code declares (schedule grants,
+   * peer keys, the delivered connection grants) and re-apply the recorded-off positions in the
+   * same unit, and nothing else: no owner seat, no projection, no entity-grant shapes. Only a scope
+   * already provisioned for `tenantId`. Optional: a host built before it leaves `/internal/reconcile`
+   * answering 501 for a vertical that keeps no owner of record, as it always did.
+   */
+  seatScopeLocal?(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    connectionGrants?: ProjectedConnectionGrant[];
+    switchedOff?: ModuleId[];
+    tenantHeld?: ModuleId[];
+    switchedOffPeers?: string[];
+    tenantHeldPeers?: string[];
+    switchFences?: Record<string, string>;
+  }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
    *  `opts.exact`: the platform exported the dump itself, so the re-point never falls back. */
@@ -665,6 +682,15 @@ const reconcileBody = z.object({
    * reconcile of shapes.
    */
   entityGrants: z.array(entityGrantShape).optional(),
+  /**
+   * #2263: the caller accepts the OWNERLESS reconcile when the vertical keeps no owner of record
+   * (no `resolveOwner` at all): the declared tuples seated, the recorded-off positions
+   * re-applied, and nothing else (`seatScopeLocal`). Answered with `owner: null` and no
+   * retirement or bound-shape report, which the platform's receipt reads as not finished. A caller
+   * that needs the projection itself (an entitlements delivery) omits it and keeps the 501. A
+   * vertical that keeps an owner of record and finds none for the scope answers 409 either way.
+   */
+  ownerless: z.literal('seat').optional(),
 });
 
 /**
@@ -980,7 +1006,9 @@ export interface PlatformSurfaceDeps<Env> {
   /**
    * Re-source a reconcile's owner from the vertical's durable owner-of-record (#332).
    * Return `null` when there is no record (⇒ 409, re-run the install). Omit entirely and
-   * `/internal/reconcile` answers 501 — the vertical keeps no owner-of-record.
+   * `/internal/reconcile` answers 501 — the vertical keeps no owner-of-record — unless the caller
+   * sends `ownerless: 'seat'` (the platform's sweep and `substrat scope provision`), which then
+   * gets the ownerless reconcile (#2263): the declared tuples seated, and nothing else.
    */
   resolveOwner?: (
     env: Env,
@@ -1905,10 +1933,33 @@ export function mountPlatformSurface<Env extends object>(
   // The kernel half SEATS its tuples (#1659): what is missing comes back, what an operator
   // revoked stays revoked — except the owner's seat on a scope no one else can act in.
   app.post('/internal/reconcile', async (c) => {
+    const body = reconcileBody.parse(await c.req.json());
     if (!deps.resolveOwner) {
+      // #2263: a vertical that keeps NO owner of record can never have a full reconcile, so a caller
+      // that accepts it gets the ownerless one — what this version declares, seated — rather than
+      // nothing at all, which left every scope provisioned before a declaration without it for
+      // good. `owner: null` says no owner was re-sourced, so no lockout was repaired.
+      //
+      // Only here. A vertical that keeps one and found none for this scope (an unclaimed seat, say)
+      // stays the 409 below: it is owed the FULL reconcile once the record exists, and a seat
+      // answered as a success would let the platform record the version as reconciled.
+      const host = deps.hostFor(c.env);
+      if (body.ownerless === 'seat' && host.seatScopeLocal) {
+        const seated = await host.seatScopeLocal({
+          tenantId: body.tenantId,
+          scopeId: body.scopeId,
+          connectionGrants: body.connectionGrants,
+          switchedOff: body.switchedOff,
+          tenantHeld: body.tenantHeld,
+          switchedOffPeers: body.switchedOffPeers,
+          tenantHeldPeers: body.tenantHeldPeers,
+          switchFences: body.switchFences,
+        });
+        await platformSweeperOf(c.env)?.noteScope(body.tenantId, body.scopeId);
+        return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: null, ...switchedOffAnswer(seated?.switchedOff) });
+      }
       throw new HTTPException(501, { message: 'this vertical keeps no owner-of-record to reconcile from' });
     }
-    const body = reconcileBody.parse(await c.req.json());
     const owner = await deps.resolveOwner(c.env, { tenantId: body.tenantId, scopeId: body.scopeId });
     if (!owner) {
       throw new HTTPException(409, {

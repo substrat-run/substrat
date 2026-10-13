@@ -5,6 +5,7 @@ import {
   availableActions,
   canReprovision,
   effectiveStatus,
+  reprovisionedDetail,
   scopeHandle,
   statusLabel,
   statusTone,
@@ -183,11 +184,11 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
   // scope's data. Nothing resolved ⇒ null ⇒ the DO link falls back to the list.
   const scopeNamespace = doNamespaces?.[0] ?? null;
 
-  async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
+  async function run<T>(fn: () => Promise<T>, title: string, detail?: string | ((result: T) => string)) {
     try {
-      await fn();
+      const result = await fn();
       onChanged();
-      onToast(title, detail);
+      onToast(title, typeof detail === 'function' ? detail(result) : detail);
     } catch (e) {
       onToast('Refused', (e as Error).message, 'danger');
     }
@@ -245,7 +246,7 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
                   run(
                     () => api.reprovisionScope(scope.tenantId, scope.id),
                     'Provisioning re-run',
-                    `${scope.slug} · entitlements, identity links and the vertical's own provision hook re-delivered`,
+                    (answer) => reprovisionedDetail(scope.slug, answer),
                   )
                 }
               >
