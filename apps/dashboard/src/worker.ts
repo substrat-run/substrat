@@ -5213,8 +5213,8 @@ async function inviteLinkIn(ctx: TeamContext, invitationId: string) {
  * Remove a member. The op revokes the roster row and asks the membership executor (#1184)
  * to take the role away; it runs inline, so the answer says what happened: `pending: false`
  * done, `pending: true` when the backstop owns it, 409 refused, `removed: false` when there
- * was no removable member by that id. The login is severed either
- * way, since the removal itself is committed.
+ * was no removable member by that id. The login is severed either way, since the removal
+ * itself is committed.
  */
 async function removeMemberIn({ c, node }: TeamContext, memberId: string): Promise<{ removed: boolean; pending: boolean }> {
   // Its own host: only one with the membership executor registered runs it inline.
