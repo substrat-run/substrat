@@ -137,6 +137,20 @@ export interface InstallStep {
   settled_at: string | null;
 }
 
+/** `memberRow` — a published schema, not a stored row. */
+export interface Member {
+  id: string;
+  principal: string | null;
+  email: string;
+  role_key: string;
+  status: "active" | "invited" | "revoked" | "joining" | "refused";
+  refusal?: string;
+  invitation_id: string | null;
+  invited_by: string;
+  invited_at: string;
+  joined_at: string | null;
+}
+
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface DashboardClient {
   /**
@@ -173,6 +187,27 @@ export interface DashboardClient {
    * `POST /apps` — `dashboard/install-app`
    */
   installApp(input: { verticalSlug: string; name: string; auth?: { source: "auth-server"; scopeId: string } | { source: "external"; issuer: string; clientId: string; clientSecret?: string; audience?: string }; config?: Record<string, string> }): Promise<AppRow>;
+
+  /**
+   * A pending invite's accept link and deadline, to copy; sends no email, and a lapsed invite is a 409
+   *
+   * `POST /members/invites/{invitationId}/link` — `dashboard/invite-link`
+   */
+  inviteLink(input: { invitationId: string }): Promise<{ invitationId: string; acceptUrl: string; expiresAt: string }>;
+
+  /**
+   * Invite someone at a role; emails them and answers the shareable accept link
+   *
+   * `POST /members/invites` — `dashboard/invite-member`
+   */
+  inviteMember(input: { email: string; roleKey: "admin" | "member" | "viewer" }): Promise<{ invitationId: string; acceptUrl: string; emailDelivered: boolean }>;
+
+  /**
+   * Leave this team: your roster row is revoked and your login detached from it
+   *
+   * `POST /leave` — `dashboard/leave-team`
+   */
+  leaveTeam(): Promise<{ left: true }>;
 
   /**
    * One page of the control-plane admin log for one of this team's apps, newest first
@@ -224,6 +259,13 @@ export interface DashboardClient {
   listFindings(input: { status?: "open" | "acked" | "resolved" | "suppressed"; kind?: "invariant" | "drift" | "recurring"; limit?: number; cursor?: string }): Promise<{ available: boolean; entries: FindingEntry[]; nextCursor: string | null; cut: boolean }>;
 
   /**
+   * One page of this team's roster (active members and outstanding invites), newest first
+   *
+   * `GET /members` — `dashboard/list-members`
+   */
+  listMembers(input: { limit?: number; cursor?: string }): Promise<{ entries: Member[]; nextCursor: string | null }>;
+
+  /**
    * One page of this team's whole admin log, or one app's with `scopeId`, newest first
    *
    * `GET /audit` — `dashboard/list-team-audit`
@@ -252,6 +294,20 @@ export interface DashboardClient {
   removeDomain(input: { hostname: string }): Promise<{ deleted: string }>;
 
   /**
+   * Remove a member: their role is taken away and their login leaves the team (409 when the removal is refused)
+   *
+   * `DELETE /members/{memberId}` — `dashboard/remove-member`
+   */
+  removeMember(input: { memberId: string }): Promise<{ removed: boolean; pending: boolean }>;
+
+  /**
+   * Re-send a pending invite's email (a lapsed invitation is renewed); 404 when there is no such pending invite
+   *
+   * `POST /members/invites/{invitationId}/resend` — `dashboard/resend-invite`
+   */
+  resendInvite(input: { invitationId: string }): Promise<{ invitationId: string; acceptUrl: string; emailDelivered: boolean }>;
+
+  /**
    * Finish the install of an app stuck provisioning, in place (409 unless it is)
    *
    * `POST /apps/{scopeId}/resume` — `dashboard/resume-app`
@@ -271,6 +327,13 @@ export interface DashboardClient {
    * `DELETE /findings/rules/{ruleId}` — `dashboard/revoke-finding-rule`
    */
   revokeFindingRule(input: { ruleId: string }): Promise<FindingRuleEntry>;
+
+  /**
+   * Withdraw a pending invite
+   *
+   * `DELETE /members/invites/{invitationId}` — `dashboard/revoke-invite`
+   */
+  revokeInvite(input: { invitationId: string }): Promise<{ revoked: true }>;
 
   /**
    * Acknowledge, resolve or reopen one of this team's findings
@@ -356,6 +419,12 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
     installApp: (input: Args) =>
       send("/apps", "POST", input, undefined),
+    inviteLink: (input: Args) =>
+      send(`/members/invites/${encodeURIComponent(String(input.invitationId))}/link`, "POST", omit(input, ["invitationId"]), undefined),
+    inviteMember: (input: Args) =>
+      send("/members/invites", "POST", input, undefined),
+    leaveTeam: () =>
+      send("/leave", "POST", undefined, undefined),
     listAppAudit: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/audit`, "GET", undefined, omit(input, ["scopeId"])),
     listAppEvents: (input: Args) =>
@@ -370,6 +439,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/findings/rules", "GET", undefined, input),
     listFindings: (input: Args) =>
       send("/findings", "GET", undefined, input),
+    listMembers: (input: Args) =>
+      send("/members", "GET", undefined, input),
     listTeamAudit: (input: Args) =>
       send("/audit", "GET", undefined, input),
     removeApp: (input: Args) =>
@@ -378,12 +449,18 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames/${encodeURIComponent(String(input.hostname))}`, "DELETE", undefined, omit(input, ["scopeId","hostname"])),
     removeDomain: (input: Args) =>
       send(`/domains/${encodeURIComponent(String(input.hostname))}`, "DELETE", undefined, omit(input, ["hostname"])),
+    removeMember: (input: Args) =>
+      send(`/members/${encodeURIComponent(String(input.memberId))}`, "DELETE", undefined, omit(input, ["memberId"])),
+    resendInvite: (input: Args) =>
+      send(`/members/invites/${encodeURIComponent(String(input.invitationId))}/resend`, "POST", omit(input, ["invitationId"]), undefined),
     resumeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/resume`, "POST", omit(input, ["scopeId"]), undefined),
     retryApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/retry`, "POST", omit(input, ["scopeId"]), undefined),
     revokeFindingRule: (input: Args) =>
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
+    revokeInvite: (input: Args) =>
+      send(`/members/invites/${encodeURIComponent(String(input.invitationId))}`, "DELETE", undefined, omit(input, ["invitationId"])),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
     verifyDomain: (input: Args) =>
