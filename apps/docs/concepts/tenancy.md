@@ -177,11 +177,13 @@ vertical's manifest can declare stores the platform mints for it, one per *tenan
   store of that name is refused.
 
 A **scope store** is the level below those. `scopeStores` declares one platform-run object
-per scope: a binding and a kind, with no default kind. The only kind today is `graph`.
-The platform holds the namespace and the key. The vertical is not given either. A binding
-used by another store, and the name `ATTACHMENTS`, are refused. A kind with no registration
-is refused too, and none is registered yet, so a push that declares a scope store does not
-succeed until that registration exists. Hosted upload of the store script is a later step.
+per scope: a binding and a kind, with no default kind. The only kind named so far is
+`graph`. A hosted upload carries no store binding: the vertical's calls go through the
+platform, which addresses the object. A binding used by another store, and the name
+`ATTACHMENTS`, are refused. A kind with no registration is refused too, and none is
+registered yet, so a push that declares a scope store does not succeed until that
+registration exists. Hosted upload of the store script is a later step. See
+[Scope stores](./scope-stores.md).
 
 The per-tenant stores follow one ownership rule, and it is the load-bearing part: **the builder supplies
 no id.** The vertical declares a *need*; the platform mints the database or bucket, holds the

@@ -2,4 +2,4 @@
 '@substrat-run/docs': patch
 ---
 
-The scope-store concept page covers erasure, snapshot and backup — including that a store's tables in a backup are not sealed per subject — the storage meter, and what an invocation line records. Hosted upload of a store script is still waiting on a registered kind.
+The scope-store concept page says what a vertical can use today (nothing is live until a store kind is registered) and covers the platform call path, what an invocation line records, erasure, snapshot, restore, export and backup — including that a store's tables in a backup are not sealed per subject — the storage meter, and the known limits.

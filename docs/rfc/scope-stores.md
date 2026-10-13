@@ -111,13 +111,11 @@ HMAC key. An undeclared binding is refused by the router before it signs. The na
 `SUBSTRAT_STORE_<BINDING>` is the direct binding used in local development and tests,
 and that binding is not an isolation boundary (§1).
 
-**Implementation status / scaffolding.** The implementation stack (#2224, #2225)
-currently injects a raw `SUBSTRAT_STORE_<BINDING>` `durable_object_namespace` into the
-serving upload. That is temporary scaffolding and does not match the intent above. It is
-inert while no store kind is registered. It is removed and replaced by the signed router
-hop of §1 before the first kind is registered (§10.9, rule L1). The guard on main
-(`control-plane-api/test/deploy.test.ts`) fails if a kind is registered while that
-injection exists.
+**Implementation status.** The implementation stack (#2224, #2225) first injected a raw
+`SUBSTRAT_STORE_<BINDING>` `durable_object_namespace` into the serving upload, as temporary
+scaffolding. #2247 removed that injection: no upload carries a store binding, and a test
+holds the serving and per-version uploads to rule L1 (§10.8 item (d), §10.9 step 2). The
+router hop of §1 is #2254.
 
 A push that names a kind with no registration is refused twice: by the CLI's push check,
 and again by the control plane on upload. A declaration the platform cannot run is not
