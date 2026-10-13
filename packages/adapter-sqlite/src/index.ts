@@ -4265,7 +4265,10 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * `substrat.erase` on each declared binding. A store error throws, so the caller
-   * can leave the subject key untouched. No runners means nothing to erase.
+   * can leave the subject key untouched. Fail closed (#2242): an empty answer means
+   * this host KNOWS it holds nothing for the scope. It always can tell — the
+   * directory names the scope's vertical, and the runners are this host's own — so
+   * unlike a Cloudflare host with no control plane it has no "cannot tell" case.
    */
   private async eraseScopeStores(
     tenantId: TenantId,
@@ -4278,8 +4281,9 @@ export class SqliteScopeHost implements ScopeHost {
       | { vertical: string | null }
       | undefined;
     const vertical = row?.vertical;
-    // Shred calls this for every scope. One this host cannot name a store for is
-    // nothing to erase, and the key is still destroyed.
+    // Shred calls this for every scope. No vertical names no store object, and a
+    // vertical this host is not pinned to is one its runners never served: both hold
+    // nothing here, and the key is still destroyed.
     if (!vertical) return [];
     if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return [];
     const erasures: { binding: string; erased: number }[] = [];
