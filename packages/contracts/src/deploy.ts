@@ -342,7 +342,7 @@ const storeCatalogOperation = z
  * The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
  */
 export const storeKindRegistration = z.object({
-  kind: z.literal('ontomate'),
+  kind: z.literal('graph'),
   release: z.string().min(1),
   script: z.string().min(1),
   className: z.string().min(1),
@@ -364,7 +364,7 @@ export const STORE_KINDS: readonly StoreKindRegistration[] = [];
  */
 export const scopeStoreNeed = z.object({
   binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-  kind: z.literal('ontomate'),
+  kind: z.literal('graph'),
 });
 export type ScopeStoreNeed = z.infer<typeof scopeStoreNeed>;
 
@@ -582,7 +582,7 @@ export function assertStoreBindingsDistinct(input: {
 
 /**
  * A scope store whose kind has no registration is refused (#2207). The declaration
- * parses — `ontomate` is the kind — and still cannot be stored as if the platform
+ * parses — `graph` is the kind — and still cannot be stored as if the platform
  * could run it. {@link STORE_KINDS} is what "registered" means.
  */
 export function assertScopeStoresRegistered(stores: readonly ScopeStoreNeed[]): void {

@@ -10,10 +10,10 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 
 ## Declaring it
 
-`runtimeNeeds.scopeStores` is a list of `{ binding, kind }`. `binding` is a screaming-snake name. `kind` has no default. The only kind is `ontomate`.
+`runtimeNeeds.scopeStores` is a list of `{ binding, kind }`. `binding` is a screaming-snake name. `kind` has no default. The only kind is `graph`.
 
 ```ts
-scopeStores: [{ binding: 'GRAPH', kind: 'ontomate' }]
+scopeStores: [{ binding: 'GRAPH', kind: 'graph' }]
 ```
 
 At push the platform injects `SUBSTRAT_STORE_GRAPH`. That binding is the platform's. A binding already used by another store is refused, and so is the name `ATTACHMENTS`.
