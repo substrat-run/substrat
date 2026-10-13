@@ -6,15 +6,19 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const PACKAGES = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
 export const signedStoreFixtureWorker = {
   name: 'substrat-store-fixture',
-  modules: true,
-  // The fixture imports contracts' built MAC module by a relative path, so the module root has
-  // to contain both packages.
-  modulesRoot: join(dirname(fileURLToPath(import.meta.url)), '..', '..'),
-  // A string, not `new URL(…)`: the configs are typechecked with the workers types, whose URL
+  // Listed rather than discovered: the fixture imports contracts' built MAC module (a zero-import
+  // subpath) by a relative path, and workerd resolves it only if the module is declared. Paths
+  // are strings, not `new URL(…)`: the configs are typechecked with the workers types, whose URL
   // is not the one node:url's fileURLToPath takes.
-  scriptPath: join(dirname(fileURLToPath(import.meta.url)), 'signed-store-worker.js'),
+  modulesRoot: PACKAGES,
+  modules: [
+    { type: 'ESModule' as const, path: join(PACKAGES, 'adapter-cloudflare', 'test', 'signed-store-worker.js') },
+    { type: 'ESModule' as const, path: join(PACKAGES, 'contracts', 'dist', 'scope-store-mac.js') },
+  ],
   compatibilityDate: '2025-01-01',
   bindings: { SUBSTRAT_STORE_HMAC_KEY: 'scope-store-test-key' },
 };
