@@ -4,7 +4,7 @@ Evidence for [the scope-stores RFC](../../docs/rfc/scope-stores.md) and [#2207](
 Not a workspace member: nothing here is imported by a package, and `pnpm-lock.yaml` at the
 repo root does not name it. The lockfile in this directory is its own.
 
-The store is a counter in the Durable Object's SQLite. It is not Ontomate, and it keeps
+The store is a counter in the Durable Object's SQLite. It is not a real kind, and it keeps
 no state at module level.
 
 ## Run

@@ -4,6 +4,7 @@
  * A failure here is recorded; it does not change what run.mjs already showed.
  */
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,7 +12,7 @@ const pythonDir = dirname(fileURLToPath(import.meta.url));
 const port = 8793;
 // A fresh name each run: wrangler keeps the object's SQLite, so a fixed
 // name would increment a counter left by the previous run.
-const name = `tenant-1/vertical-py/${crypto.randomUUID()}/GRAPH`;
+const name = `tenant-1/vertical-py/${randomUUID()}/GRAPH`;
 
 function assert(condition, message, extra) {
   if (!condition) {

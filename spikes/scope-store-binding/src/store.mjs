@@ -6,7 +6,7 @@ import { verify } from './mac.mjs';
  * `{ result }` or `{ error: { code, status, body } }` out — so the RFC can
  * cite a shape that has actually run, not only been described.
  *
- * Nothing here is Ontomate. The class keeps no module-level state: every
+ * Nothing here is a real kind. The class keeps no module-level state: every
  * fact lives in this object's SQLite, which is what "tolerates eviction" requires.
  */
 export class CounterStore {

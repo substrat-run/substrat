@@ -19,8 +19,8 @@ event, at least once. `peerClient` calls another vertical. `ADMISSIBLE_BINDING_T
 `service`, and a `durable_object_namespace` with a `script_name` is refused on a binding the
 vertical declares.
 
-The first kind is Ontomate: a Python schema and data engine, one repository per scope, called
-synchronously from the operation the user is waiting on. The mechanism is generic. A new kind
+The first kind is a graph-database-shaped store: a Python schema and data engine, one
+repository per scope, that needs its own script and is called synchronously from the operation the user is waiting on. The mechanism is generic. A new kind
 adds a catalog, not a method.
 
 ## 1. The trust boundary
@@ -56,10 +56,11 @@ reaches. Hosted isolation is the hop above, not that binding.
 
 The signature is HMAC-SHA256 over the object name. The spike's check compared the MAC to
 the header and never to the object being addressed, so one signature opened every object.
-The store script now remembers the first name it accepts and refuses a later call that
-names a different object, including one that carries a valid MAC for that other name.
-The object cannot read its own `idFromName`, which is why the remembered string is the
-signed name.
+The design closes that by having the store script remember the first name it accepts and
+refuse a later call that names a different object, including one that carries a valid MAC
+for that other name. The object cannot read its own `idFromName`, which is why the
+remembered string is the signed name. **This is design intent. The spike does not
+implement or exercise it** (see Not yet evidenced).
 
 One script per (kind, vertical), upgraded in place. A new release replaces the script.
 The objects keep their storage, and the kind migrates its schema when an object wakes.
@@ -94,7 +95,7 @@ if a connector or a schedule needs one; it is not implied.
 ## 3. Declaration and binding
 
 `scopeStoreNeed` is `{ binding, kind }`. `binding` uses the SCREAMING_SNAKE rule
-`tenantStoreNeed` already has. `kind` is `z.literal('ontomate')` until a second kind
+`tenantStoreNeed` already has. `kind` is `z.literal('graph')` until a second kind
 asks to widen it, which is an additive change, the same intent as the comment on
 `tenantStoreNeed.kind`. No default: the kind is the choice.
 
@@ -108,8 +109,15 @@ HMAC key. An undeclared binding is refused by the router before it signs. The na
 `SUBSTRAT_STORE_<BINDING>` is the direct binding used in local development and tests,
 and that binding is not an isolation boundary (§1).
 
-A push that names a kind with no registration is refused. A declaration the platform
-cannot run is not stored as if it could. See D-63.
+**Implementation status / scaffolding.** The implementation stack (#2224, #2225)
+currently injects a raw `SUBSTRAT_STORE_<BINDING>` `durable_object_namespace` into the
+serving upload. That is temporary scaffolding and does not match the intent above. It is
+inert while no store kind is registered. It must be removed, or replaced by the signed
+router hop of §1, before the first kind is registered, and a test will enforce that.
+
+A push that names a kind with no registration is refused twice: by the CLI's push check,
+and again by the control plane on upload. A declaration the platform cannot run is not
+stored as if it could. See D-63.
 
 The vertical slug is not a field of the Cloudflare host today. It comes from the scope
 record when the control plane is present, and from the host option the pure adapter
@@ -133,8 +141,9 @@ Reserved names, only the platform may send:
 | `substrat.wipe` | none | `{}` | remove all of it |
 | `substrat.erase` | `{ subjectId }` | `{ erased }` | the kind's answer to subject erasure (#2068, D-45) |
 
-The store accepts a reserved name only when the MAC's audience is `platform`. That MAC
-is a second use of the same key, made by the control plane, which calls the store script
+The design is that the store accepts a reserved name only when the MAC's audience is
+`platform`. The spike has no audience: its MAC covers the name alone, so this is not yet
+evidenced. That MAC is a second use of the same key, made by the control plane, which calls the store script
 through the dispatch namespace and does not go through the vertical. A caller holding a
 direct binding, or a request signed for audience `caller`, is refused by the store. The
 vertical's stub also refuses `substrat.*` before it fetches, so a vertical cannot ask.
@@ -145,10 +154,10 @@ the caller that holds the binding can leave the flag unset.
 it deletes is specified with #2068. This RFC only reserves the name and requires the
 operation to exist, so a kind cannot ship without a place for erasure to land.
 
-The kind decides what a dump holds. For Ontomate that is the repository. Open sessions
+The kind decides what a dump holds. For the first kind that is the repository. Open sessions
 and unsaved drafts are not part of it, so a fork or a restored scope starts without
 them. The dump format is `scopeDumpTable` (`packages/contracts/src/introspection.ts`):
-name, DDL, columns, rows. Nothing in the four lifecycle operations is specific to Ontomate.
+name, DDL, columns, rows. Nothing in the four lifecycle operations is specific to that kind.
 
 ## 5. Registering a kind
 
@@ -187,7 +196,7 @@ external process. A runner is handed to `SqliteScopeHost` and satisfies:
   `request` is the envelope, answered with the same envelope
 - the reserved operations, on the platform path only
 
-The kind ships the runner. Ontomate's is a local process with one repository per address.
+The kind ships the runner. The first kind's is a local process with one repository per address.
 The contract suite uses an in-process runner of the trivial kind, on both adapters.
 
 ## 8. Copies, and what a shred reaches
@@ -224,12 +233,40 @@ operation's transaction: if the operation commits and the call fails, the vertic
 the error. There is no idempotency key. A retry is safe when the operation is. A cold
 start is the kind's latency.
 
-`kind: z.literal('ontomate')` in the Apache-2.0 contracts package is intended. The kind
-name is part of the public vocabulary, and #2207 already uses it.
+`kind: z.literal('graph')` in the Apache-2.0 contracts package is intended. The kind id
+is part of the public vocabulary and names a shape, not a product. A second kind widens
+the union additively.
 
 Jurisdiction: every scope is `global` today, and a store object follows its scope when
 per-jurisdiction ids exist. No placement hint. No keep-alive. No permission model inside
 the store.
+
+## Not yet evidenced
+
+The spike (`spikes/scope-store-binding`) shows what its FINDINGS list under Shown. It does
+not show these, and the isolation argument in §1 rests on the first two:
+
+- **First-name memory.** `store.mjs` verifies the MAC against the `x-store-name` header
+  only. It stores no first name and compares nothing to it. A caller with a valid MAC for
+  X who sets header X but addresses `idFromName(Y)` is admitted.
+- **MAC audience (`platform` vs `caller`).** The MAC covers the name alone. Reserved
+  operations are refused by a flag on the spike's caller worker, which the RFC itself says
+  is not a control. No store-side refusal of `substrat.*` for a non-platform MAC exists.
+- **The router hop.** `store.substrat.internal`, egress forwarding, the `ScopeStoreCalls`
+  entrypoint and the declared-binding check are not in the spike; callers there address
+  the namespace directly.
+- **`substrat.erase`.** Not implemented by either probe, and `substrat.export` and
+  `substrat.import` were not run on the Python object.
+- **Admission before dispatch.** The store initialises its table before the signature is
+  checked in the object, and a binding holder can reach object activation for any name.
+  Resource limits on rejected traffic are not measured.
+- **Hosted behaviour.** A dispatch-namespace upload, isolate sharing, jurisdiction,
+  metering, snapshot and reap (§1, FINDINGS).
+
+Follow-up: extend the spike with first-name pinning (including a validly signed other
+name) and `platform` vs `caller` audience for `substrat.*`, each with an assertion in
+`run.mjs`, and move them into FINDINGS Shown only when they pass. Until then the RFC
+claims them as design.
 
 ## Alternatives rejected
 

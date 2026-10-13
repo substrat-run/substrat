@@ -63,3 +63,7 @@ with `idFromName("<tenant>/<vertical>/<scope>/<binding>")` through a
   and verticals share a 128 MB isolate. Not exercised.
 - Jurisdiction, metering, snapshot and reap. The reserved operations answered; nothing
   here calls them from the scope lifecycle.
+- First-name pinning and MAC audience. `store.mjs` checks the MAC against the
+  `x-store-name` header only; it remembers no first name and has no `platform` / `caller`
+  audience. A caller with a valid MAC for one name who addresses another object is not
+  refused. Both are design intent in the RFC (see its "Not yet evidenced" section).
