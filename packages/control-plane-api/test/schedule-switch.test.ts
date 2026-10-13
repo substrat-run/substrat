@@ -572,7 +572,7 @@ describe('the repair route re-asserts the switch after the deployment reconciles
         await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
       }
       // Wiped: the marker and the grants are gone; the directory's record is not.
-      await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+      await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] });
       return s;
     };
     const repair = (s: string) => app.request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers: asStaff });
@@ -653,7 +653,7 @@ describe('the install route re-asserts the switch after the deployment provision
       await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
     }
     // Wiped: the marker and the grants are gone; the directory's record is not.
-    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] });
     return s;
   };
 
@@ -774,7 +774,7 @@ describe('the record is carried into the deployment and its in-unit move audited
     if (switchedOff) {
       await host.admin.revokeFromSystem(staff, { moduleId: TICK, node: { tenantId: t, scopeId: s }, reason: 'incident' });
     }
-    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] });
     bodies.length = 0;
     return s;
   };
@@ -833,7 +833,7 @@ describe('the record is carried into the deployment and its in-unit move audited
       .run(t, `vertical:${PEER}`, 'granted:x:read', `tenant:${t}`);
     await host.admin.revokeFromPeer(staff, { vertical: PEER, node: { tenantId: t, scopeId: s }, reason: 'incident' });
     // The scope loses its marker, the record keeps it.
-    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] });
     bodies.length = 0;
     expect((await app().request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers: asStaff })).status).toBe(200);
     expect(bodies).toEqual([

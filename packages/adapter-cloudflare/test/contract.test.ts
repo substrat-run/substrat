@@ -89,7 +89,7 @@ import {
   SWITCH_HOLD_SETTLE_MS,
   SWITCH_HOLD_SNAPSHOT_MS,
   SWITCH_HOLDS_NAME,
-} from '../src/host.js';
+} from './test-host.js';
 import type { DoReply } from '../src/do-reply.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { PROVISIONED_VERSIONS_SQL, installsReconciledOf, provisionedVersionsParams, runPlatformSweep, type ScopeHost } from '@substrat-run/kernel';
@@ -2718,7 +2718,7 @@ describe('#1742 — the CP-full seat and restore switch off in their own unit', 
   it("a wiped scope's re-provision switches the module off in the seat's unit", async () => {
     const s = await newScope();
     await off(s);
-    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] });
+    await host.restoreScope(staff, t, s, { tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] });
     await host.provisionScope(staff, { tenantId: t, scopeId: s });
     expect(await reasserts(s)).toEqual([inUnit]);
     expect(await host.runDueSchedules(SCHED, t, s)).toMatchObject({ fired: 0, switchedOff: true });

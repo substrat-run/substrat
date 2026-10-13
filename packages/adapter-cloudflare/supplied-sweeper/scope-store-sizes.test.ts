@@ -16,4 +16,15 @@ describe('scope store sizes on a worker with no store (#2239)', () => {
     const host = new CloudflareScopeHost({ scope: (env as unknown as { SCOPE: DurableObjectNamespace }).SCOPE });
     expect(await host.scopeStoreSizesLocal(tenantId.parse(ulid()), scopeId.parse(ulid()))).toEqual([]);
   });
+
+  // #2243 r3: the export a backup, a full pull and a snapshot ask for. It used to read the
+  // directory first, which a host with no control plane cannot do: a 400 for every copy of a
+  // deployment that holds no store at all.
+  it('answer an empty export, and erase nothing, before the directory is asked', async () => {
+    const host = new CloudflareScopeHost({ scope: (env as unknown as { SCOPE: DurableObjectNamespace }).SCOPE });
+    const [t, s] = [tenantId.parse(ulid()), scopeId.parse(ulid())];
+    expect(await host.scopeStoreExportLocal(t, s)).toEqual([]);
+    await expect(host.scopeStoreImportLocal(t, s, [])).resolves.toBeUndefined();
+    expect(await host.scopeStoreEraseLocal(t, s, ulid())).toEqual([]);
+  });
 });

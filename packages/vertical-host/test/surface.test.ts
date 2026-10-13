@@ -628,6 +628,38 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await refused.json()).error).toMatch(/erase a scope store/);
   });
 
+  it('exports and imports scope stores behind the gate, and 501s on a host that cannot', async () => {
+    const table = { name: 'counter', ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)', columns: ['n'], rows: [[4]] };
+    const host = fakeHost({
+      scopeStoreExportLocal: async () => [{ binding: 'GRAPH', kind: 'counter', tables: [table] }],
+      scopeStoreImportLocal: async () => undefined,
+    });
+    const url = `/internal/scope-store-export?scopeId=${SCOPE}&tenantId=${TENANT}`;
+    const exported = await appWith(host).request(url, { headers: authed() }, ENV);
+    expect(exported.status).toBe(200);
+    expect(await exported.json()).toEqual({ stores: [{ binding: 'GRAPH', kind: 'counter', tables: [table] }] });
+    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
+    const older = fakeHost();
+    const refused = await appWith(older).request(url, { headers: authed() }, ENV);
+    expect(refused.status).toBe(501);
+    expect((await refused.json()).error).toMatch(/export scope stores/);
+
+    const imported = await appWith(host).request('/internal/scope-store-import', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', tables: [table] }] }),
+    }, ENV);
+    expect(imported.status).toBe(200);
+    expect(await imported.json()).toEqual({ tables: 1 });
+    const refusedImport = await appWith(older).request('/internal/scope-store-import', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, stores: [] }),
+    }, ENV);
+    expect(refusedImport.status).toBe(501);
+    expect((await refusedImport.json()).error).toMatch(/import scope stores/);
+  });
+
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,
   // which lives in THIS deployment's DO. The query string is the filter — parsed here, not
   // trusted onward — so a console can ask for one provider's traffic.

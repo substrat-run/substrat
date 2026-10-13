@@ -108,6 +108,7 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
+  scopeStoreDump,
   scopeStoreSize,
   storeErasure,
   type VerticalCaller,
@@ -1249,6 +1250,34 @@ export class VerticalClient {
       throw new ControlPlaneError(502, `script answered redact-subject incompletely for scope ${scopeId}`);
     }
     return answer;
+  }
+
+  /**
+   * The scope stores captured with an export (#2211). A deployment that predates the
+   * route answers 501, which a backup reads as "no stores", not as an empty scope.
+   */
+  async scopeStoreExport(tenantId: TenantId, scopeId: ScopeId): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+    const answer = await this.getInternal<{ stores?: unknown }>(
+      `/internal/scope-store-export?scopeId=${encodeURIComponent(scopeId)}&tenantId=${encodeURIComponent(tenantId)}`,
+    );
+    const parsed = scopeStoreDump.array().safeParse(answer.stores);
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `vertical answered scope-store-export without a store list for scope ${scopeId}`);
+    }
+    return parsed.data;
+  }
+
+  /** Replace each named scope store (#2211). A binding this deployment does not have is a 404. */
+  async scopeStoreImport(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
+  ): Promise<void> {
+    await this.postInternal(
+      '/internal/scope-store-import',
+      { tenantId, scopeId, stores: stores.map(({ binding, kind, tables }) => ({ binding, ...(kind ? { kind } : {}), tables })) },
+      'scope-store-import',
+    );
   }
 
   /**

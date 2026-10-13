@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, scopeStoreObjectName, tenantId, type ScopeLifecycle } from '@substrat-run/contracts';
 import { ulid, type ScopeStoreRunner } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 describe('scope store door (cloudflare host, #2209)', () => {

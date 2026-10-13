@@ -39,7 +39,7 @@ import {
   planDirectoryDdl,
 } from '../src/control-plane-do.js';
 import { switchSqlOver } from '../src/scope-do.js';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));

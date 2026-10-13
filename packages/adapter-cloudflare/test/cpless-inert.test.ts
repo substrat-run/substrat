@@ -15,7 +15,7 @@ import {
 } from '@substrat-run/contracts';
 import { scheduleMod } from '@substrat-run/contract-tests';
 import { INERT_SCOPE_REASON, ulid } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 
 let revision = 0;
 /**

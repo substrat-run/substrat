@@ -672,7 +672,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     const legacy: ScopeId[] = [];
     /** The serving script's copy of the data: the marker did not survive into it. */
     const serving = {
-      exportScope: async (s: string) => ({ tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] }),
+      exportScope: async (s: string) => ({ tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] }),
       // A move exports stamped (#1722); a deployment that predates the stamp answers none.
       exportScopeStamped: async () => ({ tables: [], loadStamp: null, revision: null }),
       // The copy lands with the grants live and no marker; the carried list (#1742) goes back

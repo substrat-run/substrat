@@ -17,7 +17,7 @@ import {
 import { ulid } from '@substrat-run/kernel';
 import { PEER_BARE, PEER_CALLER, PEER_LISTENER, peerMod, scheduleMod } from '@substrat-run/contract-tests';
 import { switchCarryFor } from '@substrat-run/control-plane-api';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 import { armRewind, holdsStub, landRewind, restartNow } from './pitr-emulation.js';
 

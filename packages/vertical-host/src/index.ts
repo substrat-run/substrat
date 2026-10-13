@@ -135,6 +135,7 @@ import {
   type EntityRef,
   type Visibility,
   type RoleDefinition,
+  scopeDumpTable,
   type ScopeDumpTable,
   type ScopeTable,
   type ScopeQueryResult,
@@ -327,7 +328,7 @@ export interface VerticalScopeHost {
   /** #2016: `tenantId`, the tenant the platform snapshots for: the source must not be another
    *  tenant's, and the copy records it as its own. A host built before it ignores it. */
   snapshotScopeLocal(source: ScopeId, dest: ScopeId, tenantId?: TenantId): Promise<{ tables: number }>;
-  deleteScopeLocal(scopeId: ScopeId): Promise<void>;
+  deleteScopeLocal(scopeId: ScopeId, tenantId?: TenantId): Promise<void>;
   migrationBookmarksLocal(
     scopeId: ScopeId,
   ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
@@ -380,6 +381,17 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<{ binding: string; erased: number }[]>;
+  /** The scope stores to put in a backup (#2211). 501 when the host predates it. */
+  scopeStoreExportLocal?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]>;
+  /** Replace each named scope store from a dump (#2211). Refuses a binding that is not declared. */
+  scopeStoreImportLocal?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
+  ): Promise<void>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
@@ -1494,6 +1506,41 @@ export function mountPlatformSurface<Env extends object>(
     });
   });
 
+  // #2211: the scope stores a backup copies. A host that predates the method answers
+  // 501, which the control plane reads as "this deployment has no store export".
+  app.get('/internal/scope-store-export', async (c) => {
+    const scope = scopeIdOf.parse(c.req.query('scopeId'));
+    const tenant = tenantIdOf.parse(c.req.query('tenantId'));
+    const host = deps.hostFor(c.env);
+    if (!host.scopeStoreExportLocal) {
+      return c.json({ error: 'this deployment cannot export scope stores (#2211). Redeploy it' }, 501);
+    }
+    return c.json({ stores: await host.scopeStoreExportLocal(tenant, scope) });
+  });
+
+  app.post('/internal/scope-store-import', async (c) => {
+    const body = z
+      .object({
+        tenantId: tenantIdOf,
+        scopeId: scopeIdOf,
+        stores: z.array(z.object({ binding: z.string(), kind: z.string().min(1).optional(), tables: z.array(z.unknown()) })),
+      })
+      .strict()
+      .parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.scopeStoreImportLocal) {
+      return c.json({ error: 'this deployment cannot import scope stores (#2211). Redeploy it' }, 501);
+    }
+    // The kind rides along so the host can refuse a dump of another kind before it writes (L8).
+    const stores = body.stores.map((store) => ({
+      binding: store.binding,
+      ...(store.kind ? { kind: store.kind } : {}),
+      tables: z.array(scopeDumpTable).parse(store.tables),
+    }));
+    await host.scopeStoreImportLocal(body.tenantId, body.scopeId, stores);
+    return c.json({ tables: stores.length });
+  });
+
   // #286: the PITR bookmarks one scope recorded before its migration passes — the rewind
   // points a backout offers. Metadata only; no scope bytes cross the boundary.
   app.get('/internal/bookmarks', async (c) =>
@@ -1525,7 +1572,7 @@ export function mountPlatformSurface<Env extends object>(
 
   app.post('/internal/delete-scope', async (c) => {
     const body = z.object({ scopeId: scopeIdOf, tenantId: tenantIdOf.optional() }).parse(await c.req.json());
-    await deps.hostFor(c.env).deleteScopeLocal(body.scopeId);
+    await deps.hostFor(c.env).deleteScopeLocal(body.scopeId, body.tenantId);
     // #1902: a reaped scope's alarm must never wake it again.
     await platformSweeperOf(c.env)?.forgetScope(body.scopeId);
     await deps.onDeleteScope?.(c.env, body.scopeId, body.tenantId);

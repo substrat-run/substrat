@@ -69,6 +69,7 @@ const dumpAt = (capturedAt: string, tenantId = 'ten1', scopeId = 'sc1'): ScopeDu
   tenantId,
   scopeId,
   capturedAt,
+  stores: [],
   tables: [
     {
       name: 'customers',

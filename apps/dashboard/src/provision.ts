@@ -1105,6 +1105,7 @@ export async function restoreAppData(
       capturedAt: new Date().toISOString(),
       // boundary-lint-end R6
       tables: input.tables,
+      stores: [],
     }, input.sourceScopeId ? { sourceScopeId: input.sourceScopeId } : undefined);
   }
   return { restored: input.appScopeId, tables: input.tables.length, safetyCopyId: safety.id };

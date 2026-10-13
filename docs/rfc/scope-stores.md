@@ -669,7 +669,7 @@ What each open PR keeps:
 |---|---|---|
 | #2240 reserved ops | `callReservedStoreOperation`, and `HostAdmin.scopeStoreSizes` on the pure host | `/internal/scope-store-sizes` and `VerticalClient.scopeStoreSizes` (removed in #2254) |
 | #2242 erasure | Ordering (redact, erase, then destroy the key), the host arm, and the control-plane arm's rules | `/internal/scope-store-erase`, and the fix's call to the vertical: superseded by the control-plane-direct erase on #2254 (item (k)) |
-| #2243 dump, restore, reap | Stores in the dump, stores-first ordering, masked exports without stores | `/internal/scope-store-export` and `-import`. `scopeStoreKind` / `scopeStores.kinds` become dev and test only. "Closes #2211" becomes "Part of #2211" |
+| #2243 dump, restore, reap | Stores in the dump; on reap and delete the stores are wiped before the scope's own storage (L6), and on restore and import the scope's tables load before its stores; masked exports without stores | `/internal/scope-store-export` and `-import`. `scopeStoreKind` / `scopeStores.kinds` become dev and test only. "Closes #2211" becomes "Part of #2211" |
 | #2244 meter | The gauge table and the sweep | Its reader moves from the vertical's route to the control plane (in #2254) |
 | #2246 invocation log | Everything | none |
 | #2247 upload plan | `scopeStoreScriptName`, one script per (kind, vertical), made injective in step 2 | The name-only MAC, replaced in step 5 |

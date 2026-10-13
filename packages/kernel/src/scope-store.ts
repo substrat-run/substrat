@@ -46,6 +46,11 @@ export interface ScopeStoreHostOptions {
   /** When set, a scope running any other vertical is refused. */
   readonly vertical?: string;
   readonly runners: readonly { readonly binding: string; readonly runner: ScopeStoreRunner }[];
+  /**
+   * Kind of an ambient binding, which has no runner to ask. A dump must not
+   * invent one: an export of a binding named in neither place is refused.
+   */
+  readonly kinds?: Readonly<Record<string, string>>;
 }
 
 export function scopeStoreRunnersOf(

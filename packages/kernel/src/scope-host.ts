@@ -121,6 +121,7 @@ import type {
   ReadScopeTableInput,
   Scope,
   ScopeDump,
+  ScopeDumpInput,
   SubjectShredReceipt,
   ScopeQueryResult,
   ScopeId,
@@ -5298,7 +5299,7 @@ export interface ScopeHost {
   importScope(
     actor: PlatformActorId,
     input: ProvisionScopeInput,
-    dump: ScopeDump,
+    dump: ScopeDumpInput,
   ): Promise<void>;
 
   /**
@@ -5320,7 +5321,7 @@ export interface ScopeHost {
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    dump: ScopeDump,
+    dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
   ): Promise<void>;
 
