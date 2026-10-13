@@ -66,6 +66,8 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
   const appScope = scopeId.parse(ulid());
   /** Every `/observability/tenant-logs` request that reached the plane, as a URL. */
   let logReads: URL[];
+  /** Every other plane path asked of, so a refused read can be shown to have reached nothing. */
+  let planeReads: string[];
   let env: Record<string, unknown>;
 
   beforeEach(async () => {
@@ -74,6 +76,7 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     logReads = [];
+    planeReads = [];
 
     const owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'logs', name: 'Logs' });
@@ -102,6 +105,9 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
             logReads.push(u);
             return Response.json({ hours: 24, buckets: [{ provider: 'mail', start: '2026-09-01T10:00:00Z', bucketMinutes: 15, calls: 2, errors: 1, ok: 1, class4xx: 0, class5xx: 1, timeouts: 0, failed: 0, durationP50: 30, durationP95: 80 }] });
           }
+          // The vertical's scope list a stranger's id is looked for in (#2192): none of them is it.
+          if (path === '/scopes') return Response.json({ entries: [], nextCursor: null });
+          planeReads.push(path);
           return Response.json({ error: `unexpected ${path}` }, { status: 500 });
         },
       },
@@ -148,6 +154,18 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
     expect((await read(stranger, `?invocationId=${CALL}`)).status).toBe(404);
     expect(logReads).toEqual([]);
   });
+  it('refuses another app’s id on every read the request view makes, before any plane read (#2192)', async () => {
+    const stranger = scopeId.parse(ulid());
+    const asked = (path: string) =>
+      app.request(`/api/apps/${stranger}/${path}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    expect((await asked(`invocation?invocationId=${CALL}`)).status).toBe(404);
+    expect((await asked(`cause?eventId=${CALL}`)).status).toBe(404);
+    expect((await asked(`effects?eventId=${CALL}`)).status).toBe(404);
+    expect((await asked(`observability/logs?invocationId=${CALL}`)).status).toBe(404);
+    expect(planeReads).toEqual([]);
+    expect(logReads).toEqual([]);
+  });
+
   it('forwards an absolute metric window and confines both aggregate and chart reads to owned apps', async () => {
     const bounds = new URLSearchParams({ since: '2026-09-01T10:07:00Z', until: '2026-09-01T10:29:00Z', hours: '72' });
     for (const path of [`/api/apps/${appScope}/observability/metrics`, '/api/observability/traffic']) {
