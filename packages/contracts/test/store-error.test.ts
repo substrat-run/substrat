@@ -36,6 +36,8 @@ describe('StoreError (#2209)', () => {
     expect(new StoreError({ code: 'big', status: 409, body: fits }).storeBody).toBe(fits);
     expect(new StoreError({ code: 'big', status: 409, body: `${fits}a` }).storeBody).toBeUndefined();
     expect(new StoreError({ code: 'bigint', status: 409, body: { n: 1n } }).storeBody).toBeUndefined();
+    // The bound is bytes, not characters: 600 'é' is 602 characters of JSON and 1202 bytes.
+    expect(new StoreError({ code: 'wide', status: 409, body: 'é'.repeat(600) }).storeBody).toBeUndefined();
   });
 
   it('reads an error envelope only with a status from 400 to 599', () => {
