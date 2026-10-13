@@ -56,7 +56,7 @@ function callLine(row: DeclaredCallRow): string {
         ? `Cut off at ${row.vertical} by ${row.switchedOff.actor} ${relativeTime(row.switchedOff.at)} — “${row.switchedOff.reason}”`
         : `Cut off at ${row.vertical}. Let it back in from that app's page.`;
     case 'no-grant':
-      return `${row.vertical} grants this app nothing, so its calls are refused. Usually the target has not declared this app as a peer.`;
+      return `${row.vertical} grants this app nothing, so its calls are refused. Either its version does not declare this app as a peer, or its install predates the version that does: the platform reconciles that on its regular pass after a promote, and \`substrat scope provision\` on its scope does it now.`;
     case 'unreadable':
       return `Could not read where this stands at ${row.vertical}: ${row.message}`;
   }

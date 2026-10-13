@@ -17,9 +17,13 @@ import {
   PLATFORM_SWEEPER_VAR as VERTICAL_HOST_SWEEPER_VAR,
   SCOPE_SWEEP_HOST_KEY as VERTICAL_HOST_SWEEP_HOST_KEY,
 } from '@substrat-run/vertical-host';
+import { observeStoreCall } from '@substrat-run/kernel';
+import { PLATFORM_ENTRY_ALS_FALLBACK, PLATFORM_ENTRY_ALS_IMPORT } from '../src/platform-entry.generated.js';
 import {
+  ASYNC_LOCAL_STORAGE_FLAG,
   PLATFORM_ENTRY_MODULE,
   PLATFORM_SWEEPER_MODULE,
+  platformEntryFlags,
   platformEntrySkipReason,
   platformSweeperDecision,
   withPlatformEntry,
@@ -51,6 +55,37 @@ describe('withPlatformEntry (#1893)', () => {
     const entry = textOf(out.modules[0]!);
     expect(entry).toContain('"./worker.js"');
     expect(entry).not.toContain('__SUBSTRAT_VERTICAL_ENTRY__');
+  });
+
+  it('adds nodejs_als only to a script with neither it nor nodejs_compat, and never reorders (#2245)', () => {
+    expect(platformEntryFlags(undefined)).toEqual({ flags: [ASYNC_LOCAL_STORAGE_FLAG], asyncLocalStorage: true });
+    expect(platformEntryFlags([])).toEqual({ flags: ['nodejs_als'], asyncLocalStorage: true });
+    expect(platformEntryFlags(['streams_enable_constructors'])).toEqual({
+      flags: ['streams_enable_constructors', 'nodejs_als'],
+      asyncLocalStorage: true,
+    });
+    expect(platformEntryFlags(['nodejs_compat'])).toEqual({ flags: ['nodejs_compat'], asyncLocalStorage: true });
+    expect(platformEntryFlags(['x', 'nodejs_als', 'y'])).toEqual({ flags: ['x', 'nodejs_als', 'y'], asyncLocalStorage: true });
+    // An explicit opt-out is kept, and the entry then imports nothing it cannot have.
+    expect(platformEntryFlags(['no_nodejs_als'])).toEqual({ flags: ['no_nodejs_als'], asyncLocalStorage: false });
+  });
+
+  it('uploads the flags it decided, and drops the entry’s node import only where the script opts out (#2245)', () => {
+    const flagless = withPlatformEntry({ ...bundle(), compatibilityFlags: [] });
+    expect(flagless.compatibilityFlags).toEqual(['nodejs_als']);
+    expect(textOf(flagless.modules[0]!)).toContain(PLATFORM_ENTRY_ALS_IMPORT);
+    const compat = withPlatformEntry({ ...bundle(), compatibilityFlags: ['nodejs_compat'] });
+    expect(compat.compatibilityFlags).toEqual(['nodejs_compat']);
+    expect(textOf(compat.modules[0]!)).toContain(PLATFORM_ENTRY_ALS_IMPORT);
+    const optedOut = withPlatformEntry({ ...bundle(), compatibilityFlags: ['no_nodejs_als'] });
+    expect(optedOut.compatibilityFlags).toEqual(['no_nodejs_als']);
+    const text = textOf(optedOut.modules[0]!);
+    expect(text).not.toContain(PLATFORM_ENTRY_ALS_IMPORT);
+    expect(text).not.toMatch(/from\s*["']node:/);
+    expect(text).toContain(PLATFORM_ENTRY_ALS_FALLBACK);
+    // A bundle the platform does not wrap keeps its flags as they were.
+    const unwrapped = { entry: 'worker.js', modules: [js('other.js', '')], compatibilityFlags: [] };
+    expect(withPlatformEntry(unwrapped)).toBe(unwrapped);
   });
 
   it('points at an entry in a subdirectory by its path from the script root', () => {
@@ -205,6 +240,36 @@ describe('the generated entry, run (#1893)', () => {
       delete (globalThis as Record<string, unknown>)['__verticalMiddleware'];
     }
     expect(cap.lines).toHaveLength(1);
+  });
+
+  it('names a store call the vertical made with no observer, on the one line (#2245)', async () => {
+    // The vertical's stub is THIS suite's kernel, a different copy from the entry's: what they
+    // share is the slot on globalThis, which the entry fills from its AsyncLocalStorage.
+    (globalThis as Record<string, unknown>)['__storeCall'] = (operation: string) =>
+      observeStoreCall('GRAPH', operation, async () => 1);
+    const mod = await load(`
+      export default {
+        async fetch() {
+          await globalThis.__storeCall('increment');
+          await new Promise((r) => setTimeout(r, 1));
+          await globalThis.__storeCall('read');
+          return new Response('ok');
+        },
+      };`);
+    const cap = capture();
+    try {
+      await Promise.all([mod['default'].fetch(routed(), { ROUTER_SECRET: SECRET }, {}), mod['default'].fetch(routed(), { ROUTER_SECRET: SECRET }, {})]);
+      // Outside any request: not logged, not thrown.
+      expect(await (globalThis as Record<string, any>)['__storeCall']('read')).toBe(1);
+    } finally {
+      cap.restore();
+      delete (globalThis as Record<string, unknown>)['__storeCall'];
+    }
+    // Two requests in flight at once: each line names its own two calls.
+    expect(cap.lines).toHaveLength(2);
+    for (const line of cap.lines) {
+      expect((line['storeCalls'] as Array<{ operation: string }>).map((c) => c.operation)).toEqual(['increment', 'read']);
+    }
   });
 
   it('hands back a class entrypoint, or no default at all, untouched', async () => {

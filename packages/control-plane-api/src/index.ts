@@ -114,6 +114,16 @@ export type {
   ConfigureInstanceInput,
 } from './vertical-client.js';
 export {
+  callPlatformScopeStore,
+  platformScopeStoresFor,
+  scopeStoresOf,
+  unreachablePlatformScopeStores,
+  type PlatformScopeStoreDispatch,
+  type PlatformScopeStores,
+  type DeclaredScopeStore,
+  declaredStoresOf,
+} from './platform-scope-stores.js';
+export {
   assertSandboxContract,
   deployManifest,
   deploymentRefFor,

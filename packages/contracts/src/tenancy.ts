@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { instant, orgId, scopeId, slug, tenantId } from './ids.js';
+import { SCOPE_STORE_SCRIPT_PREFIX } from './script-names.js';
 
 export const tenantStatus = z.enum([
   'active',
@@ -45,7 +46,15 @@ export type Tenant = z.infer<typeof tenant>;
 // create omits it (→ null).
 export const createTenantInput = tenant
   .pick({ id: true, slug: true, name: true })
-  .extend({ provisionedByTenant: tenantId.nullable().optional() });
+  .extend({
+    // L20: every vertical this tenant owns has a script stem starting with its slug, so a slug
+    // inside the scope-store script name space could register nothing. Refused at the claim, on
+    // the input only: a stored tenant is read back with the plain `tenant` schema.
+    slug: slug.refine((value) => !`${value}-`.startsWith(SCOPE_STORE_SCRIPT_PREFIX), {
+      message: `a tenant slug cannot start with '${SCOPE_STORE_SCRIPT_PREFIX}': that script name space is the platform's`,
+    }),
+    provisionedByTenant: tenantId.nullable().optional(),
+  });
 export type CreateTenantInput = z.infer<typeof createTenantInput>;
 
 /**

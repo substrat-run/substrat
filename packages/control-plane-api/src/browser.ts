@@ -24,6 +24,7 @@ export type {
   ProvisionScopeInput,
   RebindScopeResult,
   RecentLogEvent,
+  ReprovisionedScope,
   ScopeHealth,
   ServiceMetricsRow,
   StaffMember,

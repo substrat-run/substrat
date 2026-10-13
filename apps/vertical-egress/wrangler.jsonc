@@ -15,6 +15,7 @@
 	"services": [
 		{ "binding": "ROUTER", "service": "substrat-router" },
 		{ "binding": "PEER_CALLS", "service": "substrat-router", "entrypoint": "PeerCalls" },
+		{ "binding": "STORE_CALLS", "service": "substrat-router", "entrypoint": "ScopeStoreCalls" },
 		// RELAY: the control plane's `RelayGateway` entrypoint. A vertical's call to the relay
 		// (`PLATFORM_CP_URL`) goes here with the caller the router dispatched, because the
 		// relay's own authentication says a platform script is calling, not which vertical.
@@ -53,6 +54,7 @@
 			"services": [
 				{ "binding": "ROUTER", "service": "substrat-router-test" },
 				{ "binding": "PEER_CALLS", "service": "substrat-router-test", "entrypoint": "PeerCalls" },
+				{ "binding": "STORE_CALLS", "service": "substrat-router-test", "entrypoint": "ScopeStoreCalls" },
 				{ "binding": "RELAY", "service": "substrat-control-plane-test", "entrypoint": "RelayGateway" }
 			], // differs
 			// Test hosts (`*.global.test.substrat.run`) still end in `substrat.run`, so the same

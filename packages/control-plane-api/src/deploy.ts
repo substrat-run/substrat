@@ -2,8 +2,9 @@ import {
   ADMISSIBLE_BINDING_TYPES,
   assertDeclaredScopeStores,
   PLATFORM_BINDING_PREFIX,
-  scopeStoreBindingName,
+  scopeStoreScriptName,
   STORE_KINDS,
+  storeNamesOfBindings,
   substratError,
   verticalScriptStem,
   type ScopeStoreNeed,
@@ -181,53 +182,12 @@ const NAMED_REFUSALS: Record<string, string> = {
 };
 
 /**
- * The §4 sandbox contract. Throws a `forbidden` `substratError` (403 — the upload is well-formed
- * and still refused) if a declared binding is not one of the vertical's OWN admissible
- * resources — a positive
- * ALLOWLIST (`ADMISSIBLE_BINDING_TYPES` in contracts), so a type the check never anticipated
- * is refused by omission, not allowed by it. Every refusal names the offending binding and
- * its type and points at the doc section, so a builder can predict admission from the same
- * list the CLI carries.
- *
- * The load-bearing refusals: the `CONTROL_PLANE` directory (by name, whatever type it claims);
- * a `service` binding (a vertical is one serving script — no own sibling, and platform reach
- * is the router, K-27); a `dispatch_namespace` (the platform's WfP fabric); and any DO binding
- * that is not one of the vertical's OWN classes (cross-script, or a class it didn't declare).
- * Admitted own resources: its `ScopeDO`/state classes, and own data stores — `d1` (e.g. a
- * Better-Auth `AUTH_DB`), `kv_namespace`, `queue`, `r2_bucket`, `analytics_engine`, and inert
- * `secret_text`/`plain_text` config.
- *
- * The static shared `d1` binding names a `database_id`, and this check does not prove the
- * vertical *owns* that id rather than pointing at another tenant's DB — a gap closed under
- * model B by human admission (a person trusts the builder's declared bindings), not by this
- * structural check. The way OUT of that trust is a `tenantStoreNeed`: a **per-tenant** store
- * carries NO id (the platform mints one per tenant in the tenant lifecycle and injects it,
- * #301), so it is a `runtimeNeeds` need rather than a `declaredBinding` and never rides this
- * allowlist at all — there is no bundle-chosen id left to trust. A vertical migrating from a
- * single shared D1 to platform-provisioned per-tenant stores is how the ownership question
- * stops applying. (The kernel seam is `provisionTenantStore`/`openTenantStore`; on Cloudflare
- * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
+ * The script a kind is uploaded as, for one vertical (#2210). Defined in contracts beside the
+ * vertical script names it must never collide with (L20).
  */
-/**
- * The cross-script bindings a serving upload adds for declared scope stores (#2207).
- * One per declaration, named `SUBSTRAT_STORE_<BINDING>`, aimed at the kind's script
- * and class. A kind that is not in `kinds` is refused: the upload does not invent
- * a target. The default registry is empty, so a declaration does not inject until
- * a kind is registered.
- */
-/**
- * The script a kind is uploaded as, for one vertical (#2210).
- *
- * Stable across releases. A new release of the kind is uploaded into this same
- * name, so the objects — addressed by {@link scopeStoreObjectName}, which also
- * carries no version — stay where they are. A vertical's own deploy version is
- * not part of it either: pushing the vertical again does not move the store.
- */
-export function scopeStoreScriptName(vertical: string, kind: string): string {
-  return `substrat-store-${kind}-${verticalScriptStem(vertical)}`;
-}
+export { scopeStoreScriptName };
 
-/** One store script to upload, and the bindings that point at it. */
+/** One store script to upload. The serving script is not given the namespace or the key. */
 export interface ScopeStoreUploadPlan {
   readonly scripts: readonly {
     readonly kind: string;
@@ -236,15 +196,15 @@ export interface ScopeStoreUploadPlan {
     readonly scriptName: string;
     readonly className: string;
   }[];
-  readonly bindings: readonly DeclaredBinding[];
+  /** Empty (L1). A vertical reaches a store through the platform, not a binding of its own. */
+  readonly bindings: readonly [];
 }
 
 /**
- * Which store scripts a vertical's push uploads, and which bindings it injects
- * (#2210). One script per (kind, vertical), shared by every binding of that
- * kind. The script name does not include the kind's release. A kind that is
- * not in `kinds` is refused, the same way {@link scopeStoreScriptBindings}
- * refuses it. The default registry is empty.
+ * Which store scripts a vertical's stores need (#2210). One script per (kind, vertical), shared
+ * by every binding of that kind, named by {@link scopeStoreScriptName}, which carries no release:
+ * a new release of the kind is uploaded into the same name. A kind that is not in `kinds` is
+ * refused. The default registry is empty. Nothing uploads these scripts yet.
  */
 export function scopeStoreUploadPlan(input: {
   readonly vertical: string;
@@ -273,49 +233,61 @@ export function scopeStoreUploadPlan(input: {
       className: kind.className,
     });
   }
-  const bindings = input.stores.map((store) => {
-    const script = scripts.find((candidate) => candidate.kind === store.kind);
-    if (!script) {
-      throw substratError('forbidden', `deploy refused: scope store '${store.binding}' has no script to bind`);
-    }
-    return {
-      type: 'durable_object_namespace' as const,
-      name: scopeStoreBindingName(store.binding),
-      class_name: script.className,
-      script_name: script.scriptName,
-    };
-  });
-  return { scripts, bindings };
+  return { scripts, bindings: [] };
 }
 
-export function scopeStoreScriptBindings(
-  stores: readonly ScopeStoreNeed[],
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
-): DeclaredBinding[] {
-  return stores.map((store) => {
-    const kind = kinds.find((candidate) => candidate.kind === store.kind);
-    if (!kind) {
-      throw substratError(
-        'forbidden',
-        `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
-          `A store kind is platform code, pinned to a release the way a connector is.`,
-      );
-    }
-    return {
-      type: 'durable_object_namespace',
-      name: scopeStoreBindingName(store.binding),
-      class_name: kind.className,
-      script_name: kind.script,
-    };
-  });
+/**
+ * The bindings a vertical's upload carries (#2210), the per-version push and the serving upload
+ * alike: the version's own declared bindings, then the platform's (the serving upload's
+ * ledger-derived stores; none on a push). A declared scope store adds none (RFC scope-stores §10.2, L1):
+ * its kind is still checked against `kinds`, so a version whose kind is not registered is
+ * refused here as at push.
+ */
+export function verticalUploadBindings<B>(input: {
+  readonly vertical: string;
+  readonly manifest: { readonly bindings: readonly DeclaredBinding[]; readonly scopeStores: readonly ScopeStoreNeed[] };
+  readonly platformBindings: readonly B[];
+  readonly kinds?: readonly StoreKindRegistration[];
+}): (DeclaredBinding | B)[] {
+  const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.manifest.scopeStores, kinds: input.kinds });
+  return [...input.manifest.bindings, ...input.platformBindings, ...plan.bindings];
 }
 
+/**
+ * The §4 sandbox contract. Throws a `forbidden` `substratError` (403 — the upload is well-formed
+ * and still refused) if a declared binding is not one of the vertical's OWN admissible
+ * resources — a positive
+ * ALLOWLIST (`ADMISSIBLE_BINDING_TYPES` in contracts), so a type the check never anticipated
+ * is refused by omission, not allowed by it. Every refusal names the offending binding and
+ * its type and points at the doc section, so a builder can predict admission from the same
+ * list the CLI carries.
+ *
+ * The load-bearing refusals: the `CONTROL_PLANE` directory (by name, whatever type it claims);
+ * a `service` binding (a vertical is one serving script — no own sibling, and platform reach
+ * is the router, K-27); a `dispatch_namespace` (the platform's WfP fabric); and any DO binding
+ * that is not one of the vertical's OWN classes (cross-script, or a class it didn't declare).
+ * Admitted own resources: its `ScopeDO`/state classes, and own data stores — `d1` (e.g. a
+ * Better-Auth `AUTH_DB`), `kv_namespace`, `queue`, `r2_bucket`, `analytics_engine`, and inert
+ * `secret_text`/`plain_text` config.
+ *
+ * The static shared `d1` binding names a `database_id`, and this check does not prove the
+ * vertical *owns* that id rather than pointing at another tenant's DB — a gap closed under
+ * model B by human admission (a person trusts the builder's declared bindings), not by this
+ * structural check. The way OUT of that trust is a `tenantStoreNeed`: a **per-tenant** store
+ * carries NO id (the platform mints one per tenant in the tenant lifecycle and injects it,
+ * #301), so it is a `runtimeNeeds` need rather than a `declaredBinding` and never rides this
+ * allowlist at all — there is no bundle-chosen id left to trust. A vertical migrating from a
+ * single shared D1 to platform-provisioned per-tenant stores is how the ownership question
+ * stops applying. (The kernel seam is `provisionTenantStore`/`openTenantStore`; on Cloudflare
+ * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
+ */
 export function assertSandboxContract(m: DeployManifest): void {
+  // The same derivation push applies (#2224): an own DO binding is an own store.
   assertDeclaredScopeStores({
+    ...storeNamesOfBindings(m.bindings),
     tenantStores: m.tenantStores,
     blobStores: m.blobStores,
     scopeStores: m.scopeStores,
-    bindingNames: m.bindings.map((b) => b.name),
   });
   const own = new Set(m.doClasses);
   const admissible = new Set<string>(ADMISSIBLE_BINDING_TYPES);

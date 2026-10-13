@@ -1050,7 +1050,22 @@ describe('control-plane API', () => {
     expect(await res.json()).toMatchObject({ scopeId: sP, owner });
     expect(captured).toMatchObject({ tenantId: t1, scopeId: sP });
     expect(captured?.owner).toBeUndefined(); // the vertical re-sources the owner; the CP never sends one
+    // #2263: and accepts the ownerless reconcile from a vertical that keeps no owner of record.
+    expect(captured).toMatchObject({ ownerless: 'seat' });
     expect(captured?.entitlements?.find((e) => e.entitlementKey === 'housing')).toMatchObject({ quota: 10, plan: 'pro' });
+  });
+
+  it('relays an ownerless reconcile as owner null, never as an owner re-granted (#2263)', async () => {
+    const sO = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sO, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sO);
+    const ownerless = {
+      reconcileInstance: async () => ({ tenantId: t1, scopeId: sO, owner: null }),
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { 'demo-vert': ownerless } });
+    const res = await delegated.request(`/tenants/${t1}/scopes/${sO}/provision`, { method: 'POST', headers: auth });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ scopeId: sO, owner: null });
   });
 
   it("relays the vertical's reconcile refusal (no owner of record) instead of collapsing to 500", async () => {

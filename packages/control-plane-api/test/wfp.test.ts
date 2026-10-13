@@ -80,7 +80,7 @@ describe('createWfpUploader — secret injection', () => {
     expect(bindings).toContainEqual({ type: 'secret_text', name: 'ROUTER_SECRET', text: 'r-val' });
     // The vertical's own binding survives, and the compat flags carry through.
     expect(bindings).toContainEqual({ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' });
-    expect(meta['compatibility_flags']).toEqual(['nodejs_compat']);
+    expect(meta['compatibility_flags']).toEqual(['nodejs_compat', 'nodejs_als']);
   });
 
   it('skips a secret whose value is unset (a half-configured platform)', async () => {

@@ -1,10 +1,12 @@
 /**
  * The signature a scope-store object checks before it answers (#2210).
  *
- * HMAC-SHA256 over the object name, Web Crypto only. The control plane holds
- * the key and signs. The store script holds the same key and verifies. A
- * vertical's script is not given the key: it never signs, and a call with no
- * signature, or a signature over a different name, is not this object's call.
+ * HMAC-SHA256 over the object name, Web Crypto only. It binds no audience, operation or time,
+ * so it is not the store's authentication: RFC scope-stores §10.3 replaces it with a signed
+ * envelope (migration step 5).
+ *
+ * @internal Not a supported API: exported only so the platform's own signer and the store
+ * fixture share one implementation until the §10.3 envelope replaces it.
  */
 
 declare const btoa: (input: string) => string;
@@ -40,7 +42,11 @@ async function hmacKey(secret: string, usage: 'sign' | 'verify'): Promise<Crypto
   );
 }
 
-/** Sign an object name. The result is base64url, with no padding. */
+/**
+ * Sign an object name. The result is base64url, with no padding.
+ *
+ * @internal Not a supported API; replaced by the RFC scope-stores §10.3 envelope (step 5).
+ */
 export async function signScopeStoreName(secret: string, objectName: string): Promise<string> {
   const key = await hmacKey(secret, 'sign');
   const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(objectName));
@@ -50,6 +56,8 @@ export async function signScopeStoreName(secret: string, objectName: string): Pr
 /**
  * Whether `signature` is the HMAC of `objectName` under `secret`. A malformed
  * signature is false. The comparison is Web Crypto's verify, not a string compare.
+ *
+ * @internal Not a supported API; replaced by the RFC scope-stores §10.3 envelope (step 5).
  */
 export async function verifyScopeStoreName(secret: string, objectName: string, signature: string): Promise<boolean> {
   const bytes = base64UrlToBytes(signature);

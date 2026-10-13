@@ -286,6 +286,8 @@ describe('router', () => {
       // A request off the internet starts a chain, so its depth is 0.
       scope: S,
       calls: null,
+      // #2207: a row from a control-plane DO that predates the column names no store.
+      stores: [],
       depth: 0,
       // #2005: a row from a control-plane DO that predates the field says nothing, which
       // resolves primary — the skew window `routeTarget` documents.

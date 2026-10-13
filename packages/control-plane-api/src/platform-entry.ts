@@ -39,6 +39,8 @@ import {
 } from '@substrat-run/contracts';
 import type { VerticalBundle } from './deploy.js';
 import {
+  PLATFORM_ENTRY_ALS_FALLBACK,
+  PLATFORM_ENTRY_ALS_IMPORT,
   PLATFORM_ENTRY_MODULE,
   PLATFORM_ENTRY_PLACEHOLDER,
   PLATFORM_ENTRY_SOURCE,
@@ -210,6 +212,32 @@ export function deployedDoClasses(doClasses: readonly string[], supplySweeper: b
   return supplySweeper ? [...new Set([...doClasses, PLATFORM_SWEEPER_CLASS])] : [...doClasses];
 }
 
+/** The flag that gives a script `node:async_hooks` and nothing else of node (#2245). */
+export const ASYNC_LOCAL_STORAGE_FLAG = 'nodejs_als';
+
+/**
+ * The compatibility flags a wrapped script is uploaded with, and whether the platform entry
+ * may import `AsyncLocalStorage` (#2245, RFC §6: the request runs in one, so its store calls
+ * reach its line). The entry imports `node:async_hooks`, which workerd allows only under
+ * `nodejs_als` or `nodejs_compat`:
+ *
+ * - either flag already there: the flags go up exactly as declared;
+ * - neither: `nodejs_als` is appended, after the declared ones. It has no compatibility-date
+ *   gate, and it adds `node:async_hooks` alone — no other node module, no globals;
+ * - the script opts out with `no_nodejs_als`: the flags go up as declared and the entry drops
+ *   its import, so the upload never fails over it. With `nodejs_compat` beside the opt-out,
+ *   vertical-host still reaches `AsyncLocalStorage` through `process.getBuiltinModule` and the
+ *   line names the calls; with no `nodejs_compat` either, the line names no store calls.
+ *
+ * Existing flags are never removed or reordered.
+ */
+export function platformEntryFlags(declared: readonly string[] | undefined): { flags: string[]; asyncLocalStorage: boolean } {
+  const flags = [...(declared ?? [])];
+  if (flags.includes(`no_${ASYNC_LOCAL_STORAGE_FLAG}`)) return { flags, asyncLocalStorage: false };
+  if (flags.includes(ASYNC_LOCAL_STORAGE_FLAG) || flags.includes('nodejs_compat')) return { flags, asyncLocalStorage: true };
+  return { flags: [...flags, ASYNC_LOCAL_STORAGE_FLAG], asyncLocalStorage: true };
+}
+
 /**
  * The bundle as uploaded: the platform's entry module added (or refreshed) and named as
  * the script's main module, importing the vertical's own entry — and, when the version's
@@ -221,19 +249,23 @@ export function deployedDoClasses(doClasses: readonly string[], supplySweeper: b
  * platform modules it can no longer reach.
  */
 export function withPlatformEntry<
-  B extends Pick<VerticalBundle, 'entry' | 'modules'> & Partial<Pick<VerticalBundle, 'doClasses' | 'bindings' | 'supplySweeper'>>,
+  B extends Pick<VerticalBundle, 'entry' | 'modules'> &
+    Partial<Pick<VerticalBundle, 'doClasses' | 'bindings' | 'supplySweeper' | 'compatibilityFlags'>>,
 >(bundle: B): B {
   const supply = bundle.supplySweeper === true;
   if (platformEntrySkipReason(bundle) !== undefined) return bundle;
   const own = bundle.modules.filter((m) => !PLATFORM_MODULES.has(m.name));
   const encode = (text: string) => new TextEncoder().encode(text);
+  const { flags, asyncLocalStorage } = platformEntryFlags(bundle.compatibilityFlags);
   // Module names are paths from the script root, where the platform entry sits too.
   let source = PLATFORM_ENTRY_SOURCE.split(PLATFORM_ENTRY_PLACEHOLDER).join(`./${bundle.entry}`);
+  if (!asyncLocalStorage) source = source.split(PLATFORM_ENTRY_ALS_IMPORT).join(PLATFORM_ENTRY_ALS_FALLBACK);
   if (supply) source += `export { ${PLATFORM_SWEEPER_CLASS} } from "./${PLATFORM_SWEEPER_MODULE}";\n`;
   const kind = 'application/javascript+module';
   return {
     ...bundle,
     entry: PLATFORM_ENTRY_MODULE,
+    compatibilityFlags: flags,
     modules: [
       { name: PLATFORM_ENTRY_MODULE, content: encode(source), contentType: kind },
       ...(supply ? [{ name: PLATFORM_SWEEPER_MODULE, content: encode(PLATFORM_SWEEPER_SOURCE), contentType: kind }] : []),

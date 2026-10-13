@@ -7,6 +7,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
+import { STORE_KIND_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
@@ -330,22 +331,38 @@ export interface StoreOperationCatalog {
   readonly operations: readonly string[];
 }
 
-const storeCatalogOperation = z
+/** The longest store operation name (#2207 §6). */
+export const STORE_OPERATION_NAME_MAX = 64;
+
+/**
+ * A store operation name is a fixed label (#2207 §6): no `@`, no whitespace, no `:`,
+ * at most {@link STORE_OPERATION_NAME_MAX} characters. The name goes on an invocation
+ * line tenant members can read, so a name built from input (`lookup:<email>`) is
+ * refused rather than logged. The reserved `substrat.*` names are labels too.
+ */
+export const storeOperationName = z
   .string()
   .min(1)
-  .refine((name) => !name.startsWith('substrat.'), {
+  .max(STORE_OPERATION_NAME_MAX)
+  .regex(/^[^@:\s]+$/, { message: 'a store operation name is a fixed label: no @, no whitespace, no :' });
+
+const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWith('substrat.'), {
     message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
   });
 
+/** A store kind id: `[a-z0-9]+` (RFC scope-stores §10.7, L20). Part of every store script name. */
+export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store kind id is [a-z0-9]+' });
+
 /**
- * A store kind, pinned the way a connector is: an exact release, the script and class
+ * A store kind, pinned the way a connector is: an exact release, the class
  * the platform runs, the catalog a vertical may call, and every reserved operation.
  * The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
  */
 export const storeKindRegistration = z.object({
-  kind: z.literal('graph'),
+  // Held to the kind-id grammar first (L20), so a second kind cannot be added outside it.
+  kind: storeKindId.pipe(z.literal('graph')),
   release: z.string().min(1),
-  script: z.string().min(1),
+  // No script name: the platform names the upload `scopeStoreScriptName(vertical, kind)`.
   className: z.string().min(1),
   operations: z.array(storeCatalogOperation),
   platformOperations: z.array(z.enum(RESERVED_STORE_OPERATIONS)).refine(
@@ -359,9 +376,45 @@ export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 export const STORE_KINDS: readonly StoreKindRegistration[] = [];
 
 /**
+ * Whether a version's stored manifest (`HostAdmin.versionManifest`) declares a scope
+ * store (#2242). `null` is a version pushed before manifests were kept, which is before
+ * scope stores, so it declares none. `undefined` is returned when the JSON cannot be
+ * read as a stored manifest: the caller cannot tell, and must not read that as "none".
+ */
+export function scopeStoresDeclaredIn(manifestJson: string | null): boolean | undefined {
+  if (manifestJson === null) return false;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(manifestJson);
+  } catch {
+    return undefined;
+  }
+  const parsed = storedDeployManifest.safeParse(raw);
+  return parsed.success ? parsed.data.scopeStores.length > 0 : undefined;
+}
+
+/**
+ * Whether the deployment running a version may hold a scope store — the gate subject
+ * erasure fails closed on (#2242). A push declaring an unregistered kind is refused, so
+ * with no kind in `kinds` nothing can hold one: false, and erasure proceeds as it did
+ * before stores existed. Otherwise true when the manifest declares a store, or when it
+ * is unknown (`undefined`: no version can be named, or it could not be read) or cannot
+ * be parsed. False for a manifest that declares none, and for `null`, a version pushed
+ * before manifests (and so stores) existed.
+ */
+export function mayHoldScopeStores(
+  manifestJson: string | null | undefined,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+): boolean {
+  if (kinds.length === 0) return false;
+  if (manifestJson === undefined) return true;
+  return scopeStoresDeclaredIn(manifestJson) ?? true;
+}
+
+/**
  * A platform-run object, one per scope (#2207). The builder names the binding and the
- * kind. The kind has no default. The platform injects `SUBSTRAT_STORE_<BINDING>` at
- * push; the vertical never writes that binding.
+ * kind. The kind has no default. A scope store adds no binding to the vertical's upload
+ * (RFC scope-stores §10.7, L1): the vertical reaches it only through the platform's hop.
  */
 export const scopeStoreNeed = z.object({
   binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
@@ -389,15 +442,16 @@ export function scopeStoreObjectName(tenantId: string, vertical: string, scopeId
 
 /** `{ operation, input }` over the store's fetch. */
 export const storeRequest = z.object({
-  operation: z.string().min(1),
+  operation: storeOperationName,
   input: z.unknown().optional(),
 });
 export type StoreRequest = z.infer<typeof storeRequest>;
 
-/** What a store answers when it refuses. `code` is the kind's, `status` is HTTP. */
+/** What a store answers when it refuses. `code` is the kind's, `status` is an HTTP
+ *  error status: anything outside 400–599 is not a refusal, and not this envelope. */
 export const storeErrorEnvelope = z.object({
   code: z.string().min(1),
-  status: z.number().int(),
+  status: z.number().int().min(400).max(599),
   body: z.unknown().optional(),
 });
 
@@ -427,7 +481,21 @@ export const storeImportInput = z.object({ tables: z.array(scopeDumpTable) });
 export const storeImportResult = z.object({ tables: z.number().int().nonnegative() });
 export type StoreImportResult = z.infer<typeof storeImportResult>;
 
-export const storeWipeResult = z.object({}).strict();
+export const storeWipeResult = z.object({});
+export type StoreWipeResult = z.infer<typeof storeWipeResult>;
+
+/**
+ * What each reserved operation answers, parsed (#2239). A plain map of the result
+ * types, so a package that names one (the kernel's `callReservedStoreOperation`)
+ * publishes no zod type of its own.
+ */
+export interface ReservedStoreResults {
+  'substrat.export': StoreExportResult;
+  'substrat.import': StoreImportResult;
+  'substrat.size': StoreSizeResult;
+  'substrat.wipe': StoreWipeResult;
+  'substrat.erase': StoreEraseResult;
+}
 
 /** One binding's storage, as `scopeStoreSizes` reports it. */
 export const scopeStoreSize = z.object({
@@ -549,9 +617,10 @@ function isPerTenantRuntimeName(name: string, binding: string): boolean {
  * A static wrangler binding is compared to the name that lands on the worker,
  * not to the declaration. An own store's durable-object binding IS that store,
  * so passing it again counts the name twice; push omits those names. A
- * per-tenant store is injected as `BINDING__<tenant>`, and a scope store as
- * `SUBSTRAT_STORE_<BINDING>`. A static binding spelled `DB` or `GRAPH` is not
- * either of those.
+ * per-tenant store is injected as `BINDING__<tenant>`. A scope store is not bound
+ * on a hosted worker at all; `SUBSTRAT_STORE_<BINDING>` is the name a dev or test
+ * host binds it under, so a static binding of that name is refused here as the
+ * store's runtime name. A static binding spelled `DB` or `GRAPH` is neither of those.
  */
 export function assertStoreBindingsDistinct(input: {
   readonly own?: readonly { binding: string }[];
@@ -583,15 +652,20 @@ export function assertStoreBindingsDistinct(input: {
     }
     claim(store.binding, 'a scope store');
   }
-  const perTenant = [...(input.tenantStores ?? []), ...(input.blobStores ?? [])];
   for (const name of input.bindingNames ?? []) {
-    const own = (input.own ?? []).find((store) => store.binding === name);
-    if (own) {
+    if ((input.own ?? []).some((store) => store.binding === name)) {
       throw substratError(
         'forbidden',
         `deploy refused: binding '${name}' is declared as an own store and as a static binding. One name is one store.`,
       );
     }
+  }
+  // Every name that lands on the worker, an own store's included, is compared with the
+  // runtime names the platform injects: an own DO binding called `DB__<tenant>` would be a
+  // second binding of that name beside the per-tenant store `DB`.
+  const perTenant = [...(input.tenantStores ?? []), ...(input.blobStores ?? [])];
+  const landed = [...(input.own ?? []).map((store) => store.binding), ...(input.bindingNames ?? [])];
+  for (const name of landed) {
     const tenant = perTenant.find((store) => isPerTenantRuntimeName(name, store.binding));
     if (tenant) {
       throw substratError(
@@ -607,6 +681,23 @@ export function assertStoreBindingsDistinct(input: {
       );
     }
   }
+}
+
+/**
+ * The two name lists {@link assertStoreBindingsDistinct} reads off a deploy's static
+ * bindings (#2224). An own durable-object binding is an own store and is compared as
+ * written; every other static binding is compared by the name that lands on the worker.
+ * Push and the control plane both derive them here, from the `bindings` the manifest
+ * carries, so the two checks cannot drift apart.
+ */
+export function storeNamesOfBindings(
+  bindings: readonly { type: string; name: string; script_name?: string }[],
+): { own: { binding: string }[]; bindingNames: string[] } {
+  const isOwnStore = (b: (typeof bindings)[number]) => b.type === 'durable_object_namespace' && !b.script_name;
+  return {
+    own: bindings.filter(isOwnStore).map((b) => ({ binding: b.name })),
+    bindingNames: bindings.filter((b) => !isOwnStore(b)).map((b) => b.name),
+  };
 }
 
 /**
@@ -1571,8 +1662,9 @@ export const deployManifest = z.object({
   /** Per-tenant blob stores (#473) — same carry-for-provisioning rule as `tenantStores`:
    *  never a static binding; the platform mints one bucket per tenant and injects it. */
   blobStores: z.array(blobStoreNeed).default([]),
-  /** Platform-run objects, one per scope (#2207). Never a static binding: the platform
-   *  injects `SUBSTRAT_STORE_<BINDING>` for a registered kind and refuses the rest. */
+  /** Platform-run objects, one per scope (#2207). Never a binding on the vertical's upload
+   *  (L1): the vertical reaches one only through the platform's hop. An unregistered kind is
+   *  refused. */
   scopeStores: z.array(scopeStoreNeed).default([]),
   /** The vertical's static files (#340): routing config + the full path/hash/size/type
    *  manifest. Never a binding — native assets are a top-level upload path, so they do not

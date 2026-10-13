@@ -582,84 +582,6 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await refused.json()).error).toMatch(/database size/);
   });
 
-  it('serves scope store sizes behind the gate, and 501s on a host that cannot read them', async () => {
-    const url = `/internal/scope-store-sizes?scopeId=${SCOPE}&tenantId=${TENANT}`;
-    const host = fakeHost({
-      scopeStoreSizesLocal: async (tenant, scope) =>
-        tenant === TENANT && scope === SCOPE ? [{ binding: 'GRAPH', bytes: 12 }] : [],
-    });
-    const ok = await appWith(host).request(url, { headers: authed() }, ENV);
-    expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ stores: [{ binding: 'GRAPH', bytes: 12 }] });
-
-    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
-    expect((await appWith(host).request(`/internal/scope-store-sizes?scopeId=nope&tenantId=${TENANT}`, { headers: authed() }, ENV)).status).toBe(400);
-
-    const older = fakeHost();
-    const refused = await appWith(older).request(url, { headers: authed() }, ENV);
-    expect(refused.status).toBe(501);
-    expect((await refused.json()).error).toMatch(/scope store sizes/);
-  });
-
-  it('erases scope stores behind the gate, and 501s on a host that cannot', async () => {
-    const host = fakeHost({
-      scopeStoreEraseLocal: async () => [{ binding: 'GRAPH', erased: 1 }],
-    });
-    const body = JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, subjectId: 'subject-1' });
-    const ok = await appWith(host).request('/internal/scope-store-erase', {
-      method: 'POST',
-      headers: authed({ 'content-type': 'application/json' }),
-      body,
-    }, ENV);
-    expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ storeErasures: [{ binding: 'GRAPH', erased: 1 }] });
-    expect((await appWith(host).request('/internal/scope-store-erase', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body,
-    }, ENV)).status).toBe(403);
-    const older = fakeHost();
-    const refused = await appWith(older).request('/internal/scope-store-erase', {
-      method: 'POST',
-      headers: authed({ 'content-type': 'application/json' }),
-      body,
-    }, ENV);
-    expect(refused.status).toBe(501);
-    expect((await refused.json()).error).toMatch(/erase a scope store/);
-  });
-
-  it('exports and imports scope stores behind the gate, and 501s on a host that cannot', async () => {
-    const table = { name: 'counter', ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)', columns: ['n'], rows: [[4]] };
-    const host = fakeHost({
-      scopeStoreExportLocal: async () => [{ binding: 'GRAPH', kind: 'counter', tables: [table] }],
-      scopeStoreImportLocal: async () => undefined,
-    });
-    const url = `/internal/scope-store-export?scopeId=${SCOPE}&tenantId=${TENANT}`;
-    const exported = await appWith(host).request(url, { headers: authed() }, ENV);
-    expect(exported.status).toBe(200);
-    expect(await exported.json()).toEqual({ stores: [{ binding: 'GRAPH', kind: 'counter', tables: [table] }] });
-    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
-    const older = fakeHost();
-    const refused = await appWith(older).request(url, { headers: authed() }, ENV);
-    expect(refused.status).toBe(501);
-    expect((await refused.json()).error).toMatch(/export scope stores/);
-
-    const imported = await appWith(host).request('/internal/scope-store-import', {
-      method: 'POST',
-      headers: authed({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', tables: [table] }] }),
-    }, ENV);
-    expect(imported.status).toBe(200);
-    expect(await imported.json()).toEqual({ tables: 1 });
-    const refusedImport = await appWith(older).request('/internal/scope-store-import', {
-      method: 'POST',
-      headers: authed({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, stores: [] }),
-    }, ENV);
-    expect(refusedImport.status).toBe(501);
-    expect((await refusedImport.json()).error).toMatch(/import scope stores/);
-  });
-
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,
   // which lives in THIS deployment's DO. The query string is the filter — parsed here, not
   // trusted onward — so a console can ask for one provider's traffic.
@@ -1267,6 +1189,106 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
       ENV,
     );
     expect(res.status).toBe(409);
+  });
+
+  /**
+   * #2263: with no owner of record, a caller that accepts it gets the ownerless reconcile — the
+   * version's declared tuples seated, the recorded-off carry re-applied, and nothing else. The
+   * twins: without `ownerless` the refusal is what it always was (an entitlements delivery must
+   * never read a seat as its projection), and a host built before `seatScopeLocal` refuses too.
+   */
+  describe('the ownerless reconcile (#2263)', () => {
+    const reconcile = (host: VerticalScopeHost, deps: Parameters<typeof appWith>[1], extra: Record<string, unknown> = {}) =>
+      appWith(host, deps).request(
+        '/internal/reconcile',
+        {
+          method: 'POST',
+          headers: authed({ 'content-type': 'application/json' }),
+          body: JSON.stringify({
+            tenantId: TENANT,
+            scopeId: SCOPE,
+            entitlements: [],
+            identityLinks: [],
+            connectionKeys: [],
+            connectionGrants: [{ connectionId: 'conn-1', permission: 'x:read' }],
+            switchedOffPeers: ['acme/board-room'],
+            // A shape that retires a key: the ownerless path must never reach a retirement.
+            entityGrants: [{ entityType: 'room', permissions: ['x:read'], retired: ['x:old'], bootstrap: true, holder: 'grantee' }],
+            ...extra,
+          }),
+        },
+        ENV,
+      );
+    const seatingHost = () => {
+      const seen: unknown[] = [];
+      const host = fakeHost({
+        seatScopeLocal: async (input) => {
+          seen.push(input);
+          return { switchedOff: [] };
+        },
+      });
+      return { host, seen };
+    };
+
+    it('no resolveOwner: seats only, answers owner null, and runs neither the provision nor onProvision', async () => {
+      const { host, seen } = seatingHost();
+      const hooked: unknown[] = [];
+      const res = await reconcile(host, { onProvision: async (_e, b) => void hooked.push(b) }, { ownerless: 'seat' });
+      expect(res.status).toBe(200);
+      const answer = (await res.json()) as Record<string, unknown>;
+      expect(answer).toMatchObject({ tenantId: TENANT, scopeId: SCOPE, owner: null });
+      // No retirement or bound-shape report: the platform's receipt reads it as not finished.
+      expect(answer).not.toHaveProperty('retirementsLeftOpen');
+      expect(answer).not.toHaveProperty('boundShapeTypes');
+      // The seat carries the grants and the carry, and none of the projection.
+      expect(seen).toEqual([
+        {
+          tenantId: TENANT,
+          scopeId: SCOPE,
+          connectionGrants: [{ connectionId: 'conn-1', permission: 'x:read' }],
+          switchedOffPeers: ['acme/board-room'],
+        },
+      ]);
+      expect(host.calls).not.toContain('provisionScopeLocal');
+      expect(hooked).toEqual([]);
+    });
+
+    /**
+     * A vertical that KEEPS an owner of record and found none for this scope (an unclaimed seat)
+     * is owed the full reconcile once the record exists. Seating it and answering 200 would let
+     * the platform record the version as reconciled and never come back, so it stays the 409.
+     */
+    it('resolveOwner finds none: 409 with or without ownerless, and nothing seated or provisioned', async () => {
+      const { host, seen } = seatingHost();
+      for (const extra of [{ ownerless: 'seat' }, {}]) {
+        const res = await reconcile(host, { resolveOwner: async () => null }, extra);
+        expect(res.status).toBe(409);
+        expect(((await res.json()) as { error: string }).error).toMatch(/re-run the full install/);
+      }
+      expect(seen).toEqual([]);
+      expect(host.calls).not.toContain('provisionScopeLocal');
+    });
+
+    it('twin: without ownerless, no resolveOwner is the 501 it always was', async () => {
+      const { host, seen } = seatingHost();
+      expect((await reconcile(host, {})).status).toBe(501);
+      expect(seen).toEqual([]);
+    });
+
+    it('twin: a host built before seatScopeLocal refuses an ownerless reconcile as before', async () => {
+      const host = fakeHost();
+      expect((await reconcile(host, {}, { ownerless: 'seat' })).status).toBe(501);
+      expect(host.calls).toEqual([]);
+    });
+
+    it('twin: with an owner of record, ownerless changes nothing — the full reconcile runs', async () => {
+      const { host, seen } = seatingHost();
+      const res = await reconcile(host, { resolveOwner: async () => OWNER as never }, { ownerless: 'seat' });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { owner: unknown }).owner).toBe(OWNER);
+      expect(host.calls).toContain('provisionScopeLocal');
+      expect(seen).toEqual([]);
+    });
   });
 
   it('reconcile re-provisions with the resolved owner', async () => {

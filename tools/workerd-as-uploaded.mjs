@@ -102,6 +102,8 @@ export async function asUploaded(dir, derived) {
     doClasses: migrations.flatMap((m) => m.new_sqlite_classes ?? []),
     bindings,
     supplySweeper: decision.supply,
+    // #2245: the uploader may add `nodejs_als`, which the entry's AsyncLocalStorage needs.
+    compatibilityFlags: derived.compatibility_flags ?? [],
   });
   for (const m of uploaded.modules) {
     if (m.name !== entry) writeFileSync(join(cacheDir, m.name), m.content);
@@ -112,6 +114,7 @@ export async function asUploaded(dir, derived) {
   return {
     ...derived,
     main: join(cacheDir, uploaded.entry),
+    compatibility_flags: uploaded.compatibilityFlags,
     durable_objects: {
       bindings: [
         ...doBindings,

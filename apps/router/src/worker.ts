@@ -89,6 +89,11 @@ export interface Env {
    */
   DISPATCH?: DispatchNamespace;
   /**
+   * The HMAC key for a scope-store object name (#2207). The store script holds the
+   * same key. A vertical does not. Absent ⇒ every store call is refused.
+   */
+  STORE_HMAC_KEY?: string;
+  /**
    * Tenant-keyed request metering (design/observability.md §4.2). The router is the
    * one place that knows which TENANT a request belonged to — Cloudflare's own
    * analytics only see scripts — so it stamps that dimension here, one datapoint
@@ -150,6 +155,11 @@ interface OutboundPolicy {
    */
   scope: string;
   calls: string[] | null;
+  /**
+   * Scope stores the dispatched version declares (#2207). The egress worker
+   * judges a store call against this list. `null` is a version that predates it.
+   */
+  stores: { binding: string; kind: string }[] | null;
   depth: number;
   /**
    * #2005: whether that scope is the real install. False for a fork, a snapshot or a
@@ -189,6 +199,7 @@ function verticalFor(env: Env, target: RouteTarget, hostname: string): Fetcher |
       hosts: target.outboundHosts,
       scope: target.scopeId,
       calls: target.calls,
+      stores: target.scopeStores,
       // A request from the outside world starts a chain: depth 0. A peer call sets its own
       // (see `PeerCalls` below), which is what bounds A→B→A.
       depth: 0,
@@ -657,6 +668,7 @@ export async function handlePeerCall(
     hosts: decision.outboundHosts,
     scope: decision.scopeId,
     calls: decision.calls,
+    stores: null,
     depth: decision.depth,
     // A peer call only ever dispatches to a primary instance — the resolver refuses any
     // other target (`resolveVerticalInstanceFrom`), so this is a fact about the decision.

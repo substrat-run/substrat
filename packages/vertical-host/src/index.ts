@@ -135,7 +135,6 @@ import {
   type EntityRef,
   type Visibility,
   type RoleDefinition,
-  scopeDumpTable,
   type ScopeDumpTable,
   type ScopeTable,
   type ScopeQueryResult,
@@ -230,6 +229,23 @@ export interface VerticalScopeHost {
      *  table-held bootstrap shape of its version. */
     boundShapeTypes?: string[];
   }>;
+  /**
+   * #2263: the ownerless reconcile — seat what this deployment's code declares (schedule grants,
+   * peer keys, the delivered connection grants) and re-apply the recorded-off positions in the
+   * same unit, and nothing else: no owner seat, no projection, no entity-grant shapes. Only a scope
+   * already provisioned for `tenantId`. Optional: a host built before it leaves `/internal/reconcile`
+   * answering 501 for a vertical that keeps no owner of record, as it always did.
+   */
+  seatScopeLocal?(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    connectionGrants?: ProjectedConnectionGrant[];
+    switchedOff?: ModuleId[];
+    tenantHeld?: ModuleId[];
+    switchedOffPeers?: string[];
+    tenantHeldPeers?: string[];
+    switchFences?: Record<string, string>;
+  }): Promise<void | { switchedOff?: SwitchedOff[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
    *  `opts.exact`: the platform exported the dump itself, so the re-point never falls back. */
@@ -373,7 +389,7 @@ export interface VerticalScopeHost {
   scopeStoreImportLocal?(
     tenantId: TenantId,
     scopeId: ScopeId,
-    stores: { binding: string; tables: ScopeDumpTable[] }[],
+    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
   ): Promise<void>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
@@ -687,6 +703,15 @@ const reconcileBody = z.object({
    * reconcile of shapes.
    */
   entityGrants: z.array(entityGrantShape).optional(),
+  /**
+   * #2263: the caller accepts the OWNERLESS reconcile when the vertical keeps no owner of record
+   * (no `resolveOwner` at all): the declared tuples seated, the recorded-off positions
+   * re-applied, and nothing else (`seatScopeLocal`). Answered with `owner: null` and no
+   * retirement or bound-shape report, which the platform's receipt reads as not finished. A caller
+   * that needs the projection itself (an entitlements delivery) omits it and keeps the 501. A
+   * vertical that keeps an owner of record and finds none for the scope answers 409 either way.
+   */
+  ownerless: z.literal('seat').optional(),
 });
 
 /**
@@ -1002,7 +1027,9 @@ export interface PlatformSurfaceDeps<Env> {
   /**
    * Re-source a reconcile's owner from the vertical's durable owner-of-record (#332).
    * Return `null` when there is no record (⇒ 409, re-run the install). Omit entirely and
-   * `/internal/reconcile` answers 501 — the vertical keeps no owner-of-record.
+   * `/internal/reconcile` answers 501 — the vertical keeps no owner-of-record — unless the caller
+   * sends `ownerless: 'seat'` (the platform's sweep and `substrat scope provision`), which then
+   * gets the ownerless reconcile (#2263): the declared tuples seated, and nothing else.
    */
   resolveOwner?: (
     env: Env,
@@ -1449,67 +1476,8 @@ export function mountPlatformSurface<Env extends object>(
     return c.json({ bytes: await host.databaseSizeLocal(scope) });
   });
 
-  // #2207: each scope store's size. Metadata only. A host that predates the method
-  // answers 501, because an empty list would be read as "this scope has no stores".
-  app.get('/internal/scope-store-sizes', async (c) => {
-    const scope = scopeIdOf.parse(c.req.query('scopeId'));
-    const tenant = tenantIdOf.parse(c.req.query('tenantId'));
-    const host = deps.hostFor(c.env);
-    if (!host.scopeStoreSizesLocal) {
-      return c.json({ error: 'this deployment cannot read scope store sizes (#2207). Redeploy it' }, 501);
-    }
-    return c.json({ stores: await host.scopeStoreSizesLocal(tenant, scope) });
-  });
-
-  // #2068: erase one subject from each scope store in this deployment. The control
-  // plane calls the serving script once, then destroys the key. A host that predates
-  // the method answers 501, because an empty list would look like nothing to erase.
-  app.post('/internal/scope-store-erase', async (c) => {
-    const body = z
-      .object({ tenantId: tenantIdOf, scopeId: scopeIdOf, subjectId: z.string().min(1) })
-      .strict()
-      .parse(await c.req.json());
-    const host = deps.hostFor(c.env);
-    if (!host.scopeStoreEraseLocal) {
-      return c.json({ error: 'this deployment cannot erase a scope store (#2068). Redeploy it' }, 501);
-    }
-    return c.json({
-      storeErasures: await host.scopeStoreEraseLocal(body.tenantId, body.scopeId, body.subjectId),
-    });
-  });
-
-  // #2211: the scope stores a backup copies. A host that predates the method answers
-  // 501, which the control plane reads as "this deployment has no store export".
-  app.get('/internal/scope-store-export', async (c) => {
-    const scope = scopeIdOf.parse(c.req.query('scopeId'));
-    const tenant = tenantIdOf.parse(c.req.query('tenantId'));
-    const host = deps.hostFor(c.env);
-    if (!host.scopeStoreExportLocal) {
-      return c.json({ error: 'this deployment cannot export scope stores (#2211). Redeploy it' }, 501);
-    }
-    return c.json({ stores: await host.scopeStoreExportLocal(tenant, scope) });
-  });
-
-  app.post('/internal/scope-store-import', async (c) => {
-    const body = z
-      .object({
-        tenantId: tenantIdOf,
-        scopeId: scopeIdOf,
-        stores: z.array(z.object({ binding: z.string(), tables: z.array(z.unknown()) })),
-      })
-      .strict()
-      .parse(await c.req.json());
-    const host = deps.hostFor(c.env);
-    if (!host.scopeStoreImportLocal) {
-      return c.json({ error: 'this deployment cannot import scope stores (#2211). Redeploy it' }, 501);
-    }
-    const stores = body.stores.map((store) => ({
-      binding: store.binding,
-      tables: z.array(scopeDumpTable).parse(store.tables),
-    }));
-    await host.scopeStoreImportLocal(body.tenantId, body.scopeId, stores);
-    return c.json({ tables: stores.length });
-  });
+  // Scope stores are not reached through this script (#2207). The control plane
+  // signs the object name and calls the store script in the dispatch namespace.
 
   // #286: the PITR bookmarks one scope recorded before its migration passes — the rewind
   // points a backout offers. Metadata only; no scope bytes cross the boundary.
@@ -1977,10 +1945,33 @@ export function mountPlatformSurface<Env extends object>(
   // The kernel half SEATS its tuples (#1659): what is missing comes back, what an operator
   // revoked stays revoked — except the owner's seat on a scope no one else can act in.
   app.post('/internal/reconcile', async (c) => {
+    const body = reconcileBody.parse(await c.req.json());
     if (!deps.resolveOwner) {
+      // #2263: a vertical that keeps NO owner of record can never have a full reconcile, so a caller
+      // that accepts it gets the ownerless one — what this version declares, seated — rather than
+      // nothing at all, which left every scope provisioned before a declaration without it for
+      // good. `owner: null` says no owner was re-sourced, so no lockout was repaired.
+      //
+      // Only here. A vertical that keeps one and found none for this scope (an unclaimed seat, say)
+      // stays the 409 below: it is owed the FULL reconcile once the record exists, and a seat
+      // answered as a success would let the platform record the version as reconciled.
+      const host = deps.hostFor(c.env);
+      if (body.ownerless === 'seat' && host.seatScopeLocal) {
+        const seated = await host.seatScopeLocal({
+          tenantId: body.tenantId,
+          scopeId: body.scopeId,
+          connectionGrants: body.connectionGrants,
+          switchedOff: body.switchedOff,
+          tenantHeld: body.tenantHeld,
+          switchedOffPeers: body.switchedOffPeers,
+          tenantHeldPeers: body.tenantHeldPeers,
+          switchFences: body.switchFences,
+        });
+        await platformSweeperOf(c.env)?.noteScope(body.tenantId, body.scopeId);
+        return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: null, ...switchedOffAnswer(seated?.switchedOff) });
+      }
       throw new HTTPException(501, { message: 'this vertical keeps no owner-of-record to reconcile from' });
     }
-    const body = reconcileBody.parse(await c.req.json());
     const owner = await deps.resolveOwner(c.env, { tenantId: body.tenantId, scopeId: body.scopeId });
     if (!owner) {
       throw new HTTPException(409, {

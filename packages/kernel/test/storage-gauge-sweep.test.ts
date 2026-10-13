@@ -224,13 +224,31 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
         },
       },
     });
-    expect(recorded.find((x) => x.scopeId === old)).toMatchObject({ bytes: 4096, error: expect.stringMatching(/501/) });
-    expect(recorded.find((x) => x.scopeId === old)).not.toHaveProperty('stores');
+    // Unsupported is not failing and not 0 (RFC L13): the database sample, no error, no stores.
+    expect(recorded.find((x) => x.scopeId === old)).toEqual({ tenantId: T, scopeId: old, bytes: 4096, readAt: expect.any(String) });
     expect(recorded.find((x) => x.scopeId === broken)).toMatchObject({ bytes: 4096, error: 'store down' });
     expect(recorded.find((x) => x.scopeId === broken)).not.toHaveProperty('stores');
     expect(report.errors).toEqual([{ kind: 'storage', id: broken, error: 'store down' }]);
-    expect(report.storage).toMatchObject({ read: 2, failed: 2, unsupported: 1 });
+    // Each scope counts once: read + failed + skipped is the scopes tried.
+    expect(report.storage).toMatchObject({ read: 1, failed: 1, skipped: 0, unsupported: 1 });
   });
+
+  it('a store read that hangs past its deadline fails that scope only, and the batch is recorded (#2212)', async () => {
+    const [hung, fine] = [sid(), sid()];
+    const { host, recorded } = gaugeHost({ scopes: [hung, fine] });
+    const report = await sweep(host, {
+      drainPlatformRequestsFn: async () => drained,
+      storageGauge: {
+        read: reader().read,
+        readStores: (s) => (s.id === hung ? new Promise(() => undefined) : Promise.resolve([{ binding: 'GRAPH', bytes: 3 }])),
+        storeReadTimeoutMs: 20,
+      },
+    });
+    expect(recorded.find((x) => x.scopeId === hung)).toMatchObject({ bytes: 4096, error: expect.stringMatching(/longer than 20 ms/) });
+    expect(recorded.find((x) => x.scopeId === hung)).not.toHaveProperty('stores');
+    expect(recorded.find((x) => x.scopeId === fine)).toMatchObject({ bytes: 4096, stores: [{ binding: 'GRAPH', bytes: 3 }] });
+    expect(report.storage).toMatchObject({ read: 1, failed: 1, recorded: 2 });
+  }, 5_000);
 
   it('does not retry a scope that failed recently: it waits a day, behind nothing', async () => {
     // A batch-full of scopes that failed an hour ago, and one never tried. Without the attempt

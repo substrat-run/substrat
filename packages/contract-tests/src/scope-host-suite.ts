@@ -9994,6 +9994,36 @@ export function scopeHostContractSuite(
           sampled: 1,
         });
 
+        // A later day that measured no store at all (a version that dropped its only binding)
+        // stops billing every binding: an empty reading is recorded, not skipped.
+        const emptied = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: emptied, slug: 'gauge-stores-empty', name: 'Gauge Stores Empty' });
+        const empty = await newScope(emptied);
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: emptied,
+          scopeId: empty,
+          bytes: 100,
+          readAt: day(-1, '08:00:00'),
+          stores: [{ binding: 'GRAPH', bytes: 40 }, { binding: 'BLOBS', bytes: 2 }],
+        }]);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: emptied, scopeId: empty, bytes: 100, readAt: day(0, '08:00:00'), stores: [] }]);
+        expect((await host.admin.readMeters(staff, { tenantId: emptied })).perTenant[0]!.storage).toMatchObject({ bytes: 100, sampled: 1 });
+        expect((await host.admin.readMeters(staff, { tenantId: emptied })).perTenant[0]!.storage?.stores).toBeUndefined();
+
+        // An older reading of a day, recorded after a newer one, leaves the newer one, as the
+        // database sample does.
+        await host.admin.recordScopeStorage!(staff, [{
+          tenantId: ta,
+          scopeId: s,
+          bytes: 100,
+          readAt: day(0, '08:30:00'),
+          stores: [{ binding: 'GRAPH', bytes: 99 }, { binding: 'BLOBS', bytes: 1 }],
+        }]);
+        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage?.stores).toEqual({
+          bytes: 7,
+          sampled: 1,
+        });
+
         const old = new Date();
         old.setUTCMonth(old.getUTCMonth() - 14);
         const aged = tenantId.parse(ulid());

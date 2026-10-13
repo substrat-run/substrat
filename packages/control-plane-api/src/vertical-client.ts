@@ -108,9 +108,6 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
-  scopeStoreDump,
-  scopeStoreSize,
-  storeErasure,
   type VerticalCaller,
   substratError,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
@@ -431,6 +428,17 @@ export interface ReconcileInstanceInput {
   tenantStores?: TenantStoreHandle[];
   /** The recorded-off modules, switched off in the reconcile's own unit (#1742) — as at provision. */
   switchedOff?: ModuleId[];
+  /**
+   * #2263: accept the OWNERLESS reconcile from a vertical that keeps no owner of record (no
+   * `resolveOwner` at all; one that keeps a record and finds none still answers 409) — the
+   * tuples its running version declares (schedule grants, peer keys, these connection grants)
+   * seated and the recorded-off positions re-applied, and nothing else: no projection of the
+   * entitlements, links or keys above, no entity-grant shapes, no owner. Answered `owner: null`
+   * with no retirement or bound-shape report. Omit it when the projection is the point (an
+   * entitlements delivery): such a vertical then refuses (501) as it always did. A vertical
+   * built before the field ignores it and refuses too.
+   */
+  ownerless?: 'seat';
   /** Of `switchedOff`, the modules held only by a tenant-level grant (#1823) — as at provision. */
   tenantHeld?: ModuleId[];
   /** #2029: the recorded-off peers, and those held only by a tenant grant — as at provision. */
@@ -474,8 +482,10 @@ export function connectionGrantsForScope(
 export interface ReconciledInstance {
   tenantId: TenantId;
   scopeId: ScopeId;
-  /** The owner the vertical re-granted, echoed back so the caller can report who was restored. */
-  owner: PrincipalId;
+  /** The owner the vertical re-granted, echoed back so the caller can report who was restored.
+   *  `null` (#2263) when the vertical keeps no owner of record and the caller sent `ownerless`:
+   *  the ownerless reconcile ran, no owner was re-seated, and no lockout was repaired. */
+  owner: PrincipalId | null;
   /** What the deployment switched off inside the reconcile's unit (#1742), when asked to. */
   switchedOff?: SwitchedOffInUnit[];
   /**
@@ -1240,34 +1250,6 @@ export class VerticalClient {
   }
 
   /**
-   * The scope stores captured with an export (#2211). A deployment that predates the
-   * route answers 501, which a backup reads as "no stores", not as an empty scope.
-   */
-  async scopeStoreExport(tenantId: TenantId, scopeId: ScopeId): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
-    const answer = await this.getInternal<{ stores?: unknown }>(
-      `/internal/scope-store-export?scopeId=${encodeURIComponent(scopeId)}&tenantId=${encodeURIComponent(tenantId)}`,
-    );
-    const parsed = scopeStoreDump.array().safeParse(answer.stores);
-    if (!parsed.success) {
-      throw new ControlPlaneError(502, `vertical answered scope-store-export without a store list for scope ${scopeId}`);
-    }
-    return parsed.data;
-  }
-
-  /** Replace each named scope store (#2211). A binding this deployment does not have is a 404. */
-  async scopeStoreImport(
-    tenantId: TenantId,
-    scopeId: ScopeId,
-    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
-  ): Promise<void> {
-    await this.postInternal(
-      '/internal/scope-store-import',
-      { tenantId, scopeId, stores: stores.map(({ binding, tables }) => ({ binding, tables })) },
-      'scope-store-import',
-    );
-  }
-
-  /**
    * The scope's full dump — the ONE verb here that deliberately moves scope bytes
    * across the boundary, for the governed `scope pull` (§8). The control-plane route
    * in front of it is the gate: staff-only, audited, masked by default, jurisdiction-
@@ -1759,48 +1741,6 @@ export class VerticalClient {
       throw new ControlPlaneError(502, `vertical answered database-size without a size for scope ${scopeId}`);
     }
     return answer.bytes;
-  }
-
-  /**
-   * Each scope store's size in bytes (#2207). Metadata only. A 200 whose `stores`
-   * is not the declared list is a wire disagreement and throws, because a missing
-   * list read as empty would look like a scope that has no stores.
-   */
-  async scopeStoreSizes(tenantId: TenantId, scopeId: ScopeId): Promise<{ binding: string; bytes: number }[]> {
-    const answer = await this.getInternal<{ stores?: unknown }>(
-      `/internal/scope-store-sizes?scopeId=${encodeURIComponent(scopeId)}&tenantId=${encodeURIComponent(tenantId)}`,
-    );
-    const parsed = scopeStoreSize.array().safeParse(answer.stores);
-    if (!parsed.success) {
-      throw new ControlPlaneError(502, `vertical answered scope-store-sizes without a size list for scope ${scopeId}`);
-    }
-    return parsed.data;
-  }
-
-  /**
-   * Erase one subject from each scope store in this deployment (#2068). The control
-   * plane calls the serving script once. A 200 whose list is not the declared shape
-   * is a wire disagreement, because a missing list read as empty would destroy the
-   * subject key while leaving the store.
-   */
-  async scopeStoreErase(
-    tenantId: TenantId,
-    scopeId: ScopeId,
-    subjectId: string,
-  ): Promise<{ binding: string; erased: number }[]> {
-    const answer = await this.postInternal<{ storeErasures?: unknown }>(
-      '/internal/scope-store-erase',
-      { tenantId, scopeId, subjectId },
-      'scope-store-erase',
-    );
-    const parsed = storeErasure.array().safeParse(answer.storeErasures);
-    if (!parsed.success) {
-      throw new ControlPlaneError(
-        502,
-        `vertical answered scope-store-erase without an erasure list for scope ${scopeId}`,
-      );
-    }
-    return parsed.data;
   }
 
   /**
