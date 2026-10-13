@@ -4829,9 +4829,8 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * `substrat.erase` on each declared binding (#2068). A store error throws so the
-   * caller can leave the subject key untouched. No bindings, or a scope this host
-   * cannot name a store for, means nothing to erase — shred continues and the key
-   * is still destroyed. A missing vertical used to throw here and the key survived.
+   * caller can leave the subject key untouched. Fail closed: an empty answer means
+   * this host KNOWS it holds nothing for the scope, never that it could not tell.
    */
   private async eraseScopeStores(
     tenantId: TenantId,
@@ -4857,13 +4856,16 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * The vertical an erasure may name a store for. Missing, or not the vertical
-   * this host serves, means this host has no store to erase — an empty answer,
-   * not a refusal. Shred calls this unconditionally, including for a scope that
-   * never had a vertical.
+   * The vertical an erasure names a store for. With a control plane, the scope row
+   * decides: no vertical, or not the vertical this host is pinned to, means no
+   * store object of this host's is the scope's — an empty answer, which shred
+   * needs for a scope that never had a vertical. With no control plane and no
+   * `scopeStores.vertical`, the host cannot tell which objects are the scope's, so
+   * it refuses `unavailable` as the size read and the door do, and the subject key
+   * survives until the stores can be erased.
    */
   private async erasureStoreVertical(tenantId: TenantId, scopeId: ScopeId): Promise<string | undefined> {
-    if (this.cpLess) return this.scopeStoreVertical;
+    if (this.cpLess) return this.scopeStoreVerticalOf(tenantId, scopeId);
     const scope = await this.cp.getScopeRecord(tenantId, scopeId);
     const vertical = scope?.vertical ?? undefined;
     if (!vertical) return undefined;

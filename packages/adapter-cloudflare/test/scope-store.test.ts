@@ -99,6 +99,23 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect(errorCodeOf(refusal)).toBe('unavailable');
   });
 
+  // #2242: an empty erase list is what lets the control plane destroy the subject key. A
+  // host that cannot say which objects are the scope's must refuse, so the key survives.
+  it('a host with no control plane and no vertical refuses an erase as unavailable, not an empty list', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+    const refusal = await host.scopeStoreEraseLocal(tenantId.parse(ulid()), scopeId.parse(ulid()), ulid()).then(
+      (erasures) => erasures,
+      (err: unknown) => err,
+    );
+    expect(errorCodeOf(refusal)).toBe('unavailable');
+  });
+
+  it('a host with no control plane erases the ambient store under the vertical it was given', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
+    const erasures = await host.scopeStoreEraseLocal(tenantId.parse(ulid()), scopeId.parse(ulid()), ulid());
+    expect(erasures).toEqual([{ binding: 'GRAPH', erased: 0 }]);
+  });
+
   it('a host with no control plane and no binding refuses before asking the directory', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE });
     const refusal = await host.getScopeStore(principal, tenantId.parse(ulid()), scopeId.parse(ulid()), 'OTHER').then(
