@@ -1645,6 +1645,21 @@ describe('R12 — a hand-built IN list of placeholders', () => {
     ).toEqual([]);
   });
 
+  it('of two declarations in scope, the nearest one before the use is the one used', () => {
+    expect(
+      r12([
+        '// boundary-lint-allow R12 — two fixed slots, for the statement below',
+        "const p = ['?', '?'].join(',');",
+        'export const a = (ctx) => ctx.sql.query(`SELECT * FROM t WHERE id IN (${p})`, [1, 2]);',
+        '// boundary-lint-end R12',
+        'export function b(ctx) {',
+        "  const p = STATES.map((s) => `'${s}'`).join(',');",
+        '  return ctx.sql.query(`SELECT * FROM t WHERE state IN (${p})`);',
+        '}',
+      ]),
+    ).toEqual([]);
+  });
+
   it('a parameter shadows a same-named constant outside it', () => {
     expect(
       r12([
@@ -1681,6 +1696,17 @@ describe('R12 — a hand-built IN list of placeholders', () => {
       '}',
     ]);
     expect(vs.map((v) => v.line)).toEqual([5]);
+  });
+
+  it('twin: a line break inside a template literal does not end the statement', () => {
+    const vs = r12([
+      'export function m(ctx, ids) {',
+      '  const ph = `',
+      "    ${ids.map(() => '?').join(', ')}`",
+      '  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${ph})`, ids)',
+      '}',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([4]);
   });
 
   it('twin: a condition naming the list is not a parameter list that shadows it', () => {
