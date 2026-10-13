@@ -1,5 +1,20 @@
 # @substrat-run/demo-auth-server
 
+## 0.14.0
+
+### Minor Changes
+
+- 492e30a: Identifier-first sign-in, per application. An application can ask for an email (or BankID) first and pick the method from the address: addresses at a configured domain are sent to one provider and can sign in no other way, everyone else gets the password form — with the SMS code after it when the application requires one. The rule is enforced at the authorize endpoint, so a password registered under a routed address does not get a code. The application editor now lays the settings out as start screen, methods open to everyone, domain rules and a preview of what people will see.
+
+### Patch Changes
+
+- Updated dependencies [381f120]
+- Updated dependencies [a55d75e]
+- Updated dependencies [56b0af0]
+  - @substrat-run/contracts@0.146.0
+  - @substrat-run/kernel@0.146.0
+  - @substrat-run/vertical-host@0.146.0
+
 ## 0.13.1
 
 ### Patch Changes
