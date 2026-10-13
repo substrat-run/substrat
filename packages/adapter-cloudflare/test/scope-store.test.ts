@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { errorCodeOf, platformActorId, principalId, scopeId, scopeStoreObjectName, tenantId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, principalId, scopeId, scopeStoreObjectName, tenantId, type ScopeLifecycle } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -66,7 +66,8 @@ describe('scope store door (cloudflare host, #2209)', () => {
   });
 
   it('the store itself answers a reserved operation, which is how the stub refusal is visible', async () => {
-    const { t, a } = await world();
+    const { host, t, a } = await world();
+    await (await host.getScopeStore(principal, t, a, 'GRAPH')).invoke('increment', { by: 2 });
     const name = scopeStoreObjectName(t, 'docs', a, 'GRAPH');
     const object = env.SUBSTRAT_STORE_GRAPH.get(env.SUBSTRAT_STORE_GRAPH.idFromName(name));
     const response = await object.fetch('https://scope-store/', {
@@ -76,8 +77,56 @@ describe('scope store door (cloudflare host, #2209)', () => {
     });
     const body: unknown = await response.json();
     const result = typeof body === 'object' && body !== null ? Reflect.get(body, 'result') : undefined;
-    expect(typeof result).toBe('number');
-    expect(Number(result)).toBeGreaterThan(0);
+    const bytes = typeof result === 'object' && result !== null ? Reflect.get(result, 'bytes') : undefined;
+    expect(bytes).toBe(2);
+  });
+
+  // This worker always binds SUBSTRAT_STORE_GRAPH, so a host here is never storeless: the
+  // no-store empty list is held on adapter-sqlite, where a host can be built without one.
+  it('a host with no control plane sizes the object its door reached, under the vertical it was given', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('increment', { by: 3 });
+    // The test store answers its counter as its size, so 3 names this tenant, vertical and scope.
+    expect(await host.scopeStoreSizesLocal(t, s)).toEqual([{ binding: 'GRAPH', bytes: 3 }]);
+  });
+
+  it('a host with no control plane refuses a size read on a scope its lifecycle holds, as the door does', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('increment');
+    const at = '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'];
+    await host.setLifecycleLocal(s, { scope: 'suspended', tenant: 'active', at, revision: { epoch: 0, scope: 1, tenant: 1 } });
+    const refused = /scope not active \(status: suspended\)/;
+    await expect(host.getScopeStore(principal, t, s, 'GRAPH')).rejects.toThrow(refused);
+    await expect(host.scopeStoreSizesLocal(t, s)).rejects.toThrow(refused);
+    // The twin: delivered active again, the read answers.
+    await host.setLifecycleLocal(s, { scope: 'active', tenant: 'active', at, revision: { epoch: 0, scope: 2, tenant: 2 } });
+    expect(await host.scopeStoreSizesLocal(t, s)).toEqual([{ binding: 'GRAPH', bytes: 1 }]);
+  });
+
+  it('a reserved call whose answer is not JSON is a bad envelope, as at the door', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [] } });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('break-envelope');
+    const refusal = await host.scopeStoreSizesLocal(t, s).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(errorCodeOf(refusal)).toBe('unavailable');
+    expect((refusal as { storeCode?: string }).storeCode).toBe('bad_envelope');
+  });
+
+  it('a host with no control plane and no vertical refuses a size read as unavailable', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+    const refusal = await host.scopeStoreSizesLocal(tenantId.parse(ulid()), scopeId.parse(ulid())).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(errorCodeOf(refusal)).toBe('unavailable');
   });
 
   it('a host with no control plane and no binding refuses before asking the directory', async () => {
