@@ -38,7 +38,7 @@ import {
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { expectAnswered, expectSettledUnknown, withEmptyOutcomeError, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
-import { PEER_CALLER, PEER_LISTENER, peerMod } from './modules.js';
+import { PEER_BARE, PEER_CALLER, PEER_LISTENER, peerMod } from './modules.js';
 
 const READ = permissionKey.parse('peer:read');
 const WRITE = permissionKey.parse('peer:write');
@@ -142,6 +142,7 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
             `vertical:${PEER_CALLER} granted:peer:read scope:${s}`,
             `vertical:${PEER_CALLER} granted:peer:write scope:${s}`,
             `vertical:${PEER_LISTENER} granted:peer:read scope:${s}`,
+            `vertical:${PEER_BARE} granted:peer:read scope:${s}`,
           ].sort(),
         );
       });
@@ -200,6 +201,27 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
           );
         }
         expect(await held('acme/stranger')).toEqual([]);
+      });
+
+      // #2252: the platform hands the door `tenantSlug` — the directory's, for the tenant it
+      // authenticated the call in — so a caller pushed pinned to that tenant meets the bare slug
+      // the target declares, and is recorded and seated under that declared name.
+      it('a pinned caller meets a bare declaration only with its own tenant\'s slug', async () => {
+        const slug = `peer-t-${t.slice(-8).toLowerCase()}`;
+        const pinned: VerticalCaller = { vertical: `${slug}/${PEER_BARE}`, scope: callerScope, tenantSlug: slug };
+        await expect((await asPeer(pinned)).invoke('peer/list')).resolves.toEqual(expect.any(Array));
+        // It is the bare entry it met: that entry's allowlist, not another peer's.
+        expect(errorCodeOf(await refusal((await asPeer(pinned)).invoke('peer/note', { id: 'p', body: 'p' })))).toBe('forbidden');
+        // Another tenant's listed vertical of that name is not the declared peer.
+        const foreign: VerticalCaller = { vertical: `peer-u/${PEER_BARE}`, scope: callerScope, tenantSlug: slug };
+        expect(errorCodeOf(await refusal((await asPeer(foreign)).invoke('peer/list')))).toBe('forbidden');
+        // Without the platform's slug the door matches exactly, as a door predating it does.
+        const unslugged: VerticalCaller = { vertical: pinned.vertical, scope: pinned.scope };
+        expect(errorCodeOf(await refusal((await asPeer(unslugged)).invoke('peer/list')))).toBe('forbidden');
+        // A declaration naming the caller's registered spelling still wins: `acme/board-room` in a
+        // tenant slugged `acme` keeps its own entry (and its allowlist), not the bare one.
+        await expect((await asPeer({ ...caller, tenantSlug: 'acme' })).invoke('peer/note', { id: 'n-exact', body: 'exact' }))
+          .resolves.toEqual({ id: 'n-exact' });
       });
 
       it('a receive-only peer (`operations: []`) holds its key and invokes nothing', async () => {
@@ -275,6 +297,7 @@ export function peerContractSuite(adapterName: string, makeFixture: () => Promis
         expect(all).toEqual([
           { vertical: PEER_CALLER, calls: 'on', switchedOff: null },
           { vertical: PEER_LISTENER, calls: 'on', switchedOff: null },
+          { vertical: PEER_BARE, calls: 'on', switchedOff: null },
         ]);
       });
 
@@ -674,6 +697,64 @@ export function verticalResolutionContractSuite(
       expect((await read()).outcome).toBe('resolved');
       await host.admin.setPeerBinding(staff, t, caller, slug, null);
       expect((await read()).outcome).toBe('ambiguous');
+    });
+
+    // #2252: a push pinned to a tenant registers `<tenantSlug>/<slug>`, while `calls` and `peers`
+    // name the bare slug. The bare name reaches THIS tenant's pin, read from the directory's own
+    // `tenants.slug` — never another tenant's prefix, never the reverse, and an exact install wins.
+    describe('a tenant-pinned registration (#2252)', () => {
+      const p = tenantId.parse(ulid());
+      const pSlug = `pin-${p.slice(-10).toLowerCase()}`;
+      const oSlug = `oth-${p.slice(-10).toLowerCase()}`;
+      const bare = (name: string) => `${name}-${p.slice(-6).toLowerCase()}`;
+      const install = async (vertical: string) => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: p, scopeId: s, vertical });
+        await host.admin.activateScope(staff, p, s);
+        return s;
+      };
+      let caller: ScopeId;
+
+      beforeAll(async () => {
+        await host.admin.createTenant(staff, { id: p, slug: pSlug, name: 'Pinned' });
+        caller = await install(bare('caller'));
+      });
+
+      it('the bare declared name resolves, routes and binds to this tenant\'s pinned install', async () => {
+        const pinned = await install(`${pSlug}/${bare('crm')}`);
+        const resolved = { outcome: 'resolved', instance: { tenantId: p, scopeId: pinned, vertical: bare('crm') } };
+        // The read a queued peer-invoke makes at drain time.
+        await expect(host.admin.resolvePeerInstance(p, caller, bare('crm'))).resolves.toEqual(resolved);
+        // The cross-vertical edges' read (the import cursor's producer) keeps matching exactly.
+        expect((await host.admin.resolveVerticalInstance(p, bare('crm'))).outcome).toBe('not-installed');
+        await expect(host.admin.resolveVerticalInstance(p, `${pSlug}/${bare('crm')}`)).resolves.toMatchObject({ outcome: 'resolved' });
+        await expect(host.admin.setPeerBinding(staff, p, caller, bare('crm'), pinned)).resolves.toMatchObject({ changed: true });
+        await expect(host.admin.resolvePeerInstance(p, caller, bare('crm'))).resolves.toEqual(resolved);
+      });
+
+      it('another tenant\'s prefix is another vertical: not resolved, not bindable', async () => {
+        const foreign = await install(`${oSlug}/${bare('ledger')}`);
+        expect((await host.admin.resolvePeerInstance(p, caller, bare('ledger'))).outcome).toBe('not-installed');
+        await expect(host.admin.setPeerBinding(staff, p, caller, bare('ledger'), foreign)).rejects.toThrow();
+      });
+
+      it('never the reverse: a declared pinned name does not reach a bare install', async () => {
+        await install(bare('desk'));
+        expect((await host.admin.resolvePeerInstance(p, caller, `${pSlug}/${bare('desk')}`)).outcome).toBe('not-installed');
+      });
+
+      it('an exact install wins over the pinned one, rather than making the tenant ambiguous', async () => {
+        const exact = await install(bare('board'));
+        const pinned = await install(`${pSlug}/${bare('board')}`);
+        await expect(host.admin.resolvePeerInstance(p, caller, bare('board'))).resolves.toEqual({
+          outcome: 'resolved', instance: { tenantId: p, scopeId: exact, vertical: bare('board') },
+        });
+        // A binding still chooses the pinned one.
+        await host.admin.setPeerBinding(staff, p, caller, bare('board'), pinned);
+        await expect(host.admin.resolvePeerInstance(p, caller, bare('board'))).resolves.toMatchObject({
+          outcome: 'resolved', instance: { scopeId: pinned },
+        });
+      });
     });
   });
 }

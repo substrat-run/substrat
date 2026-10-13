@@ -99,6 +99,7 @@ export {
   peerModManifest,
   PEER_CALLER,
   PEER_LISTENER,
+  PEER_BARE,
   scheduleMod,
   composedEngineMod,
   composerMod,

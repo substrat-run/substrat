@@ -2902,7 +2902,9 @@ export interface HostAdmin {
    * One rule wherever it is asked (`resolveVerticalInstanceFrom`): a primary, active scope of
    * THAT tenant bound to THAT vertical; `not-installed` for none, `ambiguous` for several — never
    * a guess. The tenant is the caller's own, supplied by the platform; there is no parameter by
-   * which a caller could name another.
+   * which a caller could name another. Names match exactly: this is the cross-vertical edges'
+   * read. A peer call also reaches the tenant's pinned `<tenantSlug>/<slug>`, through
+   * `resolvePeerInstance` (#2252).
    *
    * Takes NO actor and is not logged, for `resolveHostname`'s reason: it is a machine read on the
    * per-call path, before any staff member is involved.

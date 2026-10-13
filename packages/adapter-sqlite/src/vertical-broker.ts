@@ -163,8 +163,10 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
               binding.invalidated = true;
             }
           }
+          // Exact names (`slug: null`): local verticals register under their bare slug and each
+          // has its own host keyed by it, so no tenant-pinned spelling exists to reach (#2252).
           const resolution = resolvePeerInstanceFrom(
-            scopes, caller.tenantId, target_, binding?.targetScopeId ?? null, binding?.invalidated ?? false,
+            scopes, { id: caller.tenantId, slug: null }, target_, binding?.targetScopeId ?? null, binding?.invalidated ?? false,
           );
           if (resolution.outcome === 'not-installed') {
             throw substratError('not_found', `vertical '${target_}' is not installed in this tenant`);
