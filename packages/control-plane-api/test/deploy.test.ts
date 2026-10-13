@@ -173,6 +173,46 @@ describe('assertSandboxContract', () => {
     expect((thrown as Error).message).toMatch(/not registered/);
     expect((thrown as Error).message).toMatch(/^deploy refused: /);
   });
+
+  // #2224: the control plane holds an own DO binding to the same one-name-one-store rule push
+  // does, so a manifest that did not come through push is refused the same way.
+  it('refuses an own DO binding that takes a per-tenant or scope store’s name', () => {
+    const own = { type: 'durable_object_namespace', name: 'DB', class_name: 'ScopeDO' } as const;
+    const refused = (m: DeployManifest, message: RegExp) => {
+      let thrown: unknown;
+      try {
+        assertSandboxContract(m);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown, 'the contract admitted a name taken twice').toBeInstanceOf(Error);
+      expect(errorCodeOf(thrown)).toBe('forbidden');
+      expect((thrown as Error).message).toMatch(message);
+    };
+    refused(
+      { ...manifest([own]), tenantStores: [{ binding: 'DB', kind: 'relational' }] },
+      /binding 'DB' is declared as an own store and as a per-tenant store/,
+    );
+    refused(
+      { ...manifest([{ ...own, name: 'GRAPH' }]), scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] },
+      /binding 'GRAPH' is declared as an own store and as a scope store/,
+    );
+    // An own DO binding also lands under its own name, so it must not take a store's runtime name.
+    const tenant = '01JABCDEFGHJKMNPQRSTVWXYZ0';
+    refused(
+      { ...manifest([{ ...own, name: `DB__${tenant}` }]), tenantStores: [{ binding: 'DB', kind: 'relational' }] },
+      new RegExp(`binding 'DB__${tenant}' is the runtime name of per-tenant store 'DB'`),
+    );
+    refused(
+      { ...manifest([{ ...own, name: `ATTACHMENTS__${tenant}` }]), blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] },
+      new RegExp(`binding 'ATTACHMENTS__${tenant}' is the runtime name of per-tenant store 'ATTACHMENTS'`),
+    );
+    // The twin: an own DO binding of another name is admitted beside the per-tenant store.
+    ok([{ ...own, name: 'SCOPE' }]);
+    expect(() =>
+      assertSandboxContract({ ...manifest([{ ...own, name: 'SCOPE' }]), tenantStores: [{ binding: 'DB', kind: 'relational' }] }),
+    ).not.toThrow();
+  });
 });
 
 describe('scope store upload plan (#2210)', () => {

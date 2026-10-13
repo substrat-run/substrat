@@ -486,6 +486,13 @@ peers: [
   `vertical:acme/board-room` on every install of this app, from provisioning on, and
   `PERMISSIONS.md` shows them in their own section. Widening what another app may do is a
   permission diff like any other.
+- **An install older than the declaration gets it at its next reconcile.** Promoting the version
+  that declares a peer lets that peer through the door at once, but the permissions are written
+  into each existing install by a reconcile. The platform runs one on every install whose running
+  version changed, on its regular pass after the promote. `substrat scope provision <scopeId>`
+  runs it for one install now. Until then the calling app's panel says the target grants it
+  nothing. An app that keeps no owner of record still gets this part of the reconcile: the
+  permissions its version declares are added, and nothing else is changed.
 - **It may invoke only what is listed.** Any other operation is refused `forbidden` before it
   runs. `operations: []` declares a peer that holds its permissions and invokes nothing. That
   is the shape for an app that only receives from this one.
@@ -504,9 +511,7 @@ peers: [
   tenant runs two instances of the same app.
 
 On the pure host, `@substrat-run/adapter-sqlite/vertical-broker` runs two apps side by side
-under the same rules, for tests and local development. The platform hop that identifies a
-calling app on hosted deployments is the next piece of this work, so hosted apps cannot make
-peer calls yet.
+under the same rules, for tests and local development.
 
 ## Assigning a role: `ctx.canAssign`
 

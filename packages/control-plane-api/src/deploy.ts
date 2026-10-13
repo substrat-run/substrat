@@ -4,6 +4,7 @@ import {
   PLATFORM_BINDING_PREFIX,
   scopeStoreScriptName,
   STORE_KINDS,
+  storeNamesOfBindings,
   substratError,
   verticalScriptStem,
   type ScopeStoreNeed,
@@ -281,11 +282,12 @@ export function verticalUploadBindings<B>(input: {
  * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
  */
 export function assertSandboxContract(m: DeployManifest): void {
+  // The same derivation push applies (#2224): an own DO binding is an own store.
   assertDeclaredScopeStores({
+    ...storeNamesOfBindings(m.bindings),
     tenantStores: m.tenantStores,
     blobStores: m.blobStores,
     scopeStores: m.scopeStores,
-    bindingNames: m.bindings.map((b) => b.name),
   });
   const own = new Set(m.doClasses);
   const admissible = new Set<string>(ADMISSIBLE_BINDING_TYPES);

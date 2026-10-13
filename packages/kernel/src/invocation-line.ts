@@ -148,6 +148,11 @@ export interface InvocationLogLine {
    * is not a field.
    */
   storeCalls?: readonly StoreCallLine[];
+  /**
+   * #2245: calls past {@link STORE_CALL_LOG_CAP}, counted instead of named. Omitted
+   * when none were dropped, so 16 calls and 500 do not read the same.
+   */
+  storeCallsDropped?: number;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -234,12 +239,13 @@ export interface InvocationLineFields {
   /** #1923: written only beside `outputFields`. */
   fieldCoverageId?: string;
   /**
-   * #2245: store calls made through a stub that was handed an observer. Omitted
-   * when there were none, so a line that never touched a store stays what it was.
-   * Each entry is the binding, the operation, the outcome and the duration.
-   * The input is not a field.
+   * #2245: store calls the request made. Omitted when there were none, so a line
+   * that never touched a store stays what it was. Each entry is the binding, the
+   * operation, the outcome and the duration. The input is not a field.
    */
   storeCalls?: readonly StoreCallLine[];
+  /** #2245: written only when calls past the cap were dropped. */
+  storeCallsDropped?: number;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -272,16 +278,77 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     versionId: f.versionId ?? null,
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),
+    ...(f.storeCallsDropped ? { storeCallsDropped: f.storeCallsDropped } : {}),
     ...(f.async ?? {}),
   };
 }
 
 /** One store call on an invocation line (#2245). Names and a duration; never the input. */
 export interface StoreCallLine {
-  binding: string;
-  operation: string;
-  outcome: 'ok' | 'error';
-  durationMs: number;
+  readonly binding: string;
+  readonly operation: string;
+  readonly outcome: 'ok' | 'error';
+  readonly durationMs: number;
+}
+
+/**
+ * How many store calls one line names (#2245). A request that makes more still runs
+ * them; the line names the first ones and counts the rest in `storeCallsDropped`.
+ */
+export const STORE_CALL_LOG_CAP = 16;
+
+/** Where a request's store calls are tallied: the invocation record, or anything shaped like it. */
+export interface StoreCallTally {
+  storeCalls?: StoreCallLine[];
+  storeCallsDropped?: number;
+}
+
+/**
+ * Add one call to a tally (#2245). The one append every recorder uses: the first
+ * {@link STORE_CALL_LOG_CAP} are named, the rest counted. The entry is rebuilt from
+ * its four fields, so nothing else a caller put on the object reaches the line.
+ */
+export function tallyStoreCall(tally: StoreCallTally, call: StoreCallLine): void {
+  const calls = tally.storeCalls ?? (tally.storeCalls = []);
+  if (calls.length < STORE_CALL_LOG_CAP) {
+    calls.push({ binding: call.binding, operation: call.operation, outcome: call.outcome, durationMs: call.durationMs });
+  } else {
+    tally.storeCallsDropped = (tally.storeCallsDropped ?? 0) + 1;
+  }
+}
+
+/** A recorder for one store call. Advisory: a throw from it is swallowed by the caller. */
+export type StoreCallSink = (call: StoreCallLine) => void;
+
+/**
+ * The registry key the request's current store-call sink is reached by (#2245, RFC §6).
+ *
+ * The platform entry and the vertical's bundle each carry their own copy of the kernel,
+ * so a module-level variable in one is invisible to the other. Both meet on
+ * `globalThis[Symbol.for(STORE_CALL_SINK_KEY)]`, the way the invocation stamp registry
+ * does. The entry installs a slot whose `current()` reads its `AsyncLocalStorage`; a
+ * store stub asks it when the vertical passed no observer of its own.
+ */
+export const STORE_CALL_SINK_KEY = 'substrat.store-call-sink';
+
+/** What the entry installs under {@link STORE_CALL_SINK_KEY}. */
+export interface StoreCallSinkSlot {
+  current(): StoreCallSink | undefined;
+}
+
+/**
+ * The sink of the request now running, or `undefined` outside one (#2245). Never
+ * throws: a missing or broken slot means the call is not logged, never that it fails.
+ */
+export function currentStoreCallSink(): StoreCallSink | undefined {
+  try {
+    const slot = (globalThis as Record<symbol, unknown>)[Symbol.for(STORE_CALL_SINK_KEY)] as
+      | Partial<StoreCallSinkSlot>
+      | undefined;
+    return typeof slot?.current === 'function' ? slot.current() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Distinct values, first occurrence wins — the order a reader expects to see them in. */
