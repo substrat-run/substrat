@@ -116,6 +116,8 @@ export type {
 export {
   callPlatformScopeStore,
   platformScopeStoresFor,
+  scopeStoresOf,
+  unreachablePlatformScopeStores,
   type PlatformScopeStoreDispatch,
   type PlatformScopeStores,
   type DeclaredScopeStore,

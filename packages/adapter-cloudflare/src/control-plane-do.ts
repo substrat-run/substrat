@@ -344,9 +344,16 @@ export const READ_ROUTE_SQL = `SELECT h.tenant_id, h.scope_id, h.vertical_slug, 
                 CASE WHEN s.serving_ref IS NOT NULL
                      THEN json_extract(sv.manifest_json, '$.calls')
                      ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json,
-                CASE WHEN s.serving_ref IS NOT NULL
+                -- #2207: the stores of the version the scope's script runs. A scope pinned to a
+                -- script other than its vertical's current serving one (stamped at provision, a
+                -- fork kept on its copy's script) runs a version this row cannot name: NULL, so
+                -- its store calls are refused. The control plane reads the same rule
+                -- (scopeStoresOf in control-plane-api).
+                CASE WHEN s.serving_ref IS NULL
+                     THEN json_extract(vv.manifest_json, '$.scopeStores')
+                     WHEN s.serving_ref = vr.serving_ref
                      THEN json_extract(sv.manifest_json, '$.scopeStores')
-                     ELSE json_extract(vv.manifest_json, '$.scopeStores') END AS scope_stores_json,
+                     ELSE NULL END AS scope_stores_json,
                 s.kind, s.forked_from,
                 (SELECT json_group_array(sh.hostname) FROM (
                    -- INDEXED BY: unpinned, the planner reads hostnames_status — every active

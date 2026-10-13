@@ -201,6 +201,21 @@ The contract suite uses an in-process runner of the trivial kind, on both adapte
 
 ## 8. Copies, and what a shred reaches
 
+Which stores a scope has is read from the version its script runs, by one rule that the
+router's route read and the control plane both apply. A scope pinned to its vertical's
+current serving script runs the serving version. A scope with no pin runs its bound
+version. A scope pinned to any other script (stamped at provision, or a fork kept on its
+copy's script) runs a version nothing names, so it is unknown. Provisioning sets the
+serving pin and no bound version, so reading the bound version alone answered "no store"
+for an ordinary install. The control plane resolves stores in one place (`scopeStoresOf`)
+for backup, full pull, snapshot, reap, restore, erasure and the sweep's wipe and storage
+gauge. The router gives an unknown scope no store, so its store calls are refused.
+
+`mayHoldScopeStores` is the gate. With no kind registered, nothing can hold a store and
+every path proceeds as before. Once a kind is registered, an unknown version or an
+unreadable manifest makes the operation refuse with 503 rather than skip a store that may
+hold data. A hosted control plane with no route to the store scripts refuses the same way.
+
 A store dump is opaque to the platform, so a copy can bring an erased subject's rows
 back. After a restore, and after a snapshot copy, the platform runs `substrat.erase`
 again for every subject whose key row has `shredded_at` set, on every declared binding,

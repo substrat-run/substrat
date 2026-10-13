@@ -35,6 +35,8 @@ import {
   SWEEP_RUNS_KIND,
   SEND_EMAIL_KIND,
   connectorDispatchKind,
+  STORE_KINDS,
+  type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
@@ -51,6 +53,7 @@ import {
   type ScopeHost,
   type SecretBox,
   type SweepRunInput,
+  type HostAdmin,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -130,7 +133,9 @@ import {
   type PlatformRuntime,
   type DoNamespaceReader,
   platformScopeStoresFor,
-  declaredStoresOf,
+  scopeStoresOf,
+  unreachablePlatformScopeStores,
+  type PlatformScopeStores,
 } from '@substrat-run/control-plane-api';
 import {
   ControlPlaneError,
@@ -1396,27 +1401,50 @@ export function storeStorageReaderFor(
   };
 }
 
-/** `substrat.wipe` on each store a scope's version declares, before its own bytes go. */
-async function wipeDeclaredScopeStores(
-  env: Env,
-  manifest: (vertical: string, versionId: string) => Promise<string | null>,
-  scope: { tenantId: string; id: string; vertical: string | null; verticalVersionId: string | null },
+/**
+ * This control plane's caller for the store scripts (#2207). Without the route or the key it is
+ * one that refuses every call (503), never an absent one: absent means a co-located host, and a
+ * hosted control plane that skipped its stores would back up, wipe and erase without them.
+ */
+function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_HMAC_KEY'>): PlatformScopeStores {
+  return env.DISPATCH && env.STORE_HMAC_KEY
+    ? platformScopeStoresFor({
+        hmacKey: env.STORE_HMAC_KEY,
+        fetch: (scriptName, request) => env.DISPATCH!.get(scriptName).fetch(request),
+      })
+    : unreachablePlatformScopeStores();
+}
+
+type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest'>;
+
+/**
+ * `substrat.wipe` on each store the scope's running version declares, before its own bytes go
+ * (#2207). A store list that cannot be resolved, or no route to the stores, refuses (503): the
+ * sweep records it and the scope is not reaped past a store that may hold data.
+ */
+export async function wipeDeclaredScopeStores(
+  env: Pick<Env, 'DISPATCH' | 'STORE_HMAC_KEY'>,
+  admin: StoreReadAdmin,
+  scope: Scope,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
 ): Promise<void> {
-  if (!scope.vertical || !scope.verticalVersionId) return;
-  const stores = declaredStoresOf(await manifest(scope.vertical, scope.verticalVersionId));
+  if (!scope.vertical) return;
+  const stores = await scopeStoresOf(admin, SWEEP_ACTOR, scope, kinds);
   if (stores.length === 0) return;
-  if (!env.DISPATCH || !env.STORE_HMAC_KEY) {
-    throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
-  }
-  await platformScopeStoresFor({
-    hmacKey: env.STORE_HMAC_KEY,
-    fetch: (scriptName, request) => env.DISPATCH!.get(scriptName).fetch(request),
-  }).wipeStores({
-    tenantId: scope.tenantId,
-    scopeId: scope.id,
-    vertical: scope.vertical,
-    stores,
-  });
+  await platformStoresFor(env).wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores });
+}
+
+/** Each declared store's size, for the storage gauge (#2207). Refuses as the wipe does. */
+export async function declaredStoreSizes(
+  env: Pick<Env, 'DISPATCH' | 'STORE_HMAC_KEY'>,
+  admin: StoreReadAdmin,
+  scope: Scope,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+): Promise<{ binding: string; bytes: number }[]> {
+  if (!scope.vertical) return [];
+  const stores = await scopeStoresOf(admin, SWEEP_ACTOR, scope, kinds);
+  if (stores.length === 0) return [];
+  return platformStoresFor(env).sizeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores });
 }
 
 /**
@@ -1882,11 +1910,7 @@ export default {
           rec,
         );
         if (rec) {
-          await wipeDeclaredScopeStores(
-            env,
-            (vertical, versionId) => host.admin.versionManifest(SWEEP_ACTOR, vertical, versionId),
-            rec,
-          );
+          await wipeDeclaredScopeStores(env, host.admin, rec);
         }
         if (resolveRef) {
           // #1722: a script that predates the delete verb strands its bytes; the reap records it
@@ -1911,11 +1935,7 @@ export default {
       reapScopeFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
         if (rec) {
-          await wipeDeclaredScopeStores(
-            env,
-            (vertical, versionId) => host.admin.versionManifest(SWEEP_ACTOR, vertical, versionId),
-            rec,
-          );
+          await wipeDeclaredScopeStores(env, host.admin, rec);
         }
         if (resolveRef) {
           // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
@@ -1947,25 +1967,7 @@ export default {
       // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
       storageGauge: {
         read: storageReaderFor(resolveVerticalForScopeFor(env)),
-        readStores: storeStorageReaderFor(async (scope) => {
-          if (!scope.vertical || !scope.verticalVersionId) return [];
-          const stores = declaredStoresOf(
-            await host.admin.versionManifest(SWEEP_ACTOR, scope.vertical, scope.verticalVersionId),
-          );
-          if (stores.length === 0) return [];
-          if (!env.DISPATCH || !env.STORE_HMAC_KEY) {
-            throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
-          }
-          return platformScopeStoresFor({
-            hmacKey: env.STORE_HMAC_KEY,
-            fetch: (scriptName, request) => env.DISPATCH!.get(scriptName).fetch(request),
-          }).sizeStores({
-            tenantId: scope.tenantId,
-            scopeId: scope.id,
-            vertical: scope.vertical,
-            stores,
-          });
-        }),
+        readStores: storeStorageReaderFor((scope) => declaredStoreSizes(env, host.admin, scope)),
       },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is
@@ -2679,14 +2681,7 @@ export default {
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),
-        ...(env.DISPATCH && env.STORE_HMAC_KEY
-          ? {
-              platformScopeStores: platformScopeStoresFor({
-                hmacKey: env.STORE_HMAC_KEY,
-                fetch: (scriptName, request) => env.DISPATCH!.get(scriptName).fetch(request),
-              }),
-            }
-          : {}),
+        platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
         fetchVerticalAsset: fetchVerticalAssetFor(env),

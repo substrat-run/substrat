@@ -1,4 +1,7 @@
 import {
+  mayHoldScopeStores,
+  scopeStoresDeclaredIn,
+  STORE_KINDS,
   scopeStoreObjectName,
   scopeStoreScriptName,
   signScopeStoreName,
@@ -6,10 +9,13 @@ import {
   storeExportResult,
   storeSizeResult,
   StoreError,
+  type PlatformActorId,
   type ReservedStoreOperation,
+  type Scope,
   type ScopeDumpTable,
+  type StoreKindRegistration,
 } from '@substrat-run/contracts';
-import { callReservedStoreOperation } from '@substrat-run/kernel';
+import { callReservedStoreOperation, type HostAdmin } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { storedDeployManifest } from './deploy.js';
 
@@ -86,6 +92,40 @@ export function declaredStoresOf(manifestJson: string | null): DeclaredScopeStor
     throw new ControlPlaneError(503, 'scope store declarations could not be read');
   }
   return parsed.data.scopeStores;
+}
+
+/**
+ * The scope stores of the version a scope's deployment runs (#2207). A scope on its vertical's
+ * serving pin runs the serving pointer's version, and any other scope its bound version; this
+ * is the version the router reads a scope's stores from (`READ_ROUTE_SQL`). Provisioning sets the
+ * serving pin and no bound version, so reading the bound version alone answers "no store" for an
+ * ordinary install whose store the router serves. A pin that names another script than the
+ * pointer's is unknown, as #2242's erasure gate has it.
+ *
+ * The gate is `mayHoldScopeStores`: with no kind registered nothing can hold a store, and the
+ * answer is none. Otherwise a version that cannot be named, a manifest that cannot be read, or one
+ * the gate says may hold a store without naming it refuses (503), rather than let a backup, a
+ * wipe, a replay or an erasure skip a store that may hold data.
+ */
+export async function scopeStoresOf(
+  admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+): Promise<DeclaredScopeStore[]> {
+  if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return [];
+  let versionId: string | null = scope.verticalVersionId;
+  if (scope.servingRef) {
+    const pointer = await admin.verticalServing(actor, scope.vertical).catch(() => null);
+    versionId = pointer?.ref === scope.servingRef ? pointer.versionId : null;
+  }
+  const manifestJson = versionId
+    ? await admin.versionManifest(actor, scope.vertical, versionId).catch(() => undefined)
+    : undefined;
+  if (!mayHoldScopeStores(manifestJson, kinds)) return [];
+  const declared = typeof manifestJson === 'string' && scopeStoresDeclaredIn(manifestJson) ? declaredStoresOf(manifestJson) : [];
+  if (declared.length > 0) return declared;
+  throw new ControlPlaneError(503, `scope ${scope.id} may hold scope stores, and the version it runs cannot say which`);
 }
 
 function asControlPlane(error: unknown): never {
@@ -178,4 +218,16 @@ export function platformScopeStoresFor(dispatch: PlatformScopeStoreDispatch): Pl
       return sizes;
     },
   };
+}
+
+/**
+ * The caller of a hosted control plane that has no route to the store scripts (#2207): every
+ * call is refused (503). A hosted control plane always passes a caller, this one included, so
+ * a missing route refuses the backup, wipe or erasure that needs a store instead of skipping it.
+ */
+export function unreachablePlatformScopeStores(): PlatformScopeStores {
+  const refuse = async (): Promise<never> => {
+    throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
+  };
+  return { exportStores: refuse, importStores: refuse, eraseSubject: refuse, wipeStores: refuse, sizeStores: refuse };
 }
