@@ -29,7 +29,7 @@ import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type Scop
 import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
-import { resolveVerticalInstanceFrom } from './peer.js';
+import { resolveVerticalInstanceFrom, type PeerTenant } from './peer.js';
 
 // setTimeout/clearTimeout are web-standard (Node, Workers, browsers) but the
 // kernel pulls in no platform lib typings; declared locally, returning an opaque
@@ -1774,7 +1774,7 @@ async function sweepCrossVertical(
   let from: string | null = null;
   if (only) {
     const named = scopes.find((s) => s.id === only.scopeId && s.tenantId === only.tenantId);
-    const resolved = named ? resolveVerticalInstanceFrom(scopes, named.tenantId, named.vertical) : null;
+    const resolved = named ? resolveVerticalInstanceFrom(scopes, exactIn(named.tenantId), named.vertical) : null;
     if (!named || resolved?.outcome !== 'resolved' || resolved.instance.scopeId !== named.id) return out;
     from = named.vertical;
   }
@@ -2455,6 +2455,9 @@ export async function bindExportBreaksOf(input: {
   });
 }
 
+/** A tenant read with names matched exactly — the edges' rule (see `edgeEnds`). */
+const exactIn = (id: TenantId): PeerTenant => ({ id, slug: null });
+
 /**
  * The two ends of the edge from `from` into `consumer`, by #1706's one rule
  * (`resolveVerticalInstanceFrom`: same tenant, active, primary; two are `ambiguous`, refused rather
@@ -2462,6 +2465,10 @@ export async function bindExportBreaksOf(input: {
  * grant naming a slug cannot tell two installs of it apart. Shared by the sweep and the health read,
  * so the view cannot disagree with the next pass about where an edge points, or why it points
  * nowhere.
+ *
+ * Names match EXACTLY here (`exactIn`), unlike a peer call's target (#2252), and deliberately:
+ * the tenant-pinned spelling is not read as the bare one for an edge's producer or consumer.
+ * Whether it should be is its own decision, since it moves which edges deliver.
  */
 function edgeEnds(
   scopes: readonly Scope[],
@@ -2470,13 +2477,13 @@ function edgeEnds(
 ): { source: { vertical: string; scopeId: ScopeId } } | { reason: string } {
   const vertical = consumer.vertical!;
   if (from === vertical) return { reason: `'${vertical}' imports from itself — an import names ANOTHER vertical` };
-  const self = resolveVerticalInstanceFrom(scopes, consumer.tenantId, vertical);
+  const self = resolveVerticalInstanceFrom(scopes, exactIn(consumer.tenantId), vertical);
   if (self.outcome !== 'resolved' || self.instance.scopeId !== consumer.id) {
     return {
       reason: `this tenant has more than one primary instance of '${vertical}', so the producer cannot tell which one its grant names`,
     };
   }
-  const producer = resolveVerticalInstanceFrom(scopes, consumer.tenantId, from);
+  const producer = resolveVerticalInstanceFrom(scopes, exactIn(consumer.tenantId), from);
   if (producer.outcome !== 'resolved') {
     return {
       reason:
