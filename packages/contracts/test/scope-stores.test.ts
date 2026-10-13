@@ -5,6 +5,10 @@ import {
   assertScopeStoresRegistered,
   assertStoreBindingsDistinct,
   deployManifest,
+  mayHoldScopeStores,
+  scopeStoresDeclaredIn,
+  STORE_KINDS,
+  type StoreKindRegistration,
   runtimeNeeds,
   scopeStoreBindingName,
   storeKindRegistration,
@@ -149,5 +153,52 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
         platformOperations: [...RESERVED_STORE_OPERATIONS],
       }),
     ).toThrow(/substrat/);
+  });
+});
+
+// #2242: subject erasure destroys the key once the stores answer, so "cannot tell" must
+// never read as "holds none". The gate is the registry: no registered kind, no store.
+describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
+  const graph: StoreKindRegistration = {
+    kind: 'graph',
+    release: '0.0.0-test',
+    script: 'store-graph',
+    className: 'GraphStore',
+    operations: [],
+    platformOperations: [...RESERVED_STORE_OPERATIONS],
+  };
+  const manifest = (scopeStores?: unknown[]) =>
+    JSON.stringify({
+      version: '1.0.0',
+      entry: 'index.js',
+      compatibilityDate: '2026-07-01',
+      registry: { permissions: [], roles: [], entityGrants: [] },
+      digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      ...(scopeStores ? { scopeStores } : {}),
+    });
+  const declaring = manifest([{ binding: 'GRAPH', kind: 'graph' }]);
+
+  it('reads a manifest: declares, declares none, predates manifests, unreadable', () => {
+    expect(scopeStoresDeclaredIn(declaring)).toBe(true);
+    expect(scopeStoresDeclaredIn(manifest())).toBe(false);
+    expect(scopeStoresDeclaredIn(null)).toBe(false);
+    expect(scopeStoresDeclaredIn('{not json')).toBeUndefined();
+    expect(scopeStoresDeclaredIn(JSON.stringify({ version: 1 }))).toBeUndefined();
+  });
+
+  it('with no kind registered nothing may hold a store, whatever the manifest says', () => {
+    expect(STORE_KINDS).toEqual([]);
+    for (const json of [declaring, manifest(), null, undefined, '{not json']) {
+      expect(mayHoldScopeStores(json)).toBe(false);
+    }
+  });
+
+  it('with a kind registered, unknown and unreadable count as may, and only a known "none" does not', () => {
+    expect(mayHoldScopeStores(declaring, [graph])).toBe(true);
+    expect(mayHoldScopeStores(undefined, [graph])).toBe(true);
+    expect(mayHoldScopeStores('{not json', [graph])).toBe(true);
+    expect(mayHoldScopeStores(JSON.stringify({ version: 1 }), [graph])).toBe(true);
+    expect(mayHoldScopeStores(manifest(), [graph])).toBe(false);
+    expect(mayHoldScopeStores(null, [graph])).toBe(false);
   });
 });

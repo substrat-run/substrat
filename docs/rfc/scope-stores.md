@@ -218,7 +218,7 @@ platform does not make that claim when it cannot tell (#2242). Erasure fails clo
   the serving pointer's on the serving script, the bound version on its own script, and
   unknown for a deployment reached by slug alone.
 - If such a deployment cannot be asked, because none resolves or it predates the route,
-  the erasure is refused (502) and the key stays. So does a store that answers with an
+  the erasure is refused (503) and the key stays. So does a store that answers with an
   error. A retry converges.
 - A Cloudflare host with no control plane and no `scopeStores.vertical` cannot name the
   scope's store objects. With a store binding present it refuses `unavailable`, as the

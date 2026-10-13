@@ -175,11 +175,11 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     it('a deployment that cannot be asked (no erase method) stops the erasure, and the key is kept', async () => {
       const { s, subject, keyKept } = await sealedScope();
       const res = await shred(bySlug({}, [graph]), s, subject);
-      expect(res.status).toBe(502);
+      expect(res.status).toBe(503);
       expect(await keyKept()).toBe(true);
     });
 
-    it('a scope with no deployment to ask stops the erasure with 502, and the key is kept', async () => {
+    it('a scope with no deployment to ask stops the erasure with 503, and the key is kept', async () => {
       const { s, subject, keyKept, ref } = await unservedScope();
       const api = createControlPlaneApi({
         host,
@@ -188,7 +188,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         resolveVerticalRef: async (r) => (r === ref ? (redactOnly as unknown as VerticalClient) : undefined),
       });
       const res = await shred(api, s, subject);
-      expect(res.status).toBe(502);
+      expect(res.status).toBe(503);
       expect(((await res.json()) as { error: string }).error).toMatch(/may hold a scope store/);
       expect(await keyKept()).toBe(true);
     });

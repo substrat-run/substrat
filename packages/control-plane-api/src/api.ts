@@ -112,7 +112,7 @@ import {
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
   STORE_KINDS,
-  scopeStoresPossible,
+  mayHoldScopeStores,
   type StoreErasure,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
@@ -3155,25 +3155,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * Whether the deployment a subject erasure asks may hold a scope store (#2242). An empty
-   * answer from it lets the key be destroyed, so "cannot tell" counts as "may".
-   *
-   * - No registered kind: no deployment can hold a store (a push of one is refused), so no.
-   * - No vertical: nothing names a store object, so no.
-   * - Otherwise the manifest of the version the asked deployment runs decides: the serving
-   *   pointer's version for the serving script (unknown when the pointer names another
-   *   script), the bound version for its own script or the bound-version rung, and unknown
-   *   for the slug rung, which runs whatever it runs. An unknown version, or a manifest that
-   *   cannot be read, may hold one. A version with no manifest was pushed before manifests
-   *   were kept, which is before scope stores, so it holds none.
+   * Whether the deployment a subject erasure asks may hold a scope store (#2242): the
+   * contracts gate (`mayHoldScopeStores`) on the manifest of the version that deployment
+   * runs. That is the serving pointer's version on the serving script (unknown when the
+   * pointer names another script), the bound version on its own script or the
+   * bound-version rung, and unknown on the slug rung, which runs whatever it runs. An
+   * unknown version, or a manifest read that fails, is passed as unknown, never as none.
    */
-  const mayHoldScopeStores = async (
+  const servingMayHoldScopeStores = async (
     c: ReqCtx,
     scope: Scope,
     currentRef: string | null,
     via: ScopeDeploymentVia | undefined,
   ): Promise<boolean> => {
-    if (!scopeStoresPossible(options.storeKinds) || !scope.vertical) return false;
+    const kinds = options.storeKinds ?? STORE_KINDS;
+    if (!mayHoldScopeStores(undefined, kinds) || !scope.vertical) return false;
     let versionId: string | null = null;
     if (currentRef && currentRef === scope.servingRef) {
       const pointer = await c.var.admin.verticalServing(c.get('actor'), scope.vertical).catch(() => null);
@@ -3181,16 +3177,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     } else if (currentRef || via === 'bound-version') {
       versionId = scope.verticalVersionId;
     }
-    if (!versionId) return true;
-    const json = await c.var.admin.versionManifest(c.get('actor'), scope.vertical, versionId).catch(() => undefined);
-    if (json === null) return false;
-    if (json === undefined) return true;
-    try {
-      const parsed = storedDeployManifest.safeParse(JSON.parse(json));
-      return !parsed.success || parsed.data.scopeStores.length > 0;
-    } catch {
-      return true;
-    }
+    const manifestJson = versionId
+      ? await c.var.admin.versionManifest(c.get('actor'), scope.vertical, versionId).catch(() => undefined)
+      : undefined;
+    return mayHoldScopeStores(manifestJson, kinds);
   };
 
   /** How many exports a carry tries before its source holds still long enough to bind (#1722 r12). */
@@ -5235,10 +5225,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // a store is asked, and one that may and cannot be asked stops the erasure here, before
     // `finalizeSubjectShred` destroys the key. An error from the ask stops it the same way.
     let storeErasures: StoreErasure[] = [];
-    if (await mayHoldScopeStores(c, scope, currentRef, reached?.via)) {
+    if (await servingMayHoldScopeStores(c, scope, currentRef, reached?.via)) {
       if (typeof serving?.scopeStoreErase !== 'function') {
         throw new ControlPlaneError(
-          502,
+          503,
           `scope ${scopeId} may hold a scope store, and no deployment can be asked to erase it; the subject key is kept`,
         );
       }
