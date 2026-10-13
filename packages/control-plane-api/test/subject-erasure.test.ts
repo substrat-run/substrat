@@ -15,6 +15,8 @@ import {
   type ScopeId,
   type ScopeDump,
   type SubjectShredReceipt,
+  RESERVED_STORE_OPERATIONS,
+  type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
@@ -416,7 +418,7 @@ describe('subject erasure (#37)', () => {
   };
   const graphTable = { name: 'nodes', ddl: 'CREATE TABLE nodes(id TEXT)', columns: ['id'], rows: [['a']] };
   /** A registered graph kind: with none registered no store can exist (`mayHoldScopeStores`, #2242). */
-  const graphKind = { kind: 'graph', release: '1.0.0', script: 'graph', className: 'Graph', operations: [], platformOperations: ['substrat.export', 'substrat.import', 'substrat.size', 'substrat.wipe', 'substrat.erase'] } as never;
+  const graphKind: StoreKindRegistration = { kind: 'graph', release: '1.0.0', className: 'Graph', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] };
 
   /** The control plane against a hosted `docs`, its stores reached through the platform. */
   const hosted = (calls: { imported: unknown[][]; erased: string[]; failErase?: boolean }, tables: number) =>
