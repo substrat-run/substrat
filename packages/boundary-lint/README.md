@@ -44,6 +44,7 @@ the only thing that can tell them apart, which is why this is a linter and not a
 | **R6** no clock | module code never reads the wall clock (`new Date()`, `Date.now()`) — the operation's instant is `ctx.now()` |
 | **R7** no bare catch | module code never catches an engine error outside `ctx.atomic` — a `catch` around a raw engine call commits its partial writes (under-fires; see below) |
 | **R8** no `SELECT *` | an **engine** never reads with a star — a read names its columns, so the shape it publishes is its schema's rather than its table's |
+| **R12** one list parameter | module code never writes `IN (${…})` with one `?` per value — a Durable Object refuses the 101st bound parameter, so a list goes in as ONE JSON array with `inList(values)` from `@substrat-run/contracts` |
 
 **Module code** is everything reachable from a `ModuleRegistration` — operations and
 consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harness, and are
@@ -155,6 +156,29 @@ The other half of the seam — proving every row-returning export goes through `
 is **not** linted. It needs the type checker this package deliberately does not carry, so
 it stays a convention with an engine-side `test/seam.test.ts` behind it.
 
+## A list is one parameter (R12)
+
+A Durable Object's SQLite refuses a statement that binds more than 100 parameters. A list
+written one `?` per value passes every test whose fixture has a handful of rows, and fails
+the first hosted call whose list outgrew it:
+
+```ts
+// R12. Fine with five ids; refused in production with a hundred and one.
+ctx.sql.exec(`UPDATE acme_items SET used = 1 WHERE id IN (${ids.map(() => '?').join(', ')})`, ids);
+
+// One JSON array, read back with json_each — on both adapters, at any length.
+import { inList } from '@substrat-run/contracts';
+const list = inList(ids);
+ctx.sql.exec(`UPDATE acme_items SET used = 1 WHERE id IN ${list.sql}`, [...list.params]);
+```
+
+R12 fires on an interpolation right after `IN (` (or `NOT IN (`) inside a template whose
+expression holds a placeholder literal (`'?'`, `"?"`, `'?, '`), or is a local name built from
+one. It does not fire on `VALUES (${…})`, whose width is the table's, nor on an interpolation
+with no placeholder in it. A placeholder built by a function defined elsewhere is out of its
+reach. A list whose length is fixed and short opts out in a `boundary-lint-allow R12` …
+`boundary-lint-end R12` block.
+
 ## The escape hatch
 
 A one-time extraction handoff (decision 27) opts out of R5 explicitly, in a block a
@@ -166,8 +190,9 @@ const legacy = ctx.sql.query('SELECT * FROM workorder_time_entries');
 // boundary-lint-end R5
 ```
 
-R6 has the same block for code that must read the real clock, and R8 for a maintenance or
-migration read whose row never leaves the engine. R4 accepts only an update that sets
+R6 has the same block for code that must read the real clock, R8 for a maintenance or
+migration read whose row never leaves the engine, and R12 for a placeholder list of fixed,
+short length. R4 accepts only an update that sets
 `_substrat_tuples.revoked_at` to the current non-null UTC timestamp, with no other
 assignments and a statement-local SQL comment in a generated
 `migrations.generated.ts` file. The comment names the issue whose migration diff a person

@@ -60,6 +60,12 @@ describe('bound parameters', () => {
     expect(() => assertWithinSqlLimits(`SELECT ${marks(P + 1)}`)).toThrow(`too many SQL variables at offset ${'SELECT '.length + 2 * P}: SQLITE_ERROR`);
   });
 
+  it('names the way round it after the DO\'s own words: one JSON array, inList (#2248)', () => {
+    expect(() => assertWithinSqlLimits(`SELECT 1 WHERE 1 IN (${marks(P + 1)})`)).toThrow(
+      /^too many SQL variables at offset \d+: SQLITE_ERROR \(limit 100; bind a list of any length as ONE JSON array: .*inList\(values\)` from @substrat-run\/contracts, which is `IN \(SELECT value FROM json_each\(\?\)\)`\)$/,
+    );
+  });
+
   it('numbers explicit ?N as SQLite does, so a gap counts', () => {
     expect(() => assertWithinSqlLimits(`SELECT ?${P}`)).not.toThrow();
     expect(() => assertWithinSqlLimits(`SELECT ?${P + 1}`)).toThrow(`variable number must be between ?1 and ?${P} at offset 7: SQLITE_ERROR`);

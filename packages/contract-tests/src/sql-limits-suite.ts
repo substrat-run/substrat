@@ -13,7 +13,7 @@
  * the twins; one that refused nothing fails the refusals.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { inList, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { DO_SQL_LIMITS, ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { testMod } from './modules.js';
@@ -124,6 +124,8 @@ const cases: Case[] = [
     params: Array(boundParameters + 1).fill(1),
     // The offset is SQLite's own: the byte where the 101st `?` starts, after 100 of `?, `.
     refusal: `too many SQL variables at offset ${'SELECT 1 WHERE 1 IN ('.length + '?, '.length * boundParameters}: SQLITE_ERROR`,
+    // The node adapter names the way round it (inList, #2248); the DO's message ends at SQLITE_ERROR.
+    refusalTail: true,
   },
   {
     name: `?${boundParameters + 1} (numbered)`,
@@ -197,6 +199,47 @@ export function sqlLimitsContractSuite(
     it('refuses without taking the scope down — the next statement still runs', async () => {
       await expect(stub.invoke('testmod/sql-query', { sql: compound(compoundTerms + 1) })).rejects.toThrow();
       await expect(stub.invoke('testmod/sql-query', { sql: 'SELECT 1 AS ok' })).resolves.toEqual([{ ok: 1 }]);
+    });
+
+    // -- the way round the parameter limit: inList (#2248) ----------------------
+    // The same list, the same table, two spellings: one `?` per value is refused, one JSON
+    // array through json_each is not — on this adapter, which is the claim the docs make.
+    describe('inList: a list of any length in one parameter', () => {
+      const listed = Array.from({ length: boundParameters * 2 + 50 }, (_, i) => `id-${i}`);
+      const rows = `WITH t(id) AS (VALUES ('id-3'), ('id-${listed.length - 1}'), ('other'))`;
+
+      it(`matches inside a list of ${listed.length} values`, async () => {
+        const ids = inList(listed);
+        await expect(
+          stub.invoke('testmod/sql-query', { sql: `${rows} SELECT id FROM t WHERE id IN ${ids.sql} ORDER BY id`, params: ids.params }),
+        ).resolves.toEqual([{ id: `id-${listed.length - 1}` }, { id: 'id-3' }]); // text order: '2' < '3'
+      });
+
+      it(`refuses the hand-built twin: ${listed.length} placeholders`, async () => {
+        await expect(
+          stub.invoke('testmod/sql-query', { sql: `${rows} SELECT id FROM t WHERE id IN (${marks(listed.length)})`, params: listed }),
+        ).rejects.toThrow(/^too many SQL variables/);
+      });
+
+      it('matches nothing for the empty list, where `IN ()` is a syntax error', async () => {
+        const none = inList([]);
+        await expect(
+          stub.invoke('testmod/sql-query', { sql: `${rows} SELECT id FROM t WHERE id IN ${none.sql}`, params: none.params }),
+        ).resolves.toEqual([]);
+        await expect(
+          stub.invoke('testmod/sql-query', { sql: `${rows} SELECT id FROM t WHERE id NOT IN ${none.sql} ORDER BY id`, params: none.params }),
+        ).resolves.toHaveLength(3);
+      });
+
+      it('sits among the other parameters, and numbers compare as numbers', async () => {
+        const ns = inList([2, 3]);
+        await expect(
+          stub.invoke('testmod/sql-query', {
+            sql: `WITH t(n) AS (VALUES (1), (2), (3)) SELECT n FROM t WHERE n > ? AND n IN ${ns.sql} AND n < ? ORDER BY n`,
+            params: [1, ...ns.params, 3],
+          }),
+        ).resolves.toEqual([{ n: 2 }]);
+      });
     });
   });
 }

@@ -129,6 +129,14 @@
  *                      sits in a `boundary-lint-allow R11` … `boundary-lint-end R11`
  *                      block, where a reviewer reads it.
  *
+ *   R12 one list param module code never writes `IN (${…})` with one `?` per value (#2248).
+ *                      A Durable Object refuses the 101st bound parameter, so the
+ *                      hand-built list passes every small fixture and fails in
+ *                      production on the first list that outgrew it. A list is ONE
+ *                      JSON parameter: `IN ${list.sql}`, `list = inList(values)` from
+ *                      `@substrat-run/contracts`. A list of fixed, short length sits
+ *                      in a `boundary-lint-allow R12` … `boundary-lint-end R12` block.
+ *
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
  * unbuilt; the no-clock rule landed first and took the number, so #786 shipped
@@ -190,7 +198,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10' | 'R11';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10' | 'R11' | 'R12';
   message: string;
 }
 
@@ -1201,6 +1209,85 @@ function checkHandlerMapCast(rel: string, source: string, out: Violation[]): voi
   }
 }
 
+// ---------------------------------------------------------------------------
+// R12 — a list is one parameter, not one per value (#2248)
+// ---------------------------------------------------------------------------
+
+/** `IN (${` / `NOT IN (${` — a list written into the statement from an interpolation. */
+const IN_INTERPOLATION = /\bIN\s*\(\s*\$\{/gi;
+
+/** A string literal that is a placeholder: `'?'`, `"?"`, `` `?` ``, and the `'?, '` of a repeat. */
+const PLACEHOLDER_LITERAL = /(['"`])\s*\?\s*,?\s*\1/g;
+
+/**
+ * Does `stripped[from, to)` hold a placeholder literal? The `?` must be a string's body — blank in
+ * the masked copy — or `x === 'a' ? 'b' : 'c'` would read as the literal `' ? '`.
+ */
+function holdsPlaceholder(masked: string, stripped: string, from: number, to: number): boolean {
+  const text = stripped.slice(from, to);
+  PLACEHOLDER_LITERAL.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = PLACEHOLDER_LITERAL.exec(text)); ) {
+    if (masked[from + m.index + m[0].indexOf('?')] === ' ') return true;
+    PLACEHOLDER_LITERAL.lastIndex = m.index + 1;
+  }
+  return false;
+}
+
+/**
+ * R12 — module code never builds `IN (?, ?, …)` one placeholder per value.
+ *
+ * A Durable Object refuses a statement binding over 100 parameters, so
+ * `IN (${ids.map(() => '?').join(', ')})` passes every fixture that has a handful of rows and
+ * fails the first hosted call whose list outgrew it — an adopter's 217-line proposal did, while
+ * every local suite stayed green. The list is ONE JSON parameter instead: `IN ${list.sql}` with
+ * `list = inList(values)` from `@substrat-run/contracts`, which reads it back with `json_each`.
+ *
+ * Fires on an interpolation right after `IN (` — inside a template, which the masked copy proves
+ * by keeping the `${` standing where a plain string's would be blank — whose expression holds a
+ * placeholder literal (`'?'`, `"?"`, `'?, '`), or is a local name whose initializer does (one hop,
+ * as R11 resolves a name). Not fired: `VALUES (${…})`, whose width is the table's and fixed;
+ * `IN ${list.sql}`; a literal `IN (?, ?)`, whose length is written down; an interpolation with no
+ * placeholder in it (a constant list of SQL literals binds nothing). Out of reach, stated: a
+ * placeholder built by a function defined elsewhere (`IN (${marks(n)})`) — the literal is not in
+ * sight. A list whose length is fixed and short sits in a `boundary-lint-allow R12` …
+ * `boundary-lint-end R12` block, where a reviewer reads why.
+ */
+function checkPlaceholderList(rel: string, source: string, out: Violation[]): void {
+  if (!/\bin\s*\(\s*\$\{/i.test(source)) return;
+  const masked = maskSource(source);
+  const stripped = maskSource(source, { literals: false });
+  let allowed: Set<number> | undefined;
+
+  IN_INTERPOLATION.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = IN_INTERPOLATION.exec(stripped)); ) {
+    const open = m.index + m[0].length - 1; // the `{`
+    if (masked.slice(open - 1, open + 1) !== '${') continue; // not a template's interpolation
+    const close = matchDelim(masked, open, '{', '}');
+    if (close < 0) continue;
+    const written = stripped.slice(open + 1, close).trim();
+    let builds = holdsPlaceholder(masked, stripped, open + 1, close);
+    if (!builds && /^[A-Za-z_$][\w$]*$/.test(written)) {
+      const at = initializerOf(masked, written);
+      builds = at >= 0 && holdsPlaceholder(masked, stripped, at, expressionEnd(masked, at));
+    }
+    if (!builds) continue;
+    const line = lineAt(source, m.index);
+    allowed ??= allowedLines(source.split('\n'), stripped.split('\n'), 'R12');
+    if (allowed.has(line)) continue;
+    out.push({
+      file: rel,
+      line,
+      rule: 'R12',
+      message:
+        `parameter list — 'IN (\${…})' binds one parameter per value, and a Durable Object refuses ` +
+        `the 101st, so it passes every small fixture and fails the first hosted call whose list ` +
+        `outgrew it. Bind the list as ONE JSON array: 'IN \${list.sql}' with ` +
+        `'list = inList(values)' from @substrat-run/contracts. A list of fixed, short length goes ` +
+        `in a boundary-lint-allow R12 … boundary-lint-end R12 block`,
+    });
+  }
+}
+
 /**
  * R2's test seams (#2155 review): the packages that hand a test what module code must never hold —
  * `@substrat-run/kernel/testing` mints a `BoundOperations` over any maps, and the two kits wrap it
@@ -1221,6 +1308,7 @@ function checkModuleFile(
   checkClock(rel, source, out);
   checkEngineCatch(rel, source, out);
   checkHandlerMapCast(rel, source, out);
+  checkPlaceholderList(rel, source, out);
   if (pkg.engine) checkSelectStar(rel, source, out);
 
   for (const spec of importsOf(source)) {
