@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/model-providers",
-  "version": "0.5.34",
+  "version": "0.5.35",
   "description": "The model-provider seam: one `provider:model` grammar, a table of providers (Anthropic, OpenAI, Google, Mistral, Qwen, Cloudflare, Scaleway, Ollama, any OpenAI-compatible endpoint), the hosting disclosure per provider, the generated rate card and the list-price math over it. Cloudflare is one row, not the design (#1054).",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -29,9 +29,9 @@
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "3.0.63",
+    "@ai-sdk/openai-compatible": "3.0.67",
     "@substrat-run/contracts": "workspace:^",
-    "ai": "7.0.128"
+    "ai": "7.0.136"
   },
   "devDependencies": {
     "typescript": "catalog:",

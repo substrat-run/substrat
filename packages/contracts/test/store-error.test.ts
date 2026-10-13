@@ -12,10 +12,18 @@ describe('StoreError (#2209)', () => {
   });
 
   it('maps a status the taxonomy does not list to unavailable, and still carries the body', () => {
+    const err = new StoreError({ code: 'teapot', status: 418, body: 'short' });
+    expect(errorCodeOf(err)).toBe('unavailable');
+    expect(toProblem(err).detail).toMatch(/418/);
+    expect(toProblem(err).storeBody).toBe('short');
+  });
+
+  it('maps a 5xx to unavailable and keeps its body in the store', () => {
     const err = new StoreError({ code: 'broke', status: 500, body: 'disk' });
     expect(errorCodeOf(err)).toBe('unavailable');
     expect(toProblem(err).detail).toMatch(/500/);
-    expect(toProblem(err).storeBody).toBe('disk');
+    expect(err.storeBody).toBeUndefined();
+    expect(toProblem(err).storeBody).toBeUndefined();
   });
 
   it('builds an object name the vertical does not choose', () => {
