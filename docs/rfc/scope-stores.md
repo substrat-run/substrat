@@ -288,7 +288,7 @@ That path would be built, shipped, and then deleted again.
 | Caller | Reaches | Through | Its identity comes from |
 |---|---|---|---|
 | A vertical's operation | The kind's own operations, on a binding the serving version declares, for the scope the request was routed to | `fetch` of `store.substrat.internal`, then egress, then the router's `ScopeStoreCalls` entrypoint, then the store script | The router's `OUTBOUND_POLICY` (vertical, tenant, scope) and the serving version's manifest record |
-| The control plane | The reserved `substrat.*` operations, for a scope it operates | The dispatch namespace, then the store script | Its own scope record (vertical, version) and version record (bindings, kinds) |
+| The control plane | The reserved `substrat.*` operations, for a scope it operates | The dispatch namespace, then the store script | Its own scope record (vertical) and the manifest of the version the scope's deployment runs, resolved exactly as the router resolves it (§10.6) |
 | Anyone else | Nothing | none | none |
 
 A hosted upload carries no `SUBSTRAT_STORE_*` binding. The direct binding, and the runner,
@@ -326,6 +326,20 @@ Replay inside the window is bounded by the window. The reserved operations are i
 and a kind operation's retry safety is the vertical's (§9). Per-object nonce memory is
 open question Q2.
 
+**Who runs these checks.** The store script runs the kind's code, and the kind is not the
+platform's code (§1). A wrapper class the kind imports does not hold the checks, because
+the kind's own class can leave it out, and a review that "checks one import" proves little.
+**The requirement is that the checks run in platform code the kind cannot replace.** The
+platform supplies the store script's entry module, and the kind supplies only the class
+behind it. That is the role `lint:platform-entry` already plays for a vertical's bundle.
+The entry module verifies the envelope and the remembered name before it hands the request
+to the kind's object. How the entry module reaches the object's storage for the remembered
+name, without the kind's class being able to rewrite it, is open question Q3.
+
+**Keys (L16).** Store-envelope signing keys are scoped per store script and per audience.
+A store script never holds a key that can mint an envelope for another script, and no signer
+holds a key for an audience it does not sign.
+
 ### 10.4 What moves and what stays
 
 | Operation | In the stack #2240–#2247 | After this amendment |
@@ -354,7 +368,9 @@ it is whole while missing a store is not written.
 **Restore and import.** The control plane loads the scope's own tables and calls
 `substrat.import` on each binding in the dump's `stores`. Only bindings the destination's
 version declares, with the same kind, are imported. A dump binding the destination does
-not declare refuses the restore before any write (L8). Erasures are then replayed (L9–L11):
+not declare refuses the restore before any write. The check therefore runs ahead of
+`host.restoreScope`, which loads the scope's own tables first (L8, the recommended answer
+to Q4). Erasures are then replayed (L9–L11):
 
 - The subjects are the union of the target scope's tombstones and the source scope's.
   Each is erased once, on every binding the target declares.
@@ -369,9 +385,11 @@ not declare refuses the restore before any write (L8). Erasures are then replaye
 - A target with no store restores unchanged. The receipt carries no replay fields, and an
   absent receipt field means nothing had to be replayed and nothing is missing.
 
-This is what the #2254 review fix ships: `replayStoreErasures` in
+This is on #2254 as pushed at `2f442969d`: `replayStoreErasures` in
 `packages/kernel/src/scope-store.ts`, behind both the host's replay and the control
-plane's. Before that fix, #2254 read only the source's marks, through a caught page loop.
+plane's. Before that commit, #2254 read only the source's marks, through a caught page
+loop. Which destination stores the replay reaches still depends on the version resolution
+in §10.6, which is item (i).
 
 **Snapshot and fork.** A snapshot is an export of the source scope, then an import into
 the snapshot scope, then the replay above. The snapshot scope has its own id, so it has its
@@ -385,17 +403,30 @@ version in it. A preview scope is its own scope with its own objects. Its stores
 created and reaped with it, and its outbound effects stay inert as every non-primary
 scope's do (#2005).
 
-**Reap and wipe, stores first.** Every path that deletes a scope's storage calls
-`substrat.wipe` on each declared binding first. The paths are tenant reap, scope storage
-deletion, preview reap, snapshot deletion and the sweeper's reap. A wipe that fails stops
-the delete. The scope's own storage is not deleted around the store, and the delete is
-retried, which is what #2254's `wipePlatformStores` already does by throwing (L6, L7). A
-path that cannot tell which stores a scope has fails the same way and does not skip the
-wipe (L7).
+**Reap and wipe: unroute, then stores, then the scope.** Every path that deletes a scope's
+storage first stops the scope being routed. It then calls `substrat.wipe` on each binding
+(L17), and only then deletes the scope's own storage (L6). The paths are tenant reap,
+scope storage deletion, preview reap, snapshot deletion and the sweeper's reap. The router
+serves a scope while it is active. A vertical call that lands between the wipe and the
+delete would repopulate the object, which then outlives its scope with nothing left to
+reach it. Tenant reap is already fenced by the tenant's status. Scope, preview and snapshot
+deletion need the scope unrouted before the wipe.
+
+A wipe that fails stops the delete. The scope's own storage is not deleted around the
+store, and the delete is retried. #2254's `wipePlatformStores` does this by throwing when
+a store call fails. A path that cannot tell which stores a scope has must fail the same way
+(L7). #2254 does not do this yet: `wipePlatformStores` returns silently, and the delete
+proceeds, when the control plane has no store caller configured or the scope has no
+resolvable version. That is item (j).
 
 **Subject erasure, fail closed.** Erase never concludes "nothing to erase" when it cannot
 tell. The key is destroyed only after every store that may hold the subject has answered.
-Two arms, as the #2242 review fix ships them:
+"Cannot tell" and "cannot ask" are `unavailable`, which is 503
+(`packages/contracts/src/errors.ts`). 502 stays what it already means: a downstream that
+answered badly (`bad_envelope`). There are two arms. They are written in the #2242 review
+fix, which was not pushed when this amendment was written (local head `a070e7f46`; the
+pushed #2242 is `6349900b3`, where a host with no control plane and no configured vertical
+reads as "no store" and fails open):
 
 - **Host arm** (the pure adapter, dev, and any host holding a direct binding or a runner).
   If the host has no control plane and no configured vertical, it cannot tell which objects
@@ -407,35 +438,75 @@ Two arms, as the #2242 review fix ships them:
   gated on the registered kinds. With none registered, no deployment can hold a store,
   because a push of one is refused, so this arm is dormant until the first kind.
   - No vertical means no store.
-  - Otherwise the version the asked deployment runs decides: the serving pointer's version
-    for the serving script, the bound version for its own script, and unknown for the
+  - Otherwise the version the scope's deployment runs decides (§10.6), with unknown for the
     by-slug rung.
   - An unknown version, or a manifest that cannot be read, may hold a store.
   - A version with no manifest predates kept manifests, and so predates scope stores, and
     holds none.
-  - A deployment that may hold a store and cannot be asked keeps the key, and the route
-    answers 503.
+  - A deployment that may hold a store and cannot be asked keeps the key and answers 503.
 
-After this amendment the control-plane arm asks the store script directly, rather than the
-vertical. The host arm stays the rule for dev and self-host.
+The #2242 fix asks the **vertical** (`scopeStoreErase`), which is an interim step: #2254
+removes that `VerticalClient` method. After #2254, the shred route erases straight from the
+control plane to the store script. The predicate that decides which stores it must reach
+is the control-plane arm above. #2254's own shred uses a different predicate,
+`declaresStores`: it reads the bound version only, has no gate on registered kinds, and
+has no "unknown means may hold" rung. Porting the arm onto #2254's shred is item (k). The
+host arm stays the rule for dev and self-host.
+
+A bind that races an erase either sees the erase or fails (L19). The erase reads the
+declared bindings and then destroys the key. A bind landing in between could add a binding
+the erase never reached. So the erase runs under the same fence a bind takes on the scope,
+or it re-reads the resolution after its store calls and starts over if the resolution moved.
 
 **Size and the meter.** The daily sweep calls `substrat.size` per declared binding. A store
 that cannot answer leaves that day's store rows unsampled. It is never written as `0`.
 
 ### 10.6 Where the kind and the vertical come from
 
-- **The vertical and the version** come from the directory's scope record: `scopes.vertical`
-  and `scopes.vertical_version_id`. That record is the control plane's own, written at
-  provisioning and moved by bind. No deployed vertical writes it.
-- **The bindings and kinds** come from that version's reviewed manifest record:
-  `vertical_versions.manifest_json`, field `scopeStores`, parsed by `storedDeployManifest`.
-  It was accepted at push against `STORE_KINDS` (D-63) and is not edited afterwards.
-- **For a vertical's own call**, the router reads the same field for the version it is
-  serving. #2254 reads it in the route resolver's SQL. The router does not trust the
-  vertical's claim about which bindings exist.
-- **Reading the record.** A missing manifest is "no stores" only where the version predates
-  kept manifests. An unreadable one fails closed (503, or "may hold" on the erase arm).
-  `declaredStoresOf` in #2254 already does this.
+**The vertical** comes from the directory's scope record, `scopes.vertical`. That record
+is the control plane's own, and no deployed vertical writes it.
+
+**The version is one resolution, shared by the router and the control plane:** the version
+the scope's deployment runs (L14).
+
+- **When the scope rides the serving pin** (`scopes.serving_ref` is set), it is the version
+  that serving pointer names.
+- **Otherwise** it is the bound version, `scopes.vertical_version_id`.
+- **Otherwise** it is unknown, and unknown fails closed: an erase may hold a store, a wipe
+  or restore stops, and the meter leaves the day unsampled.
+
+This matters because provisioning sets `serving_ref` and leaves `vertical_version_id` null.
+Only a bind sets the version id. So an ordinary install has a serving pin and no bound
+version.
+
+The router already resolves this way: #2254's `READ_ROUTE_SQL` reads `scopeStores` from the
+serving version whenever `serving_ref` is set. #2254's control plane does not. Its
+`manifestStores` reads `vertical_version_id` only, and returns `[]` when that is null.
+
+**Failure on the common path.** An install pinned to the serving script writes to a store
+through the router. Its backup then carries no stores, its reap skips the wipe, its restore
+skips the replay, and shred destroys the key while the store still holds the subject. That
+breaks L6, L7, L9, L12 and L15. It is item (i), and it is fixed with one shared resolver
+that both the router and the control plane call. The #2242 fix's `mayHoldScopeStores`
+resolves this way for erase already.
+
+**The bindings and kinds** come from the resolved version's reviewed manifest record:
+`vertical_versions.manifest_json`, field `scopeStores`, parsed by `storedDeployManifest`.
+It was accepted at push against `STORE_KINDS` (D-63) and is not edited afterwards. The
+router does not trust the vertical's claim about which bindings exist.
+
+**Reading the record.** A missing manifest is "no stores" only where the version predates
+kept manifests. An unreadable one fails closed: 503, or "may hold" on the erase arm.
+`declaredStoresOf` in #2254 already does this.
+
+**Bindings a later version dropped (L17).** Object names carry no version, and the script
+is per (kind, vertical). A later version that drops a binding, or changes its kind (which
+points it at another script), would leave the old objects holding data. Export, wipe, erase
+and the meter would never reach them again, and an erase would destroy the key with the
+subject still in the orphan. Two ways to close this, open question Q7:
+
+- refuse such a push while the vertical has scopes that may hold the binding's objects; or
+- drive the lifecycle over every (binding, kind) any version the scope has run declared.
 
 Nothing here is per-vertical configuration that a worker carries. A deployed vertical with
 no control plane is covered by the records the platform already keeps.
@@ -446,35 +517,40 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 
 | Id | Rule |
 |---|---|
-| L1 | A hosted serving upload carries no binding named `SUBSTRAT_STORE_*`, whatever `STORE_KINDS` holds |
+| L1 | A hosted serving upload carries no binding named `SUBSTRAT_STORE_*`, whatever `STORE_KINDS` holds. With L18, that holds for every name in the upload, the vertical's own included |
 | L2 | A hosted `getScopeStore` call leaves the worker only as `fetch` of `store.substrat.internal`. With no direct binding and no runner configured, the host never falls back to an ambient binding |
 | L3 | The router refuses a `substrat.*` operation, a scope other than the routed one, and a binding the serving version does not declare, before it signs |
 | L4 | The store refuses an envelope whose MAC fails, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` differs from the first name it accepted. Each is checked before kind code runs |
 | L5 | A signature for one object, operation or audience does not open another. A validly signed envelope for name Y is refused by an object that remembers X |
-| L6 | Every scope-deletion path calls `substrat.wipe` on each declared binding before it deletes the scope's storage |
+| L6 | Every scope-deletion path stops routing the scope, then calls `substrat.wipe` on each binding, then deletes the scope's storage, in that order |
 | L7 | A failed or undecidable wipe stops the delete, and the scope's own storage is left for the retry. The delete never proceeds around the store |
-| L8 | A restore imports only bindings the destination version declares with the same kind. Any other dump binding refuses the restore before any write |
+| L8 | A restore imports only bindings the destination version declares with the same kind. Any other dump binding refuses the restore before any write, ahead of `host.restoreScope`. This is the recommended answer to Q4, pending its decision |
 | L9 | A restore re-erases the union of the target's and the source's tombstoned subjects on every binding the target declares, each subject once |
 | L10 | An unknown source never refuses a restore. It yields `storeErasureIncomplete` and `storeErasureSourceUnknown` |
 | L11 | A failed replay erase yields `storeErasureIncomplete` without `storeErasureSourceUnknown`, and the same restore again converges |
 | L12 | Subject erasure never destroys the key while a store that may hold the subject has not answered. "Cannot tell" counts as "may hold", on both arms of §10.5 |
 | L13 | A store that cannot report its size is not recorded as size `0` |
-| L14 | The kind and the vertical used for any platform call come from the scope record and the version's manifest record, never from the vertical's environment |
+| L14 | The kind, the bindings and the vertical for any store call, from the router or the control plane, come from one shared resolution: the scope record's vertical, and the manifest of the version the scope's deployment runs (the serving pointer's version under a serving pin, else the bound version, else unknown, which fails closed). Never from the vertical's environment |
 | L15 | A masked export or pull carries no stores, and a failed store export fails the export |
+| L16 | Store-envelope signing keys are scoped per store script and per audience. A store script never holds a key that can mint an envelope for another script, and no signer holds a key for an audience it does not sign |
+| L17 | The lifecycle (export, wipe, erase, size) reaches every binding under which a scope may hold objects, not only those its current version declares. Or such a binding cannot leave the declaration (Q7) |
+| L18 | A vertical-declared name (store binding, static binding, Durable Object binding) starting with `SUBSTRAT_STORE_` is refused at push and again at upload |
+| L19 | A bind that races a subject erasure either sees the erase or fails. The erase never destroys the key after a bind added a binding it did not reach |
+| L20 | A kind id matches `[a-z0-9]+`, so `substrat-store-<kind>-<vertical>` names exactly one (kind, vertical). A registration with any other id is refused |
 
 ### 10.8 What #2254 already does, and what is open
 
-#2254 already does most of this decision:
+#2254 already does most of this decision. As pushed at `2f442969d`:
 
 | Already in #2254 | Where |
 |---|---|
 | The control plane drives size, erase, export, import, wipe and replay straight to the store script through `DISPATCH` | `control-plane-api/src/platform-scope-stores.ts` |
-| The kind and bindings come from the version manifest, the vertical and version from the scope record. Unreadable manifests fail closed | `declaredStoresOf`, `manifestStores` |
+| The kind and bindings come from a version manifest, the vertical from the scope record. Unreadable manifests fail closed. Which version it reads is item (i) | `declaredStoresOf`, `manifestStores` |
 | The vertical's `/internal/scope-store-*` routes and their `VerticalClient` methods are removed | vertical-host, control-plane-api |
 | The serving upload plan carries no store bindings | `scopeStoreUploadPlan(…).bindings` is `[]` |
 | A vertical's call goes `store.substrat.internal`, then egress, then `ScopeStoreCalls`, which refuses `substrat.*`, a foreign scope and an undeclared binding | `contracts/src/scope-store-transport.ts`, `apps/router/src/store-calls.ts` |
-| Wipe before delete on the reap paths | `wipePlatformStores`, the sweeper's `wipeDeclaredScopeStores` |
-| Restore erasure replay, with target and source marks and an unknown source reported (review fix) | `replayStoreErasures` |
+| Wipe before delete on the reap paths, when a store call fails. Not yet when the stores cannot be resolved: item (j) | `wipePlatformStores`, the sweeper's `wipeDeclaredScopeStores` |
+| Restore erasure replay, with target and source marks and an unknown source reported | `replayStoreErasures`, `storeErasureSourceUnknown` |
 
 Still open:
 
@@ -484,50 +560,69 @@ Still open:
 | (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
 | (c) | `transport: 'platform'` exists, but the host defaults to `'binding'` and nothing in production sets `'platform'` | L2 | **Yes** |
 | (d) | `scopeStoreScriptBindings` and the guard that tests it remain. After #2254 no production path calls them | L1 | **Yes**: delete the function and retarget the guard |
-| (e) | The host keeps an ambient lifecycle path. It is right for dev and self-host, and needs the fail-closed host arm | L12 | **Yes** (the #2242 review fix) |
+| (e) | The host keeps an ambient lifecycle path. It is right for dev and self-host, and needs the fail-closed host arm | L12 | **Yes** (the #2242 review fix, not yet pushed) |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
-| (g) | `importStores` imports whatever binding and kind the dump names, without checking them against the destination's declaration | L8 | **Yes**: before any tenant data |
+| (g) | `importStores` imports whatever binding and kind the dump names, without checking them against the destination's declaration. The check must run ahead of `host.restoreScope`, which writes the scope's tables first | L8 | **Yes**: before any tenant data |
 | (h) | The snapshot route calls the erasure replay and discards its result, so an incomplete replay into a fork is not reported | L10, L11 | **Yes**: a fork must not look sealed when it is not |
+| (i) | The router resolves a scope's version through its serving pin, and the control plane's `manifestStores` reads `vertical_version_id` only. That id is null after provisioning, so backup, reap, restore and shred see no stores on an ordinary install | L14 | **Yes**: one shared resolver |
+| (j) | `wipePlatformStores` returns silently, and the delete proceeds, when no store caller is configured or no version resolves | L7 | **Yes** |
+| (k) | #2254's shred decides by `declaresStores`: the bound version only, no gate on registered kinds, no "unknown means may hold". The #2242 fix's arm asks the vertical through a method #2254 removes. The arm has to be ported onto #2254's control-plane-direct shred, and its 502 aligned to 503 | L12 | **Yes** |
+| (l) | Nothing reserves the `SUBSTRAT_STORE_` prefix. A vertical can declare its own binding with it, which breaks L1, and the Cloudflare host would read its own namespace of that name as an ambient store binding | L1, L18 | **Yes** |
+| (m) | No path unroutes a scope before wiping it, and erase is not fenced against a bind | L6, L19 | **Yes** |
+| (n) | Every lifecycle path reads only the current version's bindings, so objects under a dropped or re-kinded binding are unreachable | L17 | **Yes**, or refuse such a push (Q7) |
+| (o) | The envelope checks are planned in the kind's script, which the kind controls. The platform has to supply the store script's entry module | L4, L5 | **Yes**, with #2210 |
+| (p) | Kind ids are not restricted, so a `-` in a kind id makes script names ambiguous | L20 | **Yes**, at the first registration |
 
 Also open but not on #2254. The stack's `deleteScopeLocal` skips the store wipe when it is
-not given a tenant id (#2243). Hosted, the control plane's wipe makes that path moot. It
-still breaks L6 on a self-hosted pure host, and is fixed there before a kind runs self-hosted.
+not given a tenant id (#2243). That is in the Cloudflare host (`adapter-cloudflare/src/host.ts`),
+reached by the vertical's `/internal/delete-scope`. `SqliteScopeHost` has no
+`deleteScopeLocal`, and its `deleteSnapshot` wipes unconditionally. Hosted, the control
+plane's wipe makes that path moot. It still breaks L6 on a Cloudflare host that holds a
+direct binding, and is fixed before a kind runs anywhere outside the platform hop.
 
 ### 10.9 The migration path
 
-In order. Steps 1–5 come before the first kind is registered (#2210). Step 6 and later do
-not block it.
+In order. Steps 1–7 come before the first kind is registered (#2210). Step 9 does not
+block it.
 
-1. Land the stack through #2254, with the #2242 and #2254 review fixes.
+1. Land the stack through #2254, with the #2242 and #2254 review fixes. #2243 says "Closes
+   #2211". It should say "Part of #2211", and #2211 stays open for (h), (j) and L6/L7.
 2. Delete `scopeStoreScriptBindings`. Change the guard from "no kind while the injection
-   exists" to L1, asserted on the serving upload with a test-registered kind. Its positive
-   twin is that the same upload still carries the vertical's own declared bindings.
-3. The signed envelope (§10.3), signed by the router and by the control plane, with a
-   verifier the store script imports from `@substrat-run/contracts`. It replaces
-   `signScopeStoreName`.
-4. Make the hosted transport the platform hop. A host with no control plane, no direct
+   exists" to L1, asserted on the serving upload with a test-registered kind. Reserve the
+   prefix at push and at upload (L18, item (l)). The positive twin is that the same upload
+   still carries the vertical's own declared bindings, none of which can now use the prefix.
+3. One version resolver (L14, item (i)), called by the router and by every control-plane
+   store path. With it: wipe fails closed on an unresolvable scope (j), the fail-closed
+   erase arm on #2254's shred with `unavailable` as 503 (k), and unroute-then-wipe plus the
+   bind fence (L6, L19, item (m)).
+4. The orphaned-binding rule (L17, item (n)), in whichever form Q7 settles on.
+5. The signed envelope (§10.3), signed by the router and by the control plane with keys
+   scoped as L16 says. It replaces `signScopeStoreName`.
+6. Make the hosted transport the platform hop. A host with no control plane, no direct
    binding and no runner sends a vertical's call to `store.substrat.internal`. The ambient
    path is taken only where a binding or runner was given explicitly (L2).
-5. The import check (L8), and the snapshot reporting its replay (h). The trivial test kind
-   implements L4 and L5, and the contract suite asserts them on workerd. The spike's "Not yet evidenced" items move to FINDINGS
+7. The import check ahead of `host.restoreScope` (L8, item (g)), and the snapshot reporting
+   its replay (h). A platform-supplied store entry module that runs L4 and L5 in front of
+   the kind's class (o). The trivial test kind runs behind it, and the contract suite
+   asserts L4 and L5 on workerd. The spike's "Not yet evidenced" items move to FINDINGS
    Shown only when they pass.
-6. #2210 itself: the store script upload. It is the first registration, and is reviewed
-   against D-63, including that the kind's script uses the step-3 verifier.
-7. Later: the null-manifest test (f), the self-host wipe (`deleteScopeLocal` without a
-   tenant id), per-object nonce memory if Q2 says so, and a door for schedules (§9).
+8. #2210 itself: the store script upload. It is the first registration, reviewed against
+   D-63 and L20, uploaded behind the step-7 entry module.
+9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
+   per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
 What each open PR keeps:
 
 | PR | Keeps | Loses |
 |---|---|---|
 | #2240 reserved ops | `callReservedStoreOperation`, and `HostAdmin.scopeStoreSizes` on the pure host | `/internal/scope-store-sizes` and `VerticalClient.scopeStoreSizes` (removed in #2254) |
-| #2242 erasure | Ordering (redact, erase, then destroy the key) and both fail-closed arms | `/internal/scope-store-erase` (removed in #2254) |
-| #2243 dump, restore, reap | Stores in the dump, stores-first ordering, masked exports without stores | `/internal/scope-store-export` and `-import`. `scopeStoreKind` / `scopeStores.kinds` become dev and test only |
+| #2242 erasure | Ordering (redact, erase, then destroy the key), the host arm, and the control-plane arm's rules | `/internal/scope-store-erase`, and the fix's call to the vertical: superseded by the control-plane-direct erase on #2254 (item (k)) |
+| #2243 dump, restore, reap | Stores in the dump, stores-first ordering, masked exports without stores | `/internal/scope-store-export` and `-import`. `scopeStoreKind` / `scopeStores.kinds` become dev and test only. "Closes #2211" becomes "Part of #2211" |
 | #2244 meter | The gauge table and the sweep | Its reader moves from the vertical's route to the control plane (in #2254) |
 | #2246 invocation log | Everything | none |
 | #2247 upload plan | `scopeStoreScriptName`, one script per (kind, vertical) | The name-only MAC, replaced in step 3 |
 | #2249 docs | Its erasure, backup and meter prose, where it agrees with §10 | Wording that describes injecting a binding |
-| #2254 platform hop | Almost all of it | Items (a)–(h) above, done as steps 2–5 |
+| #2254 platform hop | Almost all of it | Items (a)–(p) above, done as steps 2–7 |
 | #2266 CodeRabbit follow-up | Everything | Its note that `scopeStores.kinds` is unwired becomes "dev and test only, by design" |
 
 ### 10.10 Failure modes and compatibility
@@ -539,28 +634,39 @@ What each open PR keeps:
 - **Mixed versions during a carry.** The object name has no version, so the old and the new
   version address the same object. The kind migrates its schema when the object wakes
   (D-63). The router reads the declared bindings of the version it is serving, so a binding
-  a newer version removed is refused from the moment that version serves.
+  a newer version removed is refused from the moment that version serves. That covers access,
+  not data: the objects under the removed binding are what L17 is for.
 - **A store script older than the envelope.** It cannot exist hosted: steps 2–5 land before
   the first registration, and the registration review requires the verifier.
 - **A store script newer than the signer.** The store refuses an envelope `v` it does not
   know, and the call fails loudly. An envelope change is a new `v` that the store accepts
   before any signer sends it.
 - **The control plane cannot reach the store script.** Export fails, restore is incomplete,
-  wipe strands the scope, erase keeps the key, and the meter leaves the day unsampled. No
+  wipe stops the delete, erase keeps the key, and the meter leaves the day unsampled. No
   path reads unreachable as empty.
 
 ### 10.11 Tests
 
-- **The guard (L1).** A test-registered kind, a serving upload plan, and no `SUBSTRAT_STORE_*`
-  name in it. The positive twin: the vertical's own declared bindings are still there.
+- **The guard (L1, L18).** A test-registered kind, a serving upload plan, and no
+  `SUBSTRAT_STORE_*` name in it. The positive twin: the vertical's own declared bindings are
+  still there. A push and an upload declaring `SUBSTRAT_STORE_X` (as a store, a static binding
+  and a Durable Object binding) are each refused, and the twin `STORE_X` is admitted.
+- **Resolver (L14).** A serving-pinned scope with a null version id, a bound scope, and a
+  scope with neither: the router and the control plane resolve the same version, and the
+  third fails closed on every lifecycle path.
+- **Ordering and races (L6, L19).** A route test where a call after the wipe is refused
+  because the scope is unrouted. An erase whose bind lands mid-erase either retries or fails.
+- **Orphans (L17).** A version that drops a binding: either the push is refused, or wipe and
+  erase still reach the old object, whichever Q7 settles on.
+- **Kind ids (L20).** A registration with `graph-x` is refused, and `graph` is admitted.
 - **Router (L3).** `substrat.*`, a foreign scope and an undeclared binding are each refused
   before signing. The twin: a declared binding on the routed scope is signed and dispatched.
 - **Envelope (L4, L5).** Unit tests over the canonical encoding. On workerd, through the test
   kind: a wrong audience, a stale `iat`, a validly signed other name, and a replayed
   envelope after the window are each refused. Each has its admitted twin.
 - **Lifecycle (L6–L13, L15).** Control-plane route tests with a fake platform caller:
-  ordering, stranding, the import check, the replay's three outcomes, and both erase arms
-  with registered and unregistered kinds.
+  ordering, a failed and an unresolvable wipe, the import check ahead of the scope's tables,
+  the replay's three outcomes, and both erase arms with registered and unregistered kinds.
 - **Contract suite.** The same lifecycle assertions on the pure adapter with the in-process
   runner, so dev and hosted agree on the rules.
 - **Still owed** after these: a real dispatch-namespace upload (#2210), isolate sharing, and
@@ -572,8 +678,9 @@ What each open PR keeps:
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
 | Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a kind call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a kind registers a non-idempotent operation the platform itself calls |
-| Q3 | Where does first-name memory live: in the kind's code, or in a platform wrapper around the kind's class? | A wrapper class from `@substrat-run/contracts` that the registration requires. A kind then cannot forget it, and the review checks one import instead of re-reading a protocol |
-| Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it |
+| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough |
+| Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
+| Q7 | A later version drops or re-kinds a binding while objects exist (L17). Refuse the push, or drive the lifecycle over every binding the scope has run under? | Refuse at push, while any non-reaped scope of the vertical may hold the binding's objects. Bindings then evolve additively, like an engine's surface. A ledger of created objects per scope is the later option if a vertical needs to retire a store |
 | Q5 | Should a schedule or a connector reach a store? | Not in this amendment. When one needs it, it gets its own door, signed by the platform with audience `caller` for the scope it runs in (§9) |
 | Q6 | Does the control plane sign `platform` envelopes for every tenant from one place? | Yes. It already operates every scope's lifecycle, and the envelope's `name` is built from its own record, which is the authority this amendment relies on |
 
