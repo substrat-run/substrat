@@ -76,10 +76,39 @@ export interface SignInPolicy {
   providers: string[] | null;
   password: boolean;
   passwordSecondFactor?: 'sms';
+  /** Ask for an email (or BankID) first, and pick the method from the address. */
+  identifierFirst?: true;
+  /** Email domains that may sign in ONE way only — see `DomainRoute`. */
+  domainRoutes?: DomainRoute[];
 }
+
+/**
+ * "Anyone whose address is at one of these domains signs in through this provider, and no
+ * other way." A LOCK, not a hint: `policyAdmits` refuses a session for such an address that
+ * was made any other way, so a staff member cannot sidestep their directory by registering a
+ * password under their work address. The provider need not be in `providers` — that list is
+ * what EVERYONE may use, and a route is how a provider is offered to one domain alone.
+ */
+export interface DomainRoute {
+  domains: string[];
+  provider: string;
+}
+
+/** A bare, lower-case DNS name (`acme.se`) — no `@`, no wildcard, no scheme. Exact match only:
+ *  a subdomain is a different directory, and silently covering it would lock people out. */
+const domainName = z
+  .string()
+  .regex(/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/, 'a domain such as acme.se');
+
 
 /** A provider id, as `providers.ts` constrains one: the callback path segment, so path-safe. */
 const methodId = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/);
+
+const domainRouteSchema = z.object({
+  domains: z.array(domainName).min(1).max(32),
+  // A route names an upstream, never one of the stamps that are not upstreams.
+  provider: methodId.refine((id) => !isReservedMethodId(id) || id === BANKID_METHOD, 'an upstream provider'),
+});
 
 /**
  * The stored vocabulary, v1. Both keys optional: `{ password: false }` is a complete policy
@@ -90,6 +119,8 @@ const storedPolicySchema = z.object({
   providers: z.array(methodId).max(32),
   password: z.boolean(),
   passwordSecondFactor: z.literal('sms'),
+  identifierFirst: z.literal(true),
+  domainRoutes: z.array(domainRouteSchema).max(16),
 });
 
 /**
@@ -116,13 +147,22 @@ const storedPolicySchema = z.object({
 export function sanitizeSignInPolicy(value: unknown): SignInPolicy | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
-  if (raw.providers === undefined && raw.password === undefined && raw.passwordSecondFactor === undefined) return undefined;
+  if (
+    raw.providers === undefined && raw.password === undefined && raw.passwordSecondFactor === undefined &&
+    raw.identifierFirst === undefined && raw.domainRoutes === undefined
+  ) return undefined;
   const providers = storedPolicySchema.shape.providers.safeParse(raw.providers);
   const password = storedPolicySchema.shape.password.safeParse(raw.password);
+  const routes = storedPolicySchema.shape.domainRoutes.safeParse(raw.domainRoutes);
+  // Routes are RESTRICTIONS, so — like a corrupt `password` — present-but-unreadable fails
+  // to the deny value: a policy that admits nobody, never one that forgot who was locked.
+  const routesBroken = raw.domainRoutes !== undefined && !routes.success;
   return {
-    providers: raw.providers === undefined ? null : providers.success ? [...new Set(providers.data)] : [],
-    password: (raw.password === undefined ? true : password.success && password.data) && (raw.passwordSecondFactor === undefined || raw.passwordSecondFactor === 'sms'),
+    providers: routesBroken ? [] : raw.providers === undefined ? null : providers.success ? [...new Set(providers.data)] : [],
+    password: !routesBroken && (raw.password === undefined ? true : password.success && password.data) && (raw.passwordSecondFactor === undefined || raw.passwordSecondFactor === 'sms'),
     ...(raw.passwordSecondFactor === 'sms' ? { passwordSecondFactor: 'sms' as const } : {}),
+    ...(raw.identifierFirst === true ? { identifierFirst: true as const } : {}),
+    ...(routes.success && routes.data.length ? { domainRoutes: routes.data } : {}),
   };
 }
 
@@ -141,7 +181,14 @@ export function assertSignInPolicy(value: unknown): SignInPolicy {
     providers: parsed.data.providers ? [...new Set(parsed.data.providers)] : null,
     password: parsed.data.password ?? true,
     ...(parsed.data.passwordSecondFactor ? { passwordSecondFactor: parsed.data.passwordSecondFactor } : {}),
+    ...(parsed.data.identifierFirst ? { identifierFirst: true as const } : {}),
+    ...(parsed.data.domainRoutes?.length ? { domainRoutes: parsed.data.domainRoutes } : {}),
   };
+  const seen = new Set<string>();
+  for (const domain of policy.domainRoutes?.flatMap((route) => route.domains) ?? []) {
+    if (seen.has(domain)) throw new Error(`signIn: ${domain} is routed twice — an address can sign in one way only`);
+    seen.add(domain);
+  }
   if (permitsNothing(policy)) {
     throw new Error('signIn: a policy allowing no provider and no password would lock every user out of this application');
   }
@@ -176,10 +223,17 @@ export function readSignInPolicy(sql: SqlExec, clientId: string | null | undefin
  * A client with NO policy admits everything, unstamped sessions included — nothing was
  * restricted, so there is nothing to fail closed about.
  */
-export function policyAdmits(policy: SignInPolicy | undefined, method: string | null): boolean {
+export function policyAdmits(policy: SignInPolicy | undefined, method: string | null, email?: string | null): boolean {
   if (!policy) return true;
   if (!method) return false;
   if (method === 'invitation') return false;
+  if (policy.domainRoutes) {
+    // The lock. A session whose address we cannot read cannot be shown to be outside every
+    // route, so it is refused — same direction as an unstamped session.
+    if (!email) return false;
+    const route = routeFor(policy, email);
+    if (route) return method === route.provider;
+  }
   if (method === PASSWORD_METHOD) return policy.password && !policy.passwordSecondFactor;
   if (method === PASSWORD_SMS_METHOD) return policy.password;
   return policy.providers === null || policy.providers.includes(method);
@@ -188,7 +242,57 @@ export function policyAdmits(policy: SignInPolicy | undefined, method: string | 
 /** Does this policy leave no way in at all? Refused at save time; the runtime can still meet
  *  one whose only provider was deleted afterwards, and says so on the screen instead. */
 export function permitsNothing(policy: SignInPolicy): boolean {
-  return !policy.password && policy.providers !== null && policy.providers.length === 0;
+  return !policy.password && policy.providers !== null && policy.providers.length === 0 && !policy.domainRoutes?.length;
+}
+
+/** The domain of an address, lower-cased, or `null` when it is not one. */
+export function domainOf(email: string): string | null {
+  const at = email.trim().lastIndexOf('@');
+  if (at < 1) return null;
+  const domain = email.trim().slice(at + 1).toLowerCase();
+  return domain.length > 0 ? domain : null;
+}
+
+/** The route that locks this address, if any. */
+export function routeFor(policy: SignInPolicy | undefined, email: string): DomainRoute | undefined {
+  const domain = domainOf(email);
+  if (!domain) return undefined;
+  return policy?.domainRoutes?.find((route) => route.domains.includes(domain));
+}
+
+/**
+ * What the second step of an identifier-first screen does for one address.
+ *
+ *  - `provider`: this address is routed — send the person to that upstream.
+ *  - `password`: everyone else, when the client takes passwords (`secondFactor` says whether
+ *    SMS follows).
+ *  - `none`: the address is not routed and the client takes no password, so there is no way
+ *    in for it. Said as such, not dressed up as a password form that would be refused.
+ *
+ * The answer depends on the address's DOMAIN and on nothing about any account: it is the same
+ * whether or not the person has registered, so asking is not a way to find out who has.
+ * A route whose provider the issuer no longer offers is `none`, never a fall-through to
+ * password — that would be the door the lock exists to keep shut.
+ */
+export type SignInRoute =
+  | { kind: 'provider'; provider: { id: string; label: string } }
+  | { kind: 'password'; secondFactor?: 'sms' }
+  | { kind: 'none' };
+
+export function resolveSignInRoute(
+  policy: SignInPolicy | undefined,
+  issuerProviders: readonly { id: string; label: string }[],
+  identifier: string,
+): SignInRoute {
+  const route = routeFor(policy, identifier);
+  if (route) {
+    const provider = issuerProviders.find((p) => p.id === route.provider);
+    return provider ? { kind: 'provider', provider } : { kind: 'none' };
+  }
+  if (!policy || policy.password) {
+    return { kind: 'password', ...(policy?.passwordSecondFactor ? { secondFactor: policy.passwordSecondFactor } : {}) };
+  }
+  return { kind: 'none' };
 }
 
 /**
@@ -212,6 +316,9 @@ export function effectiveSignIn(
     password: policy.password,
     restricted: true,
     ...(policy.passwordSecondFactor ? { passwordSecondFactor: policy.passwordSecondFactor } : {}),
+    // Which domains are routed where is deliberately NOT here: the screen asks per address
+    // (`resolveSignInRoute`), so the list of an organisation's domains is not published.
+    ...(policy.identifierFirst ? { identifierFirst: true as const } : {}),
   };
 }
 
@@ -224,6 +331,7 @@ export interface EffectiveSignIn {
   password: boolean;
   restricted: boolean;
   passwordSecondFactor?: 'sms';
+  identifierFirst?: true;
 }
 
 /** The whole read for one client: the policy from the registry, intersected with what the
@@ -293,4 +401,14 @@ export function signInMethodOfPath(
   // is refused under every policy — the same answer, for the same reason, as an impersonation.
   if (isReservedMethodId(provider)) return null;
   return provider;
+}
+
+/** The whole read behind the identifier-first screen's second step, for one client. */
+export function clientSignInRoute(
+  sql: SqlExec,
+  clientId: string | null | undefined,
+  issuerProviders: readonly { id: string; label: string }[],
+  identifier: string,
+): SignInRoute {
+  return resolveSignInRoute(readSignInPolicy(sql, clientId), issuerProviders, identifier);
 }

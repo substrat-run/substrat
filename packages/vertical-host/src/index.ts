@@ -25,7 +25,7 @@
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { classifyError, messageOf, problemOf } from './errors.js';
+import { classifyError, messageOf, problemOf, withRequestIdMember } from './errors.js';
 import { externalInput, externalJson } from './wire.js';
 import {
   type CarriedAway,
@@ -218,7 +218,17 @@ export interface VerticalScopeHost {
      *  and (#2082) a key a shape declares `retired` taken back from each holder. A host built
      *  before it ignores the field, and the next host that reads it catches up. */
     entityGrants?: readonly EntityGrantShape[];
-  }): Promise<void | { switchedOff?: SwitchedOff[] }>;
+  }): Promise<void | {
+    switchedOff?: SwitchedOff[];
+    /** #2185: with `entityGrants`, how many shapes' retirements the reconcile left open (0: all
+     *  finished). The hosted host (`adapter-cloudflare`) counts them; one built before it answers none,
+     *  and the platform counts them not finished. */
+    retirementsLeftOpen?: number;
+    /** #2184: with `entityGrants`, every type the scope has ever bound (`shape-bound`). One built
+     *  before it answers none, and the platform judges the scope as possibly having bound every
+     *  table-held bootstrap shape of its version. */
+    boundShapeTypes?: string[];
+  }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
    *  `opts.exact`: the platform exported the dump itself, so the re-point never falls back. */
@@ -666,6 +676,24 @@ const reconcileBody = z.object({
 const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
   const parsed = switched ? z.array(switchedOffInUnit).safeParse(switched) : undefined;
   return parsed?.success ? { switchedOff: parsed.data } : {};
+};
+
+/**
+ * #2185: the reconcile's retirement report, parsed on the way OUT like `switchedOffAnswer`: a count
+ * that does not parse is left out, and the platform then counts the retirements not finished.
+ */
+const retirementsAnswer = (leftOpen: number | undefined) => {
+  const parsed = leftOpen === undefined ? undefined : z.number().int().nonnegative().safeParse(leftOpen);
+  return parsed?.success ? { retirementsLeftOpen: parsed.data } : {};
+};
+
+/**
+ * #2184: the types the scope has ever bound, parsed on the way OUT like `retirementsAnswer`: a list
+ * that does not parse is left out, and the platform then reads the scope's bound types as unknown.
+ */
+const boundShapesAnswer = (types: string[] | undefined) => {
+  const parsed = types === undefined ? undefined : z.array(z.string().min(1)).safeParse(types);
+  return parsed?.success ? { boundShapeTypes: parsed.data } : {};
 };
 
 const discardKeptBody = z.object({
@@ -1941,6 +1969,10 @@ export function mountPlatformSurface<Env extends object>(
       scopeId: body.scopeId,
       owner,
       ...switchedOffAnswer(reconciled?.switchedOff),
+      // #2185: what the platform records beside its receipt — whether the retirements finished.
+      ...retirementsAnswer(reconciled?.retirementsLeftOpen),
+      // #2184: and which binding shapes the scope has ever bound, for the binding-shape gate.
+      ...boundShapesAnswer(reconciled?.boundShapeTypes),
     });
   });
 
@@ -2341,7 +2373,7 @@ export function mountPlatformSurface<Env extends object>(
     // The returned status, not `seen`'s: a scope-gate refusal answers the neutral 404 whatever a
     // mapper decided (#113).
     const { status, body } = problemOf(seen, err, c.req.path);
-    return c.body(JSON.stringify(body), status, {
+    return c.body(JSON.stringify(withRequestIdMember(body, c)), status, {
       'content-type': PROBLEM_CONTENT_TYPE,
     });
   });

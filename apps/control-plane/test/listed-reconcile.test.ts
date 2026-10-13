@@ -119,6 +119,9 @@ describe('provision reconcile follows the served version (#1653)', () => {
       reconcileScopeFn: async (_t, id) => {
         if (!mine.has(id)) return 'unsupported';
         reached.push(id);
+        // These versions retire nothing and hold nobody by a table, so every caller records their
+        // retirements finished (#2185) and nothing bound (#2184).
+        return { retirementsFinished: true, boundShapes: [] };
       },
     });
     return reached.sort();
@@ -144,7 +147,7 @@ describe('provision reconcile follows the served version (#1653)', () => {
     await scopeAt(host, A, s.forkOfA, LISTED, v1, { forkedFrom: s.installA });
     await scopeAt(host, A, s.cleanRoom, LISTED, v2, { kind: 'preview' });
     for (const [t, id] of [[A, s.installA], [B, s.installB], [A, s.forkOfA]] as const) {
-      await host.admin.markScopeProvisioned(staff, t, id, v1);
+      await host.admin.markScopeProvisioned(staff, t, id, v1, { retirementsFinished: true, boundShapes: [] });
     }
 
     // A private vertical whose promote already moved its scope along, as it does today.
@@ -152,7 +155,7 @@ describe('provision reconcile follows the served version (#1653)', () => {
     const p1 = await publish(host, PRIVATE, '1.0.0');
     await host.admin.setVerticalServing(staff, PRIVATE, { ref: PRIVATE_REF, versionId: p1, doClasses: ['ScopeDO'], migrationTag: 'v1' });
     await scopeAt(host, OWNER, s.ownScope, PRIVATE, p1);
-    await host.admin.markScopeProvisioned(staff, OWNER, s.ownScope, p1);
+    await host.admin.markScopeProvisioned(staff, OWNER, s.ownScope, p1, { retirementsFinished: true, boundShapes: [] });
     await host.close();
   });
 
@@ -538,6 +541,44 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       });
       await host.admin.admitVersion(staff, running).catch(() => undefined);
     });
+    /**
+     * #2185: what the sweep records beside its receipt — whether the reconcile finished the
+     * retirements of the shapes it carried — from the deployment's own answer.
+     */
+    it('answers whether the reconcile finished the retirements its payload carried (#2185)', async () => {
+      const s = await wipedScope(t, false);
+      const retiring = [{ entityType: 'employee', permissions: [], retired: ['perm:use'], bootstrap: true as const }];
+      const answering = (extra: object) => ({
+        reconcileInstance: async (input: { tenantId: TenantId; scopeId: ScopeId }) => ({ tenantId: input.tenantId, scopeId: input.scopeId, owner, ...extra }),
+      });
+      const outcome = (extra: object, entityGrants?: typeof retiring) =>
+        reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, answering(extra) as never, { ...payload, ...(entityGrants ? { entityGrants } : {}) } as never);
+      // These shapes hold nobody by a table, so nothing can be bound through them (#2184): [].
+      expect(await outcome({ retirementsLeftOpen: 0 }, retiring)).toEqual({ retirementsFinished: true, boundShapes: [] });
+      expect(await outcome({ retirementsLeftOpen: 1 }, retiring)).toEqual({ retirementsFinished: false, boundShapes: [] });
+      // A deployment that predates the report says nothing: not finished, so the sweep asks again.
+      expect(await outcome({}, retiring)).toEqual({ retirementsFinished: false, boundShapes: [] });
+      // Shapes that retire nothing have nothing to finish.
+      expect(await outcome({})).toEqual({ retirementsFinished: true, boundShapes: [] });
+    });
+
+    /** #2184: and which binding shapes links have bound in it, from the same answer. */
+    it('answers the binding shapes the deployment reported bound, of those its payload holds by a table (#2184)', async () => {
+      const s = await wipedScope(t, false);
+      const held = [
+        { entityType: 'contact', permissions: ['perm:use'], bootstrap: true as const, holder: { table: 'bind_records', idColumn: 'id', principalColumn: 'principal' } },
+      ];
+      const answering = (extra: object) => ({
+        reconcileInstance: async (input: { tenantId: TenantId; scopeId: ScopeId }) => ({ tenantId: input.tenantId, scopeId: input.scopeId, owner, ...extra }),
+      });
+      const outcome = (extra: object) =>
+        reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, answering(extra) as never, { ...payload, entityGrants: held } as never);
+      expect(await outcome({ retirementsLeftOpen: 0, boundShapeTypes: ['contact', 'other'] })).toEqual({ retirementsFinished: true, boundShapes: ['contact'] });
+      expect(await outcome({ retirementsLeftOpen: 0, boundShapeTypes: [] })).toEqual({ retirementsFinished: true, boundShapes: [] });
+      // A deployment that predates the report: unknown, so the gate counts the shape bound and the sweep asks again.
+      expect(await outcome({ retirementsLeftOpen: 0 })).toEqual({ retirementsFinished: true });
+    });
+
     const rewound = async (switchedOff: boolean) => {
       const s = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: VERT });
@@ -755,3 +796,74 @@ function drainIntent(kind: string, payload: unknown, result: unknown = null): Pl
     settledAt: null,
   };
 }
+
+/**
+ * Review of #2218, round 1, on DO SQLite: a governed restore replays a dump that may predate a
+ * finished retirement (its tuples bring the retired key back, its spine loses the record that the
+ * retirement ran). The restore now clears the receipt and the finished version with it, as the
+ * rewind does, so a drop waits for the sweep's next reconcile instead of stranding the holder.
+ */
+describe('a restore of a pre-retirement dump, then a drop (#2185)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const SLUG = `restore-${ulid().slice(-8).toLowerCase()}`;
+  const owner = principalId.parse(ulid());
+  const HOLDER = { table: 'bind_records', idColumn: 'id', principalColumn: 'principal' };
+  const binding = { entityType: 'contact', permissions: ['contact:read-own'], bootstrap: true, holder: HOLDER, bind: { permission: 'contact:invite' } };
+  const deployment = {
+    restoreScope: async () => ({ tables: 0 }),
+    reconcileInstance: async (input: { tenantId: string; scopeId: string }) => ({ tenantId: input.tenantId, scopeId: input.scopeId, owner, retirementsLeftOpen: 0 }),
+  } as unknown as VerticalClient;
+
+  it('clears the receipt and the finished version, so the drop is refused until the install reconciles again', async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const app = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { [SLUG]: deployment } });
+    const headers = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+    await host.admin.createTenant(staff, { id: t, slug: `rs-${t.slice(-10).toLowerCase()}`, name: 'Restore' });
+    await host.admin.registerVertical(staff, { slug: SLUG, name: SLUG, source: 'cli', ownerTenant: t });
+    const publishShaped = async (version: string, entityGrants: object[]) => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: SLUG, version, manifestDigest: `m-${version}`, permissionDigest: `p-${version}`, migrationDigest: 'g',
+        deploymentRef: `${SLUG}-${version}`,
+        manifestJson: JSON.stringify({
+          version, entry: 'worker.js', compatibilityDate: '2025-01-01',
+          digests: { manifest: `m-${version}`, permission: `p-${version}`, migration: 'g' },
+          registry: { permissions: [], roles: [], entityGrants },
+        }),
+      });
+      await host.admin.admitVersion(staff, id).catch(() => undefined);
+      return id;
+    };
+    const binds = await publishShaped('1.0.0', [binding]);
+    const retiresAll = await publishShaped('1.1.0', [{ ...binding, permissions: [], retired: ['contact:read-own'] }]);
+    const dropped = await publishShaped('1.2.0', []);
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: SLUG });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.bindScopeVersion(staff, t, s, binds);
+    // The backup, taken before the retirement.
+    const backup = await host.admin.exportScope(staff, t, s);
+    await host.admin.bindScopeVersion(staff, t, s, retiresAll);
+    // Its reconcile finished the retirement.
+    const reconcile = await app.request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers });
+    expect(reconcile.status).toBe(200);
+    const record = async () => {
+      const r = await host.admin.getScopeRecord(staff, t, s);
+      return { provisioned: r?.provisionedVersionId, finished: r?.retirementsFinishedVersionId ?? null };
+    };
+    expect(await record()).toEqual({ provisioned: retiresAll, finished: retiresAll });
+    // The tenant restores the backup.
+    const res = await app.request(`/tenants/${t}/scopes/${s}/restore`, { method: 'POST', headers, body: JSON.stringify(backup) });
+    expect(res.status).toBe(200);
+    expect(await record()).toEqual({ provisioned: null, finished: null });
+    const refused = await host.admin.bindScopeVersion(staff, t, s, dropped).then(() => null, (e: unknown) => e as Error);
+    expect(refused?.message).toMatch(/drops the shape.*no reconcile receipt/);
+    // The twin: reconciled again, the drop binds.
+    expect((await app.request(`/tenants/${t}/scopes/${s}/provision`, { method: 'POST', headers })).status).toBe(200);
+    await host.admin.bindScopeVersion(staff, t, s, dropped);
+    expect((await host.admin.getScopeRecord(staff, t, s))?.verticalVersionId).toBe(dropped);
+    await host.close();
+  });
+});

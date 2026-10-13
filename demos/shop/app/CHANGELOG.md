@@ -1,5 +1,12 @@
 # @substrat-run/demo-shop-app
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies [796d6ab]
+  - @substrat-run/ui@0.3.3
+
 ## 0.0.4
 
 ### Patch Changes

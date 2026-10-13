@@ -30,6 +30,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toPosix } from './repo-path.mjs';
 import { buildArtifacts, describe, kernelVersion } from '../apps/docs/.vitepress/llms.mjs';
 import { COMPONENT_LINE } from '../apps/docs/.vitepress/llms.mjs';
 import { COMPONENT_ALT } from '../apps/docs/.vitepress/theme/components/alt.mjs';
@@ -81,7 +82,7 @@ function sourcePages(all = false): string[] {
         continue;
       }
       if (!entry.endsWith('.md')) continue;
-      const rel = relative(DOCS, path);
+      const rel = toPosix(relative(DOCS, path));
       if (all || !NOT_A_PAGE.has(rel)) found.push(rel);
     }
   };

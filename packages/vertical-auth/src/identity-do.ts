@@ -48,6 +48,7 @@ import {
   claimInvite as claimInviteRow,
   claimInviteByCapability as claimInviteByCapabilityRow,
   inviteMatches as inviteMatchesRow,
+  countLegacyInvites as countLegacyInvitesRow,
   inviteLink as inviteLinkRow,
   migrateInvites,
   listMemberBindings as listMemberBindingRows,
@@ -359,6 +360,11 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return getInviteRow(this.registrySql, scopeId, principal);
   }
 
+  /** Pending legacy hash-only invites at a scope (#2175) — a count, nothing identifying. */
+  async legacyInviteCount(scopeId: string): Promise<number> {
+    return countLegacyInvitesRow(this.registrySql, scopeId);
+  }
+
   /** Is there an unclaimed invite for this token hash? (the sign-up gate consults this post-setup). */
   async inviteExists(scopeId: string, tokenHash: string): Promise<boolean> {
     return inviteExistsRow(this.registrySql, scopeId, tokenHash);
@@ -521,6 +527,7 @@ export type IdentityStub = {
   ): Promise<void>;
   listInvites(scopeId: string): Promise<InviteRow[]>;
   getInvite(scopeId: string, principal: string): Promise<InviteRow | null>;
+  legacyInviteCount(scopeId: string): Promise<number>;
   inviteExists(scopeId: string, tokenHash: string): Promise<boolean>;
   revokeInvite(scopeId: string, principal: string): Promise<string | null>;
   claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;

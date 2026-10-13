@@ -19,7 +19,7 @@ import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { clientBranding } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
-import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
+import { clientSignIn, clientSignInRoute, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
 import { optionalTwilioFrom } from './twilio.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
@@ -633,6 +633,13 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         ...clientBranding(this.ctx.storage.sql, clientId),
         signIn: clientSignIn(this.ctx.storage.sql, clientId, this.offeredProviders()),
       });
+    }
+    if (url.pathname === '/__sign-in-route' && request.method === 'POST') {
+      const body = (await request.json().catch(() => null)) as { client_id?: unknown; identifier?: unknown } | null;
+      const clientId = clientIdOrConsole(typeof body?.client_id === 'string' ? body.client_id : null);
+      return Response.json(
+        clientSignInRoute(this.ctx.storage.sql, clientId, this.offeredProviders(), typeof body?.identifier === 'string' ? body.identifier : ''),
+      );
     }
     if (url.pathname.startsWith('/__admin')) {
       const api = new Hono().route(

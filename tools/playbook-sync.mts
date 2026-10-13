@@ -24,8 +24,9 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { repoRoot } from './repo-path.mjs';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = repoRoot(import.meta.url);
 const update = process.argv.includes('--update');
 
 const SOURCE = '.claude/skills/substrat/SKILL.md';
@@ -39,7 +40,9 @@ function cannot(message: string): never {
 }
 
 function sha256(rel: string): string {
-  return createHash('sha256').update(readFileSync(join(root, rel))).digest('hex');
+  // Checkout line endings must not move the baseline: CI stores LF, Windows checks out CRLF.
+  const text = readFileSync(join(root, rel), 'utf8').replace(/\r\n/g, '\n');
+  return createHash('sha256').update(text).digest('hex');
 }
 
 if (!existsSync(join(root, SOURCE))) {

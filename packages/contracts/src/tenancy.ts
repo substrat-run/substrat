@@ -295,6 +295,26 @@ export const scope = z.object({
    * this exists to heal.
    */
   provisionedVersionId: z.string().min(1).nullable(),
+  /**
+   * #2185: the version whose reconcile FINISHED every retirement it declares in this scope:
+   * each key a bootstrap shape lists in `retired` (`retiredKeysOf`) has its run-once record
+   * here, because the reconcile answered that it left none open, or because the version
+   * retires nothing. Written in the same write as `provisionedVersionId`, and it counts only
+   * while it EQUALS that receipt. Anything else (null, an older version, or absent from a
+   * host that predates it) reads as "this install may still hold the keys its version retires".
+   * A version rather than a flag, so a receipt rewritten by a control plane that predates the
+   * column reads as not finished instead of inheriting the last version's answer.
+   */
+  retirementsFinishedVersionId: z.string().min(1).nullish(),
+  /**
+   * #2184: which binding shapes this scope has bound through a link, as the reconcile of
+   * `versionId` reported them: the types of that version's bootstrap shapes with a table holder
+   * that the scope's sticky `shape-bound` records name, sorted. Written in the same write as
+   * `provisionedVersionId`, and it counts only while `versionId` EQUALS that receipt. Anything
+   * else (null, an older version, or absent from a host that predates it) reads as unknown: the
+   * binding-shape gate then counts every such shape of the version as bound.
+   */
+  boundShapes: z.object({ versionId: z.string().min(1), types: z.array(z.string().min(1)) }).nullish(),
   // The scope's migration state: the count of applied (module, version) pairs,
   // as a string. Written host-side after migrations apply — never caller-supplied.
   // '0' means "provisioned, nothing applied yet". Comparing it against the host's
