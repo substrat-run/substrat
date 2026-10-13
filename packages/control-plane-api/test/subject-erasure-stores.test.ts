@@ -254,14 +254,14 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
           resolveVerticalRef: async (r) => (r === version.ref ? (redactOnly as unknown as VerticalClient) : undefined),
           platformScopeStores: platform.caller,
         });
-        return { ...scope, api, wasAsked: () => platform.asked.length > 0 };
+        return { ...scope, api, asked: platform.asked };
       };
 
       it('a version that declares no store is not asked, and the key is destroyed', async () => {
-        const { s, subject, keyKept, api, wasAsked } = await bound();
+        const { s, subject, keyKept, api, asked } = await bound();
         const res = await shred(api, s, subject);
         expect(res.status).toBe(200);
-        expect(wasAsked()).toBe(false);
+        expect(asked).toEqual([]);
         expect(await keyKept()).toBe(false);
       });
 
@@ -292,23 +292,26 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
           platformScopeStores: platform.caller,
         });
         const status = (await shred(api, scope.s, scope.subject)).status;
-        return { status, asked: platform.asked.length > 0, keyKept: await scope.keyKept() };
+        return { status, asked: platform.asked, expected: [`${scope.s}/${scope.subject}`], keyKept: await scope.keyKept() };
       };
       const stores = [{ binding: 'GRAPH', kind: 'graph' }];
 
       it('on the serving script, the served version decides, not the bound one', async () => {
-        expect(await onServingScript({ servedStores: stores })).toEqual({ status: 200, asked: true, keyKept: false });
-        expect(await onServingScript({ boundStores: stores })).toEqual({ status: 200, asked: false, keyKept: false });
+        const served = await onServingScript({ servedStores: stores });
+        expect(served).toEqual({ status: 200, asked: served.expected, expected: served.expected, keyKept: false });
+        const boundOnly = await onServingScript({ boundStores: stores });
+        expect(boundOnly).toEqual({ status: 200, asked: [], expected: boundOnly.expected, keyKept: false });
       });
 
       // Stricter than asking (#2207): a version unknown names no binding to erase, so it refuses.
       it('on the serving script, a pointer naming another script is a version unknown: 503, and the key is kept', async () => {
-        expect(await onServingScript({ pointerRef: 'docs-elsewhere' })).toEqual({ status: 503, asked: false, keyKept: true });
+        const other = await onServingScript({ pointerRef: 'docs-elsewhere' });
+        expect(other).toEqual({ status: 503, asked: [], expected: other.expected, keyKept: true });
       });
 
       it('a store erase that fails stops the erasure before the key, and a retry then destroys it', async () => {
         let fail = true;
-        const { s, subject, keyKept, api } = await bound(stores, platformStores(() => fail, 0));
+        const { s, subject, keyKept, api, asked } = await bound(stores, platformStores(() => fail, 0));
         const refused = await shred(api, s, subject);
         expect(refused.status).toBeGreaterThanOrEqual(500);
         expect(await keyKept()).toBe(true);
@@ -317,6 +320,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const retried = await shred(api, s, subject);
         expect(retried.status).toBe(200);
         expect(((await retried.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 0 }]);
+        expect(asked).toEqual([`${s}/${subject}`, `${s}/${subject}`]);
         expect(await keyKept()).toBe(false);
       });
 
@@ -327,10 +331,10 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       });
 
       it('a version that declares a store is asked', async () => {
-        const { s, subject, keyKept, api, wasAsked } = await bound([{ binding: 'GRAPH', kind: 'graph' }]);
+        const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', kind: 'graph' }]);
         const res = await shred(api, s, subject);
         expect(res.status).toBe(200);
-        expect(wasAsked()).toBe(true);
+        expect(asked).toEqual([`${s}/${subject}`]);
         expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
         expect(await keyKept()).toBe(false);
       });

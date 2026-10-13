@@ -440,8 +440,8 @@ version declares, with the same kind, are imported. A dump binding the destinati
 not declare refuses the restore before any write. The check therefore runs ahead of
 `host.restoreScope`, which loads the scope's own tables first (L8, the recommended answer
 to Q4). #2254 does this at `2f442969d` (`refuseUndeclaredDumpStores`, called before
-`host.restoreScope`). It reads the destination's declaration through `manifestStores`, so it
-inherits item (i). Erasures are then replayed (L9–L11):
+`host.restoreScope`). It reads the destination's declaration through the one resolver of
+item (i). Erasures are then replayed (L9–L11):
 
 - The subjects are the union of the target scope's tombstones and the source scope's.
   Each is erased once, on every binding the target declares.
@@ -459,8 +459,8 @@ inherits item (i). Erasures are then replayed (L9–L11):
 This is on #2254 as pushed at `2f442969d`: `replayStoreErasures` in
 `packages/kernel/src/scope-store.ts`, behind both the host's replay and the control
 plane's. Before that commit, #2254 read only the source's marks, through a caught page
-loop. Which destination stores the replay reaches still depends on the version resolution
-in §10.6, which is item (i).
+loop. Which destination stores the replay reaches is decided by the version resolution in
+§10.6 (item (i)).
 
 **Snapshot and fork.** A snapshot is an export of the source scope, then an import into
 the snapshot scope, then the replay above. The snapshot scope has its own id, so it has its
@@ -486,9 +486,8 @@ deletion need the scope unrouted before the wipe.
 A wipe that fails stops the delete. The scope's own storage is not deleted around the
 store, and the delete is retried. #2254's `wipePlatformStores` does this by throwing when
 a store call fails. A path that cannot tell which stores a scope has must fail the same way
-(L7). #2254 does not do this yet: `wipePlatformStores` returns silently, and the delete
-proceeds, when the control plane has no store caller configured or the scope has no
-resolvable version. That is item (j).
+(L7). #2254 does this: a scope whose stores cannot be named, or a hosted control plane with
+no route to the store scripts, refuses the delete with 503 and keeps the scope (item (j)).
 
 **Subject erasure, fail closed.** Erase never concludes "nothing to erase" when it cannot
 tell. The key is destroyed only after every store that may hold the subject has answered.
@@ -519,10 +518,9 @@ reads as "no store" and fails open):
 The #2242 fix asks the **vertical** (`scopeStoreErase`), which is an interim step: #2254
 removes that `VerticalClient` method. After #2254, the shred route erases straight from the
 control plane to the store script. The predicate that decides which stores it must reach
-is the control-plane arm above. #2254's own shred uses a different predicate,
-`declaresStores`: it reads the bound version only, has no gate on registered kinds, and
-has no "unknown means may hold" rung. Porting the arm onto #2254's shred is item (k). The
-host arm stays the rule for dev and self-host.
+is the control-plane arm above. #2254's shred uses that arm, through the control plane's own
+resolver and the same gate, and calls the store script itself (item (k)). The host arm stays
+the rule for dev and self-host.
 
 A bind that races an erase either sees the erase or fails (L19). The erase reads the
 declared bindings and then destroys the key. A bind landing in between could add a binding
@@ -557,22 +555,21 @@ This matters because provisioning sets `serving_ref` and leaves `vertical_versio
 Only a bind sets the version id. So an ordinary install has a serving pin and no bound
 version.
 
-**Neither side resolves this way today.**
+**Both sides now resolve this way** (items (i) and (q)). Before, neither did:
 
-- #2254's router (`READ_ROUTE_SQL`) reads `scopeStores` from the serving pointer's version
-  whenever the scope's `serving_ref` is set, even when that ref is not the pointer's current
-  one. It would read a manifest for a scope that does not run it. The router changes to the
-  rule above: item (q), before #2210.
-- #2254's control plane reads `vertical_version_id` only. `manifestStores`, the sweeper's
-  `wipeDeclaredScopeStores` and the sweeper's meter read all treat a null id as "no stores".
-- The #2242 fix's `mayHoldScopeStores` is the closest. It takes the pointer's version only
-  when the pointer's ref is the scope's ref, and otherwise reads unknown as "may hold".
+- The router (`READ_ROUTE_SQL`) read `scopeStores` from the serving pointer's version
+  whenever the scope's `serving_ref` was set, even when that ref was not the pointer's
+  current one, so it could read a manifest for a scope that does not run it.
+- The control plane read `vertical_version_id` only. `manifestStores`, the sweeper's
+  `wipeDeclaredScopeStores` and the sweeper's meter read all treated a null id as "no stores".
+- The #2242 fix's `mayHoldScopeStores` was the closest. It took the pointer's version only
+  when the pointer's ref was the scope's ref, and otherwise read unknown as "may hold".
 
-**Failure on the common path.** An install pinned to the serving script writes to a store
-through the router. Its backup then carries no stores, its reap skips the wipe, its restore
-skips the replay, and shred destroys the key while the store still holds the subject. That
-breaks L6, L7, L9, L12 and L15. It is item (i), fixed with one shared resolver that both
-the router and the control plane call.
+**The failure this closed, on the common path.** An install pinned to the serving script writes to a store
+through the router. Its backup then carried no stores, its reap skipped the wipe, its restore
+skipped the replay, and shred destroyed the key while the store still held the subject. That
+broke L6, L7, L9, L12 and L15. Item (i) fixed it with one rule that the router and the
+control plane both apply.
 
 **The bindings and kinds** come from the resolved version's reviewed manifest record:
 `vertical_versions.manifest_json`, field `scopeStores`, parsed by `storedDeployManifest`.
@@ -632,19 +629,24 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 
 ### 10.8 What #2254 already does, and what is open
 
-#2254 already does most of this decision. As pushed at `2f442969d`, including two items an earlier draft of this section listed as open (kept as (g) and (h) so the letters stay stable):
+#2254 already does most of this decision, together with the stack it lands on: #2242 (the fail-closed erase arm), #2243 (dumps carry stores), #2246 (the store-call line) and #2247 (no store binding on any upload, injective store script names). The letters are kept stable, so a closed item keeps its letter in the first table.
 
-| Already in #2254 | Where |
+| Already in #2254 and its base | Where |
 |---|---|
 | The control plane drives size, erase, export, import, wipe and replay straight to the store script through `DISPATCH` | `control-plane-api/src/platform-scope-stores.ts` |
-| The kind and bindings come from a version manifest, the vertical from the scope record. Unreadable manifests fail closed. Which version it reads is item (i) | `declaredStoresOf`, `manifestStores` |
 | The vertical's `/internal/scope-store-*` routes and their `VerticalClient` methods are removed | vertical-host, control-plane-api |
-| The serving upload plan carries no store bindings | `scopeStoreUploadPlan(…).bindings` is `[]` |
 | A vertical's call goes `store.substrat.internal`, then egress, then `ScopeStoreCalls`, which refuses `substrat.*`, a foreign scope and an undeclared binding | `contracts/src/scope-store-transport.ts`, `apps/router/src/store-calls.ts` |
-| Wipe before delete on the reap paths, when a store call fails. Not yet when the stores cannot be resolved: item (j) | `wipePlatformStores`, the sweeper's `wipeDeclaredScopeStores` |
 | Restore erasure replay, with target and source marks and an unknown source reported | `replayStoreErasures`, `storeErasureSourceUnknown` |
-| (g) A dump binding the destination does not declare, or declares as another kind, refuses the restore ahead of `host.restoreScope`. It inherits (i) through `manifestStores` | `refuseUndeclaredDumpStores` |
+| (d) No upload carries a store binding, and the injector is gone. The serving and per-version uploads build their bindings in one function, which a test holds to L1 | `verticalUploadBindings`, `scopeStoreUploadPlan(…).bindings` is `[]` (#2247) |
+| (e) A host with ambient store bindings and no way to name the scope's objects refuses an erase (`unavailable`) rather than answering an empty list | `erasureStoreVertical` (#2242) |
+| (g) A dump binding the destination does not declare, or declares as another kind, refuses the restore ahead of `host.restoreScope` | `refuseUndeclaredDumpStores` |
 | (h) The snapshot route reports its erasure replay | `storeReplayFields` |
+| (i) One resolver names a scope's stores, the rule of §8: the serving version when the scope is pinned to its vertical's current serving script, the bound version when it has no pin, and unknown otherwise. Backup, full pull, the full tenant export, snapshot, reap, restore, the import check, shred and the sweeper all use it | `scopeStoresOf` |
+| (j) Every store path fails closed once a kind is registered: a version that cannot be named, a manifest that cannot be read, or a hosted control plane with no route to the store scripts refuses with 503, and the reap keeps the scope. The sweeper's wipe and meter go through the same resolver | `scopeStoresOf`, `unreachablePlatformScopeStores`, `wipeDeclaredScopeStores`, `declaredStoreSizes` |
+| (k) Shred erases the stores through the same resolver and gate (`mayHoldScopeStores`), on the orchestrated and the direct paths, and refuses with 503 before the key goes. With no platform path, the host's own co-located stores are erased in its finalize | `platformStoresOf`, `finalizeSubjectShred` |
+| (l) A vertical cannot declare a binding in the `SUBSTRAT_` namespace, so no declared binding reads as a store binding | `control-plane-api/src/deploy.ts` (declared-binding check) |
+| (p) Store script names are injective over (kind, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
+| (q) The router's route read applies the same rule as (i), so a scope pinned to another script gets no store | `READ_ROUTE_SQL` |
 
 Still open:
 
@@ -653,18 +655,13 @@ Still open:
 | (a) | The MAC covers the name only. The audience header is unsigned, and nothing binds the operation, the time or a nonce | L4, L5 | **Yes** |
 | (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
 | (c) | `transport: 'platform'` exists, but the host defaults to `'binding'` and nothing in production sets `'platform'` | L2 | **Yes** |
-| (d) | `scopeStoreScriptBindings` and the guard that tests it remain. After #2254 no production path calls them | L1 | **Yes**: delete the function and retarget the guard |
-| (e) | The host keeps an ambient lifecycle path. It is right for dev and self-host, and needs the fail-closed host arm | L12 | **Yes** (the #2242 review fix, not yet pushed) |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
-| (i) | The control plane's `manifestStores` reads `vertical_version_id` only. That id is null after provisioning, so backup, reap, restore, the import check and shred see no stores on an ordinary install | L14 | **Yes**: one shared resolver |
-| (j) | `wipePlatformStores` returns silently, and the delete proceeds, when no store caller is configured or no version resolves. The sweeper's `wipeDeclaredScopeStores` and its meter read do the same on a null version id. The wipes must fail closed, and the meter must report the day unsampled | L7, L13 | **Yes** |
-| (k) | #2254's shred decides by `declaresStores`: the bound version only, no gate on registered kinds, no "unknown means may hold". The #2242 fix's arm asks the vertical through a method #2254 removes. The arm has to be ported onto #2254's control-plane-direct shred, and its 502 aligned to 503 | L12 | **Yes** |
-| (l) | Nothing reserves the `SUBSTRAT_STORE_` prefix. A vertical can declare its own binding with it, which breaks L1, and the Cloudflare host would read its own namespace of that name as an ambient store binding | L1, L18 | **Yes** |
-| (m) | No path unroutes a scope before wiping it, and erase is not fenced against a bind | L6, L19 | **Yes** |
+| (m) | No path unroutes a scope before wiping it, and erase is not fenced against a bind that lands between its manifest read and the key's destruction | L6, L19 | **Yes** |
 | (n) | Every lifecycle path reads only the current version's bindings, so objects under a dropped or re-kinded binding are unreachable. Push, bind, promote, rollback and re-upload can each cause it | L17 | **Yes** (Q5) |
 | (o) | The envelope checks are planned in the kind's script, which the kind controls. The platform has to supply the store script's entry module | L4, L5 | **Yes**, with #2210 |
-| (p) | Store script names are not shown to be injective, and nothing reserves the store-script name space against vertical scripts in the shared dispatch namespace | L20 | **Yes** |
-| (q) | The router reads the serving pointer's manifest whenever a scope has any `serving_ref`, including one that is not the pointer's current ref | L14 | **Yes** |
+| (r) | The erasure replay runs inside one request and starts again from the first subject on a retry, so it converges only while it fits one request's budget. Resuming needs a cursor of its own | L9 | No, later |
+| (s) | The direct-path shred's audited receipt lacks the platform's store erasures, because the host's `shredSubject` takes no store list. The answer carries them | L12 | No, later |
+| (t) | Peer dispatch carries no store list, so a vertical serving a peer call has its store calls refused | L3 | No, later |
 
 Also open but not on #2254. The stack's `deleteScopeLocal` skips the store wipe when it is
 not given a tenant id (#2243). That is in the Cloudflare host (`adapter-cloudflare/src/host.ts`),
@@ -680,12 +677,12 @@ block it.
 
 1. Land the stack through #2254, with the #2242 and #2254 review fixes. #2243 says "Closes
    #2211". It should say "Part of #2211", and #2211 stays open for (j) and L6/L7.
-2. Delete `scopeStoreScriptBindings`. Change the guard from "no kind while the injection
+2. Done (#2247). Delete `scopeStoreScriptBindings`. Change the guard from "no kind while the injection
    exists" to L1, asserted on the serving upload with a test-registered kind. Reserve the
    prefix at push and at upload (L18, item (l)), and the store-script name space with
    injective names (L20, item (p)). The positive twin is that the same upload
    still carries the vertical's own declared bindings, none of which can now use the prefix.
-3. One version resolver (L14, items (i) and (q)), called by the router and by every
+3. Done on #2254, except unroute-then-wipe and the bind fence (m), which stay open. One version resolver (L14, items (i) and (q)), called by the router and by every
    control-plane store path, the sweeper included. With it: wipe fails closed on an unresolvable scope (j), the fail-closed
    erase arm on #2254's shred with `unavailable` as 503 (k), and unroute-then-wipe plus the
    bind fence (L6, L19, item (m)).

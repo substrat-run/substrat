@@ -5212,8 +5212,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const dump = await c.var.admin.exportScope(c.get('actor'), tenantId, scope.id);
     const vertical = await verticalForScope(c, scope);
     const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
-    // Store tables are opaque and stay unsealed. A deployment that predates the route
-    // has no stores to copy; any other failure refuses the backup rather than omitting them.
+    // Store tables are opaque and stay unsealed. The platform reads them from the store script
+    // (#2207); a store it cannot name or reach refuses the backup rather than omitting it.
     const stores = (await exportPlatformStores(c, scope)) ?? dump.stores;
     // Seal classified payloads per subject on the way in (#37). This copy is full-fidelity
     // and the platform keeps it, which is precisely why an erasure could never reach it: a
@@ -5883,8 +5883,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const vertical = await verticalForScope(c, scope);
       const tables = vertical ? await vertical.exportScope(scopeId) : dump.tables;
       if (full) {
-        // Store tables are opaque. A vertical holds them, so a full pull asks it.
-        // A deployment that predates the route has none to add.
+        // Store tables are opaque. The platform reads them from the store script (#2207); a
+        // store it cannot name or reach refuses the pull rather than omitting it.
         const stores = (await exportPlatformStores(c, scope)) ?? dump.stores;
         return c.json({ ...dump, tables, stores, masked: false });
       }
@@ -8953,9 +8953,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A fork's own sign-in clients go FIRST (#1704): a failure here leaves the preview in
     // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
     // would name those clients again. A clean room never had one.
-      await retireClientsOfReapedScope(previewAuthDeps(c), preview);
-      await wipePlatformStores(c, preview);
-      let storageStranded = false;
+    await retireClientsOfReapedScope(previewAuthDeps(c), preview);
+    await wipePlatformStores(c, preview);
+    let storageStranded = false;
     if (options.resolveVerticalRef) {
       ({ storageStranded } = await reapScopeScriptCopies({
         admin: c.var.admin,

@@ -359,37 +359,51 @@ describe('subject erasure (#37)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('does not ask a deployment to erase a store when the version declares none', async () => {
-    let asked = false;
+  it('does not ask the stores to erase when the version declares none, with a kind registered', async () => {
+    if (!docsRegistered) {
+      await host.admin.registerVertical(staff, { slug: 'docs', name: 'docs', source: 'cli' });
+      docsRegistered = true;
+    }
+    const versionId = ulid();
+    await host.admin.publishVersion(staff, {
+      id: versionId, verticalSlug: 'docs', version: `1.0.${versionId.slice(-4).toLowerCase()}`, manifestDigest: `m-${versionId}`,
+      permissionDigest: 'p', migrationDigest: 'g', deploymentRef: `docs-${versionId.toLowerCase()}`,
+      manifestJson: JSON.stringify({
+        version: '1.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      }),
+    });
+    await host.admin.admitVersion(staff, versionId);
     const scoped = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: 'docs' });
     await host.admin.activateScope(staff, t, scoped);
+    await host.admin.bindScopeVersion(staff, t, scoped, versionId);
+    const asked: string[] = [];
+    const refuse = unreachablePlatformScopeStores();
     const api = createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
-      verticals: {
-        docs: {
-          redactSubject: async () => ({
-            events: 0,
-            intents: 0,
-            jobRuns: 0,
-            idempotencyResults: 0,
-            intentIds: [],
-            vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] },
-          }),
-          scopeStoreErase: async () => {
-            asked = true;
-            throw new Error('should not be asked');
-          },
+      storeKinds: [graphKind],
+      resolveVerticalRef: async () => ({
+        redactSubject: async () => ({
+          events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+          vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] },
+        }),
+      }) as never,
+      platformScopeStores: {
+        ...refuse,
+        eraseSubject: async (input) => {
+          asked.push(`${input.scopeId}/${input.subjectId}`);
+          return refuse.eraseSubject(input);
         },
-      } as never,
+      },
     });
     const res = await api.request(`/tenants/${t}/scopes/${scoped}/subjects/${erased}/shred`, {
       method: 'POST',
       headers: auth,
     });
     expect(res.status).toBe(200);
-    expect(asked).toBe(false);
+    expect(asked).toEqual([]);
   });
 
   /** A version of `docs` that declares one graph store, and a scope of `docs` bound to it. */
@@ -541,6 +555,7 @@ describe('subject erasure (#37)', () => {
         resolveVerticalRef: async () => ({
           redactSubject: async () => redaction,
           deleteScope: async () => undefined,
+          snapshotScope: async () => ({}),
           restoreScope: async (_s: unknown, tables: unknown[]) => ({ tables: tables.length }),
           exportScope: async (s2: ScopeId) => (await host.admin.exportScope(staff, tenantOf.get(s2) ?? t, s2)).tables,
         }) as never,
@@ -649,6 +664,48 @@ describe('subject erasure (#37)', () => {
         body: JSON.stringify({ backup: false }),
       });
       expect(res.status).toBe(503);
+      expect((await host.admin.getScopeRecord(staff, t, scoped))?.status).toBe('archived');
+    });
+
+    // Every path that reaches the stores refuses when it cannot, rather than carrying on
+    // as if the declared store held nothing. Each expectation fails if its 503 is swallowed.
+    it('a control plane with no route to the stores refuses on every path, rather than skipping the store', async () => {
+      const none = api(unreachablePlatformScopeStores());
+      const scoped = await install();
+      const backup = await none.request(`/tenants/${t}/scopes/${scoped}/backups`, { method: 'POST', headers: auth });
+      expect(backup.status, 'backup').toBe(503);
+      const pull = await none.request(`/tenants/${t}/scopes/${scoped}/export?full=true`, { headers: auth });
+      expect(pull.status, 'full pull').toBe(503);
+      const own = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: own, slug: `none-${own.toLowerCase()}`, name: 'None' });
+      await install(own);
+      const tenantExport = await none.request(`/tenants/${own}/export?full=true`, { headers: auth });
+      expect(tenantExport.status, 'full tenant export').toBe(503);
+      const snap = await none.request(`/tenants/${t}/scopes/${scoped}/snapshots`, { method: 'POST', headers: auth, body: '{}' });
+      expect(snap.status, 'snapshot').toBe(503);
+      const who = ulid();
+      const shred = await none.request(`/tenants/${t}/scopes/${scoped}/subjects/${who}/shred`, { method: 'POST', headers: auth });
+      expect(shred.status, 'shred').toBe(503);
+      expect((await host.admin.listShreddedSubjects(staff, t, scoped)).subjects).not.toContain(who);
+      const dump = await host.admin.exportScope(staff, t, scoped);
+      const withStore = await none.request(`/tenants/${t}/scopes/${scoped}/restore`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ ...dump, stores: [{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }] }),
+      });
+      expect(withStore.status, 'restore of a dump store').toBe(503);
+      // The replay runs after the data landed, so it reports rather than refuses.
+      await host.admin.shredSubject(staff, t, scoped, ulid());
+      const replayed = await none.request(`/tenants/${t}/scopes/${scoped}/restore`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify(dump),
+      });
+      expect(replayed.status, 'restore replay').toBe(200);
+      expect(await replayed.json(), 'restore replay').toMatchObject({ storeErasuresReplayed: 0, incomplete: true });
+      await host.admin.archiveScope(staff, t, scoped);
+      const reap = await none.request(`/tenants/${t}/scopes/${scoped}/reap`, { method: 'POST', headers: auth, body: JSON.stringify({ backup: false }) });
+      expect(reap.status, 'reap').toBe(503);
       expect((await host.admin.getScopeRecord(staff, t, scoped))?.status).toBe('archived');
     });
 
