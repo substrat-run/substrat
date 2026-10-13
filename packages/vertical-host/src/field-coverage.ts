@@ -44,10 +44,17 @@ export interface OutputWalk {
  * The declared output's top-level field names, read once at mount. `undefined` when the
  * declaration names none — no `output`, a scalar, a union — and then no route pays anything.
  *
+ * `cap` bounds the names a field REPORT carries; a caller that needs every name (the MCP `fields`
+ * enum, where a truncated list would refuse a column that exists) passes `Infinity`.
+ *
  * Unions are skipped for the reason `coercerFor` skips them: two shapes have no single field
  * list, and guessing one would count a field as absent that the other shape never had.
  */
-export function outputWalkOf(output: unknown, paged: boolean): OutputWalk | undefined {
+export function outputWalkOf(
+  output: unknown,
+  paged: boolean,
+  cap: number = DECLARED_OUTPUT_FIELDS_MAX,
+): OutputWalk | undefined {
   let schema = output;
   let list = paged;
   // A bound because a bound is cheap, not because a Zod schema can cycle.
@@ -55,7 +62,7 @@ export function outputWalkOf(output: unknown, paged: boolean): OutputWalk | unde
     const def = defOf(schema);
     if (def?.type === 'object') {
       const shape = (schema as { shape?: unknown }).shape ?? def.shape;
-      const names = shape && typeof shape === 'object' ? Object.keys(shape).slice(0, DECLARED_OUTPUT_FIELDS_MAX) : [];
+      const names = shape && typeof shape === 'object' ? Object.keys(shape).slice(0, cap) : [];
       return names.length > 0 ? { fields: names, list, paged } : undefined;
     }
     if (def?.type === 'array') {

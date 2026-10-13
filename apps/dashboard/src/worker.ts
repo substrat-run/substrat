@@ -29,7 +29,7 @@ import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, domainBinding, type appEvent, type domainRow, type installAppInput, type installStep } from './routes.js';
+import { dashboardRoutes, domainBinding, type appEvent, type domainRow, type installAppInput, type installStep, type memberRow } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
@@ -1019,27 +1019,6 @@ app.post('/api/teams/switch', async (c) => {
 });
 
 /**
- * Leave a team — the caller detaches themselves: mark their roster row revoked, then
- * sever their identity link so the team leaves their switcher and they can no longer
- * resolve into it. The selected-team cookie is cleared so the next load re-resolves
- * (another team, or onboarding if this was their last). Self-service; no role needed
- * beyond membership. Leaving the team you have selected — no team id argument.
- */
-app.post('/api/teams/leave', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  await scope.invoke('dashboard/leave-self', {});
-  await host.admin.unlinkIdentity(STAFF, node.tenantId, node.principal);
-  // Sever the shared plane's mirrored link too (best-effort — see mirrorBuilderIdentity).
-  await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(node.principal).catch(() => {});
-  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
-  deleteCookie(c, TEAM_COOKIE, { path: '/' });
-  return c.body(null, 204);
-});
-
-/**
  * Delete the organization — the Settings danger zone. OWNER-ONLY (the in-scope op
  * checks the roster) and confirmed by retyping the organization name, re-verified
  * here so the UI gate is never the only gate. Tombstone-shaped end to end: every
@@ -1105,11 +1084,6 @@ const pageParams = (c: { req: { query(key: string): string | undefined } }) =>
   listPageQuery.parse({ limit: c.req.query('limit'), cursor: c.req.query('cursor') });
 
 /**
- * The current team's roster — active members + outstanding invites, one page newest-
- * first (`{ entries, nextCursor }`, keyset on the roster row id). Org-bounded small,
- * but the envelope is the ONE list-read shape (contracts pagination.ts).
- */
-/**
  * Is this team's identity mirror complete, right now (#1343)? The dashboard keeps
  * its own directory and best-effort mirrors links into the shared one (#265) —
  * two sources of truth healed by polling, and retiring the local one is a
@@ -1144,19 +1118,6 @@ app.get('/api/identity-mirror', async (c) => {
     extra: divergence.extra,
     conflicting: divergence.conflicting,
   });
-});
-
-app.get('/api/members', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const page = pageParams(c);
-  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const members = (await scope.invoke('dashboard/list-members', {
-    limit: page.limit,
-    cursor: page.cursor,
-  })) as Array<{ id: string }>;
-  return c.json(pageOf(members, page.limit, (m) => m.id));
 });
 
 /**
@@ -1217,138 +1178,6 @@ async function mailInvite(
   }
   return { acceptUrl, emailDelivered };
 }
-
-/**
- * Invite a member to the current team at a role. The in-scope op enforces the §5.1
- * bound (invite only at a role you already hold) and composes the invites engine,
- * then we email the invitee an accept link.
- *
- * The email is sent HERE, host-side, because this is the only place the raw address
- * exists: the invites engine hashes the identifier and the `invites.sent` event
- * carries only the hash (piiClass 'none'), so no outbox executor could recover an
- * address to send to. Delivery is best-effort — the invitation is already committed,
- * so a send failure is reported (`emailDelivered: false`) rather than rolling back a
- * recorded invite; the returned `acceptUrl` lets the inviter share the link manually
- * and is what a resend would use.
- */
-const inviteMemberBody = z.object({
-  email: z.string().trim().min(1),
-  roleKey: z.enum(['admin', 'member', 'viewer']),
-});
-app.post('/api/members/invite', async (c) => {
-  const host = hostFor(c.env);
-  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
-  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const body = inviteMemberBody.parse(await c.req.json());
-  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { invitationId } = (await scope.invoke('dashboard/invite-member', body)) as { invitationId: string };
-  const { acceptUrl, emailDelivered } = await mailInvite(
-    c.env,
-    host,
-    new URL(c.req.url).origin,
-    node,
-    user.name,
-    body.email,
-    invitationId,
-  );
-  return c.json({ invitationId, acceptUrl, emailDelivered }, 201);
-});
-
-/**
- * Re-send a pending invite's email — the resend button. Re-mints the accept link and
- * mails it again to the address kept in the readable roster (the invites engine stores
- * only a hash). The in-scope op re-checks manage-members + the §5.1 role bound and
- * refreshes a lapsed invitation; a 404 means there is no such pending invite to resend.
- */
-app.post('/api/members/resend-invite', async (c) => {
-  const host = hostFor(c.env);
-  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
-  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const { invitationId } = z.object({ invitationId: z.string().min(1) }).parse(await c.req.json());
-  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const resent = (await scope.invoke('dashboard/resend-invite', { invitationId })) as
-    | { invitationId: string; email: string; roleKey: string }
-    | null;
-  if (!resent) throw new HTTPException(404, { message: 'no such pending invite' });
-  const { acceptUrl, emailDelivered } = await mailInvite(
-    c.env,
-    host,
-    new URL(c.req.url).origin,
-    node,
-    user.name,
-    resent.email,
-    resent.invitationId,
-  );
-  return c.json({ invitationId: resent.invitationId, acceptUrl, emailDelivered });
-});
-
-/**
- * A pending invite's accept link, to copy and share — the roster's "Copy link". A pure
- * read: it sends no email and changes nothing. The in-scope op asks what a resend asks
- * (manage-members, and the §5.1 bound on the invite's role), and answers for an OPEN
- * invitation only — a lapsed one is a 409 pointing at Resend, which is what renews it.
- * The token expires with the invitation, never after it.
- */
-app.post('/api/members/invite-link', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const { invitationId } = z.object({ invitationId: z.string().min(1) }).parse(await c.req.json());
-  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const live = (await scope.invoke('dashboard/invite-link', { invitationId })) as
-    | { invitationId: string; expiresAt: string }
-    | { lapsed: true }
-    | null;
-  if (!live) throw new HTTPException(404, { message: 'no such pending invite' });
-  if ('lapsed' in live) throw new HTTPException(409, { message: 'invite expired — use Resend to renew it' });
-  const acceptUrl = await inviteAcceptUrl(c.env, new URL(c.req.url).origin, node, live.invitationId, Date.parse(live.expiresAt));
-  return c.json({ invitationId: live.invitationId, acceptUrl, expiresAt: live.expiresAt });
-});
-
-/** Withdraw a pending invite from the current team. */
-app.post('/api/members/revoke-invite', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const { invitationId } = z.object({ invitationId: z.string().min(1) }).parse(await c.req.json());
-  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  await scope.invoke('dashboard/revoke-invite', { invitationId });
-  return c.body(null, 204);
-});
-
-/**
- * Remove a member. The op revokes the roster row and asks the membership executor (#1184) to
- * take the role away; it runs inline, so the answer says what
- * happened: 204 done, 202 `{ pending: true }` when the backstop owns it, 409 refused. The
- * login is severed either way, since the removal itself is committed.
- */
-app.post('/api/members/remove', async (c) => {
-  const host = hostFor(c.env, { membership: true });
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const { memberId } = z.object({ memberId: z.string().min(1) }).parse(await c.req.json());
-  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  await enrollTeamScope(c.env, node.tenantId, node.scopeId);
-  const outcomes: ExecutorOutcome[] = [];
-  const removed = (await scope.invoke('dashboard/remove-member', { memberId }, {
-    onExecutorOutcomes: (o) => outcomes.push(...o),
-  })) as { principal: string; roleKey: string } | null;
-  if (!removed) return c.body(null, 204);
-  const principal = principalId.parse(removed.principal);
-  // Sever their login from the team, so it also disappears from their own switcher.
-  await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
-  // And the shared plane's mirrored link, so their CLI push loses the
-  // workspace too (best-effort — see mirrorBuilderIdentity).
-  await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(principal).catch(() => {});
-  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
-  const verdict = effectVerdict(outcomes, 'remove', principal);
-  if (verdict.kind === 'refused') throw new HTTPException(409, { message: `the removal was refused: ${verdict.reason}` });
-  return verdict.kind === 'done' ? c.body(null, 204) : c.json({ pending: true }, 202);
-});
 
 /**
  * Preview an invite for the accept screen + login prefill. UNAUTHENTICATED on purpose:
@@ -5303,6 +5132,131 @@ async function findingsPlane({ c, host, node }: TeamContext, may: 'read' | 'mana
   return controlPlaneFor(c.env, node.tenantId, node.principal);
 }
 
+/** The team's dashboard scope, reached as the caller — where every member operation runs its own check. */
+function teamScope({ host, node }: TeamContext) {
+  return host.getScope(node.principal, node.tenantId, node.scopeId);
+}
+
+/**
+ * The team's roster — active members + outstanding invites, one page newest-first
+ * (`{ entries, nextCursor }`, keyset on the roster row id). Org-bounded small, but the
+ * envelope is the ONE list-read shape (contracts pagination.ts).
+ */
+async function listMembersIn(ctx: TeamContext, page: ListPageQuery) {
+  const members = (await (await teamScope(ctx)).invoke('dashboard/list-members', {
+    limit: page.limit,
+    cursor: page.cursor,
+  })) as Array<z.input<typeof memberRow>>;
+  return pageOf(members, page.limit, (m) => m.id);
+}
+
+/** The signed-in person's display name, for the invite email's "from". The session was verified by `teamContext`. */
+async function inviterName({ c }: TeamContext): Promise<string | null | undefined> {
+  return (await verifySession(c.env, getCookie(c, SESSION_COOKIE)))?.name;
+}
+
+/**
+ * Invite a member to the team at a role. The in-scope op enforces the §5.1 bound (invite
+ * only at a role you already hold) and composes the invites engine, then we email the
+ * invitee an accept link.
+ *
+ * The email is sent HERE, host-side, because this is the only place the raw address
+ * exists: the invites engine hashes the identifier and the `invites.sent` event carries
+ * only the hash (piiClass 'none'), so no outbox executor could recover an address to send
+ * to. Delivery is best-effort — the invitation is already committed, so a send failure is
+ * reported (`emailDelivered: false`) rather than rolling back a recorded invite; the
+ * returned `acceptUrl` lets the inviter share the link manually and is what a resend uses.
+ */
+async function inviteMemberIn(ctx: TeamContext, body: { email: string; roleKey: 'admin' | 'member' | 'viewer' }) {
+  const { c, host, node } = ctx;
+  const { invitationId } = (await (await teamScope(ctx)).invoke('dashboard/invite-member', body)) as { invitationId: string };
+  const sent = await mailInvite(c.env, host, new URL(c.req.url).origin, node, await inviterName(ctx), body.email, invitationId);
+  return { invitationId, ...sent };
+}
+
+/**
+ * Re-send a pending invite's email — the resend button. Re-mints the accept link and mails
+ * it again to the address kept in the readable roster (the invites engine stores only a
+ * hash). The in-scope op re-checks manage-members + the §5.1 role bound and refreshes a
+ * lapsed invitation; a 404 means there is no such pending invite to resend.
+ */
+async function resendInviteIn(ctx: TeamContext, invitationId: string) {
+  const { c, host, node } = ctx;
+  const resent = (await (await teamScope(ctx)).invoke('dashboard/resend-invite', { invitationId })) as
+    | { invitationId: string; email: string; roleKey: string }
+    | null;
+  if (!resent) throw new HTTPException(404, { message: 'no such pending invite' });
+  const sent = await mailInvite(c.env, host, new URL(c.req.url).origin, node, await inviterName(ctx), resent.email, resent.invitationId);
+  return { invitationId: resent.invitationId, ...sent };
+}
+
+/**
+ * A pending invite's accept link, to copy and share — the roster's "Copy link". A pure
+ * read: it sends no email and changes nothing. The in-scope op asks what a resend asks
+ * (manage-members, and the §5.1 bound on the invite's role), and answers for an OPEN
+ * invitation only — a lapsed one is a 409 pointing at Resend, which is what renews it.
+ * The token expires with the invitation, never after it.
+ */
+async function inviteLinkIn(ctx: TeamContext, invitationId: string) {
+  const { c, node } = ctx;
+  const live = (await (await teamScope(ctx)).invoke('dashboard/invite-link', { invitationId })) as
+    | { invitationId: string; expiresAt: string }
+    | { lapsed: true }
+    | null;
+  if (!live) throw new HTTPException(404, { message: 'no such pending invite' });
+  if ('lapsed' in live) throw new HTTPException(409, { message: 'invite expired — use Resend to renew it' });
+  const acceptUrl = await inviteAcceptUrl(c.env, new URL(c.req.url).origin, node, live.invitationId, Date.parse(live.expiresAt));
+  return { invitationId: live.invitationId, acceptUrl, expiresAt: live.expiresAt };
+}
+
+/**
+ * Remove a member. The op revokes the roster row and asks the membership executor (#1184)
+ * to take the role away; it runs inline, so the answer says what happened: `pending: false`
+ * done, `pending: true` when the backstop owns it, 409 refused, `removed: false` when there
+ * was no removable member by that id. The login is severed either way, since the removal
+ * itself is committed.
+ */
+async function removeMemberIn({ c, node }: TeamContext, memberId: string): Promise<{ removed: boolean; pending: boolean }> {
+  // Its own host: only one with the membership executor registered runs it inline.
+  const host = hostFor(c.env, { membership: true });
+  const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  await enrollTeamScope(c.env, node.tenantId, node.scopeId);
+  const outcomes: ExecutorOutcome[] = [];
+  const removed = (await scope.invoke('dashboard/remove-member', { memberId }, {
+    onExecutorOutcomes: (o) => outcomes.push(...o),
+  })) as { principal: string; roleKey: string } | null;
+  if (!removed) return { removed: false, pending: false };
+  const principal = principalId.parse(removed.principal);
+  // Sever their login from the team, so it also disappears from their own switcher.
+  await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
+  // And the shared plane's mirrored link, so their CLI push loses the
+  // workspace too (best-effort — see mirrorBuilderIdentity).
+  await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(principal).catch(() => {});
+  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
+  const verdict = effectVerdict(outcomes, 'remove', principal);
+  if (verdict.kind === 'refused') throw new HTTPException(409, { message: `the removal was refused: ${verdict.reason}` });
+  return { removed: true, pending: verdict.kind !== 'done' };
+}
+
+/**
+ * Leave the team — the caller detaches themselves: mark their roster row revoked, then
+ * sever their identity link so the team leaves their switcher and they can no longer
+ * resolve into it. If the selected-team cookie names this team it is cleared, so the next
+ * load re-resolves (another team, or onboarding if this was their last); a cookie naming
+ * another of their teams is left alone, because the path, not the cookie, says which team
+ * is being left. Self-service; no role needed beyond membership.
+ */
+async function leaveTeamIn(ctx: TeamContext): Promise<{ left: true }> {
+  const { c, host, node } = ctx;
+  await (await teamScope(ctx)).invoke('dashboard/leave-self', {});
+  await host.admin.unlinkIdentity(STAFF, node.tenantId, node.principal);
+  // Sever the shared plane's mirrored link too (best-effort — see mirrorBuilderIdentity).
+  await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(node.principal).catch(() => {});
+  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
+  if (getCookie(c, TEAM_COOKIE) === node.tenantId) deleteCookie(c, TEAM_COOKIE, { path: '/' });
+  return { left: true };
+}
+
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
 const routeHandlers = {
   'dashboard/list-apps': async ({ c, host, node }, page) => listAppsPage(c, host, node, listPageQuery.parse(page)),
@@ -5340,6 +5294,16 @@ const routeHandlers = {
   'dashboard/list-app-hostnames': async (ctx, { scopeId: app }) => listAppHostnamesIn(ctx, app),
   'dashboard/add-app-hostname': async (ctx, { scopeId: app, ...body }) => addAppHostnameIn(ctx, app, body),
   'dashboard/remove-app-hostname': async (ctx, { scopeId: app, hostname }) => removeAppHostnameIn(ctx, app, hostname),
+  'dashboard/list-members': async (ctx, page) => listMembersIn(ctx, listPageQuery.parse(page)),
+  'dashboard/invite-member': async (ctx, body) => inviteMemberIn(ctx, body),
+  'dashboard/resend-invite': async (ctx, { invitationId }) => resendInviteIn(ctx, invitationId),
+  'dashboard/invite-link': async (ctx, { invitationId }) => inviteLinkIn(ctx, invitationId),
+  'dashboard/revoke-invite': async (ctx, { invitationId }) => {
+    await (await teamScope(ctx)).invoke('dashboard/revoke-invite', { invitationId });
+    return { revoked: true as const };
+  },
+  'dashboard/remove-member': async (ctx, { memberId }) => removeMemberIn(ctx, memberId),
+  'dashboard/leave-team': async (ctx) => leaveTeamIn(ctx),
 } satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
 
 mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: teamContext })(routeHandlers);
