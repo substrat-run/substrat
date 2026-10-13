@@ -374,6 +374,26 @@ export function scopeStoreContractSuite(
       expect(await host.admin.getScopeRecord(staff, tenant, dest)).toBeUndefined();
     });
 
+    it('deleting a fork whose wipe fails leaves the fork and its storage', async () => {
+      const fork = await host.snapshotScope(staff, tenant, scopeA);
+      const seeded = await host.admin.exportScope(staff, tenant, fork);
+      await host.restoreScope(staff, tenant, fork, { ...seeded, tables: [...seeded.tables, PROBE_TABLE] });
+      const store = await host.getScopeStore(principal, tenant, fork, 'GRAPH');
+      await store.invoke('fail-wipe', true);
+      try {
+        const refusal = await host.deleteSnapshot(staff, tenant, fork).then(
+          () => undefined,
+          (err: unknown) => err,
+        );
+        expect(refusal).toBeDefined();
+        expect(await host.admin.getScopeRecord(staff, tenant, fork)).toBeDefined();
+        expect(await tableNames(fork)).toContain(PROBE_TABLE.name);
+      } finally {
+        await store.invoke('fail-wipe', false);
+      }
+      await host.deleteSnapshot(staff, tenant, fork);
+    });
+
     it('deleting a fork wipes its store', async () => {
       const fork = await host.snapshotScope(staff, tenant, scopeA);
       await host.deleteSnapshot(staff, tenant, fork);
