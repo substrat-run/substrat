@@ -1,11 +1,6 @@
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
-
-// A string, not `new URL(…)`: this config is typechecked with the workers types, whose URL
-// is not the one node:url's fileURLToPath takes.
-const signedStoreWorker = join(dirname(fileURLToPath(import.meta.url)), 'test', 'signed-store-worker.js');
+import { signedStoreFixtureWorker } from './test/signed-store-fixture.js';
 
 export default defineConfig({
   // `process.env` inside workerd is not the runner's, so an opt-in from the environment is decided
@@ -23,15 +18,7 @@ export default defineConfig({
       wrangler: { configPath: './wrangler.jsonc' },
       // #2210: the store is a second script. The key is its var, not the vertical's.
       miniflare: {
-        workers: [
-          {
-            name: 'substrat-store-fixture',
-            modules: true,
-            scriptPath: signedStoreWorker,
-            compatibilityDate: '2025-01-01',
-            bindings: { SUBSTRAT_STORE_HMAC_KEY: 'scope-store-test-key' },
-          },
-        ],
+        workers: [signedStoreFixtureWorker],
       },
     }),
   ],
