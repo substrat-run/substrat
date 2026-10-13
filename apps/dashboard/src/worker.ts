@@ -2178,14 +2178,14 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
       }
       const target = targetScopeOf(scopes, tenant, vertical, binding?.targetScopeId ?? null, binding?.invalidated ?? false);
       if (target === null || 'ambiguous' in target) {
-        return { call: declaredCallState({ vertical, caller: slug, target, entries: [] }), choice };
+        return { call: declaredCallState({ vertical, caller: slug, tenantSlug: tenant.slug, target, entries: [] }), choice };
       }
-      if ('boundUnavailable' in target) return { call: declaredCallState({ vertical, caller: slug, target, entries: [] }), choice };
+      if ('boundUnavailable' in target) return { call: declaredCallState({ vertical, caller: slug, tenantSlug: tenant.slug, target, entries: [] }), choice };
       const read = await cp
         .peerGrants(scopeId.parse(target.scopeId))
         .then((entries) => ({ entries, error: null as string | null }))
         .catch((e: unknown) => ({ entries: null, error: e instanceof Error ? e.message : String(e) }));
-      return { call: declaredCallState({ vertical, caller: slug, target, entries: read.entries, readError: read.error }), choice };
+      return { call: declaredCallState({ vertical, caller: slug, tenantSlug: tenant.slug, target, entries: read.entries, readError: read.error }), choice };
     }),
   );
 
