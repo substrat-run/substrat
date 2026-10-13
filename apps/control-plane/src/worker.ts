@@ -1477,6 +1477,8 @@ export async function reconcileReachedScope(
         connectionGrants: payload.connectionGrants as never,
         connectionKeys: payload.connectionKeys as never,
         ...(payload.entityGrants ? { entityGrants: payload.entityGrants } : {}),
+        // #2263: a vertical with no owner of record still seats what its version declares.
+        ownerless: 'seat',
         // #1742: the recorded-off modules, switched off in the deployment's own unit.
         ...carry,
       }),

@@ -13,6 +13,7 @@ import {
   substratError,
   type CheckSubject,
   type ReservedStoreOperation,
+  type ReservedStoreResults,
   type ScopeId,
   type StoreOperationCatalog,
   type StoreRequest,
@@ -65,6 +66,67 @@ export function scopeStoreRunnersOf(
   return runners;
 }
 
+/** Starts and stops one host's runners (#2213). */
+export interface ScopeStoreLifecycle {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+/**
+ * The lifecycle both adapters run their runners through. `start` starts each distinct
+ * runner once, and concurrent callers share the pass. A runner that started stays
+ * started when a later one throws, so the retry starts only the rest.
+ *
+ * `stop` first waits for a pass in flight, which starts no further runner once a stop
+ * has begun (it rejects instead), so no runner is started after the stops are asked.
+ * It then asks every runner, started or not, since a runner tolerates a stop without a
+ * start. One that throws does not leave the others running. One failure is rethrown as
+ * it is, and several as an `AggregateError` carrying each.
+ */
+export function scopeStoreLifecycleOf(runners: ReadonlyMap<string, ScopeStoreRunner>): ScopeStoreLifecycle {
+  const started = new Set<ScopeStoreRunner>();
+  let pending: Promise<void> | null = null;
+  let stopping = false;
+  return {
+    start() {
+      if (pending) return pending;
+      const pass = (async () => {
+        for (const runner of new Set(runners.values())) {
+          if (started.has(runner)) continue;
+          if (stopping) throw new Error('scope-store runners are stopping; this start is abandoned');
+          await runner.start();
+          started.add(runner);
+        }
+      })();
+      pending = pass;
+      pass.catch(() => {
+        if (pending === pass) pending = null;
+      });
+      return pass;
+    },
+    async stop() {
+      stopping = true;
+      try {
+        await pending?.catch(() => undefined);
+        const failures: unknown[] = [];
+        for (const runner of new Set(runners.values())) {
+          try {
+            await runner.stop();
+          } catch (err) {
+            failures.push(err);
+          }
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, `${failures.length} scope-store runners failed to stop`);
+      } finally {
+        started.clear();
+        pending = null;
+        stopping = false;
+      }
+    },
+  };
+}
+
 /**
  * The capability a `getScopeStore` door returns (#2207).
  *
@@ -112,7 +174,10 @@ const RESERVED_RESULT = {
   'substrat.size': storeSizeResult,
   'substrat.wipe': storeWipeResult,
   'substrat.erase': storeEraseResult,
-} as const;
+} as const satisfies { [O in ReservedStoreOperation]: { parse(value: unknown): ReservedStoreResults[O] } };
+
+/** What a reserved operation answers, parsed (#2239). */
+export type ReservedStoreResult<O extends ReservedStoreOperation> = ReservedStoreResults[O];
 
 const reservedNames: readonly string[] = RESERVED_STORE_OPERATIONS;
 
@@ -136,13 +201,14 @@ function reservedInput(operation: ReservedStoreOperation, input: unknown): unkno
 /**
  * The platform's caller (#2207). A name that is not reserved is refused before
  * `send`, the mirror of {@link callScopeStore}. The result is parsed against the
- * operation's schema, so a store that answers the wrong shape fails here.
+ * operation's schema, so a store that answers the wrong shape fails here, and the
+ * caller gets that parsed type back rather than parsing again.
  */
-export async function callReservedStoreOperation(
+export async function callReservedStoreOperation<O extends ReservedStoreOperation>(
   send: (request: StoreRequest) => Promise<unknown>,
-  operation: ReservedStoreOperation,
+  operation: O,
   input?: unknown,
-): Promise<unknown> {
+): Promise<ReservedStoreResult<O>> {
   if (!reservedNames.includes(operation)) {
     throw substratError('forbidden', `store operation '${operation}' is not reserved for the platform`);
   }
@@ -156,5 +222,5 @@ export async function callReservedStoreOperation(
   if (!result.success) {
     throw new StoreError({ code: 'bad_envelope', status: 502, body: result.error.issues });
   }
-  return result.data;
+  return result.data as ReservedStoreResult<O>;
 }

@@ -122,6 +122,21 @@ describe('declaredCallState', () => {
     expect(declaredCallLine(state)).toMatch(/refuses this app's calls until you let it back in/);
   });
 
+  it('a pinned caller finds the grants stored under its bare declared name (#2263)', () => {
+    const state = declaredCallState({
+      vertical: 'acme/crm',
+      caller: 'tenant-a/board-room',
+      tenantSlug: 'tenant-a',
+      target,
+      entries: [entry({ vertical: 'board-room' })],
+    });
+    expect(state.state).toBe('allowed');
+    // Another tenant's prefix is not this caller.
+    expect(
+      declaredCallState({ vertical: 'acme/crm', caller: 'other/board-room', tenantSlug: 'tenant-a', target, entries: [entry({ vertical: 'board-room' })] }).state,
+    ).toBe('no-grant');
+  });
+
   it('a target that grants this app nothing is its own state, not "switched off"', () => {
     // Different facts: `off` somebody did and restoring undoes; `ungranted`/absent means the
     // target's manifest never declared this peer. Showing the second as the first sends a
@@ -130,6 +145,8 @@ describe('declaredCallState', () => {
       const state = declaredCallState({ vertical: 'acme/crm', caller: CALLER, target, entries });
       expect(state.state).toBe('no-grant');
       expect(declaredCallNeedsAttention(state)).toBe(true);
+      // #2263: an install that predates the declaring version is the other cause, and has a lever.
+      expect(declaredCallLine(state)).toMatch(/predates the version that does[\s\S]*substrat scope provision/);
     }
   });
 

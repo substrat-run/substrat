@@ -9,7 +9,7 @@ import { MODULES, provisionDashboard } from '../src/index.js';
 import { INVITE_TOKEN_PURPOSE, verifyClaim } from '../src/signed-token.js';
 
 /**
- * `POST /api/members/invite-link` — the roster's "Copy link". It hands back a pending
+ * `POST /api/teams/:teamId/members/invites/:invitationId/link` — the roster's "Copy link". It hands back a pending
  * invite's accept link WITHOUT emailing, and asks the same things a resend does.
  *
  * Driven through the WORKER, over a SQLite host (the seams the worker cannot run in Node
@@ -52,7 +52,7 @@ const PROVIDER = 'authhero';
 const SECRET = 'test-session-secret';
 const staff = platformActorId.parse(ulid());
 
-describe('POST /api/members/invite-link', () => {
+describe('POST /api/teams/:teamId/members/invites/:invitationId/link', () => {
   let dir: string;
   let host: SqliteScopeHost;
   let send: ReturnType<typeof vi.fn>;
@@ -109,18 +109,22 @@ describe('POST /api/members/invite-link', () => {
 
   /** A pending invite made through the real route, then the mail spy cleared. */
   async function invite(email = 'rae@links.test', role: 'admin' | 'member' | 'viewer' = 'member'): Promise<string> {
-    const res = await asRole('owner', '/api/members/invite', { email, roleKey: role });
+    const res = await asRole('owner', inTeam('/members/invites'), { email, roleKey: role });
     expect(res.status).toBe(201);
     send.mockClear();
     return ((await res.json()) as { invitationId: string }).invitationId;
   }
+
+  /** A path under the team's declared surface (#2170). */
+  const inTeam = (rest: string, team: string = tenant) => `/api/teams/${team}${rest}`;
+  const linkOf = (id: string, team: string = tenant) => inTeam(`/members/invites/${id}/link`, team);
 
   const tokenOf = (acceptUrl: string) => acceptUrl.split('/invite/')[1]!;
 
   it('owner and admin get the link, and its token verifies for that invitation', async () => {
     const invitationId = await invite();
     for (const role of ['owner', 'admin'] as const) {
-      const res = await asRole(role, '/api/members/invite-link', { invitationId });
+      const res = await asRole(role, linkOf(invitationId), {});
       expect(res.status, `${role}: ${await res.clone().text()}`).toBe(200);
       const body = (await res.json()) as { invitationId: string; acceptUrl: string };
       expect(body.invitationId).toBe(invitationId);
@@ -136,7 +140,7 @@ describe('POST /api/members/invite-link', () => {
 
   it('the link is the producer’s: the real preview route reads the invitee from it', async () => {
     const invitationId = await invite('ivy@links.test', 'viewer');
-    const { acceptUrl } = (await (await asRole('owner', '/api/members/invite-link', { invitationId })).json()) as { acceptUrl: string };
+    const { acceptUrl } = (await (await asRole('owner', linkOf(invitationId), {})).json()) as { acceptUrl: string };
     const res = await app.request(`/api/invites/preview?token=${encodeURIComponent(tokenOf(acceptUrl))}`, {}, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ email: 'ivy@links.test', roleKey: 'viewer' });
@@ -144,17 +148,17 @@ describe('POST /api/members/invite-link', () => {
 
   it('sends no email — and its twin, resend, does', async () => {
     const invitationId = await invite();
-    expect((await asRole('owner', '/api/members/invite-link', { invitationId })).status).toBe(200);
+    expect((await asRole('owner', linkOf(invitationId), {})).status).toBe(200);
     expect(send).not.toHaveBeenCalled();
 
-    expect((await asRole('owner', '/api/members/resend-invite', { invitationId })).status).toBe(200);
+    expect((await asRole('owner', inTeam(`/members/invites/${invitationId}/resend`), {})).status).toBe(200);
     expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('a member or viewer is refused, and gets no link', async () => {
     const invitationId = await invite();
     for (const role of ['member', 'viewer'] as const) {
-      const res = await asRole(role, '/api/members/invite-link', { invitationId });
+      const res = await asRole(role, linkOf(invitationId), {});
       expect(res.status, role).toBe(403);
       expect(await res.text()).not.toContain('/invite/');
     }
@@ -162,16 +166,16 @@ describe('POST /api/members/invite-link', () => {
   });
 
   it('an unknown, revoked or accepted invite is a 404', async () => {
-    expect((await asRole('owner', '/api/members/invite-link', { invitationId: ulid() })).status).toBe(404);
+    expect((await asRole('owner', linkOf(ulid()), {})).status).toBe(404);
 
     const revoked = await invite('gone@links.test');
-    expect((await asRole('owner', '/api/members/revoke-invite', { invitationId: revoked })).status).toBeLessThan(300);
-    expect((await asRole('owner', '/api/members/invite-link', { invitationId: revoked })).status).toBe(404);
+    expect((await asRole('owner', inTeam(`/members/invites/${revoked}`), {}, 'DELETE')).status).toBe(200);
+    expect((await asRole('owner', linkOf(revoked), {})).status).toBe(404);
 
     const accepted = await invite('sam@links.test');
     const sam = principalId.parse(ulid());
     await (await host.getScope(sam, tenant, dashScope)).invoke('dashboard/accept-invite', { invitationId: accepted, identifier: 'sam@links.test' });
-    expect((await asRole('owner', '/api/members/invite-link', { invitationId: accepted })).status).toBe(404);
+    expect((await asRole('owner', linkOf(accepted), {})).status).toBe(404);
   });
 
   const invitationsOf = async (): Promise<string[]> => {
@@ -183,14 +187,14 @@ describe('POST /api/members/invite-link', () => {
   it('is a pure read: no invitation is created, and an admin at the open-invite cap still gets the link', async () => {
     const first = await invite('cap0@links.test');
     for (let i = 1; i <= 25; i++) {
-      expect((await asRole('admin', '/api/members/invite', { email: `cap${i}@links.test`, roleKey: 'viewer' })).status).toBe(201);
+      expect((await asRole('admin', inTeam('/members/invites'), { email: `cap${i}@links.test`, roleKey: 'viewer' })).status).toBe(201);
     }
     // The cap is real: a 26th send by this admin is refused …
-    expect((await asRole('admin', '/api/members/invite', { email: 'over@links.test', roleKey: 'viewer' })).status).toBeGreaterThanOrEqual(400);
+    expect((await asRole('admin', inTeam('/members/invites'), { email: 'over@links.test', roleKey: 'viewer' })).status).toBeGreaterThanOrEqual(400);
     const before = await invitationsOf();
     // … and looking at a link is not a send.
     for (const id of [first, before[0]!]) {
-      expect((await asRole('admin', '/api/members/invite-link', { invitationId: id })).status).toBe(200);
+      expect((await asRole('admin', linkOf(id), {})).status).toBe(200);
     }
     expect(await invitationsOf()).toEqual(before);
   });
@@ -199,7 +203,7 @@ describe('POST /api/members/invite-link', () => {
     const invitationId = await invite();
     clock.advance(15 * 24 * 60 * 60 * 1000);
     const before = await invitationsOf();
-    const res = await asRole('owner', '/api/members/invite-link', { invitationId });
+    const res = await asRole('owner', linkOf(invitationId), {});
     expect(res.status).toBe(409);
     expect(await res.text()).toMatch(/use Resend/);
     expect(await invitationsOf()).toEqual(before);
@@ -210,7 +214,7 @@ describe('POST /api/members/invite-link', () => {
     clock.advance(-10 * 24 * 60 * 60 * 1000); // sent ten days ago: four days left
     const invitationId = await invite();
     clock.advance(10 * 24 * 60 * 60 * 1000);
-    const body = (await (await asRole('owner', '/api/members/invite-link', { invitationId })).json()) as { acceptUrl: string; expiresAt: string };
+    const body = (await (await asRole('owner', linkOf(invitationId), {})).json()) as { acceptUrl: string; expiresAt: string };
     const claim = await verifyClaim<{ exp: number }>(SECRET, INVITE_TOKEN_PURPOSE, tokenOf(body.acceptUrl), Date.now());
     expect(claim!.exp).toBeLessThanOrEqual(Date.parse(body.expiresAt));
     expect(Date.parse(body.expiresAt)).toBeLessThan(Date.now() + 5 * 24 * 60 * 60 * 1000);
@@ -227,23 +231,19 @@ describe('POST /api/members/invite-link', () => {
     await (await host.getScope(ownerB, tenantB, scopeB)).invoke('dashboard/init-team', { orgId: orgB, ownerEmail: 'owner@other.test' });
     await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-owner-b', principal: ownerB, tenantId: tenantB, scopeId: scopeB });
 
-    const asB = await app.request(
-      '/api/members/invite-link',
-      { method: 'POST', headers: { cookie: 'sb_session=sub-owner-b', 'content-type': 'application/json' }, body: JSON.stringify({ invitationId }) },
-      env,
-    );
-    expect(asB.status).toBe(404);
+    const asB = (path: string) =>
+      app.request(path, { method: 'POST', headers: { cookie: 'sb_session=sub-owner-b', 'content-type': 'application/json' }, body: '{}' }, env);
+    // Through B's own path the invitation is not B's: no such pending invite.
+    expect((await asB(linkOf(invitationId, tenantB))).status).toBe(404);
+    // Through A's path, B is not a member: no such team.
+    expect((await asB(linkOf(invitationId))).status).toBe(404);
     const preview = await (await host.getScope(principalId.parse(ulid()), tenantB, scopeB)).invoke('dashboard/preview-invite', { invitationId });
     expect(preview).toBeNull();
   });
 
   it('no session is a 401', async () => {
     const invitationId = await invite();
-    const res = await app.request(
-      '/api/members/invite-link',
-      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ invitationId }) },
-      env,
-    );
+    const res = await app.request(linkOf(invitationId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }, env);
     expect(res.status).toBe(401);
   });
 });

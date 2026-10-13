@@ -181,6 +181,18 @@ export function canReprovision(
   return status !== 'archived' && status !== 'reaped' && status !== 'archiving';
 }
 
+/**
+ * The toast a re-run provision ends with, from the vertical's answer. `owner: null` (#2263) is the
+ * ownerless reconcile of a vertical that keeps no owner of record: the grants its version declares
+ * were seated and nothing else was re-delivered, so saying otherwise would tell staff a lockout or
+ * a missing projection had been repaired.
+ */
+export function reprovisionedDetail(slug: string, answer: { owner?: string | null }): string {
+  return answer.owner === null
+    ? `${slug} · declared grants seated; owner, entitlements and identity links NOT re-sourced (the vertical keeps no owner of record)`
+    : `${slug} · entitlements, identity links and the vertical's own provision hook re-delivered`;
+}
+
 export function availableActions(
   s: EffectiveStatus,
 ): ('suspend' | 'unsuspend' | 'archive' | 'unarchive' | 'reap')[] {

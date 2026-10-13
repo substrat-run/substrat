@@ -129,6 +129,14 @@
  *                      sits in a `boundary-lint-allow R11` … `boundary-lint-end R11`
  *                      block, where a reviewer reads it.
  *
+ *   R12 one list param module code never writes `IN (${…})` with one `?` per value (#2248).
+ *                      A Durable Object refuses the 101st bound parameter, so the
+ *                      hand-built list passes every small fixture and fails in
+ *                      production on the first list that outgrew it. A list is ONE
+ *                      JSON parameter: `IN ${list.sql}`, `list = inList(values)` from
+ *                      `@substrat-run/contracts`. A list of fixed, short length sits
+ *                      in a `boundary-lint-allow R12` … `boundary-lint-end R12` block.
+ *
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
  * unbuilt; the no-clock rule landed first and took the number, so #786 shipped
@@ -190,7 +198,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10' | 'R11';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10' | 'R11' | 'R12';
   message: string;
 }
 
@@ -1201,6 +1209,250 @@ function checkHandlerMapCast(rel: string, source: string, out: Violation[]): voi
   }
 }
 
+// ---------------------------------------------------------------------------
+// R12 — a list is one parameter, not one per value (#2248)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a list is written into a statement from code: `IN (` (or `NOT IN (`) inside a template,
+ * then only placeholders, commas and space up to a `${` (so `IN (?, ${…})` and `IN (?${…})` count,
+ * and a subquery `IN (SELECT … ${…})` does not); or `IN (` closing a string a `+` continues.
+ */
+const IN_LIST_OPEN = /\bIN\s*\([\s?,\d]*\$\{|\bIN\s*\(\s*(['"`])\s*\+/gi;
+
+/**
+ * A literal that is a placeholder: `'?'`, `"?"`, `` `?` ``, the `'?, '` / `',?'` of a repeat, and the
+ * numbered `` `?${i + 1}` ``.
+ */
+const PLACEHOLDER_LITERAL = /(['"`])\s*,?\s*\?\s*,?\s*\1|`\s*,?\s*\?(?=\$\{)/g;
+
+/** A name in masked code that is not a property: `ids`, `marks`, `Q` — never the `map` of `.map`. */
+const NAME = /(?<![\w$.])[A-Za-z_$][\w$]*/g;
+
+/** How many names deep a list is followed — `p = q.join(',')`, `q = ids.map(() => Q)`, `Q = '?'`. */
+const NAME_HOPS = 3;
+
+/**
+ * Does `stripped[from, to)` hold a placeholder literal? The `?` must be a string's body — blank in
+ * the masked copy — or `x === 'a' ? 'b' : 'c'` would read as the literal `' ? '`.
+ */
+function holdsPlaceholder(masked: string, stripped: string, from: number, to: number): boolean {
+  const text = stripped.slice(from, to);
+  PLACEHOLDER_LITERAL.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = PLACEHOLDER_LITERAL.exec(text)); ) {
+    if (masked[from + m.index + m[0].indexOf('?')] === ' ') return true;
+    PLACEHOLDER_LITERAL.lastIndex = m.index + 1;
+  }
+  return false;
+}
+
+/**
+ * A line ending in one of these goes on to the next: `x =`, `a +`, `f(`, `=>`, `cond ?`, `a >`.
+ * Not a bare `!` or `>`: in TypeScript they close `m.get(k)!` and `Array<string>`, which end a line.
+ */
+const CONTINUES_AFTER = /(?:[-+*/%=&|^?:,.([{<]|=>|\s>)\s*$/;
+/** A line starting with one of these continues the one before: `.join(',')`, `+ ')'`, `?? x`. */
+const CONTINUES_BEFORE = /^\s*[-+*/%=&|^?:,.)\]}]/;
+
+/**
+ * `expressionEnd`, which stops at a bracket or a comma, also stopped where the statement ends at
+ * depth zero: a `;`, or a line break in code written without semicolons — unless the line breaks
+ * mid-expression (it ends in an operator, or the next starts with one). A template literal's text
+ * is one token, line breaks and all.
+ */
+function statementEnd(masked: string, from: number): number {
+  const end = expressionEnd(masked, from);
+  const open: string[] = []; // brackets and template texts this scan is inside
+  for (let i = from; i < end; i++) {
+    const c = masked[i]!;
+    if (open.at(-1) === '`') {
+      if (c === '`') open.pop();
+      else if (c === '$' && masked[i + 1] === '{') open.push('${'), i++;
+      continue;
+    }
+    if (c === '`') open.push('`');
+    else if (c === '(' || c === '[' || c === '{') open.push(c);
+    else if (c === ')' || c === ']' || c === '}') open.pop();
+    else if (open.length === 0 && c === ';') return i;
+    else if (open.length === 0 && c === '\n') {
+      const before = masked.slice(masked.lastIndexOf('\n', i - 1) + 1, i);
+      const next = masked.slice(i + 1).match(/^\s*([^\n]*)/)?.[1] ?? '';
+      if (before.trim() !== '' && !CONTINUES_AFTER.test(before) && !CONTINUES_BEFORE.test(next)) return i;
+    }
+  }
+  return end;
+}
+
+/** The `{…}` block that holds `at`, as `[open, close]`; the whole file when it is top level. */
+function enclosingBlock(masked: string, at: number): [number, number] {
+  for (let depth = 0, i = at - 1; i >= 0; i--) {
+    const c = masked[i];
+    if (c === '}') depth++;
+    else if (c === '{' && depth-- === 0) return [i, matchDelim(masked, i, '{', '}')];
+  }
+  return [-1, masked.length];
+}
+
+/**
+ * Parameter lists — `function f(a, b) {`, `(a, b) => …`, `a => …` — and the body each one scopes:
+ * a block, or an arrow's expression up to its statement's end.
+ */
+const PARAMETER_LIST = /\(([^()]*)\)\s*(?::[^={;]*)?(=>|\{)|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=>/g;
+
+/** Is `name` a parameter of a function between `from` and `use` whose body holds `use`? */
+function shadowed(masked: string, name: string, from: number, use: number): boolean {
+  const word = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}(?![\\w$])`);
+  PARAMETER_LIST.lastIndex = from;
+  for (let m: RegExpExecArray | null; (m = PARAMETER_LIST.exec(masked)) && m.index < use; ) {
+    if (!word.test(m[1] ?? m[3] ?? '')) continue;
+    if (m[1] !== undefined && /\b(?:if|for|while|switch)\s*$/.test(masked.slice(Math.max(0, m.index - 8), m.index))) continue; // a condition, not parameters
+    let body = m.index + m[0].length;
+    if (m[2] === '{') body -= 1;
+    else while (/\s/.test(masked[body] ?? '')) body++;
+    const close = masked[body] === '{' ? matchDelim(masked, body, '{', '}') : statementEnd(masked, body);
+    if (body <= use && use < close) return true;
+  }
+  return false;
+}
+
+/**
+ * What a name used at `use` stands for: the nearest `const`/`let`/`var` before the use whose
+ * block holds it, its initializer up to the end of its statement — or, failing one, a
+ * `function NAME(…) { … }` body in scope (hoisted, so it may come after). Null for a parameter,
+ * an import, a global, or a name a parameter list in between shadows.
+ */
+function definitionOf(masked: string, name: string, use: number): [number, number] | null {
+  const literal = name.replace(/[$.*+?^()[\]{}|\\]/g, '\\$&');
+  const inScope = (at: number): boolean => {
+    const [, close] = enclosingBlock(masked, at);
+    return use < close && !shadowed(masked, name, at, use);
+  };
+  const decl = new RegExp(`(?<![\\w$])(?:const|let|var)\\s+${literal}(?![\\w$])\\s*(?::[^=;]*)?=(?!=)`, 'g');
+  let found: [number, number] | null = null;
+  for (let m: RegExpExecArray | null; (m = decl.exec(masked)) && m.index < use; ) {
+    const at = m.index + m[0].length;
+    if (inScope(m.index)) found = [at, statementEnd(masked, at)];
+  }
+  if (found) return found;
+  const fn = new RegExp(`(?<![\\w$])function\\s*\\*?\\s*${literal}\\s*\\(`, 'g');
+  for (let m: RegExpExecArray | null; (m = fn.exec(masked)); ) {
+    if (!inScope(m.index)) continue;
+    const params = matchDelim(masked, m.index + m[0].length - 1, '(', ')');
+    const open = params < 0 ? -1 : masked.indexOf('{', params);
+    const close = open < 0 ? -1 : matchDelim(masked, open, '{', '}');
+    if (close >= 0) return [open, close];
+  }
+  return null;
+}
+
+/** Does this range build placeholders — itself, or through a name it uses, `NAME_HOPS` deep? */
+function buildsPlaceholders(masked: string, stripped: string, from: number, to: number, seen: Set<number>, hops: number): boolean {
+  if (holdsPlaceholder(masked, stripped, from, to)) return true;
+  if (hops === 0) return false;
+  for (const m of masked.slice(from, to).matchAll(NAME)) {
+    const def = definitionOf(masked, m[0], from + m.index);
+    if (!def || seen.has(def[0])) continue;
+    seen.add(def[0]);
+    if (buildsPlaceholders(masked, stripped, ...def, seen, hops - 1)) return true;
+  }
+  return false;
+}
+
+/**
+ * Where a concatenated list ends: the string literal that closes it (`')'`, `") AND x = "`) at
+ * depth zero — not the end of the statement, whose later `'?'` binds one fixed value.
+ */
+function concatenatedListEnd(masked: string, stripped: string, from: number, to: number): number {
+  let depth = 0;
+  for (let i = from; i < to; i++) {
+    const c = masked[i]!;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === "'" || c === '"' || c === '`') {
+      const close = masked.indexOf(c, i + 1);
+      if (close < 0) return to;
+      if (depth === 0 && /^\s*\)/.test(stripped.slice(i + 1, close))) return i;
+      i = close;
+    }
+  }
+  return to;
+}
+
+/**
+ * R12 — module code never builds `IN (?, ?, …)` one placeholder per value.
+ *
+ * A Durable Object refuses a statement binding over 100 parameters, so
+ * `IN (${ids.map(() => '?').join(', ')})` passes every fixture that has a handful of rows and
+ * fails the first hosted call whose list outgrew it — an adopter's 217-line proposal did, while
+ * every local suite stayed green. The list is ONE JSON parameter instead: `IN ${list.sql}` with
+ * `list = inList(values)` from `@substrat-run/contracts`, which reads it back with `json_each`.
+ *
+ * Fires where `IN (` (or `NOT IN (`) is followed by code: a template's `${` with nothing but
+ * placeholders before it (`IN (${…})`, `IN (?, ${…})`, `IN (?${',?'.repeat(n - 1)})`), or a string ending in
+ * `IN (` that a `+` continues. The masked copy proves each is real: the `${` or the closing quote
+ * stands there, where one inside another string is blank. It fires when that code holds a placeholder literal
+ * (`'?'`, `"?"`, `'?, '`, `',?'`, the numbered `` `?${i + 1}` ``) or uses a name — a `const`, or a
+ * `function` in the same file — that does, up to `NAME_HOPS` names deep. A name resolves as the
+ * code would: to the nearest declaration before the use whose block holds it, never to one a
+ * parameter list in between shadows. A statement ends at its `;`, or at a line break that does not
+ * continue the expression; a concatenated list ends at the literal that closes it (`')'`).
+ *
+ * Not fired: `VALUES (${…})`, whose width is the table's and fixed; `IN ${list.sql}`; a written-out
+ * `IN (?, ?)`; a subquery `IN (SELECT … ${…})`; code with no placeholder literal in reach (a constant
+ * list of SQL literals binds nothing); a ternary or `?.` / `??`, whose `?` is code, not a string.
+ *
+ * **Known blind spots**, stated so a clean run is not read as proof: a placeholder built by a
+ * helper IMPORTED from another file; a chain of names deeper than `NAME_HOPS`; a list assembled by
+ * mutation (`sql += '?, '` in a loop, `parts.push('?')`) rather than one expression; `IN (` and the
+ * code joined by anything but `${` or `+` (`.concat`, an array `join` of SQL pieces). Following a
+ * name is a heuristic read from the text, not a parse, and its remaining misreads — a `for` loop
+ * variable, a parameter list holding parentheses (`(a = f(x)) =>`), destructuring (`const { Q } =`,
+ * `const [Q] =`), `let Q;` with no initializer, a nested `function Q`, a return type such as
+ * `Promise<{ … }>` whose `{` reads as a body, a `let` reassigned later — can make it fire only when
+ * a placeholder constant of the same name exists in an enclosing scope; the allow block covers
+ * them. `guardSqlLimits`
+ * is the run-time check behind all of them on the node adapter. A list whose length is fixed and
+ * short sits in a `boundary-lint-allow R12` … `boundary-lint-end R12` block, where a reviewer reads why.
+ */
+function checkPlaceholderList(rel: string, source: string, out: Violation[]): void {
+  IN_LIST_OPEN.lastIndex = 0;
+  if (!IN_LIST_OPEN.test(source)) return;
+  const masked = maskSource(source);
+  const stripped = maskSource(source, { literals: false });
+  let allowed: Set<number> | undefined;
+
+  IN_LIST_OPEN.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = IN_LIST_OPEN.exec(stripped)); ) {
+    let from: number;
+    let to: number;
+    if (m[1] === undefined) {
+      const open = m.index + m[0].length - 1; // the `{` of `${`
+      if (masked.slice(open - 1, open + 1) !== '${') continue; // not a template's interpolation
+      to = matchDelim(masked, open, '{', '}');
+      if (to < 0) continue;
+      from = open + 1;
+    } else {
+      const quote = m.index + m[0].lastIndexOf(m[1]);
+      if (masked[quote] !== m[1]) continue; // the literal must close here
+      from = m.index + m[0].length; // past the `+`
+      to = concatenatedListEnd(masked, stripped, from, statementEnd(masked, from));
+    }
+    if (!buildsPlaceholders(masked, stripped, from, to, new Set(), NAME_HOPS)) continue;
+    const line = lineAt(source, m.index);
+    allowed ??= allowedLines(source.split('\n'), stripped.split('\n'), 'R12');
+    if (allowed.has(line)) continue;
+    out.push({
+      file: rel,
+      line,
+      rule: 'R12',
+      message:
+        `parameter list — one '?' per value, and a Durable Object refuses the 101st. Bind the ` +
+        `list as one parameter: 'IN \${list.sql}' with 'list = inList(values)' from ` +
+        `@substrat-run/contracts (a fixed, short list: boundary-lint-allow R12 … boundary-lint-end R12)`,
+    });
+  }
+}
+
 /**
  * R2's test seams (#2155 review): the packages that hand a test what module code must never hold —
  * `@substrat-run/kernel/testing` mints a `BoundOperations` over any maps, and the two kits wrap it
@@ -1221,6 +1473,7 @@ function checkModuleFile(
   checkClock(rel, source, out);
   checkEngineCatch(rel, source, out);
   checkHandlerMapCast(rel, source, out);
+  checkPlaceholderList(rel, source, out);
   if (pkg.engine) checkSelectStar(rel, source, out);
 
   for (const spec of importsOf(source)) {

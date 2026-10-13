@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { errorCodeOf, StoreError } from '@substrat-run/contracts';
-import { callReservedStoreOperation, callScopeStore } from '../src/scope-store.js';
+import { callReservedStoreOperation, callScopeStore, scopeStoreLifecycleOf, type ScopeStoreRunner } from '../src/scope-store.js';
 
 describe('callScopeStore (#2209)', () => {
   it('sends the envelope and returns the result', async () => {
@@ -72,6 +72,110 @@ describe('callScopeStore (#2209)', () => {
   });
 });
 
+describe('scopeStoreLifecycleOf (#2213)', () => {
+  const runner = (name: string, log: string[], fail: { start?: number; stop?: boolean } = {}): ScopeStoreRunner => ({
+    kind: 'counter',
+    async start() {
+      log.push(`start ${name}`);
+      if ((fail.start ?? 0) > 0) {
+        fail.start! -= 1;
+        throw new Error(`${name} start broke`);
+      }
+    },
+    async stop() {
+      log.push(`stop ${name}`);
+      if (fail.stop) throw new Error(`${name} stop broke`);
+    },
+    async invoke() {
+      return { result: 0 };
+    },
+  });
+
+  it('a retry after a failed start starts only the runners that had not started', async () => {
+    const log: string[] = [];
+    const a = runner('A', log);
+    const b = runner('B', log, { start: 1 });
+    const life = scopeStoreLifecycleOf(new Map([['A', a], ['B', b], ['A2', a]]));
+    await expect(life.start()).rejects.toThrow(/B start broke/);
+    await life.start();
+    await life.start();
+    expect(log).toEqual(['start A', 'start B', 'start B']);
+  });
+
+  it('concurrent starts share one pass', async () => {
+    const log: string[] = [];
+    const life = scopeStoreLifecycleOf(new Map([['A', runner('A', log)]]));
+    await Promise.all([life.start(), life.start()]);
+    expect(log).toEqual(['start A']);
+  });
+
+  it('a stop that throws does not keep the others running, and its error is the one rethrown', async () => {
+    const log: string[] = [];
+    const life = scopeStoreLifecycleOf(
+      new Map([
+        ['A', runner('A', log, { stop: true })],
+        ['B', runner('B', log)],
+      ]),
+    );
+    await life.start();
+    await expect(life.stop()).rejects.toThrow(/A stop broke/);
+    expect(log).toEqual(['start A', 'start B', 'stop A', 'stop B']);
+  });
+});
+
+describe('scopeStoreLifecycleOf, stopping (#2266)', () => {
+  const held = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    return { gate, release };
+  };
+
+  it('a stop during a start in flight waits for it, and no runner starts after the stops', async () => {
+    const log: string[] = [];
+    const a = held();
+    const runner = (name: string, gate?: Promise<void>): ScopeStoreRunner => ({
+      kind: 'counter',
+      async start() {
+        log.push(`start ${name}`);
+        await gate;
+      },
+      async stop() {
+        log.push(`stop ${name}`);
+      },
+      async invoke() {
+        return { result: 0 };
+      },
+    });
+    const life = scopeStoreLifecycleOf(new Map([['A', runner('A', a.gate)], ['B', runner('B')]]));
+    const starting = life.start();
+    const stopping = life.stop();
+    a.release();
+    await expect(starting).rejects.toThrow(/stopping/);
+    await stopping;
+    expect(log).toEqual(['start A', 'stop A', 'stop B']);
+  });
+
+  it('several failed stops are all reported', async () => {
+    const failing = (name: string): ScopeStoreRunner => ({
+      kind: 'counter',
+      async start() {},
+      async stop() {
+        throw new Error(`${name} stop broke`);
+      },
+      async invoke() {
+        return { result: 0 };
+      },
+    });
+    const life = scopeStoreLifecycleOf(new Map([['A', failing('A')], ['B', failing('B')]]));
+    const err = await life.stop().then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors.map((e: Error) => e.message)).toEqual(['A stop broke', 'B stop broke']);
+  });
+});
+
 describe('callReservedStoreOperation (#2207)', () => {
   it('parses a size', async () => {
     let sent: unknown;
@@ -140,5 +244,13 @@ describe('callReservedStoreOperation (#2207)', () => {
     expect(imported).toEqual({ tables: 1 });
     const wiped = await callReservedStoreOperation(async () => ({ result: {} }), 'substrat.wipe');
     expect(wiped).toEqual({});
+  });
+});
+
+describe('callReservedStoreOperation returns the parsed result type (#2239)', () => {
+  it('a size read is typed as its schema, not unknown', async () => {
+    const size = callReservedStoreOperation(async () => ({ result: { bytes: 4 } }), 'substrat.size');
+    expectTypeOf(size).resolves.toEqualTypeOf<{ bytes: number }>();
+    expect(await size).toEqual({ bytes: 4 });
   });
 });

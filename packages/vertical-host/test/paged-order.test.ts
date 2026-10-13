@@ -157,7 +157,7 @@ describe('a declared order, served through every door (#2001)', () => {
       let cursor: string | null | undefined;
       for (let guard = 0; cursor !== null && guard < 10; guard++) {
         const body = await rpc('tools/call', { name: 'list_newest', arguments: { limit: 2, ...(cursor ? { cursor } : {}) } });
-        const page = body.result.structuredContent as { entries: Row[]; nextCursor: string | null };
+        const page = JSON.parse(body.result.content[0].text) as { entries: Row[]; nextCursor: string | null };
         seen.push(...numbersOf(page.entries));
         cursor = page.nextCursor;
       }
@@ -166,7 +166,7 @@ describe('a declared order, served through every door (#2001)', () => {
 
     it('lets an explicit order override it', async () => {
       const body = await rpc('tools/call', { name: 'list_newest', arguments: { limit: 2, order: 'asc' } });
-      expect(numbersOf(body.result.structuredContent.entries)).toEqual(['1001', '1002']);
+      expect(numbersOf(JSON.parse(body.result.content[0].text).entries)).toEqual(['1001', '1002']);
     });
   });
 });

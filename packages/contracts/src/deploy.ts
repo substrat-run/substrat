@@ -359,6 +359,42 @@ export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 export const STORE_KINDS: readonly StoreKindRegistration[] = [];
 
 /**
+ * Whether a version's stored manifest (`HostAdmin.versionManifest`) declares a scope
+ * store (#2242). `null` is a version pushed before manifests were kept, which is before
+ * scope stores, so it declares none. `undefined` is returned when the JSON cannot be
+ * read as a stored manifest: the caller cannot tell, and must not read that as "none".
+ */
+export function scopeStoresDeclaredIn(manifestJson: string | null): boolean | undefined {
+  if (manifestJson === null) return false;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(manifestJson);
+  } catch {
+    return undefined;
+  }
+  const parsed = storedDeployManifest.safeParse(raw);
+  return parsed.success ? parsed.data.scopeStores.length > 0 : undefined;
+}
+
+/**
+ * Whether the deployment running a version may hold a scope store — the gate subject
+ * erasure fails closed on (#2242). A push declaring an unregistered kind is refused, so
+ * with no kind in `kinds` nothing can hold one: false, and erasure proceeds as it did
+ * before stores existed. Otherwise true when the manifest declares a store, or when it
+ * is unknown (`undefined`: no version can be named, or it could not be read) or cannot
+ * be parsed. False for a manifest that declares none, and for `null`, a version pushed
+ * before manifests (and so stores) existed.
+ */
+export function mayHoldScopeStores(
+  manifestJson: string | null | undefined,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+): boolean {
+  if (kinds.length === 0) return false;
+  if (manifestJson === undefined) return true;
+  return scopeStoresDeclaredIn(manifestJson) ?? true;
+}
+
+/**
  * A platform-run object, one per scope (#2207). The builder names the binding and the
  * kind. The kind has no default. The platform injects `SUBSTRAT_STORE_<BINDING>` at
  * push; the vertical never writes that binding.
@@ -394,10 +430,11 @@ export const storeRequest = z.object({
 });
 export type StoreRequest = z.infer<typeof storeRequest>;
 
-/** What a store answers when it refuses. `code` is the kind's, `status` is HTTP. */
+/** What a store answers when it refuses. `code` is the kind's, `status` is an HTTP
+ *  error status: anything outside 400–599 is not a refusal, and not this envelope. */
 export const storeErrorEnvelope = z.object({
   code: z.string().min(1),
-  status: z.number().int(),
+  status: z.number().int().min(400).max(599),
   body: z.unknown().optional(),
 });
 
@@ -427,7 +464,21 @@ export const storeImportInput = z.object({ tables: z.array(scopeDumpTable) });
 export const storeImportResult = z.object({ tables: z.number().int().nonnegative() });
 export type StoreImportResult = z.infer<typeof storeImportResult>;
 
-export const storeWipeResult = z.object({}).strict();
+export const storeWipeResult = z.object({});
+export type StoreWipeResult = z.infer<typeof storeWipeResult>;
+
+/**
+ * What each reserved operation answers, parsed (#2239). A plain map of the result
+ * types, so a package that names one (the kernel's `callReservedStoreOperation`)
+ * publishes no zod type of its own.
+ */
+export interface ReservedStoreResults {
+  'substrat.export': StoreExportResult;
+  'substrat.import': StoreImportResult;
+  'substrat.size': StoreSizeResult;
+  'substrat.wipe': StoreWipeResult;
+  'substrat.erase': StoreEraseResult;
+}
 
 /** One binding's storage, as `scopeStoreSizes` reports it. */
 export const scopeStoreSize = z.object({
@@ -548,7 +599,7 @@ function isPerTenantRuntimeName(name: string, binding: string): boolean {
  *
  * A static wrangler binding is compared to the name that lands on the worker,
  * not to the declaration. An own store's durable-object binding IS that store,
- * so passing it again counts the name twice; push omits those names. A
+ * so passing it again counts the name twice; {@link storeNamesOfBindings} omits it. A
  * per-tenant store is injected as `BINDING__<tenant>`, and a scope store as
  * `SUBSTRAT_STORE_<BINDING>`. A static binding spelled `DB` or `GRAPH` is not
  * either of those.
@@ -583,15 +634,20 @@ export function assertStoreBindingsDistinct(input: {
     }
     claim(store.binding, 'a scope store');
   }
-  const perTenant = [...(input.tenantStores ?? []), ...(input.blobStores ?? [])];
   for (const name of input.bindingNames ?? []) {
-    const own = (input.own ?? []).find((store) => store.binding === name);
-    if (own) {
+    if ((input.own ?? []).some((store) => store.binding === name)) {
       throw substratError(
         'forbidden',
         `deploy refused: binding '${name}' is declared as an own store and as a static binding. One name is one store.`,
       );
     }
+  }
+  // Every name that lands on the worker, an own store's included, is compared with the
+  // runtime names the platform injects: an own DO binding called `DB__<tenant>` would be a
+  // second binding of that name beside the per-tenant store `DB`.
+  const perTenant = [...(input.tenantStores ?? []), ...(input.blobStores ?? [])];
+  const landed = [...(input.own ?? []).map((store) => store.binding), ...(input.bindingNames ?? [])];
+  for (const name of landed) {
     const tenant = perTenant.find((store) => isPerTenantRuntimeName(name, store.binding));
     if (tenant) {
       throw substratError(
@@ -607,6 +663,23 @@ export function assertStoreBindingsDistinct(input: {
       );
     }
   }
+}
+
+/**
+ * The two name lists {@link assertStoreBindingsDistinct} reads off a deploy's static
+ * bindings (#2224). An own durable-object binding is an own store and is compared as
+ * written; every other static binding is compared by the name that lands on the worker.
+ * Push and the control plane both derive them here, from the `bindings` the manifest
+ * carries, so the two checks cannot drift apart.
+ */
+export function storeNamesOfBindings(
+  bindings: readonly { type: string; name: string; script_name?: string }[],
+): { own: { binding: string }[]; bindingNames: string[] } {
+  const isOwnStore = (b: (typeof bindings)[number]) => b.type === 'durable_object_namespace' && !b.script_name;
+  return {
+    own: bindings.filter(isOwnStore).map((b) => ({ binding: b.name })),
+    bindingNames: bindings.filter((b) => !isOwnStore(b)).map((b) => b.name),
+  };
 }
 
 /**
