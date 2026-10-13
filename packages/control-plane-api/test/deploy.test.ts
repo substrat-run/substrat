@@ -182,6 +182,16 @@ describe('assertSandboxContract', () => {
       { ...manifest([{ ...own, name: 'GRAPH' }]), scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] },
       /binding 'GRAPH' is declared as an own store and as a scope store/,
     );
+    // An own DO binding also lands under its own name, so it must not take a store's runtime name.
+    const tenant = '01JABCDEFGHJKMNPQRSTVWXYZ0';
+    refused(
+      { ...manifest([{ ...own, name: `DB__${tenant}` }]), tenantStores: [{ binding: 'DB', kind: 'relational' }] },
+      new RegExp(`binding 'DB__${tenant}' is the runtime name of per-tenant store 'DB'`),
+    );
+    refused(
+      { ...manifest([{ ...own, name: `ATTACHMENTS__${tenant}` }]), blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] },
+      new RegExp(`binding 'ATTACHMENTS__${tenant}' is the runtime name of per-tenant store 'ATTACHMENTS'`),
+    );
     // The twin: an own DO binding of another name is admitted beside the per-tenant store.
     ok([{ ...own, name: 'SCOPE' }]);
     expect(() =>

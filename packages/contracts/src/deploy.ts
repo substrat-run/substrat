@@ -555,15 +555,20 @@ export function assertStoreBindingsDistinct(input: {
     }
     claim(store.binding, 'a scope store');
   }
-  const perTenant = [...(input.tenantStores ?? []), ...(input.blobStores ?? [])];
   for (const name of input.bindingNames ?? []) {
-    const own = (input.own ?? []).find((store) => store.binding === name);
-    if (own) {
+    if ((input.own ?? []).some((store) => store.binding === name)) {
       throw substratError(
         'forbidden',
         `deploy refused: binding '${name}' is declared as an own store and as a static binding. One name is one store.`,
       );
     }
+  }
+  // Every name that lands on the worker, an own store's included, is compared with the
+  // runtime names the platform injects: an own DO binding called `DB__<tenant>` would be a
+  // second binding of that name beside the per-tenant store `DB`.
+  const perTenant = [...(input.tenantStores ?? []), ...(input.blobStores ?? [])];
+  const landed = [...(input.own ?? []).map((store) => store.binding), ...(input.bindingNames ?? [])];
+  for (const name of landed) {
     const tenant = perTenant.find((store) => isPerTenantRuntimeName(name, store.binding));
     if (tenant) {
       throw substratError(
