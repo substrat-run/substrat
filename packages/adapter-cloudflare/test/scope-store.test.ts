@@ -195,7 +195,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
   // Not gated on the scope's lifecycle, as the CP-full host and the table export are not: a reap
   // backs up and wipes an archived scope, and a snapshot or a full pull may copy a suspended one.
   it.each(['suspended', 'archived'] as const)(
-    'a host with no control plane exports, imports and wipes the store of a %s scope',
+    'a host with no control plane exports, imports and wipes the store of a scope that is %s',
     async (status) => {
       const log: string[] = [];
       const host = new CloudflareScopeHost({
