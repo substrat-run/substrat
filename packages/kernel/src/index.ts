@@ -84,6 +84,7 @@ export {
   callReservedStoreOperation,
   callScopeStore,
   scopeStoreRunnersOf,
+  type ReservedStoreResult,
   type ScopeStoreAddress,
   type ScopeStoreHostOptions,
   type ScopeStoreRunner,

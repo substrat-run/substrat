@@ -191,8 +191,6 @@ import {
   type ScopeDump,
   type ScopeDumpTable,
   type ScopeId,
-  storeEraseResult,
-  storeSizeResult,
   type ReservedStoreOperation,
   subjectShredReceipt,
   type SubjectShredReceipt,
@@ -735,6 +733,7 @@ import {
   type ConsumerDelivery,
   type StoreStub,
   callReservedStoreOperation,
+  type ReservedStoreResult,
   callScopeStore,
   scopeStoreRunnersOf,
   type ScopeStoreHostOptions,
@@ -4230,11 +4229,11 @@ export class SqliteScopeHost implements ScopeHost {
    * One reserved call on a declared binding. The vertical's stub never reaches
    * this; `callReservedStoreOperation` refuses a name that is not reserved.
    */
-  private async invokeReservedStore(
+  private async invokeReservedStore<O extends ReservedStoreOperation>(
     address: { tenantId: TenantId; vertical: string; scopeId: ScopeId; binding: string },
-    operation: ReservedStoreOperation,
+    operation: O,
     input?: unknown,
-  ): Promise<unknown> {
+  ): Promise<ReservedStoreResult<O>> {
     const runner = this.scopeStoreRunners.get(address.binding);
     if (!runner) throw substratError('not_found', `no scope store is bound for '${address.binding}'`);
     await this.ensureScopeStoresStarted();
@@ -4255,9 +4254,7 @@ export class SqliteScopeHost implements ScopeHost {
     const vertical = this.scopeStoreVerticalOf(scopeId);
     const sizes: { binding: string; bytes: number }[] = [];
     for (const binding of bindings) {
-      const { bytes } = storeSizeResult.parse(
-        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.size'),
-      );
+      const { bytes } = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.size');
       sizes.push({ binding, bytes });
     }
     return sizes;
@@ -4288,12 +4285,10 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return [];
     const erasures: { binding: string; erased: number }[] = [];
     for (const binding of bindings) {
-      const { erased } = storeEraseResult.parse(
-        await this.invokeReservedStore(
-          { tenantId, vertical, scopeId, binding },
-          'substrat.erase',
-          { subjectId },
-        ),
+      const { erased } = await this.invokeReservedStore(
+        { tenantId, vertical, scopeId, binding },
+        'substrat.erase',
+        { subjectId },
       );
       erasures.push({ binding, erased });
     }

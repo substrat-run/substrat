@@ -463,7 +463,21 @@ export const storeImportInput = z.object({ tables: z.array(scopeDumpTable) });
 export const storeImportResult = z.object({ tables: z.number().int().nonnegative() });
 export type StoreImportResult = z.infer<typeof storeImportResult>;
 
-export const storeWipeResult = z.object({}).strict();
+export const storeWipeResult = z.object({});
+export type StoreWipeResult = z.infer<typeof storeWipeResult>;
+
+/**
+ * What each reserved operation answers, parsed (#2239). A plain map of the result
+ * types, so a package that names one (the kernel's `callReservedStoreOperation`)
+ * publishes no zod type of its own.
+ */
+export interface ReservedStoreResults {
+  'substrat.export': StoreExportResult;
+  'substrat.import': StoreImportResult;
+  'substrat.size': StoreSizeResult;
+  'substrat.wipe': StoreWipeResult;
+  'substrat.erase': StoreEraseResult;
+}
 
 /** One binding's storage, as `scopeStoreSizes` reports it. */
 export const scopeStoreSize = z.object({

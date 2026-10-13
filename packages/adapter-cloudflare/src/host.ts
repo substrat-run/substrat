@@ -499,8 +499,8 @@ import {
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, storeEraseResult, storeSizeResult, type ReservedStoreOperation } from '@substrat-run/contracts';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, type ReservedStoreResult, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreRunner, type StoreStub } from '@substrat-run/kernel';
+import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -2494,6 +2494,25 @@ function ambientAttachmentBucket(tenantId: string): unknown {
 interface ScopeStoreNamespace {
   idFromName(name: string): DurableObjectId;
   get(id: DurableObjectId): { fetch(input: RequestInfo, init?: RequestInit): Promise<Response> };
+}
+
+/**
+ * One store call over an object's fetch, for the vertical's door and the platform's reserved
+ * calls alike. A body that is not JSON is the store's failure, answered as a bad envelope.
+ */
+function storeObjectSend(object: ReturnType<ScopeStoreNamespace['get']>): (request: StoreRequest) => Promise<unknown> {
+  return async (request) => {
+    const response = await object.fetch('https://scope-store/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    try {
+      return await response.json();
+    } catch {
+      throw new StoreError({ code: 'bad_envelope', status: 502 });
+    }
+  };
 }
 
 function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
@@ -4702,18 +4721,7 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId,
       subjectKind: 'principal',
       invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
-        callScopeStore(async (request) => {
-          const response = await object.fetch('https://scope-store/', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(request),
-          });
-          try {
-            return await response.json();
-          } catch {
-            throw new StoreError({ code: 'bad_envelope', status: 502 });
-          }
-        }, operation, input, ...extra),
+        callScopeStore(storeObjectSend(object), operation, input, ...extra),
     };
   }
 
@@ -4774,11 +4782,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * One reserved call. A configured runner is preferred; otherwise the ambient
    * namespace. `callReservedStoreOperation` refuses a name that is not reserved.
    */
-  private async invokeReservedStore(
+  private async invokeReservedStore<O extends ReservedStoreOperation>(
     address: { tenantId: TenantId; vertical: string; scopeId: ScopeId; binding: string },
-    operation: ReservedStoreOperation,
+    operation: O,
     input?: unknown,
-  ): Promise<unknown> {
+  ): Promise<ReservedStoreResult<O>> {
     const runner = this.scopeStoreRunners.get(address.binding);
     if (runner) {
       await this.ensureScopeStoresStarted();
@@ -4793,21 +4801,16 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     const objectName = scopeStoreObjectName(address.tenantId, address.vertical, address.scopeId, address.binding);
     const object = bound.get(bound.idFromName(objectName));
-    return callReservedStoreOperation(async (request) => {
-      const response = await object.fetch('https://scope-store/', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(request),
-      });
-      return response.json();
-    }, operation, input);
+    return callReservedStoreOperation(storeObjectSend(object), operation, input);
   }
 
   /**
    * Each declared binding's `substrat.size`. No bindings means an empty list,
    * and that answer does not read the directory: a host with no store, including
-   * one with no control plane, has nothing to size. A reaped scope is refused
-   * before any object is addressed, once a binding exists.
+   * one with no control plane, has nothing to size. Once a binding exists, the
+   * scope is gated before any object is addressed: by the directory with a control
+   * plane, and without one by the door's own gate (`assertLive`: the scope's
+   * admission of the tenant and its delivered lifecycle), as `getScopeStore` is.
    */
   private async readScopeStoreSizes(
     tenantId: TenantId,
@@ -4817,11 +4820,10 @@ export class CloudflareScopeHost implements ScopeHost {
     if (bindings.length === 0) return [];
     if (!this.cpLess) await this.scopeRecordForRead(tenantId, scopeId);
     const vertical = await this.scopeStoreVerticalOf(tenantId, scopeId);
+    if (this.cpLess) await this.assertLive(tenantId, scopeId);
     const sizes: { binding: string; bytes: number }[] = [];
     for (const binding of bindings) {
-      const { bytes } = storeSizeResult.parse(
-        await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.size'),
-      );
+      const { bytes } = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.size');
       sizes.push({ binding, bytes });
     }
     return sizes;
@@ -4843,12 +4845,10 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!vertical) return [];
     const erasures: { binding: string; erased: number }[] = [];
     for (const binding of bindings) {
-      const { erased } = storeEraseResult.parse(
-        await this.invokeReservedStore(
-          { tenantId, vertical, scopeId, binding },
-          'substrat.erase',
-          { subjectId },
-        ),
+      const { erased } = await this.invokeReservedStore(
+        { tenantId, vertical, scopeId, binding },
+        'substrat.erase',
+        { subjectId },
       );
       erasures.push({ binding, erased });
     }

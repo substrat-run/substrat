@@ -13,6 +13,11 @@ import {
   scopeStoreBindingName,
   storeKindRegistration,
   tenantStoreBindingName,
+  storeEraseResult,
+  storeExportResult,
+  storeImportResult,
+  storeSizeResult,
+  storeWipeResult,
 } from '../src/index.js';
 
 /** A tenant id the per-tenant runtime name can be built from. */
@@ -200,5 +205,15 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
     expect(mayHoldScopeStores(JSON.stringify({ version: 1 }), [graph])).toBe(true);
     expect(mayHoldScopeStores(manifest(), [graph])).toBe(false);
     expect(mayHoldScopeStores(null, [graph])).toBe(false);
+  });
+});
+
+describe('reserved store results are additive (#2239)', () => {
+  it('a later field on any reserved result still parses', () => {
+    expect(storeWipeResult.safeParse({ ok: true }).success).toBe(true);
+    expect(storeSizeResult.safeParse({ bytes: 1, kind: 'graph' }).success).toBe(true);
+    expect(storeEraseResult.safeParse({ erased: 0, note: 'x' }).success).toBe(true);
+    expect(storeImportResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
+    expect(storeExportResult.safeParse({ tables: [], at: 'now' }).success).toBe(true);
   });
 });
