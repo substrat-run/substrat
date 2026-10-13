@@ -120,6 +120,12 @@ export interface McpTool {
   readonly takesInput: boolean;
   /** #1331: how a result is walked for field coverage, read once here. Absent when the output names no fields. */
   readonly outputWalk?: OutputWalk;
+  /**
+   * The top-level output columns a caller may select with `fields`. Absent when the tool
+   * is not a read, or when its output names no fields (a scalar, a union), since a
+   * projection needs a list to be chosen from.
+   */
+  readonly selectable?: readonly string[];
 }
 
 /**
@@ -212,6 +218,49 @@ function pageFields(sortKey: string | undefined, order: 'asc' | 'desc' | undefin
 }
 
 /**
+ * The `fields` argument, spelled into a read's own schema.
+ *
+ * A result is the whole entry, and an entry can be wide: every column of every row of a
+ * page is tokens the model pays for whether or not it reads them. The names are an enum
+ * of what the declared output carries, so the model chooses from the real columns instead
+ * of guessing one and getting an error — and an unknown name is refused, not ignored,
+ * because a typo silently returning `{}` rows reads as "the data is empty".
+ */
+function fieldsParam(names: readonly string[]): Record<string, unknown> {
+  return {
+    type: 'array',
+    items: { type: 'string', enum: [...names] },
+    minItems: 1,
+    uniqueItems: true,
+    description:
+      'Return only these columns of each entry, to keep the answer small. Omit for every column. ' +
+      'Applies to the entries of a page; the cursor and paging fields are always returned.',
+  };
+}
+
+/**
+ * Keep only `fields` of the result's entries, in the order asked.
+ *
+ * Runs on the EXTERNAL result (after `externalResult` has taken out what must not leave),
+ * so it can only remove: nothing it does can put a column back.
+ */
+function project(value: unknown, walk: OutputWalk | undefined, fields: readonly string[]): unknown {
+  const pick = (entry: unknown): unknown => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    const out: Record<string, unknown> = {};
+    for (const f of fields) if (Object.hasOwn(entry, f)) out[f] = (entry as Record<string, unknown>)[f];
+    return out;
+  };
+  if (!walk?.list) return pick(value);
+  if (Array.isArray(value)) return value.map(pick);
+  if (walk.paged && value !== null && typeof value === 'object' && Array.isArray((value as { entries?: unknown }).entries)) {
+    const page = value as { entries: unknown[] };
+    return { ...page, entries: page.entries.map(pick) };
+  }
+  return value;
+}
+
+/**
  * Derive the tool list from a module's declared operations.
  *
  * Exported so a vertical can see what its MCP surface actually is — in a test, or in a
@@ -249,6 +298,14 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
 
     const method = op.http.method;
     const outputWalk = outputWalkOf(op.output, op.paged !== undefined);
+    // A read may be narrowed to the columns the model needs. Reads only: a mutation's
+    // answer is the confirmation of what it did, and trimming that is a surprise.
+    // A declared `fields` input wins — it is the vertical's own word and means something else.
+    const selectable =
+      method === 'GET' && !('fields' in (shape.properties ?? {}))
+        ? outputWalkOf(op.output, op.paged !== undefined, Infinity)?.fields
+        : undefined;
+    if (selectable) inputSchema['properties'] = { ...(inputSchema['properties'] as object), fields: fieldsParam(selectable) };
     tools.push({
       name,
       operation,
@@ -266,6 +323,7 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
       paged: Boolean(op.paged),
       takesInput: Boolean(op.input),
       ...(outputWalk ? { outputWalk } : {}),
+      ...(selectable ? { selectable } : {}),
     });
   }
   return tools;
@@ -373,20 +431,19 @@ const rpcError = (id: Id, code: number, message: string, data?: unknown) => ({
 /**
  * A tool result the MODEL can read.
  *
- * `structuredContent` without a declared `outputSchema` on purpose: a schema obliges the
- * server to return something matching it, and a paged read's declared `output` is the
- * ENTRY while the result is a `Page` — so publishing one would make a client's own
- * validation reject a correct answer. The text block is the compatibility half the spec
- * asks for; both carry the same value.
+ * One copy, as compact JSON. This used to send the value twice (a text block AND
+ * `structuredContent`) and pretty-print the text, so a page cost the model its size two
+ * or three times over for nothing it could read. The text block is the one every client
+ * reads, and the spec's compatibility note asks for it; `structuredContent` is optional,
+ * and without a declared `outputSchema` (which would oblige us to match it, while a paged
+ * read's declared `output` is the ENTRY and the result is a `Page`) it adds no guarantee.
+ * Indentation is for a human reading a terminal, which a tool result is not.
  */
-function toolResult(result: unknown) {
+function toolResult(result: unknown, select?: { walk: OutputWalk | undefined; fields: readonly string[] }) {
   // #2073: the egress every transport shares (`wire.ts`).
-  const value = externalResult(result);
-  const structured = value !== null && typeof value === 'object' && !Array.isArray(value);
-  return {
-    content: [{ type: 'text', text: JSON.stringify(value ?? null, null, 2) }],
-    structuredContent: structured ? (value as Record<string, unknown>) : { result: value ?? null },
-  };
+  const external = externalResult(result);
+  const value = select ? project(external, select.walk, select.fields) : external;
+  return { content: [{ type: 'text', text: JSON.stringify(value ?? null) }] };
 }
 
 /**
@@ -522,9 +579,36 @@ export function mountMcp(
     if (!tool) return rpcError(id, -32602, `Unknown tool: ${name ?? '(none)'}`);
 
     const rawArgs = params?.['arguments'];
-    const args = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? (rawArgs as Record<string, unknown>)
-      : {};
+    const { fields: askedFields, ...args } =
+      rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+        ? (rawArgs as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+
+    // `fields` is the MCP surface's own argument, taken out before the operation sees an
+    // input: its schema is the vertical's, and a strict one would refuse a key it never
+    // declared. A tool that does not offer it leaves the argument alone, as before.
+    let select: { walk: OutputWalk | undefined; fields: readonly string[] } | undefined;
+    if (tool.selectable) {
+      if (askedFields !== undefined) {
+        const known = new Set(tool.selectable);
+        const bad = Array.isArray(askedFields)
+          ? askedFields.filter((f) => typeof f !== 'string' || !known.has(f))
+          : [askedFields];
+        if (!Array.isArray(askedFields) || askedFields.length === 0 || bad.length > 0) {
+          // In-band, before anything runs: the agent reads the valid names and asks again.
+          return rpcResult(
+            id,
+            toolError(
+              `Invalid "fields": expected a non-empty list of column names from [${tool.selectable.join(', ')}]` +
+                (bad.length > 0 && Array.isArray(askedFields) ? `; unknown: ${bad.map(String).join(', ')}` : ''),
+            ),
+          );
+        }
+        select = { walk: tool.outputWalk, fields: askedFields as string[] };
+      }
+    } else if (askedFields !== undefined) {
+      (args as Record<string, unknown>)['fields'] = askedFields;
+    }
 
     // #1746: a batch may call several tools; the line names the last one, which is the
     // common case of one call per request stated precisely rather than a list. Everything
@@ -557,7 +641,7 @@ export function mountMcp(
         const observed = observeOutputFields(result, tool.outputWalk);
         if (observed) record.outputFields = observed;
       }
-      return rpcResult(id, toolResult(result));
+      return rpcResult(id, toolResult(result, select));
     } catch (err) {
       // #1331: a failed call reports no fields, including one whose serialisation threw
       // after the walk (a `BigInt` in the result), since no response carried them.

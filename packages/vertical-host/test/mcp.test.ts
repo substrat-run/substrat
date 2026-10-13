@@ -186,19 +186,23 @@ describe('calling a tool', () => {
     });
     expect(calls).toEqual([{ name: 'todo/create-list', input: { title: 'Groceries' } }]);
     expect(body.result.isError).toBeUndefined();
-    expect(body.result.structuredContent).toEqual({ ok: true });
+    expect(JSON.parse(body.result.content[0].text)).toEqual({ ok: true });
   });
 
-  it('carries the result as text too, for a client that reads no structured output', async () => {
-    const { app } = harness({ invoke: () => ({ id: 'l1' }) });
+  it('carries the result once, as compact text', async () => {
+    const { app } = harness({ invoke: () => ({ id: 'l1', nested: { a: 1 } }) });
     const { body } = await rpc(app, 'tools/call', { name: 'todo_create-list', arguments: { title: 'x' } });
-    expect(JSON.parse(body.result.content[0].text)).toEqual({ id: 'l1' });
+    // Not twice (no `structuredContent` beside the text) and not indented: both were tokens
+    // the model paid for and could not use.
+    expect(body.result.structuredContent).toBeUndefined();
+    expect(body.result.content).toHaveLength(1);
+    expect(body.result.content[0].text).toBe('{"id":"l1","nested":{"a":1}}');
   });
 
-  it('wraps a non-object result, which structuredContent may not be', async () => {
+  it('answers a non-object result as it is', async () => {
     const { app } = harness({ invoke: () => [1, 2] });
     const { body } = await rpc(app, 'tools/call', { name: 'todo_my-lists', arguments: {} });
-    expect(body.result.structuredContent).toEqual({ result: [1, 2] });
+    expect(JSON.parse(body.result.content[0].text)).toEqual([1, 2]);
   });
 
   // #2073: a page's rowCursors are an in-process answer; a handler that filtered its entries
@@ -206,7 +210,7 @@ describe('calling a tool', () => {
   it("never hands the model a page's rowCursors", async () => {
     const { app } = harness({ invoke: () => ({ entries: [{ id: 'a' }], nextCursor: null, rowCursors: ['a', 'hidden'] }) });
     const { body } = await rpc(app, 'tools/call', { name: 'todo_my-lists', arguments: {} });
-    expect(body.result.structuredContent).toEqual({ entries: [{ id: 'a' }], nextCursor: null });
+    expect(JSON.parse(body.result.content[0].text)).toEqual({ entries: [{ id: 'a' }], nextCursor: null });
     expect(body.result.content[0].text).not.toContain('hidden');
   });
 
@@ -1075,5 +1079,102 @@ describe('the field walk on a tool call (#1331)', () => {
     expect(unarmed.ran).toBeGreaterThan(0);
     expect(armed.ran).toBe(unarmed.ran);
     expect(armed.record).not.toHaveProperty('outputFields');
+  });
+});
+
+describe('narrowing a read with `fields`', () => {
+  const Row = z.object({ id: z.string(), title: z.string(), body: z.string(), done: z.boolean() });
+  const ops = {
+    'note/list': {
+      summary: 'Notes',
+      output: Row,
+      paged: { sortKey: 'id' },
+      http: { method: 'GET', path: '/notes' },
+    },
+    'note/get': {
+      summary: 'One note',
+      input: z.object({ noteId: z.string() }),
+      output: Row,
+      http: { method: 'GET', path: '/notes/{noteId}' },
+    },
+    'note/create': { summary: 'New', input: z.object({ title: z.string() }), output: Row, http: { method: 'POST', path: '/notes' } },
+    'note/own-fields': {
+      summary: 'Declares its own `fields`',
+      input: z.object({ fields: z.string() }),
+      output: Row,
+      http: { method: 'GET', path: '/own' },
+    },
+  } as const;
+  const row = { id: 'n1', title: 'T', body: 'x'.repeat(50), done: false };
+
+  function mount(result: unknown) {
+    const calls: { name: string; input: unknown }[] = [];
+    const app = new Hono();
+    mountOperations(app, ops, async () => {
+      return {
+        invoke: async (name: string, input: unknown) => {
+          calls.push({ name, input });
+          return result;
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any;
+    });
+    return { app, calls };
+  }
+  const tool = (name: string) => mcpToolsOf(ops).find((t) => t.operation === name)!;
+
+  it('offers the declared columns as an enum on a read, and on nothing else', () => {
+    const props = (n: string) => (tool(n).inputSchema as { properties: Record<string, any> }).properties;
+    expect(props('note/list')['fields'].items.enum).toEqual(['id', 'title', 'body', 'done']);
+    expect(props('note/get')['fields'].items.enum).toEqual(['id', 'title', 'body', 'done']);
+    expect(props('note/create')).not.toHaveProperty('fields');
+    // The vertical's own `fields` input keeps its meaning.
+    expect(props('note/own-fields')['fields']).toEqual({ type: 'string' });
+  });
+
+  it('offers none for a read whose output names no columns', () => {
+    const props = (mcpToolsOf(operations).find((t) => t.operation === 'todo/my-lists')!.inputSchema as any).properties;
+    expect(props).not.toHaveProperty('fields');
+  });
+
+  it('keeps only the asked columns of each entry, and the page envelope', async () => {
+    const { app, calls } = mount({ entries: [row, { ...row, id: 'n2' }], nextCursor: 'c1' });
+    const { body } = await rpc(app, 'tools/call', { name: 'note_list', arguments: { fields: ['title', 'id'] } });
+    expect(JSON.parse(body.result.content[0].text)).toEqual({
+      entries: [
+        { title: 'T', id: 'n1' },
+        { title: 'T', id: 'n2' },
+      ],
+      nextCursor: 'c1',
+    });
+    // The operation never sees the MCP-only argument.
+    expect(calls[0]!.input).not.toHaveProperty('fields');
+  });
+
+  it('narrows a single entry', async () => {
+    const { app } = mount(row);
+    const { body } = await rpc(app, 'tools/call', { name: 'note_get', arguments: { noteId: 'n1', fields: ['done'] } });
+    expect(JSON.parse(body.result.content[0].text)).toEqual({ done: false });
+  });
+
+  it('returns every column when `fields` is omitted', async () => {
+    const { app } = mount(row);
+    const { body } = await rpc(app, 'tools/call', { name: 'note_get', arguments: { noteId: 'n1' } });
+    expect(JSON.parse(body.result.content[0].text)).toEqual(row);
+  });
+
+  it.each([[['nope']], [[]], ['title'], [['title', 7]]])('refuses %j in-band, and runs nothing', async (fields) => {
+    const { app, calls } = mount(row);
+    const { status, body } = await rpc(app, 'tools/call', { name: 'note_get', arguments: { noteId: 'n1', fields } });
+    expect(status).toBe(200);
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0].text).toMatch(/id, title, body, done/);
+    expect(calls).toEqual([]);
+  });
+
+  it('hands a vertical-declared `fields` input to the operation untouched', async () => {
+    const { app, calls } = mount(row);
+    await rpc(app, 'tools/call', { name: 'note_own-fields', arguments: { fields: 'abc' } });
+    expect(calls[0]!.input).toEqual({ fields: 'abc' });
   });
 });

@@ -141,7 +141,10 @@ const TRANSPORTS: Transport[] = [
         headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'w_whole', arguments: input } }),
       });
-      return { text: await res.text(), received: got.input };
+      // The result rides as a JSON string inside the envelope, so unwrap it: asserting on the
+      // escaped envelope would be asserting on quoting rather than on what the model reads.
+      const body = (await res.json()) as { result?: { content?: { text?: string }[] } };
+      return { text: body.result?.content?.[0]?.text ?? '', received: got.input };
     },
   },
   {
