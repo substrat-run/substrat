@@ -1686,6 +1686,37 @@ describe('R12 — a hand-built IN list of placeholders', () => {
     ).toEqual([]);
   });
 
+  it('a non-null `!` or a type argument closing a line is not an operator that continues it (#2260 round 3)', () => {
+    expect(
+      r12([
+        'export function n(ctx, m, k, flag) {',
+        '  const p = m.get(k)!',
+        "  const s = flag ? '?' : ''",
+        '  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${p})` + s)',
+        '}',
+        'export function o(ctx, k, flag) {',
+        '  const p = k as Array<string>',
+        "  const s = flag ? '?' : ''",
+        '  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${p})` + s)',
+        '}',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('twin: an arrow, or a spaced comparison, closing a line does continue it', () => {
+    const vs = r12([
+      'const marks = (n) =>',
+      "  Array(n).fill('?').join(',')",
+      'export const a = (ctx, ids) => ctx.sql.query(`SELECT * FROM t WHERE id IN (${marks(ids.length)})`, ids)',
+      'export function b(ctx, ids, big) {',
+      '  const p = ids.length >',
+      "    big ? ids.map(() => '?').join(',') : ''",
+      '  return ctx.sql.query(`SELECT * FROM t WHERE id IN (${p})`, ids)',
+      '}',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([3, 7]);
+  });
+
   it('twin: a statement continued on the next line is still one statement', () => {
     const vs = r12([
       'export function h(ctx, ids) {',

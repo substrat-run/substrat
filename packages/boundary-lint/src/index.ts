@@ -1246,8 +1246,11 @@ function holdsPlaceholder(masked: string, stripped: string, from: number, to: nu
   return false;
 }
 
-/** A line ending in one of these goes on to the next: `x =`, `a +`, `f(`, `=>`, `cond ?`. */
-const CONTINUES_AFTER = /[-+*/%=&|^!?:,.([{<>]\s*$/;
+/**
+ * A line ending in one of these goes on to the next: `x =`, `a +`, `f(`, `=>`, `cond ?`, `a >`.
+ * Not a bare `!` or `>`: in TypeScript they close `m.get(k)!` and `Array<string>`, which end a line.
+ */
+const CONTINUES_AFTER = /(?:[-+*/%=&|^?:,.([{<]|=>|\s>)\s*$/;
 /** A line starting with one of these continues the one before: `.join(',')`, `+ ')'`, `?? x`. */
 const CONTINUES_BEFORE = /^\s*[-+*/%=&|^?:,.)\]}]/;
 
