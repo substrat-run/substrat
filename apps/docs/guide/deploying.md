@@ -251,7 +251,20 @@ compares that receipt with the version the scope now serves, and re-runs `/inter
 on every active install that is behind — a push alone serves nothing, so it repairs nothing: a `null` receipt (a scope
 provisioned before the platform recorded one) counts as behind rather than up to date, forks and
 previews are skipped so a hook never mints a second copy of anything against somebody else's
-data, and a reconcile that fails is left unmarked and retried on the next pass. A reconcile runs
+data, and a reconcile that fails is left unmarked and retried on the next pass. Beside the receipt
+the platform records whether that reconcile finished every retirement the version declares (a key
+a shape lists in `retired`): your deployment answers how many it left open, and an install whose
+retirements did not finish counts as behind too, so the sweep runs them again. The sweep's window is
+shared: installs whose receipt is behind take most of it, installs behind on their retirements alone
+are owed a quarter (at least one slot), and a slot one class does not need goes to the other. The count needs **both** `@substrat-run/adapter-cloudflare`
+(which counts) and `@substrat-run/vertical-host` (which answers) at a release that reports it; a
+deployment built on an older one of either reports nothing, which counts as not finished for a
+version that retires a key. It also records which binding shapes links have ever bound in the
+install, so a shape whose `bind` you dropped stays guarded until its keys are retired; an install
+that has not reported them yet (an older package of either kind, or a row from before the record)
+counts as behind as well, and is judged as having bound every bootstrap shape of its version with a
+table holder until it reports. A restore of a backup, like a rewind, clears the receipt, since the data
+it loads may predate what a reconcile did. A reconcile runs
 *both* halves of a provision — the kernel's (roles projected, owner seated, entitlements
 re-delivered) and yours (`onProvision`) — so a service principal or site registration a new
 release adds in its hook reaches every existing install with no button and no call. The
@@ -549,6 +562,28 @@ missing:
 `cloudflare:workers`, another module's tables, or `Date.now()` before that code is serving
 traffic. A repo that declares none of the three still deploys — the file is regenerated into
 projects that predate the gate — but the run says so, loudly.
+
+### Declared outbound hosts
+
+A vertical may only call the third-party hosts it lists in `substrat.outbound`; any other call is
+refused at run time with `403 outbound refused`, which from the outside reads like an upstream
+error. `substrat push`, `substrat preview` and `substrat push --check` read the worker entry and
+the modules it imports for `https://host` literals (and `new URL('https://…')`) and name each one
+`outbound` does not cover, with the file, the line and the exact line to add:
+
+```text
+warning: the code names a host package.json substrat.outbound does not declare — …
+  api.partner-co.com  (src/integrations/sync.ts:12)
+  add to package.json: "outbound": ["api.partner-co.com"]
+```
+
+It is a warning by default; **`--strict`** makes it an error, which is the form to run in CI. A
+host you declared that no literal names comes back as a `note:` only, since declarations are
+reviewed rather than trimmed for you. The scan is best effort: a host assembled at runtime or read
+from configuration is not found, a module loaded with `require()` is not followed, and a file it cannot
+read is named in a `note:`. A URL literal that something is appended to (`'https://api.partner-co.com' + path`)
+is printed as a `note:` too, since its host may continue, and is not judged; a clean run does not prove
+every call is declared.
 
 If you never connect the GitHub App — you own your CI, you are not on GitHub-hosted runners, or
 you want the release-train shape instead of merge-deploys-prod — generate the same file locally:

@@ -28,6 +28,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve, basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toPosix } from './repo-path.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -100,7 +101,7 @@ function walk(dir) {
       walk(full);
       continue;
     }
-    const rel = relative(ROOT, full);
+    const rel = toPosix(relative(ROOT, full));
     const name = basename(full);
     const ext = name.slice(name.lastIndexOf('.'));
     const isSuffixed = /\.generated\.[^.]+$/.test(name);

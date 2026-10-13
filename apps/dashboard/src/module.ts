@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { type AppEventKind } from './app-event-kinds.js';
 import { moduleManifest, permissionKey, substratError, type PermissionKey, type OrgId } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -453,7 +454,7 @@ export interface AppEnvValue {
 export interface DashboardAppEventRow {
   id: string;
   app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored' | 'hostname-bound' | 'hostname-unbound' | 'resumed';
+  kind: AppEventKind;
   detail: string | null;
   actor: string;
   created_at: string;

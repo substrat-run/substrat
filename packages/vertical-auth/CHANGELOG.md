@@ -1,5 +1,27 @@
 # @substrat-run/vertical-auth
 
+## 0.24.0
+
+### Minor Changes
+
+- c8525e8: Measure the legacy hash-only invites still pending (#2175).
+
+  `IdentityDO.legacyInviteCount(scopeId)` counts a scope's unclaimed invites that carry no capability — the rows only the legacy branch of `acceptMemberInvite` can still serve. The invite routes write a `legacy-invites-pending` warn line (`scopeId`, `pending`, `via`; no address, token or principal): from `GET /api/invites` only while `pending` is above zero and at most once an hour per scope per isolate, and from every accept that claims an invite through the legacy branch. An hour with no line means nothing is left to retire only once count support is confirmed (without `legacyInviteCount`, or when the count cannot be read, a list read emits no measurement) and the list reads succeeded for every relevant scope. Additive: `legacyInviteCount` is optional on `InviteDirectory`, and `legacyInviteListReporter` is exported for a door that lists invites itself.
+
+### Patch Changes
+
+- Updated dependencies [e786ff0]
+- Updated dependencies [f49cc49]
+- Updated dependencies [6aaf822]
+- Updated dependencies [bb4f18d]
+- Updated dependencies [2c75a0d]
+- Updated dependencies [48e9503]
+- Updated dependencies [5554b23]
+- Updated dependencies [3782c4c]
+- Updated dependencies [fac4f0a]
+  - @substrat-run/contracts@0.145.0
+  - @substrat-run/kernel@0.145.0
+
 ## 0.23.0
 
 ### Minor Changes

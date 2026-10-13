@@ -629,7 +629,9 @@ mountInvites(app, {
       return principal ? { principal, roleKey: pending.find((i) => i.principal === principal)?.roleKey ?? '' } : null;
     };
     return {
+      scopeId: node.scopeId,
       store: {
+        legacyCount: () => directory.legacyInviteCount(node.scopeId),
         /**
          * The DO stamps `created_at` as epoch millis; every other timestamp this
          * vertical shows is ISO text, and the screen rendering these calls the same
