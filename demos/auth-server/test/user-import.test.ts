@@ -146,7 +146,7 @@ describe('an imported person signs in with the password they already had', () =>
       users: [{ id: LEGACY_ID, email: 'Ada@Example.test', name: 'Ada', emailVerified: true, passwordHash: bcryptOf('old-password-1') }],
     });
     expect(result.results).toEqual([
-      { id: LEGACY_ID, outcome: 'created', password: true, accounts: [], skippedAccounts: [], emailVerified: null },
+      { id: LEGACY_ID, outcome: 'created', password: true, accounts: [], skippedAccounts: [], emailVerified: true },
     ]);
 
     expect((await signIn('ada@example.test', 'not-it-at-all')).status).toBe(401);
