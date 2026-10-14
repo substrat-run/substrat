@@ -734,9 +734,11 @@ import {
   unknownRoleError,
   type ConsumerDelivery,
   type StoreStub,
+  type ScopeStoreStubOptions,
   callReservedStoreOperation,
   type ReservedStoreResult,
   callScopeStore,
+  observeStoreCall,
   scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
   type ScopeStoreHostOptions,
@@ -4172,6 +4174,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     binding: string,
+    options?: ScopeStoreStubOptions,
   ): Promise<StoreStub> {
     // The directory check is the same one `getScope` makes. With no runners
     // configured, the binding is refused after that check.
@@ -4190,11 +4193,17 @@ export class SqliteScopeHost implements ScopeHost {
       scopeId,
       subjectKind: 'principal',
       invoke: (operation: string, input?: unknown, ...extra: unknown[]) =>
-        callScopeStore(
-          (request) => runner.invoke({ tenantId, vertical, scopeId, binding }, request),
+        observeStoreCall(
+          binding,
           operation,
-          input,
-          ...extra,
+          () =>
+            callScopeStore(
+              (request) => runner.invoke({ tenantId, vertical, scopeId, binding }, request),
+              operation,
+              input,
+              ...extra,
+            ),
+          options?.onStoreCall,
         ),
     };
   }

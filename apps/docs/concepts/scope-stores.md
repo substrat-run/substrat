@@ -29,7 +29,11 @@ const store = await host.getScopeStore(principal, tenantId, scopeId, 'GRAPH');
 const count = await store.invoke('increment', { by: 1 });
 ```
 
-`invoke` takes an operation and its input. Idempotency and observer options belong to a scope operation, and a store call has neither. A name that starts with `substrat.` is refused before the call leaves the vertical. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe` and `substrat.erase` are the platform's operations.
+`invoke` takes an operation and its input, and nothing else: idempotency belongs to a scope operation, and a store call has none. An operation name is a fixed label: no `@`, no space and no `:`, at most 64 characters. Any other name is refused before the call leaves the vertical, and so is a name that starts with `substrat.`. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe` and `substrat.erase` are the platform's operations.
+
+Each call is recorded on the invocation line of the request that made it, with nothing passed by the vertical. An entry is the binding, the operation, `ok` or `error`, and the duration. The input is not on the line, and neither is the store's error code or body. A line names the first 16 calls and counts the rest in `storeCallsDropped`. A line for a request that made no store call has neither key. A call made outside a request is not recorded and still runs, and so is one made after the response has gone, inside `waitUntil`: the line was written when the response left.
+
+`getScopeStore` takes an optional last argument, `{ onStoreCall }`. When it is passed, that observer hears each call instead of the request's line. It carries no authority, and a throw from it does not change the store's answer.
 
 Subject erasure reaches each store through `substrat.erase`, before the subject key is destroyed. It fails closed: when the platform cannot tell whether a deployment holds a store, or cannot ask it, the erasure is refused and the key stays until a retry can reach the store. While no store kind is registered nothing can hold a store, so this changes nothing yet.
 

@@ -83,6 +83,7 @@ export { GRANT_CHILDREN_INDEX_DDL } from './grant-scoped-read.js';
 export {
   callReservedStoreOperation,
   callScopeStore,
+  observeStoreCall,
   scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
   type ReservedStoreResult,
@@ -90,6 +91,8 @@ export {
   type ScopeStoreHostOptions,
   type ScopeStoreLifecycle,
   type ScopeStoreRunner,
+  type ScopeStoreStubOptions,
+  type StoreCallReport,
   type StoreStub,
 } from './scope-store.js';
 export type { GrantedEntitiesPage, GrantedEntityIdsMayRepeatPage } from './grant-scoped-read.js';

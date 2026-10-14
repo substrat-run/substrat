@@ -1,4 +1,4 @@
-import type { StoreStub } from './scope-store.js';
+import type { ScopeStoreStubOptions, StoreStub } from './scope-store.js';
 import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
@@ -5195,12 +5195,18 @@ export interface ScopeHost {
    * The host checks the (tenant, scope) pair the way `getScope` does, then builds
    * the object name itself. `binding` is the declaration. The vertical does not
    * choose the tenant, the scope, or the vertical slug that go into the name.
+   *
+   * `options` carries no authority (#2245). Each invoke is recorded on the
+   * request now running — binding, operation, outcome, duration, never the input —
+   * with nothing passed by the vertical (RFC §6). `onStoreCall`, when passed, is
+   * heard instead. A call made where no request is current is not logged.
    */
   getScopeStore(
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
     binding: string,
+    options?: ScopeStoreStubOptions,
   ): Promise<StoreStub>;
 
   /**

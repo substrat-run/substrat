@@ -1,6 +1,13 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { errorCodeOf, StoreError } from '@substrat-run/contracts';
-import { callReservedStoreOperation, callScopeStore, scopeStoreLifecycleOf, type ScopeStoreRunner } from '../src/scope-store.js';
+import { callReservedStoreOperation, callScopeStore, observeStoreCall, scopeStoreLifecycleOf, type ScopeStoreRunner } from '../src/scope-store.js';
+import {
+  STORE_CALL_LOG_CAP,
+  STORE_CALL_SINK_KEY,
+  tallyStoreCall,
+  type StoreCallLine,
+  type StoreCallTally,
+} from '../src/invocation-line.js';
 
 describe('callScopeStore (#2209)', () => {
   it('sends the envelope and returns the result', async () => {
@@ -244,6 +251,64 @@ describe('callReservedStoreOperation (#2207)', () => {
     expect(imported).toEqual({ tables: 1 });
     const wiped = await callReservedStoreOperation(async () => ({ result: {} }), 'substrat.wipe');
     expect(wiped).toEqual({});
+  });
+});
+
+describe('observeStoreCall (#2245)', () => {
+  const g = globalThis as unknown as Record<symbol, unknown>;
+  const key = Symbol.for(STORE_CALL_SINK_KEY);
+  const withSlot = async (slot: unknown, run: () => Promise<void>) => {
+    const before = g[key];
+    g[key] = slot;
+    try {
+      await run();
+    } finally {
+      g[key] = before;
+    }
+  };
+
+  it('reports to the current request when no observer is passed, and a passed one wins', async () => {
+    const tally: StoreCallTally = {};
+    await withSlot({ current: () => (call: StoreCallLine) => tallyStoreCall(tally, call) }, async () => {
+      await observeStoreCall('GRAPH', 'read', async () => 1);
+      const heard: StoreCallLine[] = [];
+      await observeStoreCall('GRAPH', 'write', async () => 1, (r) => heard.push(r));
+      expect(heard.map((r) => r.operation)).toEqual(['write']);
+    });
+    expect(tally.storeCalls?.map((c) => c.operation)).toEqual(['read']);
+  });
+
+  it('logs nothing and throws nothing with no slot, an empty one, or a broken one', async () => {
+    for (const slot of [undefined, {}, { current: () => undefined }, { current: () => { throw new Error('slot'); } }, { current: () => () => { throw new Error('sink'); } }]) {
+      await withSlot(slot, async () => {
+        expect(await observeStoreCall('GRAPH', 'read', async () => 5)).toBe(5);
+      });
+    }
+  });
+
+  it('refuses a name that is not a fixed label before the call and before any report', async () => {
+    for (const name of ['a:b', 'a b', 'a@b', 'x'.repeat(65)]) {
+      let ran = false;
+      const heard: StoreCallLine[] = [];
+      const refusal = await observeStoreCall('GRAPH', name, async () => { ran = true; }, (r) => heard.push(r)).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(refusal), name).toBe('validation_failed');
+      expect(ran).toBe(false);
+      expect(heard).toEqual([]);
+    }
+    expect(await observeStoreCall('GRAPH', 'x'.repeat(64), async () => 1)).toBe(1);
+  });
+
+  it('names the first calls, counts the rest, and keeps only the four fields', () => {
+    const tally: StoreCallTally = {};
+    for (let i = 0; i < STORE_CALL_LOG_CAP + 2; i++) {
+      tallyStoreCall(tally, { binding: 'GRAPH', operation: 'read', outcome: 'ok', durationMs: i, input: 'x' } as StoreCallLine);
+    }
+    expect(tally.storeCalls).toHaveLength(STORE_CALL_LOG_CAP);
+    expect(tally.storeCallsDropped).toBe(2);
+    expect(Object.keys(tally.storeCalls![0]!).sort()).toEqual(['binding', 'durationMs', 'operation', 'outcome']);
   });
 });
 
