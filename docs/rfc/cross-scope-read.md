@@ -34,9 +34,9 @@ question.
 
 | Mechanism | What it crosses | Why it is not this read |
 |---|---|---|
-| In-scope reads, `ctx.page` (§5.6 path 1, K-41; K-44 pending ratification) | nothing: one scope | One hop, one scope. Its keyset cursor is what each section in §4 carries. |
-| Outbox-fed external read model (§5.6 path 2) | scope → external store | Read-your-writes does not survive the crossing. Acceptable for a sidebar, but fatal for a screen re-read after its own write. |
-| Tier 2 and the lake query gateway (§5.6 path 3, #2277) | the whole tenant's history | Staff-only and columnar. §5.6 says it is *"never a UI list view"*. |
+| In-scope reads, `ctx.page` (kernel-design §5.6 path 1, K-41; K-44 pending ratification) | nothing: one scope | One hop, one scope. Its keyset cursor is what each section in §4 carries. |
+| Outbox-fed external read model (kernel-design §5.6 path 2) | scope → external store | Read-your-writes does not survive the crossing. Acceptable for a sidebar, but fatal for a screen re-read after its own write. |
+| Tier 2 and the lake query gateway (kernel-design §5.6 path 3, #2277) | the whole tenant's history | Staff-only and columnar. kernel-design §5.6 says it is *"never a UI list view"*. |
 | Peer calls (#1706) | vertical → vertical, same tenant | The target runs the call as the vertical's own subject (`vertical:<slug>`), holding what the target seated for that peer, not as the person. A vertical cannot peer-call itself. |
 | Scope stores ([scope-stores.md](scope-stores.md), K-49) | scope → its own store | The router refuses a store call addressed to any scope other than the dispatch's own. |
 | `readScopeTimeline` / `readScopeHistory` (#1582) | nothing: one scope's spine | A scope-wide walk since a watermark, within one scope. |
@@ -45,7 +45,7 @@ question.
 | `HostAdmin.listIdentityMemberships` (#1540) | every tenant a person belongs to | A staff-actor directory read that only the privileged dashboard may call. It is the escape hatch #1581 describes. |
 | The platform's bounded fan-outs (`mapBounded`, the scope sweeper, the storage meter) | every scope of a tenant or of the fleet | Platform code that sweeps for the platform, not a read for a person. |
 
-§5.4 closes the remaining door: *"Fleet questions never fan out."* That rule is about the
+Kernel-design §5.4 closes the remaining door: *"Fleet questions never fan out."* That rule is about the
 **fleet**: unbounded, cross-tenant and operator-shaped. The read here is bounded by one
 person's memberships in one tenant's installation of one vertical. §9 keeps the two apart and
 says where each part of that separation is enforced.
@@ -59,7 +59,7 @@ whatever that subject may read in every scope, which is more than the person may
 
 **B. A per-principal read model fed by the outbox.** Each scope's membership-relevant events
 feed an external projection, and the screen reads that. It is cheap and constant-time per page.
-It also brings §5.6 path 2's whole cost:
+It also brings kernel-design §5.6 path 2's whole cost:
 - no read-your-writes;
 - a second store holding a copy of every scope's listed fields;
 - a residency question for every field it copies (K-7).
@@ -102,7 +102,7 @@ The name and the exact surface are illustrative. The properties are not:
 
 - **The operation is an existing declared operation.** No second handler is written for the
   cross-scope case.
-- **It is paged** (K-41) and **read-only**. §5.6 reserves `readonly: true` on an operation as the
+- **It is paged** (K-41) and **read-only**. kernel-design §5.6 reserves `readonly: true` on an operation as the
   hook a later read path needs; this is that path. A fan-out of a write is not this RFC.
 - **The forwarded input is fixed by the declaration**, and everything else is refused when the
   declaration is registered, not at request time:
@@ -121,7 +121,7 @@ The name and the exact surface are illustrative. The properties are not:
 
 The host resolves the set (§8.1) to `(scope, principal)` pairs. A person's principal is
 per-scope: the identity directory maps an authenticated subject to a principal **per scope**.
-Only scopes that pass the issuer check (§7, invariant 2) are kept.
+Only scopes whose own wiring would accept the credential (§7, invariant 2) are kept.
 
 The host then invokes the declared operation in each scope as that scope's principal, with
 `mapBounded`-style concurrency. Each invocation is an ordinary one:
@@ -130,11 +130,13 @@ The host then invokes the declared operation in each scope as that scope's princ
 - checked by the operation's first line;
 - logged by the invocation log as if called alone.
 
-K-6 is untouched: each scope sees one read per page, queued like any other. The lifecycle a
-CP-less scope enforces is the one delivered **into** the scope (#1713); the router's directory
-gate covers only the routed scope. The host therefore learns a scope's lifecycle by asking that
-scope, which wakes it. Answering lifecycle without a wake would need a lifecycle hint beside the
-set, and that is left to §8.1.
+K-6 is untouched: each scope sees one read per page, queued like any other. The host learns a
+scope's lifecycle by asking the scope (#1713), which wakes it. Answering lifecycle without a
+wake would need a lifecycle hint beside the set, and that is left to §8.1.
+
+The bound (§8.3) is counted after the set is filtered: once every id the source does not record,
+every id outside the tenant or installation, and every scope whose wiring would not accept the
+credential (§7, invariant 2) has been dropped, and before any scope is invoked.
 
 ### 4.2 The answer and the cursor
 
@@ -151,23 +153,27 @@ The client sends back the top-level `nextCursor`, which covers the whole walk. A
 single-scope operation, for a "more from this space" link.
 
 Each section is exactly the page the scope returned alone, in the scope's own order, with the
-scope's own cursor. Since no rows from different scopes are compared, none of §5's ordering
-problems arise.
+scope's own cursor. Since no rows from different scopes are compared, none of this RFC's §5
+ordering problems arise.
 
-The merged cursor is an opaque, versioned envelope that holds:
+**Section order.** `sections` follows the set source's stable order, which is scope id unless the
+source declares another stable key. It is never arrival order, so the same walk over the same set
+answers with the same page. A client that wants another order, such as by name, reorders on its
+side.
+
+**The cursor carries positions, never membership.** The merged cursor is an opaque, versioned
+envelope that holds:
 - the walk it belongs to (the cross-scope read's name, `order`, `sort`, forwarded filters);
-- the set it was minted over, as a digest;
-- for each scope, its own cursor (K-44, pending ratification), or a marker that it is exhausted,
-  or a marker that it has not answered yet.
+- for each scope, its own cursor (K-44, pending ratification), or a marker that the scope is done
+  for this walk (§4.4).
 
-A scope that did not answer keeps its last position. The next page retries it from there, so a
-timeout never skips that scope's rows. A cursor replayed under another walk is refused, with
-the same remedy K-44 gives (the first page). The set changing mid-walk does not need a restart,
-because sections are never compared with each other:
+Like a K-44 cursor, it is unsigned and held by the client, so it must never widen anything. The
+set is re-resolved from the source on **every** page, and a cursor entry for a scope outside the
+current set is ignored. A cursor replayed under another walk is refused, with the same remedy K-44
+gives (the first page). The set changing mid-walk does not need a restart, because sections are
+never compared with each other:
 - a scope that joins the set appears as a new section, starting from its own first page;
 - a scope that leaves the set stops appearing.
-
-The set digest in the cursor only tells the host which scopes have positions.
 
 The screens this serves: a sidebar of spaces with each space's latest items, "shared with me"
 grouped by space, and search across spaces with results grouped by space.
@@ -181,23 +187,45 @@ indistinguishable, in the answer, from a scope that does not exist.** Concretely
 - A scope is listed in `unavailable` only when the set source records **this** authenticated
   subject as holding it (§8.1 (i)). A caller-supplied id that the source does not record is
   dropped silently, whatever its state.
-- A scope that refuses the principal (`forbidden`, `not_found`), a scope of another tenant or
-  installation, a scope whose issuer differs (§7, invariant 2), and a scope that is
-  `provisioning` or `reaped` are all **dropped**, the same way and with the same timing class.
-  None of them appears in the answer.
+- **Dropped before any work:** a scope the source does not record, a scope of another tenant or
+  installation, and a scope whose wiring would not accept the credential (§7, invariant 2). None
+  is invoked, and none is counted against the bound.
+- **Dropped after it answers:** a scope the source records but which refuses the principal
+  (`forbidden`, `not_found`), or which is `provisioning` or `reaped`. These are invoked, so they
+  cost a wake. In the answer they look like the first group: absent.
+- The two groups are not claimed to take the same time. What timing can tell apart is whether the
+  source records the caller's own subject against a scope. That is a fact about the caller, not
+  about the scope.
 - The reasons map onto `scopeStatus`:
   - `suspended` is `suspended`;
   - `archived` covers `archiving` and `archived`;
   - `timeout` is a scope that did not answer in time;
   - `error` is anything else the scope answered with that is not a refusal.
 
-  A reason for a migration freeze is not proposed: no freeze is reported today, and §5.6 names
+  A reason for a migration freeze is not proposed: no freeze is reported today, and kernel-design §5.6 names
   one only as a possible later use of `readonly`. If one ships, it gets its own reason.
 - The residue: the set is a hint (§7, invariant 4), so a removed member whose index entry has not
   yet been removed still sees that scope's lifecycle reason, though never its rows. That exposure
   is bounded by the index's lag (§8.1).
 - Everything dropped is recorded for the vertical's operator in the host's invocation log line,
   never in the answer.
+
+### 4.4 When the walk ends
+
+Each scope's state in the walk is one of four:
+
+| State | Meaning | Retried? |
+|---|---|---|
+| `open` | It has a position. | Read again on the next page. |
+| `exhausted` | Its own `nextCursor` was null. | No. |
+| `unavailable: suspended` or `archived` | A lifecycle refusal. Reported once. | No. Never retried within the walk, so a suspended scope is not woken again on every page. A new walk sees its state afresh. |
+| `unavailable: timeout` or `error` | A transient failure. Its last position is kept. | Yes, on the next page, a small fixed number of times. After that it is marked done for the walk, reported once more, and not retried. |
+
+The top-level `nextCursor` is **null** once every scope in the current set is `exhausted` or done.
+A walk therefore ends after at most (pages the largest scope needs) plus (the retry allowance)
+pages, and a scope that joins mid-walk adds only its own pages, within the bound. It cannot cycle
+on a scope that will never answer. Rewriting a done marker in the client-held cursor only buys
+more reads, and those are what §8.6's rate limit counts.
 
 ## 5. A later slice: one globally merged page
 
@@ -238,9 +266,9 @@ that cannot be served by sections.
 
 | Condition | Behaviour |
 |---|---|
-| A scope the source records the person as holding is suspended, archiving or archived | Listed in `unavailable` with its reason (§4.3). Its cursor position is kept. |
-| A scope is cold or slow | Invoked under a per-scope timeout. If the timeout passes it is listed as `timeout` and its position is kept. |
-| A scope refuses the principal, is `provisioning` or `reaped`, belongs elsewhere, or trusts another issuer | Dropped. Indistinguishable from a scope that does not exist (§4.3). |
+| A scope the source records the person as holding is suspended, archiving or archived | Listed in `unavailable` with its reason (§4.3), once. Done for the walk and not retried (§4.4). |
+| A scope is cold or slow | Invoked under a per-scope timeout. If the timeout passes it is listed as `timeout`, its position is kept, and it is retried within the allowance (§4.4). |
+| A scope refuses the principal, is `provisioning` or `reaped`, belongs elsewhere, or would not accept the credential | Dropped. Indistinguishable from a scope that does not exist (§4.3). |
 | A scope answers under a different declared version of the operation | Open (§8.4). Until it is decided: `error`. |
 | The set exceeds the declared bound | Open (§8.3). The recommendation is a named refusal, never a silent truncation. |
 | Any other error in a scope | `error`. The other sections still answer. |
@@ -250,12 +278,16 @@ that cannot be served by sections.
 1. **One tenant, one installation.** The set and every scope in it belong to the tenant the router
    signed for this request, and to this vertical's installation in that tenant. The set is never
    wider than that, whatever the caller supplies.
-2. **One issuer.** Auth wiring is per scope: each scope's delivered `substrat:auth` config decides
-   which issuer it trusts, so two scopes of one tenant can trust different issuers. The same
-   `sub` from two issuers is two subjects. A scope joins the set **only if its auth wiring trusts
-   the issuer that authenticated this request**. Any index of a person's scopes is keyed by
-   `(issuer, sub)`, never by `sub`. A scope that disagrees is excluded, recorded for the operator,
-   and never merged (§4.3).
+2. **The scope's own wiring would accept this credential.** Auth wiring is per scope: each scope's
+   delivered `substrat:auth` config decides which issuer it trusts and, on an issuer shared by
+   several apps (#1683), which client a credential must have been issued to. Two scopes of one
+   tenant can therefore disagree, and the same `sub` from two issuers is two subjects. A scope
+   joins the set **only if its own wiring would accept the credential that authenticated this
+   request**: the same issuer and, where that wiring names its own client on a shared issuer, the
+   same client. Issuer equality alone is not enough. Any index of a person's scopes is keyed by
+   `(issuer, sub)`, never by `sub`, and the client condition is checked per scope when the set is
+   resolved. A scope that disagrees is excluded, recorded for the operator, and never merged
+   (§4.3).
 3. **Authority is per scope, held by the scope.** Every invocation runs the operation's own
    `ctx.check` as that scope's principal. No new permission key, no aggregate role, no service
    subject, no grant.
@@ -382,24 +414,25 @@ the walk halt at the boundary until they arrive? This is relevant only if §5 is
 | Invariant | Who evaluates what |
 |---|---|
 | 1. One tenant, one installation | The router signs the tenant for the request. `vertical-host` holds the set to it. |
-| 2. One issuer | `vertical-host`'s set resolution, against the per-scope auth wiring `vertical-auth` holds |
+| 2. The scope's own wiring would accept the credential | `vertical-host`'s set resolution, against the per-scope auth wiring `vertical-auth` holds (issuer, and client on a shared issuer) |
 | 3. Authority per scope | The pairing of each scope with a principal comes from §4.1's resolution, which is invariants 1 and 2. Given that pair, the kernel evaluates `ctx.check` for the principal it is handed. That the operation checks **first** is the module rule every operation follows (`assertAllowed(await ctx.check(…))` as its first line), exercised by the conformance kit. |
 | 4. Hint, not authority | Follows from 3: a stale entry meets the scope's own check |
 | 5. No oracle | `vertical-host`'s construction of the answer (§4.3) |
 | 6. The bound | `vertical-host`, under a ceiling the platform publishes |
 | 7. Module code gains nothing | `boundary-lint`, and the absence of any `ctx` surface for it |
+| 8. Audit stays at least what it is now | Each per-scope invocation goes through the invocation log exactly as a single call does. Any addition (§8.2) is written by `vertical-host`. |
 
-The invariants held by `vertical-host` are exercised by the §11 contract suite. §5.4's rule
+The invariants held by `vertical-host` are exercised by the §11 contract suite. kernel-design §5.4's rule
 stands: a fleet question is unbounded and operator-shaped, and still goes to Tier 2.
 
 ## 10. Not in this RFC
 
 - **A subscription over the set.** The per-scope live feed (#938) exists. Merging N feeds into one
-  socket is the push half of open question 18.
+  socket is the push half of kernel-design open question 18.
 - **A per-scope filtered spine walk.** The half of #1582 that is still open.
 - **Cross-tenant lists.** The privileged dashboard keeps its own surface.
 - **Writes across scopes.** A fan-out of a write is a distributed transaction.
-- **Open question 19** (a tuple whose subject is another scope).
+- **Kernel-design open question 19** (a tuple whose subject is another scope).
 
 ## 11. If accepted
 
@@ -410,7 +443,9 @@ The work splits into PRs that are each reviewable alone:
    adapters covering:
    - a stale entry is denied and dropped;
    - a missing entry exposes nothing;
-   - a scope trusting another issuer never joins.
+   - a scope trusting another issuer never joins;
+   - on a shared issuer, a scope whose wiring names a different client never joins, even though
+     the issuer matches.
 3. **Sections (§4)**: the declaration, its registration-time refusals, the host-side fan-out, the
    cursor and the failure modes, with a contract suite on both adapters. The suite must include:
    - the positive twin: a set the principal holds in full returns exactly each scope's own page;
@@ -425,7 +460,7 @@ The work splits into PRs that are each reviewable alone:
 
 - **Peer calls (A).** They read with the vertical's authority, not the person's (§2).
 - **An outbox read model as the default (B).** It gives up read-your-writes on the screen that
-  needs it most. It remains available per surface under §5.6 path 2.
+  needs it most. It remains available per surface under kernel-design §5.6 path 2.
 - **Platform-run merge (C).** It puts the shared platform on a vertical's read path.
 - **A global merge in the first slice.** It needs per-entry positions, a projected merge key and
   one collation, none of which a scope returns today (§5).
