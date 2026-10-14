@@ -302,9 +302,9 @@ describe('capability expiry on the DO path, the stored instant past the wall clo
   let host: CloudflareScopeHost;
 
   const scopeSql = (sql: string, ...params: SqlStorageValue[]) =>
-    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s1)), (_, state) => {
-      state.storage.sql.exec(sql, ...params);
-    });
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s1)), (_, state) =>
+      state.storage.sql.exec(sql, ...params).toArray(),
+    );
   const aMinuteAgo = () => new Date(Date.now() - 60_000).toISOString();
   const later = () => new Date(Date.now() + HOUR).toISOString();
   const share = async (spec: Record<string, unknown>) =>
@@ -379,10 +379,7 @@ describe('capability expiry on the DO path, the stored instant past the wall clo
 
     await scopeSql('UPDATE _substrat_capabilities SET expires_at = ? WHERE id = ?', aMinuteAgo(), expiring.id);
     expect(await host.exchangeCapability(t1, s1, expiring.secret)).toBeNull();
-    const uses = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s1)), (_, state) =>
-      state.storage.sql.exec('SELECT uses FROM _substrat_capabilities WHERE id = ?', expiring.id).one(),
-    );
-    expect(uses).toEqual({ uses: 0 });
+    expect(await scopeSql('SELECT uses FROM _substrat_capabilities WHERE id = ?', expiring.id)).toEqual([{ uses: 0 }]);
 
     expect((await host.exchangeCapability(t1, s1, twin.secret))?.kind).toBe('principal');
   });
