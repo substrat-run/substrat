@@ -422,6 +422,79 @@ describe('createR2SqlEngine (#1334)', () => {
     await expect(createR2SqlEngine({ ...opts, fetchImpl }).query('SELECT')).rejects.toThrow(/parse error/);
   });
 
+  /** A fetch that never answers on its own: it settles only when its signal aborts. */
+  const stalled = (stage: 'headers' | 'body') =>
+    (async (_url: string, init: RequestInit) => {
+      const signal = init.signal!;
+      const aborted = () => signal.reason ?? new DOMException('aborted', 'AbortError');
+      if (stage === 'headers') {
+        return new Promise<Response>((_, reject) => signal.addEventListener('abort', () => reject(aborted())));
+      }
+      // Headers at once, then a body that never ends — the stall a header-only timeout misses.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"success":true,'));
+          signal.addEventListener('abort', () => controller.error(aborted()));
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch;
+
+  it('gives up on a stalled answer as a LakeQueryError, at the headers or mid-body', async () => {
+    for (const stage of ['headers', 'body'] as const) {
+      const engine = createR2SqlEngine({ ...opts, fetchImpl: stalled(stage), timeoutMs: 50 });
+      await expect(engine.query('SELECT 1'), stage).rejects.toThrow(/timed out after 50 ms/);
+    }
+  });
+
+  it('passes every query a timeout signal, and an answer inside it comes back', async () => {
+    const { calls, fetchImpl } = fake(200, { success: true, result: { rows: [] } });
+    await expect(createR2SqlEngine({ ...opts, fetchImpl, timeoutMs: 50 }).query('SELECT 1')).resolves.toEqual([]);
+    expect(calls[0]!.init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  /** An answer of `bytes` bytes, declared in content-length or streamed with none. */
+  const sized = (bytes: number, declare: boolean) => {
+    const json = JSON.stringify({ success: true, result: { rows: [{ pad: 'x'.repeat(Math.max(0, bytes - 40)) }] } });
+    return (async () => {
+      const encoded = new TextEncoder().encode(json);
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let at = 0; at < encoded.length; at += 1024) controller.enqueue(encoded.slice(at, at + 1024));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: declare ? { 'content-length': String(encoded.length) } : {},
+      });
+    }) as unknown as typeof fetch;
+  };
+
+  it('refuses an answer whose content-length is over the cap without reading its body', async () => {
+    // The body never ends, so reading it would surface as a timeout, not as the size refusal.
+    const fetchImpl = (async () =>
+      new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+        status: 200,
+        headers: { 'content-length': '20000' },
+      })) as unknown as typeof fetch;
+    const engine = createR2SqlEngine({ ...opts, fetchImpl, maxResponseBytes: 10_000, timeoutMs: 500 });
+    await expect(engine.query('SELECT 1')).rejects.toThrow(/exceeds 10000 bytes/);
+  });
+
+  it('refuses a streamed answer once it passes the cap, with no content-length to warn it', async () => {
+    const engine = createR2SqlEngine({ ...opts, fetchImpl: sized(20_000, false), maxResponseBytes: 10_000 });
+    await expect(engine.query('SELECT 1')).rejects.toThrow(/exceeds 10000 bytes/);
+  });
+
+  it('reads an answer under the size cap whole, declared or streamed', async () => {
+    for (const declare of [true, false]) {
+      const engine = createR2SqlEngine({ ...opts, fetchImpl: sized(5_000, declare), maxResponseBytes: 10_000 });
+      const rows = await engine.query('SELECT 1');
+      expect(rows).toHaveLength(1);
+    }
+  });
+
   it('refuses an answer whose shape it does not know rather than guessing at rows', async () => {
     for (const result of [{}, { rows: 'no' }, { rows: [[A, 'x']] }]) {
       const { fetchImpl } = fake(200, { success: true, result });
