@@ -138,7 +138,8 @@ const MANIFEST = {
       SUPPORT_WIDGET_SECRET: 'SUPPORT_WIDGET_SECRET',
       // Reads the Tier-2 Iceberg lake with R2 SQL — an R2 "Admin Read only" token,
       // scoped to substrat-lake. Optional: unset, the plane simply serves no lake
-      // query, which is the state every deployment is in until the gateway ships.
+      // query. Set, it is still not enough on its own: the gateway (#1334) also needs the
+      // worker's LAKE_BUCKET var, which stays unset until its R2 SQL client is smoke-tested.
       // Read-only on purpose. The catalog's write token is NOT interchangeable with
       // this and is never pushed to a worker (see STORE_ONLY below).
       R2_SQL_TOKEN: 'R2_LAKE_SQL_TOKEN',

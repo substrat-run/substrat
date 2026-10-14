@@ -2312,6 +2312,28 @@ export function permissionContractSuite(
         }),
       ).rejects.toThrow();
       expect((await host.admin.accessLog(staff, { actor: reporter })).length).toBe(2);
+
+      // #1334: a lake read spans a tenant's scopes, so its arm takes a null scope…
+      await host.admin.recordDelegatedRead(reporter, {
+        method: 'lakeEvents',
+        tenantId: t1,
+        scopeId: null,
+        params: { type: 'todo.item-created' },
+        resultCount: 7,
+      });
+      const [lake] = await host.admin.accessLog(staff, { actor: reporter, method: 'lakeEvents' });
+      expect(lake).toMatchObject({ method: 'lakeEvents', tenantId: t1, scopeId: null, resultCount: 7 });
+      // …and only that arm does: a scope read still cannot be recorded without its scope.
+      await expect(
+        host.admin.recordDelegatedRead(reporter, {
+          method: 'readScopeTable',
+          tenantId: t1,
+          scopeId: null as never,
+          params: null,
+          resultCount: 0,
+        }),
+      ).rejects.toThrow();
+      expect((await host.admin.accessLog(staff, { actor: reporter })).length).toBe(3);
     });
 
     it('records an owner hand-over phase as a `transferOwner` admin row, stamped here (#1665)', async () => {

@@ -908,14 +908,29 @@ export const delegatedReadParams: {
  * Deliberately carries no `id` and no `at`: the adapter stamps both, so a caller cannot
  * backdate a row or collide one with another. `params` is the same argument object the
  * co-located branch logs, truncated by the adapter exactly as that path truncates it.
+ *
+ * The second arm is the lake read (#1334): the control plane answered it itself, from the
+ * Tier-2 lake rather than from any scope, so no adapter could have written its row and
+ * there is no co-located twin to match. It is one tenant's read and may span every one of
+ * its scopes, so its scope is nullable — and only on this arm, so a scope read still
+ * cannot be recorded without naming its scope.
  */
-export const delegatedReadRecord = z.object({
-  method: delegatedReadMethod,
-  tenantId,
-  scopeId,
-  params: z.unknown(),
-  resultCount: z.number().int().nonnegative(),
-});
+export const delegatedReadRecord = z.union([
+  z.object({
+    method: delegatedReadMethod,
+    tenantId,
+    scopeId,
+    params: z.unknown(),
+    resultCount: z.number().int().nonnegative(),
+  }),
+  z.object({
+    method: z.literal('lakeEvents'),
+    tenantId,
+    scopeId: scopeId.nullable(),
+    params: z.unknown(),
+    resultCount: z.number().int().nonnegative(),
+  }),
+]);
 export type DelegatedReadRecord = z.infer<typeof delegatedReadRecord>;
 
 /**
