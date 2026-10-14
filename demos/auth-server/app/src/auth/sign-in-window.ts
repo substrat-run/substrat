@@ -10,8 +10,9 @@
  * when this page loaded, on the device's own clock.
  *
  * The server stays the authority — it refuses the send and the verify alike — and this is only
- * a hint that lets the screen say so before someone types a number. It errs late, never early:
- * the time between issue and page load is not subtracted, and a reload restarts the window, so
+ * a hint that lets the screen say so before someone types a number. It errs late (bar the
+ * second `exp` is floored to): the time between issue and page load is not subtracted, and a
+ * reload restarts the window, so
  * a refusal from the server (`isExpiredSignIn`) also switches the screen to "Start again".
  */
 export function signInDeadline(oauthQuery: string | null, loadedAt: number): number | null {
