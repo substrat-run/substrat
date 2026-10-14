@@ -25,6 +25,7 @@ import { join, relative, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { deriveDeclaredSurface, sweeperClassesOf } from '../packages/cli/dist/push.js';
 import { platformSweeperDecision, withPlatformEntry } from '../packages/control-plane-api/dist/platform-entry.js';
+import { withStoreEntry } from '../packages/control-plane-api/dist/store-entry.js';
 
 /**
  * What a push of `dir` declares about its sweeper (#1902): the schedules its modules declare
@@ -128,5 +129,41 @@ export async function asUploaded(dir, derived) {
       ...(derived.vars ?? {}),
       ...Object.fromEntries(added.filter((b) => b.type === 'plain_text').map((b) => [b.name, b.text])),
     },
+  };
+}
+
+/**
+ * A store script as the platform uploads it (#2289): the entry in front of the kind,
+ * the object class migrated, and the public keys bound. The kind's source is bundled
+ * the way a push bundles an entry. The caller starts workerd from `main` and `modules`.
+ *
+ * @param {string} dir
+ * @param {{ kindMain: string, className: string, vertical: string, callerPublicKey: string, platformPublicKey: string }} options
+ */
+export async function storeScriptAsUploaded(dir, options) {
+  const cacheDir = join(dir, '.workerd-uploaded', 'store');
+  mkdirSync(cacheDir, { recursive: true });
+  const kindMain = resolve(dir, options.kindMain);
+  const uploaded = withStoreEntry(
+    {
+      entry: 'kind.js',
+      compatibilityDate: '2026-03-01',
+      compatibilityFlags: [],
+      modules: [{ name: 'kind.js', content: await bundledEntry(kindMain), contentType: 'application/javascript+module' }],
+      doClasses: [],
+      bindings: [],
+    },
+    options,
+  );
+  for (const module of uploaded.modules) writeFileSync(join(cacheDir, module.name), module.content);
+  const text = Object.fromEntries(
+    uploaded.bindings.filter((binding) => binding.type === 'plain_text').map((binding) => [binding.name, binding.text]),
+  );
+  return {
+    main: join(cacheDir, uploaded.entry),
+    modules: uploaded.modules.map((module) => join(cacheDir, module.name)),
+    className: 'SubstratStoreObject',
+    binding: 'SUBSTRAT_STORE',
+    text,
   };
 }
