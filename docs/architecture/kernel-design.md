@@ -1418,7 +1418,10 @@ translations are not).
     exists to prevent. Any vertical whose unit of sharing is the scope has it: a
     document-spaces vertical's sidebar, its search and an offline delta feed are all this
     question. `demos/todo`'s shared lists avoid it only because every list lives in one
-    scope. Decide before the second vertical invents its own answer.
+    scope. Decide before the second vertical invents its own answer. *Proposed answer for
+    the read half:* [rfc/cross-scope-read.md](../rfc/cross-scope-read.md) (#1581) — a
+    declared read that `vertical-host` fans out over a bounded scope set, checked by every
+    scope it touches; the scope-set source and its audit are left open there.
 19. **A tuple whose subject is another scope has no store.** §4.2 places tuples
     scope-locally, *"with the tenant-level slice cached from the tenant-root DO"*, and that
     locality is exactly what buys check-after-write consistency and a tractable `explain`:
