@@ -1,0 +1,40 @@
+name: Store entry Python
+
+# The Python store entry (#2290). It runs when the entry, the envelope, or the
+# shared vectors change, and stays quiet on every other pull request.
+on:
+  pull_request:
+    paths:
+      - 'packages/store-entry-python/**'
+      - 'packages/contracts/src/scope-store-envelope.ts'
+      - 'packages/contracts/test/vectors/scope-store-envelope.json'
+      - '.github/workflows/store-entry-python.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/store-entry-python/**'
+      - 'packages/contracts/src/scope-store-envelope.ts'
+      - 'packages/contracts/test/vectors/scope-store-envelope.json'
+      - '.github/workflows/store-entry-python.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @substrat-run/contracts build
+      - run: uv sync --frozen
+        working-directory: packages/store-entry-python
+      - run: node probe.mjs
+        working-directory: packages/store-entry-python
