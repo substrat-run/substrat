@@ -3,7 +3,10 @@ import {
   PASSWORD_METHOD,
   describeFlow,
   draftProblems,
+  editDraft,
+  everyMethod,
   newRoute,
+  shownDraft,
   type PolicyDraft,
 } from './sign-in-draft';
 
@@ -25,15 +28,11 @@ export function SignInPolicyEditor({
 }) {
   const providers = offered ?? [];
   // Until a method is changed the application takes every method the issuer offers, and that
-  // is what the boxes show: all ticked. The first change turns it into an explicit list, so
-  // the choices are always on the page rather than behind a switch.
-  const everything: PolicyDraft = {
-    ...draft,
-    methods: new Set([PASSWORD_METHOD, ...providers.map((p) => p.id)]),
-  };
-  const shown = draft.restrict ? draft : everything;
+  // is what the boxes show: all ticked, everything else at its default. The first change turns
+  // it into an explicit list, so the choices are always on the page rather than behind a switch.
+  const shown = shownDraft(draft, providers);
   const locked = !draft.restrict && !offered;
-  const set = (patch: Partial<PolicyDraft>) => onChange({ ...shown, ...patch, restrict: true });
+  const set = (patch: Partial<PolicyDraft>) => onChange(editDraft(draft, providers, patch));
   const toggle = (id: string, on: boolean) => {
     const methods = new Set(shown.methods);
     if (on) methods.add(id);
@@ -56,7 +55,7 @@ export function SignInPolicyEditor({
       {draft.restrict ? (
         <p className="muted small">
           Only the methods ticked below.{' '}
-          <button className="btn tiny" onClick={() => onChange({ ...draft, restrict: false })}>
+          <button className="btn tiny" onClick={() => onChange(everyMethod())}>
             Back to every method
           </button>
         </p>
@@ -150,14 +149,14 @@ export function SignInPolicyEditor({
                     <input
                       value={route.domains}
                       placeholder="acme.se, acme.com"
-                      onChange={(e) => onChange({ ...shown, restrict: true, routes: shown.routes.map((r) => (r.key === route.key ? { ...r, domains: e.target.value } : r)) })}
+                      onChange={(e) => set({ routes: shown.routes.map((r) => (r.key === route.key ? { ...r, domains: e.target.value } : r)) })}
                     />
                   </label>
                   <label className="field">
                     <span>Must sign in with</span>
                     <select
                       value={route.provider}
-                      onChange={(e) => onChange({ ...shown, restrict: true, routes: shown.routes.map((r) => (r.key === route.key ? { ...r, provider: e.target.value } : r)) })}
+                      onChange={(e) => set({ routes: shown.routes.map((r) => (r.key === route.key ? { ...r, provider: e.target.value } : r)) })}
                     >
                       <option value="">Choose a provider…</option>
                       {providers.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}

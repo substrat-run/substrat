@@ -1,26 +1,9 @@
 import { useEffect, useState } from 'react';
 import { authClient, phoneStatus, sendPhoneCode, verifyPhoneCode } from '../api';
 import { Card, Centered, Field } from '../primitives';
-
-/** When the signed authorize query this sign-in rides on stops being accepted (its `exp`, in
- *  seconds), or null when there is no such query (account page, invitation). The server is the
- *  authority — it refuses the send and the verify alike — this only lets the screen say so
- *  before the person types a number and waits for an SMS that can no longer be used. */
-function expiryOf(oauthQuery: string | null): number | null {
-  const exp = Number(new URLSearchParams(oauthQuery ?? '').get('exp'));
-  return oauthQuery && Number.isFinite(exp) && exp > 0 ? exp * 1000 : null;
-}
-
-/** The authorize request the signed query came from, without the signature material, so
- *  starting again yields a fresh login page instead of one that is already dead. */
-function restartUrl(oauthQuery: string): string {
-  const params = new URLSearchParams(oauthQuery);
-  for (const key of ['sig', 'exp', 'ba_iat', 'ba_param', 'ba_pl']) params.delete(key);
-  return `/api/auth/oauth2/authorize?${params.toString()}`;
-}
+import { isExpiredSignIn, restartUrl, signInDeadline } from './sign-in-window';
 
 const EXPIRED = 'This sign-in has expired. Start again from the application.';
-const friendly = (message: string) => (message === 'invalid_signature' ? EXPIRED : message);
 
 export function PhoneFactor({ oauthQuery, onDone, onBack }: { oauthQuery: string | null; onDone: () => void; onBack: () => void }) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof phoneStatus>> | null>(null);
@@ -30,18 +13,25 @@ export function PhoneFactor({ oauthQuery, onDone, onBack }: { oauthQuery: string
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const expiresAt = expiryOf(oauthQuery);
+  // On the device's clock, but measured from page load — see `signInDeadline` for why.
+  const [deadline] = useState(() => signInDeadline(oauthQuery, Date.now()));
   const [now, setNow] = useState(() => Date.now());
+  // The issuer refused the signed query: authoritative, whatever the deadline says.
+  const [refused, setRefused] = useState(false);
   useEffect(() => {
-    if (expiresAt === null) return;
+    if (deadline === null) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [expiresAt]);
-  const expired = expiresAt !== null && now >= expiresAt;
+  }, [deadline]);
+  const expired = refused || (deadline !== null && now >= deadline);
   useEffect(() => { void phoneStatus().then(setStatus).catch((e: Error) => setErr(e.message)); }, []);
   const act = async (fn: () => Promise<void>) => {
     setBusy(true); setErr(null);
-    try { await fn(); } catch (e) { setErr(e instanceof Error ? friendly(e.message) : String(e)); } finally { setBusy(false); }
+    try { await fn(); } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (isExpiredSignIn(message)) setRefused(true);
+      else setErr(message);
+    } finally { setBusy(false); }
   };
   return <Centered><Card title="Verify your phone">
     {!status && !err && <p>Loading…</p>}
