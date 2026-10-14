@@ -582,37 +582,37 @@ describe('which client a token request claims to be', () => {
   const assertion = (payload: unknown) => `${b64url({ alg: 'ES256' })}.${b64url(payload)}.sig`;
   const basic = (id: string) => new Headers({ authorization: `Basic ${btoa(`${encodeURIComponent(id)}:s`)}` });
 
+  /** What the request claims, from its form body and Authorization header. */
+  const claim = (body: Record<string, unknown>, headers?: Headers) => tokenRequestClientId({ body, headers });
+
   it('reads the posted id, Basic, or a private_key_jwt assertion’s sub, whichever is present', () => {
-    expect(tokenRequestClientId({ body: { client_id: 'posted' } })).toBe('posted');
-    expect(tokenRequestClientId({ body: {}, headers: basic('basic') })).toBe('basic');
-    expect(tokenRequestClientId({ body: { client_assertion: assertion({ sub: 'asserted', iss: 'asserted' }) } })).toBe(
-      'asserted',
-    );
+    expect(claim({ client_id: 'posted' })).toEqual({ clientId: 'posted' });
+    expect(claim({}, basic('basic'))).toEqual({ clientId: 'basic' });
+    expect(claim({ client_assertion: assertion({ sub: 'asserted', iss: 'asserted' }) })).toEqual({ clientId: 'asserted' });
   });
 
   it('says the identities conflict when two presentations name different clients', () => {
-    const conflict = 'conflict';
-    expect(tokenRequestClientId({ body: { client_id: 'posted' }, headers: basic('basic') })).toBe(conflict);
-    expect(tokenRequestClientId({ body: { client_id: 'posted', client_assertion: assertion({ sub: 'asserted' }) } })).toBe(
-      conflict,
-    );
-    expect(
-      tokenRequestClientId({ body: { client_assertion: assertion({ sub: 'asserted' }) }, headers: basic('basic') }),
-    ).toBe(conflict);
+    const conflict = { conflict: true };
+    expect(claim({ client_id: 'posted' }, basic('basic'))).toEqual(conflict);
+    expect(claim({ client_id: 'posted', client_assertion: assertion({ sub: 'asserted' }) })).toEqual(conflict);
+    expect(claim({ client_assertion: assertion({ sub: 'asserted' }) }, basic('basic'))).toEqual(conflict);
   });
 
   it('agrees when they all name the same client, and ignores Basic it cannot decode', () => {
-    expect(tokenRequestClientId({ body: { client_id: 'same' }, headers: basic('same') })).toBe('same');
-    expect(tokenRequestClientId({ body: { client_id: 'same', client_assertion: assertion({ sub: 'same' }) } })).toBe(
-      'same',
-    );
+    expect(claim({ client_id: 'same' }, basic('same'))).toEqual({ clientId: 'same' });
+    expect(claim({ client_id: 'same', client_assertion: assertion({ sub: 'same' }) })).toEqual({ clientId: 'same' });
     const malformed = new Headers({ authorization: 'Basic !!!' });
-    expect(tokenRequestClientId({ body: { client_id: 'posted' }, headers: malformed })).toBe('posted');
+    expect(claim({ client_id: 'posted' }, malformed)).toEqual({ clientId: 'posted' });
+  });
+
+  it('resolves a client that is really named "conflict" to itself', () => {
+    expect(claim({ client_id: 'conflict' })).toEqual({ clientId: 'conflict' });
+    expect(claim({ client_id: 'conflict' }, basic('conflict'))).toEqual({ clientId: 'conflict' });
   });
 
   it('claims nobody from nothing, or from an assertion it cannot read', () => {
-    expect(tokenRequestClientId({ body: {} })).toBeUndefined();
-    expect(tokenRequestClientId({ body: { client_assertion: 'not-a-jwt' } })).toBeUndefined();
-    expect(tokenRequestClientId({ body: { client_assertion: assertion({ iss: 'no-sub' }) } })).toBeUndefined();
+    expect(claim({})).toEqual({});
+    expect(claim({ client_assertion: 'not-a-jwt' })).toEqual({});
+    expect(claim({ client_assertion: assertion({ iss: 'no-sub' }) })).toEqual({});
   });
 });
