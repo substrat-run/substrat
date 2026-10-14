@@ -40,7 +40,7 @@ export interface LakeQueryEngine {
 }
 
 /** The lake's one table — `LAKE.namespace`.`LAKE.table` in `scripts/lake-provision.mjs`. */
-export const LAKE_TABLE = 'kernel.events';
+const LAKE_TABLE = 'kernel.events';
 
 /**
  * The envelope columns a lake read returns. Deliberately NOT `payload`, `subject_id`,

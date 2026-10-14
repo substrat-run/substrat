@@ -629,12 +629,6 @@ function platformRuntimeFor(env: Env): PlatformRuntime | undefined {
 }
 
 /**
- * Resolves a script's Durable Object namespaces to their dashboard ids, so the console can
- * link a scope to the exact namespace its DO lives in rather than the account-wide list.
- * Same credential slot as the WfP uploader (Workers scripts read); absent ⇒ the route 501s
- * and the console keeps the list-level link.
- */
-/**
  * The Tier-2 lake's query engine (#1334). All three of the account, the read-only token and
  * the bucket, or nothing — and nothing is what keeps `GET …/lake/events` answering 501.
  */
@@ -643,6 +637,12 @@ function lakeQueryFor(env: Env): LakeQueryEngine | undefined {
   return createR2SqlEngine({ accountId: env.CF_ACCOUNT_ID, bucket: env.LAKE_BUCKET, token: env.R2_SQL_TOKEN });
 }
 
+/**
+ * Resolves a script's Durable Object namespaces to their dashboard ids, so the console can
+ * link a scope to the exact namespace its DO lives in rather than the account-wide list.
+ * Same credential slot as the WfP uploader (Workers scripts read); absent ⇒ the route 501s
+ * and the console keeps the list-level link.
+ */
 function doNamespacesFor(env: Env): DoNamespaceReader | undefined {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
   return createCfDoNamespaceReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN });
