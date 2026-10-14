@@ -4,7 +4,7 @@ export interface R2SqlEngineOptions {
   accountId: string;
   /** The lake's bucket — `LAKE.bucket` in `scripts/lake-provision.mjs`. */
   bucket: string;
-  /** An R2 "Admin Read only" token scoped to that bucket (`secrets/README.md`). */
+  /** The query token the secrets tooling pushes as `R2_SQL_TOKEN` (`secrets/README.md`). */
   token: string;
   /** Injected for tests. */
   fetchImpl?: typeof fetch;
@@ -82,8 +82,12 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
  * has exercised them. Until a human has, the control plane is deployed without the bucket
  * var that turns this on, and the gateway's route answers 501.
  *
- * Read-only by its credential, not by its caller: the token is "Admin Read only", which is
- * read-only on the catalog AND on storage, so even a statement that tried to write could not.
+ * **Which permissions the token needs is unverified too.** It is provisioned today as an R2
+ * "Admin Read only" token scoped to the lake bucket. Cloudflare's R2 SQL docs list catalog,
+ * storage and R2 SQL permissions for a query token, and their example grants storage read
+ * and write, so whether read-only is enough has not been checked. The smoke test that turns
+ * this engine on establishes the smallest set that works. This client never writes; the
+ * gateway only ever sends the SELECT it compiled.
  */
 export function createR2SqlEngine(opts: R2SqlEngineOptions): LakeQueryEngine {
   const fetchImpl = opts.fetchImpl ?? fetch;

@@ -272,9 +272,10 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   SUBSTRAT_OUTBOX_STREAM?: { send(records: readonly Record<string, unknown>[]): Promise<unknown> };
   /**
-   * Reads the Tier-2 lake with R2 SQL (#1334) — an R2 "Admin Read only" token scoped to the
-   * lake bucket, pushed by `scripts/secrets.mjs`. Read-only on purpose; the catalog's write
-   * token never reaches a worker.
+   * Reads the Tier-2 lake with R2 SQL (#1334), pushed by `scripts/secrets.mjs`. Provisioned as
+   * an R2 "Admin Read only" token scoped to the lake bucket; whether that permission set is
+   * enough for R2 SQL is part of the smoke test that turns the gateway on (`r2-sql-engine.ts`).
+   * The catalog's write token never reaches a worker.
    */
   R2_SQL_TOKEN?: string;
   /**
