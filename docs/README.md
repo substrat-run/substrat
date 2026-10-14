@@ -193,6 +193,7 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 | document | status | |
 |---|---|---|
 | [agent-surface.md](rfc/agent-surface.md) | `building` | How any agent discovers and works with Substrat. #749 open. |
+| [assistant.md](rfc/assistant.md) | `proposed` | One chat in every product — a thread with an AI, and sometimes a person, that answers and acts as the signed-in user. Argues the stream protocol, the record, the host loop, the UI element, context, memory and the support handoff, and the bar for the experience. |
 | [booking-social.md](rfc/booking-social.md) | `building` | Booking engine shipped; the cross-tenant social tier is not. |
 | [callout-concept.md](rfc/callout-concept.md) | `historical` | The Callout field-service concept — the first demo vertical, which the workorder, invoicing and protocol engines were cut against; the demo is gone, the argument stays. |
 | [callout-testrun.md](rfc/callout-testrun.md) | `historical` | The original test-run spec the first engines (workorder, invoicing) were cut from — kept after the Callout demo was removed. |
