@@ -323,29 +323,28 @@ const clientCredentialsScopes = z.array(z.string().min(1)).min(1);
  *     each of those keys is refused rather than ignored. It always has a secret (the plugin
  *     mints one for a confidential client) and must name the scopes it may hold.
  */
-const relyingPartyCreate = z
-  .object({
+const clientCreateBase = z.object({
+  client_name: z.string().min(1),
+  logo_uri: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  disabled: z.boolean().optional(),
+});
+
+const relyingPartyCreate = clientCreateBase
+  .extend({
     application_type: z.enum(['web', 'native']).optional(),
-    client_name: z.string().min(1),
     redirect_uris: z.array(z.string().min(1)).min(1),
-    logo_uri: z.string().optional(),
-    metadata: z.record(z.string(), z.unknown()).optional(),
     skip_consent: z.boolean().optional(),
-    disabled: z.boolean().optional(),
     enable_end_session: z.boolean().optional(),
     post_logout_redirect_uris: z.array(z.string().min(1)).optional(),
     token_endpoint_auth_method: z.enum(['client_secret_basic', 'client_secret_post', 'none']).optional(),
   })
   .strict();
 
-const machineCreate = z
-  .object({
+const machineCreate = clientCreateBase
+  .extend({
     application_type: z.literal('machine'),
-    client_name: z.string().min(1),
     client_credentials_scopes: clientCredentialsScopes,
-    logo_uri: z.string().optional(),
-    metadata: z.record(z.string(), z.unknown()).optional(),
-    disabled: z.boolean().optional(),
   })
   .strict();
 
@@ -516,7 +515,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
        * value is `[]` plus the reason, so the form can say why it has nothing to offer.
        */
       machineScopes: machine.scopes,
-      ...(machine.error ? { machineScopesError: machine.error } : {}),
+      machineScopesError: machine.error,
     };
   };
 
@@ -790,12 +789,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
         clientId,
       )
       .toArray()[0] as
-      | {
-          application_type: string | null;
-          redirect_uris: string | null;
-          post_logout_redirect_uris: string | null;
-          grant_types: string | null;
-        }
+      | Pick<ClientRow, 'application_type' | 'redirect_uris' | 'post_logout_redirect_uris' | 'grant_types'>
       | undefined;
     if (!exists) throw new HTTPException(404, { message: `unknown client '${clientId}'` });
 

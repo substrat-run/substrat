@@ -362,11 +362,7 @@ export function ClientEditor({
    * is only offered the kinds on its own side of that line.
    */
   const machine = type === 'machine';
-  const kinds = !client
-    ? APPLICATION_TYPES
-    : client.application_type === 'machine'
-      ? (['machine'] as ApplicationType[])
-      : APPLICATION_TYPES.filter((t) => t !== 'machine');
+  const kinds = APPLICATION_TYPES.filter((t) => !client || (t === 'machine') === (client.application_type === 'machine'));
   const [scopes, setScopes] = useState<string[]>(client?.client_credentials_scopes ?? []);
   /** The issuer's `MACHINE_SCOPES` — what the scope boxes offer. `null` until read. */
   const [ceiling, setCeiling] = useState<IssuerSettings | null>(null);
@@ -451,22 +447,24 @@ export function ClientEditor({
     // there must not survive past the fields, which would otherwise win only when non-empty.
     delete metadata.theme;
     delete metadata.signIn;
+    const common = {
+      client_name: name.trim(),
+      metadata,
+      disabled: client?.disabled ?? false,
+      // An EDIT always names `logo_uri`, empty included: the PATCH reads `''` as "clear it"
+      // and an absent key as "leave it alone", so omitting a field the operator just emptied
+      // is how a logo becomes unremovable — the box goes blank, the save succeeds, and the
+      // consent screen keeps the icon. Registration still omits it: the plugin's own
+      // registration body is the one that validates the URI, and `''` is not one.
+      ...(icon.trim() ? { logo_uri: icon.trim() } : client ? { logo_uri: '' } : {}),
+    };
     if (machine) {
       if (!ceiling) return setErr('Scopes: still loading the issuer’s machine scopes — try again in a moment.');
       // A held scope that has left MACHINE_SCOPES is dropped rather than sent: the API refuses
       // any scope outside the list, and the token endpoint already stopped granting it.
       const kept = scopes.filter((s) => ceiling.machineScopes.includes(s));
       if (!kept.length) return setErr('Scopes: tick at least one — a machine client with none could never get a token.');
-      const machineDraft: MachineClientDraft = {
-        client_name: name.trim(),
-        application_type: 'machine',
-        client_credentials_scopes: kept,
-        metadata,
-        disabled: client?.disabled ?? false,
-        // Same rule as a relying party's logo, below.
-        ...(icon.trim() ? { logo_uri: icon.trim() } : client ? { logo_uri: '' } : {}),
-      };
-      return persist(machineDraft);
+      return persist({ ...common, application_type: 'machine', client_credentials_scopes: kept });
     }
     // Reassemble the theme: the untouched extra keys, then the fields (empty = remove).
     const fields: [string, string][] = [
@@ -500,20 +498,12 @@ export function ClientEditor({
       metadata.signIn = draftToStored(draft, offered, builtin);
     }
     const clientDraft: ClientDraft = {
-      client_name: name.trim(),
+      ...common,
       application_type: type as ClientDraft['application_type'],
       redirect_uris: uris.split('\n').map((u) => u.trim()).filter(Boolean),
-      metadata,
       skip_consent: skipConsent,
       enable_end_session: endSession,
       post_logout_redirect_uris: logoutUris.split('\n').map((u) => u.trim()).filter(Boolean),
-      disabled: client?.disabled ?? false,
-      // An EDIT always names `logo_uri`, empty included: the PATCH reads `''` as "clear it"
-      // and an absent key as "leave it alone", so omitting a field the operator just emptied
-      // is how a logo becomes unremovable — the box goes blank, the save succeeds, and the
-      // consent screen keeps the icon. Registration still omits it: the plugin's own
-      // registration body is the one that validates the URI, and `''` is not one.
-      ...(icon.trim() ? { logo_uri: icon.trim() } : client ? { logo_uri: '' } : {}),
     };
     return persist(clientDraft);
   };
@@ -580,7 +570,12 @@ export function ClientEditor({
           {machine && (
             <MachineScopes ceiling={ceiling} chosen={scopes} onChange={setScopes} />
           )}
-          <Field label="Logo URL" value={icon} onChange={setIcon} hint="Optional. Shown beside the name on the consent screen." />
+          <Field
+            label="Logo URL"
+            value={icon}
+            onChange={setIcon}
+            hint={machine ? 'Optional. Shown beside the name in this console.' : 'Optional. Shown beside the name on the consent screen.'}
+          />
         </>
       )}
       {!builtin && !machine && (

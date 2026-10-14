@@ -1001,15 +1001,14 @@ export interface IssuerSettings {
   machineScopesError?: string;
 }
 
-/** The settings this console writes. */
-export type WritableIssuerSettings = Pick<IssuerSettings, 'allowSignup' | 'accountLinking'>;
-
 export async function issuerSettings(): Promise<IssuerSettings> {
   return admin('/settings');
 }
 
 /** A partial patch: only the settings named are written, so one control cannot revert another. */
-export async function setIssuerSettings(patch: Partial<WritableIssuerSettings>): Promise<IssuerSettings> {
+export async function setIssuerSettings(
+  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking'>>,
+): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
 }
 

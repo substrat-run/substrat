@@ -17,6 +17,7 @@ import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
 import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
 import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
 import { USER_DELEGATED_SCOPES } from './settings.js';
+import { basicCredentialsOf } from './token-exchange.js';
 import {
   authorityOf,
   callbackProviderOf,
@@ -354,15 +355,8 @@ async function withoutMachineScopes(
 function tokenRequestClientId(ctx: ScopeHookCtx): string | undefined {
   const body = ctx.body as Record<string, unknown> | undefined;
   if (typeof body?.client_id === 'string' && body.client_id) return body.client_id;
-  const header = ctx.headers?.get('authorization');
-  if (!header?.toLowerCase().startsWith('basic ')) return undefined;
-  try {
-    const decoded = atob(header.slice(6).trim());
-    const colon = decoded.indexOf(':');
-    return colon > 0 ? decodeURIComponent(decoded.slice(0, colon)) : undefined;
-  } catch {
-    return undefined;
-  }
+  const basic = basicCredentialsOf(ctx.headers?.get('authorization'));
+  return basic && basic !== 'malformed' ? basic.clientId : undefined;
 }
 
 /**
@@ -688,13 +682,12 @@ function betterAuthFor(deps: AuthDeps) {
       before: createAuthMiddleware(async (ctx) => {
         if (ctx.path === '/oauth2/token') return machineGrantCeiling(ctx, machineScopes);
         if (ctx.path !== '/oauth2/authorize') return;
-        const asked = ctx.query as Record<string, string | undefined> | undefined;
-        const clientId = asked?.client_id;
+        const query = ctx.query as Record<string, string | undefined> | undefined;
+        const clientId = query?.client_id;
         if (!clientId) return;
         // Before the policy, so a refusal below re-asks with the narrowed scope too.
-        const scope = await withoutMachineScopes(ctx, clientId, asked?.scope, machineScopes);
-        const query = scope === undefined ? asked : { ...asked, scope };
-        const narrowed = scope === undefined ? undefined : { context: { query } };
+        const scope = await withoutMachineScopes(ctx, clientId, query?.scope, machineScopes);
+        const narrowed = scope === undefined ? undefined : { context: { query: { ...query, scope } } };
         const policy = deps.signInPolicyFor?.(clientId);
         // No session is not this hook's business: the plugin already sends that person to the
         // login screen, which applies the same policy to what it draws.
@@ -702,7 +695,7 @@ function betterAuthFor(deps: AuthDeps) {
         if (!session) return narrowed;
         const method = (session.session as Record<string, unknown>).signInProvider;
         if (method !== 'invitation' && policyAdmits(policy, typeof method === 'string' ? method : null, session.user.email)) return narrowed;
-        return { context: { query: { ...query, max_age: '0' } } };
+        return { context: { query: { ...(narrowed?.context.query ?? query), max_age: '0' } } };
       }),
       /**
        * THE SIGN-IN LOG (`src/sign-in-log.ts`) — both ends of a federated round trip, recorded.

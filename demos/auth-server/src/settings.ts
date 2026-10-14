@@ -1,3 +1,4 @@
+import { DEFAULT_OAUTH_SCOPES } from '@better-auth/oauth-provider';
 import type { EnvVarSpec } from '@substrat-run/contracts';
 import type { SqlExec } from './introspect.js';
 
@@ -80,11 +81,12 @@ export function boolValue(on: boolean): string {
 export const MACHINE_SCOPES = 'MACHINE_SCOPES';
 
 /**
- * The scopes a person grants an application by signing in — the plugin's own defaults, and
- * the four it refuses as `client_credentials` scopes. A machine token has nobody behind it,
- * so none of them can mean anything on one.
+ * The scopes a person grants an application by signing in — the plugin's own defaults, which
+ * are also exactly the ones it refuses as `client_credentials` scopes. A machine token has
+ * nobody behind it, so none of them can mean anything on one. Imported rather than restated,
+ * so an upgrade that changes the list changes it here too.
  */
-export const USER_DELEGATED_SCOPES: readonly string[] = ['openid', 'profile', 'email', 'offline_access'];
+export const USER_DELEGATED_SCOPES: readonly string[] = DEFAULT_OAUTH_SCOPES;
 
 /** RFC 6749 §3.3 `scope-token`: printable ASCII, no space, `"` or `\`. */
 const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
