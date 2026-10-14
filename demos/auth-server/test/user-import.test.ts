@@ -12,6 +12,7 @@ import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
 import { publicProvidersFrom, readProviders } from '../src/providers.js';
 import type { ImportResult } from '../src/user-import-wire.js';
+import { parseImportFile, unverifiedNotice } from '../app/src/user-import-file.js';
 
 /**
  * Moving people here from another issuer (`src/user-import.ts`).
@@ -144,7 +145,9 @@ describe('an imported person signs in with the password they already had', () =>
     const result = await imported({
       users: [{ id: LEGACY_ID, email: 'Ada@Example.test', name: 'Ada', emailVerified: true, passwordHash: bcryptOf('old-password-1') }],
     });
-    expect(result.results).toEqual([{ id: LEGACY_ID, outcome: 'created', password: true, accounts: [], skippedAccounts: [] }]);
+    expect(result.results).toEqual([
+      { id: LEGACY_ID, outcome: 'created', password: true, accounts: [], skippedAccounts: [], emailVerified: true },
+    ]);
 
     expect((await signIn('ada@example.test', 'not-it-at-all')).status).toBe(401);
 
@@ -272,6 +275,56 @@ describe('dryRun', () => {
     expect(real.dryRun).toBe(false);
     expect(dry.results).toEqual(real.results);
     expect(real.counts).toEqual({ created: 2, merged: 0, unchanged: 1, conflict: 1 });
+  });
+});
+
+describe('an address that arrives unverified is counted, and still stored unverified (#1359)', () => {
+  const verifiedOf = (id: string): number | undefined =>
+    (db.prepare('SELECT email_verified AS v FROM user WHERE id = ?').get(id) as { v: number } | undefined)?.v;
+
+  const mixed = {
+    users: [
+      { id: 'auth2|yes', email: 'yes@example.test', emailVerified: true },
+      { id: 'auth2|no', email: 'no@example.test', emailVerified: false },
+      { id: 'auth2|silent', email: 'silent@example.test' },
+    ],
+  };
+
+  it('a dry run counts no flag apart from false, and the real run reports the same', async () => {
+    const dry = await imported({ ...mixed, dryRun: true });
+    expect(dry.unverified).toEqual({ unasserted: 1, unverified: 1 });
+    expect(dry.results.map((r) => (r.outcome === 'created' ? r.emailVerified : 'not created'))).toEqual([true, false, null]);
+
+    const real = await imported(mixed);
+    expect(real.unverified).toEqual(dry.unverified);
+    expect(real.results).toEqual(dry.results);
+  });
+
+  it('stores exactly what it stored before: true is verified, false and no flag are not', async () => {
+    await imported(mixed);
+    expect([verifiedOf('auth2|yes'), verifiedOf('auth2|no'), verifiedOf('auth2|silent')]).toEqual([1, 0, 0]);
+  });
+
+  it('a file where everyone is verified counts nobody', async () => {
+    const all = await imported({ users: [mixed.users[0]!, { id: 'auth2|also', email: 'also@example.test', emailVerified: true }] });
+    expect(all.counts.created).toBe(2);
+    expect(all.unverified).toEqual({ unasserted: 0, unverified: 0 });
+  });
+
+  it('never counts a person merged onto a row already here, whose own flag is kept', async () => {
+    await imported({ users: [mixed.users[0]!] });
+    // The second run carries no flag, but the person is already here — verified — and stays so.
+    const again = await imported({ users: [{ id: 'auth2|yes', email: 'yes@example.test', passwordHash: bcryptOf('pw-123456') }] });
+    expect(again.counts).toMatchObject({ created: 0, merged: 1 });
+    expect(again.unverified).toEqual({ unasserted: 0, unverified: 0 });
+    expect(verifiedOf('auth2|yes')).toBe(1);
+  });
+
+  it('an export with no email_verified column arrives as people with no flag, every one counted', async () => {
+    const { users } = parseImportFile('export.csv', 'user_id,email\nauth2|a,a@example.test\nauth2|b,b@example.test');
+    const dry = await imported({ users, dryRun: true });
+    expect(dry.unverified).toEqual({ unasserted: 2, unverified: 0 });
+    expect(unverifiedNotice(dry)[0]).toMatch(/^2 of the 2 new people have no email_verified in the file/);
   });
 });
 

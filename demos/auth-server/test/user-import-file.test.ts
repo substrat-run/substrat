@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { batchesOf, csvRows, inFileRows, parseImportFile } from '../app/src/user-import-file.js';
+import { batchesOf, csvRows, inFileRows, mergeBatchResults, parseImportFile, unverifiedNotice } from '../app/src/user-import-file.js';
+import type { ImportOutcome } from '../src/user-import-wire.js';
 
 /**
  * The browser half of "Import users": a dropped file → the import body. The server holds
@@ -82,6 +83,71 @@ describe('JSON', () => {
   it('says so when it is not JSON at all', () => {
     expect(() => parseImportFile('a.json', '{nope')).toThrow(/not valid JSON/);
   });
+});
+
+describe('the unverified-address notice (#1359)', () => {
+  const run = (created: number, unasserted: number, unverified: number, dryRun = true) => ({
+    dryRun,
+    counts: { created, merged: 0, unchanged: 0, conflict: 0 },
+    unverified: { unasserted, unverified },
+  });
+
+  it('says nothing when every new person is verified', () => {
+    expect(unverifiedNotice(run(3, 0, 0))).toEqual([]);
+  });
+
+  it('warns about people with no flag, and says how to fix the export', () => {
+    expect(unverifiedNotice(run(3, 2, 0))).toEqual([
+      '2 of the 3 new people have no email_verified in the file, so they will be imported as unverified. ' +
+        'A relying party that identifies someone by address (a staff roster, an invite) refuses an unverified one ' +
+        'until they verify it. If the old issuer had verified them, add an email_verified column to the export and ' +
+        'drop the file again.',
+    ]);
+  });
+
+  it('names people read as not verified (false, or a spelling other than 1/true/yes) on a line of their own', () => {
+    expect(unverifiedNotice(run(3, 0, 1))).toEqual(['1 of the 3 new people is read as not verified from the file and will be imported that way.']);
+  });
+
+  it('agrees in number', () => {
+    const [unasserted, unverified] = unverifiedNotice(run(1, 1, 1));
+    expect(unasserted).toMatch(/^1 of the 1 new person has no email_verified/);
+    expect(unverified).toMatch(/^1 of the 1 new person is read as not verified/);
+    expect(unverifiedNotice(run(4, 0, 2))[0]).toMatch(/^2 of the 4 new people are read as not verified/);
+  });
+
+  it('speaks in the past once the import has run', () => {
+    const [unasserted, unverified] = unverifiedNotice(run(5, 2, 1, false));
+    expect(unasserted).toContain('so they were imported as unverified');
+    expect(unverified).toContain('were imported that way');
+  });
+});
+
+it('reads a spelling other than 1/true/yes as not verified — which is why the notice says "read as"', () => {
+  expect(parseImportFile('x.csv', 'id,email,email_verified\n1,a@example.test,Y').users[0]!.emailVerified).toBe(false);
+});
+
+it('sums every count across the real run’s batches, the unverified ones included', () => {
+  const created = (id: string, emailVerified: boolean | null): ImportOutcome =>
+    ({ id, outcome: 'created', password: false, accounts: [], skippedAccounts: [], emailVerified });
+  const merged = mergeBatchResults([
+    {
+      dryRun: false,
+      results: [created('1', null), created('2', false)],
+      counts: { created: 2, merged: 0, unchanged: 0, conflict: 0 },
+      unverified: { unasserted: 1, unverified: 1 },
+    },
+    {
+      dryRun: false,
+      results: [created('3', null), { id: '4', outcome: 'unchanged', skippedAccounts: [] }],
+      counts: { created: 1, merged: 0, unchanged: 1, conflict: 0 },
+      unverified: { unasserted: 1, unverified: 0 },
+    },
+  ]);
+  expect(merged.dryRun).toBe(false);
+  expect(merged.results.map((r) => r.id)).toEqual(['1', '2', '3', '4']);
+  expect(merged.counts).toEqual({ created: 3, merged: 0, unchanged: 1, conflict: 0 });
+  expect(merged.unverified).toEqual({ unasserted: 2, unverified: 1 });
 });
 
 it('splits into the server’s batch size', () => {

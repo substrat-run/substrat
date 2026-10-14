@@ -1,4 +1,11 @@
-import { IMPORT_BATCH_LIMIT, type ImportEntry } from '../../src/user-import-wire.js';
+import {
+  IMPORT_BATCH_LIMIT,
+  emptyCounts,
+  emptyUnverified,
+  type ImportEntry,
+  type ImportOutcome,
+  type ImportResult,
+} from '../../src/user-import-wire.js';
 
 export type { ImportEntry };
 
@@ -162,6 +169,47 @@ function isoOf(value: string, line: number): string {
           : new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`line ${line}: created_at '${value}' is not a date`);
   return date.toISOString();
+}
+
+/**
+ * What the run says about new people whose address arrives unverified (#1359) — empty when
+ * there are none. The import still stores them unverified; this only makes an export that
+ * dropped the `email_verified` column visible before it locks them out of whatever identifies
+ * them by address.
+ */
+export function unverifiedNotice(result: Pick<ImportResult, 'dryRun' | 'counts' | 'unverified'>): string[] {
+  const { created } = result.counts;
+  const { unasserted, unverified } = result.unverified;
+  const of = (n: number): string => `${n} of the ${created} new ${created === 1 ? 'person' : 'people'}`;
+  const lines: string[] = [];
+  if (unasserted > 0) {
+    lines.push(
+      `${of(unasserted)} ${unasserted === 1 ? 'has' : 'have'} no email_verified in the file, so ` +
+        `they ${result.dryRun ? 'will be' : 'were'} imported as unverified. ` +
+        'A relying party that identifies someone by address (a staff roster, an invite) refuses an unverified one ' +
+        'until they verify it. If the old issuer had verified them, add an email_verified column to the export and ' +
+        'drop the file again.',
+    );
+  }
+  if (unverified > 0) {
+    lines.push(
+      `${of(unverified)} ${unverified === 1 ? 'is' : 'are'} read as not verified from the file and ` +
+        `${result.dryRun ? 'will be' : 'were'} imported that way.`,
+    );
+  }
+  return lines;
+}
+
+/** The real run's batches as one report: outcomes in file order, every count summed. */
+export function mergeBatchResults(batches: ImportResult[]): ImportResult {
+  const merged: ImportResult = { dryRun: false, results: [], counts: emptyCounts(), unverified: emptyUnverified() };
+  for (const result of batches) {
+    merged.results.push(...result.results);
+    for (const [k, v] of Object.entries(result.counts) as [ImportOutcome['outcome'], number][]) merged.counts[k] += v;
+    merged.unverified.unasserted += result.unverified.unasserted;
+    merged.unverified.unverified += result.unverified.unverified;
+  }
+  return merged;
 }
 
 /** Split into the server's write batch size (`IMPORT_BATCH_LIMIT`). */

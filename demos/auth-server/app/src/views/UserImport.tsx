@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { importUsers } from '../api';
-import { batchesOf, inFileRows, parseImportFile } from '../user-import-file';
+import { batchesOf, inFileRows, mergeBatchResults, parseImportFile, unverifiedNotice } from '../user-import-file';
 import {
   DRY_RUN_LIMIT,
   IMPORT_BATCH_LIMIT,
-  emptyCounts,
   type ImportEntry,
   type ImportOutcome,
   type ImportResult,
@@ -43,15 +42,13 @@ export function ImportUsers({ onImported }: { onImported: () => void }) {
   };
 
   const write = async (users: ImportEntry[]): Promise<ImportResult> => {
-    const merged: ImportResult = { dryRun: false, results: [], counts: emptyCounts() };
+    const results: ImportResult[] = [];
     for (const [i, batch] of batchesOf(users).entries()) {
       const first = i * IMPORT_BATCH_LIMIT;
       setBusy(`Importing ${first + 1}–${first + batch.length} of ${users.length}…`);
-      const result = await inFileRows(first, () => importUsers(batch, false));
-      merged.results.push(...result.results);
-      for (const [k, v] of Object.entries(result.counts) as [ImportOutcome['outcome'], number][]) merged.counts[k] += v;
+      results.push(await inFileRows(first, () => importUsers(batch, false)));
     }
-    return merged;
+    return mergeBatchResults(results);
   };
 
   const load = async (picked: File | undefined) => {
@@ -110,6 +107,7 @@ export function ImportUsers({ onImported }: { onImported: () => void }) {
             {done ? 'Imported: ' : `Dry run of ${file?.users.length} — nothing written yet: `}
             {shown.counts.created} new · {shown.counts.merged} merged · {shown.counts.unchanged} unchanged · {shown.counts.conflict} conflicts
           </p>
+          {unverifiedNotice(shown).map((line, i) => <p key={i} className="notice">{line}</p>)}
           <Problems results={shown.results} />
         </>
       )}

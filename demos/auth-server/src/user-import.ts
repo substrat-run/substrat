@@ -5,6 +5,7 @@ import {
   DRY_RUN_LIMIT,
   IMPORT_BATCH_LIMIT,
   emptyCounts,
+  emptyUnverified,
   type ImportEntry,
   type ImportOutcome,
   type ImportResult,
@@ -22,7 +23,9 @@ import {
  *
  * What one entry may carry, and what becomes of it:
  *
- *  - the user row — id, email, name, whether the email was verified, when they joined;
+ *  - the user row — id, email, name, whether the email was verified, when they joined. An
+ *    entry with no `emailVerified` is stored as unverified, never guessed verified, and the
+ *    result counts such new people (`UnverifiedCounts`) so a dry run shows the lockout first;
  *  - a password, as the old issuer's bcrypt hash. Stored as the `credential` account Better
  *    Auth's own sign-up writes, and checked by `legacyAwarePassword` until they next set one;
  *  - the upstream identities they signed in with (`github` + GitHub's numeric user id, …), as
@@ -129,8 +132,12 @@ export function importUsers(
   const run = (): ImportOutcome[] => body.users.map((entry) => importOne(sql, entry, dryRun, planned, now));
   const results = dryRun ? run() : transaction(run);
   const counts = emptyCounts();
-  for (const r of results) counts[r.outcome] += 1;
-  return { dryRun, results, counts };
+  const unverified = emptyUnverified();
+  for (const r of results) {
+    counts[r.outcome] += 1;
+    if (r.outcome === 'created' && r.emailVerified !== true) unverified[r.emailVerified === null ? 'unasserted' : 'unverified'] += 1;
+  }
+  return { dryRun, results, counts, unverified };
 }
 
 function importOne(sql: SqlExec, entry: ImportedUser, dryRun: boolean, planned: Planned, now: number): ImportOutcome {
@@ -237,5 +244,7 @@ function importOne(sql: SqlExec, entry: ImportedUser, dryRun: boolean, planned: 
     }
   }
 
-  return { id: entry.id, outcome: exists ? 'merged' : 'created', password: addPassword, accounts, skippedAccounts };
+  return exists
+    ? { id: entry.id, outcome: 'merged', password: addPassword, accounts, skippedAccounts }
+    : { id: entry.id, outcome: 'created', password: addPassword, accounts, skippedAccounts, emailVerified: entry.emailVerified ?? null };
 }
