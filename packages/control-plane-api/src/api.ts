@@ -1461,7 +1461,9 @@ async function answeredMessage(res: Response): Promise<string> {
   const body = (await res.clone().json().catch(() => null)) as Record<string, unknown> | null;
   const error = typeof body?.['error'] === 'string' ? body['error'] : typeof body?.['title'] === 'string' ? body['title'] : null;
   const detail = typeof body?.['detail'] === 'string' ? body['detail'] : null;
-  if (error && detail) return `${error}: ${detail}`;
+  // A problem document carries its sentence twice (`detail`, and the deprecated `error`
+  // duplicate, #113); the row names it once.
+  if (error && detail && detail !== error) return `${error}: ${detail}`;
   return error ?? detail ?? `HTTP ${res.status}`;
 }
 
