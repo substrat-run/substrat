@@ -1,5 +1,25 @@
 # @substrat-run/connector-fortnox
 
+## 0.4.49
+
+### Patch Changes
+
+- 7322e07: The platform's Fortnox Connect flow now asks for the `supplierinvoice` scope alongside `bookkeeping` and `companyinformation`. The connector does not choose scopes (its caller passes them in); this release only documents the new default and has its mock return it, and it has no supplier invoice code yet. A company connected before this has to go through Connect again before the new scope applies, and the integration must have the Supplier Invoice permission enabled in the Fortnox Developer Portal.
+- Updated dependencies [9926c53]
+- Updated dependencies [8ff761c]
+- Updated dependencies [cb957bc]
+- Updated dependencies [cb957bc]
+- Updated dependencies [4d14a81]
+- Updated dependencies [5b1c20f]
+- Updated dependencies [1ce756e]
+- Updated dependencies [b854efd]
+- Updated dependencies [23840a7]
+- Updated dependencies [1ad1426]
+- Updated dependencies [b4bb938]
+- Updated dependencies [cb957bc]
+  - @substrat-run/contracts@0.147.0
+  - @substrat-run/kernel@0.147.0
+
 ## 0.4.48
 
 ### Patch Changes

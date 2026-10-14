@@ -1,5 +1,27 @@
 # @substrat-run/router
 
+## 0.4.10
+
+### Patch Changes
+
+- b4bb938: A restore re-erases tombstoned subjects from scope stores without ever refusing the restore. The replay reads the target scope's erasure marks and, when the source is a scope of the same tenant on this host, the source's too. When the source is unknown (another host's backup, an upload, a deleted snapshot), the restore still lands and returns `storeErasureIncomplete: true` with `storeErasureSourceUnknown: true`; the restore route answers `incomplete` and `sourceUnknown`. The result is present only when `storeErasuresReplayed > 0` or `storeErasureIncomplete`; absent means no erasure had to be replayed and none is missing, which is also what `restoreScope` returned before. The kernel exports `replayStoreErasures`, which both adapters and the control plane use. A hosted snapshot reports its fork's replay on its answer the same way. The restore route refuses, before any write, a dump store whose binding the destination's version does not declare or whose kind differs. The control plane now names a scope's stores from the version its script runs, through one resolver, `scopeStoresOf`, used for backup, full pull, the full tenant export, snapshot, reap, restore, erasure and the sweep. Before, an install on the serving pin was backed up, reaped, restored and erased without its store. The router's route read applies the same rule, and gives a scope pinned to a script other than the current serving one no store. A store list that cannot be resolved refuses with 503 once a store kind is registered (`mayHoldScopeStores` in contracts), and a hosted control plane with no route to the store scripts refuses rather than skips (`unreachablePlatformScopeStores`). A store-call validator is no longer duplicated: the store-call request uses contracts' `storeOperationName`, which also refuses whitespace other than a space. An orchestrated shred with no platform path to the stores no longer hands the host an empty erasure list, so a host with co-located stores erases them in the finalize, as its direct shred does. A vertical no longer serves `/internal/scope-store-sizes`, `/internal/scope-store-erase`, `/internal/scope-store-export` or `/internal/scope-store-import`, and `VerticalClient` loses `scopeStoreSizes`, `scopeStoreErase`, `scopeStoreExport` and `scopeStoreImport`: the control plane signs the object name and calls the store script itself, for size, erase, export, import and wipe, so the vertical holds neither the store namespace nor the key.
+- Updated dependencies [9926c53]
+- Updated dependencies [7a1ab65]
+- Updated dependencies [8ff761c]
+- Updated dependencies [873d117]
+- Updated dependencies [cb957bc]
+- Updated dependencies [cb957bc]
+- Updated dependencies [4d14a81]
+- Updated dependencies [5b1c20f]
+- Updated dependencies [1ce756e]
+- Updated dependencies [b854efd]
+- Updated dependencies [23840a7]
+- Updated dependencies [1ad1426]
+- Updated dependencies [b4bb938]
+- Updated dependencies [cb957bc]
+  - @substrat-run/contracts@0.147.0
+  - @substrat-run/adapter-cloudflare@0.147.0
+
 ## 0.4.9
 
 ### Patch Changes

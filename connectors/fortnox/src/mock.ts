@@ -147,7 +147,7 @@ export class FortnoxMock {
           access_token: token,
           token_type: 'bearer',
           expires_in: this.expiresIn,
-          scope: 'bookkeeping companyinformation',
+          scope: 'bookkeeping companyinformation supplierinvoice',
         });
       }
       if ((headers['TenantId'] ?? '') !== this.tenantId) {
@@ -164,7 +164,7 @@ export class FortnoxMock {
         access_token: token,
         token_type: 'bearer',
         expires_in: this.expiresIn,
-        scope: 'bookkeeping companyinformation',
+        scope: 'bookkeeping companyinformation supplierinvoice',
       });
     }
 

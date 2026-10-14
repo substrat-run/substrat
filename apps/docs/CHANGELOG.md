@@ -1,5 +1,14 @@
 # @substrat-run/docs
 
+## 0.1.26
+
+### Patch Changes
+
+- 8ff761c: The control plane now refuses a vertical's own durable-object binding that takes a per-tenant or scope store's name, as the push already did. Both use `storeNamesOfBindings`. A scope store's error envelope is read only with a status from 400 to 599, and a `StoreError` carries the store's body to a client only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). Both adapters start and stop scope-store runners through `scopeStoreLifecycleOf`. A retried start no longer starts a runner twice. `close` waits for a start in flight, so no runner starts after it, and then calls `stop` on every runner even when one throws, reporting several failures as an `AggregateError`. An own durable-object binding is also compared with the injected per-tenant and scope runtime names, as every static binding is.
+- cb957bc: A vertical can declare `scopeStores`: one platform-run object per scope, a binding plus a kind. The only kind is `graph`, and it has no default. A hosted upload carries no store binding: the vertical's calls go through the platform. A binding already used by another store is refused, and so is `ATTACHMENTS`. A kind with no registration is refused by the push and again by the control plane. No kind is registered yet, so declaring a scope store does not deploy one.
+- cb957bc: A concept page for scope stores: one platform-run object per scope, declared as a binding and a kind, reached through `getScopeStore`. Hosted deploy of the store script is not available until the kind is registered.
+- b4bb938: The scope-store concept page says what a vertical can use today (nothing is live until a store kind is registered) and covers the platform call path, what an invocation line records, erasure, snapshot, restore, export and backup — including that a store's tables in a backup are not sealed per subject — the storage meter, and the known limits.
+
 ## 0.1.25
 
 ### Patch Changes

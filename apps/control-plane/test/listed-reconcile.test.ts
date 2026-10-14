@@ -562,6 +562,28 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
       expect(await outcome({})).toEqual({ retirementsFinished: true, boundShapes: [] });
     });
 
+    /**
+     * #2263: the sweep accepts the ownerless reconcile, and an ownerless answer (`owner: null`, no
+     * report) leaves a retiring version's install unfinished, so the sweep keeps asking — no worse
+     * than the `unsupported` it was — while one with nothing to retire gets its receipt.
+     */
+    it('asks for the ownerless reconcile, and an ownerless answer finishes no retirement (#2263)', async () => {
+      const s = await wipedScope(t, false);
+      const retiring = [{ entityType: 'employee', permissions: [], retired: ['perm:use'], bootstrap: true as const }];
+      const asked: unknown[] = [];
+      const ownerless = {
+        reconcileInstance: async (input: { tenantId: TenantId; scopeId: ScopeId; ownerless?: string }) => {
+          asked.push(input.ownerless);
+          return { tenantId: input.tenantId, scopeId: input.scopeId, owner: null };
+        },
+      };
+      const outcome = (entityGrants?: typeof retiring) =>
+        reconcileReachedScope(host.admin, { tenantId: t, scopeId: s }, ownerless as never, { ...payload, ...(entityGrants ? { entityGrants } : {}) } as never);
+      expect(await outcome(retiring)).toEqual({ retirementsFinished: false, boundShapes: [] });
+      expect(await outcome()).toEqual({ retirementsFinished: true, boundShapes: [] });
+      expect(asked).toEqual(['seat', 'seat']);
+    });
+
     /** #2184: and which binding shapes links have bound in it, from the same answer. */
     it('answers the binding shapes the deployment reported bound, of those its payload holds by a table (#2184)', async () => {
       const s = await wipedScope(t, false);
@@ -650,7 +672,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     const legacy: ScopeId[] = [];
     /** The serving script's copy of the data: the marker did not survive into it. */
     const serving = {
-      exportScope: async (s: string) => ({ tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [] }),
+      exportScope: async (s: string) => ({ tenantId: t, scopeId: s, capturedAt: new Date().toISOString(), tables: [], stores: [] }),
       // A move exports stamped (#1722); a deployment that predates the stamp answers none.
       exportScopeStamped: async () => ({ tables: [], loadStamp: null, revision: null }),
       // The copy lands with the grants live and no marker; the carried list (#1742) goes back

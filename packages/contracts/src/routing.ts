@@ -216,6 +216,13 @@ export const routeTarget = z.object({
    */
   calls: z.array(verticalSlug).nullable().default(null),
   /**
+   * Scope stores the dispatched version declares (#2207): `{ binding, kind }` from
+   * the same manifest. The router hands the list to egress, which is what a store
+   * call is judged against. Defaulted to `[]`, so a resolver that predates the
+   * field parses, and a store call is refused until a version declares one.
+   */
+  scopeStores: z.array(z.object({ binding: z.string(), kind: z.string() })).default([]),
+  /**
    * Whether the scope is the real install (`isPrimaryScope`, #2005) — false for a fork, a
    * snapshot or a preview of either kind. The router hands it to the egress worker, which
    * refuses a non-primary scope's third-party subrequests: those scopes cause no outbound

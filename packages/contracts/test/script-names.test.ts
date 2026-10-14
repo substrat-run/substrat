@@ -8,11 +8,15 @@ import { describe, expect, it } from 'vitest';
 // The repo's wrangler JSONC reader: string-aware comments and trailing commas (tools/jsonc.mjs).
 import { parseJsonc } from '../../../tools/jsonc.mjs';
 import {
+  createTenantInput,
   PLATFORM_SCRIPT_NAMES,
   platformScriptCollision,
   registerVerticalInput,
   ROUTER_SCRIPT_NAMES,
+  scopeStoreScriptName,
+  slug as tenantSlug,
   verticalScriptStem,
+  verticalSlug,
 } from '../src/index.js';
 
 const ROOT = new URL('../../../', import.meta.url);
@@ -113,5 +117,94 @@ describe('platform script names (#1923)', () => {
       expect(JSON.stringify(parsed.error?.issues), slug).toContain('platform');
     }
     expect(registerVerticalInput.safeParse({ slug: 'acme/router', name: 'x', source: 'cli' }).success).toBe(true);
+  });
+});
+
+describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
+  const KINDS = ['graph', 'g2', 'graphx'];
+  const VERTICALS = [
+    'crm',
+    'acme-crm',
+    'acme/crm',
+    'acme/crm-x',
+    'acme-crm/x',
+    'acme-crm-x',
+    'a/b-c',
+    'a-b/c',
+    'a-b-c',
+    't-0wv2mwk4j5/crm',
+  ];
+
+  it('gives distinct (kind, vertical) pairs distinct names, and the same pair the same name', () => {
+    const seen = new Map<string, string>();
+    for (const kind of KINDS) {
+      for (const vertical of VERTICALS) {
+        const name = scopeStoreScriptName(vertical, kind);
+        const pair = `${kind} ${vertical}`;
+        expect(seen.get(name), `${pair} and ${seen.get(name)} share ${name}`).toBeUndefined();
+        seen.set(name, pair);
+        expect(scopeStoreScriptName(vertical, kind)).toBe(name);
+        expect(name.startsWith('substrat-store-')).toBe(true);
+      }
+    }
+    expect(scopeStoreScriptName('acme/crm', 'graph')).toBe('substrat-store-graph-acme_crm');
+    expect(scopeStoreScriptName('crm', 'graph')).toBe('substrat-store-graph-crm');
+  });
+
+  it('relies on `_` and `-` never occurring where the encoding uses them as separators', () => {
+    for (const value of ['acme_crm', 'acme/crm_x', 'acme_x/crm']) expect(verticalSlug.safeParse(value).success, value).toBe(false);
+    for (const value of ['acme_x', 'a_b']) expect(tenantSlug.safeParse(value).success, value).toBe(false);
+    // The twin: the shapes the encoding is built for parse.
+    for (const value of ['acme/crm', 'acme-crm', 'crm']) expect(verticalSlug.safeParse(value).success, value).toBe(true);
+  });
+
+  it('refuses a kind id or a vertical outside its grammar instead of flattening it', () => {
+    for (const kind of ['graph-x', 'graph_x', 'Graph', '']) {
+      expect(() => scopeStoreScriptName('acme/crm', kind), kind).toThrow(/kind id/);
+    }
+    for (const vertical of ['Acme/crm', 'acme_crm', 'a/b/c', '/crm', 'acme/', '']) {
+      expect(() => scopeStoreScriptName(vertical, 'graph'), vertical).toThrow(/vertical slug/);
+    }
+  });
+
+  it('reserves the store name space against every vertical script name', () => {
+    for (const slug of ['substrat-store', 'substrat/store', 'substrat-store-graph-acme', 'substrat/store-graph-acme-crm', 'substrat-store/x']) {
+      expect(platformScriptCollision(slug), slug).toBe(verticalScriptStem(slug));
+      const parsed = registerVerticalInput.safeParse({ slug, name: 'x', source: 'cli' });
+      expect(parsed.success, slug).toBe(false);
+    }
+    // The twin: names that only start alike are free.
+    for (const slug of ['substrat/storefront', 'substrat-stores', 'acme/store-graph', 'store/substrat', 'substrat/stor']) {
+      expect(platformScriptCollision(slug), slug).toBeNull();
+      expect(registerVerticalInput.safeParse({ slug, name: 'x', source: 'cli' }).success, slug).toBe(true);
+    }
+  });
+
+  it('refuses a tenant slug inside the store name space, and creates one beside it', () => {
+    const input = (slug: string) => ({ id: '01JTENANT0000000000000000A', slug, name: 'x' });
+    for (const slug of ['substrat-store', 'substrat-store-x']) {
+      expect(createTenantInput.safeParse(input(slug)).success, slug).toBe(false);
+    }
+    for (const slug of ['substrat', 'substrat-storefront', 'acme']) {
+      expect(createTenantInput.safeParse(input(slug)).success, slug).toBe(true);
+    }
+  });
+
+  it('leaves every existing vertical script name as it was', () => {
+    // Representative slug shapes in the fleet: bare, tenant-pinned, hyphenated, digits, the
+    // generated tenant prefix. The stem a vertical deploys under is unchanged by L20.
+    const expected: Record<string, string> = {
+      ticket0: 'ticket0',
+      todo: 'todo',
+      'acme/crm': 'acme-crm',
+      'acme-co/field-service': 'acme-co-field-service',
+      't-0wv2mwk4j5/crm': 't-0wv2mwk4j5-crm',
+      'substrat/docs-bot': 'substrat-docs-bot',
+      '9lives/app2': '9lives-app2',
+    };
+    for (const [slug, stem] of Object.entries(expected)) {
+      expect(verticalScriptStem(slug), slug).toBe(stem);
+      expect(platformScriptCollision(slug), slug).toBeNull();
+    }
   });
 });

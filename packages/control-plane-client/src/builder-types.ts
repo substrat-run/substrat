@@ -116,12 +116,21 @@ export interface DumpTable {
 }
 
 /** `GET …/scopes/:id/export` — a scope's data as the control plane released it. */
+/** One scope store inside a pull or a restore (#2211). Opaque tables, not sealed. */
+export interface StoreDump {
+  binding: string;
+  kind: string;
+  tables: DumpTable[];
+}
+
 export interface PulledDump {
   tenantId: string;
   scopeId: string;
   capturedAt: string;
   masked: boolean;
   tables: DumpTable[];
+  /** Absent on a pull from before scope stores. A masked pull sends an empty list. */
+  stores?: StoreDump[];
 }
 
 export interface RestoreBody {
@@ -129,6 +138,8 @@ export interface RestoreBody {
   scopeId: string;
   capturedAt: string;
   tables: DumpTable[];
+  /** Absent means the restore does not touch scope stores. */
+  stores?: StoreDump[];
 }
 
 export interface ScopeRecord {
@@ -184,7 +195,9 @@ export interface RebindVerticalResult {
 }
 
 export interface ProvisionScopeResult {
-  owner?: string;
+  /** The owner the vertical re-seated; `null` when it keeps no owner of record (#2263), so the
+   *  reconcile seated what its version declares and repaired no lockout. */
+  owner?: string | null;
   storeError?: string;
 }
 

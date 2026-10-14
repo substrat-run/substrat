@@ -7,6 +7,8 @@
   // assert every emitted outbox row carries it. Env is script-wide, so the
   // NULL-when-unconfigured half lives in adapter-sqlite's twin test instead.
   "vars": { "SUBSTRAT_VERSION_ID": "01JTESTVRSN0000000000000AA" },
+  // #2210: the store is another script. This one calls it and is not given its key.
+  "services": [{ "binding": "SIGNED_STORE", "service": "substrat-store-fixture" }],
   "durable_objects": {
     "bindings": [
       { "name": "SCOPE", "class_name": "ScopeDO" },

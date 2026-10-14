@@ -298,7 +298,7 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       compatibility_date: bundle.compatibilityDate,
       // Without the declared flags (e.g. `nodejs_compat`) a script importing `node:*`
       // fails to start and the upload is rejected — carry them through.
-      compatibility_flags: bundle.compatibilityFlags,
+      compatibility_flags: [...new Set([...(bundle.compatibilityFlags ?? []), 'nodejs_als'])],
       // The vertical's own bindings, plus the platform's injected secrets (added here,
       // AFTER the §4 sandbox check on the declared set — the platform is granting the
       // vertical verification secrets, not the vertical reaching for a platform binding).

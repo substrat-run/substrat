@@ -66,6 +66,8 @@
 
 import {
   isPeerCallHost,
+  isStoreCallHost,
+  storeCallRequest,
   isPlatformHost,
   matchesOutboundHost,
   parsePlatformBaseDomains,
@@ -92,6 +94,8 @@ export interface OutboundPolicy {
    */
   scope?: string;
   calls?: string[] | null;
+  /** Scope stores the dispatched version declares (#2207). Absent refuses a store call. */
+  stores?: { binding: string; kind: string }[] | null;
   depth?: number;
   /**
    * #2005: whether that scope is the real install. `false` — a fork, a snapshot or a preview
@@ -125,6 +129,11 @@ export interface Env {
   // `unknown` on both arguments deliberately: the router PARSES them (`peerCaller`,
   // `peerCallRequest`), so this worker cannot be the place that decides a caller is valid.
   PEER_CALLS?: { invoke(caller: unknown, request: unknown): Promise<PeerCallOutcome> };
+  /**
+   * The router's scope-store entrypoint (#2207). Same shape as `PEER_CALLS`: the
+   * caller is this dispatch's parameters, and the body names only the call.
+   */
+  STORE_CALLS?: { invoke(caller: unknown, request: unknown): Promise<{ ok: boolean; status: number; message?: string; body?: unknown }> };
   /**
    * The control plane's `RelayGateway` entrypoint — the relay, reached with the caller this
    * dispatch was made for (see `relay`). Absent (an environment deployed before it) ⇒ relay
@@ -319,7 +328,7 @@ type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: numb
 
 /** Where a subrequest ended up: the seven verdicts the meter distinguishes. `inert` is a
  *  third-party subrequest refused because the scope is not primary (#2005). */
-type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer' | 'inert';
+type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer' | 'store' | 'inert';
 
 /** One datapoint per decision — append-only shape, like the router's request meter:
  *  index [slug]; blobs [hostname, verdict, tenant]. A `redirect` is not a verdict but is written
@@ -394,6 +403,48 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
   });
 }
 
+/** Hand one scope-store call to the router (#2207). The caller is the dispatch, not the body. */
+async function storeCall(request: Request, env: Env): Promise<Response> {
+  const problem = (status: number, error: string): Response =>
+    new Response(JSON.stringify({ error: { code: 'unavailable', status, body: error } }), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  const policy = env.OUTBOUND_POLICY;
+  if (!env.STORE_CALLS) {
+    return problem(503, 'scope stores are not available in this environment: the egress worker has no STORE_CALLS binding');
+  }
+  if (!policy?.slug || !policy.tenant || !policy.scope) {
+    return problem(403, 'store call refused: this call carries no caller identity');
+  }
+  const parsed = storeCallRequest.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return problem(400, 'store call refused: the body is not a store call');
+  }
+  if (parsed.data.operation.startsWith('substrat.')) {
+    return problem(403, `store operation '${parsed.data.operation}' is reserved for the platform`);
+  }
+  const outcome = await env.STORE_CALLS.invoke(
+    {
+      vertical: policy.slug,
+      tenantId: policy.tenant,
+      scopeId: policy.scope,
+      stores: policy.stores ?? null,
+    },
+    parsed.data,
+  );
+  if (!outcome.ok) {
+    return new Response(
+      JSON.stringify({ error: { code: 'unavailable', status: outcome.status, body: outcome.message } }),
+      { status: outcome.status, headers: { 'content-type': 'application/json' } },
+    );
+  }
+  return new Response(JSON.stringify(outcome.body ?? { result: null }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const hostname = new URL(request.url).hostname;
@@ -404,6 +455,10 @@ export default {
     if (isPeerCallHost(hostname)) {
       meter(env, hostname, 'peer');
       return peerCall(request, hostname, env);
+    }
+    if (isStoreCallHost(hostname)) {
+      meter(env, hostname, 'store');
+      return storeCall(request, env);
     }
     if (isPlatformHost(hostname, baseDomains(env))) {
       // #2005: a fork or a preview may write to its own addresses only — any surface of the

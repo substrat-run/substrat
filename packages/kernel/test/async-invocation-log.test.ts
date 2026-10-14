@@ -90,6 +90,26 @@ describe('asyncInvocationLine', () => {
     ).toEqual(['thing:1']);
   });
 
+  it('names store calls only when there were some, and the input is not a field (#2245)', () => {
+    const bare = invocationLine({
+      tenantId: 'T1', scopeId: 'S1', invocationId: 'CALL1', threw: false, durationMs: 0, level: 'info',
+    });
+    expect(bare).not.toHaveProperty('storeCalls');
+    const line = invocationLine({
+      tenantId: 'T1', scopeId: 'S1', invocationId: 'CALL1', threw: false, durationMs: 0, level: 'info',
+      storeCalls: [{ binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: 4 }],
+    });
+    expect(line.storeCalls).toEqual([{ binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: 4 }]);
+    expect(line).not.toHaveProperty('storeCallsDropped');
+    expect(
+      invocationLine({
+        tenantId: 'T1', scopeId: 'S1', invocationId: 'CALL1', threw: false, durationMs: 0, level: 'info',
+        storeCalls: [{ binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: 4 }],
+        storeCallsDropped: 3,
+      }).storeCallsDropped,
+    ).toBe(3);
+  });
+
   it('carries a schedule its due time and lateness, and no consumer fields', () => {
     const line = asyncInvocationLine({
       kind: 'schedule',

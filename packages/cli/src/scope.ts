@@ -1,4 +1,4 @@
-import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, tenantId } from '@substrat-run/contracts';
+import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, scopeStoreDump, tenantId } from '@substrat-run/contracts';
 /**
  * `substrat scope pull <scopeId>` — bring a scope's data to the local inner loop
  * (preview-and-snapshots.md §8; the substrat analog of `vercel env pull`).
@@ -13,7 +13,7 @@ import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, tena
  * run the identical vertical against it. Written with `node:sqlite` (node 22.13+);
  * on an older node the dump lands as JSON next to where the db would have been.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
 import type { DumpTable, ExportBreakAck, PulledDump } from '@substrat-run/control-plane-client';
@@ -25,6 +25,8 @@ interface Backup {
   tables: DumpTable[];
   origin?: { tenantId: string; scopeId: string };
   capturedAt?: string;
+  /** Present when the file named scope stores. Absent leaves them untouched on restore. */
+  stores?: { binding: string; kind: string; tables: DumpTable[] }[];
 }
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
@@ -116,15 +118,32 @@ export async function pullScope(opts: {
   const base = join(opts.outDir, `${dump.tenantId}__${dump.scopeId}`);
   const rows = dump.tables.reduce((n, t) => n + t.rows.length, 0);
 
-  const wroteSqlite = await writeSqlite(`${base}.sqlite`, dump);
+  // A `.sqlite` file holds the scope's tables only, and `readDump` reads no stores back
+  // from one, so a pull that carries scope stores is written as the JSON dump: restoring
+  // it then restores the stores too, instead of leaving them as they were. An earlier
+  // pull's `.sqlite` is removed, so the stale copy is not the file left to restore.
+  const stores = dump.stores?.length ?? 0;
+  const wroteSqlite = stores === 0 && (await writeSqlite(`${base}.sqlite`, dump));
   const file = wroteSqlite ? `${base}.sqlite` : `${base}.dump.json`;
   if (!wroteSqlite) {
-    writeFileSync(file, JSON.stringify(dump, null, 2));
+    // Written beside the target and renamed into place, so a crash or a failed write
+    // leaves the previous complete `.dump.json` instead of a truncated one.
+    const staged = `${file}.${process.pid}.tmp`;
+    try {
+      writeFileSync(staged, JSON.stringify(dump, null, 2));
+      renameSync(staged, file);
+    } catch (e) {
+      rmSync(staged, { force: true });
+      throw e;
+    }
+    if (stores > 0) rmSync(`${base}.sqlite`, { force: true });
   }
 
   console.log(`✓ pulled ${dump.tables.length} tables (${rows} rows), captured ${dump.capturedAt}`);
   console.log(`  → ${file}`);
-  if (!wroteSqlite) {
+  if (stores > 0) {
+    console.log(`  (JSON — the pull carries ${stores} scope store${stores === 1 ? '' : 's'}, which a .sqlite file cannot hold)`);
+  } else if (!wroteSqlite) {
     console.log('  (JSON fallback — node 22.13+ writes a ready-to-run .sqlite instead)');
   }
   if (dump.masked) {
@@ -163,7 +182,13 @@ async function readDump(file: string): Promise<Backup> {
     if (capturedAt !== undefined && (typeof capturedAt !== 'string' || capturedAt.length === 0)) {
       throw new Error(`${file} has an invalid capturedAt`);
     }
-    return { tables: orderTablesByForeignKeys(parsed.tables), origin, capturedAt };
+    let stores: Backup['stores'];
+    if (parsed.stores !== undefined) {
+      const parsedStores = scopeStoreDump.array().safeParse(parsed.stores);
+      if (!parsedStores.success) throw new Error(`${file} has an invalid stores list`);
+      stores = parsedStores.data;
+    }
+    return { tables: orderTablesByForeignKeys(parsed.tables), origin, capturedAt, stores };
   }
   let DatabaseSync: (typeof import('node:sqlite'))['DatabaseSync'];
   try {
@@ -211,7 +236,7 @@ export async function restoreScope(opts: {
   scopeId: string;
   file: string;
 }): Promise<void> {
-  const { tables, origin, capturedAt } = await readDump(opts.file);
+  const { tables, origin, capturedAt, stores } = await readDump(opts.file);
   const source = origin ?? { tenantId: opts.tenantId, scopeId: opts.scopeId };
   const rows = tables.reduce((n, t) => n + t.rows.length, 0);
   await viaPlane(
@@ -223,6 +248,7 @@ export async function restoreScope(opts: {
         scopeId: source.scopeId,
         capturedAt: capturedAt ?? new Date().toISOString(),
         tables,
+        ...(stores === undefined ? {} : { stores }),
       }),
     (e) => {
       // The CP shapes an unloadable-dump failure as `{ error, detail }` (#321); surface the detail
@@ -287,7 +313,19 @@ export async function provisionScope(opts: {
     () => planeFor(opts.controlPlaneUrl, opts.header).provisionScope(opts.tenantId, opts.scopeId),
     (e) => new Error(problemDetail(refusalBody(e)) ?? `provision refused: ${e.status} ${e.statusText}`),
   );
-  console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
+  if (body.owner === null) {
+    // #2263: the vertical keeps no owner of record, so the platform ran the ownerless reconcile.
+    // What the version declares is seated, but nobody was re-granted: this is NOT the #332 repair,
+    // and an operator here for a locked-out owner must not read it as one.
+    console.log(`✓ reconciled scope ${opts.scopeId} — what its version declares (schedule, peer and connection grants) is seated.`);
+    console.log(
+      '\n⚠ the owner was NOT re-sourced: this vertical keeps no owner of record, so no owner was\n' +
+        '  re-granted and a locked-out owner is NOT repaired by this command. Role definitions,\n' +
+        '  entitlements and identity links were left as they were.',
+    );
+  } else {
+    console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
+  }
   // #828: the reconcile is done, but a declared store did not mint. Printed rather than
   // thrown — the half that ran is real and worth keeping — and named in full, because the
   // platform's own message is what says whether this is a credential, a client that was

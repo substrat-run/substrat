@@ -30,7 +30,7 @@ import {
 import { crossVerticalHealth, INERT_SCOPE_REASON, UNRECORDED_OUTCOME_LOG, runPlatformSweep, ulid, webCryptoSecretBox, type CandidatesHint, type FetchLike, type ModuleRegistration, type SweepRunInput } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@substrat-run/control-plane-api';
-import { CloudflareScopeHost, type CapabilityDelegation, type EventDrainDelegation } from '../src/host.js';
+import { CloudflareScopeHost, type CapabilityDelegation, type EventDrainDelegation } from './test-host.js';
 import { kickCoalescerName, type KickCoalescerDo, type KickOutcome } from '../src/kick-coalescer-do.js';
 import { warmControlPlane } from './do-warmup.js';
 import { armRewind, landRewind } from './pitr-emulation.js';

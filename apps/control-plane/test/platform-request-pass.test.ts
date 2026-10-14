@@ -19,6 +19,7 @@ import worker, {
   platformRequestSweepRun,
   recordPlatformRequestPass,
   storageReaderFor,
+  storeStorageReaderFor,
   timedDrain,
 } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -450,6 +451,45 @@ describe('storageReaderFor (#1524)', () => {
       return undefined;
     });
     await expect(read(scope(null))).resolves.toBeNull();
+    expect(resolved).toBe(0);
+  });
+});
+
+describe('storeStorageReaderFor (#2212)', () => {
+  const scope = (vertical: string | null) =>
+    ({ id: scopeId.parse(ulid()), tenantId: tenantId.parse(ulid()), vertical }) as unknown as Parameters<
+      ReturnType<typeof storeStorageReaderFor>
+    >[0];
+
+  it('turns a 501 and a route miss into the standing condition', async () => {
+    for (const status of [501, 404] as const) {
+      const read = storeStorageReaderFor(async () => {
+        throw new ControlPlaneError(
+          status,
+          status === 404 ? '404 Not Found' : 'cannot read scope store sizes',
+          undefined,
+          status === 404 ? { body: '404 Not Found' } : {},
+        );
+      });
+      const err = await read(scope('todo')).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StorageReadUnsupported);
+      expect((err as Error).message).toMatch(new RegExp(`cannot read scope store sizes \\(${status}\\)`));
+    }
+  });
+
+  it('passes any other failure on, and skips a scope with no vertical', async () => {
+    const read = storeStorageReaderFor(async () => {
+      throw new ControlPlaneError(503, 'upstream unavailable');
+    });
+    const err = await read(scope('todo')).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err).not.toBeInstanceOf(StorageReadUnsupported);
+    let resolved = 0;
+    const skip = storeStorageReaderFor(async () => {
+      resolved += 1;
+      return [];
+    });
+    await expect(skip(scope(null))).resolves.toBeNull();
     expect(resolved).toBe(0);
   });
 });

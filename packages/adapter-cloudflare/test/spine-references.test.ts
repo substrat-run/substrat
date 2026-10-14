@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { namesSpineTable, platformActorId, scopeId, tenantId, type ScopeDumpTable } from '@substrat-run/contracts';
 import { ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**

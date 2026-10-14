@@ -418,11 +418,19 @@ substrat scope pull <scopeId> [--full] [--out <dir>] [--tenant <id-or-slug>]
 ```
 
 Brings a scope's data to your local inner loop ([snapshots](/concepts/snapshots)): downloads
-the scope's dump from the control plane and writes a **real SQLite file** —
+the scope's dump from the control plane and, for a scope without
+[scope stores](/concepts/scope-stores), writes a **real SQLite file** —
 `.substrat/<tenant>__<scope>.sqlite`, the exact file shape
 [`adapter-sqlite`](/reference/adapter-sqlite) stores scopes in, so a local harness runs the
 identical vertical against it. On node < 22.13 (no `node:sqlite`) the dump lands as JSON with
 a notice instead.
+
+A full pull of a scope **with** scope stores writes no `.sqlite`: a SQLite file holds only the
+scope's tables, so the pull is written as `.substrat/<tenant>__<scope>.dump.json`, and a
+`.sqlite` an earlier pull left for the same scope is removed. `substrat scope restore` restores
+that file, stores included. A local harness loads it with `adapter-sqlite`'s `importScope`, on a
+host whose `scopeStores` binds a runner of the same kind for each store the dump names; a store
+the host does not bind is refused before anything is written.
 
 The pull crosses the platform's trust boundary on purpose, so the server side is the gate:
 

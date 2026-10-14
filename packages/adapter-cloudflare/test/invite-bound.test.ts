@@ -13,7 +13,7 @@ import { HTTPException } from 'hono/http-exception';
 import { permissionKey, principalId, scopeId, tenantId, type PrincipalId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox, type ShapeCursor } from '@substrat-run/kernel';
 import { mountInviteRoutes, type InviteDirectory } from '@substrat-run/vertical-auth/invite-routes';
-import { CloudflareScopeHost } from '../src/host.js';
+import { CloudflareScopeHost } from './test-host.js';
 
 type Row = { principal: string; roleKey: string; email: string | null; createdAt: number; capabilityId: string | null };
 

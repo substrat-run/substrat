@@ -275,6 +275,13 @@ export type CopyMarkAudit = z.infer<typeof copyMarkAudit>;
 export const scopeLineage = z.object({ kind: z.string(), forkedFrom: scopeId.nullable() }).strict();
 export type ScopeLineage = z.infer<typeof scopeLineage>;
 
+/** One scope store's answer to `substrat.erase` (#2068). */
+export const storeErasure = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  erased: z.number().int().nonnegative(),
+});
+export type StoreErasure = z.infer<typeof storeErasure>;
+
 /**
  * What a `shredSubject` did (#37) — the receipt a DSAR response is written from.
  *
@@ -328,6 +335,19 @@ export const subjectShredReceipt = z.object({
   keyDestroyed: z.boolean(),
   /** True once the subject is tombstoned: no future seal may mint a key under this id. */
   tombstoned: z.boolean(),
+  /**
+   * Scope stores this call erased (#2068). One line per binding, a zero included
+   * when the store was asked and held nothing. `erased` is what THIS attempt removed:
+   * a re-run counts zero because erase is idempotent, and a retry after a partial
+   * failure lists a binding the earlier attempt already erased with zero. A store that
+   * may be held and cannot be asked refuses the erasure and keeps the key (#2242), so an
+   * empty list means no store was asked. That is "none held" everywhere except two shred
+   * paths that run on the control plane's own host without asking a deployment (no ref
+   * resolver, or no deployment and no live copy); there it means only that this host held
+   * none. Defaulted so a receipt from before scope stores parses as the empty list it
+   * honestly reached.
+   */
+  storeErasures: z.array(storeErasure).default([]),
 });
 export type SubjectShredReceipt = z.infer<typeof subjectShredReceipt>;
 
@@ -1746,6 +1766,17 @@ export const storageGauge = z.object({
   failing: z.number().int().nonnegative(),
   /** When the most recent of those failures happened, or null when none is failing. */
   lastFailedAt: instant.nullable(),
+  /**
+   * Scope stores sampled beside the databases (#2212). Absent when this reading has no
+   * store sample — a host that has not recorded one, or a tenant whose stores were empty.
+   * `sampled` counts (scope, binding) pairs, not scopes.
+   */
+  stores: z
+    .object({
+      bytes: z.number().int().nonnegative(),
+      sampled: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 export type StorageGauge = z.infer<typeof storageGauge>;
 

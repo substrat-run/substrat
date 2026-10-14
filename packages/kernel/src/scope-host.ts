@@ -1,4 +1,4 @@
-import type { StoreStub } from './scope-store.js';
+import type { ScopeStoreStubOptions, StoreErasureReplay, StoreStub } from './scope-store.js';
 import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
@@ -121,6 +121,7 @@ import type {
   ReadScopeTableInput,
   Scope,
   ScopeDump,
+  ScopeDumpInput,
   SubjectShredReceipt,
   ScopeQueryResult,
   ScopeId,
@@ -274,7 +275,9 @@ export type SqlValue = string | number | bigint | Uint8Array | null;
  * - **5** terms in one compound `SELECT` (`UNION`/`UNION ALL`/`INTERSECT`/`EXCEPT`; a
  *   subquery or CTE body counts its own; multi-row `VALUES` is not a compound);
  * - **100** bound parameters in one statement (the highest number, `?N` included) — bind a
- *   list of unknown length as ONE JSON array and read it with `json_each`;
+ *   list of unknown length as ONE JSON array and read it with `json_each`, which is what
+ *   `inList(values)` from `@substrat-run/contracts` writes for you (#2248):
+ *   `` ctx.sql.query(`SELECT … WHERE id IN ${ids.sql}`, ids.params) ``;
  * - **100 000 bytes** of statement, UTF-8, the whole string;
  * - **50 bytes** of `LIKE`/`GLOB` pattern, UTF-8 — NOT enforced by an adapter: node's SQLite
  *   allows 50 000, and it can only be emulated by a test preload
@@ -2799,6 +2802,16 @@ export interface HostAdmin {
    */
   scopeDatabaseSize(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /**
+   * The size of each scope store bound for this scope (#2207). Access-logged like
+   * `scopeDatabaseSize`. An undeclared scope has none, so the list is empty. This is
+   * the co-located reading. A hosted control plane asks the store script directly.
+   */
+  scopeStoreSizes(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<{ binding: string; bytes: number }[]>;
+  /**
    * #286's backout: PITR-rewind a scope to a pre-migration bookmark — schema AND
    * data, discarding every write since. Audited (destructive by design). The scope
    * DO enforces the freshness window (24h unless `force`). `localApply: false`
@@ -3649,6 +3662,10 @@ export interface HostAdmin {
    * vertical's own table, copies already handed to a customer, and the PITR window (see
    * kernel-design.md's answer to open question 17). A mechanism whose limits are
    * undocumented gets oversold by someone who was not in the room.
+   *
+   * A scope store is reached, by `substrat.erase`, after the scope-side redaction and
+   * before the key is destroyed. A store that answers with an error throws, and the key
+   * stays, so a retry converges. The receipt's `storeErasures` names each binding.
    */
   shredSubject(
     actor: PlatformActorId,
@@ -3656,6 +3673,16 @@ export interface HostAdmin {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<SubjectShredReceipt>;
+  /**
+   * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.
+   * A page is at most 100. `cursor` is the last id the caller already has.
+   */
+  listShreddedSubjects(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    cursor?: string,
+  ): Promise<{ subjects: string[]; nextCursor: string | null }>;
   /** Monotone directory fence against a carry from before subject erasure. */
   scopeErasureEpoch(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /** Finish an orchestrated erasure only after every script holding a copy has redacted it.
@@ -3665,6 +3692,13 @@ export interface HostAdmin {
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     subjectId: string, redactions: readonly SubjectRedactionCounts[],
     expected: { versionId: string | null; servingRef: string | null; epoch: number; copyCount: number },
+    /**
+     * What the serving script's stores erased (#2068). The coordinator calls
+     * `substrat.erase` once — store objects are per vertical, not per script copy —
+     * and passes the result. Omitted means this host erases its own stores, which
+     * is the pure adapter's co-located shred.
+     */
+    storeErasures?: readonly { binding: string; erased: number }[],
   ): Promise<SubjectShredReceipt>;
 
   // -- impersonation (K-42, #868) --------------------------------------------
@@ -5170,12 +5204,18 @@ export interface ScopeHost {
    * The host checks the (tenant, scope) pair the way `getScope` does, then builds
    * the object name itself. `binding` is the declaration. The vertical does not
    * choose the tenant, the scope, or the vertical slug that go into the name.
+   *
+   * `options` carries no authority (#2245). Each invoke is recorded on the
+   * request now running — binding, operation, outcome, duration, never the input —
+   * with nothing passed by the vertical (RFC §6). `onStoreCall`, when passed, is
+   * heard instead. A call made where no request is current is not logged.
    */
   getScopeStore(
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
     binding: string,
+    options?: ScopeStoreStubOptions,
   ): Promise<StoreStub>;
 
   /**
@@ -5274,7 +5314,7 @@ export interface ScopeHost {
   importScope(
     actor: PlatformActorId,
     input: ProvisionScopeInput,
-    dump: ScopeDump,
+    dump: ScopeDumpInput,
   ): Promise<void>;
 
   /**
@@ -5291,14 +5331,21 @@ export interface ScopeHost {
    * `opts.sourceScopeId` (#1869) is a separate hint for the grant re-point ONLY: the scope the
    * uploaded file says it came from, when the dump's own `scopeId` was set to something else.
    * The dump's `tenantId`/`scopeId` are left exactly as they are for everything else.
+   *
+   * A host with scope stores then re-erases every tombstoned subject (#2207,
+   * `replayStoreErasures`): the target's marks, and the source's (`sourceScopeId`, else the
+   * dump's `scopeId`) when the source is a scope of this tenant on this host. An unknown
+   * source never refuses the restore; the result says `storeErasureSourceUnknown`. With nothing
+   * re-erased and nothing missing (no store here, or no tombstone that applies) it returns
+   * nothing, as a restore always did.
    */
   restoreScope(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    dump: ScopeDump,
+    dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
-  ): Promise<void>;
+  ): Promise<StoreErasureReplay | void>;
 
   /**
    * Snapshot a scope — fork its current data into a new scope and return that scope's

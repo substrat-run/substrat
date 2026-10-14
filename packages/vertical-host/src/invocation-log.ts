@@ -64,8 +64,16 @@ import {
   invocationLevelOf,
   REQUEST_ID_HEADER,
 } from '@substrat-run/contracts/invocation-record';
-import type { EmittedReport } from '@substrat-run/kernel';
-import { invocationLine, type OutputFieldsReport } from '@substrat-run/kernel/invocation-line';
+import type { EmittedReport, ScopeStoreStubOptions } from '@substrat-run/kernel';
+import {
+  invocationLine,
+  STORE_CALL_LOG_CAP,
+  STORE_CALL_SINK_KEY,
+  tallyStoreCall,
+  type OutputFieldsReport,
+  type StoreCallSinkSlot,
+  type StoreCallTally,
+} from '@substrat-run/kernel/invocation-line';
 import { ulid } from '@substrat-run/kernel/ulid';
 import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
@@ -94,7 +102,7 @@ export const INVOCATION_RECORD_KEY = 'substratInvocationRecord';
  * Every field is optional, and an unfilled one is written as `null`: a custom route that
  * never reaches an operation is still logged, it just has nothing to say about these.
  */
-export interface InvocationRecord {
+export interface InvocationRecord extends StoreCallTally {
   /** The operation name `mountOperations` dispatched to. */
   operation?: string;
   /** The `errorCode` a failed call was classified with, when the kernel's vocabulary names it. */
@@ -109,6 +117,94 @@ export interface InvocationRecord {
    * otherwise — never an empty report, so "not walked" cannot read as "returned nothing".
    */
   outputFields?: OutputFieldsReport;
+  /*
+   * #2245: `storeCalls` and `storeCallsDropped` (from `StoreCallTally`) — the store calls
+   * made during this request. Filled with no help from the vertical: the request runs in
+   * an `AsyncLocalStorage` holding this record ({@link runRecordingStoreCalls}), and a
+   * store stub reads it from there (RFC §6).
+   */
+}
+
+export { STORE_CALL_LOG_CAP };
+
+/**
+ * An explicit observer for `getScopeStore`'s last argument (#2245): the calls go on
+ * `record` rather than on the request now running. Not needed for the line — the
+ * request's own record is found without it — and a passed observer wins over it.
+ *
+ * It carries no authority. It appends `{ binding, operation, outcome, durationMs }`
+ * and nothing else. Past {@link STORE_CALL_LOG_CAP} calls are counted, not named.
+ */
+export function scopeStoreInvocationObserver(record: InvocationRecord): ScopeStoreStubOptions {
+  return { onStoreCall: (report) => tallyStoreCall(record, report) };
+}
+
+/** `AsyncLocalStorage`, typed structurally so this module imports no `node:*`. */
+export interface AsyncLocalStorageLike<T> {
+  run<R>(store: T, fn: () => R): R;
+  getStore(): T | undefined;
+}
+export type AsyncLocalStorageClass = new <T>() => AsyncLocalStorageLike<T>;
+
+/** The slot a request's store calls are reached through, plus the `run` that fills it. */
+interface StoreCallSlot extends StoreCallSinkSlot {
+  run<R>(tally: StoreCallTally, fn: () => R): R;
+}
+
+/**
+ * Node's `AsyncLocalStorage`, when this runtime offers it without an import: node (the
+ * local dev server, the pure adapter, tests) and workerd with `nodejs_compat`. A static
+ * `node:async_hooks` import would break the build of a vertical with no compat flag,
+ * which bundles this module too.
+ */
+function builtinAsyncLocalStorage(): AsyncLocalStorageClass | undefined {
+  try {
+    const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+    const mod = proc?.getBuiltinModule?.('node:async_hooks') as { AsyncLocalStorage?: unknown } | undefined;
+    return typeof mod?.AsyncLocalStorage === 'function' ? (mod.AsyncLocalStorage as AsyncLocalStorageClass) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The one store-call slot of this isolate (#2245), installed on first use under
+ * `Symbol.for(STORE_CALL_SINK_KEY)` — the key the kernel's stubs read. Shared by the
+ * platform entry's copy of this module and the vertical's own: whichever runs first
+ * installs it, and the other reuses it, so there is one storage and one current record.
+ * `undefined` when no `AsyncLocalStorage` is to be had: the line then names no calls.
+ */
+function storeCallSlot(provided: AsyncLocalStorageClass | undefined): StoreCallSlot | undefined {
+  try {
+    const g = globalThis as unknown as Record<symbol, Partial<StoreCallSlot> | undefined>;
+    const key = Symbol.for(STORE_CALL_SINK_KEY);
+    const existing = g[key];
+    if (typeof existing?.run === 'function' && typeof existing.current === 'function') return existing as StoreCallSlot;
+    const Als = provided ?? builtinAsyncLocalStorage();
+    if (!Als) return undefined;
+    const storage = new Als<StoreCallTally>();
+    const slot: StoreCallSlot = {
+      current() {
+        const tally = storage.getStore();
+        return tally ? (call) => tallyStoreCall(tally, call) : undefined;
+      },
+      run: (tally, fn) => storage.run(tally, fn),
+    };
+    g[key] = slot;
+    return slot;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Run a request's handler with its record current (#2245, RFC §6), so a store call made
+ * while it runs lands on this request's line with no observer from the vertical. With no
+ * `AsyncLocalStorage` available the handler simply runs.
+ */
+function runRecordingStoreCalls<R>(record: InvocationRecord, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
+  const slot = storeCallSlot(provided);
+  return slot ? slot.run(record, fn) : fn();
 }
 
 /**
@@ -175,6 +271,13 @@ export interface InvocationLogOptions<Env = unknown> {
    * header is a claim again.
    */
   allowUnsigned?: (env: Env) => boolean;
+  /**
+   * #2245: the `AsyncLocalStorage` class a request runs in, so its store calls reach its
+   * line. The platform entry passes it (it imports `node:async_hooks` itself). Left out,
+   * the runtime's own is used where one is reachable without an import, and with none the
+   * line names no store calls.
+   */
+  asyncLocalStorage?: AsyncLocalStorageClass;
 }
 
 /**
@@ -396,6 +499,8 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     versionId: versionIdOf(done.env),
     ...(record.outputFields ? { outputFields: record.outputFields } : {}),
     ...(stamp.fieldCoverageId ? { fieldCoverageId: stamp.fieldCoverageId } : {}),
+    ...(record.storeCalls && record.storeCalls.length > 0 ? { storeCalls: record.storeCalls } : {}),
+    ...(record.storeCallsDropped ? { storeCallsDropped: record.storeCallsDropped } : {}),
   });
   console.log(JSON.stringify(line));
 }
@@ -450,7 +555,7 @@ export function invocationLog<Env = unknown>(
     c.set?.(INVOCATION_RECORD_KEY, stamp.record);
     let threw = false;
     try {
-      await next();
+      await runRecordingStoreCalls(stamp.record, options.asyncLocalStorage, next);
       // #2192: after the handler, so whatever answered — a route's own `Response`, the
       // `onError` envelope — carries it. Set before, Hono would keep it only on a response it
       // built itself. Hono's `c.header` on an answered context COPIES the response (every one,
@@ -524,7 +629,10 @@ export function withInvocationLog<Env = unknown>(
       let status: number | null = null;
       let threw = false;
       try {
-        const response = withRequestId(await inner.call(worker, request, env, ctx), stamp.invocationId);
+        const response = withRequestId(
+          await runRecordingStoreCalls(stamp.record, options.asyncLocalStorage, () => inner.call(worker, request, env, ctx)),
+          stamp.invocationId,
+        );
         status = response.status;
         handRecordToRouter(response, stamp.record, request, env, options);
         return response;

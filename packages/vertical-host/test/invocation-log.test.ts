@@ -7,9 +7,21 @@ import {
   type InvocationLogLine,
   type InvocationRecord,
   invocationStampOf,
+  scopeStoreInvocationObserver,
+  STORE_CALL_LOG_CAP,
   withInvocationLog,
 } from '../src/invocation-log.js';
 import { invocationLevelOf } from '@substrat-run/contracts/invocation-record';
+import type { StoreRequest } from '@substrat-run/contracts';
+import { callScopeStore, observeStoreCall, type ScopeStoreStubOptions } from '@substrat-run/kernel';
+
+/** A store stub built the way both adapters build theirs: observed, then sent. */
+function storeStub(answer: (request: StoreRequest) => unknown, options?: ScopeStoreStubOptions) {
+  return {
+    invoke: (operation: string, input?: unknown) =>
+      observeStoreCall('GRAPH', operation, () => callScopeStore(async (r) => answer(r), operation, input), options?.onStoreCall),
+  };
+}
 
 /**
  * The middleware's whole output is a `console.log` line, so the suite captures the
@@ -333,6 +345,71 @@ describe('invocationLog', () => {
         cap.restore();
       }
     });
+
+    it('names the store calls a request made with no observer, and counts past the cap (#2245)', async () => {
+      const cap = capture();
+      try {
+        const secret = 'store-call-secret-value';
+        const seen: unknown[] = [];
+        const app = recordApp(() => {});
+        app.post('/api/stored', async (c) => {
+          const store = storeStub((request) => {
+            seen.push(request);
+            return request.operation === 'missing' ? { error: { code: 'nope', status: 404, body: secret } } : { result: 1 };
+          });
+          await store.invoke('missing', { note: secret }).catch(() => undefined);
+          for (let i = 1; i < STORE_CALL_LOG_CAP + 3; i++) await store.invoke('increment', { note: secret });
+          return c.json({});
+        });
+        await app.request('/api/stored', { method: 'POST', headers: routed }, ENV);
+        // The store was handed the input; the line was not.
+        expect(JSON.stringify(seen)).toContain(secret);
+        const line = cap.lines[0]!;
+        expect(line.storeCalls).toHaveLength(STORE_CALL_LOG_CAP);
+        expect(line.storeCalls?.[0]).toEqual({ binding: 'GRAPH', operation: 'missing', outcome: 'error', durationMs: expect.any(Number) });
+        expect(line.storeCalls?.[1]).toMatchObject({ operation: 'increment', outcome: 'ok' });
+        expect(line.storeCallsDropped).toBe(3);
+        expect(JSON.stringify(line)).not.toContain(secret);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('a request with no store calls has neither key, and a passed observer wins (#2245)', async () => {
+      const cap = capture();
+      try {
+        const elsewhere: InvocationRecord = {};
+        const app = recordApp(() => {});
+        app.post('/api/observed', async (c) => {
+          const store = storeStub(() => ({ result: 1 }), scopeStoreInvocationObserver(elsewhere));
+          await store.invoke('increment');
+          return c.json({});
+        });
+        await app.request('/api/things', { method: 'POST', headers: routed }, ENV);
+        await app.request('/api/observed', { method: 'POST', headers: routed }, ENV);
+        expect(cap.lines).toHaveLength(2);
+        for (const line of cap.lines) {
+          expect(line).not.toHaveProperty('storeCalls');
+          expect(line).not.toHaveProperty('storeCallsDropped');
+        }
+        expect(elsewhere.storeCalls).toEqual([{ binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: expect.any(Number) }]);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('a store call outside any request is not logged and does not throw (#2245)', async () => {
+      const cap = capture();
+      try {
+        // Run once so the slot exists, then call from outside any request.
+        await recordApp(() => {}).request('/api/things', { method: 'POST', headers: routed }, ENV);
+        expect(await storeStub(() => ({ result: 7 })).invoke('read')).toBe(7);
+        expect(cap.lines).toHaveLength(1);
+        expect(cap.lines[0]).not.toHaveProperty('storeCalls');
+      } finally {
+        cap.restore();
+      }
+    });
   });
 
   it('derives the level from how the call ended', () => {
@@ -349,6 +426,34 @@ describe('invocationLog', () => {
     const options = { routerSecret: (env: Env) => env.ROUTER_SECRET };
     const request = (path = '/api/things', init: RequestInit = {}) =>
       new Request(`https://acme.example${path}`, { ...init, headers: { ...routed, ...(init.headers as Record<string, string> | undefined) } });
+
+    it('names a store call with no observer, once, when the vertical mounts the middleware too (#2245)', async () => {
+      const cap = capture();
+      try {
+        const bare = withInvocationLog<Env>(
+          {
+            fetch: async () => {
+              await storeStub(() => ({ result: 1 })).invoke('increment');
+              return new Response('ok', { status: 201 });
+            },
+          },
+          options,
+        );
+        await bare.fetch!(request(), ENV, {});
+        const app = new Hono<{ Bindings: Env }>();
+        app.use('*', invocationLog<Env>(options));
+        app.get('/api/things', async (c) => {
+          await storeStub(() => ({ result: 1 })).invoke('read');
+          return c.text('ok');
+        });
+        await withInvocationLog<Env>({ fetch: (r, env, ctx) => app.fetch(r as Request, env, ctx as never) }, options).fetch!(request(), ENV, {});
+        expect(cap.lines).toHaveLength(2);
+        expect(cap.lines[0]?.storeCalls).toEqual([{ binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: expect.any(Number) }]);
+        expect(cap.lines[1]?.storeCalls).toEqual([{ binding: 'GRAPH', operation: 'read', outcome: 'ok', durationMs: expect.any(Number) }]);
+      } finally {
+        cap.restore();
+      }
+    });
 
     it('a line that cannot be written never changes the answer or the error', async () => {
       const original = console.log;

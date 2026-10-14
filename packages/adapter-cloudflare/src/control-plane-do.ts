@@ -24,6 +24,7 @@ import {
   forgetScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
+  listScopeStoreStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
   type ScopeStorageAttempt,
@@ -319,6 +320,8 @@ export interface RouteRow {
   outbound_json: string | null;
   /** The dispatched code's declared outgoing peer calls (#1706) as JSON text. */
   calls_json: string | null;
+  /** Scope stores declared on that same manifest (#2207). Null when the version has none. */
+  scope_stores_json: string | null;
   /** Whether the scope is the real install (`isPrimaryScope`, #2005), decided HERE, where the
    *  kernel is — the router's routing entry deliberately depends on contracts alone. The
    *  egress worker holds a fork or a preview to no third-party egress on it. */
@@ -341,6 +344,16 @@ export const READ_ROUTE_SQL = `SELECT h.tenant_id, h.scope_id, h.vertical_slug, 
                 CASE WHEN s.serving_ref IS NOT NULL
                      THEN json_extract(sv.manifest_json, '$.calls')
                      ELSE json_extract(vv.manifest_json, '$.calls') END AS calls_json,
+                -- #2207: the stores of the version the scope's script runs. A scope pinned to a
+                -- script other than its vertical's current serving one (stamped at provision, a
+                -- fork kept on its copy's script) runs a version this row cannot name: NULL, so
+                -- its store calls are refused. The control plane reads the same rule
+                -- (scopeStoresOf in control-plane-api).
+                CASE WHEN s.serving_ref IS NULL
+                     THEN json_extract(vv.manifest_json, '$.scopeStores')
+                     WHEN s.serving_ref = vr.serving_ref
+                     THEN json_extract(sv.manifest_json, '$.scopeStores')
+                     ELSE NULL END AS scope_stores_json,
                 s.kind, s.forked_from,
                 (SELECT json_group_array(sh.hostname) FROM (
                    -- INDEXED BY: unpinned, the planner reads hostnames_status — every active
@@ -2042,6 +2055,7 @@ export class ControlPlaneDO extends DurableObject {
       '_substrat_finding_rules', // #1748: the tenant's suppress rules
       '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
       '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
+      '_substrat_scope_store_storage', // #2212: scope-store samples, gone with the tenant
     ]) {
       this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
     }
@@ -3867,6 +3881,7 @@ export class ControlPlaneDO extends DurableObject {
     entitlements: { tenant_id: string; entitlement_key: string; plan: string | null; expires_at: string | null }[];
     storage: ScopeStorageSample[];
     storageAttempts: ScopeStorageAttempt[];
+    storeStorage: { tenantId: TenantId; bytes: number; readAt: string }[];
   } {
     const where = tenantId ? ' WHERE tenant_id = ?' : '';
     const args = tenantId ? [tenantId] : [];
@@ -3888,6 +3903,7 @@ export class ControlPlaneDO extends DurableObject {
       // #1524: the stored gauge's latest sample per non-reaped scope. A directory read only.
       storage: listScopeStorageRows(doRedactionSql(this.sql), { tenantId: tenantId as TenantId | undefined, latest: true }),
       storageAttempts: listScopeStorageAttemptRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
+      storeStorage: listScopeStoreStorageRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
     };
   }
 
@@ -4743,6 +4759,20 @@ export class ControlPlaneDO extends DurableObject {
     return row
       ? { keyId: row.key_id, wrappedDek: row.wrapped_dek, shreddedAt: row.shredded_at }
       : undefined;
+  }
+
+  listShreddedSubjects(scopeId: string, tenantId: string, cursor: string | null): string[] {
+    const rows = this.sql
+      .exec(
+        `SELECT subject_id FROM _substrat_subject_keys
+          WHERE scope_id = ? AND tenant_id = ? AND shredded_at IS NOT NULL AND subject_id > ?
+          ORDER BY subject_id LIMIT 101`,
+        scopeId,
+        tenantId,
+        cursor ?? '',
+      )
+      .toArray() as unknown as { subject_id: string }[];
+    return rows.map((row) => row.subject_id);
   }
 
   /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { errorCodeOf, scopeStoreObjectName, StoreError, toProblem } from '../src/index.js';
+import { errorCodeOf, scopeStoreObjectName, signScopeStoreName, STORE_BODY_MAX_BYTES, StoreError, storeResponse, toProblem, verifyScopeStoreName } from '../src/index.js';
 
 describe('StoreError (#2209)', () => {
   it('derives the taxonomy code from the status and keeps the store’s own code', () => {
@@ -26,9 +26,46 @@ describe('StoreError (#2209)', () => {
     expect(toProblem(err).storeBody).toBeUndefined();
   });
 
-  it('builds an object name the vertical does not choose', () => {
-    expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe(
-      '01TENANT/acme/crm/01SCOPE/GRAPH',
-    );
+  it('carries no body for a status that is not an HTTP error, a body too large, or one that is not JSON', () => {
+    for (const status of [200, 302, 399, -1, 600]) {
+      const err = new StoreError({ code: 'odd', status, body: 'x' });
+      expect(err.storeBody, `status ${status}`).toBeUndefined();
+      expect(toProblem(err).storeBody, `status ${status}`).toBeUndefined();
+    }
+    const fits = 'a'.repeat(STORE_BODY_MAX_BYTES - 2);
+    expect(new StoreError({ code: 'big', status: 409, body: fits }).storeBody).toBe(fits);
+    expect(new StoreError({ code: 'big', status: 409, body: `${fits}a` }).storeBody).toBeUndefined();
+    expect(new StoreError({ code: 'bigint', status: 409, body: { n: 1n } }).storeBody).toBeUndefined();
+    // The bound is bytes, not characters: 600 'é' is 602 characters of JSON and 1202 bytes.
+    expect(new StoreError({ code: 'wide', status: 409, body: 'é'.repeat(600) }).storeBody).toBeUndefined();
+  });
+
+  it('reads an error envelope only with a status from 400 to 599', () => {
+    expect(storeResponse.safeParse({ error: { code: 'no', status: 404 } }).success).toBe(true);
+    expect(storeResponse.safeParse({ error: { code: 'no', status: 599 } }).success).toBe(true);
+    for (const status of [200, 399, 600, -1]) {
+      expect(storeResponse.safeParse({ error: { code: 'no', status } }).success, `status ${status}`).toBe(false);
+    }
+  });
+
+  it('builds an object name the vertical does not choose, and the name has no version', () => {
+    const name = scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH');
+    expect(name).toBe('01TENANT/acme/crm/01SCOPE/GRAPH');
+    expect(name).not.toContain('1.0.0');
+  });
+});
+
+describe('scope store signature (#2210)', () => {
+  const secret = 'control-plane-store-key';
+  const name = scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH');
+
+  it('verifies a signature over the object name, and nothing else', async () => {
+    const mac = await signScopeStoreName(secret, name);
+    expect(await verifyScopeStoreName(secret, name, mac)).toBe(true);
+    expect(await verifyScopeStoreName(secret, `${name}-other`, mac)).toBe(false);
+    expect(await verifyScopeStoreName('other-key', name, mac)).toBe(false);
+    expect(await verifyScopeStoreName(secret, name, 'not-a-signature')).toBe(false);
+    expect(mac).not.toContain(secret);
+    expect(mac).not.toContain(name);
   });
 });

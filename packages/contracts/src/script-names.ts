@@ -45,12 +45,51 @@ export function verticalScriptStem(slug: string): string {
 }
 
 /**
+ * The name space scope-store scripts are uploaded into (RFC scope-stores §10.7, L20). Store
+ * scripts share the dispatch namespace with every vertical's scripts, so no vertical script may
+ * be named inside it: {@link platformScriptCollision} refuses a slug whose stem is the bare
+ * prefix or starts with it, which covers its stable, jurisdictional and per-version scripts.
+ */
+export const SCOPE_STORE_SCRIPT_PREFIX = 'substrat-store-';
+
+/** A store kind id (L20). No `-` and no `_`, which is what keeps {@link scopeStoreScriptName} injective. */
+export const STORE_KIND_ID = /^[a-z0-9]+$/;
+
+/** The registry id grammar `verticalSlug` parses (ids.ts), repeated so this file imports nothing. */
+const VERTICAL_SLUG = /^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+
+/**
+ * The script a scope-store kind is uploaded as, for one vertical (#2210).
+ *
+ * Stable across releases and across the vertical's own pushes: a new release of the kind
+ * replaces this script in place, and the objects stay where `scopeStoreObjectName` addresses
+ * them, since that carries no version either.
+ *
+ * Injective over (kind, vertical) (L20): `substrat-store-<kind>-<vertical>`, with the `/` of a
+ * `<tenant>/<name>` slug written as `_`. A slug never contains `_` and a kind never contains `-`,
+ * so the kind ends at the first `-` after the prefix and the rest maps back to exactly one slug.
+ * A vertical's own stem flattens `/` to `-`, which is not injective; this name does not reuse it.
+ * Anything outside those two grammars is refused rather than flattened.
+ */
+export function scopeStoreScriptName(vertical: string, kind: string): string {
+  if (!STORE_KIND_ID.test(kind)) {
+    throw new Error(`not a scope-store kind id: '${kind}' (expected [a-z0-9]+)`);
+  }
+  if (!VERTICAL_SLUG.test(vertical)) {
+    throw new Error(`not a vertical slug: '${vertical}'`);
+  }
+  return `${SCOPE_STORE_SCRIPT_PREFIX}${kind}-${vertical.replace('/', '_')}`;
+}
+
+/**
  * The platform script name a vertical with this slug would deploy under, or `null`. Checks the
  * stable script and its jurisdictional variants. A per-version script ends in a 26-character
- * ULID, which no platform name does.
+ * ULID, which no platform name does. A stem inside the scope-store name space is returned as
+ * itself: every script the slug could deploy under would fall in it.
  */
 export function platformScriptCollision(slug: string): string | null {
   const stem = verticalScriptStem(slug);
+  if (`${stem}-`.startsWith(SCOPE_STORE_SCRIPT_PREFIX)) return stem;
   for (const name of [stem, ...JURISDICTION_SUFFIXES.map((j) => `${stem}-${j}`)]) {
     if (PLATFORM_SCRIPT_NAMES.has(name)) return name;
   }

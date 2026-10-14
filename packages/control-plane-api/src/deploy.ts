@@ -2,8 +2,9 @@ import {
   ADMISSIBLE_BINDING_TYPES,
   assertDeclaredScopeStores,
   PLATFORM_BINDING_PREFIX,
-  scopeStoreBindingName,
+  scopeStoreScriptName,
   STORE_KINDS,
+  storeNamesOfBindings,
   substratError,
   verticalScriptStem,
   type ScopeStoreNeed,
@@ -181,6 +182,78 @@ const NAMED_REFUSALS: Record<string, string> = {
 };
 
 /**
+ * The script a kind is uploaded as, for one vertical (#2210). Defined in contracts beside the
+ * vertical script names it must never collide with (L20).
+ */
+export { scopeStoreScriptName };
+
+/** One store script to upload. The serving script is not given the namespace or the key. */
+export interface ScopeStoreUploadPlan {
+  readonly scripts: readonly {
+    readonly kind: string;
+    readonly release: string;
+    readonly vertical: string;
+    readonly scriptName: string;
+    readonly className: string;
+  }[];
+  /** Empty (L1). A vertical reaches a store through the platform, not a binding of its own. */
+  readonly bindings: readonly [];
+}
+
+/**
+ * Which store scripts a vertical's stores need (#2210). One script per (kind, vertical), shared
+ * by every binding of that kind, named by {@link scopeStoreScriptName}, which carries no release:
+ * a new release of the kind is uploaded into the same name. A kind that is not in `kinds` is
+ * refused. The default registry is empty. Nothing uploads these scripts yet.
+ */
+export function scopeStoreUploadPlan(input: {
+  readonly vertical: string;
+  readonly stores: readonly ScopeStoreNeed[];
+  readonly kinds?: readonly StoreKindRegistration[];
+}): ScopeStoreUploadPlan {
+  const kinds = input.kinds ?? STORE_KINDS;
+  const scripts: ScopeStoreUploadPlan['scripts'][number][] = [];
+  const seen = new Set<string>();
+  for (const store of input.stores) {
+    const kind = kinds.find((candidate) => candidate.kind === store.kind);
+    if (!kind) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
+          `A store kind is platform code, pinned to a release the way a connector is.`,
+      );
+    }
+    if (seen.has(kind.kind)) continue;
+    seen.add(kind.kind);
+    scripts.push({
+      kind: kind.kind,
+      release: kind.release,
+      vertical: input.vertical,
+      scriptName: scopeStoreScriptName(input.vertical, kind.kind),
+      className: kind.className,
+    });
+  }
+  return { scripts, bindings: [] };
+}
+
+/**
+ * The bindings a vertical's upload carries (#2210), the per-version push and the serving upload
+ * alike: the version's own declared bindings, then the platform's (the serving upload's
+ * ledger-derived stores; none on a push). A declared scope store adds none (RFC scope-stores §10.2, L1):
+ * its kind is still checked against `kinds`, so a version whose kind is not registered is
+ * refused here as at push.
+ */
+export function verticalUploadBindings<B>(input: {
+  readonly vertical: string;
+  readonly manifest: { readonly bindings: readonly DeclaredBinding[]; readonly scopeStores: readonly ScopeStoreNeed[] };
+  readonly platformBindings: readonly B[];
+  readonly kinds?: readonly StoreKindRegistration[];
+}): (DeclaredBinding | B)[] {
+  const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.manifest.scopeStores, kinds: input.kinds });
+  return [...input.manifest.bindings, ...input.platformBindings, ...plan.bindings];
+}
+
+/**
  * The §4 sandbox contract. Throws a `forbidden` `substratError` (403 — the upload is well-formed
  * and still refused) if a declared binding is not one of the vertical's OWN admissible
  * resources — a positive
@@ -208,41 +281,13 @@ const NAMED_REFUSALS: Record<string, string> = {
  * stops applying. (The kernel seam is `provisionTenantStore`/`openTenantStore`; on Cloudflare
  * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
  */
-/**
- * The cross-script bindings a serving upload adds for declared scope stores (#2207).
- * One per declaration, named `SUBSTRAT_STORE_<BINDING>`, aimed at the kind's script
- * and class. A kind that is not in `kinds` is refused: the upload does not invent
- * a target. The default registry is empty, so a declaration does not inject until
- * a kind is registered.
- */
-export function scopeStoreScriptBindings(
-  stores: readonly ScopeStoreNeed[],
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
-): DeclaredBinding[] {
-  return stores.map((store) => {
-    const kind = kinds.find((candidate) => candidate.kind === store.kind);
-    if (!kind) {
-      throw substratError(
-        'forbidden',
-        `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
-          `A store kind is platform code, pinned to a release the way a connector is.`,
-      );
-    }
-    return {
-      type: 'durable_object_namespace',
-      name: scopeStoreBindingName(store.binding),
-      class_name: kind.className,
-      script_name: kind.script,
-    };
-  });
-}
-
 export function assertSandboxContract(m: DeployManifest): void {
+  // The same derivation push applies (#2224): an own DO binding is an own store.
   assertDeclaredScopeStores({
+    ...storeNamesOfBindings(m.bindings),
     tenantStores: m.tenantStores,
     blobStores: m.blobStores,
     scopeStores: m.scopeStores,
-    bindingNames: m.bindings.map((b) => b.name),
   });
   const own = new Set(m.doClasses);
   const admissible = new Set<string>(ADMISSIBLE_BINDING_TYPES);

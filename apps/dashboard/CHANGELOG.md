@@ -1,5 +1,44 @@
 # @substrat-run/dashboard
 
+## 0.43.7
+
+### Patch Changes
+
+- 7a1ab65: An app that keeps no owner of record (no `resolveOwner` hook) now receives what each new version declares on its existing installs. Until now its reconcile answered 501, so an install provisioned before a version that adds a peer, a schedule or a connection grant never received it, and a peer's calls stayed refused.
+
+  The platform's reconcile and `substrat scope provision` now ask for the ownerless reconcile (`ownerless: 'seat'`). The vertical seats only the tuples its running version declares: schedule grants, peer permissions, and the connection grants the platform delivers. It also re-applies the switches the platform recorded off. It changes nothing else. It writes no owner, leaves roles, entitlements, identity links and sealing keys as they are, and reconciles no entity-grant shapes. It answers `owner: null`. `substrat scope provision` then says the owner was not re-sourced, and that a locked-out owner is not repaired by it. An app that keeps an owner of record but has none for the install still answers 409, and is retried until the record exists. An entitlements delivery does not ask for the ownerless reconcile and is refused as before. `adapter-cloudflare` adds `seatScopeLocal`, which only seats a scope already provisioned for that tenant.
+
+  The console's "Re-run provisioning" says the same when no owner was re-sourced. The "What this app calls" panel now names the second reason a target can grant an app nothing: its install predates the version that declares the app as a peer.
+
+- 1e4f0db: The app page's "What this app calls" panel no longer reports "grants this app nothing" for an app pushed under its tenant (`<tenantSlug>/<slug>`). The target stores its grants under the bare name the manifest declares, and the panel compared them with the registered name, so a grant that was there read as missing.
+- b854efd: A control-plane-less restore that only has a scope's tables leaves its scope stores untouched.
+- Updated dependencies [7322e07]
+- Updated dependencies [9926c53]
+- Updated dependencies [d5a7045]
+- Updated dependencies [7a1ab65]
+- Updated dependencies [8ff761c]
+- Updated dependencies [873d117]
+- Updated dependencies [cb957bc]
+- Updated dependencies [cb957bc]
+- Updated dependencies [4d14a81]
+- Updated dependencies [5b1c20f]
+- Updated dependencies [1ce756e]
+- Updated dependencies [b854efd]
+- Updated dependencies [23840a7]
+- Updated dependencies [b854efd]
+- Updated dependencies [1ad1426]
+- Updated dependencies [b4bb938]
+- Updated dependencies [cb957bc]
+  - @substrat-run/connector-fortnox@0.4.49
+  - @substrat-run/contracts@0.147.0
+  - @substrat-run/kernel@0.147.0
+  - @substrat-run/vertical-host@0.147.0
+  - @substrat-run/adapter-cloudflare@0.147.0
+  - @substrat-run/control-plane-api@0.147.0
+  - @substrat-run/control-plane-client@0.1.12
+  - @substrat-run/engine-invites@0.9.24
+  - @substrat-run/engine-protocol@0.13.32
+
 ## 0.43.6
 
 ### Patch Changes
