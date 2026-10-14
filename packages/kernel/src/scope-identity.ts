@@ -1,3 +1,12 @@
+import type { PlatformActorId, Scope } from '@substrat-run/contracts';
+import type { HostAdmin } from './scope-host.js';
+
+/**
+ * Which scope is the real install, and which version its code runs (#1653, #2005):
+ * the questions every door, both adapters and the fleet sweep ask the same way.
+ * Split out of `platform-sweep.ts` (#1978).
+ */
+
 /**
  * A scope the platform may treat as the REAL install, rather than a copy of one (#1172,
  * #1653). The directory is the only oracle for this, and it takes BOTH tests, not one.
@@ -70,7 +79,7 @@ export function runningVersionOf(
  * when some scope is actually on a serving script, since nothing else can differ from its
  * binding. Shared by the provision reconcile (#1653) and the cross-vertical narrowing (#1705).
  */
-async function servingPointersFor(
+export async function servingPointersFor(
   admin: Pick<HostAdmin, 'listVerticals'>,
   actor: PlatformActorId,
   scopes: readonly Pick<Scope, 'servingRef'>[],

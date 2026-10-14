@@ -1,4 +1,11 @@
 /**
+ * The platform sweep's per-scope scheduling state (#383, #1288): the
+ * `_substrat_schedule_state` DDL both adapters build, its rebuild, and the report of
+ * the recurring-schedule phase. Split out of `platform-sweep.ts` (#1978) so an adapter
+ * and a restore read it without the fleet sweep.
+ */
+
+/**
  * Which family a `_substrat_schedule_state` row belongs to (#1288) — the two of
  * `sweepRunKind`'s three names that a SCOPE can hold gating state for. (`connector`
  * is the third and is deliberately absent: a connection is swept host-wide and its

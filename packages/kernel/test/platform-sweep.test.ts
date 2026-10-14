@@ -10,17 +10,19 @@ import {
   strandJudgmentsOf,
   installsReconciledNote,
   installsReconciledOf,
-  isPrimaryScope,
+  type InstallsReconciled,
+} from '../src/install-receipts.js';
+import { isPrimaryScope, runningVersionOf } from '../src/scope-identity.js';
+import { exportBreaksOf } from '../src/export-break.js';
+import {
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
   registryImportCandidates,
-  exportBreaksOf,
   runCrossVerticalFrom,
-  runningVersionOf,
   runPlatformSweep,
   startPlatformSweeper,
 } from '../src/platform-sweep.js';
-import type { ConnectorSweeper, CrossVerticalReach, InstallsReconciled, PlatformSweepOptions } from '../src/platform-sweep.js';
+import type { ConnectorSweeper, CrossVerticalReach, PlatformSweepOptions } from '../src/platform-sweep.js';
 import type { FetchLike, MigrateScopeOutcome, ScopeHost, SweepRunInput } from '../src/scope-host.js';
 
 /**

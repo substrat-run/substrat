@@ -1,6 +1,6 @@
 import { SPINE_PREFIX, namesSpineTable, substratError } from '@substrat-run/contracts';
 import { MIGRATION_DIGEST_LEGACY } from './migration-digest.js';
-import { SCHEDULE_STATE_KIND_OF_OP } from './platform-sweep.js';
+import { SCHEDULE_STATE_KIND_OF_OP } from './schedule-state.js';
 import { isSearchIndexTable } from './search-index.js';
 import { SWITCH_KINDS, dumpCarriesSwitches, switchesBackfillSqlOf } from './system-switch-record.js';
 import { dumpCarriesMembershipFences, membershipFencesBackfillSql } from './membership-fence.js';

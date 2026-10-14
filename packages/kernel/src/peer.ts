@@ -47,7 +47,7 @@ import {
   type VerticalCaller,
   type VerticalResolution,
 } from '@substrat-run/contracts';
-import { isPrimaryScope } from './platform-sweep.js';
+import { isPrimaryScope } from './scope-identity.js';
 import {
   PEER_SUBJECT_PREFIX,
   SYSTEM_SWITCH_OFF_RELATION,

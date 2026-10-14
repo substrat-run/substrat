@@ -1,3 +1,12 @@
+import type { Scope } from '@substrat-run/contracts';
+import type { ServingPointer } from './scope-identity.js';
+
+/**
+ * Install receipts (#2178, #2184, #2185): which version each install last reconciled, what it
+ * reported bound, and how the binding-shape gate judges a move from them. Read by both adapters'
+ * promote and bind doors. Split out of `platform-sweep.ts` (#1978).
+ */
+
 /**
  * #2178: the versions the active primary scopes of a vertical that a promote or a serve moves were
  * last provisioned against (`provisionedVersionId`, written only after a provision or reconcile

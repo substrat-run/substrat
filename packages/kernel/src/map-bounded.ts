@@ -1,10 +1,12 @@
-const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+/** Bounded fan-out shared by the fleet sweep and the export-break gate (#1978). */
+
+export const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
  * Run `fn` over `items` with at most `limit` in flight. `fn` owns its errors —
  * this never rejects, so one unit's failure cannot abort the pass.
  */
-async function mapBounded<T>(
+export async function mapBounded<T>(
   items: readonly T[],
   limit: number,
   fn: (item: T) => Promise<void>,

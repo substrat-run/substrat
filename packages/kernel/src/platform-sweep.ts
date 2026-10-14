@@ -1,4 +1,4 @@
-import { drainedEvent, errorCodeOf, instant, substratError } from '@substrat-run/contracts';
+import { drainedEvent, instant, substratError } from '@substrat-run/contracts';
 import type {
   AccessLogEntry,
   ConnectionId,
@@ -11,8 +11,6 @@ import type {
   DrainedEvent,
 } from '@substrat-run/contracts';
 import type {
-  ExportBreak,
-  ManifestExports,
   EdgeHealth,
   EdgeHealthReport,
   ExportReadInput,
@@ -30,6 +28,10 @@ import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.j
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
 import { resolveVerticalInstanceFrom, type PeerTenant } from './peer.js';
+import type { ScheduleSweepReport } from './schedule-state.js';
+import { isPrimaryScope, runningVersionOf, servingPointersFor } from './scope-identity.js';
+import { mapBounded, message } from './map-bounded.js';
+import { runningImportsOf } from './export-break.js';
 
 // setTimeout/clearTimeout are web-standard (Node, Workers, browsers) but the
 // kernel pulls in no platform lib typings; declared locally, returning an opaque

@@ -1,3 +1,15 @@
+import { errorCodeOf, substratError } from '@substrat-run/contracts';
+import type { ExportBreak, ManifestExports, ManifestImports, PlatformActorId, Scope, TenantId } from '@substrat-run/contracts';
+import type { HostAdmin } from './scope-host.js';
+import { mapBounded, message } from './map-bounded.js';
+import { isPrimaryScope, runningVersionOf, servingPointersFor, type ServingPointer } from './scope-identity.js';
+
+/**
+ * The export-break gate (#1705 PR 3, #1756): whom a promote, a bind or a route change breaks,
+ * judged by each adapter's promote and bind doors, and the refusals they answer with.
+ * Split out of `platform-sweep.ts` (#1978).
+ */
+
 /**
  * What each scope's RUNNING version imports, from the registry (#1705): one `listVerticals` when
  * a scope is on a serving script, then one `readImports` per distinct running version, at most
@@ -6,7 +18,7 @@
  * differently from "the manifest does not parse". A scope bound to no version gets no fact. The narrowing and the promote gate
  * both ask it, so the two cannot come to disagree about which code a scope runs.
  */
-async function runningImportsOf(
+export async function runningImportsOf(
   admin: Pick<HostAdmin, 'listVerticals'>,
   actor: PlatformActorId,
   scopes: readonly Scope[],
