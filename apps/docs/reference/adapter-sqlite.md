@@ -123,7 +123,10 @@ import { SqliteScopeHost, scopeStoreRunnersFor } from '@substrat-run/adapter-sql
 const host = new SqliteScopeHost({
   dir: './data',
   scopeStores: {
-    runners: scopeStoreRunnersFor(manifest.runtimeNeeds.scopeStores, { graph: graphRunner }),
+    // `graphRunner` is the kind's own factory; the map takes the runner it returns.
+    runners: scopeStoreRunnersFor(manifest.runtimeNeeds.scopeStores, {
+      graph: graphRunner({ dir: './data/graph' }),
+    }),
   },
 });
 ```

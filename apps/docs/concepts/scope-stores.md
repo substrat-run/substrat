@@ -130,7 +130,7 @@ What a runner answers:
 - `substrat.export` answers `{ tables }`, each in the scope-dump table shape.
 - `substrat.import` takes `{ tables }`, replaces the whole object, and answers `{ tables }` as the count it wrote.
 - `substrat.wipe` answers `{}` and leaves an empty object, also for an address nothing was written to.
-- `substrat.erase` takes `{ subjectId }` and answers `{ erased }`. A repeat answers `{ erased: 0 }`.
+- `substrat.erase` takes `{ subjectId }` and answers `{ erased }`, counting what it removed. A subject with nothing on the object, a repeat included, answers `{ erased: 0 }`.
 
 `scopeStoreRunnerContractSuite` in [`@substrat-run/contract-tests`](../reference/contract-tests.md) holds a runner to each of these. A kind runs it in its own repository, with one write and one read of its own catalog:
 

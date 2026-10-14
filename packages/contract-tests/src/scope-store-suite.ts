@@ -194,12 +194,15 @@ export function scopeStoreContractSuite(
       expect(errorCodeOf(refusal)).toBe('not_found');
     });
 
-    it('an erasure reaches the store, and a second one counts zero', async () => {
+    it("an erasure reaches the store and takes the subject's part, and a second one counts zero", async () => {
       const subject = ulid();
+      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      const before = Number(await store.invoke('read'));
+      await store.invoke('increment', { by: 2, subjectId: subject });
       const first = await host.admin.shredSubject(staff, tenant, scopeA, subject);
       expect(first.storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
-      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
       expect(await store.invoke('erased')).toEqual([subject]);
+      expect(await store.invoke('read')).toBe(before);
       const again = await host.admin.shredSubject(staff, tenant, scopeA, subject);
       expect(again.storeErasures).toEqual([{ binding: 'GRAPH', erased: 0 }]);
     });
@@ -392,7 +395,7 @@ export function scopeStoreContractSuite(
         expect(refusal).toBeDefined();
         expect((await host.admin.getScopeRecord(staff, tenant, doomed))?.status).toBe('archived');
         const dump = await host.admin.exportScope(staff, tenant, doomed);
-        expect(dump.stores.find((one) => one.binding === 'GRAPH')?.tables[0]?.rows).toEqual([[7]]);
+        expect(dump.stores.find((one) => one.binding === 'GRAPH')?.tables[0]?.rows).toEqual([[null, 7]]);
         expect(dump.tables.map((table) => table.name)).toContain(PROBE_TABLE.name);
       } finally {
         await store.invoke('fail-wipe', false);
