@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { REQUEST_ID_HEADER, problemForStatus } from '@substrat-run/contracts';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { requestIdOf } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from '../src/request-id.js';
 
@@ -24,8 +25,22 @@ function appUnderTest() {
   app.get('/throws-500', () => {
     throw new Error('the plane is down');
   });
-  app.get('/throws-long', () => {
-    throw new Error('x'.repeat(2000));
+  // A detail the dashboard does not author, carrying what must never reach a log line.
+  const leaky = 'upstream said Authorization: Bearer eyJhbGciOi.secret-jwt and token=abc\r\nforged line';
+  const planeFailure = () =>
+    new ControlPlaneError(503, leaky, undefined, { body: JSON.stringify({ status: 503, code: 'unavailable', detail: leaky }) });
+  app.get('/throws-plane', () => {
+    throw planeFailure();
+  });
+  // The same failure rethrown the way a handler may, its message copied onto the wrapper.
+  app.get('/throws-wrapped', () => {
+    const plane = planeFailure();
+    throw new HTTPException(502, { message: plane.message, cause: plane });
+  });
+  app.get('/throws-named', () => {
+    const e = new Error('nothing');
+    e.name = 'Bearer abc token=abc';
+    throw e;
   });
   // An upgrade. Node's `Response` refuses a 101, so the status is set on a real response the
   // way workerd's would read; a copy of it (what `c.header` makes of an answered response)
@@ -93,22 +108,46 @@ describe('the dashboard request id (#2192)', () => {
       method: 'GET',
       path: '/throws-500',
       status: 500,
-      error: 'Error: the plane is down',
+      errorName: 'Error',
     });
+    // A message is never logged: not even our own.
+    expect(String(logged[0]![0])).not.toContain('the plane is down');
     // The query string (a consent code, a state token) never reaches the log.
     expect(String(logged[0]![0])).not.toContain('secret-consent-code');
   });
 
-  it("the logged error is capped at 500 characters", async () => {
+  it("the plane's failure is logged by name, code and status, never by its detail", async () => {
     const logged: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(String(args[0])));
-    const res = await appUnderTest().request('/throws-long');
-    expect(res.status).toBe(500);
+    for (const [path, status, errorName] of [
+      ['/throws-plane', 500, 'ControlPlaneError'],
+      ['/throws-wrapped', 502, 'Error'],
+    ] as const) {
+      logged.length = 0;
+      const res = await appUnderTest().request(path);
+      expect(res.status).toBe(status);
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).not.toMatch(/bearer|eyJhbGciOi|secret-jwt|token=abc|forged line/i);
+      expect(JSON.parse(logged[0]!)).toEqual({
+        event: 'dashboard.request-failed',
+        requestId: res.headers.get(REQUEST_ID_HEADER),
+        method: 'GET',
+        path,
+        status,
+        errorName,
+        errorCode: 'unavailable',
+        upstreamStatus: 503,
+      });
+    }
+  });
+
+  it("a name something assigned is not code's, so it is logged as Error", async () => {
+    const logged: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(String(args[0])));
+    await appUnderTest().request('/throws-named');
     expect(logged).toHaveLength(1);
-    const line = JSON.parse(logged[0]!) as { error: string; requestId: string };
-    expect(line.error).toHaveLength(500);
-    expect(line.error.startsWith('Error: xxx')).toBe(true);
-    expect(line.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
+    expect(logged[0]).not.toMatch(/bearer|token=abc/i);
+    expect((JSON.parse(logged[0]!) as { errorName: string }).errorName).toBe('Error');
   });
 
   it('an upgrade (101) is handed back untouched: not copied, so no header', async () => {

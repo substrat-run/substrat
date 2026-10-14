@@ -85,7 +85,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           if (planeDown) {
-            return new Response(JSON.stringify({ type: 'about:blank', title: 'Internal Server Error', status: 500, detail: 'internal error' }), {
+            return new Response(JSON.stringify({ type: 'about:blank', title: 'Internal Server Error', status: 500, code: 'internal', detail: 'refused Bearer eyJhbGciOi.secret-jwt token=abc' }), {
               status: 500,
               headers: { 'content-type': 'application/problem+json' },
             });
@@ -155,6 +155,8 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
     const lines = logged.filter((l) => l.includes('dashboard.request-failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ event: 'dashboard.request-failed', requestId: id, method: 'GET', path: '/api/deployments', status: res.status });
+    // The plane's detail is free text the dashboard did not write: it is never logged.
+    expect(logged.join('\n')).not.toMatch(/bearer|eyJhbGciOi|secret-jwt|token=abc/i);
   });
 
   it('two requests get two ids, and an id the caller sends is never echoed', async () => {

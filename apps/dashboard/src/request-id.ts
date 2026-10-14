@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
-import { REQUEST_ID_HEADER } from '@substrat-run/contracts';
+import { REQUEST_ID_HEADER, errorCodeOf } from '@substrat-run/contracts';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ulid } from '@substrat-run/kernel';
 import { requestIdOf } from '@substrat-run/vertical-host';
 
@@ -35,13 +36,38 @@ export function dashboardRequestId(): MiddlewareHandler {
 /**
  * One line per 5xx, for the operator: the id the caller was shown, and what failed. The path
  * carries no query string, because a callback's query holds a consent code or a state token.
+ *
+ * What failed is named by fixed vocabulary only, never by a message. A message is free text,
+ * and much of it is not ours: a `ControlPlaneError`'s is the plane's problem detail, which a
+ * handler may rethrow inside an `HTTPException`, and no pattern can promise that a detail
+ * holds no token or personal data. So the line carries the error's class name, the declared
+ * code (from the error catalog, by `errorCodeOf` or the plane's `problemCode`), and the
+ * plane's status when the plane was the failure. The message stays in the response the
+ * caller already holds, where the id now leads to this line.
  */
 function logFailedRequest(c: Context, requestId: string): void {
-  const err = c.error;
-  const error = err === undefined ? undefined : (err instanceof Error ? `${err.name}: ${err.message}` : String(err)).slice(0, 500);
   console.error(
-    JSON.stringify({ event: 'dashboard.request-failed', requestId, method: c.req.method, path: c.req.path, status: c.res.status, error }),
+    JSON.stringify({
+      event: 'dashboard.request-failed',
+      requestId,
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status,
+      ...failureOf(c.error),
+    }),
   );
+}
+
+/** A class name is code's, unless something assigned `name`: then it is just `Error`. */
+const ERROR_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+
+function failureOf(err: unknown): { errorName?: string; errorCode?: string; upstreamStatus?: number } {
+  if (err === undefined) return {};
+  const errorName = err instanceof Error && ERROR_NAME.test(err.name) ? err.name : 'Error';
+  // The plane's failure, thrown as itself or carried as the cause of what a handler rethrew.
+  const plane = [err, err instanceof Error ? err.cause : undefined].find((e) => e instanceof ControlPlaneError);
+  const errorCode = errorCodeOf(err) ?? plane?.problemCode;
+  return { errorName, ...(errorCode ? { errorCode } : {}), ...(plane ? { upstreamStatus: plane.status } : {}) };
 }
 
 /** A response body carrying this request's id, so a caller who saw only the body can quote it. */
