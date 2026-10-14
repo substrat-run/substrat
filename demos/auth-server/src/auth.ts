@@ -1,5 +1,5 @@
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
-import { createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
+import { APIError, createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
 import type { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { oauthProvider, type ClientMetadataResourceFetch } from '@better-auth/oauth-provider';
 import { cimd } from '@better-auth/cimd';
@@ -16,6 +16,7 @@ import type { PhoneVerifier } from './twilio.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
 import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
 import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
+import { USER_DELEGATED_SCOPES } from './settings.js';
 import {
   authorityOf,
   callbackProviderOf,
@@ -183,6 +184,13 @@ export interface AuthDeps {
    * only the DO sets this, and anything else leaves the grant out of `grant_types_supported`.
    */
   servesTokenExchange?: boolean;
+  /**
+   * The scopes a machine client (`client_credentials`) may hold — `MACHINE_SCOPES`, already
+   * parsed by `machineScopesOf`, so a refused value arrives here as `[]`. Undefined or empty ⇒
+   * the plugin is configured exactly as it was before machine clients existed, and the token
+   * hook below refuses every `client_credentials` request.
+   */
+  machineScopes?: readonly string[];
 }
 
 /**
@@ -289,6 +297,109 @@ async function advertiseExtensions(
   });
 }
 
+/** The slice of a Better Auth hook context the machine-scope checks read. */
+interface ScopeHookCtx {
+  body?: unknown;
+  headers?: Headers;
+  context: {
+    adapter: {
+      findOne<T>(query: { model: string; where: { field: string; value: string }[] }): Promise<T | null>;
+    };
+  };
+}
+
+/** The two scope columns of a client row, as the plugin's adapter hands them back. */
+interface ClientScopes {
+  scopes?: string[] | null;
+  clientCredentialsScopes?: string[] | null;
+}
+
+const findClientScopes = (ctx: ScopeHookCtx, clientId: string): Promise<ClientScopes | null> =>
+  ctx.context.adapter.findOne<ClientScopes>({ model: 'oauthClient', where: [{ field: 'clientId', value: clientId }] });
+
+const scopeList = (scope: string | undefined): string[] | undefined => scope?.split(' ').filter(Boolean);
+
+/**
+ * The scope a person's sign-in may ask for, with every machine scope taken out — or
+ * `undefined` when there is nothing to take out and the request goes through untouched.
+ *
+ * A machine scope names what an unattended client may do, and a person's consent is not that
+ * operator's decision. Without this, any administrator-registered client — whose stored scope
+ * list is empty, so the plugin falls back to its configured list — could ask a person for one.
+ * An absent `scope` is resolved here the way the plugin would resolve it, because the plugin
+ * resolves it AFTER this hook, to the list that now includes them.
+ *
+ * Narrowed rather than refused: RFC 6749 §3.3 lets an issuer grant less than was asked, and a
+ * refusal would have to be delivered to a redirect URI this hook has not validated.
+ */
+async function withoutMachineScopes(
+  ctx: ScopeHookCtx,
+  clientId: string,
+  scope: string | undefined,
+  machineScopes: readonly string[],
+): Promise<string | undefined> {
+  if (!machineScopes.length) return undefined;
+  let asked = scopeList(scope);
+  if (!asked) {
+    const client = await findClientScopes(ctx, clientId);
+    // An unknown client is the plugin's to refuse, with its own error.
+    if (!client) return undefined;
+    asked = client.scopes?.length ? client.scopes : [...USER_DELEGATED_SCOPES];
+  }
+  const kept = asked.filter((s) => !machineScopes.includes(s));
+  return scope !== undefined && kept.length === asked.length ? undefined : kept.join(' ');
+}
+
+/** The client id a token request authenticates as — the form body's, or HTTP Basic's. */
+function tokenRequestClientId(ctx: ScopeHookCtx): string | undefined {
+  const body = ctx.body as Record<string, unknown> | undefined;
+  if (typeof body?.client_id === 'string' && body.client_id) return body.client_id;
+  const header = ctx.headers?.get('authorization');
+  if (!header?.toLowerCase().startsWith('basic ')) return undefined;
+  try {
+    const decoded = atob(header.slice(6).trim());
+    const colon = decoded.indexOf(':');
+    return colon > 0 ? decodeURIComponent(decoded.slice(0, colon)) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `MACHINE_SCOPES` as a ceiling the token endpoint enforces, on every `client_credentials`
+ * request — not only at registration.
+ *
+ * The plugin checks a request against the CLIENT's stored list alone, so a scope an operator
+ * removes from `MACHINE_SCOPES` would keep being minted to every client registered while it was
+ * there. Here the request is narrowed to what is in both lists before the plugin sees it: a
+ * scope asked for outside the ceiling is refused, an absent scope becomes the intersection, and
+ * an empty intersection is refused. With no `MACHINE_SCOPES` at all the grant is refused
+ * outright, whatever any client row holds.
+ *
+ * This runs before the plugin authenticates the client. What it can disclose without a secret
+ * is whether a client id currently holds a machine scope; client ids are not secrets.
+ */
+async function machineGrantCeiling(ctx: ScopeHookCtx, machineScopes: readonly string[]) {
+  const body = ctx.body as Record<string, unknown> | undefined;
+  if (body?.grant_type !== 'client_credentials') return;
+  const refuse = (error: string, error_description: string) =>
+    new APIError('BAD_REQUEST', { error, error_description });
+  if (!machineScopes.length) throw refuse('unauthorized_client', 'this issuer grants no machine scopes');
+  const asked = scopeList(typeof body.scope === 'string' ? body.scope : undefined);
+  if (asked) {
+    const outside = asked.filter((s) => !machineScopes.includes(s));
+    if (outside.length) throw refuse('invalid_scope', `The following scopes are invalid: ${outside.join(', ')}`);
+    return;
+  }
+  const clientId = tokenRequestClientId(ctx);
+  // No id, or an unknown one: the plugin refuses it with its own error.
+  const client = clientId ? await findClientScopes(ctx, clientId) : null;
+  if (!client) return;
+  const granted = (client.clientCredentialsScopes ?? []).filter((s) => machineScopes.includes(s));
+  if (!granted.length) throw refuse('unauthorized_client', 'client has no authorized client_credentials scopes');
+  return { context: { body: { ...body, scope: granted.join(' ') } } };
+}
+
 export function buildAuth(deps: AuthDeps) {
   const auth = betterAuthFor(deps);
   const handle = auth.handler;
@@ -300,6 +411,7 @@ export function buildAuth(deps: AuthDeps) {
 }
 
 function betterAuthFor(deps: AuthDeps) {
+  const machineScopes = deps.machineScopes ?? [];
   return betterAuth({
     database: deps.database,
     emailAndPassword: {
@@ -396,6 +508,29 @@ function betterAuthFor(deps: AuthDeps) {
          * Administrators only, the same gate `clientPrivileges` puts on the client registry.
          */
         resourcePrivileges: ({ user }) => (user as { role?: string } | undefined)?.role === 'admin',
+        /**
+         * MACHINE CLIENTS (`client_credentials`, #2267). The plugin grants a machine client only
+         * scopes it was configured with and that no person grants by signing in — and left
+         * unset, its configured scopes are exactly those four, so no machine client could hold
+         * anything. `MACHINE_SCOPES` is the operator's list, added here only when there is one,
+         * so an issuer without it is configured byte for byte as before.
+         *
+         * Adding them makes them valid in EVERY scope check the plugin runs, not just the
+         * machine one, which is wider than meant. Two pins narrow it back:
+         *   - `clientRegistrationDefaultScopes` keeps a SELF-registered client (RFC 7591, CIMD)
+         *     on the sign-in scopes; without it the plugin would stamp the whole list on it.
+         *   - the authorize hook below strips machine scopes from every sign-in, covering the
+         *     administrator-registered clients whose scope column is empty and so falls back to
+         *     this list.
+         * They also appear in discovery's `scopes_supported`, which is accurate: they are scopes
+         * this issuer mints.
+         */
+        ...(machineScopes.length
+          ? {
+              scopes: [...USER_DELEGATED_SCOPES, ...machineScopes],
+              clientRegistrationDefaultScopes: [...USER_DELEGATED_SCOPES],
+            }
+          : {}),
       }),
       // Client ID Metadata Documents (draft-ietf-oauth-client-id-metadata-document), under
       // the MCP 2026-07-28 profile. A client identifies itself by an HTTPS URL that IS its
@@ -551,17 +686,22 @@ function betterAuthFor(deps: AuthDeps) {
        * the moment it tries to become a code, not merely on the way in.
        */
       before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === '/oauth2/token') return machineGrantCeiling(ctx, machineScopes);
         if (ctx.path !== '/oauth2/authorize') return;
-        const query = ctx.query as Record<string, string | undefined> | undefined;
-        const clientId = query?.client_id;
+        const asked = ctx.query as Record<string, string | undefined> | undefined;
+        const clientId = asked?.client_id;
         if (!clientId) return;
+        // Before the policy, so a refusal below re-asks with the narrowed scope too.
+        const scope = await withoutMachineScopes(ctx, clientId, asked?.scope, machineScopes);
+        const query = scope === undefined ? asked : { ...asked, scope };
+        const narrowed = scope === undefined ? undefined : { context: { query } };
         const policy = deps.signInPolicyFor?.(clientId);
         // No session is not this hook's business: the plugin already sends that person to the
         // login screen, which applies the same policy to what it draws.
         const session = await getSessionFromCtx(ctx);
-        if (!session) return;
+        if (!session) return narrowed;
         const method = (session.session as Record<string, unknown>).signInProvider;
-        if (method !== 'invitation' && policyAdmits(policy, typeof method === 'string' ? method : null, session.user.email)) return;
+        if (method !== 'invitation' && policyAdmits(policy, typeof method === 'string' ? method : null, session.user.email)) return narrowed;
         return { context: { query: { ...query, max_age: '0' } } };
       }),
       /**

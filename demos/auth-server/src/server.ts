@@ -24,7 +24,7 @@ import { AUTH_SERVER_ENV } from './manifest.js';
 import { createAdminApi } from './admin-api.js';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
-import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, supabaseBridgeFrom } from './settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { clientBranding } from './branding.js';
@@ -146,6 +146,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // rather than the workerd one this vertical also carries.
     fetchClientMetadataResource,
     allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
+    machineScopes: machineScopesOf(cfg[MACHINE_SCOPES]).scopes,
     socialProviders: socialProvidersFrom(providers),
     genericProviders: genericProvidersFrom(providers),
     trustedProviders: trustedProvidersFrom(providers),

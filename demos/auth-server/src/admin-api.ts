@@ -3,7 +3,16 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
-import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
+import {
+  ACCOUNT_LINKING,
+  ALLOW_SIGNUP,
+  MACHINE_SCOPES,
+  accountLinkingMode,
+  boolValue,
+  isTruthy,
+  machineScopesOf,
+  putDeliveredConfig,
+} from './settings.js';
 import { assertSignInPolicy, isReservedMethodId, sanitizeSignInPolicy } from './sign-in-policy.js';
 import {
   CONSOLE_CLIENT_ID,
@@ -117,9 +126,11 @@ export interface AdminApiDeps {
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
   token_endpoint_auth_method, application_type, user_id, client_secret, created_at, scopes,
-  enable_end_session, post_logout_redirect_uris`;
+  enable_end_session, post_logout_redirect_uris, grant_types, client_credentials_scopes`;
 
 interface ClientRow {
+  grant_types: string | null;
+  client_credentials_scopes: string | null;
   client_id: string;
   name: string | null;
   icon: string | null;
@@ -147,6 +158,20 @@ function jsonColumn<T>(value: string | null, fallback: T): T {
   }
 }
 
+/**
+ * Whether a row is a MACHINE client: one that can only use `client_credentials`.
+ *
+ * The plugin has no such application type — its `application_type` is OpenID's `web` or
+ * `native`, which describe where a redirect URI may point, and a machine client has none. So
+ * "machine" is a fact about the grants, read from them, and a machine client is stored as
+ * `web` (confidential, secret-authenticated). One reader for both the wire shape and the PATCH
+ * guard, so the console's idea of the kind and the server's cannot drift.
+ */
+function isMachineGrant(grantTypes: string | null): boolean {
+  const grants = jsonColumn<string[]>(grantTypes, []);
+  return grants.includes('client_credentials') && !grants.includes('authorization_code');
+}
+
 function readClientRow(sql: SqlExec, clientId: string): ClientRow | undefined {
   return sql
     .exec(`SELECT ${CLIENT_COLUMNS} FROM oauth_client WHERE client_id = ?`, clientId)
@@ -168,7 +193,10 @@ function toWireClient(row: ClientRow) {
     redirect_uris: jsonColumn<string[]>(row.redirect_uris, []),
     scope: jsonColumn<string[]>(row.scopes, []).join(' ') || undefined,
     token_endpoint_auth_method: row.token_endpoint_auth_method ?? undefined,
-    application_type: row.application_type ?? undefined,
+    // `machine` is this console's type, not the plugin's — see `isMachineGrant`.
+    application_type: isMachineGrant(row.grant_types) ? 'machine' : (row.application_type ?? undefined),
+    /** What a machine client may be granted. Empty for every other kind of client. */
+    client_credentials_scopes: jsonColumn<string[]>(row.client_credentials_scopes, []),
     disabled: Boolean(row.disabled),
     skip_consent: Boolean(row.skip_consent),
     user_id: row.user_id ?? undefined,
@@ -279,6 +307,82 @@ function assertClientMetadata(metadata: unknown): void {
   }
 }
 
+/** A machine client's ceiling, as an operator picks it — a subset of `MACHINE_SCOPES`. */
+const clientCredentialsScopes = z.array(z.string().min(1)).min(1);
+
+/**
+ * A new client, as the console registers one. Two shapes, told apart by `application_type`
+ * (`clientCreateSchema`), and both STRICT: a key that is not listed is refused rather than
+ * passed on to the plugin, which would otherwise accept it.
+ *
+ *   - `web` / `native` — a relying party a PERSON signs into. It needs somewhere to send them
+ *     back, so `redirect_uris` is required, and it never carries machine scopes. The type may
+ *     be left out, as before this schema existed; the plugin then treats it as `web`.
+ *   - `machine` — an unattended client (`client_credentials`). Nobody signs into it, so there
+ *     is nothing to redirect to, consent to skip, sign out of or restrict the sign-in of, and
+ *     each of those keys is refused rather than ignored. It always has a secret (the plugin
+ *     mints one for a confidential client) and must name the scopes it may hold.
+ */
+const relyingPartyCreate = z
+  .object({
+    application_type: z.enum(['web', 'native']).optional(),
+    client_name: z.string().min(1),
+    redirect_uris: z.array(z.string().min(1)).min(1),
+    logo_uri: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    skip_consent: z.boolean().optional(),
+    disabled: z.boolean().optional(),
+    enable_end_session: z.boolean().optional(),
+    post_logout_redirect_uris: z.array(z.string().min(1)).optional(),
+    token_endpoint_auth_method: z.enum(['client_secret_basic', 'client_secret_post', 'none']).optional(),
+  })
+  .strict();
+
+const machineCreate = z
+  .object({
+    application_type: z.literal('machine'),
+    client_name: z.string().min(1),
+    client_credentials_scopes: clientCredentialsScopes,
+    logo_uri: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    disabled: z.boolean().optional(),
+  })
+  .strict();
+
+/**
+ * Which of the two a body is held to. Chosen by hand rather than by a `z.union`, so a refused
+ * body is told what IT got wrong, not every way it fails to be the other kind as well.
+ */
+const clientCreateSchema = (body: unknown) =>
+  (body as { application_type?: unknown } | null)?.application_type === 'machine' ? machineCreate : relyingPartyCreate;
+
+/** What a client's `metadata` may not say on a machine client: it has no sign-in to restrict. */
+function assertMachineMetadata(metadata: Record<string, unknown> | undefined): void {
+  if (metadata && 'signIn' in metadata) {
+    throw new HTTPException(400, { message: 'a machine client has no sign-in, so it takes no signIn policy' });
+  }
+}
+
+/**
+ * Hold machine scopes to the issuer's ceiling — `MACHINE_SCOPES`, read live, on the way in.
+ * The plugin checks the same list at registration but not on our PATCH, which writes the
+ * column itself, so this one function answers for both doors. A missing or refused ceiling is
+ * a 409 naming the key: the request is fine, the issuer is not set up to honour it.
+ */
+function assertWithinMachineScopes(cfg: Record<string, string | undefined>, scopes: string[]): void {
+  const ceiling = machineScopesOf(cfg[MACHINE_SCOPES]);
+  if (ceiling.error) throw new HTTPException(409, { message: ceiling.error });
+  if (!ceiling.scopes.length) {
+    throw new HTTPException(409, {
+      message: `${MACHINE_SCOPES} is not set, so this issuer grants no machine scopes and a machine client could never get a token`,
+    });
+  }
+  const outside = scopes.filter((s) => !ceiling.scopes.includes(s));
+  if (outside.length) {
+    throw new HTTPException(400, { message: `not in ${MACHINE_SCOPES}: ${outside.join(', ')}` });
+  }
+}
+
 const clientPatch = z
   .object({
     client_name: z.string().min(1),
@@ -286,7 +390,12 @@ const clientPatch = z
     metadata: z.record(z.string(), z.unknown()),
     skip_consent: z.boolean(),
     disabled: z.boolean(),
-    application_type: z.enum(['web', 'native']),
+    /**
+     * `machine` is accepted only as a restatement: a client's kind is fixed when it is
+     * registered (see the route), so this names the kind it already is or is refused.
+     */
+    application_type: z.enum(['web', 'native', 'machine']),
+    client_credentials_scopes: clientCredentialsScopes,
     redirect_uris: z.array(z.string().min(1)).min(1),
     enable_end_session: z.boolean(),
     /**
@@ -397,9 +506,17 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
 
   const settingsView = () => {
     const cfg = deps.effectiveCfg();
+    const machine = machineScopesOf(cfg[MACHINE_SCOPES]);
     return {
       allowSignup: isTruthy(cfg[ALLOW_SIGNUP]),
       accountLinking: accountLinkingMode(cfg[ACCOUNT_LINKING]),
+      /**
+       * What a machine client may be granted — read-only here: `MACHINE_SCOPES` is set where
+       * the issuer's environment is, and the console only offers a choice from it. A refused
+       * value is `[]` plus the reason, so the form can say why it has nothing to offer.
+       */
+      machineScopes: machine.scopes,
+      ...(machine.error ? { machineScopesError: machine.error } : {}),
     };
   };
 
@@ -622,10 +739,37 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
    * one.
    */
   app.post('/clients', async (c) => {
-    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
-    if (!body) throw new HTTPException(400, { message: 'a JSON body is required' });
-    assertClientMetadata(body.metadata);
-    return c.json((await pluginCall(() => deps.auth().adminCreateOAuthClient({ headers: c.req.raw.headers, body }))) as object, 201);
+    const raw: unknown = await c.req.json().catch(() => null);
+    const draft = parsedBody<z.infer<typeof relyingPartyCreate> | z.infer<typeof machineCreate>>(
+      clientCreateSchema(raw),
+      raw,
+    );
+    assertClientMetadata(draft.metadata);
+    let body: Record<string, unknown> = draft;
+    if (draft.application_type === 'machine') {
+      assertMachineMetadata(draft.metadata);
+      assertWithinMachineScopes(deps.effectiveCfg(), draft.client_credentials_scopes);
+      /**
+       * The plugin's spelling of a machine client (see `isMachineGrant`): `web`, because the
+       * plugin knows no third type and `web` is the confidential one; the one grant; and a
+       * secret sent in the Authorization header, the RFC 6749 default every client library
+       * speaks. No `response_types` — they belong to the authorization endpoint it never uses.
+       */
+      body = {
+        ...draft,
+        application_type: 'web',
+        grant_types: ['client_credentials'],
+        token_endpoint_auth_method: 'client_secret_basic',
+      };
+    }
+    const created = (await pluginCall(() =>
+      deps.auth().adminCreateOAuthClient({ headers: c.req.raw.headers, body }),
+    )) as Record<string, unknown>;
+    // The plugin answers in its own shape; ours says `machine` where the row does.
+    return c.json(
+      draft.application_type === 'machine' ? { ...created, application_type: 'machine' } : created,
+      201,
+    );
   });
 
   /**
@@ -641,14 +785,50 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     if (isConsoleClient(clientId)) assertConsoleClientPatch(patch);
     const exists = deps.sql
       .exec(
-        `SELECT client_id, application_type, redirect_uris, post_logout_redirect_uris
+        `SELECT client_id, application_type, redirect_uris, post_logout_redirect_uris, grant_types
            FROM oauth_client WHERE client_id = ?`,
         clientId,
       )
       .toArray()[0] as
-      | { application_type: string | null; redirect_uris: string | null; post_logout_redirect_uris: string | null }
+      | {
+          application_type: string | null;
+          redirect_uris: string | null;
+          post_logout_redirect_uris: string | null;
+          grant_types: string | null;
+        }
       | undefined;
     if (!exists) throw new HTTPException(404, { message: `unknown client '${clientId}'` });
+
+    /**
+     * A client's KIND is fixed at registration, in both directions. A machine client edited
+     * into `web` or `native` would be a redirect-less client a person could be sent through —
+     * and, as `native`, a public one that skips consent — with a secret minted for something
+     * else; a relying party edited into `machine` would keep its redirect URIs and sign-ins
+     * while gaining a grant nobody reviewed. Neither is an edit: register the other kind.
+     */
+    const machine = isMachineGrant(exists.grant_types);
+    if (patch.application_type !== undefined && (patch.application_type === 'machine') !== machine) {
+      throw new HTTPException(400, {
+        message: machine
+          ? 'a machine client cannot become a web or native client — register one instead'
+          : 'a web or native client cannot become a machine client — register one instead',
+      });
+    }
+    if (machine) {
+      // Each of these is a sign-in's, and a machine client has no sign-in to configure.
+      const refused = (['redirect_uris', 'post_logout_redirect_uris', 'enable_end_session', 'skip_consent'] as const).filter(
+        (key) => patch[key] !== undefined,
+      );
+      if (refused.length) {
+        throw new HTTPException(400, { message: `a machine client does not take ${refused.join(', ')}` });
+      }
+      assertMachineMetadata(patch.metadata);
+      if (patch.client_credentials_scopes !== undefined) {
+        assertWithinMachineScopes(deps.effectiveCfg(), patch.client_credentials_scopes);
+      }
+    } else if (patch.client_credentials_scopes !== undefined) {
+      throw new HTTPException(400, { message: 'only a machine client takes client_credentials_scopes' });
+    }
 
     const sets: string[] = [];
     const values: unknown[] = [];
@@ -677,7 +857,11 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     if (patch.skip_consent !== undefined) set('skip_consent', patch.skip_consent ? 1 : 0);
     if (patch.disabled !== undefined) set('disabled', patch.disabled ? 1 : 0);
-    if (patch.application_type !== undefined) set('application_type', patch.application_type);
+    // A machine client's stored type is the plugin's `web`; restating `machine` writes nothing.
+    if (patch.application_type !== undefined && !machine) set('application_type', patch.application_type);
+    if (patch.client_credentials_scopes !== undefined) {
+      set('client_credentials_scopes', JSON.stringify([...new Set(patch.client_credentials_scopes)]));
+    }
     if (patch.enable_end_session !== undefined) set('enable_end_session', patch.enable_end_session ? 1 : 0);
     /**
      * The URI rule is a fact about the PAIR — a list, and the application type that judges it

@@ -64,6 +64,16 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
     group: 'Accounts',
   },
   {
+    key: 'MACHINE_SCOPES',
+    label: 'Machine client scopes',
+    description:
+      'The scopes a machine-to-machine client (`client_credentials`) may be granted, space-separated. The ceiling for every such client: one is registered with a subset, and a scope removed here stops being minted on the next token request. Blank ⇒ no machine client can be registered or get a token. The sign-in scopes (openid, profile, email, offline_access) are refused — a machine token has no person behind it. These scopes are advertised in discovery, and are never granted through a person’s sign-in.',
+    placeholder: 'reports:read billing:write',
+    required: false,
+    secret: false,
+    group: 'Applications',
+  },
+  {
     key: 'SUPABASE_LEGACY_JWT_SECRET',
     label: 'Supabase legacy JWT secret',
     description:

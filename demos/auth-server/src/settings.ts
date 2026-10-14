@@ -74,6 +74,50 @@ export function boolValue(on: boolean): string {
   return on ? 'true' : 'false';
 }
 
+/* ---- machine clients (`client_credentials`) ---- */
+
+/** The declared key naming the scopes a machine client may be granted. */
+export const MACHINE_SCOPES = 'MACHINE_SCOPES';
+
+/**
+ * The scopes a person grants an application by signing in — the plugin's own defaults, and
+ * the four it refuses as `client_credentials` scopes. A machine token has nobody behind it,
+ * so none of them can mean anything on one.
+ */
+export const USER_DELEGATED_SCOPES: readonly string[] = ['openid', 'profile', 'email', 'offline_access'];
+
+/** RFC 6749 §3.3 `scope-token`: printable ASCII, no space, `"` or `\`. */
+const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
+
+/**
+ * Read `MACHINE_SCOPES` — the operator's ceiling on what any machine client may hold.
+ *
+ * Absent or blank is `[]`, and `[]` means no machine client can be registered or get a token:
+ * an issuer handing out unattended credentials is a decision, the same way `ALLOW_SIGNUP` is.
+ *
+ * A malformed value is REFUSED rather than trimmed to its good half, and a refused value is
+ * read as `[]` by everything that enforces it. Dropping `openid` from `"openid billing"` would
+ * quietly mint `billing` for an operator who plainly misunderstood what the key is for; the
+ * console's registration route is where the refusal is said out loud, naming the entry.
+ */
+export function machineScopesOf(
+  value: string | undefined,
+): { scopes: string[]; error?: string } {
+  const entries = [...new Set((value ?? '').split(/[\s,]+/).filter(Boolean))];
+  const malformed = entries.filter((s) => !SCOPE_TOKEN.test(s));
+  if (malformed.length) {
+    return { scopes: [], error: `${MACHINE_SCOPES} has entries that are not scope tokens: ${malformed.join(', ')}` };
+  }
+  const delegated = entries.filter((s) => USER_DELEGATED_SCOPES.includes(s));
+  if (delegated.length) {
+    return {
+      scopes: [],
+      error: `${MACHINE_SCOPES} must not name a scope a person grants by signing in: ${delegated.join(', ')}`,
+    };
+  }
+  return { scopes: entries };
+}
+
 /* ---- the Supabase legacy-secret bridge ---- */
 
 /** The project's legacy (HS256) JWT secret — delivered as a secret, never read back out. */

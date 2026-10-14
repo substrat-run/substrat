@@ -1106,3 +1106,90 @@ describe('token exchange: one app acting for another app’s user (#1824)', () =
     expect((await stageA(w, ann.idToken)).status).toBe(200);
   });
 });
+
+/**
+ * Machine clients on the DEPLOYED issuer (#2267): `MACHINE_SCOPES` delivered as instance
+ * config, read by the Durable Object's own per-request rebuild (`auth-do.ts`), a machine
+ * client registered through the routed admin API, and its secret traded for a token on the
+ * real `AuthServerDO` SQLite — the path the node suite reaches only through better-sqlite3.
+ */
+describe('machine clients on the deployed issuer (#2267)', () => {
+  const ADMIN = { email: 'root@acme.test', password: 'correct-horse-battery' };
+
+  async function issuer(machineScopes?: string) {
+    const scope = scopeId.parse(ulid());
+    const res = await platform('/internal/provision', {
+      ...install(scope),
+      config: { ...ADMIN_CONFIG, ...(machineScopes ? { MACHINE_SCOPES: machineScopes } : {}) },
+    });
+    expect(res.status).toBe(201);
+    const routed = (path: string, init: RequestInit = {}) =>
+      SELF.fetch(`https://auth.acme.test${path}`, {
+        ...init,
+        redirect: 'manual',
+        headers: {
+          ...(init.headers as Record<string, string> | undefined),
+          'x-substrat-tenant': t,
+          'x-substrat-scope': scope,
+          'x-substrat-router': env.ROUTER_SECRET,
+        },
+      });
+    const signIn = await routed('/api/auth/sign-in/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(ADMIN),
+    });
+    expect(signIn.status).toBe(200);
+    const cookie = (signIn.headers as unknown as { getSetCookie(): string[] })
+      .getSetCookie()
+      .map((c) => c.split(';')[0] ?? '')
+      .filter((pair) => !pair.endsWith('='))
+      .join('; ');
+    const register = (body: Record<string, unknown>) =>
+      routed('/api/admin/clients', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify(body),
+      });
+    const token = (clientId: string, secret: string) =>
+      routed('/api/auth/oauth2/token', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          authorization: `Basic ${btoa(`${encodeURIComponent(clientId)}:${encodeURIComponent(secret)}`)}`,
+        },
+        body: new URLSearchParams({ grant_type: 'client_credentials' }).toString(),
+      });
+    return { register, token };
+  }
+  const ADMIN_CONFIG = { ADMIN_EMAIL: ADMIN.email, ADMIN_PASSWORD: ADMIN.password };
+
+  it('registers one within MACHINE_SCOPES and mints it a token carrying no person', async () => {
+    const w = await issuer('reports:read billing:write');
+    const res = await w.register({
+      application_type: 'machine',
+      client_name: 'Nightly Export',
+      client_credentials_scopes: ['reports:read'],
+    });
+    expect(res.status).toBe(201);
+    const client = (await res.json()) as { client_id: string; client_secret: string; application_type: string };
+    expect(client.application_type).toBe('machine');
+
+    const minted = await w.token(client.client_id, client.client_secret);
+    expect(minted.status).toBe(200);
+    const body = (await minted.json()) as Record<string, unknown>;
+    expect(body.scope).toBe('reports:read');
+    expect(body.id_token).toBeUndefined();
+  });
+
+  it('refuses a machine client where MACHINE_SCOPES was never delivered', async () => {
+    const w = await issuer();
+    const res = await w.register({
+      application_type: 'machine',
+      client_name: 'Too Early',
+      client_credentials_scopes: ['reports:read'],
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain('MACHINE_SCOPES');
+  });
+});

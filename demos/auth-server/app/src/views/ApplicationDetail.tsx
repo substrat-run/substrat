@@ -4,12 +4,15 @@ import {
   APPLICATION_TYPES,
   createOAuthClient,
   deleteOAuthClient,
+  issuerSettings,
   listOAuthClients,
   rotateOAuthClientSecret,
   setupState,
   updateOAuthClient,
   type ApplicationType,
   type ClientDraft,
+  type IssuerSettings,
+  type MachineClientDraft,
   type PublicProvider,
   type RegisteredClient,
 } from '../api';
@@ -167,18 +170,29 @@ function ApplicationHeader({ client }: { client: RegisteredClient }) {
           {!client.builtin && client.enable_end_session && <span className="tag">can sign out</span>}
           {!client.builtin && !client.user_id && <span className="tag">self-registered</span>}
         </dd>
-        <dt>Redirect URIs</dt>
-        {/* No `uris` class: that one styles a table cell, and `.kv dd` already wraps a long
-            URI the same way. */}
-        <dd>
-          {client.builtin ? (
-            <span className="muted">the admin console — signs in here, never redirects</span>
-          ) : client.redirect_uris.length === 0 ? (
-            <span className="muted">none</span>
-          ) : (
-            client.redirect_uris.map((uri) => <div key={uri}><code>{uri}</code></div>)
-          )}
-        </dd>
+        {client.application_type === 'machine' ? (
+          <>
+            <dt>Scopes</dt>
+            <dd>
+              {(client.client_credentials_scopes ?? []).map((scope) => <code key={scope}>{scope} </code>)}
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>Redirect URIs</dt>
+            {/* No `uris` class: that one styles a table cell, and `.kv dd` already wraps a long
+                URI the same way. */}
+            <dd>
+              {client.builtin ? (
+                <span className="muted">the admin console — signs in here, never redirects</span>
+              ) : client.redirect_uris.length === 0 ? (
+                <span className="muted">none</span>
+              ) : (
+                client.redirect_uris.map((uri) => <div key={uri}><code>{uri}</code></div>)
+              )}
+            </dd>
+          </>
+        )}
         <dt>Registered</dt>
         <dd>
           {/* `client_id_issued_at` is RFC 7591's seconds-since-epoch, not milliseconds — the
@@ -341,6 +355,27 @@ export function ClientEditor({
   const [skipConsent, setSkipConsent] = useState(Boolean(client?.skip_consent));
   const [endSession, setEndSession] = useState(Boolean(client?.enable_end_session));
   const [logoutUris, setLogoutUris] = useState((client?.post_logout_redirect_uris ?? []).join('\n'));
+  /**
+   * A machine client: no sign-in, so none of the redirect, consent, logout, sign-in-policy or
+   * appearance fields below apply to it — they are hidden, and never sent. A client's kind is
+   * fixed once it is registered (the API refuses the move either way), so an existing client
+   * is only offered the kinds on its own side of that line.
+   */
+  const machine = type === 'machine';
+  const kinds = !client
+    ? APPLICATION_TYPES
+    : client.application_type === 'machine'
+      ? (['machine'] as ApplicationType[])
+      : APPLICATION_TYPES.filter((t) => t !== 'machine');
+  const [scopes, setScopes] = useState<string[]>(client?.client_credentials_scopes ?? []);
+  /** The issuer's `MACHINE_SCOPES` — what the scope boxes offer. `null` until read. */
+  const [ceiling, setCeiling] = useState<IssuerSettings | null>(null);
+  useEffect(() => {
+    if (!machine || ceiling) return;
+    void issuerSettings()
+      .then(setCeiling)
+      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
+  }, [machine, ceiling]);
 
   /**
    * The stored theme (`metadata.theme` — the vocabulary src/branding.ts sanitizes). The
@@ -416,6 +451,23 @@ export function ClientEditor({
     // there must not survive past the fields, which would otherwise win only when non-empty.
     delete metadata.theme;
     delete metadata.signIn;
+    if (machine) {
+      if (!ceiling) return setErr('Scopes: still loading the issuer’s machine scopes — try again in a moment.');
+      // A held scope that has left MACHINE_SCOPES is dropped rather than sent: the API refuses
+      // any scope outside the list, and the token endpoint already stopped granting it.
+      const kept = scopes.filter((s) => ceiling.machineScopes.includes(s));
+      if (!kept.length) return setErr('Scopes: tick at least one — a machine client with none could never get a token.');
+      const machineDraft: MachineClientDraft = {
+        client_name: name.trim(),
+        application_type: 'machine',
+        client_credentials_scopes: kept,
+        metadata,
+        disabled: client?.disabled ?? false,
+        // Same rule as a relying party's logo, below.
+        ...(icon.trim() ? { logo_uri: icon.trim() } : client ? { logo_uri: '' } : {}),
+      };
+      return persist(machineDraft);
+    }
     // Reassemble the theme: the untouched extra keys, then the fields (empty = remove).
     const fields: [string, string][] = [
       ['title', themeTitle],
@@ -449,7 +501,7 @@ export function ClientEditor({
     }
     const clientDraft: ClientDraft = {
       client_name: name.trim(),
-      application_type: type,
+      application_type: type as ClientDraft['application_type'],
       redirect_uris: uris.split('\n').map((u) => u.trim()).filter(Boolean),
       metadata,
       skip_consent: skipConsent,
@@ -463,6 +515,10 @@ export function ClientEditor({
       // registration body is the one that validates the URI, and `''` is not one.
       ...(icon.trim() ? { logo_uri: icon.trim() } : client ? { logo_uri: '' } : {}),
     };
+    return persist(clientDraft);
+  };
+
+  const persist = async (clientDraft: ClientDraft | MachineClientDraft) => {
     setBusy(true);
     try {
       if (builtin && client) {
@@ -511,20 +567,29 @@ export function ClientEditor({
         <>
           <label className="field">
             <span>Application type</span>
-            <select value={type} onChange={(e) => setType(e.target.value as ApplicationType)}>
-              {APPLICATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            <select value={type} disabled={kinds.length === 1} onChange={(e) => setType(e.target.value as ApplicationType)}>
+              {kinds.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
             <em className="hint">
               A <code>web</code> client keeps its secret on a server. A <code>native</code> one is public — PKCE, and
-              loopback or private-scheme redirect URIs are allowed.
+              loopback or private-scheme redirect URIs are allowed. A <code>machine</code> client is a service
+              with no person signing in: it trades its own secret for a token (<code>client_credentials</code>).
+              {client && ' Fixed once registered: register another application to change it.'}
             </em>
           </label>
+          {machine && (
+            <MachineScopes ceiling={ceiling} chosen={scopes} onChange={setScopes} />
+          )}
+          <Field label="Logo URL" value={icon} onChange={setIcon} hint="Optional. Shown beside the name on the consent screen." />
+        </>
+      )}
+      {!builtin && !machine && (
+        <>
           <label className="field">
             <span>Redirect URIs</span>
             <textarea rows={3} value={uris} onChange={(e) => setUris(e.target.value)} />
             <em className="hint">One per line, matched exactly. A `web` client needs HTTPS unless it is on loopback.</em>
           </label>
-          <Field label="Logo URL" value={icon} onChange={setIcon} hint="Optional. Shown beside the name on the consent screen." />
           <label className="toggle">
             <input type="checkbox" checked={skipConsent} onChange={(e) => setSkipConsent(e.target.checked)} />
             <span>
@@ -558,20 +623,24 @@ export function ClientEditor({
           )}
         </>
       )}
-      <SignInPolicyEditor draft={draft} onChange={setDraft} offered={offered} offeredError={offeredError} builtin={builtin} />
-      <h3>Appearance</h3>
-      <p className="muted small">
-        {builtin
-          ? 'How this console’s own sign-in screen looks. '
-          : 'How the sign-in, sign-up and consent screens look when this application sends someone here. '}
-        Colors are hex (<code>#0a6847</code>); blank means the issuer&apos;s default.
-      </p>
-      <Field label="Sign-in title" value={themeTitle} onChange={setThemeTitle} hint="Replaces “Substrat Auth” as the sign-in heading." />
-      <Field label="Logo URL" value={themeLogo} onChange={setThemeLogo} hint="https:// or data:image/ — shown above the heading." />
-      <Field label="Primary color" value={themePrimary} onChange={setThemePrimary} hint="Buttons and links." />
-      <Field label="Primary text color" value={themePrimaryFg} onChange={setThemePrimaryFg} hint="Text on the primary color — keep the contrast readable." />
-      <Field label="Background color" value={themeBackground} onChange={setThemeBackground} />
-      <Field label="Card color" value={themePanel} onChange={setThemePanel} />
+      {!machine && (
+        <>
+          <SignInPolicyEditor draft={draft} onChange={setDraft} offered={offered} offeredError={offeredError} builtin={builtin} />
+          <h3>Appearance</h3>
+          <p className="muted small">
+            {builtin
+              ? 'How this console’s own sign-in screen looks. '
+              : 'How the sign-in, sign-up and consent screens look when this application sends someone here. '}
+            Colors are hex (<code>#0a6847</code>); blank means the issuer&apos;s default.
+          </p>
+          <Field label="Sign-in title" value={themeTitle} onChange={setThemeTitle} hint="Replaces “Substrat Auth” as the sign-in heading." />
+          <Field label="Logo URL" value={themeLogo} onChange={setThemeLogo} hint="https:// or data:image/ — shown above the heading." />
+          <Field label="Primary color" value={themePrimary} onChange={setThemePrimary} hint="Buttons and links." />
+          <Field label="Primary text color" value={themePrimaryFg} onChange={setThemePrimaryFg} hint="Text on the primary color — keep the contrast readable." />
+          <Field label="Background color" value={themeBackground} onChange={setThemeBackground} />
+          <Field label="Card color" value={themePanel} onChange={setThemePanel} />
+        </>
+      )}
       <label className="field">
         <span>Metadata (JSON)</span>
         <textarea rows={4} value={meta} onChange={(e) => setMeta(e.target.value)} placeholder={'{\n  "plan": "internal"\n}'} />
@@ -583,12 +652,60 @@ export function ClientEditor({
       </label>
       {err && <p className="error">{err}</p>}
       <div className="row">
-        <button className="btn primary" disabled={busy || (draft.restrict && !offered)} onClick={() => void save()}>
+        <button className="btn primary" disabled={busy || (!machine && draft.restrict && !offered)} onClick={() => void save()}>
           {busy ? 'Saving…' : client ? 'Save changes' : 'Register'}
         </button>
         {onCancel && <button className="btn" onClick={onCancel}>Cancel</button>}
         {saved && <span className="muted small">Saved.</span>}
       </div>
     </div>
+  );
+}
+
+/**
+ * The scopes a machine client may be granted, as boxes over the issuer's `MACHINE_SCOPES`
+ * rather than free text: the list is the operator's ceiling, and a box can only offer what is
+ * on it. A scope the client holds that has since left the list gets no box, but is named, so a
+ * save that drops it is not a surprise — the token endpoint stopped granting it already.
+ */
+function MachineScopes({
+  ceiling, chosen, onChange,
+}: {
+  ceiling: IssuerSettings | null;
+  chosen: string[];
+  onChange: (scopes: string[]) => void;
+}) {
+  if (!ceiling) return <p className="muted small">Loading this issuer&apos;s machine scopes…</p>;
+  const offered = ceiling.machineScopes;
+  if (!offered.length) {
+    return (
+      <p className="error">
+        {ceiling.machineScopesError ??
+          'This issuer grants no machine scopes: set MACHINE_SCOPES in its environment before registering a machine client.'}
+      </p>
+    );
+  }
+  const stale = chosen.filter((s) => !offered.includes(s));
+  return (
+    <fieldset className="field">
+      <span>Scopes</span>
+      {offered.map((scope) => (
+        <label key={scope} className="toggle">
+          <input
+            type="checkbox"
+            checked={chosen.includes(scope)}
+            onChange={(e) => onChange(e.target.checked ? [...chosen, scope] : chosen.filter((s) => s !== scope))}
+          />
+          <span><code>{scope}</code></span>
+        </label>
+      ))}
+      {stale.length > 0 && (
+        <em className="hint">
+          Also held, but no longer in MACHINE_SCOPES and so no longer granted: {stale.join(', ')}. Saving
+          drops {stale.length === 1 ? 'it' : 'them'}.
+        </em>
+      )}
+      <em className="hint">What this client may ask for. It gets all of them when it asks for none.</em>
+    </fieldset>
   );
 }
