@@ -24,7 +24,7 @@ It is built in two slices:
 - a later, globally merged page needs things a scope does not return today, and §5 states them
   rather than assuming them.
 
-Nine questions are left open for a human (§8). Two of them are the original ones: where the
+Seven questions are left open for a human (§8). Two of them are the original ones: where the
 scope set comes from, and whether the read is audited as one.
 
 ## 1. What exists, and why none of it is this
@@ -141,10 +141,14 @@ set, and that is left to §8.1.
 ```ts
 {
   sections: Array<{ scope: ScopeId; entries: T[]; nextCursor: string | null }>,
-  unavailable: Array<{ scope: ScopeId; reason: 'suspended' | 'archived' | 'frozen' | 'timeout' | 'error' }>,
+  unavailable: Array<{ scope: ScopeId; reason: 'suspended' | 'archived' | 'timeout' | 'error' }>,
   nextCursor: string | null,
 }
 ```
+
+The client sends back the top-level `nextCursor`, which covers the whole walk. A section's
+`nextCursor` is that scope's own cursor. It continues that one scope alone, through the
+single-scope operation, for a "more from this space" link.
 
 Each section is exactly the page the scope returned alone, in the scope's own order, with the
 scope's own cursor. Since no rows from different scopes are compared, none of §5's ordering
@@ -158,8 +162,12 @@ The merged cursor is an opaque, versioned envelope that holds:
 
 A scope that did not answer keeps its last position. The next page retries it from there, so a
 timeout never skips that scope's rows. A cursor replayed under another walk is refused, with
-the same remedy K-44 gives (the first page). The set changing mid-walk is the same: a new scope
-cannot be spliced into a walk that has already passed its first page.
+the same remedy K-44 gives (the first page). The set changing mid-walk does not need a restart,
+because sections are never compared with each other:
+- a scope that joins the set appears as a new section, starting from its own first page;
+- a scope that leaves the set stops appearing.
+
+The set digest in the cursor only tells the host which scopes have positions.
 
 The screens this serves: a sidebar of spaces with each space's latest items, "shared with me"
 grouped by space, and search across spaces with results grouped by space.
@@ -177,12 +185,17 @@ indistinguishable, in the answer, from a scope that does not exist.** Concretely
   installation, a scope whose issuer differs (§7, invariant 2), and a scope that is
   `provisioning` or `reaped` are all **dropped**, the same way and with the same timing class.
   None of them appears in the answer.
-- The reasons map onto `scopeStatus` and the migration freeze:
+- The reasons map onto `scopeStatus`:
   - `suspended` is `suspended`;
   - `archived` covers `archiving` and `archived`;
-  - `frozen` is a migration in progress (a freeze, not a status);
   - `timeout` is a scope that did not answer in time;
   - `error` is anything else the scope answered with that is not a refusal.
+
+  A reason for a migration freeze is not proposed: no freeze is reported today, and §5.6 names
+  one only as a possible later use of `readonly`. If one ships, it gets its own reason.
+- The residue: the set is a hint (§7, invariant 4), so a removed member whose index entry has not
+  yet been removed still sees that scope's lifecycle reason, though never its rows. That exposure
+  is bounded by the index's lag (§8.1).
 - Everything dropped is recorded for the vertical's operator in the host's invocation log line,
   never in the answer.
 
@@ -205,8 +218,12 @@ requirement:
    disagree. SQLite's BINARY collation compares UTF-8 bytes while JS compares UTF-16 code units,
    so the two order U+FFFD and U+1F600 differently. A column holding mixed integer and text
    values also sorts by storage class. *Requirement:* a merge key is restricted to types whose
-   orders agree on both sides: an integer, or text limited to ASCII (a ULID, an ISO 8601
-   timestamp). A value outside the declared type fails that scope as `error` rather than
+   orders agree on both sides:
+   - an integer within ±2^53, so that JS compares it exactly;
+   - or text limited to ASCII in one fixed format, such as a ULID, or an ISO 8601 timestamp in UTC
+     with a `Z` suffix and a fixed fractional precision, so that byte order is time order.
+
+   A value outside the declared type fails that scope as `error` rather than
    misordering the page.
 4. **A scope that times out on page k.** Its next row may sort before rows already emitted.
    *Requirement:* the merged cursor keeps that scope's position, and the page is marked
@@ -221,7 +238,7 @@ that cannot be served by sections.
 
 | Condition | Behaviour |
 |---|---|
-| A scope the source records the person as holding is suspended, archiving, archived or frozen | Listed in `unavailable` with its reason (§4.3). Its cursor position is kept. |
+| A scope the source records the person as holding is suspended, archiving or archived | Listed in `unavailable` with its reason (§4.3). Its cursor position is kept. |
 | A scope is cold or slow | Invoked under a per-scope timeout. If the timeout passes it is listed as `timeout` and its position is kept. |
 | A scope refuses the principal, is `provisioning` or `reaped`, belongs elsewhere, or trusts another issuer | Dropped. Indistinguishable from a scope that does not exist (§4.3). |
 | A scope answers under a different declared version of the operation | Open (§8.4). Until it is decided: `error`. |
@@ -256,7 +273,8 @@ each authenticated against its own scope, would not have returned.
 
 ## 8. Open questions
 
-These are for a human. Each has a recommendation, and none is settled by this document.
+These are for a human. All but §8.7 carry a recommendation, and none is settled by this
+document.
 
 ### 8.1 Where the scope set comes from
 
@@ -361,21 +379,18 @@ the walk halt at the boundary until they arrive? This is relevant only if §5 is
 
 ## 9. Where each invariant is enforced
 
-| Invariant | Enforced by | Where it sits |
-|---|---|---|
-| 1. One tenant, one installation | The router, which signs the tenant for the request; the host, which holds the set to it | Router: the platform. Host: the `vertical-host` library inside the vertical's deployment. |
-| 2. One issuer | The host's set resolution, against the identity directory's per-scope auth wiring | `vertical-host` and `vertical-auth`, inside the vertical's deployment |
-| 3. Authority per scope | Each scope's own `ctx.check`, in the operation's first line | The kernel's scope door |
-| 4. Hint, not authority | Follows from 3 | The kernel's scope door |
-| 5. No oracle | The host's construction of the answer (§4.3) | `vertical-host` |
-| 6. The bound | The host, under a ceiling the platform publishes | `vertical-host`; the ceiling's value is the platform's |
-| 7. Module code gains nothing | `boundary-lint` and the absence of a `ctx` surface | Build-time lint, and the kernel |
+| Invariant | Who evaluates what |
+|---|---|
+| 1. One tenant, one installation | The router signs the tenant for the request. `vertical-host` holds the set to it. |
+| 2. One issuer | `vertical-host`'s set resolution, against the per-scope auth wiring `vertical-auth` holds |
+| 3. Authority per scope | The pairing of each scope with a principal comes from §4.1's resolution, which is invariants 1 and 2. Given that pair, the kernel evaluates `ctx.check` for the principal it is handed. That the operation checks **first** is the module rule every operation follows (`assertAllowed(await ctx.check(…))` as its first line), exercised by the conformance kit. |
+| 4. Hint, not authority | Follows from 3: a stale entry meets the scope's own check |
+| 5. No oracle | `vertical-host`'s construction of the answer (§4.3) |
+| 6. The bound | `vertical-host`, under a ceiling the platform publishes |
+| 7. Module code gains nothing | `boundary-lint`, and the absence of any `ctx` surface for it |
 
-The invariants held by `vertical-host` are a library's guarantees: they hold for every vertical
-that serves the read through it, and the contract suite (§11) holds the library to them. Moving
-any of them behind the platform, so that it holds independently of the vertical's own code, is a
-later hardening and is not proposed here. §5.4's rule stands: a fleet question is unbounded and
-operator-shaped, and still goes to Tier 2.
+The invariants held by `vertical-host` are exercised by the §11 contract suite. §5.4's rule
+stands: a fleet question is unbounded and operator-shaped, and still goes to Tier 2.
 
 ## 10. Not in this RFC
 
