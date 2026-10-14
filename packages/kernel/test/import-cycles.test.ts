@@ -7,8 +7,10 @@
  * modules of their own. This holds the list to what is left, so a new cycle appears in the
  * PR that adds it, and removing the last one shows up here too.
  *
- * Type-only imports are erased at compile time and cannot cycle at run time, so they are
- * not edges (`import type`, or a braced list whose every name is `type`).
+ * Only an `import type` or `export type` statement is erased at compile time, so only those
+ * are not edges. A braced list whose every name is inline `type` (`import { type X } from`)
+ * is NOT erased: under `verbatimModuleSyntax` (tsconfig.base.json) tsc emits it as
+ * `import {} from './x.js'`, which loads the module and can cycle like any other import.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,12 +29,8 @@ function valueEdges(sources: ReadonlyMap<string, string>): Map<string, Set<strin
   const edges = new Map<string, Set<string>>();
   for (const [name, source] of sources) {
     const to = new Set<string>();
-    for (const [, typeOnly, clause, target] of source.matchAll(statement)) {
-      if (typeOnly) continue;
-      const braced = clause!.trim().match(/^\{([\s\S]*)\}$/);
-      const names = braced ? braced[1]!.split(',').map((s) => s.trim()).filter(Boolean) : [];
-      if (names.length > 0 && names.every((n) => n.startsWith('type '))) continue;
-      to.add(target!);
+    for (const [, typeOnly, , target] of source.matchAll(statement)) {
+      if (!typeOnly) to.add(target!);
     }
     edges.set(name, to);
   }
@@ -97,7 +95,7 @@ describe("the kernel's runtime import cycles (#1978)", () => {
     }
   });
 
-  it('finds a cycle through a value import, and none through a type-only one', () => {
+  it('finds a cycle through a value import, and none through an import type or export type', () => {
     const value = new Map([
       ['a', "import type { T } from '@substrat-run/contracts';\nimport { b } from './b.js';"],
       ['b', "import {\n  type T,\n  a,\n} from './a.js';"],
@@ -106,8 +104,26 @@ describe("the kernel's runtime import cycles (#1978)", () => {
 
     const typeOnly = new Map([
       ['a', "import { b } from './b.js';"],
-      ['b', "import type { A } from './a.js';\nexport { type A2 } from './a.js';"],
+      ['b', "import type { A } from './a.js';\nexport type { A2 } from './a.js';"],
     ]);
     expect(cyclesOf(valueEdges(typeOnly))).toEqual([]);
+  });
+
+  it('counts a braced list of inline type names as an edge, as tsc emits it', () => {
+    // verbatimModuleSyntax compiles each of these to `import {} from './a.js'` /
+    // `export {} from './a.js'`: a.js is loaded, so the cycle is real at run time.
+    for (const spelling of ["import { type A } from './a.js';", "export { type A2 } from './a.js';"]) {
+      const inline = new Map([
+        ['a', "import { b } from './b.js';"],
+        ['b', spelling],
+      ]);
+      expect(cyclesOf(valueEdges(inline)), spelling).toEqual([['a', 'b']]);
+    }
+  });
+
+  it('reddens on the review of #2275: peer importing an inline type from the sweep is the cycle again', () => {
+    const mutated = new Map(sources);
+    mutated.set('peer', `${sources.get('peer')}\nimport { type PlatformSweepOptions } from './platform-sweep.js';\n`);
+    expect(cyclesOf(valueEdges(mutated))).toContainEqual(['peer', 'platform-sweep']);
   });
 });
