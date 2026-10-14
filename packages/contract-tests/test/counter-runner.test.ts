@@ -65,4 +65,19 @@ describe('counterScopeStoreRunner (#2213)', () => {
     const tables = [{ name: 'counter', ddl: 'CREATE TABLE counter (subject TEXT, n INTEGER NOT NULL)', columns: ['subject', 'n'], rows: [[null, -4]] }];
     await expect(store.importTables(tables)).rejects.toMatchObject({ storeCode: 'validation_failed', storeStatus: 400 });
   });
+
+  it('refuses an import that names one subject twice, and leaves the object as it was', async () => {
+    const store = counter();
+    await store.call('increment', { by: 5, subjectId: 'alice' });
+    const table = (rows: unknown[][]) => [
+      { name: 'counter', ddl: 'CREATE TABLE counter (subject TEXT, n INTEGER NOT NULL)', columns: ['subject', 'n'], rows },
+    ];
+    for (const rows of [[['a', 1], ['a', 2]], [[null, 1], [null, 2]]]) {
+      await expect(store.importTables(table(rows))).rejects.toMatchObject({ storeCode: 'validation_failed', storeStatus: 400 });
+      expect(await store.call('read')).toBe(5);
+    }
+    // The twin: distinct subjects load.
+    expect(await store.importTables(table([['a', 1], ['b', 2], [null, 3]]))).toEqual({ tables: 1 });
+    expect(await store.call('read')).toBe(6);
+  });
 });

@@ -84,7 +84,10 @@ export function counterScopeStoreRunner(): ScopeStoreRunner {
           // The whole object is replaced: no counter table is an empty object.
           const rows = z.array(counterRow).safeParse(input.data.tables.find((one) => one.name === 'counter')?.rows ?? []);
           if (!rows.success) return invalidStoreInput('a counter row is [subject or null, a non-negative integer]');
-          objects.set(id, new Map(rows.data));
+          // A dump names each row key once: a repeated subject is refused, never folded or dropped.
+          const next = new Map(rows.data);
+          if (next.size !== rows.data.length) return invalidStoreInput('a counter table names each subject once');
+          objects.set(id, next);
           return { result: { tables: input.data.tables.length } };
         }
         default:
