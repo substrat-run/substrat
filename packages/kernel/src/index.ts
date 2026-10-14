@@ -751,7 +751,16 @@ export type {
   JobStepRow,
   StartJobRunInput,
 } from './job-run.js';
-export { runPlatformSweep, startPlatformSweeper } from './platform-sweep.js';
+export {
+  runPlatformSweep,
+  startPlatformSweeper,
+  StorageReadUnsupported,
+  PROVISION_RECONCILE_BATCH,
+  CROSS_VERTICAL_CONSUMERS_PER_PASS,
+  runCrossVerticalFrom,
+  registryImportCandidates,
+  crossVerticalHealth,
+} from './platform-sweep.js';
 export { SCHEDULE_STATE_DDL, SCHEDULE_STATE_REBUILD, scheduleStateHasKind } from './schedule-state.js';
 export type { ScheduleSweepReport, ScheduleStateKind } from './schedule-state.js';
 export type {
@@ -769,19 +778,17 @@ export type {
   StartPlatformSweeperOptions,
   StorageGaugeSweepOptions,
   StorageGaugeSweepReport,
+  CandidatesHint,
+  CrossVerticalEdge,
+  CrossVerticalOptions,
+  CrossVerticalReach,
+  CrossVerticalReport,
+  ProvisionReconcileReport,
 } from './platform-sweep.js';
-export { StorageReadUnsupported } from './platform-sweep.js';
 // #1653: which scopes are the real install, and which version runs on them — shared so
 // every receipt writer and the sweep answer both questions the same way.
 export { isPrimaryScope, isPrimaryScopeRow, INERT_SCOPE_REASON, runningVersionOf } from './scope-identity.js';
 export type { ServingPointer } from './scope-identity.js';
-export {
-  PROVISION_RECONCILE_BATCH,
-  CROSS_VERTICAL_CONSUMERS_PER_PASS,
-  runCrossVerticalFrom,
-  registryImportCandidates,
-  crossVerticalHealth,
-} from './platform-sweep.js';
 export {
   exportBreaksOf,
   exportBreakRefusal,
@@ -804,14 +811,6 @@ export {
   strandJudgmentsOf,
 } from './install-receipts.js';
 export type { InstallsReconciled, StrandJudgment } from './install-receipts.js';
-export type {
-  CandidatesHint,
-  CrossVerticalEdge,
-  CrossVerticalOptions,
-  CrossVerticalReach,
-  CrossVerticalReport,
-  ProvisionReconcileReport,
-} from './platform-sweep.js';
 export {
   migrationProgress,
 } from './migration-progress.js';

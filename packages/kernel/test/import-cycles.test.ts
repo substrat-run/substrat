@@ -31,7 +31,7 @@ function valueEdges(sources: ReadonlyMap<string, string>): Map<string, Set<strin
       if (typeOnly) continue;
       const braced = clause!.trim().match(/^\{([\s\S]*)\}$/);
       const names = braced ? braced[1]!.split(',').map((s) => s.trim()).filter(Boolean) : [];
-      if (braced && names.length > 0 && names.every((n) => n.startsWith('type '))) continue;
+      if (names.length > 0 && names.every((n) => n.startsWith('type '))) continue;
       to.add(target!);
     }
     edges.set(name, to);
@@ -78,19 +78,19 @@ function cyclesOf(edges: ReadonlyMap<string, ReadonlySet<string>>): string[][] {
 function kernelSources(): Map<string, string> {
   return new Map(
     readdirSync(SRC)
-      .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+      .filter((f) => f.endsWith('.ts'))
       .map((f) => [f.slice(0, -'.ts'.length), readFileSync(join(SRC, f), 'utf8')]),
   );
 }
 
 describe("the kernel's runtime import cycles (#1978)", () => {
+  const sources = kernelSources();
+
   it('are exactly the known ones', () => {
-    expect(cyclesOf(valueEdges(kernelSources()))).toEqual(KNOWN_CYCLES);
+    expect(cyclesOf(valueEdges(sources))).toEqual(KNOWN_CYCLES);
   });
 
-  it('leave the platform sweep out of every cycle, and nothing split out of it imports it back', () => {
-    const sources = kernelSources();
-    expect(cyclesOf(valueEdges(sources)).flat()).not.toContain('platform-sweep');
+  it('do not reach back into the platform sweep from anything split out of it', () => {
     for (const split of ['schedule-state', 'scope-identity', 'install-receipts', 'export-break', 'map-bounded']) {
       // Any import at all, a type-only one included: these sit below the sweep.
       expect(sources.get(split), split).not.toMatch(/from '\.\/platform-sweep\.js'/);
