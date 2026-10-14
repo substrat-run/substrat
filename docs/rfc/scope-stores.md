@@ -204,6 +204,9 @@ external process. A runner is handed to `SqliteScopeHost` and satisfies:
 
 The kind ships the runner. The first kind's is a local process with one repository per address.
 The contract suite uses an in-process runner of the trivial kind, on both adapters.
+A kind holds its own runner to this section with `scopeStoreRunnerContractSuite`
+(`@substrat-run/contract-tests`, #2213), and a dev host reads its bindings from the
+declaration with `scopeStoreRunnersFor` (`@substrat-run/adapter-sqlite`).
 
 ## 8. Copies, and what a shred reaches
 
