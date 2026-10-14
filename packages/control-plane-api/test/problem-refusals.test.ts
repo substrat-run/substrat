@@ -20,7 +20,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   type LakeQueryEngine,
 } from '../src/index.js';
-import { NON_PROBLEM_REFUSAL, coded, relayed } from '../src/errors.js';
+import { coded, relayed } from '../src/errors.js';
 import { takeNonProblemRefusals } from './setup/problem-tripwire.js';
 
 /**
@@ -140,7 +140,6 @@ describe('control-plane refusals are problem documents', () => {
       expect(seen).toEqual([{ method: 'GET', route: '/hand-rolled/:id', status: 404 }]);
       expect(JSON.stringify(seen)).not.toContain(id);
       expect(JSON.stringify(seen)).not.toContain('secret sentence');
-      expect(NON_PROBLEM_REFUSAL).toBe('control-plane.non-problem-refusal');
     });
 
     it('stays quiet for a problem answer and for a success', async () => {

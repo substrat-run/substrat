@@ -177,7 +177,6 @@ import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switch
 import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { NON_PROBLEM_REFUSAL, coded, mapError, relayed, type ApiError } from './errors.js';
 import { maskDump, maskRecords } from './mask.js';
 import { createPseudonymizer } from './pseudonymize.js';
@@ -1459,12 +1458,14 @@ function messageOfThrow(err: unknown): string {
 /** What a 5xx answered with no error object said: the JSON body's `error` (and `detail`), else the status. */
 async function answeredMessage(res: Response): Promise<string> {
   const body = (await res.clone().json().catch(() => null)) as Record<string, unknown> | null;
-  const error = typeof body?.['error'] === 'string' ? body['error'] : typeof body?.['title'] === 'string' ? body['title'] : null;
-  const detail = typeof body?.['detail'] === 'string' ? body['detail'] : null;
-  // A problem document carries its sentence twice (`detail`, and the deprecated `error`
-  // duplicate, #113); the row names it once.
-  if (error && detail && detail !== error) return `${error}: ${detail}`;
-  return error ?? detail ?? `HTTP ${res.status}`;
+  const str = (k: string): string | null => (typeof body?.[k] === 'string' && body[k] !== '' ? (body[k] as string) : null);
+  const error = str('error');
+  const detail = str('detail');
+  // A headline beside a reason (`deploy upload failed` + the upstream's sentence) reads as
+  // both. A problem document's `error` is only the deprecated duplicate of its `detail`
+  // (#113), so it adds nothing, and once it is gone `detail` alone still names the occurrence.
+  if (error && detail && error !== detail) return `${error}: ${detail}`;
+  return detail ?? error ?? str('title') ?? `HTTP ${res.status}`;
 }
 
 /**
@@ -1949,10 +1950,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /** The status of a ControlPlaneError a route answers itself, with the error marked for the backstop. */
-  const failedWith = (c: { set: (k: 'failure', v: unknown) => void }, e: ControlPlaneError): ContentfulStatusCode => {
+  const failedWith = (c: { set: (k: 'failure', v: unknown) => void }, e: ControlPlaneError): number => {
     c.set('failure', e);
-    return e.status as ContentfulStatusCode;
+    return e.status;
   };
+
+  /** A caught `ControlPlaneError` answered as itself — its status and sentence, `about:blank` — and marked for the backstop. */
+  const relayRefusal = (c: Context<{ Variables: Vars }>, e: ControlPlaneError, carried?: Readonly<Record<string, unknown>>): Response =>
+    refuseStatus(c, failedWith(c, e), e.message, carried);
 
   // Rides out a transient downstream window: the install path's binding-attach →
   // script-settings propagation race (#424 case 2), and a one-shot DO storage blip
@@ -2107,7 +2112,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(await c.var.admin.getTenant(actor, tenantId));
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -2819,10 +2824,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           owner: input.owner,
         },
       );
-      if (!result.ok) return refuseStatus(c, result.status as ContentfulStatusCode, result.error);
+      if (!result.ok) return refuseStatus(c, result.status, result.error);
       return c.json(await c.var.admin.getScopeRecord(actor, tenantId, input.scopeId), 201);
     } catch (e) {
-      if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
       throw e;
     }
   });
@@ -4659,7 +4664,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       return c.json(await vertical.ownerSeat(tenantId, scopeId));
     } catch (e) {
-      if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
       throw e;
     }
   });
@@ -4698,7 +4703,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       return c.json(await vertical.mintOwnerClaim({ tenantId, scopeId, origin, actor }), 201);
     } catch (e) {
-      if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
       throw e;
     }
   });
@@ -4751,7 +4756,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { operationId } = done;
     if ('error' in done) {
       if (done.error instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, done.error), done.error.message, { operationId });
+        return relayRefusal(c, done.error, { operationId });
       }
       throw done.error;
     }
@@ -4796,7 +4801,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       return c.json(await target.vertical.listMembers(target.tenantId, target.scopeId));
     } catch (e) {
-      if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
       throw e;
     }
   });
@@ -4919,7 +4924,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await vertical.configureInstance({ tenantId, scopeId, entries: input.entries });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -5129,7 +5134,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ ...record, ...storeReplayFields(replay ? [replay] : []) }, 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -5220,7 +5225,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ deleted: scopeId, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -5321,7 +5326,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(await backupScope(c, tenantId, scope), 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -5899,7 +5904,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         backup = await backupScope(c, tenantId, scope);
       } catch (e) {
         if (e instanceof ControlPlaneError) {
-          return refuseStatus(c, failedWith(c, e), e.message);
+          return relayRefusal(c, e);
         }
         return refuseStatus(
           c,
@@ -5921,7 +5926,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ ...reaped, backup, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -5975,7 +5980,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ ...dump, tables: await maskDump(tables, mask), stores: [], masked: true });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -6110,7 +6115,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(body);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -6150,7 +6155,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       try {
         await refuseUndeclaredDumpStores(c, scope, dump.stores);
       } catch (e) {
-        if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
+        if (e instanceof ControlPlaneError) return relayRefusal(c, e);
         throw e;
       }
     }
@@ -6215,7 +6220,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // reconcile); a clear that fails here must not hide the restore's own error.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       // A restore throw is driven by the caller-supplied dump (a shape the target cannot
       // load, a DDL the engine rejects), so DISCLOSE it as an actionable 422 rather than
@@ -6298,7 +6303,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(answer);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -6318,7 +6323,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ adopted: scopeId, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message, exportBreaksOf(e));
+        return relayRefusal(c, e, exportBreaksOf(e));
       }
       throw e;
     }
@@ -6356,7 +6361,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message, { ...exportBreaksOf(e), adopted, alreadyAdopted });
+        return relayRefusal(c, e, { ...exportBreaksOf(e), adopted, alreadyAdopted });
       }
       throw e;
     }
@@ -6390,7 +6395,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ rebound: scopeId, vertical, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return refuseStatus(c, failedWith(c, e), e.message, exportBreaksOf(e));
+        return relayRefusal(c, e, exportBreaksOf(e));
       }
       throw e;
     }
@@ -6932,7 +6937,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             message: e.message,
           }, e);
         }
-        return refuseStatus(c, failedWith(c, e), e.message);
+        return relayRefusal(c, e);
       }
       throw e;
     }
@@ -9508,21 +9513,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // tenant) has no scope of its own to fork.
   const previewVertical = async (
     c: Context<{ Variables: Vars }>,
-  ): Promise<{ tenantId: TenantId; slug: string } | { error: string; status: ContentfulStatusCode }> => {
+  ): Promise<{ tenantId: TenantId; slug: string } | { refused: ErrorCode; error: string }> => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug')!);
     const v = await verticalOf(c.get('actor'), slug);
-    if (!v) return { error: `unknown vertical '${slug}'`, status: 404 };
+    if (!v) return { refused: 'not_found', error: `unknown vertical '${slug}'` };
     if (confinedTenant(p) !== null && v.ownerTenant !== confinedTenant(p)) {
-      return { error: 'forbidden', status: 403 };
+      return { refused: 'forbidden', error: 'forbidden' };
     }
-    if (v.ownerTenant === null) return { error: `vertical '${slug}' has no owner tenant`, status: 409 };
+    if (v.ownerTenant === null) return { refused: 'conflict', error: `vertical '${slug}' has no owner tenant` };
     return { tenantId: v.ownerTenant, slug };
   };
 
   app.post('/verticals/:slug/previews', async (c) => {
     const gate = await previewVertical(c);
-    if ('error' in gate) return refuseStatus(c, gate.status, gate.error);
+    if ('error' in gate) return refuse(c, gate.refused, gate.error);
     const { tenantId, slug } = gate;
     const body = createPreviewBody.parse(await c.req.json());
     const actor = c.get('actor');
@@ -9555,14 +9560,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const out = await orchestratedPreview(c, tenantId, slug, source, body);
       return c.json(out, out.reused ? 200 : 201);
     } catch (e) {
-      if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
       throw e;
     }
   });
 
   app.get('/verticals/:slug/previews', async (c) => {
     const gate = await previewVertical(c);
-    if ('error' in gate) return refuseStatus(c, gate.status, gate.error);
+    if ('error' in gate) return refuse(c, gate.refused, gate.error);
     const { tenantId, slug } = gate;
     const actor = c.get('actor');
     const previews = (await c.var.admin.listScopes(actor, { tenantId, vertical: slug }))
@@ -9588,7 +9593,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.delete('/verticals/:slug/previews/:tag', async (c) => {
     const gate = await previewVertical(c);
-    if ('error' in gate) return refuseStatus(c, gate.status, gate.error);
+    if ('error' in gate) return refuse(c, gate.refused, gate.error);
     const { tenantId, slug } = gate;
     const tag = c.req.param('tag');
     const actor = c.get('actor');
@@ -9605,7 +9610,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const { storageStranded } = await reapPreview(c, preview);
       return c.json({ deleted: preview.id, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
-      if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
       throw e;
     }
   });

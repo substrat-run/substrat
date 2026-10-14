@@ -1,4 +1,4 @@
-import { afterEach, beforeEach } from 'vitest';
+import { afterEach } from 'vitest';
 import { NON_PROBLEM_REFUSAL } from '../../src/errors.js';
 
 /**
@@ -24,10 +24,8 @@ export function takeNonProblemRefusals(): unknown[] {
   return fired.splice(0);
 }
 
-beforeEach(() => {
-  fired.length = 0;
-});
-
+// No `beforeEach` clearing: a refusal answered in a `beforeAll` must fail the file's first
+// test, not be wiped before it runs.
 afterEach(() => {
   const seen = takeNonProblemRefusals();
   if (seen.length > 0) {

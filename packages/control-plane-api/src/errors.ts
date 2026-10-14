@@ -6,7 +6,6 @@ import {
   substratError,
   toProblem,
   type ErrorCode,
-  type ExtensionsFor,
   type Problem,
 } from '@substrat-run/contracts';
 import { SecretBoxUnconfiguredError } from '@substrat-run/kernel';
@@ -30,9 +29,9 @@ export interface ApiError {
  * status follows from the catalog, so a route that refuses by code cannot pick a status
  * the code does not mean.
  */
-export const coded = <C extends ErrorCode>(code: C, message: string, extensions?: ExtensionsFor<C>): ApiError => ({
+export const coded = (code: ErrorCode, message: string): ApiError => ({
   status: PROBLEM_CATALOG[code].status as ContentfulStatusCode,
-  body: toProblem(substratError(code, message, extensions)),
+  body: toProblem(substratError(code, message)),
 });
 
 /**
