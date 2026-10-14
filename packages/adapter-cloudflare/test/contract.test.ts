@@ -306,7 +306,7 @@ describe('capability expiry on the DO path, the stored instant past the wall clo
       state.storage.sql.exec(sql, ...params).toArray(),
     );
   const aMinuteAgo = () => new Date(Date.now() - 60_000).toISOString();
-  const later = () => new Date(Date.now() + HOUR).toISOString();
+  const later = () => instant.parse(new Date(Date.now() + HOUR).toISOString());
   const share = async (spec: Record<string, unknown>) =>
     (await host.getScope(alice, t1, s1)).invoke<MintedCapability>('cap/share', { entity: folder, permissions: [CAP_READ], ...spec });
   const session = async (secret: string): Promise<string> => {
